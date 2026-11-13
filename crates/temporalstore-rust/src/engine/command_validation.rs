@@ -720,6 +720,7 @@ pub(super) fn validate_command_preconditions(
                         end_routing_bucket,
                     ),
                     points,
+                    crate::engine::cell_merge_append::PlanOutput::CountOnly,
                 )?;
             }
         }

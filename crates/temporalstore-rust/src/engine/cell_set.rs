@@ -451,8 +451,9 @@ impl CellHeader {
         encode_varint_field(&mut out, 1, self.version as u64);
         encode_bytes_field(&mut out, 2, self.key.namespace.as_bytes());
         encode_varint_field(&mut out, 3, entity_tag(self.key.entity));
+        let mut record = Vec::new();
         for dim in &self.key.dimensions {
-            let mut record = Vec::new();
+            record.clear();
             encode_bytes_field(&mut record, 1, dim.name.as_bytes());
             encode_varint_field(&mut record, 2, dim_tag(dim.ty));
             encode_varint_field(&mut record, 3, dim.required as u64);
@@ -462,7 +463,7 @@ impl CellHeader {
             encode_bytes_field(&mut out, 5, label.as_bytes());
         }
         for lane in &self.lanes {
-            let mut record = Vec::new();
+            record.clear();
             encode_bytes_field(&mut record, 1, lane.name.as_bytes());
             encode_varint_field(&mut record, 2, lane.reducer.tag());
             encode_bytes_field(&mut out, 6, &record);
@@ -937,21 +938,25 @@ pub(crate) fn encode_value(header: &CellHeader, cells: &[Cell]) -> Result<Vec<u8
     Ok(out)
 }
 
-/// The header and the still-packed snapshot bytes of a value.
-pub(crate) fn split_value(bytes: &[u8]) -> Result<(CellHeader, &[u8]), String> {
+/// The header and the still-packed snapshot bytes of a value, the header still undecoded.
+pub(crate) fn split_value_raw(bytes: &[u8]) -> Result<(&[u8], &[u8]), String> {
     let mut cursor = 0;
     let (mut header, mut snapshot) = (None, None);
     while cursor < bytes.len() {
         let (field, wire) = read_tag(bytes, &mut cursor)?;
         match (field, wire) {
-            (1, 2) if header.is_none() => {
-                header = Some(CellHeader::decode(read_bytes(bytes, &mut cursor)?)?)
-            }
+            (1, 2) if header.is_none() => header = Some(read_bytes(bytes, &mut cursor)?),
             (2, 2) if snapshot.is_none() => snapshot = Some(read_bytes(bytes, &mut cursor)?),
             _ => return Err(format!("unexpected or repeated value field {field}/{wire}")),
         }
     }
     Ok((header.ok_or("value has no header")?, snapshot.unwrap_or(&[])))
+}
+
+/// The header and the still-packed snapshot bytes of a value.
+pub(crate) fn split_value(bytes: &[u8]) -> Result<(CellHeader, &[u8]), String> {
+    let (header, snapshot) = split_value_raw(bytes)?;
+    Ok((CellHeader::decode(header)?, snapshot))
 }
 
 pub(crate) fn decode_value(bytes: &[u8]) -> Result<(CellHeader, Vec<Cell>), String> {
@@ -977,25 +982,476 @@ pub(crate) fn merge_request(
     existing: Option<&[u8]>,
     request: &[u8],
 ) -> Result<(Vec<u8>, CellHeader, MergeCounts), String> {
-    let (requested, cells) = decode_value(request)?;
-    validate_cells_in_request(cells.len())?;
-    let effective = match newest {
-        None => requested,
-        Some(stored) => check_header(stored, &requested)?.unwrap_or_else(|| stored.clone()),
-    };
-    let mut snapshot = match existing {
-        None => Vec::new(),
+    let newest = newest.map(|header| std::rc::Rc::new(header.clone()));
+    let own;
+    let existing = match existing {
+        None => Existing::Nothing,
         Some(bytes) => {
-            let (own, packed) = split_value(bytes)?;
-            if own != effective {
-                // The stored snapshot may only be an earlier, shorter form of the effective header.
-                check_header(&own, &effective)?;
-            }
-            decode_snapshot(&effective, packed)?
+            let (header, snapshot) = split_value(bytes)?;
+            own = header;
+            Existing::Stored { header: &own, snapshot }
         }
     };
-    let counts = merge_into_snapshot(&effective, &mut snapshot, &cells)?;
-    Ok((encode_value(&effective, &snapshot)?, effective, counts))
+    let (effective, cells, counts) = merge_point(newest.as_ref(), existing, request)?;
+    Ok((cells.encode_value(&effective)?, (*effective).clone(), counts))
+}
+
+// ------------------------------------------------------------------------------------------
+// The flat form
+// ------------------------------------------------------------------------------------------
+//
+// A merge that holds each cell as a `Cell` pays several allocations per cell per step: the labels
+// `Vec`, the lanes `Vec`, a `Vec` for a bytes member, a temporary record and two packed-field
+// temporaries while it is written, and a clone of the whole snapshot to keep the merge atomic. The
+// flat form holds the same cells in four vectors for the WHOLE snapshot -- members, one arena for
+// bytes members, labels and lanes at a fixed stride -- so a merge costs a fixed number of
+// allocations at any cell count. It reads and writes exactly the bytes `decode_snapshot` and
+// `encode_snapshot` do; the tests pin that against those two, which stay as the plain statement of
+// the format.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FlatMember {
+    U64(u64),
+    /// `len` bytes of the arena from `start`.
+    Bytes { start: usize, len: usize },
+}
+
+/// Orders members as [`Member`] does: every `u64` before every bytes member, bytes lexically.
+fn cmp_members(a: &FlatMember, a_arena: &[u8], b: &FlatMember, b_arena: &[u8]) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (FlatMember::U64(x), FlatMember::U64(y)) => x.cmp(y),
+        (FlatMember::U64(_), FlatMember::Bytes { .. }) => Ordering::Less,
+        (FlatMember::Bytes { .. }, FlatMember::U64(_)) => Ordering::Greater,
+        (FlatMember::Bytes { start: s1, len: l1 }, FlatMember::Bytes { start: s2, len: l2 }) => {
+            a_arena[*s1..*s1 + *l1].cmp(&b_arena[*s2..*s2 + *l2])
+        }
+    }
+}
+
+/// The cells of one snapshot, sorted by member once merged, in four vectors.
+#[derive(Debug)]
+pub(crate) struct FlatCells {
+    labels_per_cell: usize,
+    lanes_per_cell: usize,
+    members: Vec<FlatMember>,
+    arena: Vec<u8>,
+    labels: Vec<u64>,
+    lanes: Vec<i64>,
+}
+
+/// Bytes a varint of `value` takes.
+fn varint_len(value: u64) -> usize {
+    (64 - (value | 1).leading_zeros() as usize).div_ceil(7)
+}
+
+/// Bytes a length-delimited field of `len` content bytes takes, with a one-byte tag. An empty
+/// field is not written (see `encode_bytes_field`), so it takes none.
+fn field_len(len: usize) -> usize {
+    if len == 0 {
+        0
+    } else {
+        1 + varint_len(len as u64) + len
+    }
+}
+
+/// How many cells the packed snapshot holds, read off its top-level fields only. A damaged image
+/// stops the count early; the decode that follows reports the damage.
+fn count_cells(bytes: &[u8]) -> usize {
+    let (mut cursor, mut count) = (0, 0);
+    while cursor < bytes.len() {
+        let Ok((field, wire)) = read_tag(bytes, &mut cursor) else { break };
+        let step = match (field, wire) {
+            (1, 2) => read_bytes(bytes, &mut cursor).map(|_| count += 1),
+            (SNAPSHOT_DELTA_FIELD, 0) => read_varint(bytes, &mut cursor).map(|_| ()),
+            _ => break,
+        };
+        if step.is_err() {
+            break;
+        }
+    }
+    count
+}
+
+/// Appends the packed varints of `bytes` to `out`, refusing more than `limit` of them.
+fn unpack_into<T>(
+    bytes: &[u8],
+    limit: usize,
+    what: &str,
+    out: &mut Vec<T>,
+    convert: impl Fn(u64) -> T,
+) -> Result<(), String> {
+    let (mut cursor, mut count) = (0, 0);
+    while cursor < bytes.len() {
+        within(what, count + 1, limit)?;
+        out.push(convert(read_varint(bytes, &mut cursor)?));
+        count += 1;
+    }
+    Ok(())
+}
+
+impl FlatCells {
+    /// No cells, with room for `room` of them.
+    pub(crate) fn empty(header: &CellHeader, room: usize) -> FlatCells {
+        let room = room.min(MAX_CELLS_PER_SNAPSHOT + 1);
+        let (labels_per_cell, lanes_per_cell) = (header.labels.len(), header.lanes.len());
+        FlatCells {
+            labels_per_cell,
+            lanes_per_cell,
+            members: Vec::with_capacity(room),
+            arena: Vec::new(),
+            labels: Vec::with_capacity(room * labels_per_cell),
+            lanes: Vec::with_capacity(room * lanes_per_cell),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.members.len()
+    }
+
+    /// Reads what [`decode_snapshot`] reads, under the same limits, with room for `room` more
+    /// cells than `bytes` holds so a merge into it does not have to grow it.
+    pub(crate) fn decode(header: &CellHeader, bytes: &[u8], room: usize) -> Result<FlatCells, String> {
+        let mut out = FlatCells::empty(header, count_cells(bytes).saturating_add(room));
+        let (labels_per_cell, lanes_per_cell) = (out.labels_per_cell, out.lanes_per_cell);
+        let mut cursor = 0;
+        let mut delta = false;
+        let mut previous = 0u64;
+        while cursor < bytes.len() {
+            let (field, wire) = read_tag(bytes, &mut cursor)?;
+            if (field, wire) == (SNAPSHOT_DELTA_FIELD, 0) {
+                if !out.members.is_empty() || delta {
+                    return Err("snapshot delta flag is repeated or follows a cell".to_string());
+                }
+                if read_varint(bytes, &mut cursor)? != 1 {
+                    return Err("snapshot delta flag is not 1".to_string());
+                }
+                delta = true;
+                continue;
+            }
+            if (field, wire) != (1, 2) {
+                return Err(format!("unknown snapshot field {field}/{wire}"));
+            }
+            validate_cells_in_snapshot(out.members.len() + 1)?;
+            let record = read_bytes(bytes, &mut cursor)?;
+            let (labels_at, lanes_at, arena_at) = (out.labels.len(), out.lanes.len(), out.arena.len());
+            let mut at = 0;
+            let mut member = None;
+            while at < record.len() {
+                let (f, w) = read_tag(record, &mut at)?;
+                match (f, w) {
+                    (1, 0) => {
+                        let raw = read_varint(record, &mut at)?;
+                        let value = if delta {
+                            previous.checked_add(raw).ok_or("member distance overflows u64")?
+                        } else {
+                            raw
+                        };
+                        previous = value;
+                        member = Some(FlatMember::U64(value));
+                    }
+                    (2, 2) => {
+                        let body = read_bytes(record, &mut at)?;
+                        // A repeated member field keeps the last, as it does when decoded to a `Cell`.
+                        out.arena.truncate(arena_at);
+                        if out.arena.capacity() == 0 {
+                            // Every bytes member is inside `bytes`, so this is one allocation, once.
+                            out.arena.reserve_exact(bytes.len());
+                        }
+                        out.arena.extend_from_slice(body);
+                        member = Some(FlatMember::Bytes { start: arena_at, len: body.len() });
+                    }
+                    (3, 2) => {
+                        out.labels.truncate(labels_at);
+                        let packed = read_bytes(record, &mut at)?;
+                        unpack_into(packed, labels_per_cell, "labels per cell", &mut out.labels, |v| v)?;
+                    }
+                    (4, 2) => {
+                        out.lanes.truncate(lanes_at);
+                        let packed = read_bytes(record, &mut at)?;
+                        unpack_into(packed, lanes_per_cell, "lanes per cell", &mut out.lanes, unzigzag)?;
+                    }
+                    _ => return Err(format!("unknown cell field {f}/{w}")),
+                }
+            }
+            let member = member.ok_or("cell has no member")?;
+            if let FlatMember::Bytes { len, .. } = member {
+                within_nonzero("member bytes", len, MAX_MEMBER_BYTES)?;
+            }
+            // Values the cell did not carry (a snapshot written under an earlier header) read as zero.
+            out.labels.resize(labels_at + labels_per_cell, 0);
+            out.lanes.resize(lanes_at + lanes_per_cell, 0);
+            out.members.push(member);
+        }
+        Ok(out)
+    }
+
+    /// The same cells under a header that declares more labels or lanes: the new ones read as zero.
+    fn widen(&mut self, header: &CellHeader) {
+        let (labels_per_cell, lanes_per_cell) = (header.labels.len(), header.lanes.len());
+        if (labels_per_cell, lanes_per_cell) == (self.labels_per_cell, self.lanes_per_cell) {
+            return;
+        }
+        fn spread<T: Copy + Default>(old: &[T], from: usize, to: usize, cells: usize) -> Vec<T> {
+            let mut out = vec![T::default(); cells * to];
+            for i in 0..cells {
+                out[i * to..i * to + from].copy_from_slice(&old[i * from..(i + 1) * from]);
+            }
+            out
+        }
+        let cells = self.members.len();
+        self.labels = spread(&self.labels, self.labels_per_cell, labels_per_cell, cells);
+        self.lanes = spread(&self.lanes, self.lanes_per_cell, lanes_per_cell, cells);
+        self.labels_per_cell = labels_per_cell;
+        self.lanes_per_cell = lanes_per_cell;
+    }
+
+    fn is_strictly_ascending(&self) -> bool {
+        self.members
+            .windows(2)
+            .all(|pair| cmp_members(&pair[0], &self.arena, &pair[1], &self.arena).is_lt())
+    }
+
+    /// Merges `incoming` into these cells under the header's lane reducers, as
+    /// [`merge_into_snapshot`] does: a member already here has its lanes combined and its labels
+    /// replaced; a member that is not is inserted in order. A member that appears twice in
+    /// `incoming` merges twice. On `Err` the cells are left half merged, so a caller must not use
+    /// them.
+    pub(crate) fn merge(&mut self, header: &CellHeader, incoming: &FlatCells) -> Result<MergeCounts, String> {
+        validate_cells_in_request(incoming.len())?;
+        if !self.is_strictly_ascending() {
+            return Err("stored snapshot is not strictly ascending by member".to_string());
+        }
+        if !incoming.members.is_empty() {
+            if incoming.labels_per_cell != header.labels.len() {
+                return Err(format!(
+                    "cell has {} labels, the header declares {}",
+                    incoming.labels_per_cell,
+                    header.labels.len()
+                ));
+            }
+            if incoming.lanes_per_cell != header.lanes.len() {
+                return Err(format!(
+                    "cell has {} lanes, the header declares {}",
+                    incoming.lanes_per_cell,
+                    header.lanes.len()
+                ));
+            }
+        }
+        debug_assert_eq!((self.labels_per_cell, self.lanes_per_cell), (header.labels.len(), header.lanes.len()));
+        let (nl, nn) = (self.labels_per_cell, self.lanes_per_cell);
+        self.members.reserve(incoming.len());
+        self.labels.reserve(incoming.len() * nl);
+        self.lanes.reserve(incoming.len() * nn);
+        self.arena.reserve(incoming.arena.len());
+        let mut counts = MergeCounts::default();
+        for (i, member) in incoming.members.iter().enumerate() {
+            let found = self
+                .members
+                .binary_search_by(|have| cmp_members(have, &self.arena, member, &incoming.arena));
+            let in_labels = &incoming.labels[i * nl..(i + 1) * nl];
+            let in_lanes = &incoming.lanes[i * nn..(i + 1) * nn];
+            match found {
+                Ok(at) => {
+                    let have_lanes = &mut self.lanes[at * nn..(at + 1) * nn];
+                    for ((lane, have), add) in header.lanes.iter().zip(have_lanes).zip(in_lanes) {
+                        *have = lane.reducer.combine(*have, *add);
+                    }
+                    self.labels[at * nl..(at + 1) * nl].copy_from_slice(in_labels);
+                    counts.merged += 1;
+                }
+                Err(at) => {
+                    validate_cells_in_snapshot(self.members.len() + 1)?;
+                    let stored = match *member {
+                        FlatMember::U64(v) => FlatMember::U64(v),
+                        FlatMember::Bytes { start, len } => {
+                            let here = self.arena.len();
+                            self.arena.extend_from_slice(&incoming.arena[start..start + len]);
+                            FlatMember::Bytes { start: here, len }
+                        }
+                    };
+                    self.members.insert(at, stored);
+                    self.labels.splice(at * nl..at * nl, in_labels.iter().copied());
+                    self.lanes.splice(
+                        at * nn..at * nn,
+                        header.lanes.iter().zip(in_lanes).map(|(lane, v)| lane.reducer.initial(*v)),
+                    );
+                    counts.created += 1;
+                }
+            }
+        }
+        Ok(counts)
+    }
+
+    /// Whether the `u64` members ascend strictly, so each is written as a distance
+    /// (see [`delta_codable`]).
+    fn delta_codable(&self) -> bool {
+        let mut previous: Option<u64> = None;
+        for member in &self.members {
+            if let FlatMember::U64(v) = *member {
+                if previous.is_some_and(|p| v <= p) {
+                    return false;
+                }
+                previous = Some(v);
+            }
+        }
+        previous.is_some()
+    }
+
+    fn labels_of(&self, i: usize) -> &[u64] {
+        &self.labels[i * self.labels_per_cell..(i + 1) * self.labels_per_cell]
+    }
+
+    fn lanes_of(&self, i: usize) -> &[i64] {
+        &self.lanes[i * self.lanes_per_cell..(i + 1) * self.lanes_per_cell]
+    }
+
+    /// The bytes of cell `i`'s record, where `previous` is the `u64` member before it (the
+    /// distance base when `delta`).
+    fn record_len(&self, i: usize, delta: bool, previous: u64) -> usize {
+        let member = match self.members[i] {
+            FlatMember::U64(v) if delta => 1 + varint_len(v - previous),
+            FlatMember::U64(v) => 1 + varint_len(v),
+            FlatMember::Bytes { len, .. } => 1 + varint_len(len as u64) + len,
+        };
+        let labels: usize = self.labels_of(i).iter().map(|v| varint_len(*v)).sum();
+        let lanes: usize = self.lanes_of(i).iter().map(|v| varint_len(zigzag(*v))).sum();
+        member + field_len(labels) + field_len(lanes)
+    }
+
+    /// The bytes of the packed snapshot.
+    fn snapshot_len(&self, delta: bool) -> usize {
+        let mut total = if delta { 2 } else { 0 };
+        let mut previous = 0u64;
+        for (i, member) in self.members.iter().enumerate() {
+            let record = self.record_len(i, delta, previous);
+            if let FlatMember::U64(v) = member {
+                previous = *v;
+            }
+            total += 1 + varint_len(record as u64) + record;
+        }
+        total
+    }
+
+    /// The value to store: the header, then the packed snapshot, in one allocation of exactly the
+    /// size written (a first pass measures it). Byte for byte what [`encode_value`] writes for the
+    /// same cells.
+    pub(crate) fn encode_value(&self, header: &CellHeader) -> Result<Vec<u8>, String> {
+        validate_cells_in_snapshot(self.members.len())?;
+        for member in &self.members {
+            if let FlatMember::Bytes { len, .. } = member {
+                within_nonzero("member bytes", *len, MAX_MEMBER_BYTES)?;
+            }
+        }
+        if (self.labels_per_cell, self.lanes_per_cell) != (header.labels.len(), header.lanes.len()) {
+            return Err(format!(
+                "cells hold {} labels and {} lanes, the header declares {} and {}",
+                self.labels_per_cell,
+                self.lanes_per_cell,
+                header.labels.len(),
+                header.lanes.len()
+            ));
+        }
+        let delta = self.delta_codable();
+        let head = header.encode()?;
+        let snapshot_len = self.snapshot_len(delta);
+        let mut out = Vec::with_capacity(field_len(head.len()) + field_len(snapshot_len));
+        encode_bytes_field(&mut out, 1, &head);
+        if snapshot_len > 0 {
+            encode_varint(&mut out, (2 << 3) | 2);
+            encode_varint(&mut out, snapshot_len as u64);
+        }
+        if delta {
+            encode_varint_field(&mut out, SNAPSHOT_DELTA_FIELD, 1);
+        }
+        let mut previous = 0u64;
+        for (i, member) in self.members.iter().enumerate() {
+            encode_varint(&mut out, (1 << 3) | 2);
+            encode_varint(&mut out, self.record_len(i, delta, previous) as u64);
+            match *member {
+                FlatMember::U64(v) if delta => {
+                    encode_varint_field(&mut out, 1, v - previous);
+                    previous = v;
+                }
+                FlatMember::U64(v) => encode_varint_field(&mut out, 1, v),
+                FlatMember::Bytes { start, len } => encode_bytes_field(&mut out, 2, &self.arena[start..start + len]),
+            }
+            let labels = self.labels_of(i);
+            let packed: usize = labels.iter().map(|v| varint_len(*v)).sum();
+            if packed > 0 {
+                encode_varint(&mut out, (3 << 3) | 2);
+                encode_varint(&mut out, packed as u64);
+                labels.iter().for_each(|v| encode_varint(&mut out, *v));
+            }
+            let lanes = self.lanes_of(i);
+            let packed: usize = lanes.iter().map(|v| varint_len(zigzag(*v))).sum();
+            if packed > 0 {
+                encode_varint(&mut out, (4 << 3) | 2);
+                encode_varint(&mut out, packed as u64);
+                lanes.iter().for_each(|v| encode_varint(&mut out, zigzag(*v)));
+            }
+        }
+        debug_assert_eq!(out.len(), out.capacity(), "the size pass and the write pass disagree");
+        Ok(out)
+    }
+}
+
+/// The header and cells of a request value.
+pub(crate) fn decode_request(bytes: &[u8]) -> Result<(CellHeader, FlatCells), String> {
+    let (header, packed) = split_value(bytes)?;
+    let cells = FlatCells::decode(&header, packed, 0)?;
+    Ok((header, cells))
+}
+
+/// What a timestamp holds when one more request point is merged into it.
+pub(crate) enum Existing<'a> {
+    /// Nothing is stored or planned there.
+    Nothing,
+    /// A stored value: its header, and its still-packed snapshot.
+    Stored { header: &'a CellHeader, snapshot: &'a [u8] },
+    /// Cells an earlier point of the same request already merged there, with the header they were
+    /// merged under.
+    Planned { header: std::rc::Rc<CellHeader>, cells: FlatCells },
+}
+
+/// One request point merged into what its timestamp holds. The one place that owns the header
+/// check against the newest stored header, the upgrade of an older snapshot, and the merge.
+/// [`FlatCells::encode_value`] is the only step left to the caller, so a caller that only needs to
+/// know whether the request is accepted can skip it. Returns the effective header (the newest
+/// stored one itself when the request declares exactly that), the merged cells and the counts.
+pub(crate) fn merge_point(
+    newest: Option<&std::rc::Rc<CellHeader>>,
+    existing: Existing<'_>,
+    request: &[u8],
+) -> Result<(std::rc::Rc<CellHeader>, FlatCells, MergeCounts), String> {
+    let (requested, incoming) = decode_request(request)?;
+    validate_cells_in_request(incoming.len())?;
+    let effective = match newest {
+        None => std::rc::Rc::new(requested),
+        Some(stored) => match check_header(stored, &requested)? {
+            Some(extended) => std::rc::Rc::new(extended),
+            None => std::rc::Rc::clone(stored),
+        },
+    };
+    let mut cells = match existing {
+        Existing::Nothing => FlatCells::empty(&effective, incoming.len()),
+        Existing::Stored { header, snapshot } => {
+            if *header != *effective {
+                // The stored snapshot may only be an earlier, shorter form of the effective header.
+                check_header(header, &effective)?;
+            }
+            FlatCells::decode(&effective, snapshot, incoming.len())?
+        }
+        Existing::Planned { header, mut cells } => {
+            if *header != *effective {
+                check_header(&header, &effective)?;
+                cells.widen(&effective);
+            }
+            cells
+        }
+    };
+    let counts = cells.merge(&effective, &incoming)?;
+    Ok((effective, cells, counts))
 }
 
 #[cfg(test)]
@@ -1620,6 +2076,222 @@ mod tests {
         assert!(decode_key(&s, &stored_key[..stored_key.len() - 1]).is_err());
     }
 
+    // --------------------------------------------------------------------------------------
+    // The flat form reads and writes the bytes the plain form does
+    // --------------------------------------------------------------------------------------
+
+    fn flat_to_cells(flat: &FlatCells) -> Vec<Cell> {
+        (0..flat.len())
+            .map(|i| Cell {
+                member: match flat.members[i] {
+                    FlatMember::U64(v) => Member::U64(v),
+                    FlatMember::Bytes { start, len } => Member::Bytes(flat.arena[start..start + len].to_vec()),
+                },
+                labels: flat.labels_of(i).to_vec(),
+                lanes: flat.lanes_of(i).to_vec(),
+            })
+            .collect()
+    }
+
+    /// The merge as it was written over `Cell`s: the oracle the flat form is held to.
+    fn plain_merge_request(
+        newest: Option<&CellHeader>,
+        existing: Option<&[u8]>,
+        request: &[u8],
+    ) -> Result<(Vec<u8>, CellHeader, MergeCounts), String> {
+        let (requested, cells) = decode_value(request)?;
+        validate_cells_in_request(cells.len())?;
+        let effective = match newest {
+            None => requested,
+            Some(stored) => check_header(stored, &requested)?.unwrap_or_else(|| stored.clone()),
+        };
+        let mut snapshot = match existing {
+            None => Vec::new(),
+            Some(bytes) => {
+                let (own, packed) = split_value(bytes)?;
+                if own != effective {
+                    check_header(&own, &effective)?;
+                }
+                decode_snapshot(&effective, packed)?
+            }
+        };
+        let counts = merge_into_snapshot(&effective, &mut snapshot, &cells)?;
+        Ok((encode_value(&effective, &snapshot)?, effective, counts))
+    }
+
+    fn random_header(state: &mut u64, labels: usize, lanes: usize) -> CellHeader {
+        let reducers = [LaneReducer::Sum, LaneReducer::Max, LaneReducer::Min, LaneReducer::Last, LaneReducer::Count];
+        CellHeader {
+            version: HEADER_VERSION,
+            key: spec(),
+            labels: (0..labels).map(|i| format!("l{i}")).collect(),
+            lanes: (0..lanes)
+                .map(|i| LaneSpec { name: format!("n{i}"), reducer: reducers[xorshift(state) as usize % reducers.len()] })
+                .collect(),
+        }
+    }
+
+    /// A value spread over the sizes a varint changes length at, and the extremes.
+    fn random_value(state: &mut u64) -> u64 {
+        let width = xorshift(state) % 6;
+        match width {
+            0 => xorshift(state) % 4,
+            1 => xorshift(state) % 200,
+            2 => xorshift(state) % 20_000,
+            3 => xorshift(state) % (1 << 40),
+            4 => [0, u64::MAX, u64::MAX - 1, 1 << 63][xorshift(state) as usize % 4],
+            _ => xorshift(state),
+        }
+    }
+
+    fn random_cells(state: &mut u64, h: &CellHeader, count: usize, bytes_members: bool) -> Vec<Cell> {
+        (0..count)
+            .map(|_| {
+                let member = if bytes_members && xorshift(state) % 3 == 0 {
+                    let len = 1 + xorshift(state) as usize % 6;
+                    Member::Bytes((0..len).map(|_| xorshift(state) as u8 % 4).collect())
+                } else {
+                    // A small range, so a request repeats members and merges into its own cells.
+                    Member::U64(xorshift(state) % 40 + if xorshift(state) % 5 == 0 { 1 << 33 } else { 0 })
+                };
+                Cell {
+                    member,
+                    labels: (0..h.labels.len()).map(|_| random_value(state)).collect(),
+                    lanes: (0..h.lanes.len()).map(|_| random_value(state) as i64).collect(),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_flat_form_reads_and_writes_the_bytes_the_plain_form_does() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut checked = 0;
+        for round in 0..400 {
+            let h = random_header(&mut state, round % 5 % 4, 1 + round % 3);
+            let mut cells = random_cells(&mut state, &h, round % 17, round % 2 == 0);
+            // A stored snapshot is sorted and without repeats, so build one the plain way.
+            let mut sorted = Vec::new();
+            merge_into_snapshot(&h, &mut sorted, &cells).unwrap();
+            cells = sorted;
+            let plain = encode_value(&h, &cells).unwrap();
+            let (decoded_header, packed) = split_value(&plain).unwrap();
+            assert_eq!(decoded_header, h);
+            let flat = FlatCells::decode(&h, packed, 0).unwrap();
+            assert_eq!(flat_to_cells(&flat), decode_snapshot(&h, packed).unwrap(), "round {round}: decoded cells");
+            assert_eq!(flat.encode_value(&h).unwrap(), plain, "round {round}: encoded bytes");
+            checked += 1;
+        }
+        assert_eq!(checked, 400);
+    }
+
+    #[test]
+    fn a_flat_merge_stores_the_bytes_and_counts_the_plain_merge_does() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let (mut merged_any, mut created_any, mut bytes_seen) = (0u64, 0u64, 0u64);
+        for round in 0..400 {
+            let h = random_header(&mut state, round % 3, 1 + round % 4);
+            let mut stored = Vec::new();
+            merge_into_snapshot(&h, &mut stored, &random_cells(&mut state, &h, round % 23, round % 2 == 0)).unwrap();
+            let incoming = random_cells(&mut state, &h, 1 + round % 29, round % 3 == 0);
+            let stored_value = encode_value(&h, &stored).unwrap();
+            let request = encode_value(&h, &incoming).unwrap();
+            let plain = plain_merge_request(Some(&h), Some(&stored_value), &request);
+            let flat = merge_request(Some(&h), Some(&stored_value), &request);
+            assert_eq!(flat, plain, "round {round}");
+            let (_, _, counts) = flat.unwrap();
+            merged_any += counts.merged as u64;
+            created_any += counts.created as u64;
+            bytes_seen += incoming.iter().filter(|c| matches!(c.member, Member::Bytes(_))).count() as u64;
+            // The first write of a key, and a key with a header and no snapshot at the timestamp.
+            assert_eq!(
+                merge_request(None, None, &request),
+                plain_merge_request(None, None, &request),
+                "round {round}: first write"
+            );
+        }
+        // The rounds must have exercised both arms of the merge and the bytes arena, or the
+        // comparison above compared nothing.
+        assert!(merged_any > 500 && created_any > 500 && bytes_seen > 100, "{merged_any} {created_any} {bytes_seen}");
+    }
+
+    #[test]
+    fn a_flat_merge_refuses_what_the_plain_merge_refuses() {
+        let h = one_lane_header();
+        // Over the snapshot limit at the first created cell, and exactly at the limit.
+        let full: Vec<(u64, i64)> = (0..MAX_CELLS_PER_REQUEST as u64).map(|m| (m, 1)).collect();
+        let mut stored = request(&h, &full);
+        for round in 1..5u64 {
+            let more: Vec<(u64, i64)> = (0..MAX_CELLS_PER_REQUEST as u64).map(|m| (round * 10_000 + m, 1)).collect();
+            let next = request(&h, &more);
+            let plain = plain_merge_request(Some(&h), Some(&stored), &next);
+            assert_eq!(merge_request(Some(&h), Some(&stored), &next), plain, "round {round}");
+            match plain {
+                Ok((value, _, _)) => stored = value,
+                Err(err) => {
+                    assert!(err.contains("cells per snapshot"), "{err}");
+                    assert_eq!(round, 4, "the limit is {MAX_CELLS_PER_SNAPSHOT}, not before it");
+                }
+            }
+        }
+        // Wrong header, damaged stored value, damaged request, over-long request.
+        let renamed = CellHeader { lanes: vec![LaneSpec { name: "m".into(), reducer: LaneReducer::Sum }], ..h.clone() };
+        let one = request(&h, &[(1, 1)]);
+        for (newest, existing, req) in [
+            (Some(&h), Some(one.as_slice()), request(&renamed, &[(1, 1)])),
+            (Some(&h), Some(&one[..one.len() - 1]), request(&h, &[(1, 1)])),
+            (Some(&h), None, one[..one.len() - 1].to_vec()),
+            (None, None, request(&h, &(0..=MAX_CELLS_PER_REQUEST as u64).map(|m| (m, 1)).collect::<Vec<_>>())),
+        ] {
+            let plain = plain_merge_request(newest, existing, &req);
+            assert!(plain.is_err());
+            assert!(merge_request(newest, existing, &req).is_err());
+        }
+    }
+
+    #[test]
+    fn points_planned_at_one_timestamp_merge_as_two_requests_one_after_the_other_do() {
+        let mut state = 0x1234_5678_9abc_def1u64;
+        let base = random_header(&mut state, 1, 2);
+        // The second request adds a label and a lane, so the cells planned by the first are widened.
+        let wider = CellHeader {
+            labels: vec!["l0".into(), "extra".into()],
+            lanes: vec![base.lanes[0].clone(), base.lanes[1].clone(), LaneSpec { name: "added".into(), reducer: LaneReducer::Sum }],
+            ..base.clone()
+        };
+        for (second, widened) in [(&base, false), (&wider, true)] {
+            let first_request = encode_value(&base, &random_cells(&mut state, &base, 12, true)).unwrap();
+            let second_request = encode_value(second, &random_cells(&mut state, second, 12, true)).unwrap();
+            // As two requests applied one after the other, each stored in between.
+            let (stored_value, effective, first_counts) = plain_merge_request(None, None, &first_request).unwrap();
+            let (expected, expected_header, second_counts) =
+                plain_merge_request(Some(&effective), Some(&stored_value), &second_request).unwrap();
+            // As two points planned at one timestamp, the cells carried in between.
+            let first = std::rc::Rc::new(effective.clone());
+            let (header, cells, counts) = merge_point(None, Existing::Nothing, &first_request).unwrap();
+            assert_eq!(counts, first_counts);
+            let (header, cells, counts) =
+                merge_point(Some(&header), Existing::Planned { header: header.clone(), cells }, &second_request).unwrap();
+            assert_eq!(counts, second_counts);
+            assert_eq!(*header, expected_header);
+            assert_eq!(widened, *header != *first, "the second request {} the header", if widened { "extends" } else { "keeps" });
+            assert_eq!(cells.encode_value(&header).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn a_flat_value_is_written_in_the_one_allocation_the_size_pass_measured() {
+        let mut state = 7u64;
+        let h = random_header(&mut state, 2, 3);
+        let mut cells = Vec::new();
+        merge_into_snapshot(&h, &mut cells, &random_cells(&mut state, &h, 30, true)).unwrap();
+        let (_, packed) = split_value(&encode_value(&h, &cells).unwrap()).map(|(a, b)| (a, b.to_vec())).unwrap();
+        let flat = FlatCells::decode(&h, &packed, 0).unwrap();
+        let value = flat.encode_value(&h).unwrap();
+        assert_eq!(value.len(), value.capacity(), "the value was grown instead of sized");
+        assert_eq!(value, encode_value(&h, &cells).unwrap());
+    }
+
     /// The counting allocator is installed only under `alloc-probe`, so these are `#[ignore]`d and
     /// pinned separately in CI. They show that the allocations a cell or a key costs do not depend
     /// on how big its key or member is: only what the bytes cost may grow.
@@ -1659,6 +2331,34 @@ mod tests {
             assert!(large_bytes > small_bytes + 400, "the probe cannot see bytes: {small_bytes} vs {large_bytes}");
             assert_eq!(small_allocs, 1, "a key is built in one allocation");
             assert_eq!(large_allocs, small_allocs, "allocations depend on key size");
+        }
+
+        /// A merge request costs the same allocations at 50 cells as at 1,000: the cells are held
+        /// in a few vectors for the whole snapshot. Measured equal; the bound is a handful.
+        #[test]
+        #[ignore = "measurement: run with --features alloc-probe --ignored"]
+        fn a_merge_request_costs_the_same_allocations_at_any_cell_count() {
+            let h = CellHeader {
+                labels: vec!["slot".into()],
+                lanes: vec![LaneSpec { name: "n".into(), reducer: LaneReducer::Sum }],
+                ..header()
+            };
+            let value_of = |count: u64| -> Vec<u8> {
+                let cells: Vec<Cell> = (0..count)
+                    .map(|m| Cell { member: Member::U64(m * 3), labels: vec![1], lanes: vec![1] })
+                    .collect();
+                encode_value(&h, &cells).unwrap()
+            };
+            let allocs = |count: u64| -> (u64, u64) {
+                let (stored, request) = (value_of(count), value_of(count));
+                counted(|| merge_request(Some(&h), Some(&stored), &request).unwrap())
+            };
+            let (few, few_bytes) = allocs(50);
+            let (many, many_bytes) = allocs(1000);
+            println!("merge_request: {few} allocs {few_bytes} B at 50 cells; {many} allocs {many_bytes} B at 1000");
+            assert!(many_bytes > few_bytes * 4, "the probe cannot see the cell count");
+            assert!(few > 5, "the probe is blind: {few}");
+            assert!(many <= few + 4, "allocations grew with the cell count: {few} -> {many}");
         }
 
         #[test]
