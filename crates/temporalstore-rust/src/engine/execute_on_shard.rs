@@ -2729,38 +2729,6 @@ pub(crate) fn execute_on_shard(
                 None,
                 false,
             );
-            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
-            // not the take itself. Re-running a take would recompute against a different clock;
-            // installing the resulting bucket cannot.
-            let mut bucket_state = Vec::with_capacity(16);
-            bucket_state.extend_from_slice(&next.0.to_le_bytes());
-            bucket_state.extend_from_slice(&next.1.to_le_bytes());
-            stage_meta_outcome(
-                shard_id,
-                "bucket",
-                &key,
-                start_routing_bucket,
-                end_routing_bucket,
-                Some(bucket_state),
-                None,
-                false,
-            );
-            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
-            // not the take itself. Re-running a take would recompute against a different clock;
-            // installing the resulting bucket cannot.
-            let mut bucket_state = Vec::with_capacity(16);
-            bucket_state.extend_from_slice(&next.0.to_le_bytes());
-            bucket_state.extend_from_slice(&next.1.to_le_bytes());
-            stage_meta_outcome(
-                shard_id,
-                "bucket",
-                &key,
-                start_routing_bucket,
-                end_routing_bucket,
-                Some(bucket_state),
-                None,
-                false,
-            );
             shard.buckets.insert(std::sync::Arc::from(&key[..]), next);
             mutated = true;
             CommandResponse::Members {
@@ -6949,3 +6917,7 @@ pub(crate) fn list_element_name(seq: i64, buf: &mut [u8; 16]) -> &str {
     }
     std::str::from_utf8(buf).expect("hex digits are ascii")
 }
+
+#[cfg(test)]
+#[path = "token_bucket_outcome_tests.rs"]
+mod token_bucket_outcome_tests;
