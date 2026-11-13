@@ -1002,11 +1002,13 @@ impl TemporalEngine {
         let mut ids = shards
             .get(&shard_id)
             .map(collect_live_block_slab_ids)
-            .unwrap_or_default()
-            .into_iter()
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids
+            .unwrap_or_default();
+        if let Some(pinned) = self.unpublished_compaction_slabs
+            .read().expect("unpublished compaction lock poisoned").get(&shard_id)
+        {
+            ids.extend(pinned.iter().copied());
+        }
+        ids.into_iter().collect()
     }
 
     /// Union of live block-slab ids across EVERY shard currently loaded into this engine.
@@ -1025,11 +1027,13 @@ impl TemporalEngine {
         let mut ids = shards
             .values()
             .flat_map(collect_live_block_slab_ids)
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids
+            .collect::<std::collections::BTreeSet<_>>();
+        for pinned in self.unpublished_compaction_slabs
+            .read().expect("unpublished compaction lock poisoned").values()
+        {
+            ids.extend(pinned.iter().copied());
+        }
+        ids.into_iter().collect()
     }
 
 /// How far a round may walk to fill its window.
@@ -1487,6 +1491,18 @@ fn expiry_scan_budget(limit: usize) -> usize {
         self.compact_shard_blocks_with_budgets(shard_id, budget_bytes, usize::MAX)
     }
 
+    /// Hold the slabs the on-disk index may still name until a round publishes.
+    fn pin_unpublished_compaction(&self, shard_id: ShardId, pre_round_slabs: &BTreeSet<u64>) {
+        self.unpublished_compaction_slabs
+            .write().expect("unpublished compaction lock poisoned")
+            .entry(shard_id).or_default().extend(pre_round_slabs.iter().copied());
+    }
+
+    fn clear_unpublished_compaction(&self, shard_id: ShardId) {
+        self.unpublished_compaction_slabs
+            .write().expect("unpublished compaction lock poisoned").remove(&shard_id);
+    }
+
     // Called under the shard write guard, after the block durability barrier succeeds.
     fn publish_compacted_container_index(
         &self,
@@ -1621,6 +1637,12 @@ fn expiry_scan_budget(limit: usize) -> usize {
             compaction_model_layout_reports(&self.block_store, shard),
             storage_reporting::storage_delete_marked_object_count(shard),
         ));
+        // Every slab the DURABLE index may name: what this round vacates in memory is only safe to
+        // reclaim once the new index is on disk. See `unpublished_compaction_slabs`.
+        let pre_round_slabs = entries
+            .iter()
+            .map(|entry| entry.address.block_slab_id())
+            .collect::<BTreeSet<u64>>();
         drop(entries);
         // Start a round, or continue the one a budget cut short.
         //
@@ -2004,15 +2026,23 @@ fn expiry_scan_budget(limit: usize) -> usize {
             );
             refresh_bucket_runtime_flags(shard);
             rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
-            self.block_store.sync_durable().map_err(|barrier| {
-                Status::error(
+            if let Err(barrier) = self.block_store.sync_durable() {
+                self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
+                return Err(Status::error(
                     "block_compaction_failed",
                     format!(
                         "durability barrier failed while committing a partial compaction: {barrier}"
                     ),
-                )
-            })?;
-            let partial_index_bytes = self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id)?;
+                ));
+            }
+            let partial_index_bytes = match self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id) {
+                Ok(bytes) => bytes,
+                Err(publish) => {
+                    self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
+                    return Err(publish);
+                }
+            };
+            self.clear_unpublished_compaction(shard_id);
             let _ = self.index_log_store.append_index_bytes(shard_id, &partial_index_bytes);
             // Keep the round OPEN. A relocation that failed partway left work behind by
             // definition -- the blocks it had not reached yet are still on their old slabs -- and
@@ -2062,14 +2092,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // slab (compaction does not advance applied_wal_sequence, so WAL replay does not
         // re-derive them) = permanent silent loss. The partial-failure path above already
         // syncs here; the success path must too. Unconditional, matching that path.
-        self.block_store.sync_durable().map_err(|barrier| {
-            Status::error(
+        if let Err(barrier) = self.block_store.sync_durable() {
+            self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
+            return Err(Status::error(
                 "block_compaction_failed",
                 format!(
                     "durability barrier failed before publishing the compacted base index: {barrier}"
                 ),
-            )
-        })?;
+            ));
+        }
         // THIS FLUSH STAYS UNDER THE WRITE GUARD. DO NOT GIVE IT THE EVICTION/EXPIRY
         // TREATMENT.
         //
@@ -2097,7 +2128,14 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // `FLUSH_PUBLISHED_UNDER_GUARD`.
         #[cfg(test)]
         note_compaction_flush_publish();
-        let index_bytes = self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id)?;
+        let index_bytes = match self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id) {
+            Ok(bytes) => bytes,
+            Err(publish) => {
+                self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
+                return Err(publish);
+            }
+        };
+        self.clear_unpublished_compaction(shard_id);
         let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
         let rewritten_object_blocks = rewrite_stats.rewritten_block_refs;
         // Only actual relocation opens a write-amplification window. A budgeted/drained

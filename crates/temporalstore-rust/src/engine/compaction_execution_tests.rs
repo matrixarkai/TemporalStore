@@ -269,3 +269,44 @@ fn background_compaction_still_rejects_misfiled_ownership_before_rolling() {
     assert_eq!(failure.code, "block_compaction_owner_mismatch");
     assert_eq!(engine.block_store().slab_ids().unwrap(), slabs_before);
 }
+
+/// A round whose index publish FAILS has already moved the volatile index. The durable index
+/// still names the pre-round slabs and no log can replay the relocation, so reclaim (which
+/// derives stale slabs from the volatile live set) must keep those slabs until a round publishes.
+#[test]
+fn a_compaction_whose_index_publish_failed_keeps_the_slabs_the_disk_index_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path(), false);
+    seed(&engine, 16);
+    let before = engine.live_block_slab_ids(1);
+    assert!(!before.is_empty());
+    // Make the index file unwritable: a non-empty directory cannot be renamed over.
+    let index_path = engine.index_path(1);
+    let _ = std::fs::remove_file(&index_path);
+    std::fs::create_dir_all(index_path.join("blocker")).unwrap();
+    let failed = engine.compact_shard_blocks_relocating_inner(1, u64::MAX, usize::MAX, None, false);
+    assert_eq!(
+        failed.expect_err("the publish must fail").code,
+        "block_compaction_failed"
+    );
+    let after_failure = engine.live_block_slab_ids(1);
+    let all_shards = engine.live_block_slab_ids_all_shards();
+    for slab in &before {
+        assert!(after_failure.contains(slab), "slab {slab} the on-disk index names was released");
+        assert!(all_shards.contains(slab), "slab {slab} released for all-shard reclaim");
+    }
+    // Once a round publishes, the pin goes and the vacated slabs become reclaimable.
+    std::fs::remove_dir_all(&index_path).unwrap();
+    assert!(
+        engine
+            .compact_shard_blocks_relocating_inner(1, u64::MAX, usize::MAX, None, false)
+            .unwrap()
+            .is_none()
+    );
+    let after_publish = engine.live_block_slab_ids(1);
+    assert!(
+        before.iter().any(|slab| !after_publish.contains(slab)),
+        "a published round must release the pin"
+    );
+    check_values(&engine, 16);
+}
