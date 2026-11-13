@@ -1077,27 +1077,16 @@ fn ingestion_state_from_proto(
     })
 }
 
-/// Decode an ingestion state in EITHER shape.
+/// Decode an ingestion state: a protobuf document behind its container byte.
 ///
-/// THE JSON ARM IS PERMANENT, now that no writer in this tree can produce that shape.
-///
-/// THE HOLD RULE: a reader stays if ANY build that ever shipped could have written data a live
-/// store still holds. "Which writer runs today" is the wrong question -- this writer no longer
-/// writes JSON, and that is exactly why the arm below can never be deleted on evidence found in
-/// this tree. Every state file written before the writer flip carries that shape, this is a
-/// public repo, and deleting a reader for a format on disk is silent data loss rather than a
-/// cleanup.
-///
-/// AN ENCODER IS DELETED AND A DECODER IS KEPT, FOR OPPOSITE REASONS. An encoder no caller
-/// reaches is how a retired format comes back -- a later branch finds the function and calls
-/// it. A decoder with no caller in this tree is still reached by every file already on disk.
-///
-/// The shape is decided per document from the first byte, never from a setting, so a node that
-/// has never written a JSON state file still reads one.
+/// The first release has no state file written any other way, so a document that does not open
+/// with the container byte is refused, never parsed as anything else.
 fn decode_ingestion_state(bytes: &[u8]) -> Result<DurableIngestionState, Status> {
     let Some(body) = ingestion_state_protobuf_body(bytes) else {
-        return serde_json::from_slice::<DurableIngestionState>(bytes)
-            .map_err(|err| Status::error("bad_ingestion_state", err.to_string()));
+        return Err(Status::error(
+            "bad_ingestion_state",
+            "the ingestion state is not a protobuf document: its first byte is not the container byte",
+        ));
     };
     let proto = <v1::DurableIngestionState as prost::Message>::decode(body)
         .map_err(|err| Status::error("bad_ingestion_state", err.to_string()))?;
@@ -2217,20 +2206,21 @@ mod tests {
         }
     }
 
-    /// BOTH SHAPES DECODE TO THE SAME STATE, AND THE READER DECIDES FROM THE FIRST BYTE.
+    /// THE READER TAKES THE PROTOBUF SHAPE AND REFUSES A JSON DOCUMENT, FROM THE FIRST BYTE.
     ///
-    /// This is the whole point of a reader-first change, so it is asserted directly rather than
-    /// inferred from a round trip through a writer -- there is no binary writer yet. The JSON arm
-    /// is what every state file on disk carries today and must keep working unchanged.
+    /// The JSON document is built from the same state the protobuf one is, so the only thing
+    /// that differs between the two inputs is the encoding.
     #[test]
-    fn the_ingestion_state_reader_accepts_both_shapes() {
+    fn the_ingestion_state_reader_takes_protobuf_and_refuses_json() {
         let original = ingestion_state_with_every_collection();
 
-        // ---- the shape on disk today
+        // ---- a JSON document is refused
         let json = serde_json::to_vec_pretty(&original).unwrap();
         assert_eq!(json[0], b'{', "the JSON shape must still start with a brace");
-        let from_json = decode_ingestion_state(&json).expect("the JSON shape must still decode");
-        assert_eq!(from_json, original, "JSON round trip changed the state");
+        assert!(
+            decode_ingestion_state(&json).is_err(),
+            "a JSON ingestion state was read: a JSON decode path survives"
+        );
 
         // ---- the shape THIS build writes, from the production encoder
         let binary = encode_ingestion_state(&original);
@@ -2242,8 +2232,6 @@ mod tests {
         let from_binary =
             decode_ingestion_state(&binary).expect("the binary shape must decode");
         assert_eq!(from_binary, original, "binary round trip changed the state");
-
-        assert_eq!(from_json, from_binary, "the two shapes decode differently");
 
         // DENOMINATORS, SPELLED OUT. Equality above would catch a dropped collection, but
         // naming the counts is what says the fixture really exercised all five.
@@ -2370,26 +2358,15 @@ mod tests {
         assert!(refused.message.contains("99"), "{refused:?}");
     }
 
-    /// THE WRITER IS BINARY WITH NOTHING TO TURN ON, AND A PLANTED JSON FILE IS STILL READ.
+    /// THE WRITER IS BINARY WITH NOTHING TO TURN ON, AND A PLANTED JSON FILE IS REFUSED ON RESTART.
     ///
     /// Driven through the real engine and a real restart, because the unit test above proves
-    /// nothing about the call sites. The two call sites answer differently on a decode failure
-    /// and BOTH are asserted:
-    ///
-    ///   - `ingest_batch` reads with `load_ingestion_state(..).unwrap_or_default()`, so a reader
-    ///     that could not decode the file would silently see EMPTY state and ACCEPT the replayed
-    ///     offset. Asserting the duplicate is refused is what catches that; asserting the call
-    ///     merely succeeded would not, because it succeeds either way.
-    ///   - `ingestion_state_report` has no fallback and surfaces the error as a status, so it is
-    ///     asserted `ok` with the committed offset in it.
-    ///
-    /// THE JSON DOCUMENT IS PLANTED STRAIGHT ONTO DISK, because the writer that used to produce
-    /// it has been deleted. A test that round-tripped through the writer would have had nothing
-    /// left to drive after the flip, and would have quietly become a test of the binary arm
-    /// twice over. The plant is rebuilt from the state the real writer just persisted, so the
-    /// document is a valid ingestion state in every respect except its encoding.
+    /// nothing about the call sites. The JSON document is planted straight onto disk, rebuilt from
+    /// the state the real writer just persisted, so it is a valid ingestion state in every respect
+    /// except its encoding. `ingestion_state_report` has no fallback and surfaces the refusal as a
+    /// status.
     #[test]
-    fn the_state_writer_is_binary_and_a_planted_json_file_is_still_read_on_restart() {
+    fn the_state_writer_is_binary_and_a_planted_json_file_is_refused_on_restart() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
         let block_dir = dir.path().join("blocks");
@@ -2446,69 +2423,20 @@ mod tests {
             "the fixture state does not hold the offset the assertions below depend on"
         );
 
-        // ---- PLANT THE INSTALLED BASE: the same state in the shape every file written before
-        // ---- the flip carries, built with `serde_json` because the writer that produced it is
-        // ---- gone. `Serialize` survives on the type, so a test can still build the shape even
-        // ---- though no production path can.
+        // ---- A JSON document planted over it: the same state, in a shape no writer produces.
         let planted_bytes = serde_json::to_vec_pretty(&state).expect("the JSON shape must build");
         assert_eq!(planted_bytes[0], b'{', "the plant is not the JSON shape");
         fs::write(&path, planted_bytes).unwrap();
-        let planted = fs::read(&path).unwrap();
         assert_eq!(
-            planted[0], b'{',
-            "the plant did not take, so nothing below reads a JSON state file"
+            fs::read(&path).unwrap()[0],
+            b'{',
+            "the plant did not take, so nothing below meets a JSON state file"
         );
 
         let restarted =
             TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
         restarted.load_shard(7);
-
-        // ---- the reader WITHOUT a fallback.
         let report = restarted.ingestion_state_report();
-        assert!(report.status.ok, "{report:?}");
-        assert_eq!(
-            report.kafka_offsets[0].committed_offset, 5,
-            "the planted JSON state file was not read by the state report, so every state file \
-             written before the flip is unreadable"
-        );
-
-        // ---- the reader WITH a fallback. An undecodable file would read as empty state here
-        // ---- and the replayed offset would be ACCEPTED, so the refusal is the assertion.
-        let duplicate = restarted.ingest_batch(IngestionBatchRequest {
-            stop_on_error: false,
-            kafka_high_watermarks: Vec::new(),
-            flink_checkpoints: Vec::new(),
-            records: vec![IngestionRecord {
-                source: IngestionSource::Kafka {
-                    topic: "topic-a".to_string(),
-                    partition: 0,
-                    offset: 5,
-                    key: None,
-                    timestamp_ms: None,
-                },
-                shard_id: 7,
-                command: Command::StringSet {
-                    key: "should-not-write".to_string(),
-                    value: b"duplicate".to_vec(),
-                },
-            }],
-        });
-        assert_eq!(
-            duplicate.duplicate_count, 1,
-            "the replayed Kafka offset was accepted, so the planted JSON state file was read as \
-             empty state by the ingest path and its `unwrap_or_default` hid the failure: {duplicate:?}"
-        );
-        assert_eq!(duplicate.accepted_count, 0);
-        let missing = restarted.execute(crate::ExecuteRequest {
-            shard_id: 7,
-            command: Command::StringGet {
-                key: "should-not-write".to_string(),
-            },
-        });
-        assert_eq!(
-            missing.response,
-            CommandResponse::Bytes { value: None },
-            "the duplicate was reported but its write landed anyway"
-        );
+        assert!(!report.status.ok, "a JSON state file was read by the state report: {report:?}");
     }
 }

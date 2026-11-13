@@ -444,11 +444,9 @@ fn a_gated_list_comes_back_through_wal_replay() {
     crate::engine::persistence::reset_index_load_path_counts();
     let reloaded = engine_on(&dir.path().join("cache-reloaded"), &blocks, &indexes);
     let response = reloaded.load_shard_with(load_request());
-    let (accepted, refused_stale, absent, undecodable) =
-        crate::engine::persistence::index_load_path_counts();
+    let (accepted, absent, undecodable) = crate::engine::persistence::index_load_path_counts();
     println!(
-        "    load_ok={} accepted={accepted} refused_stale={refused_stale} absent={absent} \
-         undecodable={undecodable}",
+        "    load_ok={} accepted={accepted} absent={absent} undecodable={undecodable}",
         response.status.ok
     );
 

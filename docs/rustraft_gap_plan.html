@@ -10,7 +10,7 @@ and observable apply lag.
 ## What Is Implemented Now
 
 - `RustRaft` now lives in its own repository:
-  `https://github.com/bjmeetsfo/RustRaft`.
+  `https://github.com/matrixarkai/matrixraft`.
 - `crates/temporalstore-rust` consumes the external `rustraft` crate through a
   pinned git dependency.
 - The library owns:
@@ -41,7 +41,7 @@ and observable apply lag.
 
 ## Implementation Order
 
-1. Keep `https://github.com/bjmeetsfo/RustRaft` as the stable public RustRaft
+1. Keep `https://github.com/matrixarkai/matrixraft` as the stable public RustRaft
    contract crate.
 2. Move pure contract/state types first; keep TemporalStore process and storage code
    where it is until the library boundary is stable.

@@ -196,7 +196,7 @@ pub(super) fn context_tenant_hash(scope: &ProxyContextScope) -> u64 {
     stable_scope_hash(&format!("{account_id}:{tenant_id}"))
 }
 
-fn stable_scope_hash(value: &str) -> u64 {
+pub(super) fn stable_scope_hash(value: &str) -> u64 {
     let digest = Sha256::digest(value.as_bytes());
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&digest[..8]);
@@ -454,12 +454,16 @@ impl ProxyService {
     }
 
     fn context_forward_to(&self, server_addr: &str, path: &str, body: &[u8]) -> (u16, Vec<u8>) {
+        self.context_forward_encoded(server_addr, path, body, "application/json")
+    }
+
+    fn context_forward_encoded(&self, server_addr: &str, path: &str, body: &[u8], content_type: &str) -> (u16, Vec<u8>) {
         match request_bytes_with_options(
             server_addr,
             "POST",
             path,
             body,
-            "application/json",
+            content_type,
             self.context_http_options(),
         ) {
             Ok(raw) => (200, raw),
@@ -485,10 +489,43 @@ impl ProxyService {
         }
     }
 
-    /// FAST path: buffer the messages as lightweight `raw_event` records in ONE
-    /// routed `/execute` `HashMultiSet` (a single raw write, NO extraction, no
-    /// embeddings/summaries). Reuses the proxy's cached-route execute path, so it
-    /// is one datanode write regardless of message count.
+    /// Persist explicit memories through the protobuf encoder-only endpoint.
+    pub(super) fn context_store_explicit(
+        &self,
+        scope: &ProxyContextScope,
+        request: crate::context_workflow::ContextIngestExtractRequest,
+    ) -> Result<(), (u16, Vec<u8>)> {
+        let _admitted = self.admit_context(scope, true)?;
+        self.inner.context_ingest_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let server_addr = self.context_shard_addr(request.shard_id)?;
+        let expected = request.sources.len();
+        let body = crate::context_workflow::ingest_wire::encode_request(request)
+            .map_err(|status| crate::http::json_response(400, &status))?;
+        let response = self.context_forward_encoded(
+            &server_addr, "/context/ingest_explicit", &body, "application/x-protobuf",
+        );
+        if response.0 != 200 { return Err(response); }
+        crate::context_workflow::ingest_wire::validate_response(&response.1, expected)
+            .map_err(|status| crate::http::json_response(502, &status))
+    }
+
+    /// Extract inferred memories with a protobuf source request and compact fact receipt.
+    pub(super) fn context_extract_facts(
+        &self, scope: &ProxyContextScope,
+        request: crate::context_workflow::ContextIngestExtractRequest,
+    ) -> Result<Vec<u8>, (u16, Vec<u8>)> {
+        let _admitted = self.admit_context(scope, true)?;
+        self.inner.context_extract_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let server_addr = self.context_shard_addr(request.shard_id)?;
+        let body = crate::context_workflow::ingest_wire::encode_request(request)
+            .map_err(|status| crate::http::json_response(400, &status))?;
+        let response = self.context_forward_encoded(
+            &server_addr, "/context/ingest_facts", &body, "application/x-protobuf");
+        if response.0 != 200 { return Err(response); }
+        Ok(response.1)
+    }
+
+    /// FAST path: buffer messages as raw events in one write, without model calls.
     pub(super) fn context_ingest(&self, request: ProxyContextIngestRequest<'_>) -> (u16, Vec<u8>) {
         self.inner
             .context_ingest_requests
@@ -675,6 +712,21 @@ impl ProxyService {
 
     /// Forward a `ContextRetrieveRequest` to the owning datanode.
     pub(super) fn context_retrieve(&self, request: ProxyContextRetrieveRequest) -> (u16, Vec<u8>) {
+        self.context_retrieve_candidates(request, false)
+    }
+
+    pub(super) fn context_retrieve_from_nodes(
+        &self,
+        request: ProxyContextRetrieveRequest,
+    ) -> (u16, Vec<u8>) {
+        self.context_retrieve_candidates(request, true)
+    }
+
+    fn context_retrieve_candidates(
+        &self,
+        request: ProxyContextRetrieveRequest,
+        restrict_nodes: bool,
+    ) -> (u16, Vec<u8>) {
         self.inner
             .context_retrieve_requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -710,7 +762,12 @@ impl ProxyService {
             Ok(addr) => addr,
             Err(resp) => return resp,
         };
-        self.context_forward_to(&server_addr, "/context/retrieve", &body)
+        let path = if restrict_nodes {
+            "/context/retrieve/nodes"
+        } else {
+            "/context/retrieve"
+        };
+        self.context_forward_to(&server_addr, path, &body)
     }
 
     /// Read the buffered `raw_event` records (HGETALL) back into extract sources.

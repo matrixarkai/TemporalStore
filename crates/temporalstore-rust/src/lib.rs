@@ -118,7 +118,7 @@ pub use context_workflow::{
     context_pipeline_parity_evidence,
     context_skill_registry_from_parsed,
     context_workflow_state_report, default_context_model_providers, extract_context,
-    ingest_extract_context, ingest_extract_context_with_l1_gate, ingest_resource_skill_context,
+    ingest_context_without_inference, ingest_extract_context, ingest_extract_context_with_l1_gate, ingest_resource_skill_context,
     inject_context, remember_context_scope, remember_context_scope_node,
     reference_open_source_model_profiles, parse_context_resource, parse_context_skill_markdown,
     retrieve_context, run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep,

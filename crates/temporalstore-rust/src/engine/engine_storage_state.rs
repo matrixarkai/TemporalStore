@@ -591,6 +591,10 @@ pub(super) struct ShardState {
     /// replay); a missing index file replays the whole retained WAL onto empty state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) applied_wal_sequence: Option<u64>,
+    /// An applied record skipped an unapplied log prefix. Only replay can establish
+    /// a complete state boundary again; do not publish this in-memory image.
+    #[serde(skip)]
+    pub(super) wal_apply_discontinuous: bool,
     /// Per-bucket LRU recency: wall-clock ms of the last read/write that touched the
     /// bucket. In-memory and ephemeral (serde-skipped, like context_dirty_index); on
     /// restart every bucket resets to 0 (== never touched == evicted first), which
@@ -1412,6 +1416,36 @@ pub(super) struct BlockKeysByPosition<'a> {
     restricted: bool,
 }
 
+#[cfg(test)]
+mod bucket_projection_tests {
+    use super::*;
+
+    #[test]
+    fn bucket_projection_matches_full_identity_without_unrelated_allocations() {
+        let objects = BTreeMap::new();
+        let mut lookup = ObjectBlockLookup::default();
+        let kind = Arc::<str>::from("hash");
+        for index in 0..4096u64 {
+            lookup.file(&kind, &Arc::from(format!("key-{index}")), BlockLookupRef {
+                routing_bucket: (index % 64) as u32,
+                block_ref_key: index,
+            });
+        }
+        let full = BlockKeysByPosition::from_parts(&objects, &lookup);
+        assert_eq!(full.by_position.len(), 4096);
+        assert_eq!(full.by_handle.len(), 4096);
+        for bucket in 0..64 {
+            let scoped = BlockKeysByPosition::from_parts_for_bucket(&objects, &lookup, bucket);
+            assert_eq!(scoped.by_position.len(), 64);
+            assert!(scoped.by_handle.is_empty());
+            for (position, identity) in &scoped.by_position {
+                assert_eq!(position.0, bucket);
+                assert_eq!(Some(identity), full.by_position.get(position));
+            }
+        }
+    }
+}
+
 thread_local! {
     /// Times THIS THREAD built a block-identity inversion restricted to named keys. Per thread, so
     /// a probe counts its own writes and not a neighbouring test's.
@@ -1421,6 +1455,18 @@ thread_local! {
 /// How many keyed inversions this thread has built.
 pub fn keyed_block_inversions() -> u64 {
     KEYED_INVERSIONS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+thread_local! {
+    static BLOCK_IDENTITY_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn measure_block_identity_builds_for_test<T>(work: impl FnOnce() -> T) -> (T, usize) {
+    BLOCK_IDENTITY_BUILDS.with(|count| count.set(0));
+    let result = work();
+    (result, BLOCK_IDENTITY_BUILDS.with(|count| count.get()))
 }
 
 impl<'a> BlockKeysByPosition<'a> {
@@ -1447,15 +1493,44 @@ impl<'a> BlockKeysByPosition<'a> {
         >,
         lookup: &'a ObjectBlockLookup,
     ) -> Self {
+        Self::from_parts_filtered(objects, lookup, None)
+    }
+
+    pub(super) fn from_parts_for_bucket(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        routing_bucket: u32,
+    ) -> Self {
+        Self::from_parts_filtered(objects, lookup, Some(routing_bucket))
+    }
+
+    fn from_parts_filtered(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        routing_bucket: Option<u32>,
+    ) -> Self {
+        #[cfg(test)]
+        BLOCK_IDENTITY_BUILDS.with(|count| count.set(count.get() + 1));
         let mut by_position = std::collections::HashMap::new();
         let mut by_handle = std::collections::HashMap::new();
         let mut file = |model_id: &'a str, object_key: &'a Arc<str>, refs: &'a BlockRefs| {
             for block_ref in refs.iter() {
+                if routing_bucket.is_some_and(|bucket| bucket != block_ref.routing_bucket) {
+                    continue;
+                }
                 by_position.insert(
                     (block_ref.routing_bucket, block_ref.block_ref_key),
                     (model_id, object_key),
                 );
-                by_handle.insert(block_ref.block_ref_key, (model_id, object_key));
+                if routing_bucket.is_none() {
+                    by_handle.insert(block_ref.block_ref_key, (model_id, object_key));
+                }
             }
         };
         // THE SLOT HOME FIRST. `as_str` on the kind is `&'static str`, which outlives `'a`.
@@ -1473,7 +1548,7 @@ impl<'a> BlockKeysByPosition<'a> {
         Self {
             by_position,
             by_handle,
-            restricted: false,
+            restricted: routing_bucket.is_some(),
         }
     }
 
@@ -1819,10 +1894,23 @@ pub fn reset_bucket_node_scan_visits() {
 ///
 /// NOT SERIALIZED, and not a field of anything that is: it is derived from the flags, which are.
 /// A `OnceLock` so a read through `&self` can fill it and a `&mut self` operation can drop it.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub(super) struct BucketMap {
     nodes: BTreeMap<u32, BucketNode>,
     dirty: std::sync::OnceLock<BTreeSet<u32>>,
+    // Process-local accounting follows guarded mutations; bulk mutable access invalidates it.
+    resident_block_heap: std::sync::OnceLock<u64>,
+}
+
+impl Clone for BucketMap {
+    fn clone(&self) -> Self {
+        Self {
+            nodes: self.nodes.clone(),
+            dirty: self.dirty.clone(),
+            // Cloned vectors may have less capacity than their source buffers.
+            resident_block_heap: std::sync::OnceLock::new(),
+        }
+    }
 }
 
 impl BucketMap {
@@ -1883,12 +1971,28 @@ impl BucketMap {
 
     pub(super) fn get_mut(&mut self, routing_bucket: &u32) -> Option<BucketMut<'_>> {
         let node = self.nodes.get_mut(routing_bucket)?;
+        let was_block_heap = self.resident_block_heap.get()
+            .map(|_| node.block_index.resident_heap_bytes()).unwrap_or_default();
         Some(BucketMut {
             was_dirty: node.dirty(),
             routing_bucket: *routing_bucket,
+            was_block_heap,
             node,
             dirty: &mut self.dirty,
+            resident_block_heap: &mut self.resident_block_heap,
         })
+    }
+
+    /// Cached heap bytes and the node visits needed to initialize them, if any.
+    pub(super) fn resident_block_heap_bytes(&self) -> (u64, u64) {
+        let mut visits = 0u64;
+        let bytes = *self.resident_block_heap.get_or_init(|| {
+            self.nodes.values().fold(0u64, |bytes, node| {
+                visits = visits.saturating_add(1);
+                bytes.saturating_add(node.block_index.resident_heap_bytes())
+            })
+        });
+        (bytes, visits)
     }
 
     pub(super) fn range<R: std::ops::RangeBounds<u32>>(
@@ -1905,7 +2009,13 @@ impl BucketMap {
 
     pub(super) fn insert(&mut self, routing_bucket: u32, node: BucketNode) -> Option<BucketNode> {
         let now_dirty = node.dirty();
+        let block_heap = node.block_index.resident_heap_bytes();
         let replaced = self.nodes.insert(routing_bucket, node);
+        if let Some(bytes) = self.resident_block_heap.get_mut() {
+            *bytes = bytes.saturating_sub(replaced.as_ref()
+                .map(|node| node.block_index.resident_heap_bytes()).unwrap_or_default())
+                .saturating_add(block_heap);
+        }
         if let Some(set) = self.dirty.get_mut() {
             if now_dirty {
                 set.insert(routing_bucket);
@@ -1918,6 +2028,10 @@ impl BucketMap {
 
     pub(super) fn remove(&mut self, routing_bucket: &u32) -> Option<BucketNode> {
         let removed = self.nodes.remove(routing_bucket);
+        if let Some(bytes) = self.resident_block_heap.get_mut() {
+            *bytes = bytes.saturating_sub(removed.as_ref()
+                .map(|node| node.block_index.resident_heap_bytes()).unwrap_or_default());
+        }
         if let Some(set) = self.dirty.get_mut() {
             set.remove(routing_bucket);
         }
@@ -1927,6 +2041,7 @@ impl BucketMap {
     pub(super) fn clear(&mut self) {
         self.nodes.clear();
         self.dirty = std::sync::OnceLock::new();
+        self.resident_block_heap = std::sync::OnceLock::from(0);
     }
 
     /// Every node mutably, and the dirty set DISCARDED: a sweep can set or clear the flag on any
@@ -1935,6 +2050,7 @@ impl BucketMap {
         &mut self,
     ) -> std::collections::btree_map::ValuesMut<'_, u32, BucketNode> {
         self.dirty = std::sync::OnceLock::new();
+        self.resident_block_heap = std::sync::OnceLock::new();
         self.nodes.values_mut()
     }
 
@@ -1943,11 +2059,13 @@ impl BucketMap {
         &mut self,
     ) -> std::collections::btree_map::IterMut<'_, u32, BucketNode> {
         self.dirty = std::sync::OnceLock::new();
+        self.resident_block_heap = std::sync::OnceLock::new();
         self.nodes.iter_mut()
     }
 
     pub(super) fn retain(&mut self, keep: impl FnMut(&u32, &mut BucketNode) -> bool) {
         self.dirty = std::sync::OnceLock::new();
+        self.resident_block_heap = std::sync::OnceLock::new();
         self.nodes.retain(keep);
     }
 }
@@ -1986,6 +2104,8 @@ impl<'a> IntoIterator for &'a BucketMap {
 pub(super) struct BucketMut<'a> {
     node: &'a mut BucketNode,
     dirty: &'a mut std::sync::OnceLock<BTreeSet<u32>>,
+    resident_block_heap: &'a mut std::sync::OnceLock<u64>,
+    was_block_heap: u64,
     routing_bucket: u32,
     was_dirty: bool,
 }
@@ -2005,6 +2125,10 @@ impl std::ops::DerefMut for BucketMut<'_> {
 
 impl Drop for BucketMut<'_> {
     fn drop(&mut self) {
+        if let Some(bytes) = self.resident_block_heap.get_mut() {
+            *bytes = bytes.saturating_sub(self.was_block_heap)
+                .saturating_add(self.node.block_index.resident_heap_bytes());
+        }
         let now_dirty = self.node.dirty();
         if now_dirty == self.was_dirty {
             return;
@@ -5158,11 +5282,10 @@ pub(super) fn block_index_written_key(object_key: &str, block: &BlockIndex) -> S
 /// was nothing left to rebuild FROM. The conclusion below is unchanged -- it never rested on
 /// WHICH pass fills the field, only on the field not being written. An
 /// index stamped with the current `SHARD_INDEX_FORMAT_VERSION` cannot carry it, because the writer
-/// skips it; an index stamped lower is refused by `persistence`'s `<` comparison. So the wire
-/// shape below has no reader a stamp could protect. The one observable difference for a
-/// pre-version index that DOES carry the old shape is which counter it lands in --
-/// `IndexLoadPath::Undecodable` rather than `RefusedStaleStamp` -- and both return `Ok(None)` and
-/// fall back to WAL replay.
+/// skips it; an index stamped lower is refused by the container header's version check in
+/// `decode_index_bytes`, before any payload is read. So the wire shape below has no reader a stamp
+/// could protect. A pre-version index that DOES carry the old shape lands in
+/// `IndexLoadPath::Undecodable`, returns `Ok(None)` and falls back to WAL replay.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     from = "BTreeMap<String, BlockRefs>",
@@ -5573,6 +5696,18 @@ const _: () = assert!(
 /// a subtraction: the element name was 16 bytes and held a constant `None`.
 const _: () = assert!(std::mem::size_of::<Option<Arc<str>>>() == 16);
 
+#[cfg(test)]
+thread_local! {
+    static BLOCK_REF_VECTOR_SHIFTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn measure_block_ref_vector_shifts_for_test<T>(work: impl FnOnce() -> T) -> (T, usize) {
+    BLOCK_REF_VECTOR_SHIFTS.with(|count| count.set(0));
+    let result = work();
+    (result, BLOCK_REF_VECTOR_SHIFTS.with(std::cell::Cell::get))
+}
+
 impl BlockRefs {
     pub(super) fn as_slice(&self) -> &[BlockLookupRef] {
         match self {
@@ -5650,6 +5785,8 @@ impl BlockRefs {
             Self::Many(values) => match values.binary_search(&value) {
                 Ok(_) => false,
                 Err(at) => {
+                    #[cfg(test)]
+                    BLOCK_REF_VECTOR_SHIFTS.with(|count| count.set(count.get() + values.len() - at));
                     values.insert(at, value);
                     true
                 }
@@ -6445,9 +6582,16 @@ pub(super) struct TombstoneElement {
 /// empty the vector puts it back to `None` so the two cannot both be reachable with different
 /// behaviour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(super) struct TombstoneElements(Option<Box<Vec<TombstoneElement>>>);
+pub(super) struct TombstoneElements(Option<Box<tombstone_identity_filter::TombstoneRows>>);
+
+#[path = "tombstone_identity_filter.rs"]
+mod tombstone_identity_filter;
 
 impl TombstoneElements {
+    fn from_rows(rows: Vec<TombstoneElement>) -> Self {
+        if rows.is_empty() { Self::default() }
+        else { Self(Some(Box::new(tombstone_identity_filter::TombstoneRows::new(rows)))) }
+    }
     pub(super) fn is_empty(&self) -> bool {
         self.0.as_ref().is_none_or(|rows| rows.is_empty())
     }
@@ -6460,12 +6604,26 @@ impl TombstoneElements {
         self.0.iter().flat_map(|rows| rows.iter())
     }
 
-    fn iter_mut(&mut self) -> impl Iterator<Item = &mut TombstoneElement> {
-        self.0.iter_mut().flat_map(|rows| rows.iter_mut())
+    fn update_block(&mut self, model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        object_key: &str, element_name: &str, block: (u64, u64, u64)) -> bool
+    {
+        self.0.as_mut().is_some_and(|rows| rows.update_block(model_id, object_key, element_name, block))
+    }
+
+    fn find(&self, model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        object_key: &str, element_name: &str) -> Option<&TombstoneElement>
+    {
+        self.0.as_ref()?.find(model_id, object_key, element_name)
+    }
+
+    fn may_contain(&self, model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        object_key: &str, element_name: &str) -> bool
+    {
+        self.0.as_ref().is_some_and(|rows| rows.may_contain(model_id, object_key, element_name))
     }
 
     fn push(&mut self, row: TombstoneElement) {
-        self.0.get_or_insert_with(Box::default).push(row);
+        self.0.get_or_insert_with(|| Box::new(tombstone_identity_filter::TombstoneRows::new(Vec::new()))).push(row);
     }
 
     /// Retain, and DROP THE ALLOCATION when nothing is left, so `None` is the only spelling of
@@ -6503,11 +6661,7 @@ impl<'de> Deserialize<'de> for TombstoneElements {
         D: serde::Deserializer<'de>,
     {
         let rows: Vec<TombstoneElement> = Deserialize::deserialize(deserializer)?;
-        Ok(if rows.is_empty() {
-            Self(None)
-        } else {
-            Self(Some(Box::new(rows)))
-        })
+        Ok(Self::from_rows(rows))
     }
 }
 
@@ -6732,12 +6886,7 @@ impl BucketNode {
         address: &ElementEntry,
     ) {
         let block = tombstone_block_key(address);
-        if let Some(row) = self.tombstone_elements.iter_mut().find(|row| {
-            row.model_id == model_id
-                && &*row.object_key == &**object_key
-                && &*row.element_name == element_name
-        }) {
-            row.block = block;
+        if self.tombstone_elements.update_block(model_id, object_key, element_name, block) {
             return;
         }
         self.tombstone_elements.push(TombstoneElement {
@@ -6749,6 +6898,32 @@ impl BucketNode {
         });
     }
 
+    /// Replace a reconstructed row list, preserving first position and last address per identity.
+    pub(super) fn rebuild_tombstone_elements(&mut self, mut rows: Vec<TombstoneElement>) {
+        let mut positions = HashMap::new();
+        let mut kept = 0;
+        for read in 0..rows.len() {
+            let row = &rows[read];
+            let identity = (row.model_id, Arc::clone(&row.object_key), Arc::clone(&row.element_name));
+            match positions.entry(identity) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    let index: usize = *entry.get();
+                    rows[index].block = rows[read].block;
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(kept);
+                    rows.swap(kept, read);
+                    kept += 1;
+                }
+            }
+        }
+        if kept < rows.len() {
+            rows.truncate(kept);
+            rows.shrink_to_fit();
+        }
+        self.tombstone_elements = TombstoneElements::from_rows(rows);
+    }
+
     /// The block the tombstone for this element names, if this bucket holds one.
     pub(super) fn tombstone_element_block(
         &self,
@@ -6757,12 +6932,7 @@ impl BucketNode {
         element_name: &str,
     ) -> Option<(u64, u64, u64)> {
         self.tombstone_elements
-            .iter()
-            .find(|row| {
-                row.model_id == model_id
-                    && &*row.object_key == object_key
-                    && &*row.element_name == element_name
-            })
+            .find(model_id, object_key, element_name)
             .map(|row| row.block)
     }
 
@@ -6782,6 +6952,7 @@ impl BucketNode {
         model_id: crate::engine::storage_bucket_internals::StoredModelKind,
         element_name: &str,
     ) {
+        if !self.tombstone_elements.may_contain(model_id, object_key, element_name) { return; }
         self.tombstone_elements.retain(|row| {
             !(row.model_id == model_id
                 && &*row.object_key == object_key
@@ -6809,16 +6980,22 @@ impl BucketNode {
         if self.tombstone_elements.is_empty() {
             return;
         }
-        let blocks: std::collections::BTreeSet<(u64, u64, u64)> = self
+        let mut blocks: Vec<(u64, u64, u64)> = self
             .block_index
             .values()
             .filter(|block| block.deleted())
             .map(|block| tombstone_block_key(&block.address))
             .collect();
+        blocks.sort_unstable();
+        blocks.dedup();
         self.tombstone_elements
-            .retain(|row| blocks.contains(&row.block));
+            .retain(|row| blocks.binary_search(&row.block).is_ok());
     }
 }
+
+#[cfg(test)]
+#[path = "tombstone_reconcile_cost_tests.rs"]
+mod tombstone_reconcile_cost_tests;
 
 /// THE STORED SPELLING, WRITTEN OUT BY HAND BECAUSE THE DECLARATION NO LONGER MATCHES IT.
 ///
@@ -8922,39 +9099,11 @@ pub(super) fn resident_highest_block_id(
     model_id: &str,
     object_key: &str,
 ) -> Option<u64> {
-    #[cfg(test)]
-    SIBLING_SCAN_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    // TWO BODIES, SO A RELEASE BUILD IS BYTE-IDENTICAL TO WHAT IT WAS. The counted one exists only
-    // under `cfg(test)`; the shipped one is the expression this function has always had. An
-    // instrument that costs the write path two atomic increments per container insert would be
-    // paying for its own measurement forever, on a path this arm exists to show is already too
-    // expensive.
-    #[cfg(test)]
-    fn highest<'a>(addresses: impl Iterator<Item = &'a ElementEntry>) -> Option<u64> {
-        let mut examined = 0u64;
-        let highest = addresses
-            .inspect(|_| examined += 1)
-            .filter_map(ElementEntry::block_id)
-            .max();
-        SIBLING_SCAN_ELEMENTS.fetch_add(examined, std::sync::atomic::Ordering::Relaxed);
-        highest
-    }
-    #[cfg(not(test))]
-    fn highest<'a>(addresses: impl Iterator<Item = &'a ElementEntry>) -> Option<u64> {
-        addresses.filter_map(ElementEntry::block_id).max()
-    }
     match model_id {
-        "hash" => highest(shard.bucket_index.hashes.get(object_key)?.values()),
-        "set" => highest(shard.bucket_index.sets.get(object_key)?.values()),
-        "zset" => highest(
-            shard
-                .bucket_index.zsets
-                .get(object_key)?
-                .values()
-                .map(|(_, address)| address),
-        ),
-        "list" => highest(shard.bucket_index.lists.get(object_key)?.values()),
+        "hash" => shard.bucket_index.hashes.highest_block_id(object_key),
+        "set" => shard.bucket_index.sets.highest_block_id(object_key),
+        "zset" => shard.bucket_index.zsets.highest_block_id(object_key),
+        "list" => shard.bucket_index.lists.highest_block_id(object_key),
         _ => None,
     }
 }
@@ -9917,6 +10066,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         shard_id: _,
         shard_id_known: _,
         applied_wal_sequence: _,
+        wal_apply_discontinuous: _,
         index_format_version: _,
         // The bucket index's own containers are owned elsewhere and are deliberately left alone
         // here, so this pass cannot be blamed for a change in them.

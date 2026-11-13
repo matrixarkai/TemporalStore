@@ -182,12 +182,12 @@ fn write_then_replay(dir: &std::path::Path, gate_on: bool) -> ReplayArm {
     crate::engine::persistence::reset_index_load_path_counts();
     let reloaded = engine_with_cache(dir, "cache-reloaded");
     let status = load_on(&reloaded);
-    let (accepted, refused_stale, absent, undecodable) =
+    let (accepted, absent, undecodable) =
         crate::engine::persistence::index_load_path_counts();
     let arm = ReplayArm {
         load_ok: status.ok,
         accepted,
-        classified: accepted + refused_stale + absent + undecodable,
+        classified: accepted + absent + undecodable,
         resident: if status.ok {
             resident_members(&reloaded)
         } else {
@@ -201,7 +201,7 @@ fn write_then_replay(dir: &std::path::Path, gate_on: bool) -> ReplayArm {
     };
 
     println!(
-        "  gate {}: load_ok={} accepted={accepted} refused_stale={refused_stale} absent={absent} \
+        "  gate {}: load_ok={} accepted={accepted} absent={absent} \
          undecodable={undecodable} resident={} listed={}",
         if gate_on { "ON " } else { "OFF" },
         arm.load_ok,
@@ -358,7 +358,7 @@ fn the_gate_does_not_reach_the_element_name_the_index_log_item_is_built_from() {
          item, and the write would never reach the index log",
     );
     assert_eq!(
-        hex::encode(member_bytes(0)),
+        "\u{1b}member-00000",
         element_name,
         "the element name is spelled {element_name}, not as the set arm decodes it"
     );
@@ -497,12 +497,12 @@ fn write_then_replay_hash(dir: &std::path::Path, gate_on: bool) -> HashReplayArm
     crate::engine::persistence::reset_index_load_path_counts();
     let reloaded = engine_with_cache(dir, "cache-reloaded-hash");
     let status = load_on(&reloaded);
-    let (accepted, refused_stale, absent, undecodable) =
+    let (accepted, absent, undecodable) =
         crate::engine::persistence::index_load_path_counts();
     let arm = HashReplayArm {
         load_ok: status.ok,
         accepted,
-        classified: accepted + refused_stale + absent + undecodable,
+        classified: accepted + absent + undecodable,
         resident: if status.ok {
             resident_hash_fields(&reloaded)
         } else {
@@ -510,7 +510,7 @@ fn write_then_replay_hash(dir: &std::path::Path, gate_on: bool) -> HashReplayArm
         },
     };
     println!(
-        "  gate {}: load_ok={} accepted={accepted} refused_stale={refused_stale} absent={absent} \
+        "  gate {}: load_ok={} accepted={accepted} absent={absent} \
          undecodable={undecodable} resident={}",
         if gate_on { "ON " } else { "OFF" },
         arm.load_ok,

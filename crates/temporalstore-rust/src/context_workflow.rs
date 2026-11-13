@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -32,7 +32,6 @@ const LEXICAL_SCORE_SATURATION: i64 = 1_000;
 /// remain rankable (never a flat 0) instead of collapsing to recency order.
 const LEXICAL_MATCH_MICROS: i64 = 500_000;
 
-
 /// Map a raw lexical-relevance score into the same micros scale cosine similarity
 /// uses (`context_embedding_similarity_micros`), so lexical and cosine node scores
 /// merge into one ranking. 0 stays 0 (no overlap => not surfaced by lexical).
@@ -41,38 +40,39 @@ fn lexical_score_to_micros(raw: u32) -> i64 {
     raw.saturating_mul(LEXICAL_MATCH_MICROS) / LEXICAL_SCORE_SATURATION
 }
 
-#[path = "context_workflow/context_query_scoring.rs"]
-mod query;
-mod embed_drainer;
-#[path = "context_workflow/context_workflow_resource.rs"]
-mod resource;
 #[path = "context_workflow/context_workflow_benchmark.rs"]
 mod benchmark;
-mod model_provider;
+mod embed_drainer;
 #[path = "context_workflow/context_workflow_ingest.rs"]
 mod ingest;
+pub mod ingest_wire;
+pub mod memory_wire;
+mod model_provider;
+#[path = "context_workflow/context_query_scoring.rs"]
+mod query;
 #[path = "context_workflow/context_workflow_reports.rs"]
 mod reports;
+#[path = "context_workflow/context_workflow_resource.rs"]
+mod resource;
 #[path = "context_workflow/context_workflow_skill.rs"]
 mod skill;
 
-pub use resource::{
-    parse_context_resource, update_context_resource_lifecycle,
-};
-pub use benchmark::{run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep};
 pub(crate) use benchmark::*;
-pub use reports::*;
+pub use benchmark::{run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep};
+pub use embed_drainer::{
+    drain_embedding_dirty_once, embed_drainer_config_from_env, embed_drainer_enabled,
+    run_embed_drainer_loop, EmbedDrainReport, EmbedDrainerConfig,
+};
 pub use ingest::{
+    ingest_context_without_inference,
     ingest_extract_context, ingest_extract_context_with_l1_gate, ingest_resource_skill_context,
     validate_resource_skill_secondary_indexes,
 };
 pub(crate) use model_provider::*;
 pub use model_provider::{context_backfill_embeddings, context_provider_from_env};
 pub use query::context_embedding_ref_hash;
-pub use embed_drainer::{
-    drain_embedding_dirty_once, embed_drainer_config_from_env, embed_drainer_enabled,
-    run_embed_drainer_loop, EmbedDrainReport, EmbedDrainerConfig,
-};
+pub use reports::*;
+pub use resource::{parse_context_resource, update_context_resource_lifecycle};
 pub use skill::{
     context_skill_registry_from_parsed, parse_context_skill_markdown,
     select_context_skills_for_retrieval, update_context_skill_registry,
@@ -90,15 +90,14 @@ use crate::http::{
     HttpRequestOptions,
 };
 use crate::llm_context::{
-    score_prepared_embedding_candidates_exact, EmbeddingBatch, EmbeddingChannel, EmbeddingKey,
-    EmbeddingVector, PreparedEmbeddingQuery,
+    score_prepared_embedding_candidate_exact, score_prepared_embedding_candidates_exact,
+    EmbeddingBatch, EmbeddingChannel, EmbeddingKey, EmbeddingVector, PreparedEmbeddingQuery,
 };
 use crate::types::{
     context_model_descriptors, context_node_summary_vector_enabled, BatchExecuteRequest, Command,
-    CommandResponse, ContextAuditRef, ContextChildRef, CONTEXT_SUMMARY_LEVEL_L1,
-    ContextCompressionEvent, ContextEntity, ContextEvent, ContextIndexRef,
-    ContextModelDescriptor, ContextNode, ContextPackAudit, ContextSummary,
-    ContextDirtyNode, ExecuteRequest, ShardId, Status,
+    CommandResponse, ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextDirtyNode,
+    ContextEntity, ContextEvent, ContextIndexRef, ContextModelDescriptor, ContextNode,
+    ContextPackAudit, ContextSummary, ExecuteRequest, ShardId, Status, CONTEXT_SUMMARY_LEVEL_L1,
 };
 
 const CONTEXT_SCOPE_NODE_INDEX_NAME: &str = "scope_node_recent";
@@ -324,6 +323,16 @@ pub struct ContextModelProviderConfig {
     pub mock_mode: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextExtractedEntity {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+}
+
 impl Default for ContextModelProviderConfig {
     fn default() -> Self {
         Self {
@@ -351,8 +360,15 @@ pub struct ContextExtractRequest {
     pub title: String,
     pub body: String,
     pub timestamp_ms: u64,
-    #[serde(default)]
+    #[serde(default = "inherited_context_source_provider")]
     pub provider: ContextModelProviderConfig,
+}
+
+fn inherited_context_source_provider() -> ContextModelProviderConfig {
+    ContextModelProviderConfig {
+        provider_name: String::new(),
+        ..ContextModelProviderConfig::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -390,12 +406,24 @@ impl Default for ContextEmbeddingGenerationReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextExtractedFact {
+    pub entity_hash: u64,
+    pub kind: String,
+    pub name: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextExtractReport {
     pub status: Status,
     pub provider: ContextModelProviderConfig,
     #[serde(default)]
     pub embedding_generation: ContextEmbeddingGenerationReport,
+    #[serde(default)]
+    pub extracted_entity_count: usize,
+    #[serde(skip)]
+    pub facts: Vec<ContextExtractedFact>,
     pub node: ContextNode,
     pub event: ContextEvent,
     pub index_ref: ContextIndexRef,
@@ -1444,6 +1472,8 @@ pub struct ContextInjectionOrderingDebug {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextBlock {
+    #[serde(default)]
+    pub record_type: String,
     pub uri: String,
     pub tier: ContextTier,
     pub node_hash: u64,
@@ -1451,6 +1481,66 @@ pub struct ContextBlock {
     pub text: String,
     pub estimated_tokens: u32,
     pub source_ref: String,
+}
+
+#[derive(Debug)]
+struct RankedContextBlock {
+    score: i64,
+    block: ContextBlock,
+}
+
+impl PartialEq for RankedContextBlock {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for RankedContextBlock {}
+
+impl PartialOrd for RankedContextBlock {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedContextBlock {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score
+            .cmp(&other.score)
+            .then_with(|| self.block.event_time_ms.cmp(&other.block.event_time_ms))
+            // A smaller stable URI wins an otherwise exact tie.
+            .then_with(|| other.block.uri.cmp(&self.block.uri))
+    }
+}
+
+fn retain_ranked_context_block(
+    candidates: &mut BinaryHeap<Reverse<RankedContextBlock>>,
+    candidate: RankedContextBlock,
+    limit: usize,
+) {
+    if limit == 0 {
+        return;
+    }
+    if candidates.len() < limit {
+        candidates.push(Reverse(candidate));
+    } else if candidates
+        .peek()
+        .is_some_and(|Reverse(worst)| candidate > *worst)
+    {
+        candidates.pop();
+        candidates.push(Reverse(candidate));
+    }
+}
+
+fn take_ranked_context_blocks(
+    candidates: BinaryHeap<Reverse<RankedContextBlock>>,
+) -> Vec<RankedContextBlock> {
+    let mut candidates = candidates
+        .into_iter()
+        .map(|Reverse(candidate)| candidate)
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by(|left, right| right.cmp(left));
+    candidates
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1739,19 +1829,15 @@ pub(crate) fn context_prepared_embeddings_with_fallback(
                     return Err(status);
                 };
                 let fallback = normalize_provider(fallback.clone());
-                context_embeddings_for_prepared_unique(
-                    &fallback,
-                    unique_inputs,
-                    input_rows.len(),
-                )
-                .map(|(vectors, mut report)| {
-                    report.fallback_used = true;
-                    report.provider_name = format!(
-                        "{}+fallback:{}",
-                        provider.provider_name, report.provider_name
-                    );
-                    (vectors, report)
-                })
+                context_embeddings_for_prepared_unique(&fallback, unique_inputs, input_rows.len())
+                    .map(|(vectors, mut report)| {
+                        report.fallback_used = true;
+                        report.provider_name = format!(
+                            "{}+fallback:{}",
+                            provider.provider_name, report.provider_name
+                        );
+                        (vectors, report)
+                    })
             },
         );
     match embed_outcome {
@@ -1825,8 +1911,7 @@ pub(crate) fn context_extract_summaries_with_fallback_batch(
                 .iter()
                 .map(|index| requests[*index])
                 .collect::<Vec<_>>();
-            let fallback_results =
-                context_summaries_for_extract_batch(&fallback, &failed_requests);
+            let fallback_results = context_summaries_for_extract_batch(&fallback, &failed_requests);
             for (index, fallback_result) in failed_indexes.iter().zip(fallback_results) {
                 results[*index] = fallback_result.map(|mut summaries| {
                     summaries.provider = fallback.clone();
@@ -1945,16 +2030,26 @@ pub(crate) fn extract_context_gated_prepared(
     )
 }
 
+/// Stable node identity shared by extraction and candidate routing.
+pub fn context_source_node_hash(
+    tenant_hash: u64,
+    source_kind: ContextSourceKind,
+    source_id: &str,
+) -> u64 {
+    stable_hash64(&format!("{tenant_hash}:{}:{source_id}", source_kind as u8))
+}
+
 pub(crate) fn prepare_context_gated_prepared(
     request: ContextExtractRequest,
     gate_l1: bool,
     summaries: ContextExtractSummaries,
     embedding_outcome: Option<ContextEmbeddingOutcome>,
 ) -> PreparedContextExtract {
-    let node_hash = stable_hash64(&format!(
-        "{}:{}:{}",
-        request.tenant_hash, request.source_kind as u8, request.source_id
-    ));
+    let node_hash = context_source_node_hash(
+        request.tenant_hash,
+        request.source_kind,
+        &request.source_id,
+    );
     let event_id_hash = context_event_id_hash(&request.source_id, &request.body);
     prepare_context_gated_prepared_with_ids(
         request,
@@ -1974,6 +2069,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
     node_hash: u64,
     event_id_hash: u64,
 ) -> PreparedContextExtract {
+    let extracted_entities = summaries.entities;
     let provider = summaries.provider;
     if !summaries.status.ok {
         return PreparedContextExtract {
@@ -1982,6 +2078,8 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
                 status: summaries.status,
                 provider,
                 embedding_generation: ContextEmbeddingGenerationReport::default(),
+                extracted_entity_count: 0,
+                facts: Vec::new(),
                 node: empty_node(),
                 event: empty_event(),
                 index_ref: ContextIndexRef {
@@ -2016,11 +2114,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
     // warrant the richer, more expensive L1 tier. Thin gated nodes keep only L0
     // (no l1_ref, no l1 summary, no l1 embedding) -- the frugal path.
     let emit_l1 = !gate_l1 || context_source_warrants_l1(&request.body);
-    let l1 = if emit_l1 {
-        summaries.l1
-    } else {
-        String::new()
-    };
+    let l1 = if emit_l1 { summaries.l1 } else { String::new() };
     let l2_ref = summaries.l2_ref;
     let mut node = ContextNode {
         node_hash,
@@ -2029,7 +2123,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
         canonical_name: request.title.clone(),
         l0: l0.clone(),
         status: 1,
-            last_event_time_ms: timestamp_ms,
+        last_event_time_ms: timestamp_ms,
         l1_ref: l1.clone(),
         raw_metadata_ref: request.source_id.clone(),
         vector: Vec::new(),
@@ -2053,10 +2147,11 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
             confidence: 1.0,
             importance: context_importance(&request.body),
             text: request.body.clone(),
-            source_ref: String::new(),
+            source_ref: request.source_id.clone(),
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
             vector: Vec::new(),
+            embedding_model_hash: 0,
         },
     );
     let index_ref = ContextIndexRef {
@@ -2118,13 +2213,23 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
     // to every owner of it. Batch ingestion preserves that ownership with compact row mappings,
     // so repeated source text also occupies one temporary vector instead of one copy per owner.
     //
-    // So the batch is two texts whether or not L1 is emitted: the text the node is searched by,
-    // and the event body.
+    // The batch starts with the node and event texts, followed by one bounded entity value per
+    // extracted entity. The provider still receives one request and can deduplicate repeated text.
     let node_embedding_text = if emit_l1 { l1.as_str() } else { l0.as_str() };
-    let embedding_inputs: Vec<(&str, u64, u32, &str)> = vec![
+    let mut embedding_inputs: Vec<(&str, u64, u32, &str)> =
+        Vec::with_capacity(2usize.saturating_add(extracted_entities.len()));
+    embedding_inputs.extend([
         ("node_text", node_hash, 1, node_embedding_text),
         ("event_text", event_id_hash, 3, request.body.as_str()),
-    ];
+    ]);
+    embedding_inputs.extend(extracted_entities.iter().map(|entity| {
+        (
+            "entity_state",
+            context_extracted_entity_hash(entity),
+            4,
+            entity.value.as_str(),
+        )
+    }));
     // Compute embeddings, trying the fallback provider on error. On total failure
     // the behavior depends on `context_embed_defer_on_failure()`: the default is to
     // DEFER (persist the node/event/summaries without vectors and mark the node
@@ -2145,6 +2250,17 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
     // Left empty when embedding was deferred (provider failure): the node is marked
     // embedding-dirty and the async drainer attaches vectors later, so an empty vector here
     // means "not yet", never "none". skip_serializing_if keeps that costing nothing on disk.
+    let embedding_model_hash = if embedding_deferred {
+        0
+    } else {
+        // An embedding fallback can differ from the provider used for summaries.
+        let model = if embedding_generation.embedding_model.is_empty() {
+            &provider.embedding_model
+        } else {
+            &embedding_generation.embedding_model
+        };
+        context_embedding_model_hash(model)
+    };
     if !embedding_deferred {
         // embedding_inputs order is node text then event text, so the vectors line up with their
         // owners: index 0 is whatever the node was embedded from -- taken by the node, the L0
@@ -2155,7 +2271,6 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
         // every owner that takes a vector. The summaries need it as much as the node does: the
         // retrieve pass scores an L1 summary vector too, and an unstamped one cannot be told
         // apart from one the encoder in use wrote.
-        let embedding_model_hash = context_embedding_model_hash(&provider.embedding_model);
         if let Some(vector) = embedding_vectors.get_row(0) {
             // The level-1 summary carries its own vector because that is the only place a
             // summary's vector lives -- the embedding fold moved vectors off separate rows and
@@ -2194,6 +2309,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
         // to the batch whether or not L1 was emitted.
         if let Some(vector) = embedding_vectors.get_row(1) {
             event.vector = vector.to_vec();
+            event.embedding_model_hash = embedding_model_hash;
         }
     }
 
@@ -2234,18 +2350,61 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
         commands.push(Command::ContextMarkEmbeddingDirty {
             tenant_hash: request.tenant_hash,
             node_hash,
-                event_time_ms: timestamp_ms,
-                reason: EMBEDDING_DIRTY_REASON_LIVE_FAILURE,
-                propagate_depth: 0,
+            event_time_ms: timestamp_ms,
+            reason: EMBEDDING_DIRTY_REASON_LIVE_FAILURE,
+            propagate_depth: 0,
             clear: false,
         });
     }
+    let extracted_entity_count = extracted_entities.len();
+    let facts = extracted_entities.iter().map(|entity| ContextExtractedFact {
+        entity_hash: context_extracted_entity_hash(entity), kind: entity.kind.clone(),
+        name: entity.name.clone(), value: entity.value.clone(),
+    }).collect();
+    commands.extend(
+        extracted_entities
+            .into_iter()
+            .enumerate()
+            .map(|(index, entity)| {
+                let entity_hash = context_extracted_entity_hash(&entity);
+                let vector = if embedding_deferred {
+                    Vec::new()
+                } else {
+                    embedding_vectors
+                        .get_row(index.saturating_add(2))
+                        .map(<[f32]>::to_vec)
+                        .unwrap_or_default()
+                };
+                Command::ContextUpsertEntity {
+                    tenant_hash: request.tenant_hash,
+                    entity: ContextEntity {
+                        entity_hash,
+                        node_hash,
+                        entity_type: context_extracted_entity_type(&entity.kind),
+                        name: entity.name,
+                        value: entity.value,
+                        updated_at_ms: timestamp_ms,
+                        valid_from_ms: timestamp_ms,
+                        confidence: 0.9,
+                        source_event_hashes: vec![event_id_hash],
+                        embedding_model_hash: if vector.is_empty() {
+                            0
+                        } else {
+                            embedding_model_hash
+                        },
+                        vector,
+                    },
+                }
+            }),
+    );
     PreparedContextExtract {
         commands,
         report: ContextExtractReport {
             status: Status::ok(),
             provider,
             embedding_generation,
+            extracted_entity_count,
+            facts,
             node,
             event,
             index_ref,
@@ -2265,7 +2424,23 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
 
 pub fn retrieve_context(
     engine: &TemporalEngine,
+    request: ContextRetrieveRequest,
+) -> ContextRetrieveReport {
+    retrieve_context_candidates(engine, request, false)
+}
+
+/// Retrieve only from the supplied node set, including when that set is empty.
+pub fn retrieve_context_from_nodes(
+    engine: &TemporalEngine,
+    request: ContextRetrieveRequest,
+) -> ContextRetrieveReport {
+    retrieve_context_candidates(engine, request, true)
+}
+
+fn retrieve_context_candidates(
+    engine: &TemporalEngine,
     mut request: ContextRetrieveRequest,
+    restrict_nodes: bool,
 ) -> ContextRetrieveReport {
     let mut blocks = Vec::new();
     let mut node_count = 0usize;
@@ -2304,12 +2479,10 @@ pub fn retrieve_context(
     let include_l0 = tiers.contains(&ContextTier::L0);
     let include_l1 = tiers.contains(&ContextTier::L1);
     let include_l2 = tiers.contains(&ContextTier::L2);
-    let mut node_hashes = if request.node_hashes.is_empty() {
+    let mut node_hashes = std::mem::take(&mut request.node_hashes);
+    if restrict_nodes && node_hashes.is_empty() {
         return ContextRetrieveReport {
-            status: Status::error(
-                "node_hash_required",
-                "context retrieval requires at least one node hash in this local workflow",
-            ),
+            status: Status::ok(),
             blocks,
             node_count,
             event_count,
@@ -2317,11 +2490,10 @@ pub fn retrieve_context(
             fanout_plan,
             parity: context_pipeline_parity_evidence(),
         };
-    } else {
-        std::mem::take(&mut request.node_hashes)
-    };
+    }
     let retrieval_provider = normalize_provider(request.provider.clone());
-    let query_embedding = match context_query_embedding_shared(&retrieval_provider, &request.query) {
+    let query_embedding = match context_query_embedding_shared(&retrieval_provider, &request.query)
+    {
         Ok(vector) => vector,
         Err(status) => {
             return ContextRetrieveReport {
@@ -2343,6 +2515,28 @@ pub fn retrieve_context(
     // encoder is unknown, and unknown never conflicts.
     let active_embedding_model_hash =
         context_embedding_model_hash(request.provider.embedding_model.trim());
+    // A caller may omit node ids and let the compact embedding index provide a bounded
+    // tenant-wide candidate set. Text is not hydrated until after this selection.
+    if !restrict_nodes && node_hashes.is_empty() {
+        let candidate_limit = request
+            .max_summary_nodes
+            .max(request.max_event_nodes)
+            .max(request.max_events)
+            .max(1)
+            .saturating_mul(4)
+            .min(128);
+        if let Some(prepared_query) = prepared_query_embedding {
+            if let Ok(hits) = engine.search_context_embeddings(
+                EmbeddingChannel::Node,
+                request.tenant_hash,
+                active_embedding_model_hash,
+                prepared_query,
+                candidate_limit,
+            ) {
+                node_hashes.extend(hits.into_iter().map(|hit| hit.key.item_id));
+            }
+        }
+    }
     // Candidate builders can reach the same node through more than one index. Preserve the
     // first occurrence, but never fetch, quantize, score, or expand that node twice.
     let mut seen_node_hashes = HashSet::with_capacity(node_hashes.len());
@@ -2350,7 +2544,7 @@ pub fn retrieve_context(
     // The durable recency index bounds cold storage reads. The compact hot index may know older
     // nodes that are stronger semantic matches, so let a small number re-enter as candidates.
     // Their cached scores are not final: the normal node fetch and rerank below still apply.
-    if node_hashes.len() >= CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT {
+    if !restrict_nodes && node_hashes.len() >= CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT {
         let hot_candidate_limit = request
             .max_summary_nodes
             .max(request.max_event_nodes)
@@ -2376,8 +2570,7 @@ pub fn retrieve_context(
     }
     drop(seen_node_hashes);
     fanout_plan.namespace_node_candidates = node_hashes.len();
-    let mut summary_scores_by_node =
-        HashMap::<u64, (i64, usize)>::with_capacity(node_hashes.len());
+    let mut summary_scores_by_node = HashMap::<u64, (i64, usize)>::with_capacity(node_hashes.len());
     let initial_candidate_capacity = node_hashes.len().min(CONTEXT_EMBEDDING_QUERY_CHUNK);
     let mut prefetched_nodes = HashMap::<u64, ContextNode>::new();
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
@@ -2414,9 +2607,7 @@ pub fn retrieve_context(
                         let scores = summary_scores_by_node
                             .entry(summary_hit.key.item_id)
                             .or_default();
-                        scores.0 = scores
-                            .0
-                            .max((summary_hit.score * 1_000_000.0) as i64);
+                        scores.0 = scores.0.max((summary_hit.score * 1_000_000.0) as i64);
                     },
                 );
                 let _ = engine.visit_context_embedding_candidate_ids(
@@ -2496,6 +2687,7 @@ pub fn retrieve_context(
                                 .push(EmbeddingVector {
                                     key: EmbeddingKey {
                                         tenant_id: request.tenant_hash,
+                                        owner_id: 0,
                                         item_id: projection.node_hash,
                                     },
                                     values: summary_vector,
@@ -2538,6 +2730,7 @@ pub fn retrieve_context(
                         .push(EmbeddingVector {
                             key: EmbeddingKey {
                                 tenant_id: request.tenant_hash,
+                                owner_id: 0,
                                 item_id: projection.node_hash,
                             },
                             values: &projection.vector,
@@ -2580,7 +2773,10 @@ pub fn retrieve_context(
         }
         // The projection loader preserves request order while omitting missing nodes. Walk both
         // ordered lists once instead of allocating a hash set and hashing every id twice.
-        let mut returned = projections.iter().map(|projection| projection.node_hash).peekable();
+        let mut returned = projections
+            .iter()
+            .map(|projection| projection.node_hash)
+            .peekable();
         // A node the engine did not return cannot carry a vector either.
         for node_hash in candidate_chunk {
             if returned
@@ -2685,6 +2881,7 @@ pub fn retrieve_context(
                     .push(EmbeddingVector {
                         key: EmbeddingKey {
                             tenant_id: request.tenant_hash,
+                            owner_id: 0,
                             item_id: entry.node_hash,
                         },
                         values: &entry.vector,
@@ -2783,6 +2980,7 @@ pub fn retrieve_context(
             exact_node_rows.push(EmbeddingVector {
                 key: EmbeddingKey {
                     tenant_id: request.tenant_hash,
+                    owner_id: 0,
                     item_id: *node_hash,
                 },
                 values: &node.vector,
@@ -2798,6 +2996,7 @@ pub fn retrieve_context(
                 exact_summary_rows.push(EmbeddingVector {
                     key: EmbeddingKey {
                         tenant_id: request.tenant_hash,
+                        owner_id: 0,
                         item_id: *node_hash,
                     },
                     values: vector,
@@ -2947,6 +3146,12 @@ pub fn retrieve_context(
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(64);
+    // `u64::MAX` is the public open-ended query convention, while the durable timeline reserves
+    // low bits for event disambiguation. Clamp only the storage query; ranking still sees the
+    // caller's original end time.
+    let event_query_end_time_ms = request
+        .end_time_ms
+        .min(u64::MAX / crate::engine::constants::CONTEXT_TIMELINE_FANOUT);
     let skipped_node_count = summary_candidate_count.saturating_sub(event_node_limit);
     fanout_plan.summary_candidate_nodes = summary_candidate_count;
     fanout_plan.summary_selected_nodes = node_hashes.len();
@@ -3024,6 +3229,60 @@ pub fn retrieve_context(
 
     let mut event_query_returned_count = 0usize;
     let mut event_node_index = 0usize;
+    // Expand entities only after embedding selection has bounded the node set.
+    let entity_candidate_budget = request.max_events.max(1).saturating_mul(4).min(256);
+    let entity_result_limit = request.max_events.max(1).min(32);
+    let event_candidate_budget = event_pack_budget
+        .saturating_mul(event_overfetch)
+        .max(event_pack_budget)
+        .min(256);
+    let selected_nodes = node_hashes.iter().copied().collect::<HashSet<_>>();
+    let mut hot_entity_ids_by_node = HashMap::<u64, Vec<u64>>::new();
+    let mut hot_event_ids_by_node = HashMap::<u64, Vec<u64>>::new();
+    if let Some(prepared_query) = prepared_query_embedding {
+        if include_l1 {
+            if let Ok(hits) = engine.search_context_embeddings_for_owners(
+                EmbeddingChannel::Entity,
+                request.tenant_hash,
+                active_embedding_model_hash,
+                prepared_query,
+                entity_candidate_budget,
+                &selected_nodes,
+            ) {
+                for hit in hits {
+                    hot_entity_ids_by_node
+                        .entry(hit.key.owner_id)
+                        .or_default()
+                        .push(hit.key.item_id);
+                }
+            }
+        }
+        if include_l2 {
+            if let Ok(hits) = engine.search_context_embeddings_for_owners(
+                EmbeddingChannel::Event,
+                request.tenant_hash,
+                active_embedding_model_hash,
+                prepared_query,
+                event_candidate_budget,
+                &selected_nodes,
+            ) {
+                for hit in hits {
+                    hot_event_ids_by_node
+                        .entry(hit.key.owner_id)
+                        .or_default()
+                        .push(hit.key.item_id);
+                }
+            }
+        }
+    }
+    let use_hot_entity_candidates = !hot_entity_ids_by_node.is_empty();
+    let use_hot_event_candidates = !hot_event_ids_by_node.is_empty();
+    let selected_node_count = node_hashes.len().max(1);
+    let mut entity_candidate_count = 0usize;
+    let mut entity_candidates = BinaryHeap::with_capacity(entity_result_limit.saturating_add(1));
+    let mut event_candidates = BinaryHeap::with_capacity(event_pack_budget.saturating_add(1));
+    let mut ranked_scores_by_uri =
+        HashMap::with_capacity(entity_result_limit.saturating_add(event_pack_budget));
     for (selected_node_index, node_hash) in node_hashes.iter().copied().enumerate() {
         let mut node_source_ref = String::new();
         let cached_node = prefetched_nodes.remove(&node_hash).or_else(|| {
@@ -3048,6 +3307,7 @@ pub fn retrieve_context(
             }
             if include_l0 {
                 blocks.push(ContextBlock {
+                    record_type: "matched_chunk".to_string(),
                     uri: format!("{}/l0", context_node_uri(request.tenant_hash, node_hash)),
                     tier: ContextTier::L0,
                     node_hash,
@@ -3059,6 +3319,7 @@ pub fn retrieve_context(
             }
             if include_l1 {
                 blocks.push(ContextBlock {
+                    record_type: "matched_chunk".to_string(),
                     uri: format!("{}/l1", context_node_uri(request.tenant_hash, node_hash)),
                     tier: ContextTier::L1,
                     node_hash,
@@ -3070,24 +3331,126 @@ pub fn retrieve_context(
             }
         }
 
-        if include_l2 && event_count < event_pack_budget && selected_node_index < event_node_count {
-            let remaining_budget = event_pack_budget.saturating_sub(event_count).max(1);
-            let remaining_nodes = event_node_count
-                .saturating_sub(event_node_index)
+        if include_l1
+            && entity_candidate_count < entity_candidate_budget
+            && (!use_hot_entity_candidates || hot_entity_ids_by_node.contains_key(&node_hash))
+        {
+            let remaining = entity_candidate_budget.saturating_sub(entity_candidate_count);
+            let remaining_nodes = selected_node_count
+                .saturating_sub(selected_node_index)
                 .max(1);
+            let per_node_limit = remaining.div_ceil(remaining_nodes).max(1);
+            let entity_hashes = hot_entity_ids_by_node
+                .get(&node_hash)
+                .cloned()
+                .unwrap_or_default();
+            let response = engine.execute(ExecuteRequest {
+                shard_id: request.shard_id,
+                command: Command::ContextQueryEntities {
+                    tenant_hash: request.tenant_hash,
+                    node_hash,
+                    limit: Some(if entity_hashes.is_empty() {
+                        per_node_limit
+                    } else {
+                        entity_hashes.len().min(per_node_limit)
+                    }),
+                    entity_hashes,
+                },
+            });
+            if let CommandResponse::ContextEntities { entities, .. } = response.response {
+                for entity in entities {
+                    if entity_candidate_count >= entity_candidate_budget {
+                        break;
+                    }
+                    let text = if entity.value.trim().is_empty() {
+                        entity.name
+                    } else {
+                        format!("{}: {}", entity.name, entity.value)
+                    };
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    entity_candidate_count = entity_candidate_count.saturating_add(1);
+                    let semantic_score = prepared_query_embedding
+                        .filter(|_| {
+                            !entity.vector.is_empty()
+                                && !context_embedding_width_conflicts(
+                                    &query_embedding,
+                                    &entity.vector,
+                                )
+                                && !context_embedding_model_conflicts(
+                                    entity.embedding_model_hash,
+                                    active_embedding_model_hash,
+                                )
+                        })
+                        .and_then(|query| {
+                            score_prepared_embedding_candidate_exact(
+                                query,
+                                EmbeddingVector {
+                                    key: EmbeddingKey {
+                                        tenant_id: request.tenant_hash,
+                                        owner_id: entity.node_hash,
+                                        item_id: entity.entity_hash,
+                                    },
+                                    values: &entity.vector,
+                                },
+                            )
+                            .ok()
+                        })
+                        .map(|hit| (hit.score * 1_000_000.0) as i64);
+                    let lexical_score =
+                        lexical_score_to_micros(context_relevance_score_plan(&query_plan, &text));
+                    let score = semantic_score.unwrap_or_default().max(lexical_score);
+                    let source_ref = format!("entity:{:016x}", entity.entity_hash);
+                    let uri = format!(
+                        "context://tenant/{:016x}/entity/{:016x}",
+                        request.tenant_hash, entity.entity_hash
+                    );
+                    let estimated_tokens = estimate_tokens(&text);
+                    retain_ranked_context_block(
+                        &mut entity_candidates,
+                        RankedContextBlock {
+                            score,
+                            block: ContextBlock {
+                                record_type: "entity".to_string(),
+                                uri,
+                                tier: ContextTier::L1,
+                                node_hash: entity.node_hash,
+                                event_time_ms: entity.updated_at_ms,
+                                estimated_tokens,
+                                source_ref,
+                                text,
+                            },
+                        },
+                        entity_result_limit,
+                    );
+                }
+            }
+        }
+
+        if include_l2 && selected_node_index < event_node_count {
+            let remaining_nodes = event_node_count.saturating_sub(event_node_index).max(1);
             event_node_index = event_node_index.saturating_add(1);
-            let per_node_event_limit = remaining_budget
+            let remaining_candidate_budget = event_candidate_budget
+                .saturating_sub(event_query_returned_count.min(event_candidate_budget))
+                .max(1);
+            let per_node_event_limit = remaining_candidate_budget
                 .div_ceil(remaining_nodes)
                 .max(1)
-                .saturating_mul(event_overfetch)
-                .min(event_pack_budget);
-            let events_response = engine.execute(ExecuteRequest {
-                shard_id: request.shard_id,
-                command: Command::ContextQueryEvents {
+                .min(event_candidate_budget);
+            let event_ids = hot_event_ids_by_node
+                .get(&node_hash)
+                .cloned()
+                .unwrap_or_default();
+            if use_hot_event_candidates && event_ids.is_empty() {
+                continue;
+            }
+            let command = if event_ids.is_empty() {
+                Command::ContextQueryEvents {
                     tenant_hash: request.tenant_hash,
                     node_hash,
                     start_time_ms: request.start_time_ms,
-                    end_time_ms: request.end_time_ms,
+                    end_time_ms: event_query_end_time_ms,
                     limit: Some(per_node_event_limit),
                     max_scan: Some(event_scan_cap),
                     current_valid_only: false,
@@ -3096,16 +3459,61 @@ pub fn retrieve_context(
                     statuses: Vec::new(),
                     min_confidence: request.min_confidence,
                     min_importance: request.min_importance,
-                },
+                }
+            } else {
+                Command::ContextQueryEventsByIds {
+                    tenant_hash: request.tenant_hash,
+                    node_hash,
+                    limit: Some(event_ids.len().min(per_node_event_limit)),
+                    event_id_hashes: event_ids,
+                }
+            };
+            let events_response = engine.execute(ExecuteRequest {
+                shard_id: request.shard_id,
+                command,
             });
             if let CommandResponse::ContextEvents { events, .. } = events_response.response {
                 event_query_returned_count =
                     event_query_returned_count.saturating_add(events.len());
                 for event in events {
-                    if event_count >= event_pack_budget {
-                        break;
+                    let event_time_ms = event.primary_time_ms();
+                    if event_time_ms < request.start_time_ms
+                        || event_time_ms > event_query_end_time_ms
+                        || event.confidence < request.min_confidence
+                        || event.importance < request.min_importance
+                    {
+                        continue;
                     }
-                    let passes_prefilter = context_query_matches_plan(&query_plan, &event.text);
+                    let lexical_match = context_query_matches_plan(&query_plan, &event.text);
+                    let semantic_score = prepared_query_embedding
+                        .filter(|_| {
+                            !event.vector.is_empty()
+                                && !context_embedding_width_conflicts(
+                                    &query_embedding,
+                                    &event.vector,
+                                )
+                                && !context_embedding_model_conflicts(
+                                    event.embedding_model_hash,
+                                    active_embedding_model_hash,
+                                )
+                        })
+                        .and_then(|query| {
+                            score_prepared_embedding_candidate_exact(
+                                query,
+                                EmbeddingVector {
+                                    key: EmbeddingKey {
+                                        tenant_id: request.tenant_hash,
+                                        owner_id: node_hash,
+                                        item_id: event.event_id_hash,
+                                    },
+                                    values: &event.vector,
+                                },
+                            )
+                            .ok()
+                        })
+                        .map(|hit| (hit.score * 1_000_000.0) as i64);
+                    let passes_prefilter =
+                        lexical_match || semantic_score.is_some_and(|score| score > 0);
                     if include_debug {
                         context_query_debug_record_candidate(
                             &mut query_understanding_debug,
@@ -3118,30 +3526,64 @@ pub fn retrieve_context(
                     if !passes_prefilter {
                         continue;
                     }
-                    event_count += 1;
                     let source_ref = if event.source_ref.is_empty() {
                         node_source_ref.clone()
                     } else {
                         event.source_ref
                     };
-                    blocks.push(ContextBlock {
-                        uri: context_event_uri(request.tenant_hash, node_hash, event.event_time_ms),
-                        tier: ContextTier::L2,
-                        node_hash,
-                        event_time_ms: event.event_time_ms,
-                        text: event.text,
-                        estimated_tokens: estimate_tokens(&source_ref),
-                        source_ref,
-                    });
+                    let lexical_score = lexical_score_to_micros(context_relevance_score_plan(
+                        &query_plan,
+                        &event.text,
+                    ));
+                    let score = semantic_score.unwrap_or_default().max(lexical_score);
+                    let uri =
+                        context_event_uri(request.tenant_hash, node_hash, event.event_time_ms);
+                    let estimated_tokens = estimate_tokens(&event.text);
+                    retain_ranked_context_block(
+                        &mut event_candidates,
+                        RankedContextBlock {
+                            score,
+                            block: ContextBlock {
+                                record_type: "raw_message".to_string(),
+                                uri,
+                                tier: ContextTier::L2,
+                                node_hash,
+                                event_time_ms: event.event_time_ms,
+                                text: event.text,
+                                estimated_tokens,
+                                source_ref,
+                            },
+                        },
+                        event_pack_budget,
+                    );
                 }
             }
         }
     }
     fanout_plan.event_query_returned_count = event_query_returned_count;
 
+    for candidate in take_ranked_context_blocks(event_candidates) {
+        event_count = event_count.saturating_add(1);
+        ranked_scores_by_uri.insert(candidate.block.uri.clone(), candidate.score);
+        blocks.push(candidate.block);
+    }
+    for candidate in take_ranked_context_blocks(entity_candidates) {
+        ranked_scores_by_uri.insert(candidate.block.uri.clone(), candidate.score);
+        blocks.push(candidate.block);
+    }
+
     blocks.sort_by_cached_key(|block| {
         (
-            Reverse(context_relevance_score_plan(&query_plan, &block.text)),
+            Reverse(
+                ranked_scores_by_uri
+                    .get(&block.uri)
+                    .copied()
+                    .unwrap_or_default()
+                    .max(lexical_score_to_micros(context_relevance_score_plan(
+                        &query_plan,
+                        &block.text,
+                    ))),
+            ),
             tier_rank(block.tier),
             Reverse(block.event_time_ms),
             block.uri.clone(),
@@ -3175,10 +3617,11 @@ fn dedupe_context_blocks_by_source_ref(blocks: &mut Vec<ContextBlock>) {
     let mut deduped = Vec::<ContextBlock>::with_capacity(blocks.len());
     for block in blocks.drain(..) {
         let key = if block.source_ref.trim().is_empty() {
-            format!("uri:{}", block.uri)
+            format!("{}:uri:{}", block.record_type, block.uri)
         } else {
             format!(
-                "source:{}:{}",
+                "{}:source:{}:{}",
+                block.record_type,
                 block.node_hash,
                 block.source_ref.trim().to_ascii_lowercase()
             )
@@ -3335,8 +3778,7 @@ fn context_sentences(body: &str) -> Vec<&str> {
 /// internal `node_l1_generation_policy` (>=3 events / >=180 tokens); at
 /// extract time sentences stand in for events.
 pub(crate) fn context_source_warrants_l1(body: &str) -> bool {
-    context_sentence_iter(body).take(3).count() >= 3
-        || body.split_whitespace().nth(179).is_some()
+    context_sentence_iter(body).take(3).count() >= 3 || body.split_whitespace().nth(179).is_some()
 }
 
 /// L0: the short routing/preview summary (the required
@@ -3356,9 +3798,10 @@ fn contains_ascii_case_insensitive(value: &str, marker: &str) -> bool {
     if marker.is_empty() {
         return true;
     }
-    value.as_bytes().windows(marker.len()).any(|candidate| {
-        candidate.eq_ignore_ascii_case(marker.as_bytes())
-    })
+    value
+        .as_bytes()
+        .windows(marker.len())
+        .any(|candidate| candidate.eq_ignore_ascii_case(marker.as_bytes()))
 }
 
 fn context_fact_score(sentence: &str) -> i32 {
@@ -3405,20 +3848,25 @@ fn context_fact_score(sentence: &str) -> i32 {
 /// the same facts: L1 always adds detail on top of L0. Raw event evidence stays
 /// in the separate L2 tier.
 fn summarize_l1(kind: ContextSourceKind, title: &str, body: &str) -> String {
-    let sentences = context_sentences(body);
-    let lead = sentences.first().copied();
-    let mut ranked = sentences
-        .iter()
-        .enumerate()
-        .skip(1)
-        .map(|(index, sentence)| (context_fact_score(sentence), index, *sentence))
-        .collect::<Vec<_>>();
-    ranked.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+    let mut sentences = context_sentence_iter(body);
+    let lead = sentences.next();
+    let mut ranked: Vec<(i32, &str)> = Vec::with_capacity(7);
+    for sentence in sentences {
+        let score = context_fact_score(sentence);
+        // Later ties stay after earlier sentences, matching the full stable ranking.
+        let position = ranked.iter().position(|held| score > held.0).unwrap_or(ranked.len());
+        if position < 7 {
+            if ranked.len() == 7 {
+                ranked.pop();
+            }
+            ranked.insert(position, (score, sentence));
+        }
+    }
     let mut facts = Vec::new();
     if let Some(lead) = lead {
         facts.push(truncate_words(lead, 32));
     }
-    for (_, _, sentence) in ranked.into_iter().take(7) {
+    for (_, sentence) in ranked {
         facts.push(truncate_words(sentence, 32));
     }
     format!(
@@ -3438,9 +3886,8 @@ fn truncate_words(value: &str, limit: usize) -> String {
     if word_count == 0 {
         return String::new();
     }
-    let mut truncated = String::with_capacity(
-        word_bytes.saturating_add(word_count.saturating_sub(1)),
-    );
+    let mut truncated =
+        String::with_capacity(word_bytes.saturating_add(word_count.saturating_sub(1)));
     for (index, word) in words.enumerate() {
         if index > 0 {
             truncated.push(' ');
@@ -3470,6 +3917,28 @@ fn source_kind_code(kind: ContextSourceKind) -> u32 {
         ContextSourceKind::Incident => 5,
         ContextSourceKind::UserEvent => 6,
     }
+}
+
+fn context_extracted_entity_type(kind: &str) -> u32 {
+    match kind {
+        "person" => 1,
+        "organization" => 2,
+        "project" => 3,
+        "preference" => 4,
+        "decision" => 5,
+        "constraint" => 6,
+        "task" => 7,
+        "fact" => 8,
+        _ => 0,
+    }
+}
+
+pub(crate) fn context_extracted_entity_hash(entity: &ContextExtractedEntity) -> u64 {
+    stable_hash64(&format!(
+        "{}:{}",
+        entity.kind,
+        entity.name.to_ascii_lowercase()
+    ))
 }
 
 fn context_node_uri(tenant_hash: u64, node_hash: u64) -> String {
@@ -3528,6 +3997,7 @@ fn empty_event() -> ContextEvent {
         related_node_hashes: Vec::new(),
         compact_attrs: Vec::new(),
         vector: Vec::new(),
+        embedding_model_hash: 0,
     }
 }
 
@@ -3549,6 +4019,8 @@ fn empty_extract_report(
         status,
         provider,
         embedding_generation,
+        extracted_entity_count: 0,
+        facts: Vec::new(),
         node: empty_node(),
         event: empty_event(),
         index_ref: ContextIndexRef {

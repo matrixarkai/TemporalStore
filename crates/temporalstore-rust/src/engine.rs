@@ -18,7 +18,7 @@ pub mod reports;
 
 mod admin_report;
 #[path = "engine/engine_constants.rs"]
-mod constants;
+pub(crate) mod constants;
 mod container_membership;
 mod container_blocks;
 mod execute_on_shard;
@@ -32,6 +32,8 @@ mod packed_blocks;
 mod product_model;
 mod cell_merge_append;
 mod window_aggregate;
+mod cell_rank;
+mod cell_rank_read;
 // Merged cell sets: the key, the per-key header and the packed snapshot. The merge-reduce write
 // policy of the feature append is its caller.
 mod cell_set;
@@ -44,6 +46,12 @@ mod set_index_serde;
 mod zset_index_serde;
 mod seen_index_serde;
 mod bucket_dump_manifest_methods;
+#[path = "engine/wal_application.rs"]
+mod wal_application;
+#[path = "engine/maintenance_log.rs"]
+mod maintenance_log;
+#[path = "engine/portable_checkpoint.rs"]
+mod portable_checkpoint;
 mod storage_lifecycle_methods;
 pub use storage_lifecycle_methods::{
     eviction_sampler_buckets_scanned, reset_eviction_sampler_buckets_scanned,
@@ -116,8 +124,13 @@ mod bucket_store;
 mod control_rollup;
 #[path = "engine/engine_hll.rs"]
 mod hll;
-mod hot_block_spill;
 mod block_in_wal;
+pub(crate) use block_in_wal::clear_store_registrations;
+mod checkpoint_publication;
+#[cfg(test)]
+mod replay_scratch;
+#[cfg(test)]
+mod checkpoint_page_cost;
 #[path = "engine/engine_storage_state.rs"]
 mod state;
 mod hash_field_map;
@@ -155,6 +168,8 @@ use self::product_model::*;
 use self::reports::*;
 use self::command_validation::*;
 use self::compaction::*;
+#[cfg(test)]
+pub(crate) use self::compaction::fail_only_compaction_block_read_at_for_test;
 use self::hashing::*;
 use self::storage_reporting::*;
 use self::storage_bucket_internals::*;
@@ -211,6 +226,7 @@ pub struct TemporalEngine {
     wal_store: LocalWriteAheadLogStore,
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
+    checkpoint_publications: Arc<checkpoint_publication::CheckpointPublications>,
     // Set only when the engine minted its own index_dir (no caller-supplied one): the
     // engine owns that scratch directory, and the last clone's drop removes it.
     index_scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
@@ -349,38 +365,28 @@ pub struct TemporalEngine {
 }
 
 
-/// How many times a sweep has moved blocks out, for tests that need to know the bound fired
+/// How many times an explicit foreground policy moved blocks out, for tests that need to know it fired
 /// rather than that the count merely happened to stay low.
 pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// TS_WAL_RESIDENT_BLOCKS: how many log-resident blocks one shard may hold before the oldest are
-/// written out to the block store. Zero disables the bound entirely. `TS_WAL_RESIDENT_PAGES` is
-/// the previous spelling and is still read.
+/// Optional foreground relocation threshold. Both spellings remain supported; zero or an
+/// unset setting leaves log-backed values in their existing durable records.
 ///
-/// Resident blocks are bounded because an unbounded set costs twice. Each one is a registration,
-/// which is memory; each one also pins `min_registered_sequence`, and reclaim may not truncate
-/// below the lowest registration — so a set that only grows is a log that can never be reclaimed
-/// whatever the retention policy says. Measured on an ingest of distinct keys, registrations
-/// tracked writes ONE FOR ONE: 200 writes 200 held, 1200 writes 1200 held.
-///
-/// The default is deliberately generous. The recent ones are worth keeping where they are: a block
-/// written moments ago is the one a read is most likely to want, and its bytes are already in the
-/// record just written. This is a ceiling on how far behind the dump can fall, not a cache policy.
+/// Registrations contain locations, not retained payloads. Their count follows indexed live
+/// identities, while the payload cache enforces its byte capacity independently. Moving every
+/// old location to a slab just because the index grew duplicates needed log data without
+/// freeing a reclaimable record. Maintenance handles relocation pressure separately.
 fn wal_resident_block_limit() -> usize {
-    crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"], 4096)
+    crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"], 0)
 }
 
 #[cfg(test)]
 mod wal_resident_env_name_tests {
     /// The previous spelling of this bound must keep configuring it.
     ///
-    /// Nothing errors when a variable stops being read. `TS_WAL_RESIDENT_PAGES` sets a CEILING on
-    /// how far behind the dump may fall, and the default is deliberately generous -- so a
-    /// deployment that lowered it on purpose and then silently got 4096 back would hold far more
-    /// in the log than it asked to, with no message anywhere. The value asserted is 64, which
-    /// differs from the default, because reading the previous name has to be distinguishable from
-    /// falling through to it.
+    /// An operator's explicit relocation policy must keep working under either spelling.
+    /// Unset is different from an explicit limit, and the current spelling wins over the alias.
     #[test]
     fn the_previous_wal_resident_env_name_still_bounds_the_set() {
         let keys = ["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"];
@@ -388,6 +394,7 @@ mod wal_resident_env_name_tests {
             std::env::remove_var(key);
         }
         let default_limit = super::wal_resident_block_limit();
+        assert_eq!(default_limit, 0, "payload cache capacity is not a locator-count limit");
 
         std::env::set_var("TS_WAL_RESIDENT_PAGES", "64");
         assert_eq!(
@@ -412,6 +419,14 @@ mod wal_resident_env_name_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "engine/log_backed_string_tests.rs"]
+mod log_backed_string_tests;
+
+#[cfg(test)]
+#[path = "engine/expiry_residency_tests.rs"]
+mod expiry_residency_tests;
 
 /// How far below the limit a sweep goes, so a shard sitting exactly at the ceiling does not
 /// materialise on every single append.
@@ -929,6 +944,12 @@ impl TemporalEngine {
         };
         let command = request.command;
         let write_command = is_write_command(&command);
+        let writes_string_block = matches!(
+            &command,
+            Command::StringSet { .. }
+                | Command::StringSetEx { .. }
+                | Command::StringSetConditional { .. }
+        );
         let mut config = self
             .configs
             .read()
@@ -1241,6 +1262,7 @@ impl TemporalEngine {
                         )
                     }
                     Command::HashMultiSet { key, entries }
+                    | Command::HashMultiSetWithTtl { key, entries, .. }
                     | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => {
                         storage_bucket_internals::sync_written_hash_fields(
                             shard,
@@ -1255,7 +1277,8 @@ impl TemporalEngine {
                 };
             let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
                 && !object_keys.is_empty()
-                && (narrow_hash_sync
+                && (matches!(&command, Command::SetAdd { .. })
+                    || narrow_hash_sync
                     || object_keys.iter().all(|object_key| {
                         storage_bucket_internals::sync_context_blocks_for_object(
                             shard,
@@ -1311,13 +1334,9 @@ impl TemporalEngine {
             // commit). Block/index materialization stays deferred to dump.
             // Drain what this execution recorded, on EVERY path -- not only the ones that go
             // on to append. Staging happens during execution, but the append below is guarded,
-            // so any write that does not reach it left its items sitting in the thread's
-            // buffer for whatever wrote next on that thread to adopt as its own. Replay is the
-            // loud case: it re-executes commands with `replaying_wal()` true, stages an item
-            // for everything it re-applies, and appends none of it -- so the first write after
-            // a recovery inherited the recovery's items and recorded them as changes it had
-            // made itself. A later replay then installs them, and if one cannot be applied it
-            // aborts the whole shard load, taking unrelated keys down with it.
+            // so any write that does not reach it must leave nothing for the next write on
+            // this thread to adopt. Replay emits no outgoing outcomes at the staging boundary;
+            // other no-append paths still need this drain.
             // Nothing can be staged while recording is off, because the staging function is
             // where that is now decided -- so there is nothing left here to clear.
             let mut staged_outcomes = block_in_wal::take_outcomes();
@@ -1382,9 +1401,19 @@ impl TemporalEngine {
                 // by the append below, which is the first moment the log id exists.
                 let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentBlock)> =
                     Vec::new();
+                let mut register_appended = |record: &crate::wal::WriteAheadLogRecord, log_id| {
+                    appended_sequence = Some(record.sequence);
+                    let locations = block_in_wal::register_record_with_outcomes(
+                        &self.block_store, request.shard_id, &record.staged_blocks,
+                        &record.outcomes, log_id, record.sequence, &self.wal_store,
+                    );
+                    wal_resident_updates.extend(locations.into_iter().map(|folded| (
+                        folded, crate::engine::state::WalResidentBlock { log_id, sequence: record.sequence },
+                    )));
+                };
                 let append_result = if concurrent_commit {
                     self.wal_store
-                        .append_for_group_commit(
+                        .append_for_group_commit_with_location(
                             request.shard_id,
                             command,
                             std::mem::take(&mut staged_outcomes),
@@ -1395,8 +1424,8 @@ impl TemporalEngine {
                                 std::mem::take(&mut carried_blocks)
                             },
                         )
-                        .map(|record| {
-                            appended_sequence = Some(record.sequence);
+                        .map(|(record, log_id)| {
+                            register_appended(&record, log_id);
                             Some(record.sequence)
                         })
                 } else {
@@ -1417,39 +1446,15 @@ impl TemporalEngine {
                             std::mem::take(&mut staged_outcomes),
                         )
                         .map(|(record, log_id)| {
-                            appended_sequence = Some(record.sequence);
-                            // Point every block this record carries at the record, keyed on the
-                            // object id the write derived -- which is what the stored address
-                            // carries, so a read finds it by identity rather than by timing.
-                            block_in_wal::register_record(
-                                &self.block_store,
-                                request.shard_id,
-                                &record.staged_blocks,
-                                log_id,
-                                record.sequence,
-                                &self.wal_store,
-                            );
-                            // Same fact, written down where it survives this process.
-                            wal_resident_updates.extend(record.staged_blocks.iter().map(|block| {
-                                (
-                                    // One entry per BLOCK, not per object: the record says which
-                                    // element each block is, and a record carrying several
-                                    // elements of one key files several entries here.
-                                    block_in_wal::wal_resident_key(
-                                        block.object_id,
-                                        block.element_name.as_deref(),
-                                    ),
-                                    crate::engine::state::WalResidentBlock {
-                                        log_id,
-                                        sequence: record.sequence,
-                                    },
-                                )
-                            }));
+                            register_appended(&record, log_id);
                             None
                         })
                 };
                 match append_result {
                     Ok(deferred_seq) => {
+                        if let Some(sequence) = appended_sequence {
+                            shard.note_wal_application(sequence, sequence);
+                        }
                         // The index carries where each staged block landed, so a reload can hand
                         // the mapping back rather than leaving the address unresolvable until a
                         // full replay re-derives the block.
@@ -1521,19 +1526,11 @@ impl TemporalEngine {
                     }
                 }
             }
-            if !config.async_storage && !bulk_ingest_mode() && !replaying_wal() {
-                // Anchor the (in-memory) served index to the WAL sequence it now reflects, so a
-                // later load replays only records written after this point (the
-                // dumped-log-id anchor read back on load). Reading the sequence via `stats()`
-                // triggers a full-file `last_wal_sequence_at` rescan -- an O(records)-per-write cost
-                // under this lock (stack-sampling shows it dominates a warm ingest). Under
-                // flat append anchor off the O(1) cached last sequence (authoritative right after
-                // this write's append) instead; without it the exact `stats()` value is kept.
-                shard.applied_wal_sequence = Some(if self.wal_store.flat_append() || coalesced_apply_batch_active() {
-                    self.wal_store.cached_last_sequence(request.shard_id)
-                } else {
-                    self.wal_store.stats(request.shard_id).last_sequence
-                });
+            if !config.async_storage && !bulk_ingest_mode() && !replaying_wal()
+                && shard.checkpoint_wal_sequence().is_some()
+            {
+                // The append receipt above is the state boundary; a cached or
+                // rescanned tail may include records this shard has not applied.
                 // Append ONLY the blocks this write changed (O(delta)) to the index-log,
                 // advancing the index-log sequence and populating the served-index delta
                 // stream. The whole base index is NOT rewritten per write (that O(store) path
@@ -1677,10 +1674,11 @@ impl TemporalEngine {
                 };
             }
         }
-        // Locks are released and the barrier is done: a safe point to bound the resident set.
+        // Locks are released and the barrier is done: apply an explicit relocation policy.
         // Not inside the write lock -- moving a block takes the same lock -- and not before the
         // barrier, because the write this call is acking must reach disk first.
-        if write_command && !replaying_wal() {
+        // This sweep only materializes strings; container writes cannot add a block it can retire.
+        if writes_string_block && !replaying_wal() {
             let limit = wal_resident_block_limit();
             if limit > 0
                 && block_in_wal::registration_count(&self.block_store, request.shard_id) > limit
@@ -1892,7 +1890,7 @@ impl TemporalEngine {
                     .filter_map(|(field, address)| {
                         let cache_key =
                             page_keys.key(request.shard_id, address, Some(routing_bucket));
-                        read_block_bytes_keyed(
+                        read_block_value_keyed(
                             &self.cache,
                             &self.block_store,
                             request.shard_id,
@@ -3063,7 +3061,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// asked to adjudicate.
 ///
 /// THE REPLAY CONSEQUENCE, PLAINLY. Every index written before this is refused on load, counted
-/// as `IndexLoadPath::RefusedStaleStamp`, and the shard rebuilds from its WAL. Slower and
+/// as `IndexLoadPath::Undecodable`, and the shard rebuilds from its WAL. Slower and
 /// correct, and the same trade every bump in this tree has made.
 ///
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
@@ -3474,14 +3472,12 @@ fn serialize_index(shard: &ShardState) -> Vec<u8> {
     bytes
 }
 
-/// Container magic for a non-JSON served index. A JSON index starts with `{`, so a reader can
-/// tell the two apart from the first byte and never has to be told which it is holding.
+/// Container magic of a served index. Bytes that do not start with it are not a served index.
 const INDEX_CONTAINER_MAGIC: &[u8] = b"TSIDX\x01";
 
-/// Payload codec ids inside the container. The whole point of the container is that this is an
-/// enumeration rather than a decision: each payload is an id whose decoder lands beside the
-/// others, and every index written before it keeps loading.
-const INDEX_CODEC_ZSTD_JSON: u8 = 1;
+/// Payload codec ids inside the container. Id 1 was the struct's JSON, compressed; nothing writes it
+/// and nothing reads it, so it is not named here and the reader refuses it like any unknown id.
+///
 /// The struct's own serde model in a binary encoding, then compressed.
 ///
 /// Two decisions are baked in here, and measurement forced both.
@@ -3509,17 +3505,20 @@ const INDEX_CODEC_ZSTD_MSGPACK: u8 = 2;
 /// the decode it is supposed to guard, and a fresh shard carries 0 there regardless.
 const INDEX_BINARY_VERSION_BYTES: usize = 4;
 
-/// Compression level for the container payload. The served index is written whole, in the
-/// background, and read whole -- so this trades a little CPU on a path that is not the request
-/// path for a large cut in bytes written and bytes read at load.
-const INDEX_ZSTD_LEVEL: i32 = 3;
+/// Compaction publishes this frame under the shard write guard. Favor low encoding cost;
+/// the codec and decoder are independent of the compression level.
+const INDEX_ZSTD_LEVEL: i32 = 1;
 
-/// Does this look like a served index, in either of the two formats a reader may be handed?
+#[cfg(test)]
+#[path = "engine/index_encode_work_tests.rs"]
+mod index_encode_work_tests;
+
+/// Does this look like a served index?
 ///
-/// A JSON index starts with `{`; a container starts with its magic. Callers that only need to
+/// A served index is a container, and a container starts with its magic. Callers that only need to
 /// know "these bytes are an index" -- rather than to decode one -- ask this instead of parsing.
 pub(crate) fn bytes_look_like_served_index(bytes: &[u8]) -> bool {
-    bytes.first() == Some(&b'{') || bytes.starts_with(INDEX_CONTAINER_MAGIC)
+    bytes.starts_with(INDEX_CONTAINER_MAGIC)
 }
 
 /// Encode a shard with the container's binary payload: the serde model as a binary map,
@@ -3527,18 +3526,17 @@ pub(crate) fn bytes_look_like_served_index(bytes: &[u8]) -> bool {
 fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
     // struct-as-MAP, not struct-as-array: the array form is positional, and positional is what
     // mis-reads a struct that skipped an absent optional.
-    let mut encoded = Vec::new();
-    let mut serializer = rmp_serde::Serializer::new(&mut encoded).with_struct_map();
-    serde::Serialize::serialize(shard, &mut serializer).ok()?;
-    let payload = zstd::stream::encode_all(encoded.as_slice(), INDEX_ZSTD_LEVEL).ok()?;
-    let mut out = Vec::with_capacity(
-        payload.len() + INDEX_CONTAINER_MAGIC.len() + 1 + INDEX_BINARY_VERSION_BYTES,
-    );
+    let mut out = Vec::new();
     out.extend_from_slice(INDEX_CONTAINER_MAGIC);
     out.push(INDEX_CODEC_ZSTD_MSGPACK);
     out.extend_from_slice(&SHARD_INDEX_FORMAT_VERSION.to_be_bytes());
-    out.extend_from_slice(&payload);
-    Some(out)
+    // Bound the writer buffer instead of retaining the whole uncompressed index.
+    // Buffer the small Msgpack writes before they reach the compression stream.
+    let encoder = zstd::stream::write::Encoder::new(out, INDEX_ZSTD_LEVEL).ok()?;
+    let mut buffered = std::io::BufWriter::with_capacity(64 * 1024, encoder);
+    let mut serializer = rmp_serde::Serializer::new(&mut buffered).with_struct_map();
+    serde::Serialize::serialize(shard, &mut serializer).ok()?;
+    buffered.into_inner().ok()?.finish().ok()
 }
 
 /// The single place the served index becomes bytes, and it always writes the container.
@@ -3547,10 +3545,6 @@ fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
 /// dump rewrites it whole. Compressing the same JSON keeps ONE representation of the struct --
 /// no schema mirrored by hand, no second definition to drift -- while cutting what is written and
 /// what must be read back at load.
-///
-///
-/// Reading is unconditional and sniffed, so this flag only ever controls what is WRITTEN, and an
-/// index written either way loads in either setting.
 ///
 ///
 /// The container was built, measured and then left switched off, so every store written since has
@@ -3579,13 +3573,10 @@ fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
 /// as a default rather than an opt-in. That switch has since been removed, so only the two cases
 /// above are reachable now.
 ///
-/// A reader never has to be told which it is holding: JSON starts with `{`, a container with its
-/// magic, so both formats stay loadable.
-///
 /// Writing raw JSON was a switch until nothing selected it, and the setting that chose between the
-/// two payloads (`TS_INDEX_CODEC`) is gone: the payload is msgpack. `encode_index_bytes_as_plain_json`
-/// keeps the raw-JSON shape reachable from tests, which is where the claim "both shapes still
-/// load" has to be proved.
+/// two payloads (`TS_INDEX_CODEC`) is gone: the payload is msgpack, and msgpack is the only payload
+/// `decode_index_bytes` reads. `encode_index_bytes_as_plain_json` keeps the raw-JSON shape reachable
+/// from tests, which is where the claim that the reader REFUSES it has to be proved.
 pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
     // MSGPACK ONLY, AND NO FALLBACK. There is no setting that selects another payload, and this
     // does not fall through to JSON when the binary encode returns `None`: a `ShardState` that
@@ -3594,41 +3585,85 @@ pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
     encode_index_msgpack(shard).expect("shard index should serialize")
 }
 
-/// Put index JSON into the zstd-json container, the way an older binary wrote it.
+/// The served index container as a binary of ANOTHER struct version wrote it: this shard's msgpack
+/// payload behind a header that says `version`.
 ///
-/// Test-only. Nothing in production writes this payload any more, but the reader arm for it is still
-/// kept, and a claim about what a reader accepts is worth only as much as the bytes used to test it.
+/// The header is the stamp. `decode_index_bytes` checks it before it reads a byte of the payload, so
+/// this is how a test builds an image that is "from an older (or newer) build" without a second
+/// encoder: nothing about the payload changes, and what the reader must do with it is decided by
+/// the header alone.
 #[cfg(test)]
-fn wrap_index_json(json: Vec<u8>) -> Vec<u8> {
-    match zstd::stream::encode_all(json.as_slice(), INDEX_ZSTD_LEVEL) {
-        Ok(payload) => {
-            let mut out = Vec::with_capacity(payload.len() + INDEX_CONTAINER_MAGIC.len() + 1);
-            out.extend_from_slice(INDEX_CONTAINER_MAGIC);
-            out.push(INDEX_CODEC_ZSTD_JSON);
-            out.extend_from_slice(&payload);
-            out
-        }
-        // A compression failure must not cost the index: fall back to the bytes that always work.
-        Err(_) => json,
+pub(super) fn encode_index_bytes_at_version(shard: &ShardState, version: u32) -> Vec<u8> {
+    let mut bytes = encode_index_bytes(shard);
+    let at = INDEX_CONTAINER_MAGIC.len() + 1;
+    bytes[at..at + INDEX_BINARY_VERSION_BYTES].copy_from_slice(&version.to_be_bytes());
+    bytes
+}
+
+/// The same container with one extra field written beside the struct's own, behind a header that
+/// says `version`.
+///
+/// For the fixtures that carry a field the struct no longer has (`ShardState` sets no
+/// `deny_unknown_fields`, so a current-stamped image holding one decodes cleanly and drops it). The
+/// extra field is flattened into the struct's own map, so every integer-keyed map inside the shard
+/// keeps its integer keys, which a round trip through a JSON value would not.
+#[cfg(test)]
+pub(super) fn encode_index_bytes_with_extra_field(
+    shard: &ShardState,
+    field: &str,
+    value: &serde_json::Value,
+    version: u32,
+) -> Vec<u8> {
+    #[derive(serde::Serialize)]
+    struct WithExtra<'a> {
+        #[serde(flatten)]
+        shard: &'a ShardState,
+        #[serde(flatten)]
+        extra: std::collections::BTreeMap<String, serde_json::Value>,
     }
+    let mut extra = std::collections::BTreeMap::new();
+    extra.insert(field.to_string(), value.clone());
+    let mut encoded = Vec::new();
+    let mut serializer = rmp_serde::Serializer::new(&mut encoded).with_struct_map();
+    serde::Serialize::serialize(&WithExtra { shard, extra }, &mut serializer)
+        .expect("the image serializes");
+    let payload = zstd::stream::encode_all(encoded.as_slice(), INDEX_ZSTD_LEVEL)
+        .expect("the payload compresses");
+    let mut out = Vec::with_capacity(
+        payload.len() + INDEX_CONTAINER_MAGIC.len() + 1 + INDEX_BINARY_VERSION_BYTES,
+    );
+    out.extend_from_slice(INDEX_CONTAINER_MAGIC);
+    out.push(INDEX_CODEC_ZSTD_MSGPACK);
+    out.extend_from_slice(&version.to_be_bytes());
+    out.extend_from_slice(&payload);
+    out
 }
 
 /// The served index as an older build wrote it: the struct's JSON, in no container.
 ///
-/// Production has no way to produce this any more, and that is the point -- but the reader still
-/// takes it, and a claim about what a reader accepts is worth only as much as the bytes used to
-/// test it. This is those bytes.
+/// Production has no way to produce this and the reader does not take it, and that is the point: a
+/// claim that a reader REFUSES a shape is worth only as much as the bytes used to test it, and this
+/// is those bytes. Also what a size comparison against the container needs as its other arm.
 #[cfg(test)]
 pub(super) fn encode_index_bytes_as_plain_json(shard: &ShardState) -> Vec<u8> {
     serde_json::to_vec(shard).expect("shard index should serialize")
 }
 
-/// The single place served-index bytes become a `ShardState`, whatever wrote them.
+/// The single place served-index bytes become a `ShardState`.
 ///
-/// Sniffs the container magic, so JSON written by any earlier binary keeps loading unchanged and
-/// a container written by a newer one is refused with a clear error rather than mis-parsed. Every
-/// decode site goes through here; the previous attempt at a binary index failed precisely because
-/// the decoders were scattered and could not move together.
+/// Only the msgpack container is read. Raw JSON, and the compressed-JSON payload an older binary
+/// wrote, are refused like any unknown codec: nothing writes them, and a reader for a shape no
+/// writer produces is a door a stale image can walk through. Every decode site goes through here;
+/// the previous attempt at a binary index failed precisely because the decoders were scattered and
+/// could not move together.
+///
+/// THE STRUCT VERSION IS CHECKED HERE, ON THE HEADER, BEFORE A BYTE OF THE PAYLOAD IS READ. That is
+/// the one place a stored image's stamp is compared with `SHARD_INDEX_FORMAT_VERSION`, so it holds
+/// at every caller at once -- the base-index load, the dump-manifest install, the preflight report,
+/// the recovery arm that reads a durable manifest, and the reclaim plan -- and an image from another
+/// struct version is an `Err` for all of them, which each already treats as "no usable index" and
+/// answers by replaying the log. What comes back from an `Ok` therefore always carries the current
+/// stamp, because it is taken from the header.
 ///
 /// And it is where a decoded index gets PACKED. `serde` fills a `BTreeMap` one `insert` at a time
 /// from bytes written in key order, which is the one insertion order that leaves a B-tree half
@@ -3636,45 +3671,27 @@ pub(super) fn encode_index_bytes_as_plain_json(shard: &ShardState) -> Vec<u8> {
 /// every leaf. It rides the load rather than a timer or a flag, because the load is the moment the
 /// whole structure is in hand and already paid for.
 pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
-    // WRAPPED RATHER THAN EDITED PER ARM. Every codec path below returns its own
-    // `ShardState`, and a fifth one added later would return another; a repack written into
-    // each arm would be a thing to remember. Written here it is a thing nobody can forget.
+    #[cfg(test)]
+    bucket_dump_manifest_methods::note_checkpoint_decode();
+    // WRAPPED RATHER THAN EDITED PER ARM, so that a second payload added later is packed without
+    // anyone having to remember to.
     let mut state = decode_index_bytes_inner(bytes)?;
     state::repack_decoded_btrees(&mut state);
-    // THE LEGACY CONTROL-STATE FOLD, HERE FOR THE SAME REASON THE REPACK IS HERE.
-    //
-    // Written in this wrapper it covers every codec arm and -- which is the half that matters --
-    // every CALLER -- all six of which read `index_format_version` now, so a PRE-stamp image is
-    // refused on every path. What the fold is for is an image at the CURRENT stamp: every one of
-    // them still carries the top-level key, none is stale, and `objects` defaults to empty. A fold
-    // written into one arm, or reached from one caller, would miss the rest.
-    // THE LEGACY FOLD, HERE FOR THE REASON THE REPACK ABOVE IS HERE. Written per codec arm it
-    // would be a thing to remember; written on the wrapper it covers every arm and every caller,
-    // which is what matters because an image carrying the legacy key is not necessarily STALE --
-    // the staleness test is `<`, so a current-stamp image is accepted at every door.
-    // THE LEGACY EVENT FOLD IS GONE. Its own purpose, recorded above, was an image at the
-    // CURRENT stamp still carrying the top-level `context_events` key -- false since stamp
-    // 20 moved the event series into `objects`. Pre-stamp images are refused on every
-    // caller, so the key arrives from no door.
     Ok(state)
 }
 
 /// The codec arms themselves. Reached only through `decode_index_bytes` above, which packs what
-/// this fills -- so a fourth arm added here is covered without being told to be.
+/// this fills -- so a second arm added here is covered without being told to be.
 fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
     if !bytes.starts_with(INDEX_CONTAINER_MAGIC) {
-        return serde_json::from_slice::<ShardState>(bytes).map_err(|error| error.to_string());
+        return Err("served index is not a container: it does not start with the container magic"
+            .to_string());
     }
     let body = &bytes[INDEX_CONTAINER_MAGIC.len()..];
     let (codec, payload) = body
         .split_first()
         .ok_or_else(|| "served index container is truncated".to_string())?;
     match *codec {
-        INDEX_CODEC_ZSTD_JSON => {
-            let json = zstd::stream::decode_all(payload)
-                .map_err(|error| format!("served index payload did not decompress: {error}"))?;
-            serde_json::from_slice::<ShardState>(&json).map_err(|error| error.to_string())
-        }
         INDEX_CODEC_ZSTD_MSGPACK => {
             if payload.len() < INDEX_BINARY_VERSION_BYTES {
                 return Err("served index binary payload is truncated".to_string());
@@ -3732,6 +3749,7 @@ fn command_upsert_element_names(
             Some(vec![("hash", key.clone(), Some(field.clone()))])
         }
         Command::HashMultiSet { key, entries }
+        | Command::HashMultiSetWithTtl { key, entries, .. }
         | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => Some(
             entries
                 .iter()
@@ -3763,7 +3781,8 @@ fn command_upsert_element_names(
         //
         // DEDUPED, because `sorted_feature_points` collapses repeated timestamps before the write
         // and the element names have to be the ones that actually landed.
-        Command::FeatureAppend { key, points } => {
+        Command::FeatureAppend { key, points }
+        | Command::FeatureAppendWithTtl { key, points, .. } => {
             let mut seen = std::collections::BTreeSet::new();
             Some(
                 points
@@ -3834,6 +3853,16 @@ fn command_upsert_element_names(
             key.clone(),
             Some(crate::engine::execute_on_shard::zset_element_name(member)),
         )]),
+        Command::ZSetCountAdjust { key, member, .. }
+            if shard.bucket_index.zsets.get(key).is_some_and(|members| members.contains_key(member)) =>
+        {
+            // A positive count writes one member. Zero removes it and must keep snapshot semantics.
+            Some(vec![(
+                "zset",
+                key.clone(),
+                Some(crate::engine::execute_on_shard::zset_element_name(member)),
+            )])
+        }
         Command::SetAdd { key, member } => {
             Some(vec![(
                 "set",
@@ -3875,6 +3904,7 @@ fn collect_upsert_index_items(
     end_routing_bucket: u32,
 ) -> Vec<crate::index_log::IndexItem> {
     let mut items = Vec::with_capacity(element_names.len());
+    let mut previous_placement: Option<(&str, &str, u32, u64)> = None;
     for (kind, object_key, element_name) in element_names {
         let address = match (*kind, element_name) {
             ("hash", Some(field)) => shard
@@ -3946,9 +3976,19 @@ fn collect_upsert_index_items(
             _ => None,
         };
         let Some(address) = address else { continue };
-        let routing_bucket =
-            block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
-        let object_id = stable_block_object_id(shard_id, kind, object_key);
+        let (routing_bucket, object_id) = previous_placement
+            .and_then(|(previous_kind, previous_key, routing_bucket, object_id)| {
+                (previous_kind == *kind && previous_key == object_key.as_str())
+                    .then_some((routing_bucket, object_id))
+            })
+            .unwrap_or_else(|| {
+                let placement = (
+                    block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket),
+                    stable_block_object_id(shard_id, kind, object_key),
+                );
+                previous_placement = Some((kind, object_key.as_str(), placement.0, placement.1));
+                placement
+            });
         // THE AUTHORITY, CALLED RATHER THAN COPIED. `block_ref_key_from_parts` says of itself:
         // "One definition, called from the block index's serialization and from the replay log, so
         // the two cannot drift into different spellings of the same page." This site was a hand
@@ -4213,7 +4253,8 @@ fn command_will_trim_feature_membership(
         return current_len.saturating_add(new_timestamps.len()) > feature_max_size;
     }
     let (key, points, may_add) = match command {
-        Command::FeatureAppend { key, points } => (key, points, true),
+        Command::FeatureAppend { key, points }
+        | Command::FeatureAppendWithTtl { key, points, .. } => (key, points, true),
         Command::FeatureAppendWithPolicy { key, points, policy } => (
             key,
             points,
@@ -4379,7 +4420,8 @@ fn command_touched_container_elements(
         // map at capture time, so the record carries the score the map actually holds rather than a
         // second rendering of the `f64` the caller sent -- which is #1989's rule, applied at the
         // point the value is written down instead of at the point it is read back.
-        Command::ZSetAdd { key, member, .. } => vec![TouchedContainerElement::ZSet {
+        Command::ZSetAdd { key, member, .. }
+        | Command::ZSetCountAdjust { key, member, .. } => vec![TouchedContainerElement::ZSet {
             key: key.clone(),
             member: member.clone(),
         }],
@@ -4390,6 +4432,7 @@ fn command_touched_container_elements(
             }]
         }
         Command::HashMultiSet { key, entries }
+        | Command::HashMultiSetWithTtl { key, entries, .. }
         | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => entries
             .iter()
             .map(|(field, _)| TouchedContainerElement::Hash {
@@ -4458,25 +4501,27 @@ fn capture_container_element_states(
                 .bucket_index.sets
                 .get(key)
                 .and_then(|members| members.get(member))
-                .and_then(|address| serde_json::to_value((member, address)).ok())
+                .and_then(|address| serde_json::to_value((member, address.compact_carried_row())).ok())
                 .map(|value| (CARRIED_CONTAINER_FIELDS[0], value)),
             TouchedContainerElement::ZSet { key, member } => shard
                 .bucket_index.zsets
                 .get(key)
                 .and_then(|members| members.get(member))
-                .and_then(|scored| serde_json::to_value((member, scored)).ok())
+                .and_then(|(score, address)| {
+                    serde_json::to_value((member, (score, address.compact_carried_row()))).ok()
+                })
                 .map(|value| (CARRIED_CONTAINER_FIELDS[1], value)),
             TouchedContainerElement::List { key, sequence } => shard
                 .bucket_index.lists
                 .get(key)
                 .and_then(|entries| entries.get(sequence))
-                .and_then(|address| serde_json::to_value((sequence, address)).ok())
+                .and_then(|address| serde_json::to_value((sequence, address.compact_carried_row())).ok())
                 .map(|value| (CARRIED_CONTAINER_FIELDS[2], value)),
             TouchedContainerElement::Hash { key, field } => shard
                 .bucket_index.hashes
                 .get(key)
                 .and_then(|fields| fields.get(field))
-                .and_then(|address| serde_json::to_value((field, address)).ok())
+                .and_then(|address| serde_json::to_value((field, address.compact_carried_row())).ok())
                 .map(|value| (CARRIED_CONTAINER_FIELDS[3], value)),
         };
         let Some((field, value)) = carried else {
@@ -6284,6 +6329,14 @@ where
 }
 
 fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
+    remove_if_expired_with(shard, key, |_| {})
+}
+
+fn remove_if_expired_with(
+    shard: &mut ShardState,
+    key: &str,
+    mut removed_record: impl FnMut(&str),
+) -> bool {
     // Use the replay-aware clock: during WAL replay this resolves to the per-record leader
     // timestamp so lazy expiry reproduces the leader's original branch. Using the real
     // restart clock here would let a key that was live at leader-time (and thus took the
@@ -6308,7 +6361,10 @@ fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
 
     // The key as given. `BTreeMap<String, _>` looks up by `&str`, so this needs no owned copy.
     if expired(shard, key, now) {
-        removed |= delete_record_exact(shard, key);
+        if delete_record_exact(shard, key) {
+            removed = true;
+            removed_record(key);
+        }
     }
 
     if key.starts_with("control_state:") {
@@ -6329,7 +6385,10 @@ fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
         candidate.push(':');
         candidate.push_str(key);
         if expired(shard, &candidate, now) {
-            removed |= delete_record_exact(shard, &candidate);
+            if delete_record_exact(shard, &candidate) {
+                removed = true;
+                removed_record(&candidate);
+            }
         }
     }
     removed
@@ -6419,7 +6478,11 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
         let names = crate::engine::state::block_identities_in(
             &bucket,
-            &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
+            &crate::engine::state::BlockKeysByPosition::from_parts_for_bucket(
+                &shard.bucket_index.objects,
+                &shard.bucket_index.object_block_lookup,
+                routing_bucket,
+            ),
         );
         bucket.block_index.retain(
             &mut shard.bucket_index.block_slab_live,
@@ -6440,7 +6503,15 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             }
         });
         if !deleted_object_ids.is_empty() {
-            bucket.object_index.extend(deleted_object_ids.iter().copied());
+            // An empty bucket retains the deleted id as a tombstone. A mixed bucket must
+            // drop it before reconciliation, or a normal delete is reported as divergence.
+            if bucket.block_index.is_empty() {
+                bucket.object_index.extend(deleted_object_ids.iter().copied());
+            } else {
+                for object_id in &deleted_object_ids {
+                    bucket.object_index.remove(object_id);
+                }
+            }
             bucket.set_dirty(true);
             let next_flag = bucket.block_index.is_empty();
             bucket.set_deleted(next_flag);
@@ -7137,6 +7208,33 @@ fn append_value(
     )
 }
 
+// Strings have a complete WAL-carried value and an explicit portable-export relocation path.
+// Cache admission must not decide whether their durable payload needs a second slab copy.
+fn append_string_value(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    bytes: &[u8],
+    object_id: u64,
+    routing_bucket: u32,
+    async_storage: bool,
+) -> Result<ElementEntry, BlockStoreError> {
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
+        append_value_inner(
+            cache,
+            block_store,
+            shard_id,
+            bytes,
+            Some(object_id),
+            None,
+            Some(routing_bucket),
+            async_storage,
+            u32::MAX as usize,
+            || 0,
+        )
+    })
+}
+
 /// The same append, saying WHICH block of its object this is.
 ///
 /// The ordinal is threaded all the way to `append_block_of_object`, and that matters rather than
@@ -7160,7 +7258,7 @@ fn append_value_of_object(
     async_storage: bool,
     block_ordinal: u32,
 ) -> Result<ElementEntry, BlockStoreError> {
-    // Both arms, and every command that stores a value, reach a slab through here. The payload's
+    // Borrowed-value writes pass through here. The payload's
     // own copies re-tag themselves inside -- the encode as `BlockBytes`, the carried copy as
     // `CarriedBlock` -- so what is left under this class is the append machinery and not the bytes.
     crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
@@ -7173,9 +7271,80 @@ fn append_value_of_object(
             element_name,
             routing_bucket,
             async_storage,
-            block_ordinal,
+            8 * 1024 - 1,
+            || block_ordinal,
         )
     })
+}
+
+// Packed rows can move their encoded frame into the WAL on either placement path.
+#[allow(clippy::too_many_arguments)]
+fn append_owned_value_of_object(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    bytes: Vec<u8>,
+    object_id: u64,
+    routing_bucket: u32,
+    async_storage: bool,
+    frame_cache: execute_on_shard::PackedFrameCache,
+    block_ordinal: impl FnOnce() -> u32,
+) -> Result<ElementEntry, BlockStoreError> {
+    if let Some(offset) = (async_storage && bytes.len() < 8 * 1024)
+        .then(|| reserve_hot_block_offset(&HOT_BLOCK_OFFSET)).flatten()
+    {
+        return crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
+            let address = ElementEntry::try_from_parts(
+                HOT_BLOCK_SLAB_ID, offset, bytes.len() as u64, None, Some(object_id),
+            )?;
+            let cached = (frame_cache == execute_on_shard::PackedFrameCache::Eager).then(||
+                crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::BlockBytes,
+                    || bytes.clone()));
+            block_in_wal::stage_owned(object_id, None, bytes);
+            if let Some(cached) = cached {
+                cache.put_memory_only(CacheKey::page_with_slot(
+                    shard_id, address.block_slab_id(), address.offset(), address.length(),
+                    Some(routing_bucket),
+                ), cached);
+            }
+            Ok(address)
+        });
+    }
+    let address = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
+        block_store.append_block_of_object(
+            &bytes,
+            Some(object_id),
+            Some(routing_bucket),
+            block_ordinal(),
+        )
+    })?;
+    block_in_wal::stage_owned(object_id, None, bytes);
+    Ok(address)
+}
+
+#[cfg(test)]
+#[path = "engine/owned_packed_frames_tests.rs"]
+mod owned_packed_frames_tests;
+
+fn reserve_hot_block_offset(counter: &std::sync::atomic::AtomicU64) -> Option<u64> {
+    counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |offset| {
+        (offset <= u64::from(u32::MAX)).then(|| offset + 1)
+    }).ok()
+}
+
+#[cfg(test)]
+mod hot_block_ticket_tests {
+    use super::*;
+
+    #[test]
+    fn exhausted_hot_block_tickets_select_physical_storage_without_wrapping() {
+        let counter = std::sync::atomic::AtomicU64::new(u64::from(u32::MAX) - 1);
+        assert_eq!(reserve_hot_block_offset(&counter), Some(u64::from(u32::MAX) - 1));
+        assert_eq!(reserve_hot_block_offset(&counter), Some(u64::from(u32::MAX)));
+        assert_eq!(reserve_hot_block_offset(&counter), None);
+        assert_eq!(reserve_hot_block_offset(&counter), None);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::from(u32::MAX) + 1);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7188,12 +7357,17 @@ fn append_value_inner(
     element_name: Option<&str>,
     routing_bucket: Option<u32>,
     async_storage: bool,
-    block_ordinal: u32,
+    log_frame_limit: usize,
+    block_ordinal: impl FnOnce() -> u32,
 ) -> Result<ElementEntry, BlockStoreError> {
-    // Large async values can evict thousands of smaller hot blocks before a
-    // dump. Give them a real readable address immediately, while the WAL still
-    // carries the block for recovery if that append has not reached storage.
-    if !async_storage || bytes.len() >= 8 * 1024 {
+    // Only strings opt into large log frames; other models keep their existing placement.
+    // Anonymous blocks cannot be resolved through a WAL locator after cache eviction.
+    let hot_offset = if async_storage && bytes.len() <= log_frame_limit && object_id.is_some() {
+        reserve_hot_block_offset(&HOT_BLOCK_OFFSET)
+    } else {
+        None
+    };
+    if hot_offset.is_none() {
         // Carry the block in this write's record, the same as the asynchronous arm below.
         //
         // The record is allowed to state its results and drop the operation only when the blocks
@@ -7214,19 +7388,12 @@ fn append_value_inner(
             bytes,
             object_id,
             routing_bucket,
-            block_ordinal,
+            block_ordinal(),
         );
     }
-    // THE COUNTER IS NOW BOUNDED, AND IT IS REFUSED RATHER THAN WRAPPED.
-    //
-    // A hot block's "offset" is not a position, it is a ticket from a process-wide counter, and
-    // the address word gives that ticket 32 bits. Four billion hot writes in ONE process is a
-    // long run but not an impossible one, and the two things that could happen at the boundary
-    // are both worse than a refusal: wrapping hands a live block the address of an older one, and
-    // truncating does the same thing without even reaching the boundary. So the mint is checked,
-    // and a process that exhausts its tickets stops minting hot addresses instead of aliasing
-    // them. The counter is process-local and a reload starts it again at one.
-    let address = ElementEntry::try_from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id)?;
+    // Tickets fit the address word's 32-bit offset. Exhaustion selects the physical append
+    // above, without wrapping onto a live frame; recovery raises the counter past retained tickets.
+    let address = ElementEntry::try_from_parts(HOT_BLOCK_SLAB_ID, hot_offset.expect("reserved hot offset"), bytes.len() as u64, None, object_id)?;
     // Put the block aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if let Some(object_id) = object_id {
@@ -7252,12 +7419,14 @@ fn append_value_inner(
 /// `BTreeMap` iterates its keys ascending, so the first `len - max_size` of them ARE the oldest
 /// points; `max_size == 0` means unbounded and trims nothing.
 ///
-/// NEITHER DURABLE REPRESENTATION RESURRECTS WHAT THIS DROPS, which is why the trim needs no
-/// removal record of its own. In block mode the whole series is re-serialised immediately below,
-/// so the persisted block already excludes the trimmed points and a rebuild from it finds
-/// nothing to bring back. In coalesced mode durability is the index snapshot plus WAL replay,
-/// and replay re-executes each increment through this same trim with the config effective at
-/// that record's frontier, so it converges on the same series.
+/// THE TRIM RECORDS NO REMOVAL, so something at recovery has to run it again. The block holds the
+/// series as it stood after the trim, but a block is not what recovery installs last: replay
+/// installs each logged `control_counter` outcome, one point each, and an outcome from before the
+/// trim brings its point back. Measured with the block written on every increment: after 10,140
+/// increments at a bound of 10,000 the live series held 10,000 points and a recovery with no
+/// unload held 10,140. The `control_counter` install in `apply_outcome_item_inner` therefore runs
+/// this function, with the bound in force at that record's frontier. In coalesced mode, where
+/// durability is the index snapshot plus replay, the same install does the work.
 fn trim_control_state_series(shard: &mut ShardState, key: &str, max_size: usize) -> bool {
     if max_size == 0 {
         return false;
@@ -7291,8 +7460,9 @@ thread_local! {
 /// the block-derived one (`the serialized i64 series is authoritative`). Rewriting the whole
 /// series into the log and the block store on every increment bought nothing a recovery used, and
 /// cost the series' length every time: 1.7 B per entry written to each of the log and the block
-/// store, and about 4,100 instructions per entry, per increment. At the default cap of 30,000
-/// points that is roughly 120 million instructions for one increment.
+/// store, and about 4,100 instructions per entry, per increment in a debug build. At the default
+/// cap of 10,000 points (`feature_max_size`) a release build spent 3.16 million instructions on one
+/// increment, against 61 thousand with the block due-only.
 ///
 /// The block is still written on the first increment of a key, which anchors the object in the
 /// bucket index, and on a deterministic share of the rest: one in `len / 16` (at least 16), chosen
@@ -7672,6 +7842,8 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
         let from_lookup = lookup.get(kind, object_key);
         for entry in from_row.into_iter().chain(from_lookup) {
         for block_ref in entry.iter() {
+            #[cfg(test)]
+            storage_bucket_internals::note_set_write_scan(true);
             let Some(mut bucket) = buckets.get_mut(&block_ref.routing_bucket) else {
                 continue;
             };
@@ -7759,15 +7931,12 @@ pub(crate) struct CacheSweepCounts {
     pub batched_calls: std::sync::atomic::AtomicU64,
     /// Dropped keys those calls were handed, counted INSIDE the primitive.
     pub keys_batched: std::sync::atomic::AtomicU64,
-    /// `MultiLayerCache::entries_for_shard` listings -- the batched pass's single walk.
+    /// Batched record-key lookup passes, one per invalidation round.
     pub listings: std::sync::atomic::AtomicU64,
-    /// Cache entries those listings stepped over, summed. Zero unless armed, and read from the
-    /// SAME three tier lengths as `entries_walked`, so the two are commensurable.
+    /// Candidate keys actually visited by those lookups, summed. Zero unless armed.
     pub entries_listed: std::sync::atomic::AtomicU64,
-    /// Entries those listings RETURNED for the shard. This is the upper bound on the filesystem
-    /// `metadata()` calls the listing makes: `entries_for_shard` falls through to
-    /// `disk_path(&key).metadata()` for every returned entry the disk index does not hold, and
-    /// for no others. Always counted -- it is a `Vec::len()`, not a probe.
+    /// Matching keys those snapshots returned for the shard. The key-only API does not inspect
+    /// filesystem metadata. Always counted -- it is a `Vec::len()`, not a probe.
     pub entries_returned: std::sync::atomic::AtomicU64,
 }
 
@@ -7859,19 +8028,13 @@ impl CacheSweepCounts {
             .fetch_add(keys, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Counted immediately BEFORE the listing it describes, from the same three tier lengths
-    /// `note_sweep` reads -- so a listing and a sweep are priced in the same unit and the ratio
-    /// between them means something.
-    fn note_listing(&self, cache: &MultiLayerCache) {
+    /// Count actual candidate visits, not the population of unrelated cache tiers.
+    fn note_listing(&self, entries_examined: usize) {
         self.listings
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if self.armed.load(std::sync::atomic::Ordering::Relaxed) {
-            let listed = cache
-                .item_count_for_tier(matrixcache::CacheTier::Memory)
-                .saturating_add(cache.item_count_for_tier(matrixcache::CacheTier::Pmem))
-                .saturating_add(cache.item_count_for_tier(matrixcache::CacheTier::Ssd));
             self.entries_listed
-                .fetch_add(listed as u64, std::sync::atomic::Ordering::Relaxed);
+                .fetch_add(entries_examined as u64, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -7963,18 +8126,17 @@ fn invalidate_record_all(
 /// write guard that serving reads queue behind.
 ///
 /// WHAT IT DOES INSTEAD. The swept namespaces are the same for every key in the round, so the
-/// walk does not have to be repeated: one listing of the shard's cache, one membership test per
+/// walk does not have to be repeated: one key snapshot of the shard's cache, one membership test per
 /// entry against the round's dropped-key set, and one `invalidate_batch` for everything that
 /// matched plus the named keys. The cache is stepped over ONCE per round rather than twice per
 /// key, and the write lock inside the cache is taken once rather than 4N times.
 ///
-/// EXACTLY THE SAME SET, arm for arm. `entries_for_shard` chains the SAME three tier key sets as
+/// EXACTLY THE SAME SET, arm for arm. `keys_for_shard` chains the SAME three tier key sets as
 /// `invalidate_record` and filters them by shard alone, so it is a superset of what every one of
 /// the round's per-key sweeps could have matched; the predicate here re-applies the other two
 /// halves of that filter (`namespace` and `record_key`) that `invalidate_record` applies inline.
-/// `CacheEntryInfo` carries `shard_id`, `namespace`, `record_key` and `selector`, which is every
-/// field of a `CacheKey`, so the key each matched entry is rebuilt from is the key that was in
-/// the tier. Both arms take their namespaces from `SWEPT_RECORD_NAMESPACES` and their named keys
+/// The snapshot filters before copying and returns only matching `CacheKey` fields, without reconstructing keys
+/// from diagnostic strings. Both arms take their namespaces from `SWEPT_RECORD_NAMESPACES` and their named keys
 /// from `named_record_keys`, so neither list can drift from the other. And a key the round did
 /// NOT drop is not in the set, so its entries are left cached -- which is the same thing N
 /// per-key sweeps do, and the direction that would be visible if this were wrong.
@@ -7986,11 +8148,8 @@ fn invalidate_record_all(
 /// repeating the walk. `a_key_the_shard_has_dropped_is_never_still_answered_out_of_the_cache` is
 /// what holds that.
 ///
-/// WHAT IT COSTS INSTEAD. `entries_for_shard` falls through to a filesystem `metadata()` for
-/// every entry it returns that the disk index does not hold, so the one pass carries C syscalls.
-/// `what_one_listing_of_the_shards_cache_costs_in_syscalls` measures C from outside the process
-/// and `one_batched_pass_walks_the_cache_once_instead_of_twice_per_dropped_key` puts it next to
-/// the entry visits it removes.
+/// Record-scoped indexes visit only the requested hash and feature selectors. Payload pages
+/// retain their physical keys and are neither copied nor scanned by this invalidation pass.
 /// GENERIC OVER THE KEY TYPE, and only because its two call sites hold their round's keys in
 /// different containers: `delete_drop` collects `Arc<str>` object keys off the live block entries,
 /// and the expiry sweep collects `String` keys out of `due_window`. Converting either one to suit
@@ -8010,7 +8169,9 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
     let dropped = keys
         .iter()
         .map(|key| key.as_ref())
-        .collect::<std::collections::BTreeSet<&str>>();
+        .collect::<std::collections::BTreeSet<&str>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     let mut batch = Vec::with_capacity(keys.len().saturating_mul(2));
     for key in keys {
         for named in named_record_keys(shard_id, key.as_ref()) {
@@ -8018,26 +8179,16 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
             batch.push(named);
         }
     }
-    counts.note_listing(cache);
-    let listed = cache.entries_for_shard(shard_id);
-    counts.note_listed_entries(listed.len() as u64);
-    for entry in listed {
-        if SWEPT_RECORD_NAMESPACES.contains(&entry.namespace.as_str())
-            && dropped.contains(entry.record_key.as_str())
-        {
-            // THE LISTING AND THE KEY NO LONGER HOLD THE SAME TYPES, and that is deliberate
-            // on the cache side: `CacheEntryInfo` is a snapshot handed out by value, where an
-            // owned `String` is the honest type, while a `CacheKey` is built on every get and
-            // put and so holds a shared `Arc<str>` and a `Cow` that borrows for the literal
-            // selectors. Converting here pays once per swept entry, not per read.
-            batch.push(CacheKey {
-                shard_id,
-                record_key: std::sync::Arc::from(entry.record_key.as_str()),
-                namespace: std::borrow::Cow::Owned(entry.namespace),
-                selector: std::borrow::Cow::Owned(entry.selector),
-            });
-        }
+    let mut examined = 0usize;
+    let mut returned = 0usize;
+    for namespace in SWEPT_RECORD_NAMESPACES {
+        let snapshot = cache.keys_for_records(shard_id, namespace, &dropped);
+        examined = examined.saturating_add(snapshot.entries_examined);
+        returned = returned.saturating_add(snapshot.keys.len());
+        batch.extend(snapshot.keys);
     }
+    counts.note_listing(examined);
+    counts.note_listed_entries(returned as u64);
     cache.invalidate_batch(&batch).unwrap_or(0)
 }
 
@@ -8176,27 +8327,15 @@ fn read_block_frame_bytes_after_cache_miss(
     // three fallbacks below because every one of them is a trip to the store and they must not
     // drift apart in the tally; a cache HIT returns above and is not I/O.
     shard_write_guard::note_block_read();
-    // Log-backed hot block (synthetic address, no block-store file): a cache miss here would read
-    // as MISSING for an acked async write. If it was spilled to a real slab on eviction, resolve
-    // the redirect and read the durable copy. On a genuine miss (never spilled, or spill failed)
-    // this falls through to the normal read below, which returns None -- the WAL still holds the
-    // value and a reload replays it.
+    // Hot blocks are carried in the WAL. Cache eviction does not relocate them or create
+    // unindexed slab copies; the registration continues to pin their durable record.
     if crate::wal_record::is_wal_resident(address.block_slab_id()) {
-        if let Some(real_address) = hot_block_spill::lookup_spilled(shard_id, address.offset()) {
-            if let Ok(bytes) = block_store.read(&real_address) {
-                let _ = cache.put(cache_key, bytes.clone());
-                return Some(bytes);
-            }
-        }
-        // Nothing spilled, so the value exists only in its WAL record -- which is where it has
-        // been all along. Read it back by the log id the write registered. Tried after the
-        // spill redirect because a spilled copy is a direct block-store read, while this one
-        // parses a log record.
-        if let Some(bytes) = block_in_wal::read_block(
+        if let Some(bytes) = block_in_wal::read_block_at(
             block_store,
             shard_id,
             identity.object_id(),
             identity.element_name(),
+            address,
         ) {
             let _ = cache.put(cache_key, bytes.clone());
             return Some(bytes);
@@ -8221,11 +8360,12 @@ fn read_block_frame_bytes_after_cache_miss(
     //
     // Ordered after the block-store read, not before it: the durable copy is the common case and
     // a direct read, while this one resolves a log id and parses a record.
-    if let Some(bytes) = block_in_wal::read_block(
+    if let Some(bytes) = block_in_wal::read_block_at(
         block_store,
         shard_id,
         identity.object_id(),
         identity.element_name(),
+        address,
     ) {
         let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
@@ -8281,9 +8421,16 @@ fn read_block_bytes(
     select_container_value(&bytes, element_name)
 }
 
-/// [`read_block_bytes`] with the page key already built (see [`PageKeys`]).
+/// One element's value, for a caller that reads many elements and built their page keys itself
+/// (see [`PageKeys`]).
+///
+/// A warm read selects the element out of the frame the cache already holds, shared, so the frame
+/// is not copied into a `Vec` only to have one value copied out of it and the frame dropped. That
+/// copy was one allocation and a memcpy of the whole frame per element of a whole-container read.
+/// The value returned is the same bytes `read_block_bytes` returns: the same lookup, the same
+/// selection, and on a miss the same storage fallbacks, promotion included.
 #[allow(clippy::too_many_arguments)]
-fn read_block_bytes_keyed(
+fn read_block_value_keyed(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
@@ -8291,12 +8438,16 @@ fn read_block_bytes_keyed(
     identity: BlockIdentity<'_>,
     cache_key: CacheKey,
 ) -> Option<Vec<u8>> {
-    let bytes =
-        read_block_frame_bytes_keyed(cache, block_store, shard_id, address, identity, cache_key)?;
-    let Some(element_name) = identity.element_name() else {
-        return Some(bytes);
-    };
-    select_container_value(&bytes, element_name)
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get_shared(&cache_key)
+    });
+    if let Ok(Some(frame)) = cached {
+        let Some(element_name) = identity.element_name() else {
+            return Some(frame.to_vec());
+        };
+        return select_container_value(&frame, element_name);
+    }
+    read_block_bytes_after_cache_miss(cache, block_store, shard_id, address, identity, cache_key)
 }
 
 fn read_block_bytes_after_cache_miss(

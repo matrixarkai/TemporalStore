@@ -31,6 +31,9 @@ mod part3;
 mod part4;
 #[path = "tests/expiry_scale.rs"]
 mod expiry_scale;
+
+#[path = "tests/deadline_source_guards.rs"]
+mod deadline_source_guards;
 #[path = "tests/a_container_write_asks_its_own_slot.rs"]
 mod a_container_write_asks_its_own_slot;
 #[path = "tests/reclaim_dump.rs"]
@@ -115,6 +118,8 @@ mod promote_precondition;
 mod alloc_class_scale;
 #[path = "tests/evict_scale.rs"]
 mod evict_scale;
+#[path = "tests/resident_size_cache.rs"]
+mod resident_size_cache;
 #[path = "tests/reclaiming_space_is_its_own_pass.rs"]
 mod reclaiming_space_is_its_own_pass;
 #[path = "tests/cache_invalidation_cost.rs"]
@@ -143,6 +148,8 @@ mod a_manifest_is_fingerprinted_once_not_once_per_plan;
 mod a_hash_get_all_shares_its_page_keys;
 #[path = "tests/a_feature_sum_reads_each_point_in_place.rs"]
 mod a_feature_sum_reads_each_point_in_place;
+#[path = "tests/feature_serving_key_work.rs"]
+mod feature_serving_key_work;
 #[path = "tests/warm_read_decomposition.rs"]
 mod warm_read_decomposition;
 #[path = "tests/wal_reclaim_frame_boundary.rs"]
@@ -219,6 +226,12 @@ mod campaign_end_to_end;
 mod length_answer_and_listing_agree;
 #[path = "tests/set_listing_block_reads.rs"]
 mod set_listing_block_reads;
+#[path = "tests/set_scan.rs"]
+mod set_scan;
+#[path = "tests/zset_count_adjust.rs"]
+mod zset_count_adjust;
+#[path = "tests/hash_batch_ordinals.rs"]
+mod hash_batch_ordinals;
 #[path = "tests/object_is_a_key_not_an_element.rs"]
 mod object_is_a_key_not_an_element;
 #[path = "tests/container_block_element_key.rs"]
@@ -508,3 +521,7 @@ mod the_sequence_row_is_protobuf_only;
 mod a_plan_lists_the_shards_blocks_once;
 #[path = "tests/a_feature_append_merges_cells_by_lane_reducer.rs"]
 mod a_feature_append_merges_cells_by_lane_reducer;
+#[path = "tests/a_ranked_cell_read_is_a_command.rs"]
+mod a_ranked_cell_read_is_a_command;
+#[path = "tests/a_whole_container_read_shares_its_work.rs"]
+mod a_whole_container_read_shares_its_work;

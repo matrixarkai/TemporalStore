@@ -1547,19 +1547,19 @@ where
         // registry -- so an index carrying one names a place the restoring node cannot reach, and
         // that read returns nothing with no error. Materialising them first means the index names
         // only slabs this checkpoint actually uploads.
-        let materialised = engine.materialize_synthetic_blocks(shard_id);
-        if materialised > 0 {
-            tracing::info!(
+        let image = engine.export_portable_checkpoint_index(shard_id)?;
+        let local_slabs: std::collections::BTreeSet<_> = block_store.slab_ids()?.into_iter().collect();
+        if let Some(missing) = image.block_slab_ids.iter().find(|id| !local_slabs.contains(id)) {
+            return Err(SharedStoreReplicationError::CheckpointSlabNotDurable {
                 shard_id,
-                blocks = materialised,
-                "materialised in-process-only blocks so the checkpoint index can travel"
-            );
+                block_slab_id: *missing,
+            });
         }
         block_store.sync_durable()?;
         let checkpoint_id = uuid::Uuid::new_v4().to_string();
         let prefix = self.checkpoint_prefix(shard_id, &checkpoint_id);
         let index_key = format!("{prefix}index/shard.index.json");
-        let index = engine.export_index_bytes(shard_id)?;
+        let index = image.index_bytes;
         self.object_store
             .put(&index_key, Bytes::from(index.clone()))
             .await?;
@@ -1597,24 +1597,9 @@ where
             });
         }
 
-        // Completeness barrier: every slab the served index actually references must be covered by
-        // an uploaded slab before the manifest is written, so a restore never resolves a live block
-        // to a slab that is absent from the checkpoint. A SYNTHETIC address is folded into the
-        // exported index rather than a durable slab, so it is excluded.
-        //
-        // ASK `is_wal_resident`, DO NOT RESTATE THE SENTINEL. This skipped a local
-        // `const HOT_BLOCK_SLAB_ID: u64 = u64::MAX`, and the engine's sentinel is
-        // `u32::MAX as u64` -- it moved to the top of the 32-bit range (see the note on
-        // `wal_record::WAL_LOG_SLAB_ID`) and this copy did not move with it. So the exclusion
-        // matched NOTHING: every live hot block fell through to the check below and failed the
-        // barrier with `CheckpointSlabNotDurable`, which refuses a checkpoint that is in fact
-        // complete. A second home for a constant is wrong even when it agrees, because only one
-        // of the two gets updated; `is_wal_resident` is the one home, and it answers for BOTH
-        // synthetic sentinels -- `WAL_LOG_SLAB_ID` was equally unskipped here.
-        for referenced in engine.live_block_slab_ids(shard_id) {
-            if crate::wal_record::is_wal_resident(referenced) {
-                continue;
-            }
+        // Check the exact captured image, not a later live view. A log-only address
+        // is not embedded payload and cannot be omitted from a portable checkpoint.
+        for referenced in image.block_slab_ids {
             if !uploaded_slab_ids.contains(&referenced) {
                 return Err(SharedStoreReplicationError::CheckpointSlabNotDurable {
                     shard_id,
@@ -1623,7 +1608,6 @@ where
             }
         }
 
-        let (start_routing_bucket, end_routing_bucket) = engine.shard_routing_range(shard_id);
         let manifest = SharedStoreCheckpointManifest {
             cluster_id: self.cluster_id.clone(),
             shard_id,
@@ -1632,10 +1616,7 @@ where
             created_at_ms: now_ms(),
             // The range this node serves the shard on, which is the range the checkpointed index
             // was built on: one function decides both where a write is filed and what this says.
-            routing_range: Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
-                start_routing_bucket,
-                end_routing_bucket,
-            }),
+            routing_range: Some(image.routing_range),
             index_key,
             index_byte_size: index.len() as u64,
             index_sha256: sha256_hex(&index),
@@ -4275,18 +4256,12 @@ fn encode_wal_proto_frame(
                 element_name: block.element_name.as_deref().map(str::to_string),
             })
             .collect(),
-        items: entry
-            .outcomes
-            .iter()
-            .map(|item| {
-                crate::wal_proto::item_to_proto(
-                    item,
-                    entry.shard_id,
-                    implied_length,
-                    crate::wal_proto::command_object_key(entry.command.as_ref()).as_deref(),
-                )
-            })
-            .collect(),
+        items: crate::wal_proto::items_to_proto(
+            &entry.outcomes,
+            entry.shard_id,
+            implied_length,
+            crate::wal_proto::command_object_key(entry.command.as_ref()).as_deref(),
+        ),
     };
     let mut encoded = frame.encode_to_vec();
     let mut out = Vec::with_capacity(4 + encoded.len());
@@ -4528,6 +4503,21 @@ fn wal_command_from_payload(
     }
 }
 
+/// A command in its protobuf encoding, for the logs outside this file that carry commands.
+///
+/// The same mapping the shared WAL publishes with: a command that has none is refused, never
+/// written as JSON.
+pub(crate) fn command_protobuf_bytes(command: &Command) -> std::io::Result<Vec<u8>> {
+    wal_command_payload(command).map_err(std::io::Error::other)
+}
+
+/// The command a payload written by [`command_protobuf_bytes`] carries.
+pub(crate) fn command_from_protobuf_bytes(payload: &[u8]) -> std::io::Result<Command> {
+    wal_command_from_payload(payload, WAL_COMMAND_ENCODING_SDK_PROTO, false)
+        .map_err(std::io::Error::other)?
+        .ok_or_else(|| std::io::Error::other("a protobuf command payload carried no command"))
+}
+
 /// Assemble a record from the parts a frame and a container entry both carry.
 ///
 /// Extracted for the same reason as [`wal_command_from_payload`]: the implied-length rule and the
@@ -4552,17 +4542,12 @@ fn wal_entry_from_parts(
         shard_id,
         wal_index,
         command,
-        outcomes: items
-            .into_iter()
-            .map(|item| {
-                crate::wal_proto::item_from_proto(
-                    item,
-                    shard_id,
-                    implied_length,
-                    command_key.as_deref(),
-                )
-            })
-            .collect(),
+        outcomes: crate::wal_proto::items_from_proto(
+            items,
+            shard_id,
+            implied_length,
+            command_key.as_deref(),
+        ),
         staged_blocks: staged_blocks
             .into_iter()
             .map(|block| crate::wal::StagedBlock {
@@ -4689,18 +4674,12 @@ fn encode_wal_batch_container(
                     element_name: block.element_name.as_deref().map(str::to_string),
                 })
                 .collect(),
-            items: entry
-                .outcomes
-                .iter()
-                .map(|item| {
-                    crate::wal_proto::item_to_proto(
-                        item,
-                        entry.shard_id,
-                        implied_length,
-                        crate::wal_proto::command_object_key(entry.command.as_ref()).as_deref(),
-                    )
-                })
-                .collect(),
+            items: crate::wal_proto::items_to_proto(
+                &entry.outcomes,
+                entry.shard_id,
+                implied_length,
+                crate::wal_proto::command_object_key(entry.command.as_ref()).as_deref(),
+            ),
         });
     }
 
@@ -5073,6 +5052,13 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                 increment: *increment,
             })
         }
+        Command::ZSetCountAdjust { key, member, increment } => {
+            v1::command::Kind::ZsetCountAdjust(v1::ZSetCountAdjust {
+                key: key.clone(),
+                member: member.clone(),
+                increment: *increment,
+            })
+        }
         Command::ZSetPop { key, min, count } => v1::command::Kind::ZsetPop(v1::ZSetPop {
             key: key.clone(),
             min: *min,
@@ -5086,6 +5072,10 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             value: value.clone(),
             ttl_ms: 0,
         }),
+        // A zero TTL on `StringSetEx` means "expires now", and the protobuf `StringSet` cannot say
+        // that: its zero TTL reads back as a write with NO expiry at all. There is no mapping, so
+        // the command is refused instead of being quietly turned into a different one.
+        Command::StringSetEx { ttl_ms: 0, .. } => return None,
         Command::StringSetEx { key, value, ttl_ms } => {
             v1::command::Kind::StringSet(v1::StringSet {
                 key: key.clone(),
@@ -5120,11 +5110,25 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                     .collect(),
             })
         }
+        Command::HashMultiSetWithTtl { key, entries, ttl_ms } => {
+            v1::command::Kind::HashMultiSetWithTtl(v1::HashMultiSetWithTtl {
+                key: key.clone(),
+                entries: entries
+                    .iter()
+                    .map(|(field, value)| v1::HashEntry {
+                        field: field.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+                ttl_ms: *ttl_ms,
+            })
+        }
         Command::HashMultiSetIfTimestampOlder {
             key,
             timestamp_field,
             timestamp_seconds,
             timestamp_nanos,
+            ttl_ms,
             entries,
         } => v1::command::Kind::HashMultiSetIfTimestampOlder(
             v1::HashMultiSetIfTimestampOlder {
@@ -5132,6 +5136,7 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                 timestamp_field: timestamp_field.clone(),
                 timestamp_seconds: *timestamp_seconds,
                 timestamp_nanos: *timestamp_nanos,
+                ttl_ms: *ttl_ms,
                 entries: entries
                     .iter()
                     .map(|(field, value)| v1::HashEntry {
@@ -5154,6 +5159,20 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
         Command::SetMembers { key } => {
             v1::command::Kind::SetMembers(v1::SetMembers { key: key.clone() })
         }
+        Command::SetScan { key, after, limit } => {
+            v1::command::Kind::SetScan(v1::SetScan {
+                key: key.clone(),
+                after: after.clone(),
+                limit: *limit as u64,
+            })
+        }
+        Command::ZSetScan { key, after, limit } => {
+            v1::command::Kind::ZsetScan(v1::ZSetScan {
+                key: key.clone(),
+                after: after.clone(),
+                limit: *limit as u64,
+            })
+        }
         Command::FeatureAppend { key, points } => {
             v1::command::Kind::FeatureAppend(v1::FeatureAppend {
                 key: key.clone(),
@@ -5164,6 +5183,19 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                         value: point.value.clone(),
                     })
                     .collect(),
+            })
+        }
+        Command::FeatureAppendWithTtl { key, points, ttl_ms } => {
+            v1::command::Kind::FeatureAppendWithTtl(v1::FeatureAppendWithTtl {
+                key: key.clone(),
+                points: points
+                    .iter()
+                    .map(|point| v1::FeaturePoint {
+                        timestamp_ms: point.timestamp_ms,
+                        value: point.value.clone(),
+                    })
+                    .collect(),
+                ttl_ms: *ttl_ms,
             })
         }
         Command::FeatureQuery {
@@ -5624,6 +5656,10 @@ fn now_ms() -> u64 {
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+#[path = "shared_portable_checkpoint_tests.rs"]
+mod portable_checkpoint_tests;
 
 #[cfg(test)]
 mod tests {
@@ -10329,15 +10365,15 @@ mod tests {
         // Counting from before load makes the assertion robust to warm-on-load either way.
         let reads_before = follower.block_store().stats().reads;
         follower.load_shard(1);
+        let disk_read = follower.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "disk-key".to_string(),
+            },
+        });
+        assert!(disk_read.status.ok, "checkpoint read failed: {disk_read:?}");
         assert_eq!(
-            follower
-                .execute(ExecuteRequest {
-                    shard_id: 1,
-                    command: Command::StringGet {
-                        key: "disk-key".to_string()
-                    },
-                })
-                .response,
+            disk_read.response,
             CommandResponse::Bytes {
                 value: Some(b"disk-value".to_vec())
             }
@@ -13680,6 +13716,7 @@ fn a_timestamp_conditioned_hash_write_round_trips_through_the_wal() {
         timestamp_field: "_ts:view".into(),
         timestamp_seconds: 1_700_000_000,
         timestamp_nanos: 123_456_789,
+        ttl_ms: Some(60_000),
         entries: vec![
             ("_ts:view".into(), vec![8, 1]),
             ("view:score".into(), vec![8, 42]),
@@ -13716,9 +13753,9 @@ fn a_fully_populated_context_entity() -> crate::types::ContextEntity {
         valid_from_ms: 1_700_000_000_012,
         confidence: 0.125,
         source_event_hashes: vec![201, 202, 203],
-        // NOT quantised, and no model hash: `ContextEntity` has never carried one. `1.0e-7` is the
-        // element that says so -- it is exact in `f32` and would not survive int8 quantisation.
+        // NOT quantised. `1.0e-7` is exact in `f32` and would not survive int8 quantisation.
         vector: vec![0.5, -0.25, 1.0e-7, 3.5],
+        embedding_model_hash: 0x4142_4344_4546_4748,
     }
 }
 
@@ -14266,7 +14303,7 @@ fn the_last_context_record_writes_refuse_an_absent_record_by_name() {
     }
 }
 
-/// A `ContextEvent` with every one of its fifteen fields set, and set DISTINCTLY.
+/// A `ContextEvent` with every one of its sixteen fields set, and set DISTINCTLY.
 ///
 /// A converter that crossed two fields of the same type, or dropped one, passes on a fixture whose
 /// fields are mostly zero. The seven `skip_serializing` fields are deliberately non-default here,
@@ -14292,8 +14329,9 @@ fn a_fully_populated_context_event() -> crate::types::ContextEvent {
         source_ref: "source://ref/1".to_string(),
         related_node_hashes: vec![7, 8, 9],
         compact_attrs: vec![0xA7, 0xB3, 0x00, 0xFF],
-        // NOT quantised, and no model hash: `ContextEvent` has never carried one.
+        // NOT quantised. `1.0e-7`-style precision would remain intact on this wire path.
         vector: vec![-1.5, 0.0, 0.5, 1.0],
+        embedding_model_hash: 0x5152_5354_5556_5758,
     }
 }
 
@@ -14333,7 +14371,7 @@ fn a_fully_populated_index_block() -> crate::types::ContextExtractedEventIndexes
 ///   4. the TAGGING of the durable JSON record is pinned -- one FLAT object with a `kind`
 ///      discriminator beside the variant's own fields -- so the old-format reader is driven on the
 ///      shape it will actually meet on disk rather than on a guess;
-///   5. that JSON form DROPS seven of the event's fifteen fields and this record does not, which
+///   5. that JSON form DROPS seven of the event's sixteen fields and this record does not, which
 ///      makes the port strictly more faithful rather than merely different. Asserted by showing a
 ///      JSON round trip returns something UNEQUAL to the command while the proto one does not.
 #[test]

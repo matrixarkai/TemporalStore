@@ -538,7 +538,11 @@ pub(crate) fn benchmark_source_kind(index: usize) -> ContextSourceKind {
     }
 }
 
-pub(crate) fn benchmark_context_body(index: usize, topic_index: usize, topic_sequence: usize) -> String {
+pub(crate) fn benchmark_context_body(
+    index: usize,
+    topic_index: usize,
+    topic_sequence: usize,
+) -> String {
     let is_latest_update = topic_sequence > 1;
     let update_marker = if is_latest_update {
         "latest memory update"

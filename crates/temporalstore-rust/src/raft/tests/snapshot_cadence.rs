@@ -1310,7 +1310,7 @@ fn a_deployed_followers_compaction_is_paced_by_the_same_bound() {
         next += STEP;
         let log_bytes = follower_log_bytes(&follower);
         let before = follower_snapshot_index(&follower);
-        let _ = follower.maybe_trigger_snapshot();
+        follower.maybe_trigger_snapshot().expect("follower snapshot must not fail");
         let after = follower_snapshot_index(&follower);
         if after > before {
             println!("  FIRED at log {log_bytes} B (threshold {expected} B)");

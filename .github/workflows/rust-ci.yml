@@ -126,6 +126,123 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: Ollama extraction source isolation checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe llm_context::ollama::tests:: \
+            -- --test-threads=1 2>&1 | tee /tmp/ollama-source-isolation.log
+          grep -q 'test result: ok\. 10 passed; 0 failed;' /tmp/ollama-source-isolation.log
+
+      - name: Resource chunk content checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe resource_chunk_tests \
+            -- --test-threads=1 2>&1 | tee /tmp/resource-chunk-content.log
+          grep -q 'test result: ok\. 8 passed; 0 failed;' /tmp/resource-chunk-content.log
+
+      - name: Embedding owner search checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe llm_context::embedding_index::tests:: \
+            -- --test-threads=1 2>&1 | tee /tmp/embedding-owner-search.log
+          grep -q 'test result: ok\. 16 passed; 0 failed;' /tmp/embedding-owner-search.log
+
+      - name: Inferred memory fact checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe inferred_memory_ \
+            -- --test-threads=1 2>&1 | tee /tmp/inferred-memory-gate.log
+          grep -q 'test result: ok\. 15 passed; 0 failed;' /tmp/inferred-memory-gate.log
+
+      - name: Memory input buffer ownership checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe memory_input_ \
+            -- --test-threads=1 2>&1 | tee /tmp/memory-input-gate.log
+          grep -q 'test result: ok\. 7 passed; 0 failed;' /tmp/memory-input-gate.log
+
+      - name: Memory fact source accounting checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --bin mem0_scale_harness memory_add_receipt \
+            -- --test-threads=1 2>&1 | tee /tmp/memory-source-count-gate.log
+          grep -q 'test result: ok\. 2 passed; 0 failed;' /tmp/memory-source-count-gate.log
+
+      - name: Memory protobuf route checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --bin server context_explicit_route \
+            -- --test-threads=1 2>&1 | tee /tmp/memory-protobuf-route-gate.log
+          grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/memory-protobuf-route-gate.log
+
+      - name: Batch WAL durability checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe batch_wal_barrier \
+            -- --test-threads=1 2>&1 | tee /tmp/batch-wal-barrier-gate.log
+          grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/batch-wal-barrier-gate.log
+
+      - name: Bounded memory deletion checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe batch_delete_pages \
+            -- --test-threads=1 2>&1 | tee /tmp/memory-delete-pages-gate.log
+          grep -q 'test result: ok\. 7 passed; 0 failed;' /tmp/memory-delete-pages-gate.log
+
+      - name: Memory deletion cleanup checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe delete_cleanup_failure \
+            -- --test-threads=1 2>&1 | tee /tmp/memory-delete-cleanup-gate.log
+          grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/memory-delete-cleanup-gate.log
+
+      - name: Repeated memory API workload checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --bin mem0_scale_harness crud::tests \
+            -- --test-threads=1 2>&1 | tee /tmp/memory-crud-gate.log
+          grep -q 'test result: ok\. 5 passed; 0 failed;' /tmp/memory-crud-gate.log
+
+      - name: Batch deletion acknowledgment checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe batch_delete_ack \
+            -- --test-threads=1 2>&1 | tee /tmp/memory-delete-ack-gate.log
+          grep -q 'test result: ok\. 5 passed; 0 failed;' /tmp/memory-delete-ack-gate.log
+
+      - name: Affected bucket update checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe affected_bucket_survivors \
+            -- --test-threads=1 --nocapture 2>&1 | tee /tmp/affected-bucket-gate.log
+          grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/affected-bucket-gate.log
+
+      - name: Retention and block ownership checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for spec in retention_work_tests:4 compaction_retention_tests:3 physical_wal_:5 block_owner_query_tests:3; do
+            filter=${spec%:*}
+            expected=${spec##*:}
+            cargo test -p temporalstore-rust --lib --features alloc-probe "$filter" \
+              -- --test-threads=1 --nocapture 2>&1 | tee /tmp/wal-retention-gate.log
+            grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/wal-retention-gate.log \
+              || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
+          done
+
       # This example requires the optional backend and are skipped by default builds.
       # Run the assertions: compiling a report does not enforce its byte ceilings.
       - name: One append storage cost and recovery
@@ -262,9 +379,9 @@ jobs:
             meta::tests::every_shape_of_torn_tail_is_dropped_and_cut_back_to_a_record_boundary \
             meta::tests::a_record_that_does_not_parse_with_records_after_it_is_still_an_error \
             meta::tests::a_complete_record_with_a_bad_checksum_is_refused_and_not_truncated \
-            ingestion::tests::the_ingestion_state_reader_accepts_both_shapes \
+            ingestion::tests::the_ingestion_state_reader_takes_protobuf_and_refuses_json \
             ingestion::tests::an_unknown_flink_tag_or_an_absent_ingestion_source_is_refused_rather_than_defaulted \
-            ingestion::tests::the_state_writer_is_binary_and_a_planted_json_file_is_still_read_on_restart \
+            ingestion::tests::the_state_writer_is_binary_and_a_planted_json_file_is_refused_on_restart \
             engine::tests::routing_range_stamp_binary::the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_refused \
             engine::tests::routing_range_stamp_binary::no_json_encode_path_is_left_for_the_local_routing_range_stamp \
             shared_store::tests::restore_reads_a_published_dump_manifest_and_refuses_a_planted_json_one \
@@ -273,7 +390,7 @@ jobs:
             engine::tests::bucket_dump_binary_shape::a_manifest_is_listed_a_json_one_is_not_and_a_changed_field_is_not_trusted \
             engine::tests::bucket_dump_binary_shape::an_install_marker_is_protobuf_only \
             engine::tests::bucket_dump_binary_shape::no_json_path_is_left_for_a_manifest_or_a_marker \
-            raft::wal_proto::tests::the_raft_wal_names_every_command_it_still_carries_as_text \
+            raft::wal_proto::tests::every_command_the_raft_wal_carries_is_protobuf \
             shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
@@ -307,6 +424,16 @@ jobs:
             engine::tests::the_served_index_encoder_has_no_json_fallback::the_served_index_encoder_does_not_fall_through_to_json_or_read_a_setting \
             engine::tests::the_served_index_encoder_has_no_json_fallback::a_shard_that_was_never_stamped_is_written_as_msgpack_and_reads_back_current \
             engine::tests::the_served_index_encoder_has_no_json_fallback::the_stamp_a_reader_sees_is_the_header_and_not_the_field_inside_the_payload \
+            engine::tests::the_dump_door_reads_the_index_stamp::the_dump_manifest_install_refuses_a_stale_stamped_image \
+            engine::tests::the_dump_door_reads_the_index_stamp::the_refused_install_writes_no_index_and_installs_no_shard \
+            engine::tests::the_dump_door_reads_the_index_stamp::the_same_manifest_at_the_current_stamp_installs_and_round_trips_its_series \
+            engine::tests::the_dump_door_reads_the_index_stamp::a_manifest_this_binary_writes_is_stamped_current_and_still_installs \
+            engine::tests::the_dump_door_reads_the_index_stamp::the_preflight_report_names_the_stale_stamp_as_a_blocker \
+            engine::tests::no_door_delivers_a_sequence_map::door_two_the_dump_manifest_refuses_a_stale_stamp_carrying_the_retired_map \
+            engine::tests::no_door_delivers_a_sequence_map::door_two_control_the_same_manifest_at_the_current_stamp_installs \
+            engine::tests::context_node_map_arrival::the_dump_manifest_door_refuses_a_stale_stamped_index_image \
+            engine::tests::part1::served_index_container_round_trips_and_refuses_plain_json \
+            engine::tests::part1::binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read \
             engine::tests::the_config_log_is_framed_only::the_config_log_reads_frames_skips_a_json_line_and_a_torn_or_damaged_frame_is_not_misread \
             engine::tests::the_config_log_is_framed_only::the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_entry \
             engine::tests::the_config_log_is_framed_only::no_json_path_is_left_in_the_config_log_code \
@@ -359,6 +486,32 @@ jobs:
             engine::window_aggregate::tests::the_shared_doors_answer_what_the_bodies_they_replaced_answered \
             engine::window_aggregate::tests::a_name_is_known_or_refused_and_the_table_is_case_insensitive \
             engine::window_aggregate::tests::edge_answers_are_the_documented_ones \
+            engine::cell_rank::tests::each_score_orders_by_the_value_only_it_produces \
+            engine::cell_rank::tests::a_wilson_bound_is_the_hand_computed_number_and_rewards_volume \
+            engine::cell_rank::tests::an_undefined_score_is_counted_and_not_ranked \
+            engine::cell_rank::tests::each_window_kind_selects_the_snapshots_it_names \
+            engine::cell_rank::tests::a_window_that_cannot_hold_a_snapshot_is_refused \
+            engine::cell_rank::tests::ties_break_by_member_and_a_smaller_k_is_a_prefix_of_a_larger_one \
+            engine::cell_rank::tests::a_row_carries_its_reduced_lanes_its_newest_labels_and_its_newest_stamp \
+            engine::cell_rank::tests::a_projection_returns_the_named_columns_only \
+            engine::cell_rank::tests::every_filter_operator_selects_what_it_names \
+            engine::cell_rank::tests::a_predicate_cuts_before_the_reduction_not_after_it \
+            engine::cell_rank::tests::a_name_the_key_does_not_declare_is_refused_before_anything_is_read \
+            engine::cell_rank::tests::the_member_score_refuses_a_bytes_member_rather_than_ranking_it_somewhere \
+            engine::cell_rank::tests::nothing_to_rank_is_an_empty_answer_not_an_error \
+            engine::cell_rank::tests::snapshots_that_cannot_be_merged_are_refused_not_guessed \
+            engine::cell_rank::tests::a_reloaded_snapshot_ranks_as_the_snapshot_it_was_stored_from \
+            engine::cell_rank::tests::top_k_is_bounded_at_exactly_the_limit \
+            engine::cell_rank::tests::predicates_per_query_are_bounded_at_exactly_the_limit \
+            engine::cell_rank::tests::lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit \
+            engine::cell_rank::tests::snapshots_in_a_window_are_bounded_at_exactly_the_limit \
+            engine::cell_rank::tests::the_merge_answers_what_a_per_member_table_answers \
+            engine::tests::a_ranked_cell_read_is_a_command::a_ranked_read_answers_from_what_was_stored_live_and_after_a_restart \
+            engine::tests::a_ranked_cell_read_is_a_command::an_absent_key_and_an_expired_key_rank_nothing \
+            engine::tests::a_ranked_cell_read_is_a_command::a_read_the_key_cannot_serve_is_refused_with_its_reason \
+            engine::tests::a_ranked_cell_read_is_a_command::a_bound_is_refused_at_admission_and_accepted_at_exactly_the_limit \
+            engine::tests::a_ranked_cell_read_is_a_command::a_window_over_the_bound_is_refused_after_a_bounded_read_and_one_at_the_bound_is_served \
+            engine::tests::a_ranked_cell_read_is_a_command::a_lane_added_later_reads_as_zero_in_the_snapshots_written_before_it \
             engine::window_aggregate::algorithm_tests::each_reducer_answers_the_value_only_that_reducer_produces \
             engine::window_aggregate::algorithm_tests::the_three_roundings_differ_on_a_fraction \
             engine::window_aggregate::algorithm_tests::an_empty_window_answers_what_the_notes_say \
@@ -391,7 +544,8 @@ jobs:
             engine::cell_set::tests::members_out_of_order_or_repeated_are_written_as_they_are_and_read_back \
             engine::cell_set::tests::merging_applies_each_lane_reducer_per_member_and_replaces_labels \
             engine::cell_set::tests::sorted_u64_members_are_stored_as_distances_and_cost_one_byte_each \
-            engine::cell_set::tests::the_version_gate_accepts_at_exactly_the_first_additive_version_and_refuses_below ; do
+            engine::cell_set::tests::the_version_gate_accepts_at_exactly_the_first_additive_version_and_refuses_below \
+            engine::tests::what_a_high_cardinality_distinct_holds::an_unbounded_distinct_holds_every_member_and_the_bound_holds_a_fixed_sketch ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/gate.log
@@ -444,6 +598,10 @@ jobs:
             engine::tests::a_counter_increment_writes_its_series_when_due::every_counter_arm_writes_its_series_only_now_and_then \
             engine::tests::a_counter_increment_writes_its_series_when_due::a_series_every_counter_arm_wrote_recovers_whether_or_not_its_block_was_written \
             engine::tests::a_counter_increment_writes_its_series_when_due::a_series_every_counter_arm_trimmed_at_its_bound_recovers_as_it_did_before \
+            engine::tests::a_counter_increment_writes_its_series_when_due::a_counter_series_recovers_held_at_its_bound \
+            engine::tests::a_counter_increment_writes_its_series_when_due::a_counter_series_written_out_of_order_recovers_held_at_its_bound \
+            engine::tests::a_counter_increment_writes_its_series_when_due::replaying_a_counter_log_twice_or_after_a_graceful_reload_gives_one_series \
+            engine::tests::a_counter_increment_writes_its_series_when_due::a_counter_bound_changed_between_runs_recovers_as_the_write_path_held_it \
             engine::tests::a_counter_increment_writes_its_series_when_due::a_log_cut_mid_record_recovers_a_prefix_of_the_writes_of_every_counter_arm \
             engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_digest_equals_exactly_when_the_lines_were_equal \
             engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_retained_manifest_is_decoded_once_across_plans ; do
@@ -583,6 +741,8 @@ jobs:
             engine::tests::a_feature_sum_reads_each_point_in_place::a_sum_answers_what_the_collected_values_summed_to \
             engine::tests::a_feature_sum_reads_each_point_in_place::page_keys_equal_the_constructors_keys \
             engine::tests::a_hash_get_all_shares_its_page_keys::a_whole_hash_read_answers_what_the_per_field_reads_answer \
+            engine::tests::a_whole_container_read_shares_its_work::a_list_range_answers_the_pushes_it_was_given \
+            engine::tests::a_whole_container_read_shares_its_work::a_list_element_name_spells_what_the_formatted_name_spells \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
@@ -672,9 +832,12 @@ jobs:
             engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::probe::a_write_does_not_pay_for_the_objects_it_did_not_touch \
             engine::tests::a_feature_sum_reads_each_point_in_place::probe::a_feature_sum_does_not_allocate_per_point \
             engine::tests::a_hash_get_all_shares_its_page_keys::probe::a_whole_hash_read_does_not_pay_three_allocations_a_field_for_its_key \
+            engine::tests::a_whole_container_read_shares_its_work::probe::a_list_range_does_not_pay_for_its_key_name_and_frame_copy_per_element \
+            engine::tests::a_whole_container_read_shares_its_work::probe::a_whole_hash_read_does_not_copy_the_frame_for_each_field \
             engine::window_aggregate::probe::the_reducers_do_not_allocate_per_point \
             engine::cell_set::tests::probe::a_cell_set_key_costs_one_allocation_whatever_its_size \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_does_not_allocate_more_for_a_longer_key \
+            engine::cell_rank::tests::probe::a_ranked_read_allocates_the_same_over_a_hundred_members_and_over_twenty_thousand \
             engine::cell_set::tests::probe::a_cell_costs_the_same_allocations_at_any_member_size ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \

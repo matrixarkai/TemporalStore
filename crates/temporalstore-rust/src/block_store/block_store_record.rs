@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek};
@@ -210,16 +211,12 @@ pub(super) fn encode_block_record(
     // step over a record whose length it does not know. Putting the decompressed size here
     // rather than in the header keeps the header one size for every block, and costs the four
     // bytes only where something was actually compressed.
-    let stored_payload = match compression {
-        BlockRecordCompression::None => squeezed,
-        BlockRecordCompression::Zstd => {
-            let mut framed = Vec::with_capacity(squeezed.len() + 4);
-            framed.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            framed.extend_from_slice(&squeezed);
-            framed
-        }
-    };
-    let block_size = stored_payload.len();
+    let block_size = squeezed.len()
+        + if compression == BlockRecordCompression::Zstd {
+            4
+        } else {
+            0
+        };
     if block_size as u64 > u64::from(BLOCK_RECORD_LENGTH_MASK) {
         return Err(corrupt_block_envelope(
             &ElementEntry::default(),
@@ -249,7 +246,10 @@ pub(super) fn encode_block_record(
     record.extend_from_slice(&(block_id as u16).to_le_bytes());
     debug_assert_eq!(record.len(), BLOCK_RECORD_HEADER_LEN, "the header is one size");
     let stored_len = block_size;
-    record.extend_from_slice(&stored_payload);
+    if compression == BlockRecordCompression::Zstd {
+        record.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    }
+    record.extend_from_slice(&squeezed);
     Ok(EncodedBlockRecord {
         bytes: record,
         logical_len: payload.len(),
@@ -258,24 +258,22 @@ pub(super) fn encode_block_record(
     })
 }
 
-fn encode_block_record_payload(
-    payload: &[u8],
+fn encode_block_record_payload<'a>(
+    payload: &'a [u8],
     options: BlockStoreOptions,
-) -> Result<(Vec<u8>, BlockRecordCompression), BlockStoreError> {
+) -> Result<(Cow<'a, [u8]>, BlockRecordCompression), BlockStoreError> {
     crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::BlockBytes, || {
         encode_block_record_payload_inner(payload, options)
     })
 }
 
-/// The encode itself. Split out so the allocation class above covers a whole function body rather
-/// than a span the early return skips: an uncompressed write takes that return, and it is the one
-/// a scope wrapped around the tail would have missed.
-fn encode_block_record_payload_inner(
-    payload: &[u8],
+/// Borrow raw bytes until the final record is assembled; only compressed bytes need an owner.
+fn encode_block_record_payload_inner<'a>(
+    payload: &'a [u8],
     options: BlockStoreOptions,
-) -> Result<(Vec<u8>, BlockRecordCompression), BlockStoreError> {
+) -> Result<(Cow<'a, [u8]>, BlockRecordCompression), BlockStoreError> {
     if !options.compression_enabled || payload.len() < options.compression_min_bytes {
-        return Ok((payload.to_vec(), BlockRecordCompression::None));
+        return Ok((Cow::Borrowed(payload), BlockRecordCompression::None));
     }
     // Reuse one compression context per thread, the mirror of the decoder below.
     //
@@ -302,9 +300,9 @@ fn encode_block_record_payload_inner(
         compressor.compress(payload)
     })?;
     if compressed.len() < payload.len() {
-        Ok((compressed, BlockRecordCompression::Zstd))
+        Ok((Cow::Owned(compressed), BlockRecordCompression::Zstd))
     } else {
-        Ok((payload.to_vec(), BlockRecordCompression::None))
+        Ok((Cow::Borrowed(payload), BlockRecordCompression::None))
     }
 }
 
@@ -835,6 +833,18 @@ pub(super) fn count_slab_blocks(slab: &[u8], block_slab_id: u64) -> (u64, u64) {
 }
 
 pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabReport {
+    inspect_slab_with_details(slab, block_slab_id, true)
+}
+
+pub(super) fn inspect_slab_corruption(slab: &[u8], block_slab_id: u64) -> bool {
+    inspect_slab_with_details(slab, block_slab_id, false).has_corruption
+}
+
+fn inspect_slab_with_details(
+    slab: &[u8],
+    block_slab_id: u64,
+    details: bool,
+) -> BlockStoreSlabReport {
     let mut report = BlockStoreSlabReport {
         block_slab_id,
         physical_bytes: slab.len() as u64,
@@ -896,58 +906,60 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
                 report.logical_bytes = report
                     .logical_bytes
                     .saturating_add(decoded.logical_len as u64);
-                report.block_index_entries.push(BlockStoreBlockIndexReport {
-                    block_slab_id: block_slab_id,
-                    offset: address.offset(),
-                    length: address.length(),
-                    compact_slab_address: address.compact_slab_address(),
-                    compact_slab_id: address.compact_slab_id(),
-                    compact_slab_offset: address.compact_slab_offset(),
-                    // Always `None`: the record header carries no slab id, and the slab a record
-                    // sits in is `block_slab_id` two lines up. A report field that restated it
-                    // would be the same number twice.
-                    storage_slab_id: None,
-                    object_id: header.object_id,
-                    model_id: None,
-                    block_id: header.block_id,
-                    block_size: decoded.logical_len as u64,
-                    stored_size: header.stored_len as u64,
-                    dirty: false,
-                    deleted: decoded.logical_len == 0,
-                    block_in_log: false,
-                    routing_bucket: header.routing_bucket,
-                    // Re-hashing the payload here doubled the sha256 work of every engine open
-                    // to fill a field no caller reads. `decode_block_record` above has already
-                    // verified this record's stored checksum. Opt in with
-                    // TS_BLOCK_INDEX_CHECKSUMS=1 when inspecting a slab by hand.
-                    checksum: block_index_checksums_enabled()
-                        .then(|| sha256_hex(&decoded.payload)),
-                });
-                report.block_index_count = report.block_index_entries.len() as u64;
-                if decoded.compression == BlockRecordCompression::Zstd {
-                    report.compressed_records = report.compressed_records.saturating_add(1);
-                }
-                if let Some(object_id) = header.object_id {
-                    object_ids.insert(object_id);
-                    report.object_count = object_ids.len() as u64;
-                }
-                if let Some(routing_bucket) = header.routing_bucket {
-                    routing_buckets.insert(routing_bucket);
-                    report.routing_bucket_count = routing_buckets.len() as u64;
-                    report.first_routing_bucket = routing_buckets.first().copied();
-                    report.last_routing_bucket = routing_buckets.last().copied();
-                }
-                if let Some(block_id) = header.block_id {
-                    report.first_block_id = Some(
-                        report
-                            .first_block_id
-                            .map_or(block_id, |current| current.min(block_id)),
-                    );
-                    report.last_block_id = Some(
-                        report
-                            .last_block_id
-                            .map_or(block_id, |current| current.max(block_id)),
-                    );
+                if details {
+                    report.block_index_entries.push(BlockStoreBlockIndexReport {
+                        block_slab_id: block_slab_id,
+                        offset: address.offset(),
+                        length: address.length(),
+                        compact_slab_address: address.compact_slab_address(),
+                        compact_slab_id: address.compact_slab_id(),
+                        compact_slab_offset: address.compact_slab_offset(),
+                        // Always `None`: the record header carries no slab id, and the slab a record
+                        // sits in is `block_slab_id` two lines up. A report field that restated it
+                        // would be the same number twice.
+                        storage_slab_id: None,
+                        object_id: header.object_id,
+                        model_id: None,
+                        block_id: header.block_id,
+                        block_size: decoded.logical_len as u64,
+                        stored_size: header.stored_len as u64,
+                        dirty: false,
+                        deleted: decoded.logical_len == 0,
+                        block_in_log: false,
+                        routing_bucket: header.routing_bucket,
+                        // Re-hashing the payload here doubled the sha256 work of every engine open
+                        // to fill a field no caller reads. `decode_block_record` above has already
+                        // verified this record's stored checksum. Opt in with
+                        // TS_BLOCK_INDEX_CHECKSUMS=1 when inspecting a slab by hand.
+                        checksum: block_index_checksums_enabled()
+                            .then(|| sha256_hex(&decoded.payload)),
+                    });
+                    report.block_index_count = report.block_index_entries.len() as u64;
+                    if decoded.compression == BlockRecordCompression::Zstd {
+                        report.compressed_records = report.compressed_records.saturating_add(1);
+                    }
+                    if let Some(object_id) = header.object_id {
+                        object_ids.insert(object_id);
+                        report.object_count = object_ids.len() as u64;
+                    }
+                    if let Some(routing_bucket) = header.routing_bucket {
+                        routing_buckets.insert(routing_bucket);
+                        report.routing_bucket_count = routing_buckets.len() as u64;
+                        report.first_routing_bucket = routing_buckets.first().copied();
+                        report.last_routing_bucket = routing_buckets.last().copied();
+                    }
+                    if let Some(block_id) = header.block_id {
+                        report.first_block_id = Some(
+                            report
+                                .first_block_id
+                                .map_or(block_id, |current| current.min(block_id)),
+                        );
+                        report.last_block_id = Some(
+                            report
+                                .last_block_id
+                                .map_or(block_id, |current| current.max(block_id)),
+                        );
+                    }
                 }
             }
             Err(err) => {
@@ -1011,6 +1023,23 @@ mod block_record_format_tests {
         assert_eq!(header.stored_len, payload.len());
         assert_eq!(header.object_id, None, "the index holds the object id");
         assert_eq!(header.routing_bucket, None, "the index holds the routing bucket");
+        let decoded = decode_block_record(&encoded.bytes, &address()).expect("decode");
+        assert_eq!(decoded.payload, payload);
+    }
+
+    #[test]
+    fn compressed_record_keeps_its_stored_length_and_original_size() {
+        let payload = vec![b'x'; 1024];
+        let encoded = encode_block_record(&payload, 9, None, None, BlockStoreOptions::default())
+            .expect("encode");
+        assert_eq!(encoded.compression, BlockRecordCompression::Zstd);
+        let header = parse_block_record_header(&encoded.bytes, &address()).expect("parse");
+        assert_eq!(header.stored_len, encoded.bytes.len() - BLOCK_RECORD_HEADER_LEN);
+        assert_eq!(header.payload_len, payload.len());
+        assert_eq!(
+            &encoded.bytes[BLOCK_RECORD_HEADER_LEN..BLOCK_RECORD_HEADER_LEN + 4],
+            &(payload.len() as u32).to_le_bytes(),
+        );
         let decoded = decode_block_record(&encoded.bytes, &address()).expect("decode");
         assert_eq!(decoded.payload, payload);
     }

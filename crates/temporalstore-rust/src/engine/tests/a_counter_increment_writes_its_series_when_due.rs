@@ -12,7 +12,7 @@
 //! ```text
 //!   log bytes          299      1,721      3,515
 //!   block-store bytes  222      1,637      3,392
-//!   instructions    1.87M (200) 4.4M (800) 13.9M (3,200)       -> ~120M at the 30,000-point default cap
+//!   instructions    1.87M (200) 4.4M (800) 13.9M (3,200)       -> 3.16M at the 10,000-point default cap (release)
 //! ```
 //!
 //! The block is now written on the first increment of a key and on a deterministic share of the
@@ -711,5 +711,263 @@ fn a_log_cut_mid_record_recovers_a_prefix_of_the_writes_of_every_counter_arm() {
                 previous = prefix;
             }
         }
+    }
+}
+
+/// ONE REAL RUN AT THE DEFAULT CAP (ignored: it fills a series of `control_state_max_size` points,
+/// which is `feature_max_size`, 10,000 by default).
+///
+/// The same writes in both arms (the block written every time, which is how every increment wrote
+/// before #2798, and due-only): fill a counter to the cap, write 200 more increments (each trims a
+/// point), measure the log and block bytes, drop the engine with no unload, recover. PRINTS how the
+/// recovered series differs from the live one and requires them equal.
+#[test]
+#[ignore]
+fn a_counter_at_the_default_cap_recovers_held_at_the_cap() {
+    let cap = crate::control::Config::default().control_state_max_size();
+    let mut failures = Vec::new();
+    for forced in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (live, log, block) = with_every_block(forced, || {
+            let engine = open(dir.path(), None);
+            for index in 0..cap as u64 + 100 {
+                increment(&engine, 1_000 + index, 1);
+            }
+            assert_eq!(series(&engine).len(), cap, "the series did not hold at the default cap");
+            let wal = engine.wal_store.raw_stats(1).bytes_written;
+            let blocks = engine.block_store().stats().bytes_written;
+            for index in 0..200u64 {
+                increment(&engine, 10_000_000 + index, 1);
+            }
+            let log = (engine.wal_store.raw_stats(1).bytes_written - wal) as f64 / 200.0;
+            let block = (engine.block_store().stats().bytes_written - blocks) as f64 / 200.0;
+            (series(&engine), log, block)
+        });
+        let recovered = recovered(dir.path(), None);
+        let resurrected = recovered.keys().filter(|at| !live.contains_key(at)).count();
+        let lost = live.keys().filter(|at| !recovered.contains_key(at)).count();
+        let changed = live.iter().filter(|(at, value)| recovered.get(at).is_some_and(|other| other != *value)).count();
+        eprintln!(
+            "  forced={forced:<5} cap {cap}, 10,300 increments: log {log:.0} B + blocks {block:.0} B per increment; live {} points, recovered {} points ({resurrected} the live series had trimmed, {lost} missing, {changed} with another value)",
+            live.len(),
+            recovered.len()
+        );
+        if recovered != live {
+            failures.push(forced);
+        }
+    }
+    assert!(failures.is_empty(), "a series at the default cap recovered as another series (forced arms: {failures:?})");
+}
+
+// ---- A RECOVERED COUNTER SERIES IS HELD AT ITS BOUND ----------------------------------------------
+//
+// A series is trimmed to its bound after each write and the trim records no removal. A replayed
+// `control_counter` outcome installed its point and, until it trimmed as the write did, brought back
+// every point the trim had dropped. Measured at the default cap of 10,000 points after 10,300
+// increments, recovered with no unload: the live series held 10,000 points and the recovered one
+// 10,300 in each arm (the block written every time, which is how every increment wrote before
+// #2798, and due-only), nothing missing and no value changed. The tests below hold for all five
+// counter arms and for both series (`<key>` and `control_state:h:<key>`).
+
+/// One write through arm 0..=3 (see `arm_write`) or arm 4, `ControlStateIncrement`.
+fn any_arm_write(engine: &TemporalEngine, arm: usize, at: u64, amount: i64) {
+    if arm == 4 {
+        increment(engine, at, amount);
+    } else {
+        arm_write(engine, arm, at, amount, None, None);
+    }
+}
+
+/// The series arm `arm` writes: arms 0 and 4 write `c`, the family arms the family series.
+fn any_arm_key(arm: usize) -> &'static str {
+    if arm == 0 || arm == 4 {
+        "c"
+    } else {
+        FAMILY_KEY
+    }
+}
+
+fn set_bound(engine: &TemporalEngine, bound: usize, version: u64) {
+    assert!(
+        engine
+            .set_config(crate::control::SetConfigRequest {
+                shard_id: 1,
+                config: crate::control::Config {
+                    version,
+                    feature_max_size: bound,
+                    ..Default::default()
+                },
+            })
+            .ok,
+        "the bound has to be the one under test"
+    );
+}
+
+#[test]
+fn a_counter_series_recovers_held_at_its_bound() {
+    const BOUND: usize = 40;
+    for arm in 0..5usize {
+        for forced in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let live = with_every_block(forced, || {
+                let engine = open(dir.path(), Some(BOUND));
+                for step in 0..600u64 {
+                    any_arm_write(&engine, arm, 1_000 + step * 3, 1);
+                }
+                series_of(&engine, any_arm_key(arm))
+            });
+            assert_eq!(live.len(), BOUND, "arm {arm}, forced={forced}: the bound did not hold a live series");
+            let engine = open(dir.path(), Some(BOUND));
+            let got = series_of(&engine, any_arm_key(arm));
+            assert_eq!(
+                got.len(),
+                BOUND,
+                "arm {arm}, forced={forced}: a recovery with no unload held {} points against a bound of {BOUND}",
+                got.len()
+            );
+            assert_eq!(got, live, "arm {arm}, forced={forced}: the recovered series is not the live one");
+        }
+    }
+}
+
+#[test]
+fn a_counter_series_written_out_of_order_recovers_held_at_its_bound() {
+    const BOUND: usize = 40;
+    for arm in 0..5usize {
+        for forced in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut rng = Rng(101 + arm as u64);
+            let live = with_every_block(forced, || {
+                let engine = open(dir.path(), Some(BOUND));
+                for _ in 0..800 {
+                    // Buckets arrive in any order, over a range wider than the bound, so a point
+                    // older than everything held is written into a full series.
+                    any_arm_write(&engine, arm, 1_000 + rng.next(300), 1 + rng.next(4) as i64);
+                }
+                series_of(&engine, any_arm_key(arm))
+            });
+            assert_eq!(live.len(), BOUND, "arm {arm}, forced={forced}: the bound did not hold a live series");
+            let got = recovered_series(dir.path(), Some(BOUND), any_arm_key(arm));
+            assert_eq!(got, live, "arm {arm}, forced={forced}: an out-of-order history recovered as another series");
+            assert_eq!(got.keys().next_back(), live.keys().next_back(), "arm {arm}, forced={forced}: the newest bucket was dropped");
+        }
+    }
+}
+
+fn recovered_series(dir: &std::path::Path, bound: Option<usize>, key: &str) -> BTreeMap<u64, i64> {
+    let engine = open(dir, bound);
+    series_of(&engine, key)
+}
+
+#[test]
+fn replaying_a_counter_log_twice_or_after_a_graceful_reload_gives_one_series() {
+    const BOUND: usize = 40;
+    for arm in [4usize, 1] {
+        let dir = tempfile::tempdir().unwrap();
+        let live = {
+            let engine = open(dir.path(), Some(BOUND));
+            for step in 0..600u64 {
+                any_arm_write(&engine, arm, 1_000 + step * 3, 1);
+            }
+            series_of(&engine, any_arm_key(arm))
+        };
+        // The same log replayed twice: each recovery reads its own copy of what the crash left.
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        copy_dir_cut_log(dir.path(), first.path(), 0);
+        copy_dir_cut_log(dir.path(), second.path(), 0);
+        let a = recovered_series(first.path(), Some(BOUND), any_arm_key(arm));
+        let b = recovered_series(second.path(), Some(BOUND), any_arm_key(arm));
+        assert_eq!(a, live, "arm {arm}: a first replay is not the live series");
+        assert_eq!(a, b, "arm {arm}: two replays of one log are two series");
+        // A replay of a log a recovery has already replayed and written back.
+        {
+            let engine = open(first.path(), Some(BOUND));
+            engine.unload_shard(1);
+        }
+        assert_eq!(
+            recovered_series(first.path(), Some(BOUND), any_arm_key(arm)),
+            live,
+            "arm {arm}: a replay after a graceful reload is not the live series"
+        );
+    }
+}
+
+#[test]
+fn a_counter_bound_changed_between_runs_recovers_as_the_write_path_held_it() {
+    // SHRUNK WHILE RUNNING, then written: the records after the change replay under the new bound.
+    for arm in [4usize, 1] {
+        let dir = tempfile::tempdir().unwrap();
+        let live = {
+            let engine = open(dir.path(), Some(40));
+            for step in 0..300u64 {
+                any_arm_write(&engine, arm, 1_000 + step * 3, 1);
+            }
+            set_bound(&engine, 25, 3);
+            for step in 300..600u64 {
+                any_arm_write(&engine, arm, 1_000 + step * 3, 1);
+            }
+            series_of(&engine, any_arm_key(arm))
+        };
+        assert_eq!(live.len(), 25, "arm {arm}: the shrunk bound did not hold a live series");
+        assert_eq!(
+            recovered_series(dir.path(), None, any_arm_key(arm)),
+            live,
+            "arm {arm}: a bound shrunk while running recovered as another series"
+        );
+    }
+    // GROWN WHILE RUNNING: nothing a smaller bound dropped may come back, and the larger bound fills.
+    for arm in [4usize, 1] {
+        let dir = tempfile::tempdir().unwrap();
+        let live = {
+            let engine = open(dir.path(), Some(25));
+            for step in 0..300u64 {
+                any_arm_write(&engine, arm, 1_000 + step * 3, 1);
+            }
+            set_bound(&engine, 40, 3);
+            for step in 300..600u64 {
+                any_arm_write(&engine, arm, 1_000 + step * 3, 1);
+            }
+            series_of(&engine, any_arm_key(arm))
+        };
+        assert_eq!(live.len(), 40, "arm {arm}: the grown bound did not hold a live series");
+        assert_eq!(
+            recovered_series(dir.path(), None, any_arm_key(arm)),
+            live,
+            "arm {arm}: a bound grown while running recovered as another series"
+        );
+    }
+    // SHRUNK BETWEEN RUNS: the log was written under 40; the new run is configured with 25. A load
+    // trims nothing (a write bound, not a resident invariant), the next write trims to the new bound,
+    // and the series is then the one a process that never restarted holds.
+    for arm in [4usize, 1] {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_dir = tempfile::tempdir().unwrap();
+        let history = |engine: &TemporalEngine| {
+            for step in 0..600u64 {
+                any_arm_write(engine, arm, 1_000 + step * 3, 1);
+            }
+        };
+        let live_at_40 = {
+            let engine = open(dir.path(), Some(40));
+            history(&engine);
+            series_of(&engine, any_arm_key(arm))
+        };
+        let reference = {
+            let engine = open(reference_dir.path(), Some(40));
+            history(&engine);
+            set_bound(&engine, 25, 3);
+            any_arm_write(&engine, arm, 1_000_000, 1);
+            series_of(&engine, any_arm_key(arm))
+        };
+        let engine = open(dir.path(), None);
+        assert_eq!(
+            series_of(&engine, any_arm_key(arm)),
+            live_at_40,
+            "arm {arm}: a load trimmed durable points"
+        );
+        set_bound(&engine, 25, 3);
+        any_arm_write(&engine, arm, 1_000_000, 1);
+        assert_eq!(series_of(&engine, any_arm_key(arm)), reference, "arm {arm}: the next write did not trim to the new bound");
     }
 }

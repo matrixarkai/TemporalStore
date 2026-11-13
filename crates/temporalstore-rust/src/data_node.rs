@@ -58,6 +58,7 @@ use crate::types::{
 #[path = "data_node/data_node_lifecycle.rs"]
 mod lifecycle;
 mod dirty_tracking;
+mod borrowed_hash_rows;
 mod shard_lifecycle;
 mod task_execution;
 mod runtime_reports;
@@ -1679,7 +1680,7 @@ pub struct StorageMetricsReapReport {
     /// durable.
     #[serde(default)]
     pub undumped_wal_records: u64,
-    /// Bytes the write-ahead log and the index log have written.
+    /// Bytes the write-ahead log and the index log hold now.
     #[serde(default)]
     pub wal_bytes: u64,
     #[serde(default)]
@@ -2827,6 +2828,7 @@ impl DataNodeRuntime {
             timestamp_field: String::new(),
             timestamp_seconds: 0,
             timestamp_nanos: 0,
+            ttl_ms: None,
             entries: Vec::new(),
         };
         if let Err(status) = validate_foreground_write_allowed_inner(
@@ -2866,6 +2868,7 @@ impl DataNodeRuntime {
 
         let fields = request.fields;
         let timestamp_field = request.timestamp_field;
+        let ttl_ms = request.ttl_ms;
         SharedWriteExecution::Expanded(self.batch_execute_inner(BatchExecuteRequest {
             shard_id: request.shard_id,
             commands: request
@@ -2876,6 +2879,7 @@ impl DataNodeRuntime {
                     timestamp_field: timestamp_field.clone(),
                     timestamp_seconds: row.1,
                     timestamp_nanos: row.2,
+                    ttl_ms,
                     entries: fields
                         .iter()
                         .cloned()
@@ -2928,6 +2932,16 @@ impl DataNodeRuntime {
             return SharedWriteExecution::Compact(response);
         }
         drop(shared_wal_sink);
+
+        if request.ttl_ms.is_some() {
+            return SharedWriteExecution::Expanded(BatchExecuteResponse {
+                status: Status::error(
+                    "compact_ttl_write_unavailable",
+                    "shared expiry writes require the packed data-only path",
+                ),
+                responses: Vec::new(),
+            });
+        }
 
         let fields = request.fields;
         SharedWriteExecution::Expanded(self.batch_execute_inner(BatchExecuteRequest {

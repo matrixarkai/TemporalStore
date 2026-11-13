@@ -340,6 +340,11 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             member: command.member,
             increment: command.increment,
         },
+        v1::command::Kind::ZsetCountAdjust(command) => types::Command::ZSetCountAdjust {
+            key: command.key,
+            member: command.member,
+            increment: command.increment,
+        },
         v1::command::Kind::ZsetPop(command) => types::Command::ZSetPop {
             key: command.key,
             min: command.min,
@@ -365,12 +370,22 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 .map(|entry| (entry.field, entry.value))
                 .collect(),
         },
+        v1::command::Kind::HashMultiSetWithTtl(command) => types::Command::HashMultiSetWithTtl {
+            key: command.key,
+            entries: command
+                .entries
+                .into_iter()
+                .map(|entry| (entry.field, entry.value))
+                .collect(),
+            ttl_ms: command.ttl_ms,
+        },
         v1::command::Kind::HashMultiSetIfTimestampOlder(command) => {
             types::Command::HashMultiSetIfTimestampOlder {
                 key: command.key,
                 timestamp_field: command.timestamp_field,
                 timestamp_seconds: command.timestamp_seconds,
                 timestamp_nanos: command.timestamp_nanos,
+                ttl_ms: command.ttl_ms,
                 entries: command
                     .entries
                     .into_iter()
@@ -387,6 +402,18 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             member: command.member,
         },
         v1::command::Kind::SetMembers(command) => types::Command::SetMembers { key: command.key },
+        v1::command::Kind::SetScan(command) => types::Command::SetScan {
+            key: command.key,
+            after: command.after,
+            limit: usize::try_from(command.limit)
+                .map_err(|_| TonicStatus::invalid_argument("set scan limit is too large"))?,
+        },
+        v1::command::Kind::ZsetScan(command) => types::Command::ZSetScan {
+            key: command.key,
+            after: command.after,
+            limit: usize::try_from(command.limit)
+                .map_err(|_| TonicStatus::invalid_argument("zset scan limit is too large"))?,
+        },
         v1::command::Kind::FeatureAppend(command) => types::Command::FeatureAppend {
             key: command.key,
             points: command
@@ -395,6 +422,17 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 .map(sdk_feature_point_to_types)
                 .collect(),
         },
+        v1::command::Kind::FeatureAppendWithTtl(command) => {
+            types::Command::FeatureAppendWithTtl {
+                key: command.key,
+                points: command
+                    .points
+                    .into_iter()
+                    .map(sdk_feature_point_to_types)
+                    .collect(),
+                ttl_ms: command.ttl_ms,
+            }
+        }
         v1::command::Kind::FeatureQuery(command) => types::Command::FeatureQuery {
             key: command.key,
             start_ms: command.start_ms,
@@ -758,10 +796,7 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
     })
 }
 
-/// THE DURABLE ENTITY, RUST TO WIRE. ALL TEN FIELDS.
-///
-/// `vector` passes through unchanged -- no quantisation -- and carries no model hash, which is
-/// `ContextEntity`'s existing design and not a guard dropped here.
+/// THE DURABLE ENTITY, RUST TO WIRE. ALL ELEVEN FIELDS.
 pub(crate) fn context_entity_record_to_proto(
     entity: &types::ContextEntity,
 ) -> v1::ContextEntityRecord {
@@ -776,10 +811,11 @@ pub(crate) fn context_entity_record_to_proto(
         confidence: entity.confidence,
         source_event_hashes: entity.source_event_hashes.clone(),
         vector: entity.vector.clone(),
+        embedding_model_hash: entity.embedding_model_hash,
     }
 }
 
-/// THE DURABLE ENTITY, WIRE TO RUST. ALL TEN FIELDS.
+/// THE DURABLE ENTITY, WIRE TO RUST. ALL ELEVEN FIELDS.
 pub(crate) fn context_entity_record_from_proto(
     entity: v1::ContextEntityRecord,
 ) -> types::ContextEntity {
@@ -794,6 +830,7 @@ pub(crate) fn context_entity_record_from_proto(
         confidence: entity.confidence,
         source_event_hashes: entity.source_event_hashes,
         vector: entity.vector,
+        embedding_model_hash: entity.embedding_model_hash,
     }
 }
 
@@ -927,15 +964,14 @@ pub(crate) fn context_pack_audit_record_from_proto(
     }
 }
 
-/// THE DURABLE EVENT, RUST TO WIRE. ALL FIFTEEN FIELDS.
+/// THE DURABLE EVENT, RUST TO WIRE. ALL SIXTEEN FIELDS.
 ///
 /// There is no client projection of `ContextEvent` to be tempted by, but the rule is the one
 /// `context_node_record_to_proto` below follows: a durable record gets its own message. Seven of
-/// the fifteen are `skip_serializing` in the JSON form and are carried anyway, because the WAL's
+/// the sixteen are `skip_serializing` in the JSON form and are carried anyway, because the WAL's
 /// contract is to reproduce the COMMAND rather than the JSON form's write policy.
 ///
-/// `vector` passes through unchanged -- no quantisation -- and carries no model hash, which is
-/// this record's existing design and not a guard dropped here.
+/// `vector` passes through unchanged -- no quantisation.
 #[allow(deprecated)]
 pub(crate) fn context_event_record_to_proto(
     event: &types::ContextEvent,
@@ -956,10 +992,11 @@ pub(crate) fn context_event_record_to_proto(
         related_node_hashes: event.related_node_hashes.clone(),
         compact_attrs: event.compact_attrs.clone(),
         vector: event.vector.clone(),
+        embedding_model_hash: event.embedding_model_hash,
     }
 }
 
-/// THE DURABLE EVENT, WIRE TO RUST. ALL FIFTEEN FIELDS.
+/// THE DURABLE EVENT, WIRE TO RUST. ALL SIXTEEN FIELDS.
 #[allow(deprecated)]
 pub(crate) fn context_event_record_from_proto(
     event: v1::ContextEventRecord,
@@ -980,6 +1017,7 @@ pub(crate) fn context_event_record_from_proto(
         related_node_hashes: event.related_node_hashes,
         compact_attrs: event.compact_attrs,
         vector: event.vector,
+        embedding_model_hash: event.embedding_model_hash,
     }
 }
 

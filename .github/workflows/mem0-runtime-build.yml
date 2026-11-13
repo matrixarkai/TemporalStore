@@ -1,0 +1,124 @@
+name: Mem0 runtime bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Public source revision to build
+        required: true
+        default: main
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/mem0-runtime-build.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mem0-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Ubuntu 22 runtime bundle
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision || github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          . /etc/os-release
+          test "$ID:$VERSION_ID:$(uname -m)" = ubuntu:22.04:x86_64
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential clang libclang-dev cmake protobuf-compiler pkg-config libssl-dev
+          rustup toolchain install 1.89.0 --profile minimal --no-self-update
+          rustup default 1.89.0
+
+      - name: Cache Ubuntu 22 build inputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: mem0-runtime-ubuntu22-v1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: mem0-runtime-ubuntu22-v1-
+
+      - name: Pin source and build services
+        id: source
+        run: |
+          set -euo pipefail
+          PACKAGE_DIR="$RUNNER_TEMP/mem0-runtime"
+          echo "PACKAGE_DIR=$PACKAGE_DIR" >> "$GITHUB_ENV"
+          revision=$(git rev-parse HEAD)
+          [[ $revision =~ ^[0-9a-f]{40}$ ]]
+          git diff --exit-code HEAD
+          test -z "$(git ls-files --others --exclude-standard)"
+          sha256sum Cargo.lock > "$RUNNER_TEMP/mem0-lock-before.sha256"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          cargo build --locked --release -p temporalstore-rust --bin server --bin proxy --bin metaserver --bin mem0_scale_harness
+          sha256sum --check "$RUNNER_TEMP/mem0-lock-before.sha256"
+          git diff --exit-code HEAD
+          test -z "$(git ls-files --others --exclude-standard)"
+          install -d "$PACKAGE_DIR/bin"
+          for binary in server proxy metaserver mem0_scale_harness; do
+            install -m 755 "target/release/$binary" "$PACKAGE_DIR/bin/$binary"
+          done
+          install -m 644 Cargo.lock LICENSE NOTICE docs/THIRD-PARTY-NOTICES.md "$PACKAGE_DIR/"
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/mem0-metadata.json"
+
+      - name: Write portable build manifest
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import subprocess
+
+          def command(*args):
+              return subprocess.check_output(args, text=True).strip()
+
+          root = pathlib.Path(os.environ["PACKAGE_DIR"])
+          metadata = json.loads((pathlib.Path(os.environ["RUNNER_TEMP"]) / "mem0-metadata.json").read_text())
+          features = {node["id"]: sorted(node["features"]) for node in metadata["resolve"]["nodes"]}
+          packages = [{"name": row["name"], "version": row["version"], "source": row["source"],
+                       "license": row["license"], "features": features.get(row["id"], [])}
+                      for row in metadata["packages"]]
+          packages.sort(key=lambda row: (row["name"], row["version"], row["source"] or ""))
+          binary_hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                           for path in sorted((root / "bin").iterdir())}
+          manifest = {"revision": command("git", "rev-parse", "HEAD"),
+                      "build_recipe_revision": os.environ.get("GITHUB_WORKFLOW_SHA"),
+                      "tree": command("git", "rev-parse", "HEAD^{tree}"),
+                      "platform": "ubuntu-22.04-x86_64", "profile": "release",
+                      "rustc": command("rustc", "--version"),
+                      "glibc": command("getconf", "GNU_LIBC_VERSION"),
+                      "cargo_lock_sha256": hashlib.sha256((root / "Cargo.lock").read_bytes()).hexdigest(),
+                      "runner_script_sha256": hashlib.sha256(pathlib.Path("scripts/mem0_scale_local.sh").read_bytes()).hexdigest(),
+                      "binaries_sha256": binary_hashes, "resolved_packages": packages}
+          (root / "build.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+          PY
+          (cd "$PACKAGE_DIR" && sha256sum bin/* Cargo.lock LICENSE NOTICE THIRD-PARTY-NOTICES.md build.json > SHA256SUMS)
+
+      - name: Archive runtime bundle
+        run: |
+          set -euo pipefail
+          revision=$(git rev-parse HEAD)
+          tar -C "$PACKAGE_DIR" -czf "$RUNNER_TEMP/mem0-runtime-$revision.tar.gz" .
+          echo "Runtime bundle source: $revision" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Build-only artifact; no ingestion, extraction or retrieval acceptance is implied.' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mem0-runtime-${{ steps.source.outputs.revision }}
+          path: ${{ runner.temp }}/mem0-runtime-${{ steps.source.outputs.revision }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7

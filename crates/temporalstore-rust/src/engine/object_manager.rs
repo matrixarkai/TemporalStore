@@ -59,6 +59,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
     let mut object_ref_counts = std::collections::BTreeMap::<u64, usize>::new();
     let mut objects = std::collections::BTreeMap::<u64, ObjectRuntimeState>::new();
     let mut live_block_ref_count = 0usize;
+    let identities = shard.bucket_index.block_identities();
 
     for bucket in shard.bucket_index.bucket_map.values() {
         for object_id in &bucket.object_index {
@@ -92,7 +93,6 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 (existing, None) => existing,
             };
         }
-        let identities = shard.bucket_index.block_identities();
         for (handle, block) in bucket.block_index.iter() {
             // THE OBJECT COMES FROM BESIDE THE BLOCK, AND A LIVE BLOCK NOTHING BESIDE IT NAMES IS
             // NO LONGER SKIPPED.

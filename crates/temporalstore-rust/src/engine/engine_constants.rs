@@ -12,7 +12,7 @@ pub(super) const FEATURE_BLOCK_BINARY_MAGIC: &[u8] = b"TSFPB1\n";
 #[cfg(test)]
 pub(super) const TIMESTAMPED_KV_BLOCK_TARGET_BYTES: usize =
     crate::storage_config::DEFAULT_CONTEXT_BLOCK_TARGET_BYTES;
-pub(super) const CONTEXT_TIMELINE_FANOUT: u64 = 1024 * 1024;
+pub(crate) const CONTEXT_TIMELINE_FANOUT: u64 = 1024 * 1024;
 pub(super) const CONTEXT_DEFAULT_LIMIT: usize = 100;
 pub(super) const CONTEXT_MAX_LIMIT: usize = 1000;
 pub(super) const CONTEXT_MAX_FILTER_VALUES: usize = 32;

@@ -14,90 +14,51 @@ use super::*;
 /// which code ran, and a change that moves the index's MEANING cannot otherwise say whether the path
 /// it cares about was exercised at all.
 ///
-/// This change bumps `SHARD_INDEX_FORMAT_VERSION` from 3 to 5, so EVERY EXISTING STORE'S INDEX IS
-/// REFUSED ON ITS FIRST LOAD and rebuilt from the log. That is correct -- it is the whole purpose of
-/// the stamp -- and it is the largest operational consequence of this change, costing whatever a full
-/// replay costs on a large store. Before this counter nothing reported it: the refusal is a
-/// `return Ok(None)` that the caller cannot tell from an absent index.
-///
-/// `a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index` turns the counter into a
-/// proof, and asserts the membership is right on BOTH paths -- a counter saying "replayed" beside a
-/// wrong answer would be worse than no counter.
+/// A stamp bump makes EVERY EXISTING STORE'S INDEX UNREADABLE ON ITS FIRST LOAD: the container header
+/// names another struct version, `decode_index_bytes` refuses it, and the shard rebuilds from the
+/// log. That is correct -- it is the whole purpose of the stamp -- and it is the largest operational
+/// consequence of a bump, costing whatever a full replay costs on a large store. The refusal is a
+/// `return Ok(None)` that the caller cannot tell from an absent index, so it is COUNTED, as
+/// `Undecodable`, and `a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index` turns
+/// that counter into a proof and asserts the membership is right on BOTH paths -- a counter saying
+/// "replayed" beside a wrong answer would be worse than no counter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexLoadPath {
     /// The file was there, decoded, and its stamp was current. The index was USED.
     Accepted,
-    /// The file was there and decoded and its stamp was OLD, so it was refused and the caller
-    /// replays. This is the arm the stamp exists for and the one nothing could see before.
-    RefusedStaleStamp,
     /// There is no index file. A crash before the first compaction looks like this.
     Absent,
-    /// The file was there and could not be decoded at all.
+    /// The file was there and was refused: it could not be decoded at all, or it carries another
+    /// struct version. The caller replays.
     Undecodable,
 }
 
 static INDEX_LOADS_ACCEPTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static INDEX_LOADS_REFUSED_STALE: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
 static INDEX_LOADS_ABSENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static INDEX_LOADS_UNDECODABLE: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// IS THIS IMAGE'S STAMP TOO OLD TO TRUST? THE COMPARISON, WRITTEN ONCE.
+/// Count one load of the persisted index, by the way it went.
 ///
-/// `index_format_version` exists because a stale index decodes CLEANLY -- the types are
-/// unchanged -- while a field's MEANING has moved under it, so trusting it serves wrong data with
-/// no error anywhere. The constant is therefore a claim about every door that turns stored bytes
-/// into a `ShardState` somebody acts on, and it used to be enforced at exactly one of them.
-///
-/// MEASURED, which is why this exists: `decode_index_bytes` has six production callers and only
-/// `load_index_inner` read the stamp. A stamp-13 image installed through
-/// `install_bucket_dump_manifest` reached a live shard with all four counters below at ZERO -- it
-/// did not skip the refusal, it never entered the code the refusal lived in. See
-/// `engine::tests::the_stamp_refuses_a_legacy_sequence_map`.
-///
-/// Spelled as a predicate rather than copied inline at each door so the ORDER of the comparison
-/// cannot drift between them: `<` and not `!=`, because a FUTURE stamp is a different question
-/// (`decode_index_bytes`'s binary arm refuses that one on equality) and because the direction
-/// that fails silently is a stamp that is too LOW.
-pub(super) fn index_stamp_is_stale(shard: &ShardState) -> bool {
-    shard.index_format_version < super::SHARD_INDEX_FORMAT_VERSION
-}
-
-/// The same question at a door that INSTALLS state, which also counts the refusal.
-///
-/// Counted so a refusal is distinguishable from an absence: every door here answers its caller
-/// with the same "no usable index" it would give for a missing file, so without the counter
-/// nothing downstream can tell "refused because stale" from "there was nothing there". The
-/// report and plan paths deliberately use the bare predicate above instead -- they install
-/// nothing, and counting them would make the tally mean something other than "an image was
-/// refused on the way in".
-pub(super) fn refuse_stale_index_stamp(shard: &ShardState) -> bool {
-    if index_stamp_is_stale(shard) {
-        note_index_load(IndexLoadPath::RefusedStaleStamp);
-        return true;
-    }
-    false
-}
-
-fn note_index_load(path: IndexLoadPath) {
+/// Counted so a refusal is distinguishable from an absence: the doors that read an index answer
+/// their caller with the same "no usable index" they would give for a missing file, so without the
+/// counter nothing downstream can tell "refused" from "there was nothing there".
+pub(super) fn note_index_load(path: IndexLoadPath) {
     let counter = match path {
         IndexLoadPath::Accepted => &INDEX_LOADS_ACCEPTED,
-        IndexLoadPath::RefusedStaleStamp => &INDEX_LOADS_REFUSED_STALE,
         IndexLoadPath::Absent => &INDEX_LOADS_ABSENT,
         IndexLoadPath::Undecodable => &INDEX_LOADS_UNDECODABLE,
     };
     counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// (accepted, refused-stale, absent, undecodable) since the last reset.
+/// (accepted, absent, undecodable) since the last reset.
 ///
 /// A TUPLE AND NOT A SUM. A guard that only had the total could not tell a store that read its index
 /// from one that replayed, which is the entire distinction this exists to draw.
-pub fn index_load_path_counts() -> (u64, u64, u64, u64) {
+pub fn index_load_path_counts() -> (u64, u64, u64) {
     (
         INDEX_LOADS_ACCEPTED.load(std::sync::atomic::Ordering::Relaxed),
-        INDEX_LOADS_REFUSED_STALE.load(std::sync::atomic::Ordering::Relaxed),
         INDEX_LOADS_ABSENT.load(std::sync::atomic::Ordering::Relaxed),
         INDEX_LOADS_UNDECODABLE.load(std::sync::atomic::Ordering::Relaxed),
     )
@@ -106,12 +67,57 @@ pub fn index_load_path_counts() -> (u64, u64, u64, u64) {
 /// Forget the counts, so a test measures its own loads rather than the suite before it.
 pub fn reset_index_load_path_counts() {
     INDEX_LOADS_ACCEPTED.store(0, std::sync::atomic::Ordering::Relaxed);
-    INDEX_LOADS_REFUSED_STALE.store(0, std::sync::atomic::Ordering::Relaxed);
     INDEX_LOADS_ABSENT.store(0, std::sync::atomic::Ordering::Relaxed);
     INDEX_LOADS_UNDECODABLE.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 impl TemporalEngine {
+    /// Raft state images move materialized state into a fresh engine-WAL namespace.
+    /// The source engine's sequence does not identify any record in that new log.
+    pub(crate) fn install_index_bytes_in_empty_wal(
+        &self,
+        shard_id: ShardId,
+        bytes: &[u8],
+        routing_range: crate::engine::routing_range_stamp::RoutingRangeStamp,
+    ) -> Result<(), std::io::Error> {
+        if self.shards.read().expect("engine lock poisoned").contains_key(&shard_id)
+            || self.wal_store.stats_without_rescan(shard_id).last_sequence != 0
+        {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                "a rebased index requires an unloaded shard and an empty local WAL"));
+        }
+        let mut snapshot = decode_index_bytes(bytes)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        if snapshot.bucket_index.bucket_map.values().any(|bucket| {
+            bucket.block_index.values().any(|block| crate::wal_record::is_wal_resident(block.address.block_slab_id()))
+        }) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                "an imported physical image cannot depend on source WAL frames"));
+        }
+        snapshot.applied_wal_sequence = Some(0);
+        snapshot.wal_resident_blocks.clear();
+        self.install_index_bytes(shard_id, &serialize_index(&snapshot), routing_range)
+    }
+
+    // The image and watermark share one guarded view. Encode the owned snapshot only
+    // after releasing the guard, so serialization and sync do not block serving reads.
+    pub(super) fn capture_shard_checkpoint(
+        &self,
+        shard_id: ShardId,
+    ) -> Option<(ShardState, checkpoint_publication::CheckpointPublication)> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&shard_id)?;
+        let anchor = shard.checkpoint_wal_sequence()?;
+        let publication = self.checkpoint_publications.capture(shard_id);
+        let mut snapshot = shard.clone();
+        snapshot.applied_wal_sequence = Some(anchor);
+        drop(shards);
+        // Release markers are memory-only. Persist complete block indexes in the owned
+        // image without undoing eviction in the live shard or holding its read guard.
+        storage_bucket_internals::restore_released_buckets_in_checkpoint(&mut snapshot, shard_id);
+        Some((snapshot, publication))
+    }
+
     pub(super) fn index_path(&self, shard_id: ShardId) -> PathBuf {
         self.index_dir.join(format!("shard-{shard_id}.index.json"))
     }
@@ -162,13 +168,21 @@ impl TemporalEngine {
         shard_id: ShardId,
     ) -> Result<Vec<u8>, std::io::Error> {
         if !bulk_ingest_mode() {
-            if let Some(shard) = self
-                .shards
-                .read()
-                .expect("engine lock poisoned")
-                .get(&shard_id)
-            {
-                return Ok(serialize_index(shard));
+            let shards = self.shards.read().expect("engine lock poisoned");
+            if let Some(shard) = shards.get(&shard_id) {
+                if shard.checkpoint_wal_sequence().is_none() {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                        "checkpoint state has an unapplied WAL prefix"));
+                }
+                if shard.bucket_index.released_buckets.is_empty() {
+                    return Ok(serialize_index(shard));
+                }
+                let mut snapshot = shard.clone();
+                drop(shards);
+                storage_bucket_internals::restore_released_buckets_in_checkpoint(
+                    &mut snapshot, shard_id,
+                );
+                return Ok(serialize_index(&snapshot));
             }
         }
         fs::read(self.index_path(shard_id))
@@ -323,27 +337,22 @@ impl TemporalEngine {
         let mut shard = match read {
             Ok(bytes) => match crate::engine::decode_index_bytes(&bytes) {
                 Ok(shard) => {
-                    // Refuse an index written in an older on-disk shape. A stale index decodes
-                    // CLEANLY -- the types are unchanged -- while a field's meaning has moved
-                    // under it, so trusting it serves wrong data with no error anywhere. The
-                    // concrete case: before version 2, context_events was keyed by timeline_key;
-                    // it is keyed by event_id_hash now, so a v1 index yields timeline keys in the
-                    // event-id slot and an empty context_event_timeline, and every time-windowed
-                    // read silently returns nothing.
-                    //
-                    // Refusing is treated exactly like a corrupt or absent index: the caller
-                    // falls back to WAL replay, which rebuilds both maps correctly through
-                    // insert_context_event_views. Slower, and correct.
-                    //
-                    // COUNTED, because all three outcomes below return the same `Ok(None)` and a
-                    // caller cannot tell a refusal from an absence. See
-                    // `index_load_path_counts` just above.
-                    if refuse_stale_index_stamp(&shard) {
-                        return Ok(None);
-                    }
                     note_index_load(IndexLoadPath::Accepted);
                     shard
                 }
+                // AN INDEX WRITTEN IN AN OLDER ON-DISK SHAPE IS HERE TOO. A stale index decodes
+                // CLEANLY -- the types are unchanged -- while a field's meaning has moved under
+                // it, so trusting it serves wrong data with no error anywhere. The concrete case:
+                // before version 2, context_events was keyed by timeline_key; it is keyed by
+                // event_id_hash now, so a v1 index yields timeline keys in the event-id slot and
+                // every time-windowed read silently returns nothing. The container header names the
+                // struct version and `decode_index_bytes` refuses any that is not this binary's
+                // before it reads the payload, so a stale image never decodes at all.
+                //
+                // Refusing is treated exactly like a corrupt or absent index: the caller falls
+                // back to WAL replay, which rebuilds the maps correctly. Slower, and correct. It
+                // is COUNTED, because all three outcomes return the same `Ok(None)`-or-default and
+                // a caller cannot tell a refusal from an absence. See `index_load_path_counts`.
                 Err(_) => {
                     note_index_load(IndexLoadPath::Undecodable);
                     return Ok(None);
@@ -550,26 +559,18 @@ impl TemporalEngine {
     /// after driving many extract_context calls under MATRIXARK_BULK_INGEST=1,
     /// which skips per-record persistence). Also refreshes the index-log tail.
     pub fn flush_shard_index(&self, shard_id: ShardId) {
-        // Make the chunk's deferred bulk writes durable before publishing the
-        // served index: fsync block slabs + slab manifest, then the WAL. If the
-        // barrier FAILS, bail without pinning applied_wal_sequence or writing the index:
-        // advancing the durable anchor past blocks that never reached disk would suppress
-        // their replay on reload -> silent data loss. advances the watermark only after
-        // the commit succeeds; the next flush retries.
-        if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
-            return;
-        }
         // Read OUTSIDE the shards write lock. `shard_routing_range` takes `infos.read()`, copies
         // the two numbers out and drops the guard before it returns, so no path ever HOLDS one of
         // these locks while acquiring the other.
         let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
-        let index_bytes = {
+        let (mut snapshot, previous_anchor, anchor, publication) = {
             // Reconstruct everything the per-command bulk path deferred: promote
             // model-map blocks into bucket_index, rebuild the secondary views, refresh
-            // runtime flags, then serialize once. Needs a write lock.
+            // runtime flags, then clone for encoding outside the write lock.
             let mut shards = self.shards.write().expect("engine lock poisoned");
             match shards.get_mut(&shard_id) {
                 Some(shard) => {
+                    let Some(applied_anchor) = shard.checkpoint_wal_sequence() else { return; };
                     if promote_model_maps_to_bucket_index_authority(
                         shard_id,
                         shard,
@@ -592,7 +593,7 @@ impl TemporalEngine {
                     // written by the live process, so it pins the anchor to the WAL
                     // sequence observed before the batch began and lets restart
                     // replay the interleaved tail.
-                    let default_anchor = self.wal_store.stats(shard_id).last_sequence;
+                    let default_anchor = applied_anchor;
                     let anchor = std::env::var("MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE")
                         .ok()
                         .and_then(|value| value.trim().parse::<u64>().ok())
@@ -609,15 +610,33 @@ impl TemporalEngine {
                             }
                         })
                         .unwrap_or(default_anchor);
-                    shard.applied_wal_sequence = Some(anchor);
-                    serialize_index(shard)
+                    let publication = self.checkpoint_publications.capture(shard_id);
+                    (shard.clone(), shard.applied_wal_sequence, anchor, publication)
                 }
                 None => return,
             }
         };
+        snapshot.applied_wal_sequence = Some(anchor);
+        let index_bytes = serialize_index(&snapshot);
+        drop(snapshot);
+        // The barrier must cover the captured image, not an earlier state. Keep the live
+        // anchor unchanged until publication succeeds, and never overwrite a newer writer's.
+        if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
+            return;
+        }
         // Write the served shard index directly, bypassing the bulk-mode gate.
-        let _ = fs::create_dir_all(&self.index_dir);
-        let _ = atomic_write_bytes(&self.index_path(shard_id), &index_bytes);
+        let published = self.checkpoint_publications.publish(&publication, || {
+            fs::create_dir_all(&self.index_dir)?;
+            atomic_write_bytes(&self.index_path(shard_id), &index_bytes)
+        });
+        if !matches!(published, Ok(Some(()))) {
+            return;
+        }
+        if let Some(shard) = self.shards.write().expect("engine lock poisoned").get_mut(&shard_id) {
+            if shard.applied_wal_sequence == previous_anchor {
+                shard.applied_wal_sequence = Some(anchor);
+            }
+        }
     }
 
     /// MANIFEST-CONFORMANCE FOLD threshold check: dump the index catalog when the undumped index-log
@@ -693,59 +712,36 @@ impl TemporalEngine {
         {
             return None;
         }
-        // 1. Make deferred data blocks + the slab manifest + the WAL durable BEFORE materializing
-        //    the dump, so nothing the anchor references is un-fsynced. Bail (without advancing the
-        //    watermark) if the barrier fails; the next cycle retries.
+        // Capture an immutable image and its anchor before syncing their backing storage.
+        // Writers during the barrier belong to the next checkpoint, not to this image.
+        let (snapshot, publication) = self.capture_shard_checkpoint(shard_id)?;
+        let anchor = snapshot.applied_wal_sequence.unwrap_or(0);
+        let index_bytes = serialize_index(&snapshot);
+        drop(snapshot);
         if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
-            return None;
-        }
-        // 2. Serialize + durably write the base served index (collapses the legacy per-write
-        //    whole-index rewrite into this threshold dump). Also read the WAL anchor the index
-        //    reflects for the folded MetaItem.
-        let (index_bytes, anchor) = {
-            let shards = self.shards.read().expect("engine lock poisoned");
-            match shards.get(&shard_id) {
-                Some(shard) => (
-                    serialize_index(shard),
-                    shard.applied_wal_sequence.unwrap_or(0),
-                ),
-                None => return None,
-            }
-        };
-        if self
-            .persist_index_bytes_durable(shard_id, &index_bytes)
-            .is_err()
-        {
             return None;
         }
         // 3. Fold the slab catalog into a MetaItem anchor and append it durably to the
         //    index-log. This is this design's "dump the slab catalog into the index log" step:
         //    after it, the slab catalog is recoverable from the durable log, so the per-write
         //    slab-manifest file stops being the source of truth.
-        let slab_version = anchor;
-        let slabs = self.block_store.slab_catalog(slab_version);
-        let meta = crate::index_log::MetaItem {
-            version: 1,
-            start_wal_sequence: anchor,
-            timestamp_ms: now_ms(),
-            slab_version,
-            slabs,
-        };
-        let meta_sequence = match self.index_log_store.append_delta(
-            shard_id,
-            Vec::new(),
-            Vec::new(),
-            Some(anchor),
-            Some(meta),
-            false,
-            true,
-        ) {
-            Ok(sequence) => sequence,
-            Err(_) => return None,
-        };
-        // 4. The base + folded anchor are durable; advance the dumped watermark so the undumped
-        //    gap resets and the next threshold is measured from here.
-        self.index_log_store.mark_catalog_dumped(shard_id);
+        let meta_sequence = self.checkpoint_publications.publish(&publication, || {
+            fs::create_dir_all(&self.index_dir)?;
+            atomic_write_bytes(&self.index_path(shard_id), &index_bytes)?;
+            let slabs = self.block_store.slab_catalog(anchor);
+            let meta = crate::index_log::MetaItem {
+                version: 1,
+                start_wal_sequence: anchor,
+                timestamp_ms: now_ms(),
+                slab_version: anchor,
+                slabs,
+            };
+            let sequence = self.index_log_store.append_delta(
+                shard_id, Vec::new(), Vec::new(), Some(anchor), Some(meta), false, true,
+            ).map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
+            self.index_log_store.mark_catalog_dumped(shard_id);
+            Ok(sequence)
+        }).ok()??;
         Some((anchor, meta_sequence))
     }
 
@@ -937,6 +933,24 @@ impl TemporalEngine {
         self.dump_and_reclaim_index_logs_with_min_reclaimable(shard_id, min_reclaimable_bytes)
     }
 
+    pub(super) fn persist_captured_index_bytes(
+        &self,
+        shard_id: ShardId,
+        bytes: &[u8],
+        publication: &checkpoint_publication::CheckpointPublication,
+    ) -> Result<bool, std::io::Error> {
+        if bulk_ingest_mode() {
+            return Ok(false);
+        }
+        self.checkpoint_publications.publish(publication, || {
+            fs::create_dir_all(&self.index_dir)?;
+            atomic_write_bytes_synced(&self.index_path(shard_id), bytes, !wal_only_sync())?;
+            self.index_log_store.append_index_bytes(shard_id, bytes)
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
+            Ok(())
+        }).map(|published| published.is_some())
+    }
+
     pub(super) fn persist_index_bytes(
         &self,
         shard_id: ShardId,
@@ -947,13 +961,15 @@ impl TemporalEngine {
         if bulk_ingest_mode() {
             return Ok(());
         }
-        fs::create_dir_all(&self.index_dir)?;
         // Ack-path served-index checkpoint. Under the single-barrier default the durable barrier
         // is deferred (content + rename still issued): the WAL is durably synced before ack
         // and replay-on-load rebuilds the served index from it, so a stale-on-crash index
         // only costs a longer WAL replay, never an acked write. This is the served-index
         // fsync removed from the write critical path.
-        atomic_write_bytes_synced(&self.index_path(shard_id), bytes, !wal_only_sync())
+        self.checkpoint_publications.publish_current(shard_id, || {
+            fs::create_dir_all(&self.index_dir)?;
+            atomic_write_bytes_synced(&self.index_path(shard_id), bytes, !wal_only_sync())
+        })
     }
 
     /// Unconditional (bulk-gate-bypassing) index write for recovery-critical paths such as
@@ -968,8 +984,10 @@ impl TemporalEngine {
         shard_id: ShardId,
         bytes: &[u8],
     ) -> Result<(), std::io::Error> {
-        fs::create_dir_all(&self.index_dir)?;
-        atomic_write_bytes(&self.index_path(shard_id), bytes)
+        self.checkpoint_publications.publish_current(shard_id, || {
+            fs::create_dir_all(&self.index_dir)?;
+            atomic_write_bytes(&self.index_path(shard_id), bytes)
+        })
     }
 
     pub(super) fn validate_load_version(

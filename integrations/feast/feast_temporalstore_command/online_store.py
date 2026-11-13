@@ -42,8 +42,9 @@ event timestamp are one key's worth of work:
 
 Reads use bounded binary ``/batch_hash_multi_get_compact_msgpack`` requests
 with one shared field projection and one top-level status per batch.
-The common latest-value write uses ``/batch_hash_timestamp_set_msgpack`` to
-compare and replace each row atomically in one request. Augmented or
+The common latest-value write uses the packed timestamp-set routes to compare
+and replace each row atomically in one request, including optional key expiry
+on accepted rows. Augmented or
 mixed-layout writes use bounded ``/batch_write_msgpack`` command batches.
 The latest-value path falls back once to the read-then-write routes for older
 nodes, so serving still groups entities instead of issuing one request per
@@ -53,8 +54,10 @@ entity.
 from __future__ import annotations
 
 import logging
+import struct
 import zlib
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -65,7 +68,7 @@ from feast.infra.key_encoding_utils import serialize_entity_key
 from feast.infra.online_stores.online_store import OnlineStore
 from feast.infra.supported_async_methods import SupportedAsyncMethods
 from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
-from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+from feast.protos.feast.types.Value_pb2 import Value as ValueProto, ValueType
 from feast.repo_config import FeastConfigBaseModel
 from feast.types import Int32, Int64
 
@@ -120,7 +123,7 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     """Approximate encoded command bytes per HTTP batch."""
 
     key_ttl_seconds: Optional[int] = None
-    """Expiry armed on each entity key after a write.
+    """Expiry armed on each entity key and feature history series after a write.
 
     TemporalStore's command surface has no key-space scan, so this is the only
     mechanism that reclaims rows without the caller remembering their keys --
@@ -128,13 +131,19 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     """
 
     skip_dedup: bool = False
-    """Write without first reading each row's stored event timestamp.
+    """Disable stored-event timestamp suppression when set to True.
 
-    The default (``False``) matches Feast's Redis store: read the stored
-    timestamps, then write only the rows that are newer, so an out-of-order
-    materialization cannot move a feature backwards. Setting this to ``True``
-    halves the round trips and is appropriate for an initial load or an
-    append-only pipeline whose rows arrive in order.
+    The default uses an atomic conditional write for common latest-value
+    batches. History, tracking, mixed layouts and older nodes use timestamp
+    reads plus writes instead. True permits older input to replace newer data.
+    """
+
+    adaptive_timestamp_prefetch: bool = True
+    """Read timestamps before serializing mostly stale latest-value batches.
+
+    A per-thread hint learns from bulk stale rejections and turns off for
+    mostly fresh input. No timestamp values are cached. Surviving shared-layout
+    rows still use atomic conditional writes; False disables this optimization.
     """
 
     write_feature_history: bool = False
@@ -149,9 +158,17 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     hash. That is deliberate. ``FeatureQuery`` returns a window in ascending
     timestamp order and truncates with ``take(count)``, so asking it for "the
     latest point" costs O(points in the window) rather than O(1); it is a
-    history read, not a latest-value read. Turning this on adds one
-    ``FeatureAppend`` per feature per row to the **write** path and leaves the
+    history read, not a latest-value read. Turning this on adds one history
+    append per feature series in the batch to the **write** path and leaves the
     read path alone.
+    """
+
+    compact_numeric_history: bool = False
+    """Store numeric history only as serialized feature values.
+
+    Requires a node with ``feature_proto_agg_query`` support. Windowed numeric
+    aggregates scan the retained points instead of using the separate numeric
+    series, reducing write and storage cost for write-heavy history workloads.
     """
 
     track_keys_for_teardown: bool = False
@@ -186,7 +203,8 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     it. A view with a million entities would have built a million-command
     request. Chunking keeps each round trip's size a function of this setting
     and makes teardown's cost linear in a bounded number of calls instead of
-    one unbounded one.
+    one unbounded one. Tracking-set reads use cursor pages of at most 256
+    members, further capped by this setting.
     """
 
 
@@ -196,6 +214,16 @@ def _ts_field(feature_view_name: str) -> str:
 
 def _feature_field(feature_view_name: str, feature_name: str) -> str:
     return f"{feature_view_name}:{feature_name}"
+
+
+@lru_cache(maxsize=128)
+def _single_entity_prefix(join_key: str) -> Optional[bytes]:
+    prototype = EntityKeyProto(
+        join_keys=[join_key], entity_values=[ValueProto(int64_val=0)]
+    )
+    encoded = serialize_entity_key(prototype, entity_key_serialization_version=3)
+    suffix = struct.pack("<IIq", ValueType.INT64, 8, 0)
+    return encoded[: -len(suffix)] if encoded.endswith(suffix) else None
 
 
 class TemporalStoreCommandOnlineStore(OnlineStore):
@@ -243,8 +271,22 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         except Exception:
             return table.name
 
+    def _is_versioned_read_supported(self) -> bool:
+        """Version tags are part of every feature and timestamp field name."""
+        return True
+
     @staticmethod
     def _entity_key_hex(config: RepoConfig, entity_key: EntityKeyProto) -> str:
+        if (
+            config.entity_key_serialization_version == 3
+            and len(entity_key.join_keys) == 1
+            and len(entity_key.entity_values) == 1
+            and entity_key.entity_values[0].WhichOneof("val") == "int64_val"
+        ):
+            value = entity_key.entity_values[0].int64_val
+            prefix = _single_entity_prefix(entity_key.join_keys[0])
+            if prefix is not None:
+                return (prefix + struct.pack("<IIq", ValueType.INT64, 8, value)).hex()
         return serialize_entity_key(
             entity_key,
             entity_key_serialization_version=config.entity_key_serialization_version,
@@ -269,29 +311,48 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             return
         online_config = config.online_store
         assert isinstance(online_config, TemporalStoreCommandOnlineStoreConfig)
+        ttl_ms = (
+            int(online_config.key_ttl_seconds) * 1000
+            if online_config.key_ttl_seconds
+            else None
+        )
         client = self._get_client(config)
         view_name = self._view_name(table, config)
         ts_field = _ts_field(view_name)
 
-        entity_key_hexes = [self._entity_key_hex(config, row[0]) for row in data]
-        hash_keys = [
-            f"{entity_key_hex}:{config.project}" for entity_key_hex in entity_key_hexes
-        ]
+        entity_key_hexes: List[str] = []
+        if online_config.write_feature_history:
+            entity_key_hexes = [self._entity_key_hex(config, row[0]) for row in data]
+            hash_keys = [
+                f"{entity_key_hex}:{config.project}" for entity_key_hex in entity_key_hexes
+            ]
+        else:
+            hash_keys = [self._entity_hash_key(config, row[0]) for row in data]
 
         defer_stored_dedup = (
             not online_config.skip_dedup
             and not online_config.write_feature_history
-            and not online_config.key_ttl_seconds
             and not online_config.track_keys_for_teardown
         )
+        adaptive_dedup = (
+            defer_stored_dedup and online_config.adaptive_timestamp_prefetch
+        )
+        prefetch_timestamps = (
+            adaptive_dedup and client.timestamp_prefetch_preferred()
+        )
+        prefetch_total = 0
         stored_nanos: Dict[str, int] = {}
-        if not online_config.skip_dedup and not defer_stored_dedup:
+        if not online_config.skip_dedup and (
+            not defer_stored_dedup or prefetch_timestamps
+        ):
             # Read just the timestamp field before the bounded write batches.
             unique_hash_keys = list(dict.fromkeys(hash_keys))
+            if prefetch_timestamps:
+                prefetch_total = len(unique_hash_keys)
             reads = client.batch_hash_multi_get(unique_hash_keys, [ts_field])
             for key, values in zip(unique_hash_keys, reads):
                 raw = decode_bytes(values[0]) if values else None
-                if raw:
+                if raw is not None:
                     stored = Timestamp()
                     stored.ParseFromString(raw)
                     stored_nanos[key] = stored.seconds * 1_000_000_000 + stored.nanos
@@ -303,40 +364,49 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         ] = {}
         history_points: Dict[str, List[Dict[str, Any]]] = {}
         numeric_points: Dict[str, List[Dict[str, Any]]] = {}
-        expiry_keys: Dict[str, None] = {}
         written = 0
         skipped = 0
-        # The newest event time queued so far in this call, per key. Without it,
-        # two rows sharing an entity key would both compare against the same
-        # pre-call value, both pass, and whichever was queued last would win
-        # regardless of its event time.
-        queued_nanos: Dict[str, int] = {}
         tracked_keys: List[str] = []
+        previous_timestamp: Optional[datetime] = None
+        previous_proto_ts: Optional[Timestamp] = None
 
-        for (_entity_key, values, timestamp, _created), hash_key, entity_key_hex in zip(
-            data, hash_keys, entity_key_hexes
+        for index, ((_entity_key, values, timestamp, _created), hash_key) in enumerate(
+            zip(data, hash_keys)
         ):
-            aware_ts = utils.make_tzaware(timestamp)
-            proto_ts = Timestamp()
-            proto_ts.FromDatetime(aware_ts)
+            if previous_proto_ts is not None and timestamp == previous_timestamp:
+                proto_ts = previous_proto_ts
+            else:
+                proto_ts = Timestamp()
+                proto_ts.FromDatetime(utils.make_tzaware(timestamp))
+                previous_timestamp = timestamp
+                previous_proto_ts = proto_ts
             event_nanos = proto_ts.seconds * 1_000_000_000 + proto_ts.nanos
 
-            latest_seen = max(
-                stored_nanos.get(hash_key, 0), queued_nanos.get(hash_key, 0)
+            # The latest-row map also fences earlier rows for this key in the batch.
+            queued_timestamp = latest_timestamps.get(hash_key)
+            queued_event_nanos = (
+                queued_timestamp.seconds * 1_000_000_000 + queued_timestamp.nanos
+                if queued_timestamp is not None
+                else 0
             )
-            if latest_seen and event_nanos <= latest_seen:
+            stored_event_nanos = stored_nanos.get(hash_key)
+            if (
+                stored_event_nanos is not None
+                and event_nanos <= stored_event_nanos
+            ) or (
+                queued_timestamp is not None and event_nanos <= queued_event_nanos
+            ):
                 skipped += 1
                 if progress:
                     progress(1)
                 continue
-            queued_nanos[hash_key] = event_nanos
-
             # A Feast batch can contain many events for one entity. Only its
             # newest accepted row belongs in the latest-value hash; history
             # below retains every accepted timestamp.
             latest_timestamps[hash_key] = proto_ts
 
             if online_config.write_feature_history:
+                entity_key_hex = entity_key_hexes[index]
                 serialized_values = [
                     (feature_name, value, value.SerializeToString())
                     for feature_name, value in values.items()
@@ -354,7 +424,10 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                         }
                     )
                     numeric_field = value.WhichOneof("val")
-                    if numeric_field in ("int32_val", "int64_val"):
+                    if (
+                        numeric_field in ("int32_val", "int64_val")
+                        and not online_config.compact_numeric_history
+                    ):
                         aggregate_key = self._aggregate_key_from_hex(
                             config, view_name, entity_key_hex, feature_name
                         )
@@ -367,11 +440,15 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             else:
                 latest_values[hash_key] = values
 
-            if online_config.key_ttl_seconds:
-                expiry_keys[hash_key] = None
             if online_config.track_keys_for_teardown:
                 tracked_keys.append(hash_key)
             written += 1
+
+        prefetch_skipped = (
+            prefetch_total - len(latest_timestamps) if prefetch_timestamps else 0
+        )
+        if prefetch_timestamps and not latest_timestamps:
+            client.observe_timestamp_dedup(prefetch_total, prefetch_skipped)
 
         prepared_rows: List[Tuple[str, int, int, List[bytes]]] = []
         prepared_row_shape_bytes: List[int] = []
@@ -379,14 +456,21 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         shared_fields: Optional[Tuple[str, ...]] = None
         shared_layout = True
         layouts: Dict[Tuple[str, ...], Tuple[str, ...]] = {}
+        encoded_timestamp: Optional[Timestamp] = None
+        timestamp_bytes = b""
         for hash_key, proto_ts in latest_timestamps.items():
             serialized_values = latest_serialized_values.get(hash_key)
+            if proto_ts is not encoded_timestamp:
+                timestamp_bytes = proto_ts.SerializeToString()
+                encoded_timestamp = proto_ts
             if serialized_values is None:
-                serialized_values = [
-                    (feature_name, value, value.SerializeToString())
-                    for feature_name, value in latest_values[hash_key].items()
-                ]
-            feature_names = tuple(item[0] for item in serialized_values)
+                row_values = latest_values[hash_key]
+                feature_names = tuple(row_values)
+                values = [value.SerializeToString() for value in row_values.values()]
+            else:
+                feature_names = tuple(item[0] for item in serialized_values)
+                values = [item[2] for item in serialized_values]
+            values.insert(0, timestamp_bytes)
             row_fields = layouts.get(feature_names)
             if row_fields is None:
                 row_fields = (ts_field,) + tuple(
@@ -394,8 +478,6 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                     for feature_name in feature_names
                 )
                 layouts[feature_names] = row_fields
-            values = [proto_ts.SerializeToString()]
-            values.extend(item[2] for item in serialized_values)
             prepared_rows.append(
                 (hash_key, proto_ts.seconds, proto_ts.nanos, values)
             )
@@ -410,22 +492,20 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             elif row_fields != shared_fields:
                 shared_layout = False
         commands: List[Dict[str, Any]] = []
-        commands.extend(
-            {"kind": "feature_append", "key": key, "points": points}
-            for key, points in history_points.items()
-        )
-        commands.extend(
-            {"kind": "feature_append", "key": key, "points": points}
-            for key, points in numeric_points.items()
-        )
-        commands.extend(
-            {
-                "kind": "common_expire",
-                "key": key,
-                "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
-            }
-            for key in expiry_keys
-        )
+        for series in (history_points, numeric_points):
+            for key, points in series.items():
+                command: Dict[str, Any] = {
+                    "kind": (
+                        "feature_append_with_ttl"
+                        if ttl_ms is not None
+                        else "feature_append"
+                    ),
+                    "key": key,
+                    "points": points,
+                }
+                if ttl_ms is not None:
+                    command["ttl_ms"] = ttl_ms
+                commands.append(command)
         for key in dict.fromkeys(tracked_keys):
             commands.append(
                 {
@@ -442,21 +522,38 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             and shared_layout
             and not commands
         ):
-            conditional_result = client.batch_hash_timestamp_set(
-                list(shared_fields),
-                ts_field,
-                prepared_rows,
-                128
+            request_upper_bound = (
+                160
                 + 4 * len(ts_field)
                 + 5
                 + 4 * sum(map(len, shared_fields))
                 + 5 * len(shared_fields)
                 + sum(prepared_row_shape_bytes)
-                + 33 * len(prepared_rows),
+                + 33 * len(prepared_rows)
             )
+            if ttl_ms is None:
+                conditional_result = client.batch_hash_timestamp_set(
+                    list(shared_fields),
+                    ts_field,
+                    prepared_rows,
+                    request_upper_bound,
+                )
+            else:
+                conditional_result = client.batch_hash_timestamp_set(
+                    list(shared_fields),
+                    ts_field,
+                    prepared_rows,
+                    request_upper_bound,
+                    ttl_ms,
+                )
             if conditional_result is not None:
                 conditional_handled = True
                 skipped += conditional_result[1]
+                if adaptive_dedup:
+                    client.observe_timestamp_dedup(
+                        prefetch_total if prefetch_timestamps else len(prepared_rows),
+                        prefetch_skipped + conditional_result[1],
+                    )
 
         if not conditional_handled:
             if defer_stored_dedup and prepared_rows:
@@ -464,7 +561,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 reads = client.batch_hash_multi_get(unique_hash_keys, [ts_field])
                 for key, values in zip(unique_hash_keys, reads):
                     raw = decode_bytes(values[0]) if values else None
-                    if raw:
+                    if raw is not None:
                         stored = Timestamp()
                         stored.ParseFromString(raw)
                         stored_nanos[key] = (
@@ -480,7 +577,11 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 ):
                     hash_key, seconds, nanos, _values = row
                     event_nanos = seconds * 1_000_000_000 + nanos
-                    if event_nanos <= stored_nanos.get(hash_key, 0):
+                    stored_event_nanos = stored_nanos.get(hash_key)
+                    if (
+                        stored_event_nanos is not None
+                        and event_nanos <= stored_event_nanos
+                    ):
                         skipped += 1
                     else:
                         retained_rows.append(row)
@@ -491,25 +592,39 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 prepared_row_shape_bytes = retained_row_shape_bytes
 
             if shared_fields is not None and shared_layout and not commands:
-                client.batch_hash_multi_set(
-                    list(shared_fields),
-                    [
-                        (hash_key, values)
-                        for hash_key, _seconds, _nanos, values in prepared_rows
-                    ],
+                shared_rows = [
+                    (hash_key, values)
+                    for hash_key, _seconds, _nanos, values in prepared_rows
+                ]
+                request_upper_bound = (
                     128
                     + 4 * sum(map(len, shared_fields))
                     + 5 * len(shared_fields)
                     + sum(prepared_row_shape_bytes)
-                    + 15 * len(prepared_rows),
+                    + 15 * len(prepared_rows)
                 )
-            elif prepared_rows or commands:
+                if ttl_ms is None:
+                    client.batch_hash_multi_set(
+                        list(shared_fields), shared_rows, request_upper_bound
+                    )
+                else:
+                    client.batch_hash_multi_set(
+                        list(shared_fields), shared_rows, request_upper_bound, ttl_ms
+                    )
+            if (shared_fields is None or not shared_layout or commands) and (
+                prepared_rows or commands
+            ):
                 client.batch_write(
                     [
                         {
-                            "kind": "hash_multi_set",
+                            "kind": (
+                                "hash_multi_set_with_ttl"
+                                if ttl_ms is not None
+                                else "hash_multi_set"
+                            ),
                             "key": row[0],
                             "entries": list(zip(layout, row[3])),
+                            **({"ttl_ms": ttl_ms} if ttl_ms is not None else {}),
                         }
                         for row, layout in zip(prepared_rows, row_layouts)
                     ]
@@ -597,8 +712,13 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         commands = []
         command_indexes = {}
         response_indexes = []
+        feature_types: Dict[str, Any] = {}
+        if queries:
+            for feature in table.features:
+                feature_types.setdefault(feature.name, feature.dtype)
+        view_name = self._view_name(table, config) if queries else ""
         for query in queries:
-            command = self._feature_aggregate_command(config, table, *query)
+            command = self._feature_aggregate_command(config, feature_types, view_name, *query)
             identity = (
                 command["key"],
                 command["start_ms"],
@@ -624,7 +744,8 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
     def _feature_aggregate_command(
         self,
         config: RepoConfig,
-        table: FeatureView,
+        feature_types: Dict[str, Any],
+        view_name: str,
         entity_key: EntityKeyProto,
         feature_name: str,
         start_ms: int,
@@ -638,26 +759,25 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             raise ValueError("write_feature_history must be enabled")
         if start_ms < 0 or end_ms < start_ms or (count is not None and count < 0):
             raise ValueError("invalid aggregate window or count")
-        feature = next(
-            (item for item in table.features if item.name == feature_name), None
-        )
-        if feature is None:
+        if feature_name not in feature_types:
             raise ValueError(f"unknown feature: {feature_name}")
         name = aggregator.lower()
         if name not in (
             "sum", "avg", "average", "min", "max", "first", "last", "count", "events"
         ):
             raise ValueError(f"unsupported aggregator: {aggregator}")
-        if name not in ("count", "events") and feature.dtype not in (Int32, Int64):
+        if name not in ("count", "events") and feature_types[feature_name] not in (Int32, Int64):
             raise ValueError("numeric aggregates require an Int32 or Int64 feature")
-        view_name = self._view_name(table, config)
+        compact_numeric = (
+            online_config.compact_numeric_history and name not in ("count", "events")
+        )
         key = (
             self._history_key(config, view_name, entity_key, feature_name)
-            if name in ("count", "events")
+            if compact_numeric or name in ("count", "events")
             else self._aggregate_key(config, view_name, entity_key, feature_name)
         )
         return {
-            "kind": "feature_agg_query",
+            "kind": "feature_proto_agg_query" if compact_numeric else "feature_agg_query",
             "key": key,
             "start_ms": start_ms,
             "end_ms": end_ms,
@@ -706,6 +826,9 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             proto_ts.ParseFromString(ts_bytes)
             event_timestamp = proto_ts.ToDatetime()
 
+        if event_timestamp is None and not any(decoded[:-1]):
+            return None, None
+
         row: Dict[str, ValueProto] = {}
         for feature_name, value_bytes in zip(feature_names, decoded[:-1]):
             value = ValueProto()
@@ -713,8 +836,6 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 value.ParseFromString(value_bytes)
             row[feature_name] = value
 
-        if event_timestamp is None and not any(decoded[:-1]):
-            return None, None
         return event_timestamp, row
 
     @staticmethod
@@ -738,11 +859,15 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         client = self._get_client(config)
         view_name = self._view_name(table, config)
 
-        feature_names = list(
+        requested_feature_names = list(
             requested_features
             if requested_features
             else [feature.name for feature in table.features]
         )
+        # The result is a dictionary, so repeated names cannot add another
+        # value. Collapse them before they enlarge the projection and trigger
+        # another protobuf parse for every entity in the batch.
+        feature_names = list(dict.fromkeys(requested_feature_names))
         ts_field = _ts_field(view_name)
         fields = [_feature_field(view_name, name) for name in feature_names] + [ts_field]
 
@@ -781,6 +906,119 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 # therefore share parsing work, not mutable message instances.
                 results.append((event_timestamp, self._copy_online_row(row)))
         return results
+
+    def _read_features_per_fv(
+        self,
+        config: RepoConfig,
+        grouped_refs: List[Any],
+        join_key_values: Dict[str, Any],
+        entity_name_to_join_key_map: Dict[str, str],
+        online_features_response: Any,
+        full_feature_names: bool,
+        include_feature_view_version_metadata: bool,
+    ) -> None:
+        """Read feature views sharing an entity set in one compact projection."""
+        if not grouped_refs:
+            return
+        groups: Dict[Tuple[bytes, ...], List[Tuple[Any, ...]]] = {}
+        entity_plans: Dict[Any, Tuple[Any, ...]] = {}
+        for table, requested_features in grouped_refs:
+            entity_layout = (
+                tuple(table.entities),
+                tuple(sorted(table.projection.join_key_map.items())),
+            )
+            plan = entity_plans.get(entity_layout)
+            if plan is None:
+                entity_values, row_indexes, output_len = utils._get_unique_entities(
+                    table, join_key_values, entity_name_to_join_key_map
+                )
+                entity_keys = utils._get_entity_key_protos(entity_values)
+                identity = tuple(
+                    key.SerializeToString(deterministic=True) for key in entity_keys
+                )
+                plan = (entity_keys, row_indexes, output_len, identity)
+                entity_plans[entity_layout] = plan
+            entity_keys, row_indexes, output_len, identity = plan
+            groups.setdefault(identity, []).append(
+                (
+                    table,
+                    list(requested_features),
+                    row_indexes,
+                    output_len,
+                    entity_keys,
+                )
+            )
+
+        client = self._get_client(config)
+        for specs in groups.values():
+            entity_keys = specs[0][4]
+            hash_keys = [self._entity_hash_key(config, key) for key in entity_keys]
+            projection: List[str] = []
+            projection_index: Dict[str, int] = {}
+            layouts: List[Tuple[List[str], List[str], List[int]]] = []
+            for table, requested_features, *_rest in specs:
+                view_name = self._view_name(table, config)
+                fields = [
+                    _feature_field(view_name, name) for name in requested_features
+                ] + [_ts_field(view_name)]
+                positions = []
+                for field in fields:
+                    position = projection_index.get(field)
+                    if position is None:
+                        position = len(projection)
+                        projection_index[field] = position
+                        projection.append(field)
+                    positions.append(position)
+                layouts.append((requested_features, fields, positions))
+
+            rows = client.batch_hash_multi_get(hash_keys, projection)
+            for spec, layout in zip(specs, layouts):
+                table, requested_features, row_indexes, output_len, _keys = spec
+                feature_names, fields, positions = layout
+                decoded_rows = [
+                    self._decode_online_response(
+                        [
+                            row[position] if position < len(row) else None
+                            for position in positions
+                        ],
+                        fields,
+                        feature_names,
+                    )
+                    for row in rows
+                ]
+                utils._populate_response_from_feature_data(
+                    requested_features,
+                    decoded_rows,
+                    row_indexes,
+                    online_features_response,
+                    full_feature_names,
+                    table,
+                    output_len,
+                    include_feature_view_version_metadata,
+                )
+
+    async def _read_features_per_fv_async(
+        self,
+        config: RepoConfig,
+        grouped_refs: List[Any],
+        join_key_values: Dict[str, Any],
+        entity_name_to_join_key_map: Dict[str, str],
+        online_features_response: Any,
+        full_feature_names: bool,
+        include_feature_view_version_metadata: bool,
+    ) -> None:
+        import asyncio
+
+        await asyncio.to_thread(
+            self._read_features_per_fv,
+            config,
+            grouped_refs,
+            join_key_values,
+            entity_name_to_join_key_map,
+            online_features_response,
+            full_feature_names,
+            include_feature_view_version_metadata,
+        )
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -856,52 +1094,98 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             fields = [
                 _feature_field(view_name, feature.name) for feature in table.features
             ] + [_ts_field(view_name)]
-            row_keys = set()
+            history_features = [
+                (feature.name, feature.dtype in (Int32, Int64))
+                for feature in table.features
+            ]
+            project_suffix = f":{config.project}"
             active_set_keys = []
             pending_deletes: List[Dict[str, Any]] = []
             deleted = 0
+            row_entries = 0
             field_delete_round_trips = 0
 
-            def delete_members(members: Sequence[Any]) -> None:
+            def queue_delete(command: Dict[str, Any]) -> None:
                 nonlocal deleted, field_delete_round_trips
+                pending_deletes.append(command)
+                if len(pending_deletes) == batch_size:
+                    client.batch_execute(pending_deletes)
+                    deleted += len(pending_deletes)
+                    field_delete_round_trips += 1
+                    pending_deletes.clear()
+
+            def delete_members(members: Sequence[Any]) -> None:
+                nonlocal row_entries
                 for member in members:
                     raw = decode_bytes(member)
                     if raw is None:
                         continue
                     row_key = raw.decode("utf-8")
-                    if row_key in row_keys:
-                        continue
-                    row_keys.add(row_key)
+                    if not row_key.endswith(project_suffix):
+                        raise ValueError("tracked entity key has a different project suffix")
+                    row_entries += 1
                     for field in fields:
-                        pending_deletes.append(
+                        queue_delete(
                             {"kind": "hash_delete", "key": row_key, "field": field}
                         )
-                        if len(pending_deletes) == batch_size:
-                            client.batch_execute(pending_deletes)
-                            deleted += len(pending_deletes)
-                            field_delete_round_trips += 1
-                            pending_deletes.clear()
+                    entity_key_hex = row_key[: -len(project_suffix)]
+                    for feature_name, numeric in history_features:
+                        queue_delete(
+                            {
+                                "kind": "feature_delete",
+                                "key": self._history_key_from_hex(
+                                    config, view_name, entity_key_hex, feature_name
+                                ),
+                            }
+                        )
+                        if numeric:
+                            queue_delete(
+                                {
+                                    "kind": "feature_delete",
+                                    "key": self._aggregate_key_from_hex(
+                                        config, view_name, entity_key_hex, feature_name
+                                    ),
+                                }
+                            )
 
-            legacy_members = client.execute(
-                {"kind": "set_members", "key": legacy_set_key}
-            ).get("members") or []
-            if legacy_members:
-                active_set_keys.append(legacy_set_key)
-                delete_members(legacy_members)
-
-            tracking_read_round_trips = 1
-            read_batch_size = client.max_batch_commands
-            for start in range(0, len(shard_keys), read_batch_size):
-                key_batch = shard_keys[start : start + read_batch_size]
-                shard_answers = client.batch_execute(
-                    [{"kind": "set_members", "key": key} for key in key_batch]
+            # Small first pages keep empty and lightly populated tracking sets
+            # cheap to enumerate. Larger continuation pages bound the response
+            # and avoid materializing an entire set or all row keys at once.
+            page_size = min(batch_size, 256)
+            first_page_size = min(page_size, 16)
+            scan_queue = [(key, b"") for key in [legacy_set_key] + shard_keys]
+            tracking_read_round_trips = 0
+            scan_limit = first_page_size
+            while scan_queue:
+                next_queue = []
+                read_batch_size = min(
+                    client.max_batch_commands, max(1, 4096 // scan_limit)
                 )
-                tracking_read_round_trips += 1
-                for set_key, answer in zip(key_batch, shard_answers):
-                    shard_members = answer.get("members") or []
-                    if shard_members:
-                        active_set_keys.append(set_key)
-                        delete_members(shard_members)
+                for start in range(0, len(scan_queue), read_batch_size):
+                    scan_batch = scan_queue[start : start + read_batch_size]
+                    answers = client.batch_execute(
+                        [
+                            {"kind": "set_scan", "key": key, "after": after, "limit": scan_limit}
+                            for key, after in scan_batch
+                        ]
+                    )
+                    tracking_read_round_trips += 1
+                    for (set_key, after), answer in zip(scan_batch, answers):
+                        members = answer.get("members") or []
+                        if len(members) > scan_limit:
+                            raise ValueError("set scan exceeded its requested page size")
+                        if not members:
+                            continue
+                        last = decode_bytes(members[-1])
+                        if not last or (after and last <= after):
+                            raise ValueError("set scan did not advance its cursor")
+                        if not after:
+                            active_set_keys.append(set_key)
+                        delete_members(members)
+                        if len(members) == scan_limit:
+                            next_queue.append((set_key, last))
+                scan_queue = next_queue
+                scan_limit = page_size
 
             if pending_deletes:
                 client.batch_execute(pending_deletes)
@@ -921,10 +1205,10 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 client.batch_execute(tracking_deletes[start : start + batch_size])
                 tracking_delete_round_trips += 1
             logger.info(
-                "temporalstore: tore down view=%s rows=%d fields=%d in %d round "
+                "temporalstore: tore down view=%s row_entries=%d fields=%d in %d round "
                 "trip(s) of at most %d",
                 view_name,
-                len(row_keys),
+                row_entries,
                 deleted,
                 field_delete_round_trips
                 + tracking_read_round_trips
@@ -1011,6 +1295,84 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         return await asyncio.to_thread(
             self.online_write_batch, config, table, data, progress
         )
+
+    # -- precomputed feature-service rows ------------------------------------
+
+    @staticmethod
+    def _precomputed_field(feature_service_name: str) -> str:
+        return _feature_field(
+            f"__precomputed__{feature_service_name}", "vector"
+        )
+
+    @classmethod
+    def _precomputed_hash_key(
+        cls, config: RepoConfig, project: str, entity_key: EntityKeyProto
+    ) -> str:
+        return f"{cls._entity_key_hex(config, entity_key)}:{project}"
+
+    def write_precomputed_vector(
+        self,
+        config: RepoConfig,
+        feature_service_name: str,
+        project: str,
+        entity_key: EntityKeyProto,
+        vector_bytes: bytes,
+    ) -> None:
+        """Write one precomputed FeatureService row without a synthetic timestamp."""
+        client = self._get_client(config)
+        field = self._precomputed_field(feature_service_name)
+        key = self._precomputed_hash_key(config, project, entity_key)
+        encoded = ValueProto(bytes_val=vector_bytes).SerializeToString()
+        online_config = config.online_store
+        assert isinstance(online_config, TemporalStoreCommandOnlineStoreConfig)
+        if online_config.key_ttl_seconds:
+            client.batch_hash_multi_set(
+                [field],
+                [(key, [encoded])],
+                192 + 4 * (len(field) + len(key)) + len(encoded),
+                int(online_config.key_ttl_seconds) * 1000,
+            )
+            return
+        client.batch_hash_multi_set(
+            [field],
+            [(key, [encoded])],
+            160 + 4 * (len(field) + len(key)) + len(encoded),
+        )
+
+    def read_precomputed_vectors(
+        self,
+        config: RepoConfig,
+        feature_service_name: str,
+        project: str,
+        entity_keys: List[EntityKeyProto],
+    ) -> List[Optional[bytes]]:
+        """Read aligned precomputed rows through one compact shared projection."""
+        if not entity_keys:
+            return []
+        unique_keys: List[str] = []
+        index_by_key: Dict[str, int] = {}
+        response_indexes: List[int] = []
+        for entity_key in entity_keys:
+            key = self._precomputed_hash_key(config, project, entity_key)
+            index = index_by_key.get(key)
+            if index is None:
+                index = len(unique_keys)
+                index_by_key[key] = index
+                unique_keys.append(key)
+            response_indexes.append(index)
+
+        field = self._precomputed_field(feature_service_name)
+        rows = self._get_client(config).batch_hash_multi_get(unique_keys, [field])
+        decoded: List[Optional[bytes]] = []
+        for row in rows:
+            raw = decode_bytes(row[0]) if row else None
+            if raw is None:
+                decoded.append(None)
+                continue
+            value = ValueProto()
+            value.ParseFromString(raw)
+            decoded.append(value.bytes_val if value.HasField("bytes_val") else None)
+        return [decoded[index] for index in response_indexes]
 
     # -- vector retrieval, refused by name -------------------------------------
 

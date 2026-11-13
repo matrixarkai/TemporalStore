@@ -91,6 +91,29 @@ fn apply_timestamped_point(
     })
 }
 
+fn insert_timestamped_point_if_absent(
+    shard: &mut super::state::ShardState,
+    kind: &str,
+    object_key: &str,
+    at: u64,
+    address: &crate::block_store::ElementEntry,
+) -> Option<bool> {
+    use super::timestamped_series::insert_point_if_absent as insert;
+    Some(match kind {
+        "feature" => insert(shard.features_mut(), object_key, at, address),
+        "context_index" => insert(shard.context_indexes_mut(), object_key, at, address),
+        "context_audit" => insert(shard.context_audits_mut(), object_key, at, address),
+        "context_child" => insert(shard.context_children_mut(), object_key, at, address),
+        "context_summary" => insert(shard.context_summaries_mut(), object_key, at, address),
+        "context_compression" => insert(shard.context_compressions_mut(), object_key, at, address),
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+#[path = "timestamped_replay_append_tests.rs"]
+mod timestamped_replay_append_tests;
+
 #[cfg(test)]
 pub(crate) static LAST_REPLAY_WATERMARK: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
@@ -507,15 +530,15 @@ impl TemporalEngine {
         block_store: BlockStore,
         index_dir: impl Into<PathBuf>,
     ) -> Self {
+        for namespace in SWEPT_RECORD_NAMESPACES {
+            cache.enable_record_key_index(namespace);
+        }
         let index_dir = index_dir.into();
         let wal_store = LocalWriteAheadLogStore::new(index_dir.join("wals"));
         let index_log_store = LocalIndexLogStore::new(index_dir.join("indexlogs"));
-        // Install the durable read-by-address fallback for log-backed hot blocks: an eviction
-        // handler spills an evicted hot block to a real slab (freeing DRAM + preventing the acked
-        // write from reading back as missing). Idempotent + a no-op when disabled.
-        hot_block_spill::install_spill_handler(&cache, &block_store);
         Self {
             shards: Arc::default(),
+            checkpoint_publications: Arc::default(),
             cache,
             block_store,
             wal_store,
@@ -559,19 +582,6 @@ impl TemporalEngine {
                 ),
             ),
         }
-    }
-
-    /// Stop this engine's cache spilling evicted hot blocks to a real slab, so a read has to come
-    /// from the log-resident path.
-    ///
-    /// Five tests want this, and `TS_HOT_PAGE_SPILL=0` was how they asked. Four could not work:
-    /// `install_spill_handler` reads that variable during construction and every one of them set
-    /// it afterwards, so the handler was already installed and the isolation they described never
-    /// happened. `register_eviction_callback` REPLACES the callback, so a no-op takes the handler
-    /// off the engine this test built, at the moment it asks.
-    #[cfg(test)]
-    pub(crate) fn disable_hot_block_spill_for_test(&self) {
-        self.cache.register_eviction_callback(|_| {});
     }
 
     /// Warm this engine's page cache in the BACKGROUND rather than during `load_shard`, so a
@@ -1111,25 +1121,17 @@ impl TemporalEngine {
                     // along the log a manifest sits. `index_log_sequence` says the delta may be
                     // ahead of this checkpoint, which is exactly the thing this arm is right to
                     // ignore -- the un-synced delta is what it does not trust.
-                    // `index_format_version` says the BYTES mean something other than what this
-                    // binary will read them as, and no amount of durability makes a
-                    // misinterpreted field correct. So the arm below refuses on the stamp and
-                    // falls back to the base file and the log, which is the same trade
+                    // The struct version in the image's header says the BYTES mean something other
+                    // than what this binary will read them as, and no amount of durability makes a
+                    // misinterpreted field correct. `decode_index_bytes` refuses such an image
+                    // before it reads the payload, so the `Err` arm below is where it lands, and
+                    // that arm falls back to the base file and the log, which is the same trade
                     // `load_index_inner` makes.
                     //
                     // This path is the reason the stamp needed covering at all: it is reached by
                     // an ORDINARY restart, not by anyone calling an install endpoint, so an old
                     // store with an old dump manifest on disk met no gate whatsoever.
                     match crate::engine::decode_index_bytes(&manifest.index_bytes) {
-                        // Counted in the body rather than in the guard, so the guard stays a pure
-                        // question: a guard that moved a counter would fire for a pattern that
-                        // then fell through to the arm below it.
-                        Ok(restored)
-                            if crate::engine::persistence::index_stamp_is_stale(&restored) =>
-                        {
-                            crate::engine::persistence::refuse_stale_index_stamp(&restored);
-                            (base_only, base_watermark)
-                        }
                         Ok(mut restored) => {
                             // RE-DERIVE THE UNSERIALIZED MODEL MAPS BEFORE REBUILDING OWNERSHIP,
                             // for the reason `install_bucket_dump_manifest` states at its own call
@@ -1170,7 +1172,16 @@ impl TemporalEngine {
                             );
                             (Some(restored), manifest.wal_sequence)
                         }
-                        Err(_) => (base_only, base_watermark),
+                        // COUNTED, exactly as `load_index_inner` counts an image it refuses, and
+                        // for the reason it gives: this arm answers with the base file and the log
+                        // whether the manifest was refused or was never there, and without the
+                        // count nothing downstream can tell the two apart.
+                        Err(_) => {
+                            crate::engine::persistence::note_index_load(
+                                crate::engine::persistence::IndexLoadPath::Undecodable,
+                            );
+                            (base_only, base_watermark)
+                        }
                     }
                 }
                 _ => (base_only, base_watermark),
@@ -1300,10 +1311,12 @@ impl TemporalEngine {
         // Hand the resolver the log ids the index has been carrying. Without this a block whose
         // only durable copy is a WAL record stays unreadable by address after a reload -- the
         // served index points at a synthetic address and the resolver's table starts empty.
-        self.rehydrate_wal_resident_blocks(request.shard_id);
+        let rehydrated = self.rehydrate_wal_resident_blocks(request.shard_id);
         #[cfg(test)]
         restore_phase_probe::mark("publish_and_seed");
-        if let Err(status) = self.replay_wal_into_shard(request.shard_id, replay_watermark) {
+        let restore_result = rehydrated
+            .and_then(|_| self.replay_wal_into_shard(request.shard_id, replay_watermark));
+        if let Err(status) = restore_result {
             // ReplayWal returns DataLoss on a WAL hole and aborts Load. Unwind the
             // partially-loaded shard and refuse the load rather than serve truncated
             // state -- a not-loaded shard is recoverable/re-routable; silent truncation
@@ -1934,6 +1947,19 @@ impl TemporalEngine {
         let block = self.elements_the_outcome_block_holds(item, carried);
         let live = block.element_names(item, false);
         let removed = block.element_names(item, true);
+        // THE BOUND IN FORCE AT THIS RECORD, for a counter point. The replay loop installs the
+        // config entry in force at each record's frontier before it installs the record, so this
+        // is the bound the write that produced the point trimmed to. A bound of 0 is unbounded.
+        let counter_bound = if item.kind == "control_counter" {
+            self.configs
+                .read()
+                .expect("config lock poisoned")
+                .get(&shard_id)
+                .map(|config| config.control_state_max_size())
+                .unwrap_or_else(|| crate::control::Config::default().control_state_max_size())
+        } else {
+            0
+        };
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
             return false;
@@ -1982,21 +2008,21 @@ impl TemporalEngine {
                     Some([only]) => Some(only.clone()),
                     _ => None,
                 };
-                match (item.kind.as_str(), element_name.as_deref()) {
+                let vacated = match (item.kind.as_str(), element_name.as_deref()) {
                     ("string", _) => {
                         super::mark_bucket_index_object_deleted(shard, &item.object_key);
                         shard.remove_string_row(item.object_key.as_str());
+                        None
                     }
                     ("hash", Some(field)) => {
                         // `&field.to_string()` because this kind's element IS a `String` and the replayed item
                         // carries a `&str`. One allocation on a replay removal, which is the honest
                         // cost of the element type being the key rather than a borrow of it.
-                        shard
-                            .bucket_index.hashes
-                            .replay_remove_element(
+                        super::recorded_map::remove_replayed_element::<super::recorded_map::HashKind>(
+                                shard,
                                 &item.object_key,
                                 &std::sync::Arc::from(&field[..]),
-                            );
+                            )
                     }
                     ("set", Some(encoded)) => {
                         let Some(member) =
@@ -2004,16 +2030,14 @@ impl TemporalEngine {
                         else {
                             return false;
                         };
-                        shard.bucket_index.sets.replay_remove_element(&item.object_key, &member);
+                        super::recorded_map::remove_replayed_element::<super::recorded_map::SetKind>(shard, &item.object_key, &member)
                     }
                     ("list", Some(encoded)) => {
                         let Ok(biased) = u64::from_str_radix(encoded, 16) else {
                             return false;
                         };
                         let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
-                        shard
-                            .bucket_index.lists
-                            .replay_remove_element(&item.object_key, &sequence);
+                        super::recorded_map::remove_replayed_element::<super::recorded_map::ListKind>(shard, &item.object_key, &sequence)
                     }
                     // THE SCORE HALF IS GONE FROM THIS STRING -- a removal never needed it for
                     // anything beyond finding the member to drop, which is still all this arm
@@ -2024,13 +2048,11 @@ impl TemporalEngine {
                         else {
                             return false;
                         };
-                        shard
-                            .bucket_index.zsets
-                            .replay_remove_element(&item.object_key, &member);
+                        super::recorded_map::remove_replayed_element::<super::recorded_map::ZSetKind>(shard, &item.object_key, &member)
                     }
                     // An element-name-keyed kind with no element names nothing to remove.
                     _ => return false,
-                }
+                };
                 if item.kind != "string" {
                     // THE OUTCOME'S ADDRESS IS THE TOMBSTONE BLOCK, AND REPLAY HAS TO RE-FILE IT.
                     //
@@ -2056,7 +2078,17 @@ impl TemporalEngine {
                         false,
                         item.address.clone(),
                     );
+                    if let Some(address) = vacated {
+                        super::storage_bucket_internals::drop_vacated_live_block(
+                            shard, &item.kind, &item.object_key, &address);
+                    }
                 }
+                true
+            }
+            // Lazy expiry retires one exact record, not its independently live families.
+            "record" if item.deleted && item.meta && item.address.is_none()
+                && item.element_name.is_none() && item.value.is_none() && item.ttl.is_none() => {
+                super::delete_record_exact(shard, &item.object_key);
                 true
             }
             // The object is gone, everywhere it appeared.
@@ -2156,23 +2188,13 @@ impl TemporalEngine {
                 let (Some(address), Some(fields)) = (item.resolved_address(), live.as_ref()) else {
                     return false;
                 };
-                for field in fields {
-                    // FROM THE POOL, as the live write site does. Replay is where a key becomes
-                    // resident again after a restart, so a minted name here would put the store back
-                    // into the shape the conversion removed.
-                    let field_handle =
-                        super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
-                    super::recorded_map::install_element::<super::recorded_map::HashKind>(
-                        shard,
-                        shard_id,
-                        &item.object_key,
-                        Some(field.clone()),
-                        field_handle,
-                        address.clone(),
-                        true,
-                        address.clone(),
-                    );
-                }
+                let (start, end) = shard.routing_range();
+                let routing_bucket = super::hashing::block_routing_bucket(&item.object_key, start, end);
+                let object_id = super::stable_block_object_id(shard_id, "hash", &item.object_key);
+                super::recorded_map::install_packed_hash_block_at_bucket(
+                    &self.cache, shard, shard_id, routing_bucket, object_id, &item.object_key,
+                    fields.iter().map(String::as_str), address, None,
+                );
                 true
             }
             // set: the PAGE spells the member, and the page's key IS the member.
@@ -2378,6 +2400,27 @@ impl TemporalEngine {
                     Some(address) if !item.deleted => Some(address),
                     _ => None,
                 };
+                if let Some(address) = point.as_ref() {
+                    if insert_timestamped_point_if_absent(
+                        shard,
+                        &item.kind,
+                        &item.object_key,
+                        stored_key,
+                        address,
+                    ) == Some(true) {
+                        // Match the live append path: no existing point was displaced.
+                        super::sync_bucket_index_object_blocks_with_mode(
+                            shard,
+                            shard_id,
+                            &item.kind,
+                            &item.object_key,
+                            vec![address.clone()],
+                            true,
+                            false,
+                        );
+                        return true;
+                    }
+                }
                 let Some(live_addresses) =
                     apply_timestamped_point(shard, &item.kind, &item.object_key, stored_key, point)
                 else {
@@ -2552,6 +2595,15 @@ impl TemporalEngine {
                     .entry(std::sync::Arc::from(&item.object_key[..]))
                     .or_default()
                     .insert(bucket_ms, total);
+                // THE TRIM THE WRITE RAN AFTER ADDING THIS POINT. An outcome carries the point and
+                // not the trim that followed it, and no removal is recorded for the points that
+                // trim dropped, so installing without it brought every one of them back: a series
+                // recovered with no unload held the live points plus every point the bound had
+                // trimmed since the log began (10,500 points against a bound of 10,000 after 10,500
+                // increments). The same function, in the same order, as the write path ran, so the
+                // series converges on the one the write path held, whatever order the buckets
+                // arrived in.
+                super::trim_control_state_series(shard, &item.object_key, counter_bound);
                 true
             }
             // A distinct member. Installed through the write path's own producer so the exact-set
@@ -2654,6 +2706,15 @@ impl TemporalEngine {
         shard_id: ShardId,
         wanted: impl Fn(u64) -> bool,
     ) -> usize {
+        self.materialize_resident_blocks_with_before_publish(shard_id, wanted, |_| {})
+    }
+
+    pub(super) fn materialize_resident_blocks_with_before_publish(
+        &self,
+        shard_id: ShardId,
+        wanted: impl Fn(u64) -> bool,
+        mut before_publish: impl FnMut(&str),
+    ) -> usize {
         // The range is read under the same guard as the addresses, so a block is read and
         // rewritten under the bucket the shard is actually loaded on.
         let (addresses, start_routing_bucket, end_routing_bucket): (
@@ -2717,9 +2778,15 @@ impl TemporalEngine {
             ) else {
                 continue;
             };
+            before_publish(&key);
             {
                 let mut shards = self.shards.write().expect("engine lock poisoned");
                 if let Some(shard) = shards.get_mut(&shard_id) {
+                    // The slab write ran without the shard lock. A writer or deleter may
+                    // have superseded the captured address while it was in flight.
+                    if shard.string_address(&key).as_ref() != Some(&address) {
+                        continue;
+                    }
                     let stored_key = shard
                         .bucket_index
                         .any_shared_object_key(key.as_str())
@@ -2743,14 +2810,12 @@ impl TemporalEngine {
                     shard
                         .wal_resident_blocks
                         .remove(&super::block_in_wal::wal_resident_key(object_id, None));
+                    // Keep retirement under the same lock as publication, so it cannot
+                    // remove a registration installed by a subsequent writer.
+                    super::block_in_wal::deregister(&self.block_store, shard_id, object_id, None);
+                    moved += 1;
                 }
             }
-            // Retire the registration too. It is what pins the WAL retention floor, and a floor
-            // held by a block that is now in the block store stops reclaim for no reason.
-            // `None` for the same reason the removal above passes it: this loop retires string
-            // blocks, which ARE their whole object.
-            super::block_in_wal::deregister(&self.block_store, shard_id, object_id, None);
-            moved += 1;
         }
         moved
     }
@@ -2810,77 +2875,53 @@ impl TemporalEngine {
             .unwrap_or(0)
     }
 
-    /// Re-register every WAL-resident block the index knows about.
-    ///
-    /// The append path learns a block's log id by writing the record; a reload learns it by
-    /// reading the index. Both end up in the same table, which is why no read path had to
-    /// change for this to work.
-    /// THE ELEMENT CANNOT COME FROM THE INDEX ENTRY ANY MORE, AND IT HAD ALREADY STOPPED COMING
-    /// FROM THERE BEFORE THE FIELD WENT.
-    ///
-    /// This read "the element has to be read back from the place that has always held it:
-    /// `BlockIndex::element_name`, sitting on the same block entry as the address whose object id this
-    /// is." That field is gone, and the paragraph was already describing a value that was `None`
-    /// for every entry of every kind: one entry a block files no element name, so this walk has
-    /// folded on `wal_resident_key(object_id, None)` -- which the function returns as `object_id`
-    /// unchanged -- since the collapse, not since this change.
-    ///
-    /// WHAT THAT MEANS, STATED RATHER THAN LEFT TO BE REDISCOVERED. The two WRITERS of this map
-    /// (`TemporalEngine`'s append path and `lifecycle`'s replay) key each entry on the STAGED
-    /// BLOCK's element name, which IS the element's own name -- a record is a full account of the
-    /// write. So an entry filed for a container element has a folded key no walk over the index can
-    /// reconstruct, and it is skipped here. Only registrations for the kinds that carry no element
-    /// name -- one block per object -- rehydrate.
-    ///
-    /// AND SKIPPING IS THE SAFE DIRECTION, which is why this is a cost and not a defect: a
-    /// registration with the WRONG element is worse than none, because the entry resolves a record
-    /// and then fails to find its block inside it -- a miss that costs a record read. A block whose
-    /// folded key is not in the map is skipped, and only an exact match registers. What a skip
-    /// costs is that a container element still living in the log is read through the block store's
-    /// ordinary path on the first read after a reload instead of being resolved straight to its
-    /// record.
-    ///
-    /// Walking the index rather than re-reading each record keeps this a pure in-memory pass over
-    /// state the load has already built -- no extra log I/O on the load path.
-    pub(super) fn rehydrate_wal_resident_blocks(&self, shard_id: ShardId) {
+    /// Restore persisted locations one record at a time, including packed-frame field aliases.
+    pub(super) fn rehydrate_wal_resident_blocks(&self, shard_id: ShardId) -> Result<(), Status> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
-            return;
+            return Ok(());
         };
         if shard.wal_resident_blocks.is_empty() {
-            return;
+            return Ok(());
         }
-        let identities = shard.bucket_index.block_identities();
-        for bucket in shard.bucket_index.bucket_map.values() {
-            for (handle, block) in bucket.block_index.iter() {
-                if block.deleted() {
-                    continue;
+        // A complete checkpoint can carry old placement metadata after its blocks moved to
+        // durable slabs. Such an image needs only those slabs, not the source node's WAL.
+        // Keep strict record validation whenever any served block still needs that WAL.
+        let needs_wal = shard.bucket_index.bucket_map.values().any(|bucket| {
+            bucket.block_index.values().any(|block| {
+                crate::wal_record::is_wal_resident(block.address.block_slab_id())
+            })
+        });
+        let require_wal = needs_wal || shard.bucket_index.bucket_map.is_empty();
+        let mut unresolved = std::collections::BTreeMap::<u64, Vec<(u64, u64)>>::new();
+        for (folded, placement) in &shard.wal_resident_blocks {
+            unresolved
+                .entry(placement.log_id)
+                .or_default()
+                .push((*folded, placement.sequence));
+        }
+        drop(shards);
+        for (log_id, placements) in unresolved {
+            if !super::block_in_wal::register_from_record(
+                &self.block_store,
+                shard_id,
+                log_id,
+                &placements,
+                &self.wal_store,
+            ) {
+                // Fully materialized imports can carry optional placements from
+                // another log domain. Local placements still restore fallbacks
+                // for unreadable real slabs after a partial compaction.
+                if !require_wal {
+                    return Ok(());
                 }
-                // A LIVE block is named by the object lookup, which the decode fills -- so the
-                // `else` here is the window between a decode and that filing, which no longer
-                // exists on any path that reaches this.
-                let Some(beside) = identities.identity_of(bucket, *handle, block) else {
-                    continue;
-                };
-                let object_id = block.object_id(shard_id, beside.object_key);
-                // `None`: an entry names a block, not an element. See this function's doc for what
-                // that skips and why skipping is the safe direction.
-                let element_name = None;
-                let folded = super::block_in_wal::wal_resident_key(object_id, element_name);
-                let Some(placement) = shard.wal_resident_blocks.get(&folded) else {
-                    continue;
-                };
-                super::block_in_wal::register_at(
-                    &self.block_store,
-                    shard_id,
-                    object_id,
-                    element_name,
-                    placement.log_id,
-                    placement.sequence,
-                    &self.wal_store,
-                );
+                return Err(Status::error(
+                    "wal_resident_block_missing",
+                    format!("shard {shard_id} cannot recover WAL-backed block at log id {log_id}"),
+                ));
             }
         }
+        Ok(())
     }
 
     pub(super) fn replay_wal_into_shard(
@@ -2911,24 +2952,24 @@ impl TemporalEngine {
             self.shard_is_recovering(shard_id),
             std::sync::atomic::Ordering::SeqCst,
         );
-        // Replay both re-executes commands and installs recorded outcomes, and BOTH stage
-        // outcome items -- while replay itself never appends, so nothing ever takes them.
-        // What it leaves behind is picked up by the next write on this thread and written
-        // into that write's record as changes it made itself; a later replay then installs
-        // them, and a single one that cannot be applied aborts the whole shard load, taking
-        // unrelated keys down with it. Threads are reused across requests in a server and
-        // across tests here, so "the next write" is routinely someone else entirely.
-        //
-        // A guard rather than a drain at the end: every early return below leaks otherwise,
-        // and the interesting exits -- an unreadable scan, a refused outcome -- are early
-        // returns by construction.
-        struct DrainStagedOnExit;
+        // Reuse staging capacity between records, then release it on every exit, including
+        // scan errors and refused outcomes. Incoming record blocks are owned separately.
+        struct DrainStagedOnExit {
+            release_capacity: bool,
+        }
         impl Drop for DrainStagedOnExit {
             fn drop(&mut self) {
-                let _ = super::block_in_wal::take_outcomes();
+                #[cfg(test)]
+                super::replay_scratch::observe_staging();
+                if self.release_capacity {
+                    let _ = super::block_in_wal::take_outcomes();
+                    let _ = super::block_in_wal::take_staged();
+                } else {
+                    super::block_in_wal::begin_write();
+                }
             }
         }
-        let _drain_staged = DrainStagedOnExit;
+        let _drain_staged = DrainStagedOnExit { release_capacity: true };
 
         // A corrupt / unreadable WAL scan is DATA LOSS, not "nothing to replay": swallowing it
         // to Ok(()) would load the shard from the stale base index only, silently discarding
@@ -2959,8 +3000,7 @@ impl TemporalEngine {
         let _guard = WalReplayGuard::enter();
         let mut expected = watermark.saturating_add(1);
         let mut replayed_through = watermark;
-        let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentBlock)> =
-            Vec::new();
+        let mut wal_resident_updates = HashMap::<u64, crate::engine::state::WalResidentBlock>::new();
         let mut replayed_any = false;
 
         // The log is read in BOUNDED WINDOWS rather than all at once. An unbounded scan decoded
@@ -3067,7 +3107,10 @@ impl TemporalEngine {
             if !pending.is_empty() {
                 replayed_any = true;
             }
+            #[cfg(test)]
+            super::replay_scratch::observe_window(pending.len());
             for record in pending {
+                let _record_staging = DrainStagedOnExit { release_capacity: false };
                 // Strict sequence continuity, matching the WAL replay, which
                 // returns DataLoss and aborts Load on a hole in the retained WAL. A hole means
                 // a WAL record was lost (partial-GC crash / corruption); refuse the load
@@ -3099,32 +3142,34 @@ impl TemporalEngine {
                 // id is still in hand, makes a replayed record as addressable as a written one.
                 if !record.staged_blocks.is_empty() {
                     if let Some(&log_id) = log_id_by_sequence.get(&record.sequence) {
-                        super::block_in_wal::register_record(
+                        let locations = super::block_in_wal::register_record_with_outcomes(
                             &self.block_store,
                             shard_id,
                             &record.staged_blocks,
+                            &record.outcomes,
                             log_id,
                             record.sequence,
                             &self.wal_store,
                         );
                         // The same fact written where it survives this process, so a later reload
                         // rehydrates it instead of rediscovering that it cannot.
-                        wal_resident_updates.extend(record.staged_blocks.iter().map(|block| {
+                        wal_resident_updates.extend(locations.into_iter().map(|folded| {
                             (
                                 // The record says which element each block is, so replay files one
                                 // entry PER BLOCK. Keyed on the object alone, a record carrying
                                 // several elements of one key would file one entry and the blocks
                                 // that lost would be unreachable after the next reload.
-                                super::block_in_wal::wal_resident_key(
-                                    block.object_id,
-                                    block.element_name.as_deref(),
-                                ),
+                                folded,
                                 crate::engine::state::WalResidentBlock {
                                     log_id,
                                     sequence: record.sequence,
                                 },
                             )
                         }));
+                        #[cfg(test)]
+                        super::replay_scratch::observe_placements(
+                            wal_resident_updates.len(), wal_resident_updates.capacity(),
+                        );
                     }
                 }
                 // A record that says what its write DID is installed, not re-executed. Re-executing
@@ -3136,8 +3181,13 @@ impl TemporalEngine {
                 // instead of silently recovering as nothing. The command cannot be dropped from the
                 // record until no accepted write can produce an empty one.
                 if !record.outcomes.is_empty() {
+                    let bindings = super::block_in_wal::outcome_block_bindings(&record.outcomes, &record.staged_blocks);
                     for item in &record.outcomes {
-                        if !self.apply_outcome_item(shard_id, item, &record.staged_blocks) {
+                        let selected = item.resolved_address()
+                            .and_then(|address| bindings.get(&(item.object_id, super::live_block_key(&address))))
+                            .map(|index| std::slice::from_ref(&record.staged_blocks[*index]))
+                            .unwrap_or(&record.staged_blocks);
+                        if !self.apply_outcome_item(shard_id, item, selected) {
                             // Say which precondition was unmet. `apply_outcome_item` answers with a
                             // bool from eighteen different places, so the caller was reporting that
                             // an outcome would not install and never which part of it was missing --
@@ -3230,6 +3280,17 @@ impl TemporalEngine {
                 expected = expected.saturating_add(1);
             }
 
+            // Publish placement metadata after each applied window. Repeated writes within
+            // the window retain only their latest location; none of this advances a durable
+            // replay frontier or publishes an index before the entire replay succeeds.
+            if !wal_resident_updates.is_empty() {
+                let mut shards = self.shards.write().expect("engine lock poisoned");
+                if let Some(shard) = shards.get_mut(&shard_id) {
+                    for (object_id, placement) in wal_resident_updates.drain() {
+                        shard.wal_resident_blocks.insert(object_id, placement);
+                    }
+                }
+            }
             if !more_to_come {
                 break;
             }
@@ -3256,14 +3317,6 @@ impl TemporalEngine {
             #[cfg(test)]
             restore_phase_probe::mark("index_fold");
             return Ok(());
-        }
-        if !wal_resident_updates.is_empty() {
-            let mut shards = self.shards.write().expect("engine lock poisoned");
-            if let Some(shard) = shards.get_mut(&shard_id) {
-                for (object_id, placement) in wal_resident_updates {
-                    shard.wal_resident_blocks.insert(object_id, placement);
-                }
-            }
         }
         // Restore the latest config for post-recovery client writes: any config entries stamped
         // at/after the last replayed sequence (future-effective changes) were intentionally not
@@ -3372,27 +3425,12 @@ impl TemporalEngine {
         // load (and any consumer that reads shard-{id}.index.json directly) on a current
         // base. The index-log is bounded separately by the storage-manager's consumer-aware
         // index GC, so unload does not truncate it here.
+        self.flush_shard_index(request.shard_id);
         {
-            let index_bytes = self
-                .shards
-                .read()
-                .expect("engine lock poisoned")
-                .get(&request.shard_id)
-                .map(serialize_index);
-            if let Some(index_bytes) = index_bytes {
-                // Discarding this result is safe for the same reason as on the replay-tail path
-                // above: unload truncates neither the WAL nor the index-log (the comment just
-                // above says so for the index-log, and the storage manager's consumer-aware GC
-                // owns that bound). A failed persist therefore leaves the older base on disk with
-                // everything after it still replayable, and the next cold load rebuilds from that
-                // base. The shard leaving memory below does not change what is recoverable.
-                let _ = self.persist_index_bytes_durable(request.shard_id, &index_bytes);
-            }
+            let mut shards = self.shards.write().expect("engine lock poisoned");
+            self.checkpoint_publications.forget(request.shard_id);
+            shards.remove(&request.shard_id);
         }
-        self.shards
-            .write()
-            .expect("engine lock poisoned")
-            .remove(&request.shard_id);
         self.infos
             .write()
             .expect("info lock poisoned")
@@ -3405,10 +3443,6 @@ impl TemporalEngine {
             .write()
             .expect("admission lock poisoned")
             .remove(&AdmissionScope::Shard(request.shard_id));
-        // Drop this shard's hot-block spill redirects: on the next load the WAL replay re-derives
-        // the hot blocks (and re-spills them as needed), so the live-path redirect map stays
-        // bounded across load/unload cycles.
-        hot_block_spill::clear_shard(request.shard_id);
         // Drop this shard's WAL-resident registrations too: they name records in a log this
         // engine no longer serves, and a reload re-derives them from the WAL anyway.
         block_in_wal::clear_shard(&self.block_store, request.shard_id);

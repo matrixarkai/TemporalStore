@@ -6,6 +6,17 @@ shared-field `POST /batch_hash_multi_set_msgpack` writes and
 compact `POST /batch_hash_multi_get_compact_msgpack` reads, with compatible
 shared-field and command-batch routing for augmented writes and older nodes.
 
+The latest-value path supports bounded writes and reads, timestamp-conditioned
+updates, TTL, and async Feast calls. Optional history and aggregate queries use
+the feature-series commands described below; teardown is exact only when key
+tracking was enabled before materialization.
+
+**Start here:** [Configuration](#install-and-configure) |
+[Reads](#reads) | [Writes](#writes) |
+[History](#write_feature_history) | [Teardown](#teardown) |
+[Serving costs](#latency-amplification-and-allocations) |
+[API coverage](#what-of-feasts-onlinestore-contract-is-covered).
+
 ## Which integration point this is
 
 Feast has three pluggable slots that are easy to conflate. This is the first
@@ -43,6 +54,7 @@ online_store:
   max_write_batch_commands: 4096
   max_batch_request_bytes: 4194304
   skip_dedup: false          # see "Writes" below
+  adaptive_timestamp_prefetch: true
   key_ttl_seconds: null      # see "Teardown" below
   write_feature_history: false
 ```
@@ -87,7 +99,55 @@ stores mean anything. Keys do not match — the hex encoding is a real differenc
 in stored key footprint, and it is written down here so nobody quotes a
 footprint ratio without knowing.
 
+## Latency, amplification, and allocations
+
+Choose the complete serving workflow before tuning a batch limit. Latest-only
+materialization, raw history, numeric windows, TTL, and tracked teardown have
+different command counts and storage costs; they are not one benchmark workload.
+
+| Concern | Supported behavior and tradeoff |
+|---|---|
+| Latest-value latency | Compact reads share the field projection and deduplicate compatible entity plans within a request. Request only the needed features; larger returned values still cost transport and protobuf decoding. |
+| Batch latency versus throughput | Defaults are 512 read commands, 4,096 write commands, and 4 MiB of encoded request data. Smaller batches can reduce work per request while increasing round trips and commit work. A caller batch can span several requests, not one atomic transaction. |
+| Mostly stale writes | Keep `skip_dedup: false`. Eligible routes compare timestamps on the node; adaptive prefetch can skip client feature serialization for rejected rows, at the cost of an extra fresh timestamp read. Augmented and older-node fallbacks have different concurrency guarantees. |
+| History write amplification | `write_feature_history` adds raw series writes; the default integer projection adds numeric series writes too. `compact_numeric_history` avoids the numeric copy but scans retained raw points for numeric windows instead of using that projection's rollup. |
+| Cleanup amplification | `track_keys_for_teardown` adds tracking writes. TTL or logical deletion does not establish that physical files have been reclaimed; account for maintenance and retained storage separately. |
+| Allocation pressure | Shared projections, request-local planning, binary values, and deferred ownership on eligible conditional writes reduce specific copies. Entity keys, protobuf serialization, response values, and server metadata still allocate. Neither request limits nor payload-cache capacity are process-RSS limits. |
+
+### Keep the latency states separate
+
+Measure end-to-end Feast calls, not only a node command or an in-process cache hit.
+Separate first-query reads after materialization, repeated query-cache hits,
+payload-cache misses, reads after restart, and reads concurrent with writers.
+Record entity count, selected fields, payload size, batch size, concurrency, and
+p50/p95/p99 latency together with accepted rows/s and requests/s. A CPU instruction
+or allocation reduction alone does not establish a service-latency improvement.
+
+`online_read_async` and `online_write_batch_async` do not switch the node to async
+storage or remove its persistence barrier. Keep acknowledgement policy,
+replication, storage medium, and maintenance settings explicit when comparing
+backends. Binary transport preserves feature bytes; it does not prove lower
+latency for every workload or compatibility fallback.
+
+### Account for each kind of amplification
+
+Distinguish request/response bytes, cumulative physical bytes written per accepted
+logical feature byte, retained storage per live feature byte, and bytes allocated
+per operation. State whether keys, timestamps, metadata, history copies, tracking,
+replication, and maintenance are included. Retained file size is not cumulative
+write amplification, and allocation traffic is not peak resident memory.
+
+For configuration-specific measurements and reproduction commands, use the
+[benchmark guide](../../../docs/feast_online_store_benchmark.md). Published results
+apply to their recorded workloads; they do not establish that every Feast API is
+faster than another store. Work under qualification is not a shipped guarantee.
+
 ## Reads
+
+Feature views with matching entities and join-key aliases reuse one entity
+deduplication and protobuf plan within each serving request. Different alias
+maps remain separate. The plan is discarded after the request, so later calls
+cannot reuse stale entity values or row positions.
 
 `online_read` over N entity keys uses ordered binary
 `/batch_hash_multi_get_compact_msgpack` requests and responses bounded by key
@@ -100,6 +160,10 @@ compact route are detected once per client and use
 The answers are positional; a short answer is refused
 rather than zipped, because a missing slot would shift every value onto the
 wrong feature and read downstream as a stale feature rather than as an error.
+Repeated requested feature names are collapsed before the projection is sent,
+so they do not add wire bytes or protobuf decoding work. Version-tagged feature
+views use isolated field namespaces and are supported by both direct and Feast
+orchestrated reads.
 
 An entity that was never written reads back as `(None, None)`, not as a dict of
 empty values.
@@ -107,27 +171,74 @@ empty values.
 ## Writes
 
 `online_write_batch` sends the common latest-value batch through
-`/batch_hash_multi_set_msgpack`: field names are encoded once, followed by
-ordered `(entity key, values)` rows. Mixed feature layouts and writes augmented
-with history, expiry, or teardown tracking use bounded binary
-`/batch_write_msgpack` command batches. A batched timestamp read runs first
-unless `skip_dedup` is set. That timestamp projection also uses
+the packed timestamp-set routes: field names are encoded once, followed by
+ordered `(entity key, timestamp, values)` rows. TTL writes use a distinct route
+and fall back to timestamp reads plus TTL-bearing hash commands when that route
+is unavailable. The serving node must support the combined command; older
+nodes reject it rather than silently retaining keys. The server compares timestamps,
+writes accepted rows, and arms their optional key expiry under one shard guard;
+stale rows neither write data nor refresh their expiry. This removes the
+timestamp-read round trip and a separate expiry command from the common TTL
+materialization path. Mixed feature layouts and writes augmented with history
+or teardown tracking use bounded binary `/batch_write_msgpack` command batches.
+When TTL is configured, each hash write in those batches carries its own
+expiry; it does not need a second command for the same entity.
+A batched timestamp read also serves augmented writes, mixed layouts, older-node
+fallbacks, and the adaptive stale-traffic path below. That projection uses
 the compact shared-field read route, so `_ts` crosses the wire once per batch.
 Reads retain the 512-command response bound while writes
 default to 4,096 commands and remain capped at 4 MiB of encoded request data.
 Nodes without either binary write route are detected once per client and use
 `/batch_write` or `/batch_execute`:
 
-* **`skip_dedup: false` (default)** — read each row's stored `_ts` field, then
-  write only the rows whose event time is newer. The number of round trips is
-  bounded by batch size, not by the number of rows. This stops an out-of-order materialization
-  moving a feature backwards, and it also deduplicates *within* the call, so
-  two rows sharing an entity key keep the newer one regardless of which was
-  queued last.
-* **`skip_dedup: true`** — skips the timestamp read. Right for an initial load or an
-  append-only pipeline whose rows arrive in order.
+* **`skip_dedup: false` (default)** — the common latest-only, shared-layout path
+  atomically compares the stored event timestamp and writes newer rows on the
+  server, normally without a preliminary timestamp read. History, teardown tracking,
+  mixed layouts, and older-node fallbacks use a separate timestamp projection
+  and write path; that read-then-write fallback is not an atomic conditional
+  update across concurrent writers. Within a call, rows sharing an entity key
+  retain the newest queued latest value rather than the last arrival.
+* **`skip_dedup: true`** — disables stored-timestamp suppression and uses the
+  unconditional write path. Use it only when input ordering is guaranteed;
+  an older materialization can otherwise replace a newer stored value.
+
+With `adaptive_timestamp_prefetch: true` (default), each client thread learns a
+single routing hint. A conditional batch with at least eight unique rows and at
+least 75% stale rejections enables a timestamp-only pre-read for following batches.
+Stale rows are then skipped before feature serialization; survivors still use the
+atomic conditional route when their layout supports it. A batch with at most 25%
+stale rows disables the hint. Ratios between those thresholds keep its current state.
+Local duplicate rows do not inflate the learned stale ratio.
+
+Only the hint persists: timestamps and feature values are read afresh, so deletion
+or expiry cannot leave a cached timestamp fence. The hint is thread-local and resets
+when the client closes. Fresh traffic normally keeps one write request; the first
+fresh batch after stale traffic may pay a pre-read plus a write. Set the option to
+`false` to keep the nonadaptive path. History, teardown tracking and `skip_dedup`
+do not use this policy. Mixed-layout and older-node fallbacks retain their existing
+read-then-write concurrency limits.
+
+### Payload copies and persistence
+
+The serving node borrows binary conditional-request values until admission and
+timestamp checks finish, then encodes accepted rows into owned packed frames.
+Stale rows avoid owned per-feature payload buffers on this path. Older encodings,
+duplicate-row requests, and mirrored writes can use the owned compatibility path.
+Complete-row overwrite bookkeeping reuses resident field identities; partial
+updates retain the general field-update path.
+
+Small packed rows can remain WAL-backed until safe materialization. This does
+not turn synchronous acknowledgement into asynchronous persistence. Deferred
+materialization, retained file size, cumulative write amplification, and serving
+latency are different measurements; use the
+[benchmark guide](../../../docs/feast_online_store_benchmark.md) before drawing
+cross-store throughput conclusions.
 
 ### `write_feature_history`
+
+Latest-only ingestion serializes values directly into bounded request rows,
+without creating an intermediate tuple for each feature. History ingestion
+reuses the serialized values already prepared for its series writes.
 
 Off by default. When on, every value is *also* appended to a feature series
 keyed by `(view, entity, feature)` at its event timestamp, so the history
@@ -139,7 +250,25 @@ and Int64 values also get an ASCII-integer projection for native windowed
 read the raw series. Existing history written before the numeric projection
 needs backfilling before numeric queries can include it.
 
+For write-heavy history workloads, set `compact_numeric_history: true` alongside
+`write_feature_history: true`. This stores each numeric value only in the raw
+serialized series and sends numeric windows through `FeatureProtoAggQuery`.
+The serving node must support that command; older nodes reject it rather than
+returning a value computed from the wrong encoding. Compact numeric windows
+scan their retained points, whereas the default numeric projection can use
+the aggregate rollup. Keep the default for read-heavy window queries.
+Use `benchmarks/bench_aggregate_serving.py --compact-numeric-history` to
+measure the compact layout explicitly; its JSON report records the selected mode.
+The runner also accepts `--aggregator` for `sum`, `avg`, `min`, `max`, `first`,
+`last`, `count`, and `events`. It verifies the selected reducer's answers and
+records its name; reports marked `void` must not support performance claims.
+
 `query_feature_aggregates` sends many windows through bounded ordered batches.
+Each batch prepares the feature-type lookup and versioned view name once;
+window bounds, feature types, and aggregate names are still validated per query.
+Current serving nodes evaluate `last` backward from the selected window's end,
+stopping at the first readable point. A count cap still selects the earliest
+points in the window, and a readable nonnumeric last value still returns zero.
 The repeat-gated 1,024-entity benchmark measured a median 4,207 aggregate
 queries/s at batch 64, with every full-window and tail-window result verified.
 
@@ -152,8 +281,8 @@ Serving reads do not change: `online_read` always answers from the hash. That
 is deliberate, and it is worth knowing why. `FeatureQuery` returns a window in
 **ascending** timestamp order and truncates with `take(count)`, so asking it
 for "the latest point" costs O(points in the window), not O(1). It is a history
-read, not a latest-value read. Turning this flag on adds one `FeatureAppend`
-per feature per row to the write path and leaves the read path alone.
+read, not a latest-value read. Turning this flag on adds one history append
+per feature series in a write batch and leaves the read path alone.
 
 ## Teardown
 
@@ -162,12 +291,17 @@ TemporalStore's command surface has **no key-space scan** — there is no `SCAN`
 what was written unless something recorded it.
 
 * `track_keys_for_teardown: true` records each entity key in a per-view set, so
-  `teardown` enumerates and deletes exactly the rows the view wrote. Tracking
+  `teardown` enumerates and deletes this view's hash fields and both history
+  series layouts, including data written before a numeric-history mode change. Tracking
   is distributed over 1,024 deterministic sets to keep each container small.
+  Teardown pages those sets with exclusive cursors and bounded responses; it
+  requires a serving node with `SetScan` support.
   It still costs one extra write per row, so it is off by default.
 * With it off, `teardown` **logs a warning and leaves the rows**. It does not
-  report success for work it did not do. Set `key_ttl_seconds` if you want rows
-  to age out on their own.
+  report success for work it did not do. `key_ttl_seconds` expires the latest
+  entity hash and, for new history writes, each history series. History TTL
+  requires a serving node that supports `FeatureAppendWithTtl`; older nodes
+  reject the command rather than retaining history without the requested TTL.
 
 ## What of Feast's `OnlineStore` contract is covered
 
@@ -180,7 +314,7 @@ Partial is written as partial below. Nothing here is rounded up.
 
 | method | required? | status |
 | --- | --- | --- |
-| `online_write_batch` | **abstract** | **implemented** — bounded `/batch_write` calls with a compatibility fallback; parameters identical to the base class |
+| `online_write_batch` | **abstract** | **implemented** — bounded native shared-row writes for eligible latest-value batches; augmented and older-node paths use compatible command batches |
 | `online_read` | **abstract** | **implemented** — bounded binary batch calls for N entities with a compatibility fallback |
 | `update` | **abstract** | **implemented** — nothing to create (the surface is schemaless); views being removed are swept through the teardown path |
 | `teardown` | **abstract** | **partial** — exact only with `track_keys_for_teardown`, which spreads keys over 1,024 deterministic sets and is off by default because it adds one write per row. Async commit is supported. With tracking off, teardown logs that it cannot enumerate instead of claiming success |
@@ -190,8 +324,8 @@ Partial is written as partial below. Nothing here is rounded up.
 | `plan` | optional, base returns `[]` | **inherited, and correct** — a schemaless surface needs no infra objects |
 | `initialize` | optional, base is `pass` | inherited; nothing to initialise |
 | `retrieve_online_documents`, `retrieve_online_documents_v2` | optional, **base raises** | **not implemented — vector search is not supported by this provider** |
-| `read_precomputed_vectors`, `write_precomputed_vector` | optional, base no-ops | **not implemented**; the inherited no-op answers `None`, so a repo relying on precomputed vectors gets nothing rather than an error |
-| `get_online_features`, `get_online_features_async` | provided by Feast | inherited and exercised — these are what the conformance tests call |
+| `read_precomputed_vectors`, `write_precomputed_vector` | optional, base has generic feature-row implementations | **implemented** — writes the compatible synthetic feature field without an unused timestamp and reads repeated entities through one deduplicated compact projection |
+| `get_online_features`, `get_online_features_async` | provided by Feast | inherited and exercised, including version-tagged views; compatible feature views are coalesced into one compact projection per entity set |
 
 ### Against Feast's own process for a new online store
 
@@ -202,7 +336,7 @@ lists six steps. Where they apply to a package outside Feast's tree:
 | --- | --- |
 | 1–2. `OnlineStore` + `OnlineStoreConfig` classes, `OnlineStore` suffix | done; Feast resolves `type:` by import path and imports `<ClassName>Config` from the same module, so no entry-point registration is needed |
 | 3. reference it from `feature_store.yaml` | done, documented above |
-| 4. test it against Feast's suite | **done for the online-store suite, and it passes.** `feast_repo_configuration.py` and `feast_online_store_creator.py` supply `AVAILABLE_ONLINE_STORES`, `FULL_REPO_CONFIGS` and an `OnlineStoreCreator` that starts a data node. Feast 0.67.0's own `tests/integration/online_store/test_universal_online.py`, run against this store, reports **5 passed, 14 skipped, 1 error** — see the breakdown below. Plus `tests/test_feast_api_conformance.py` here: five tests driving the provider through Feast's public API against a live node |
+| 4. test it against Feast's suite | **partially exercised; not a green full-suite result.** `feast_repo_configuration.py` and `feast_online_store_creator.py` supply `AVAILABLE_ONLINE_STORES`, `FULL_REPO_CONFIGS` and an `OnlineStoreCreator` that starts a data node. The recorded Feast 0.67.0 `tests/integration/online_store/test_universal_online.py` run reports **5 passed, 14 skipped, 1 error**; see the breakdown below. The separate `tests/test_feast_api_conformance.py` drives five public-API checks against a live node |
 | 5. dependencies | done; `pyproject.toml` keeps Feast itself optional |
 | 6. documentation | this file, plus the benchmark write-up |
 
@@ -284,6 +418,30 @@ PYTEST_PLUGINS=feast_temporalstore_command.feast_online_store_creator \
 ```
 
 ## Wire-format notes worth knowing before you measure anything
+
+The shared-field write routes separate WAL durability from block materialization.
+With synchronous storage, a successful response still waits for the batch's WAL
+barrier. Under default recovery, packed frames below 8 KiB can remain WAL-backed
+under WAL retention instead of being written immediately to a block slab and a
+served-index delta. Cache eviction resolves these frames through retained WAL
+records. Larger frames use physical storage; legacy recovery and explicit
+physical-storage quotas keep the physical write path. No timestamp-ordering
+check or synchronous acknowledgement barrier is disabled.
+
+Checkpoint images can retain WAL-backed locations. Reclamation keeps their
+carrying records until durable materialization makes those locations unnecessary.
+
+Measure checkpoint/materialization cost and retained WAL alongside foreground
+latency. Deferring work is not evidence that cumulative write amplification has
+fallen, and a short run may finish before background materialization occurs.
+
+For large materializations, measure the whole corpus rather than extrapolating
+from a small, hot read set. The benchmark's `--write-batch` controls rows per
+Feast write call; the adapter also bounds command count and encoded request
+bytes. Use `--skip-teardown` only on a fresh single-arm, single-payload run to
+isolate write and read timings. It does not provide a cross-store control, and
+it leaves rows behind for the caller to remove with the store's data directory.
+See the [benchmark guide](../../../docs/feast_online_store_benchmark.md).
 
 The command surface is asymmetric about byte payloads, and it matters to
 anyone reading a latency or bandwidth number off this path:

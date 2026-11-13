@@ -193,11 +193,10 @@ fn a_reload_of_a_store_this_binary_wrote_reads_the_index_rather_than_replaying()
     crate::engine::persistence::reset_index_load_path_counts();
     let engine = engine_on(dir.path());
     load_on(&engine);
-    let (accepted, refused, absent, undecodable) =
-        crate::engine::persistence::index_load_path_counts();
+    let (accepted, absent, undecodable) = crate::engine::persistence::index_load_path_counts();
 
     println!("=== reload of a store written by THIS binary ===");
-    println!("  load paths: accepted={accepted} refused_stale={refused} absent={absent} undecodable={undecodable}");
+    println!("  load paths: accepted={accepted} absent={absent} undecodable={undecodable}");
     let (live, tombstoned) = entry_counts(&engine);
     let seen = members_of(&engine);
     println!("  entries after the reload: {live} live, {tombstoned} tombstone");
@@ -206,14 +205,14 @@ fn a_reload_of_a_store_this_binary_wrote_reads_the_index_rather_than_replaying()
     // DENOMINATOR: exactly one load must have been classified, or the tuple below says nothing.
     assert_eq!(
         1,
-        accepted + refused + absent + undecodable,
+        accepted + absent + undecodable,
         "the reload classified {} index loads, not one -- so the arm below is not about a single \
          load and the counters cannot be attributed",
-        accepted + refused + absent + undecodable
+        accepted + absent + undecodable
     );
     assert_eq!(
         1, accepted,
-        "THE RELOAD DID NOT READ THE INDEX. accepted={accepted} refused_stale={refused} \
+        "THE RELOAD DID NOT READ THE INDEX. accepted={accepted} \
          absent={absent} undecodable={undecodable}. A store this binary just wrote must load through \
          its own index: if it replayed instead, the membership below would be right for the WRONG \
          REASON and the persisted index's handling of tombstone entries would be untested."
@@ -257,18 +256,13 @@ fn a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index() {
     // STAMP THE STORED INDEX WITH THE PREVIOUS VERSION, which is what every existing store looks
     // like to this binary.
     //
-    // THERE ARE TWO STAMPS AND THIS IS THE INNER ONE. The base index is written as a BINARY container
-    // whose first bytes carry an outer version, and changing that one makes `decode_index_bytes`
-    // REFUSE -- a corrupt-index path, not the stale-stamp path. What `load_index_inner` refuses on is
-    // the `index_format_version` FIELD inside the decoded state, which means the bytes must decode
-    // cleanly and then be judged. So the index is decoded, its field lowered, and re-serialized: and
-    // it is re-serialized as JSON deliberately, because `serialize_index_stamped` writes the binary
-    // container only when the field EQUALS the current constant and JSON otherwise, so a
-    // down-stamped state cannot be written in the binary form at all.
+    // THE STAMP IS THE CONTAINER HEADER'S. `decode_index_bytes` compares the struct version in the
+    // header with the constant before it reads a byte of the payload, so an image "from before the
+    // bump" is this build's payload behind a header that names the previous version -- and the
+    // decode refuses it, which the load turns into a replay.
     let index_path = dir.path().join("indexes").join("shard-1.index.json");
     let raw = std::fs::read(&index_path).expect("the unload wrote a base index");
-    let mut stored =
-        crate::engine::decode_index_bytes(&raw).expect("the stored base index decodes");
+    let stored = crate::engine::decode_index_bytes(&raw).expect("the stored base index decodes");
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     assert_eq!(
         current, stored.index_format_version,
@@ -276,31 +270,25 @@ fn a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index() {
          it must first be able to read",
         stored.index_format_version
     );
-    stored.index_format_version = current - 1;
-    std::fs::write(
-        &index_path,
-        serde_json::to_vec(&stored).expect("re-serialize the down-stamped state as JSON"),
-    )
-    .expect("write the down-stamped index");
-    // AND THE DOWN-STAMPED FILE STILL DECODES, which is the precondition for the arm below testing
-    // the stale-stamp path rather than the undecodable one.
-    let reread = std::fs::read(&index_path).expect("re-read");
-    let decoded =
-        crate::engine::decode_index_bytes(&reread).expect("the down-stamped index still decodes");
-    assert_eq!(
-        current - 1,
-        decoded.index_format_version,
-        "the down-stamp did not survive the round trip, so the arm below is not testing a stale stamp"
+    let down_stamped = crate::engine::encode_index_bytes_at_version(&stored, current - 1);
+    std::fs::write(&index_path, &down_stamped).expect("write the down-stamped index");
+    // AND THE DOWN-STAMPED FILE IS REFUSED ON ITS HEADER, which is the precondition for the arm
+    // below testing the stale-stamp path rather than some other undecodable one.
+    let refusal = crate::engine::decode_index_bytes(&down_stamped)
+        .err()
+        .expect("a down-stamped index must be refused by the decode");
+    assert!(
+        refusal.contains("struct version") && refusal.contains(&(current - 1).to_string()),
+        "the down-stamped index was refused, but not on its header's struct version: {refusal}"
     );
 
     crate::engine::persistence::reset_index_load_path_counts();
     let engine = engine_on(dir.path());
     load_on(&engine);
-    let (accepted, refused, absent, undecodable) =
-        crate::engine::persistence::index_load_path_counts();
+    let (accepted, absent, undecodable) = crate::engine::persistence::index_load_path_counts();
 
     println!("=== reload of a store stamped {} (this binary writes {current}) ===", current - 1);
-    println!("  load paths: accepted={accepted} refused_stale={refused} absent={absent} undecodable={undecodable}");
+    println!("  load paths: accepted={accepted} absent={absent} undecodable={undecodable}");
     let seen = members_of(&engine);
     let (live, tombstoned) = entry_counts(&engine);
     println!("  entries after the replay: {live} live, {tombstoned} tombstone");
@@ -308,14 +296,14 @@ fn a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index() {
 
     assert_eq!(
         1,
-        accepted + refused + absent + undecodable,
+        accepted + absent + undecodable,
         "the reload classified {} index loads, not one",
-        accepted + refused + absent + undecodable
+        accepted + absent + undecodable
     );
     assert_eq!(
-        1, refused,
-        "THE STALE STAMP WAS NOT REFUSED. accepted={accepted} refused_stale={refused} \
-         absent={absent} undecodable={undecodable}. If the index was ACCEPTED then the bump from 3 \
+        1, undecodable,
+        "THE STALE STAMP WAS NOT REFUSED. accepted={accepted} absent={absent} \
+         undecodable={undecodable}. If the index was ACCEPTED then the bump from 3 \
          to 5 does not gate anything and an index written before the block format changed would be \
          served as if it had not."
     );

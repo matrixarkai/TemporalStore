@@ -12,7 +12,8 @@ use temporalstore_rust::context_workflow::{
     context_pipeline_manage_report, context_workflow_state_report, default_context_model_providers,
     context_provider_from_env, embed_drainer_config_from_env, embed_drainer_enabled,
     extract_context, ingest_extract_context,
-    inject_context, retrieve_context, run_embed_drainer_loop, ContextExtractRequest,
+    inject_context, retrieve_context, retrieve_context_from_nodes, run_embed_drainer_loop,
+    ContextExtractRequest,
     ContextIngestExtractRequest, ContextInjectRequest, ContextModelProviderConfig,
     ContextRetrieveRequest,
 };
@@ -24,7 +25,7 @@ use temporalstore_rust::data_node::{
 use temporalstore_rust::engine::reports::{StorageManagerCycleReport, StorageManagerCycleRequest};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
-    get_bytes_with_headers, json_response, msgpack_response, parse_json, parse_msgpack, post_json,
+    get_bytes_with_headers, json_response, msgpack_response, parse_json, parse_msgpack, parse_msgpack_borrowed, post_json,
     post_json_with_options_and_headers, serve_with_stream_handler, HttpRequest,
     HttpRequestOptions, StreamAction, StreamTransfer,
 };
@@ -41,7 +42,7 @@ use temporalstore_rust::raft::{
 };
 use temporalstore_rust::types::{
     BatchExecuteRequest, BatchHashMultiGetRequest, BatchHashMultiSetRequest,
-    BatchHashTimestampSetRequest, ExecuteRequest, ExecuteResponse, ReplicatedBatchExecuteRequest,
+    BorrowedHashTimestampRequest, ExecuteRequest, ExecuteResponse, ReplicatedBatchExecuteRequest,
     ReplicatedExecuteRequest, ShardId, Status,
 };
 use temporalstore_rust::{
@@ -63,6 +64,9 @@ use temporalstore_snapshot::object_store::{MatrixObjectHttpStore, ObjectStore};
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 use bytes::Bytes;
 use tracing::{debug, error, info, warn};
+
+#[path = "server/context_explicit_route.rs"]
+mod context_explicit_route;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ServerTopologyValidationRequest {
@@ -652,9 +656,13 @@ fn main() {
     let handler_replicator = shard_replicator.clone();
     let handler_block_runtime = Arc::clone(&blob_runtime);
     let stream_chunk_bytes = blob_chunk_bytes;
+    let stream_context_engine = engine.clone();
     if let Err(err) = serve_with_stream_handler(
         &addr,
         move |head, transfer| {
+            if let StreamAction::Handled = context_explicit_route::handle(&stream_context_engine, head, transfer) {
+                return StreamAction::Handled;
+            }
             handle_blob_stream(
                 head,
                 transfer,
@@ -1083,7 +1091,8 @@ fn main() {
                     ),
                 }
             }
-            ("POST", "/batch_hash_multi_set_msgpack") => {
+            ("POST", "/batch_hash_multi_set_msgpack")
+            | ("POST", "/batch_hash_multi_set_ttl_msgpack") => {
                 match parse_msgpack::<BatchHashMultiSetRequest>(&request.body) {
                     Ok(req)
                         if req.rows.len() <= 4096
@@ -1105,14 +1114,15 @@ fn main() {
                     ),
                 }
             }
-            ("POST", "/batch_hash_timestamp_set_msgpack") => {
-                match parse_msgpack::<BatchHashTimestampSetRequest>(&request.body) {
+            ("POST", "/batch_hash_timestamp_set_msgpack")
+            | ("POST", "/batch_hash_timestamp_set_ttl_msgpack") => {
+                match parse_msgpack_borrowed::<BorrowedHashTimestampRequest<'_>>(&request.body) {
                     Ok(req)
                         if req.rows.len() <= 4096
                             && req.fields.len() <= 4096
                             && req.rows.len().saturating_mul(req.fields.len()) <= 1_000_000 =>
                     {
-                        msgpack_response(200, &runtime.batch_hash_timestamp_set(req))
+                        msgpack_response(200, &runtime.batch_hash_timestamp_set_borrowed(req))
                     }
                     Ok(_) => json_response(
                         400,
@@ -1169,6 +1179,12 @@ fn main() {
             ("POST", "/context/retrieve") => {
                 match parse_json::<ContextRetrieveRequest>(&request.body) {
                     Ok(req) => json_response(200, &retrieve_context(&engine, req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
+            ("POST", "/context/retrieve/nodes") => {
+                match parse_json::<ContextRetrieveRequest>(&request.body) {
+                    Ok(req) => json_response(200, &retrieve_context_from_nodes(&engine, req)),
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 }
             }

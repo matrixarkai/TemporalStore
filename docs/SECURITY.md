@@ -13,10 +13,10 @@ about which branch gets fixes is worse than one in a slightly less obvious place
 
 ## Reporting A Vulnerability
 
-Please report suspected vulnerabilities through GitHub private vulnerability
-reporting or a private maintainer channel for this repository. Do not open a
-public issue with exploit details. Do not open a public issue with exploit
-details until maintainers have coordinated disclosure.
+Please report suspected vulnerabilities through
+[GitHub private vulnerability reporting](https://github.com/matrixarkai/TemporalStore/security/advisories/new).
+Do not open a public issue with exploit details until maintainers have
+coordinated disclosure.
 
 Please include:
 

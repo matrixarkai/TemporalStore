@@ -29,6 +29,21 @@ def percentile(values: List[float], fraction: float) -> float:
     return ordered[min(len(ordered) - 1, round(fraction * (len(ordered) - 1)))]
 
 
+def expected_aggregate(index: int, events: int, aggregator: str) -> int:
+    total = events * index + events * (events - 1) // 2
+    if aggregator == "sum":
+        return total
+    if aggregator == "avg":
+        return total // events
+    if aggregator in ("min", "first"):
+        return index
+    if aggregator in ("max", "last"):
+        return index + events - 1
+    if aggregator in ("count", "events"):
+        return events
+    raise ValueError(f"unsupported benchmark aggregator: {aggregator}")
+
+
 def record_count(host: str, port: int, shard_id: int) -> int:
     import http.client
 
@@ -70,6 +85,9 @@ def main() -> None:
     parser.add_argument("--shard-id", type=int, default=1)
     parser.add_argument("--entities", type=int, default=256)
     parser.add_argument("--events", type=int, default=64)
+    parser.add_argument("--compact-numeric-history", action="store_true")
+    parser.add_argument("--aggregator", default="sum",
+                        choices=["sum", "avg", "min", "max", "first", "last", "count", "events"])
     parser.add_argument("--write-batch", type=int, default=256)
     parser.add_argument("--reads", type=int, default=1000)
     parser.add_argument("--aggregate-batch", type=int, default=64)
@@ -119,6 +137,7 @@ def main() -> None:
                 "shard_id": args.shard_id,
                 "skip_dedup": True,
                 "write_feature_history": True,
+                "compact_numeric_history": args.compact_numeric_history,
                 "timeout_seconds": args.timeout_seconds,
             },
         )
@@ -199,10 +218,10 @@ def main() -> None:
                 begin = time.perf_counter()
                 observed = adapter.query_feature_aggregate(
                     config, view, keys[index], "amount", base_ms,
-                    base_ms + (args.events - 1) * 1000, "sum",
+                    base_ms + (args.events - 1) * 1000, args.aggregator,
                 )
                 elapsed = (time.perf_counter() - begin) * 1_000_000
-                expected = args.events * index + args.events * (args.events - 1) // 2
+                expected = expected_aggregate(index, args.events, args.aggregator)
                 if observed != expected:
                     raise RuntimeError(f"measured aggregate differs for entity {index}")
                 return elapsed
@@ -249,14 +268,11 @@ def main() -> None:
                             "amount",
                             base_ms,
                             base_ms + (args.events - 1) * 1000,
-                            "sum",
+                            args.aggregator,
                             None,
                         )
                     )
-                    expected.append(
-                        args.events * index
-                        + args.events * (args.events - 1) // 2
-                    )
+                    expected.append(expected_aggregate(index, args.events, args.aggregator))
                 batch_cases.append((start, call_indices, queries, expected))
 
             batch_repeat_reads_per_second = []
@@ -298,6 +314,8 @@ def main() -> None:
             report = {
                 "entities": args.entities,
                 "async_storage": async_storage,
+                "compact_numeric_history": args.compact_numeric_history,
+                "aggregator": args.aggregator,
                 "timeout_seconds": args.timeout_seconds,
                 "events_per_entity": args.events,
                 "history_writes": args.entities * args.events,

@@ -1779,6 +1779,31 @@ pub struct BlockStoreRollReport {
 #[derive(Debug, Clone)]
 pub struct BlockStore {
     inner: Arc<Mutex<BlockStoreInner>>,
+    identity: usize,
+}
+
+#[derive(Debug)]
+struct BlockStoreIdentity(usize);
+
+impl BlockStoreIdentity {
+    fn new() -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+        Self(
+            NEXT_ID
+                .fetch_update(
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                    |id| id.checked_add(1),
+                )
+                .expect("block store identity exhausted"),
+        )
+    }
+}
+
+impl Drop for BlockStoreIdentity {
+    fn drop(&mut self) {
+        crate::engine::clear_store_registrations(self.0);
+    }
 }
 
 impl BlockStore {
@@ -1789,13 +1814,16 @@ impl BlockStore {
     /// only thing separating two engines that both serve shard 1 and both hold a key called
     /// "user:1", so anything keyed per object has to include it.
     pub fn store_id(&self) -> usize {
-        Arc::as_ptr(&self.inner) as *const u8 as usize
+        self.identity
     }
 }
 
 #[derive(Debug)]
 struct BlockStoreInner {
+    _identity: BlockStoreIdentity,
     root: PathBuf,
+    root_created: bool,
+    active_append_file: Option<std::fs::File>,
     // Set when a relaxed (bulk) append deferred its fsync + manifest persist;
     // cleared by sync_durable(). See bulk_relaxed_durability().
     relaxed_dirty: bool,
@@ -1933,7 +1961,7 @@ impl BlockStore {
 
     pub fn with_options(root: impl Into<PathBuf>, options: BlockStoreOptions) -> Self {
         let root = root.into();
-        let _ = std::fs::create_dir_all(&root);
+        let root_created = std::fs::create_dir_all(&root).is_ok();
         let block_slab_id = latest_slab_id_at(&root).unwrap_or_default();
         let mut write_offset = slab_path(&root, block_slab_id)
             .metadata()
@@ -2021,9 +2049,14 @@ impl BlockStore {
         if manifest_rebuilt {
             let _ = persist_slab_manifest(&root, &slabs, &mut stats);
         }
+        let identity = BlockStoreIdentity::new();
         Self {
+            identity: identity.0,
             inner: Arc::new(Mutex::new(BlockStoreInner {
+                _identity: identity,
                 root,
+                root_created,
+                active_append_file: None,
                 relaxed_dirty: false,
                 block_slab_id,
                 write_offset,
@@ -2087,6 +2120,8 @@ impl BlockStore {
     ) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         std::fs::create_dir_all(&inner.root)?;
+        inner.root_created = true;
+        inner.active_append_file = None;
         let existing_max = slab_ids_at(&inner.root)?.into_iter().max();
         let new_slab_id = through_slab_id
             .max(inner.block_slab_id)
@@ -2852,6 +2887,22 @@ impl BlockStore {
         self.inner.lock().expect("block store lock poisoned").stats
     }
 
+    /// Validate every record without retaining a per-block inspection inventory.
+    pub(crate) fn corrupt_slab_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
+        let root = self.inner.lock().expect("block store lock poisoned").root.clone();
+        let mut tally = BlockStoreReadTally::start();
+        let mut corrupt = Vec::new();
+        for block_slab_id in slab_ids_at(&root)? {
+            let bytes = LocalSlabBackend::new(&root)
+                .read_all(block_slab_id, &mut tally)?
+                .into_bytes_charged_to_the_process_only();
+            if record::inspect_slab_corruption(&bytes, block_slab_id) {
+                corrupt.push(block_slab_id);
+            }
+        }
+        Ok(corrupt)
+    }
+
     /// Open a new write-amplification window here, because the live set has just been
     /// consolidated.
     ///
@@ -2968,6 +3019,8 @@ fn roll_slab_inner(
     inner: &mut BlockStoreInner,
 ) -> Result<BlockStoreRollReport, BlockStoreError> {
     std::fs::create_dir_all(&inner.root)?;
+    inner.root_created = true;
+    inner.active_append_file = None;
     let previous_block_slab_id = inner.block_slab_id;
     // The outgoing slab may hold relaxed (un-fsynced) bulk appends; make them
     // durable before we seal and stop writing to it.
@@ -3739,6 +3792,22 @@ mod open_read_scale;
 #[cfg(test)]
 mod tests {
     use std::fs::{self, File};
+
+    #[test]
+    fn compact_carried_address_agrees_with_wire_and_round_trips() {
+        for block_id in [None, Some(0), Some(17), Some(u16::MAX as u64)] {
+            let entry = super::ElementEntry::from_parts(7, 23, 4096, block_id, None);
+            let compact = serde_json::to_value(entry.compact_carried_row()).unwrap();
+            let encoded = rmp_serde::to_vec(&entry).unwrap();
+            let wire: serde_json::Value = rmp_serde::from_slice(&encoded).unwrap();
+            assert_eq!(compact, wire);
+            let restored: super::ElementEntry = serde_json::from_value(compact.clone()).unwrap();
+            assert_eq!(restored, entry);
+            assert_eq!(restored.generation(), entry.generation());
+            assert!(rmp_serde::to_vec(&compact).unwrap().len()
+                < rmp_serde::to_vec(&serde_json::to_value(&entry).unwrap()).unwrap().len());
+        }
+    }
 
     /// The on-disk names, and the readers that have to agree with them.
     ///
@@ -6169,6 +6238,28 @@ const RETIRED_NAMES: &[&str] = &[
             .as_ref()
             .expect("corrupt second record should be reported");
         assert!(error.contains("checksum") || error.contains("corrupt page envelope"));
+    }
+
+    #[test]
+    fn corruption_only_scan_matches_detailed_slab_inspection() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        let first = store.append(&b"compressible-record-".repeat(100)).unwrap();
+        store.append(b"second record").unwrap();
+        let path = slab_path(dir.path(), first.block_slab_id());
+        let healthy = fs::read(&path).unwrap();
+        let mut corrupted = healthy.clone();
+        *corrupted.last_mut().unwrap() ^= 0xff;
+        let mut truncated = healthy.clone();
+        truncated.pop();
+        for bytes in [healthy, corrupted, truncated, Vec::new(), b"legacy raw bytes".to_vec()] {
+            fs::write(&path, bytes).unwrap();
+            let expected = store.slab_reports().unwrap().into_iter()
+                .filter(|report| report.has_corruption)
+                .map(|report| report.block_slab_id)
+                .collect::<Vec<_>>();
+            assert_eq!(store.corrupt_slab_ids().unwrap(), expected);
+        }
     }
 
     #[test]
@@ -9353,6 +9444,20 @@ pub struct ElementEntry {
 // `Hash` is written to agree with `Eq`, because a type where equal values hash differently
 // breaks every `HashMap` holding it, silently.
 impl ElementEntry {
+    /// Positional address state accepted by the existing carried-state reader.
+    pub(crate) fn compact_carried_row(
+        &self,
+    ) -> (Option<u64>, u64, Option<u64>, Option<u64>, Option<u64>) {
+        let wire = BlockAddressWire::from(self.clone());
+        (
+            wire.address,
+            wire.length,
+            wire.block_id,
+            wire.object_id,
+            wire.generation
+        )
+    }
+
     /// The flag word with the holder's lent bits masked off: the presence bits alone, which ARE
     /// part of this address's identity because they say whether the block id and generation exist.
     fn identity_flags(&self) -> u16 {

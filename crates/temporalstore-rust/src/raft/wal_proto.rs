@@ -24,24 +24,16 @@ use crate::sdk::v1;
 
 /// The record fields that sit at their default on nearly every record.
 ///
-/// They are carried together in their existing encoding rather than modelled field by field:
-/// modelling them would add a conversion to get wrong for each one, and save nothing on the
-/// records that actually dominate the log, where every one of them is absent.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+/// They are carried together in one side message that is left out of a record that has none of
+/// them, which is nearly all of them, rather than modelled on the record itself.
+#[derive(Debug, Clone, Default, PartialEq)]
 struct RaftWalRecordRest {
-    #[serde(default, skip_serializing_if = "RaftReplicaRole::is_default")]
     replica_role: RaftReplicaRole,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     joint_membership: Option<JointConsensusMembership>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     latest_external_snapshot_ref: Option<RaftExternalSnapshotRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     installed_snapshot: Option<RaftSnapshot>,
-    #[serde(default, skip_serializing_if = "RaftPeerPipelineRuntimeState::is_default")]
     pipeline_state: RaftPeerPipelineRuntimeState,
-    #[serde(default, skip_serializing_if = "RaftReadSafetyRuntimeState::is_default")]
     read_safety_state: RaftReadSafetyRuntimeState,
-    #[serde(default, skip_serializing_if = "RaftMembershipRuntimeEvidence::is_default")]
     membership_evidence: RaftMembershipRuntimeEvidence,
 }
 
@@ -49,6 +41,417 @@ impl RaftWalRecordRest {
     fn is_empty(&self) -> bool {
         *self == RaftWalRecordRest::default()
     }
+}
+
+fn pipeline_state_to_proto(state: &RaftPeerPipelineRuntimeState) -> v1::WalPipelineState {
+    let RaftPeerPipelineRuntimeState {
+        match_index,
+        next_index,
+        append_requests,
+        append_accepted,
+        append_rejected,
+        committed_overwrite_rejections,
+        inflight_entries,
+        inflight_bytes,
+        append_queue_depth,
+        last_accepted_append_ms,
+        leader_reported_commit_index,
+        apply_inflight_tasks,
+        apply_queue_depth,
+        apply_queue_max_depth,
+        apply_backpressure_rejections,
+        memory_backpressure_rejections,
+        oversized_log_rejections,
+        append_queue_max_depth,
+        reorder_queue_depth,
+        out_of_order_append_rejections,
+        reorder_entries_accepted,
+        reorder_entries_released,
+        reorder_entries_rejected,
+        reorder_entry_timeouts,
+        reorder_dropped_packages,
+        stale_term_rejections,
+        append_send_failures,
+        snapshot_sending,
+        snapshot_installing,
+        snapshot_installed_index,
+        snapshot_send_attempts,
+        snapshot_send_completed,
+        snapshot_send_failed,
+        snapshot_install_started,
+        snapshot_install_completed,
+        snapshot_install_rejected,
+        snapshot_install_rolled_back,
+        snapshot_install_received_chunks,
+        snapshot_send_progress_mark,
+        snapshot_install_total_chunks,
+        snapshot_install_progress_per_mille,
+        snapshot_retry_count,
+        snapshot_chunk_retry_count,
+        snapshot_backpressure_rejections,
+        snapshot_rate_limit_rejections,
+        snapshot_send_started_ms,
+        snapshot_send_elapsed_ms,
+        snapshot_send_timeouts,
+        snapshot_during_membership_change,
+        snapshot_rejoin_after_compacted_log,
+        transfer_leader_target,
+        transfer_leader_requests,
+        transfer_leader_accepted,
+        transfer_leader_rejected,
+        transfer_leader_completed,
+        transfer_leader_started_ms,
+        transfer_leader_elapsed_ms,
+        transfer_leader_timeouts,
+        pre_vote_rejections,
+        election_rejections,
+        offline_since_ms,
+        offline_elapsed_ms,
+        offline_timeout_reached,
+        offline_timeout_rejections,
+        auto_promoted_from_learner,
+    } = state;
+    v1::WalPipelineState {
+        match_index: *match_index,
+        next_index: *next_index,
+        append_requests: *append_requests,
+        append_accepted: *append_accepted,
+        append_rejected: *append_rejected,
+        committed_overwrite_rejections: *committed_overwrite_rejections,
+        inflight_entries: *inflight_entries,
+        inflight_bytes: *inflight_bytes,
+        append_queue_depth: *append_queue_depth,
+        last_accepted_append_ms: *last_accepted_append_ms,
+        leader_reported_commit_index: *leader_reported_commit_index,
+        apply_inflight_tasks: *apply_inflight_tasks,
+        apply_queue_depth: *apply_queue_depth,
+        apply_queue_max_depth: *apply_queue_max_depth,
+        apply_backpressure_rejections: *apply_backpressure_rejections,
+        memory_backpressure_rejections: *memory_backpressure_rejections,
+        oversized_log_rejections: *oversized_log_rejections,
+        append_queue_max_depth: *append_queue_max_depth,
+        reorder_queue_depth: *reorder_queue_depth,
+        out_of_order_append_rejections: *out_of_order_append_rejections,
+        reorder_entries_accepted: *reorder_entries_accepted,
+        reorder_entries_released: *reorder_entries_released,
+        reorder_entries_rejected: *reorder_entries_rejected,
+        reorder_entry_timeouts: *reorder_entry_timeouts,
+        reorder_dropped_packages: *reorder_dropped_packages,
+        stale_term_rejections: *stale_term_rejections,
+        append_send_failures: *append_send_failures,
+        snapshot_sending: *snapshot_sending,
+        snapshot_installing: *snapshot_installing,
+        snapshot_installed_index: *snapshot_installed_index,
+        snapshot_send_attempts: *snapshot_send_attempts,
+        snapshot_send_completed: *snapshot_send_completed,
+        snapshot_send_failed: *snapshot_send_failed,
+        snapshot_install_started: *snapshot_install_started,
+        snapshot_install_completed: *snapshot_install_completed,
+        snapshot_install_rejected: *snapshot_install_rejected,
+        snapshot_install_rolled_back: *snapshot_install_rolled_back,
+        snapshot_install_received_chunks: *snapshot_install_received_chunks,
+        snapshot_send_progress_mark: *snapshot_send_progress_mark,
+        snapshot_install_total_chunks: *snapshot_install_total_chunks,
+        snapshot_install_progress_per_mille: *snapshot_install_progress_per_mille,
+        snapshot_retry_count: *snapshot_retry_count,
+        snapshot_chunk_retry_count: *snapshot_chunk_retry_count,
+        snapshot_backpressure_rejections: *snapshot_backpressure_rejections,
+        snapshot_rate_limit_rejections: *snapshot_rate_limit_rejections,
+        snapshot_send_started_ms: *snapshot_send_started_ms,
+        snapshot_send_elapsed_ms: *snapshot_send_elapsed_ms,
+        snapshot_send_timeouts: *snapshot_send_timeouts,
+        snapshot_during_membership_change: *snapshot_during_membership_change,
+        snapshot_rejoin_after_compacted_log: *snapshot_rejoin_after_compacted_log,
+        transfer_leader_target: *transfer_leader_target,
+        transfer_leader_requests: *transfer_leader_requests,
+        transfer_leader_accepted: *transfer_leader_accepted,
+        transfer_leader_rejected: *transfer_leader_rejected,
+        transfer_leader_completed: *transfer_leader_completed,
+        transfer_leader_started_ms: *transfer_leader_started_ms,
+        transfer_leader_elapsed_ms: *transfer_leader_elapsed_ms,
+        transfer_leader_timeouts: *transfer_leader_timeouts,
+        pre_vote_rejections: *pre_vote_rejections,
+        election_rejections: *election_rejections,
+        offline_since_ms: *offline_since_ms,
+        offline_elapsed_ms: *offline_elapsed_ms,
+        offline_timeout_reached: *offline_timeout_reached,
+        offline_timeout_rejections: *offline_timeout_rejections,
+        auto_promoted_from_learner: *auto_promoted_from_learner,
+    }
+}
+
+fn pipeline_state_from_proto(message: v1::WalPipelineState) -> RaftPeerPipelineRuntimeState {
+    RaftPeerPipelineRuntimeState {
+        match_index: message.match_index,
+        next_index: message.next_index,
+        append_requests: message.append_requests,
+        append_accepted: message.append_accepted,
+        append_rejected: message.append_rejected,
+        committed_overwrite_rejections: message.committed_overwrite_rejections,
+        inflight_entries: message.inflight_entries,
+        inflight_bytes: message.inflight_bytes,
+        append_queue_depth: message.append_queue_depth,
+        last_accepted_append_ms: message.last_accepted_append_ms,
+        leader_reported_commit_index: message.leader_reported_commit_index,
+        apply_inflight_tasks: message.apply_inflight_tasks,
+        apply_queue_depth: message.apply_queue_depth,
+        apply_queue_max_depth: message.apply_queue_max_depth,
+        apply_backpressure_rejections: message.apply_backpressure_rejections,
+        memory_backpressure_rejections: message.memory_backpressure_rejections,
+        oversized_log_rejections: message.oversized_log_rejections,
+        append_queue_max_depth: message.append_queue_max_depth,
+        reorder_queue_depth: message.reorder_queue_depth,
+        out_of_order_append_rejections: message.out_of_order_append_rejections,
+        reorder_entries_accepted: message.reorder_entries_accepted,
+        reorder_entries_released: message.reorder_entries_released,
+        reorder_entries_rejected: message.reorder_entries_rejected,
+        reorder_entry_timeouts: message.reorder_entry_timeouts,
+        reorder_dropped_packages: message.reorder_dropped_packages,
+        stale_term_rejections: message.stale_term_rejections,
+        append_send_failures: message.append_send_failures,
+        snapshot_sending: message.snapshot_sending,
+        snapshot_installing: message.snapshot_installing,
+        snapshot_installed_index: message.snapshot_installed_index,
+        snapshot_send_attempts: message.snapshot_send_attempts,
+        snapshot_send_completed: message.snapshot_send_completed,
+        snapshot_send_failed: message.snapshot_send_failed,
+        snapshot_install_started: message.snapshot_install_started,
+        snapshot_install_completed: message.snapshot_install_completed,
+        snapshot_install_rejected: message.snapshot_install_rejected,
+        snapshot_install_rolled_back: message.snapshot_install_rolled_back,
+        snapshot_install_received_chunks: message.snapshot_install_received_chunks,
+        snapshot_send_progress_mark: message.snapshot_send_progress_mark,
+        snapshot_install_total_chunks: message.snapshot_install_total_chunks,
+        snapshot_install_progress_per_mille: message.snapshot_install_progress_per_mille,
+        snapshot_retry_count: message.snapshot_retry_count,
+        snapshot_chunk_retry_count: message.snapshot_chunk_retry_count,
+        snapshot_backpressure_rejections: message.snapshot_backpressure_rejections,
+        snapshot_rate_limit_rejections: message.snapshot_rate_limit_rejections,
+        snapshot_send_started_ms: message.snapshot_send_started_ms,
+        snapshot_send_elapsed_ms: message.snapshot_send_elapsed_ms,
+        snapshot_send_timeouts: message.snapshot_send_timeouts,
+        snapshot_during_membership_change: message.snapshot_during_membership_change,
+        snapshot_rejoin_after_compacted_log: message.snapshot_rejoin_after_compacted_log,
+        transfer_leader_target: message.transfer_leader_target,
+        transfer_leader_requests: message.transfer_leader_requests,
+        transfer_leader_accepted: message.transfer_leader_accepted,
+        transfer_leader_rejected: message.transfer_leader_rejected,
+        transfer_leader_completed: message.transfer_leader_completed,
+        transfer_leader_started_ms: message.transfer_leader_started_ms,
+        transfer_leader_elapsed_ms: message.transfer_leader_elapsed_ms,
+        transfer_leader_timeouts: message.transfer_leader_timeouts,
+        pre_vote_rejections: message.pre_vote_rejections,
+        election_rejections: message.election_rejections,
+        offline_since_ms: message.offline_since_ms,
+        offline_elapsed_ms: message.offline_elapsed_ms,
+        offline_timeout_reached: message.offline_timeout_reached,
+        offline_timeout_rejections: message.offline_timeout_rejections,
+        auto_promoted_from_learner: message.auto_promoted_from_learner,
+    }
+}
+
+fn read_safety_state_to_proto(state: &RaftReadSafetyRuntimeState) -> v1::WalReadSafetyState {
+    let RaftReadSafetyRuntimeState {
+        read_index_requests,
+        read_index_accepted,
+        read_index_rejected,
+        lease_read_requests,
+        lease_read_accepted,
+        lease_read_rejected,
+        pre_vote_requests,
+        pre_vote_accepted,
+        pre_vote_rejected,
+        bounded_stale_read_requests,
+        bounded_stale_read_accepted,
+        bounded_stale_read_rejected,
+        stale_leader_lease_rejected,
+        lagging_follower_read_rejected,
+        stale_follower_write_rejected,
+        minority_partition_read_rejected,
+        minority_partition_write_rejected,
+        healed_follower_catchup_observed,
+    } = state;
+    v1::WalReadSafetyState {
+        read_index_requests: *read_index_requests,
+        read_index_accepted: *read_index_accepted,
+        read_index_rejected: *read_index_rejected,
+        lease_read_requests: *lease_read_requests,
+        lease_read_accepted: *lease_read_accepted,
+        lease_read_rejected: *lease_read_rejected,
+        pre_vote_requests: *pre_vote_requests,
+        pre_vote_accepted: *pre_vote_accepted,
+        pre_vote_rejected: *pre_vote_rejected,
+        bounded_stale_read_requests: *bounded_stale_read_requests,
+        bounded_stale_read_accepted: *bounded_stale_read_accepted,
+        bounded_stale_read_rejected: *bounded_stale_read_rejected,
+        stale_leader_lease_rejected: *stale_leader_lease_rejected,
+        lagging_follower_read_rejected: *lagging_follower_read_rejected,
+        stale_follower_write_rejected: *stale_follower_write_rejected,
+        minority_partition_read_rejected: *minority_partition_read_rejected,
+        minority_partition_write_rejected: *minority_partition_write_rejected,
+        healed_follower_catchup_observed: *healed_follower_catchup_observed,
+    }
+}
+
+fn read_safety_state_from_proto(message: v1::WalReadSafetyState) -> RaftReadSafetyRuntimeState {
+    RaftReadSafetyRuntimeState {
+        read_index_requests: message.read_index_requests,
+        read_index_accepted: message.read_index_accepted,
+        read_index_rejected: message.read_index_rejected,
+        lease_read_requests: message.lease_read_requests,
+        lease_read_accepted: message.lease_read_accepted,
+        lease_read_rejected: message.lease_read_rejected,
+        pre_vote_requests: message.pre_vote_requests,
+        pre_vote_accepted: message.pre_vote_accepted,
+        pre_vote_rejected: message.pre_vote_rejected,
+        bounded_stale_read_requests: message.bounded_stale_read_requests,
+        bounded_stale_read_accepted: message.bounded_stale_read_accepted,
+        bounded_stale_read_rejected: message.bounded_stale_read_rejected,
+        stale_leader_lease_rejected: message.stale_leader_lease_rejected,
+        lagging_follower_read_rejected: message.lagging_follower_read_rejected,
+        stale_follower_write_rejected: message.stale_follower_write_rejected,
+        minority_partition_read_rejected: message.minority_partition_read_rejected,
+        minority_partition_write_rejected: message.minority_partition_write_rejected,
+        healed_follower_catchup_observed: message.healed_follower_catchup_observed,
+    }
+}
+
+fn membership_evidence_to_proto(state: &RaftMembershipRuntimeEvidence) -> v1::WalMembershipEvidence {
+    let RaftMembershipRuntimeEvidence {
+        learner_add_count,
+        learner_catchup_count,
+        learner_promote_count,
+        voter_remove_count,
+        witness_add_count,
+        auto_promote_count,
+        leader_transfer_write_count,
+        leader_transfer_exact_once_commit_count,
+        leader_transfer_exact_once_commit_ids,
+        pending_joint_consensus_persist_count,
+        pending_joint_consensus_restore_count,
+    } = state;
+    v1::WalMembershipEvidence {
+        learner_add_count: *learner_add_count,
+        learner_catchup_count: *learner_catchup_count,
+        learner_promote_count: *learner_promote_count,
+        voter_remove_count: *voter_remove_count,
+        witness_add_count: *witness_add_count,
+        auto_promote_count: *auto_promote_count,
+        leader_transfer_write_count: *leader_transfer_write_count,
+        leader_transfer_exact_once_commit_count: *leader_transfer_exact_once_commit_count,
+        leader_transfer_exact_once_commit_ids: leader_transfer_exact_once_commit_ids.clone(),
+        pending_joint_consensus_persist_count: *pending_joint_consensus_persist_count,
+        pending_joint_consensus_restore_count: *pending_joint_consensus_restore_count,
+    }
+}
+
+fn membership_evidence_from_proto(message: v1::WalMembershipEvidence) -> RaftMembershipRuntimeEvidence {
+    RaftMembershipRuntimeEvidence {
+        learner_add_count: message.learner_add_count,
+        learner_catchup_count: message.learner_catchup_count,
+        learner_promote_count: message.learner_promote_count,
+        voter_remove_count: message.voter_remove_count,
+        witness_add_count: message.witness_add_count,
+        auto_promote_count: message.auto_promote_count,
+        leader_transfer_write_count: message.leader_transfer_write_count,
+        leader_transfer_exact_once_commit_count: message.leader_transfer_exact_once_commit_count,
+        leader_transfer_exact_once_commit_ids: message.leader_transfer_exact_once_commit_ids,
+        pending_joint_consensus_persist_count: message.pending_joint_consensus_persist_count,
+        pending_joint_consensus_restore_count: message.pending_joint_consensus_restore_count,
+    }
+}
+
+fn joint_membership_to_proto(state: &JointConsensusMembership) -> v1::WalJointMembership {
+    let JointConsensusMembership {
+        old_voters,
+        new_voters,
+    } = state;
+    v1::WalJointMembership {
+        old_voters: old_voters.clone(),
+        new_voters: new_voters.clone(),
+    }
+}
+
+fn joint_membership_from_proto(message: v1::WalJointMembership) -> JointConsensusMembership {
+    JointConsensusMembership {
+        old_voters: message.old_voters,
+        new_voters: message.new_voters,
+    }
+}
+
+fn external_snapshot_ref_to_proto(state: &RaftExternalSnapshotRef) -> v1::WalExternalSnapshotRef {
+    let RaftExternalSnapshotRef {
+        uri,
+        checksum,
+        byte_size,
+    } = state;
+    v1::WalExternalSnapshotRef {
+        uri: uri.clone(),
+        checksum: checksum.clone(),
+        byte_size: *byte_size,
+    }
+}
+
+fn external_snapshot_ref_from_proto(message: v1::WalExternalSnapshotRef) -> RaftExternalSnapshotRef {
+    RaftExternalSnapshotRef {
+        uri: message.uri,
+        checksum: message.checksum,
+        byte_size: message.byte_size,
+    }
+}
+
+fn rest_to_proto(rest: &RaftWalRecordRest) -> v1::WalRecordRest {
+    v1::WalRecordRest {
+        replica_role: match rest.replica_role {
+            RaftReplicaRole::Voter => 0,
+            RaftReplicaRole::Learner => 1,
+            RaftReplicaRole::Witness => 2,
+        },
+        joint_membership: rest.joint_membership.as_ref().map(joint_membership_to_proto),
+        latest_external_snapshot_ref: rest
+            .latest_external_snapshot_ref
+            .as_ref()
+            .map(external_snapshot_ref_to_proto),
+        pipeline_state: (!rest.pipeline_state.is_default())
+            .then(|| pipeline_state_to_proto(&rest.pipeline_state)),
+        read_safety_state: (!rest.read_safety_state.is_default())
+            .then(|| read_safety_state_to_proto(&rest.read_safety_state)),
+        membership_evidence: (!rest.membership_evidence.is_default())
+            .then(|| membership_evidence_to_proto(&rest.membership_evidence)),
+    }
+}
+
+fn rest_from_proto(message: v1::WalRecordRest) -> io::Result<RaftWalRecordRest> {
+    let replica_role = match message.replica_role {
+        0 => RaftReplicaRole::Voter,
+        1 => RaftReplicaRole::Learner,
+        2 => RaftReplicaRole::Witness,
+        other => {
+            return Err(io::Error::other(format!(
+                "wal record names replica role {other}, which this build does not know"
+            )))
+        }
+    };
+    Ok(RaftWalRecordRest {
+        replica_role,
+        joint_membership: message.joint_membership.map(joint_membership_from_proto),
+        latest_external_snapshot_ref: message
+            .latest_external_snapshot_ref
+            .map(external_snapshot_ref_from_proto),
+        installed_snapshot: None,
+        pipeline_state: message
+            .pipeline_state
+            .map(pipeline_state_from_proto)
+            .unwrap_or_default(),
+        read_safety_state: message
+            .read_safety_state
+            .map(read_safety_state_from_proto)
+            .unwrap_or_default(),
+        membership_evidence: message
+            .membership_evidence
+            .map(membership_evidence_from_proto)
+            .unwrap_or_default(),
+    })
 }
 
 /// Split a checksum into the bytes to store and whether they are its text rather than its digest.
@@ -116,7 +519,7 @@ pub(crate) fn command_to_proto(command: &Command) -> io::Result<v1::wal_command:
                 value: value.to_vec(),
             })
         }
-        CommandEncoding::Owned(command) => command.kind.expect("verbatim arm always sets a kind"),
+        CommandEncoding::Owned(command) => command.kind.expect("the owned arm always sets a kind"),
     })
 }
 
@@ -127,8 +530,8 @@ pub(crate) fn command_to_proto(command: &Command) -> io::Result<v1::wal_command:
 /// kilobytes. The three modelled arms borrow their key and value here, so the write
 /// copies them only into the buffer that goes to disk.
 ///
-/// The verbatim arm still owns its bytes, and that is not an oversight: its JSON does not exist
-/// until it is built, so there is nothing to borrow.
+/// The owned arm still owns its bytes, and that is not an oversight: its protobuf encoding does not
+/// exist until it is built, so there is nothing to borrow.
 pub(crate) enum CommandEncoding<'a> {
     StringSet {
         key: &'a str,
@@ -160,8 +563,8 @@ pub(crate) fn command_encoding(command: &Command) -> io::Result<CommandEncoding<
         },
         Command::HashSet { key, field, value } => CommandEncoding::HashSet { key, field, value },
         other => CommandEncoding::Owned(v1::WalCommand {
-            kind: Some(v1::wal_command::Kind::Verbatim(
-                serde_json::to_vec(other).map_err(io::Error::other)?,
+            kind: Some(v1::wal_command::Kind::SdkCommand(
+                crate::shared_store::command_protobuf_bytes(other)?,
             )),
         }),
     })
@@ -379,8 +782,8 @@ pub(crate) fn command_from_proto(kind: v1::wal_command::Kind) -> io::Result<Comm
             field: command.field,
             value: command.value,
         },
-        v1::wal_command::Kind::Verbatim(bytes) => {
-            serde_json::from_slice(&bytes).map_err(io::Error::other)?
+        v1::wal_command::Kind::SdkCommand(bytes) => {
+            crate::shared_store::command_from_protobuf_bytes(&bytes)?
         }
     })
 }
@@ -415,21 +818,12 @@ fn entry_from_proto(entry: v1::WalLogEntry) -> io::Result<RaftLogEntry> {
     })
 }
 
-/// Introduces a length-prefixed binary record. Chosen so it cannot be confused with either text
-/// form: a record written before this change starts with `{`, and one wrapped in the integrity
-/// envelope starts with `#`.
+/// Introduces a length-prefixed binary record.
 pub(super) const BINARY_RECORD_MAGIC: u8 = 0xA7;
 
-/// Encode one record as it should appear in a segment file.
-pub(super) fn encode_record_line(
-    envelope: &RaftWalEnvelope,
-    binary: bool,
-) -> io::Result<Vec<u8>> {
-    if !binary {
-        let mut out = serde_json::to_vec(envelope).map_err(io::Error::other)?;
-        out.push(b'\n');
-        return Ok(out);
-    }
+/// Encode one record as it should appear in a segment file: the magic, a little-endian length and
+/// the protobuf envelope. There is no other encoding of a record.
+pub(super) fn encode_record_line(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>> {
     let payload = encode_envelope(envelope)?;
     let mut out = Vec::with_capacity(payload.len() + 5);
     out.push(BINARY_RECORD_MAGIC);
@@ -438,7 +832,7 @@ pub(super) fn encode_record_line(
     Ok(out)
 }
 
-/// Read the next record, in whichever encoding it was written.
+/// Read the next record.
 ///
 /// Returns how many bytes it occupied along with the record. `None` means what follows is not a
 /// complete, decodable record -- a torn tail from a crash mid-append -- and the caller truncates
@@ -459,19 +853,8 @@ pub(super) fn next_envelope(bytes: &[u8]) -> Option<(usize, RaftWalEnvelope)> {
             }
             Some((end, decode_envelope(&bytes[length_end..end]).ok()?))
         }
-        _ => {
-            let line_len = bytes
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map(|position| position + 1)
-                .unwrap_or(bytes.len());
-            let raw_line = &bytes[..line_len];
-            let line = raw_line.strip_suffix(b"\n").unwrap_or(raw_line);
-            Some((
-                line_len,
-                serde_json::from_slice::<RaftWalEnvelope>(line).ok()?,
-            ))
-        }
+        // Anything that does not open with the magic is not a record: a torn tail or another file.
+        _ => None,
     }
 }
 
@@ -579,10 +962,10 @@ pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>>
         membership_evidence: record.membership_evidence.clone(),
     };
     // Omit the block entirely when every field in it is at its default, which is the common case.
-    let rest_bytes = if rest.is_empty() {
-        Vec::new()
+    let rest_message = if rest.is_empty() {
+        None
     } else {
-        serde_json::to_vec(&rest).map_err(io::Error::other)?
+        Some(rest_to_proto(&rest))
     };
 
     let (fence_checksum, fence_checksum_is_text) =
@@ -626,7 +1009,7 @@ pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>>
                 .map(entry_to_proto)
                 .collect::<io::Result<Vec<_>>>()?,
             installed_snapshot,
-            rest: rest_bytes,
+            rest: rest_message,
         }),
         delta: envelope.delta.as_ref().map(|delta| v1::WalEntryDelta {
             from_index: delta.from_index,
@@ -647,10 +1030,9 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
     let membership = record.membership.unwrap_or_default();
     let apply_snapshot_fence = record.apply_snapshot_fence.unwrap_or_default();
     let storage_apply_fence = record.storage_apply_fence.unwrap_or_default();
-    let rest: RaftWalRecordRest = if record.rest.is_empty() {
-        RaftWalRecordRest::default()
-    } else {
-        serde_json::from_slice(&record.rest).map_err(io::Error::other)?
+    let rest = match record.rest {
+        Some(rest) => rest_from_proto(rest)?,
+        None => RaftWalRecordRest::default(),
     };
 
     let installed_snapshot = match record.installed_snapshot {
@@ -742,34 +1124,19 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
 mod tests {
     use super::*;
 
-/// THE COMMANDS THE RAFT WAL MODELS AS PROTOBUF, BY NAME. EVERYTHING ELSE IS CARRIED AS TEXT.
+/// THE RAFT WAL CARRIES EVERY COMMAND AS PROTOBUF.
 ///
-/// `command_encoding` is the only place that decides, and its last arm carries the command as
-/// `serde_json` bytes inside a protobuf envelope. That arm is DELIBERATE -- this is the durability
-/// path, and the module header makes fidelity the rule: a command this module does not model is
-/// carried byte for byte rather than approximated by the nearest match. So the text arm is not a
-/// defect to be removed in one go; it is the floor that lets modelled arms be added one at a time.
+/// Three commands are modelled field by field. Every other one rides the `sdk_command` arm as its
+/// SDK protobuf encoding, through the same mapping the shared WAL publishes with, and a command that
+/// has no mapping is refused rather than written as JSON. No arm writes or reads JSON.
 ///
-/// WHAT WAS MISSING IS THE ROSTER. Nothing said which commands still take it, so the size of the
-/// remaining work was invisible -- the same hole that `COMMANDS_STILL_ENCODED_AS_JSON` closed for
-/// the shared WAL. This states it from the short end: three commands are modelled, and every other
-/// variant of `Command` reaches this log as text.
-///
-/// THIS LIST ONLY GROWS, AND THE GUARD BELOW IS WHAT MAKES THAT TRUE. Modelling a command without
-/// adding its name here fails the test, and adding a name without modelling it fails too.
-///
-/// IT DELIBERATELY DOES NOT CLAIM REACHABILITY. The shared-WAL roster is an intersection, because
-/// `mirror_write` admits only writes. The equivalent filter for this log lives in a BINARY
-/// (`bin/server/raft_route.rs` serves reads locally and lets everything else fall through to
-/// `propose`), there is more than one proposer, and this crate's library cannot see any of them. A
-/// roster that guessed the intersection would be a roster nobody could check, so this one states
-/// the CODEC fact only: of the commands that do reach here, these three are binary.
+/// `command_encoding` is the only place that decides. The roster below states the three, and the
+/// test checks it from both ends: the source text that defines the arms, and the real encoder driven
+/// with real commands.
 const COMMANDS_THE_RAFT_WAL_MODELS: &[&str] = &["HashSet", "StringSet", "StringSetEx"];
 
-/// The roster above, checked from both ends: the source text that defines the arms, and the real
-/// encoder driven with real commands.
 #[test]
-fn the_raft_wal_names_every_command_it_still_carries_as_text() {
+fn every_command_the_raft_wal_carries_is_protobuf() {
     // ---------- the source-text half: which commands `command_encoding` names at all.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(root.join("src/raft/wal_proto.rs"))
@@ -778,8 +1145,8 @@ fn the_raft_wal_names_every_command_it_still_carries_as_text() {
         .split_once("pub(crate) fn command_encoding")
         .expect("command_encoding must be in this file")
         .1;
-    let body = &body[..body.find("\n}").expect("command_encoding must close")];
-    let mut modelled: Vec<String> = body
+    let encoder = &body[..body.find("\n}").expect("command_encoding must close")];
+    let mut modelled: Vec<String> = encoder
         .split("Command::")
         .skip(1)
         .map(|rest| {
@@ -791,9 +1158,8 @@ fn the_raft_wal_names_every_command_it_still_carries_as_text() {
     modelled.sort();
     modelled.dedup();
 
-    // DENOMINATOR FIRST. This parses SOURCE TEXT, which is exactly the thing that silently returns
-    // empty once a refactor moves the function -- and an empty parse would make the comparison
-    // below pass against an empty roster.
+    // DENOMINATOR FIRST. This parses SOURCE TEXT, which silently returns empty once a refactor
+    // moves the function -- and an empty parse would pass against an empty roster.
     assert!(
         !modelled.is_empty(),
         "parsed no Command names out of command_encoding, so this guard proved nothing"
@@ -802,12 +1168,37 @@ fn the_raft_wal_names_every_command_it_still_carries_as_text() {
         modelled, COMMANDS_THE_RAFT_WAL_MODELS,
         "the commands command_encoding models have changed. Add the new name to \
          COMMANDS_THE_RAFT_WAL_MODELS in the same change that modelled it, or delete the name \
-         that is no longer modelled -- the roster is what makes the remaining text arm visible."
+         that is no longer modelled"
+    );
+
+    // ---------- no JSON on either side of the codec.
+    let uncommented = |text: &str| -> String {
+        text.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let decoder = body
+        .split_once("pub(crate) fn command_from_proto")
+        .expect("command_from_proto must be in this file")
+        .1;
+    let decoder = &decoder[..decoder.find("\n}").expect("command_from_proto must close")];
+    for (name, code) in [("command_encoding", encoder), ("command_from_proto", decoder)] {
+        assert!(code.len() > 100, "{name}: the scan found almost nothing");
+        assert!(
+            !uncommented(code).contains("serde_json"),
+            "{name} reaches for serde_json: a JSON arm survives in the Raft WAL command codec"
+        );
+    }
+    // THE CONTROL: the same scan over a body that does call serde_json must see it.
+    assert!(
+        uncommented("fn a() { serde_json::to_vec(&x) }").contains("serde_json"),
+        "the control no longer sees serde_json, so this scan could pass over a JSON arm"
     );
 
     // ---------- the behaviour half. A LIST OF NAMES IS NOT A FORMAT: the arm is chosen by
     // ---------- `command_encoding` at run time, so each case goes through the real encoder.
-    let carried_as_text: Vec<(&str, Command)> = vec![
+    let carried_by_the_sdk_arm: Vec<(&str, Command)> = vec![
         (
             "SetAdd",
             Command::SetAdd {
@@ -815,45 +1206,48 @@ fn the_raft_wal_names_every_command_it_still_carries_as_text() {
                 member: b"m".to_vec(),
             },
         ),
-        // THE DOCUMENTED TRAP, pinned: a zero-TTL StringSetEx must NOT take the modelled arm,
-        // because the modelled form tells the two string writes apart by a non-zero TTL and would
-        // bring this one back as a plain StringSet.
         (
-            "StringSetEx with a zero ttl",
-            Command::StringSetEx {
-                key: "k".into(),
-                value: b"v".to_vec(),
-                ttl_ms: 0,
-            },
+            "StringDelete",
+            Command::StringDelete { key: "k".into() },
         ),
     ];
     assert_eq!(
-        carried_as_text.len(),
+        carried_by_the_sdk_arm.len(),
         2,
         "two cases, or the loop below asserts nothing"
     );
-
-    for (name, command) in carried_as_text {
+    for (name, command) in carried_by_the_sdk_arm {
         match command_to_proto(&command).expect("the command must encode") {
-            v1::wal_command::Kind::Verbatim(bytes) => {
-                // It really is text, not merely a differently-named binary arm.
+            v1::wal_command::Kind::SdkCommand(bytes) => {
                 assert!(
-                    serde_json::from_slice::<serde_json::Value>(&bytes).is_ok(),
-                    "{name} took the verbatim arm but its payload is not text"
+                    serde_json::from_slice::<serde_json::Value>(&bytes).is_err(),
+                    "{name} took the SDK arm but its payload parses as JSON"
                 );
-                // And it must come back, or the roster would be describing a write-only record.
-                let back = command_from_proto(v1::wal_command::Kind::Verbatim(bytes))
-                    .expect("the verbatim arm must decode");
+                let back = command_from_proto(v1::wal_command::Kind::SdkCommand(bytes))
+                    .expect("the SDK arm must decode");
                 assert_eq!(back, command, "{name} did not survive the round trip");
             }
             _ => panic!(
                 "{name} now takes a modelled arm -- add it to COMMANDS_THE_RAFT_WAL_MODELS in \
-                 this same change, because the roster only grows"
+                 this same change"
             ),
         }
     }
 
-    // ---------- THE CONTROL. Without this, a `command_to_proto` that returned Verbatim for
+    // ---------- THE TRAP, pinned: a zero-TTL StringSetEx means "expires now", and neither the
+    // ---------- modelled arm nor the SDK encoding can say that -- both would bring it back as a
+    // ---------- plain StringSet, a write with no expiry. It is refused.
+    let zero_ttl = Command::StringSetEx {
+        key: "k".into(),
+        value: b"v".to_vec(),
+        ttl_ms: 0,
+    };
+    assert!(
+        command_to_proto(&zero_ttl).is_err(),
+        "a zero-TTL StringSetEx was encoded, and would read back as a write with no expiry"
+    );
+
+    // ---------- THE CONTROL. Without this, a `command_to_proto` that returned the SDK arm for
     // ---------- EVERYTHING would satisfy every assertion above.
     let modelled_command = Command::HashSet {
         key: "k".into(),
@@ -943,33 +1337,155 @@ fn the_raft_wal_names_every_command_it_still_carries_as_text() {
         });
     }
 
-    /// The modelled form tells `StringSet` and `StringSetEx` apart by whether the TTL is
-    /// non-zero, so a zero-TTL `StringSetEx` cannot use it -- it would come back as a plain
-    /// `StringSet`, quietly dropping the fact that an expiry was set at all. It must take the
-    /// verbatim path instead.
+    /// A zero-TTL `StringSetEx` means "expires now", and nothing the log can carry says so: the
+    /// modelled form and the SDK encoding both tell the two string writes apart by a non-zero TTL,
+    /// so it would come back as a plain `StringSet` and quietly lose its expiry. It is refused.
     #[test]
-    fn a_zero_ttl_expiring_set_does_not_decay_into_a_plain_set() {
+    fn a_zero_ttl_expiring_set_is_refused_rather_than_decayed_into_a_plain_set() {
         let command = Command::StringSetEx {
             key: "k".into(),
             value: b"hello".to_vec(),
             ttl_ms: 0,
         };
-        assert_round_trips(command.clone());
-        let encoded = encode_envelope(&envelope_with(command)).expect("encode");
-        let decoded = decode_envelope(&encoded).expect("decode");
         assert!(
-            matches!(
-                decoded.record.entries[0].command,
-                Command::StringSetEx { ttl_ms: 0, .. }
-            ),
-            "it must still be an expiring set after a round trip"
+            encode_envelope(&envelope_with(command)).is_err(),
+            "a zero-TTL expiring set was written, and would replay as a plain set"
         );
+    }
+
+    /// EVERY FIELD OF THE SIDE MESSAGE, A DIFFERENT VALUE, ROUND-TRIPPED. The conversions are
+    /// written field by field and the struct is destructured with no `..`, so a field added to one
+    /// of these structs fails to compile -- and a field copied to the wrong place changes the answer
+    /// here, because no two fields hold the same number.
+    #[test]
+    fn the_side_message_round_trips_with_every_field_distinct() {
+        let rest = RaftWalRecordRest {
+            replica_role: RaftReplicaRole::Witness,
+            joint_membership: Some(JointConsensusMembership {
+            old_voters: vec![201, 301],
+            new_voters: vec![202, 302],
+        }),
+            latest_external_snapshot_ref: Some(RaftExternalSnapshotRef {
+            uri: "v1".to_string(),
+            checksum: "v2".to_string(),
+            byte_size: 103,
+        }),
+            installed_snapshot: None,
+            pipeline_state: RaftPeerPipelineRuntimeState {
+            match_index: 101,
+            next_index: 102,
+            append_requests: 103,
+            append_accepted: 104,
+            append_rejected: 105,
+            committed_overwrite_rejections: 106,
+            inflight_entries: 107,
+            inflight_bytes: 108,
+            append_queue_depth: 109,
+            last_accepted_append_ms: 110,
+            leader_reported_commit_index: 111,
+            apply_inflight_tasks: 112,
+            apply_queue_depth: 113,
+            apply_queue_max_depth: 114,
+            apply_backpressure_rejections: 115,
+            memory_backpressure_rejections: 116,
+            oversized_log_rejections: 117,
+            append_queue_max_depth: 118,
+            reorder_queue_depth: 119,
+            out_of_order_append_rejections: 120,
+            reorder_entries_accepted: 121,
+            reorder_entries_released: 122,
+            reorder_entries_rejected: 123,
+            reorder_entry_timeouts: 124,
+            reorder_dropped_packages: 125,
+            stale_term_rejections: 126,
+            append_send_failures: 127,
+            snapshot_sending: true,
+            snapshot_installing: true,
+            snapshot_installed_index: 130,
+            snapshot_send_attempts: 131,
+            snapshot_send_completed: 132,
+            snapshot_send_failed: 133,
+            snapshot_install_started: 134,
+            snapshot_install_completed: 135,
+            snapshot_install_rejected: 136,
+            snapshot_install_rolled_back: 137,
+            snapshot_install_received_chunks: 138,
+            snapshot_send_progress_mark: 139,
+            snapshot_install_total_chunks: 140,
+            snapshot_install_progress_per_mille: 141,
+            snapshot_retry_count: 142,
+            snapshot_chunk_retry_count: 143,
+            snapshot_backpressure_rejections: 144,
+            snapshot_rate_limit_rejections: 145,
+            snapshot_send_started_ms: Some(146),
+            snapshot_send_elapsed_ms: 147,
+            snapshot_send_timeouts: 148,
+            snapshot_during_membership_change: true,
+            snapshot_rejoin_after_compacted_log: true,
+            transfer_leader_target: true,
+            transfer_leader_requests: 152,
+            transfer_leader_accepted: 153,
+            transfer_leader_rejected: 154,
+            transfer_leader_completed: 155,
+            transfer_leader_started_ms: Some(156),
+            transfer_leader_elapsed_ms: 157,
+            transfer_leader_timeouts: 158,
+            pre_vote_rejections: 159,
+            election_rejections: 160,
+            offline_since_ms: Some(161),
+            offline_elapsed_ms: 162,
+            offline_timeout_reached: true,
+            offline_timeout_rejections: 164,
+            auto_promoted_from_learner: true,
+        },
+            read_safety_state: RaftReadSafetyRuntimeState {
+            read_index_requests: 101,
+            read_index_accepted: 102,
+            read_index_rejected: 103,
+            lease_read_requests: 104,
+            lease_read_accepted: 105,
+            lease_read_rejected: 106,
+            pre_vote_requests: 107,
+            pre_vote_accepted: 108,
+            pre_vote_rejected: 109,
+            bounded_stale_read_requests: 110,
+            bounded_stale_read_accepted: 111,
+            bounded_stale_read_rejected: 112,
+            stale_leader_lease_rejected: 113,
+            lagging_follower_read_rejected: 114,
+            stale_follower_write_rejected: 115,
+            minority_partition_read_rejected: 116,
+            minority_partition_write_rejected: 117,
+            healed_follower_catchup_observed: 118,
+        },
+            membership_evidence: RaftMembershipRuntimeEvidence {
+            learner_add_count: 101,
+            learner_catchup_count: 102,
+            learner_promote_count: 103,
+            voter_remove_count: 104,
+            witness_add_count: 105,
+            auto_promote_count: 106,
+            leader_transfer_write_count: 107,
+            leader_transfer_exact_once_commit_count: 108,
+            leader_transfer_exact_once_commit_ids: vec![209, 309],
+            pending_joint_consensus_persist_count: 110,
+            pending_joint_consensus_restore_count: 111,
+        },
+        };
+        // DENOMINATOR: nothing here is at its default, or a message that dropped a field would
+        // still compare equal to one that carried it.
+        assert!(!rest.pipeline_state.is_default());
+        assert!(!rest.read_safety_state.is_default());
+        assert!(!rest.membership_evidence.is_default());
+        let message = rest_to_proto(&rest);
+        let back = rest_from_proto(message).expect("the side message decodes");
+        assert_eq!(back, rest);
     }
 
     /// A command this module does not model must still round-trip exactly, because the log has to
     /// replay commands the encoding has never been taught about.
     #[test]
-    fn an_unmodelled_command_round_trips_verbatim() {
+    fn an_unmodelled_command_round_trips_through_the_sdk_arm() {
         assert_round_trips(Command::StringDelete { key: "k".into() });
         assert_round_trips(Command::SetAdd {
             key: "k".into(),
@@ -1028,31 +1544,6 @@ fn the_raft_wal_names_every_command_it_still_carries_as_text() {
         envelope.record.apply_snapshot_fence.applied_index = 9;
         let encoded = encode_envelope(&envelope).expect("encode");
         assert_eq!(decode_envelope(&encoded).expect("decode"), envelope);
-    }
-
-    /// The point of the exercise: the same record, both ways.
-    #[test]
-    fn encodes_far_smaller_than_the_text_form() {
-        for payload in [10usize, 1024] {
-            let envelope = envelope_with(Command::StringSet {
-                key: "fmt-001999".into(),
-                value: vec![0x41; payload],
-            });
-            let text = serde_json::to_vec(&envelope).expect("json");
-            let binary = encode_envelope(&envelope).expect("proto");
-            println!(
-                "payload {payload:>5}B -> text {:>6}B, binary {:>6}B ({:.2}x smaller)",
-                text.len(),
-                binary.len(),
-                text.len() as f64 / binary.len() as f64
-            );
-            assert!(
-                binary.len() < text.len(),
-                "the binary form must be smaller ({} vs {})",
-                binary.len(),
-                text.len()
-            );
-        }
     }
 
     /// What one AppendEntries costs on the wire, both ways. Replication sends this to every

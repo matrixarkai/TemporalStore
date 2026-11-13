@@ -111,6 +111,42 @@ fn incremental_wal_records_recover_the_whole_log() {
     assert_eq!(record.entries.last().unwrap().index, 200);
 }
 
+#[test]
+fn explicit_unsynced_wal_recovers_after_clean_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = RaftConfig {
+        wal_sync: false,
+        ..RaftConfig::default()
+    };
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 96, [1], config.clone()).unwrap();
+    for index in 0..16 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("unsynced-{index}"),
+                value: vec![index as u8],
+            })
+            .unwrap();
+    }
+    drop(cluster);
+
+    let restored = RaftCluster::restore_single_shard_from_wal(dir.path(), 96, [1], config).unwrap();
+    assert_eq!(restored.status().commit_index, 16);
+    assert_eq!(
+        restored
+            .read_local(
+                1,
+                Command::StringGet {
+                    key: "unsynced-15".to_string(),
+                },
+            )
+            .unwrap(),
+        CommandResponse::Bytes {
+            value: Some(vec![15])
+        }
+    );
+}
+
 /// A raft leader change can truncate a divergent suffix. The entry the WAL last wrote is
 /// then gone, so an incremental record would fold onto a log that no longer exists --
 /// the writer has to notice and re-base instead.

@@ -636,7 +636,67 @@ fn json_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn emit_json(results: &[ScenarioResult], opt: &Options, total_elapsed_s: f64) -> String {
+/// What the scenarios cost durably, read off the engine's own counters.
+///
+/// The harness reported latency, throughput and memory and no bytes at all, so the write
+/// amplification of a Control State update was not a number anyone had. These are the engine's
+/// counters rather than file lengths: on tmpfs a file length says nothing about what was written,
+/// and `logical_bytes_written` is the denominator the block store already keeps for exactly this
+/// ratio.
+#[derive(Clone, Copy, Default)]
+struct DurableCost {
+    wal_writes: u64,
+    wal_bytes: u64,
+    wal_syncs: u64,
+    wal_persistent_bytes: u64,
+    wal_last_sequence: u64,
+    wal_last_flushed_sequence: u64,
+    block_writes: u64,
+    block_bytes: u64,
+    block_logical_bytes: u64,
+}
+
+impl DurableCost {
+    /// Sequences appended but not yet flushed. Non-zero means every byte figure here is a FLOOR:
+    /// this harness runs with `async_storage: true`, so reading the counters at the end of the run
+    /// can catch the committer mid-flight. Reported rather than hidden, because a silently partial
+    /// denominator is worse than a visible one.
+    fn outstanding_sequences(&self) -> u64 {
+        self.wal_last_sequence
+            .saturating_sub(self.wal_last_flushed_sequence)
+    }
+
+    /// Bytes the block store wrote per logical byte it was asked to store.
+    fn block_amplification(&self) -> f64 {
+        if self.block_logical_bytes == 0 {
+            return 0.0;
+        }
+        self.block_bytes as f64 / self.block_logical_bytes as f64
+    }
+}
+
+fn durable_cost(engine: &TemporalEngine, shard: u64) -> DurableCost {
+    let wal = engine.write_ahead_log_store().stats(shard);
+    let block = engine.block_store().stats();
+    DurableCost {
+        wal_writes: wal.writes,
+        wal_bytes: wal.bytes_written,
+        wal_syncs: wal.syncs,
+        wal_persistent_bytes: wal.persistent_bytes,
+        wal_last_sequence: wal.last_sequence,
+        wal_last_flushed_sequence: wal.last_flushed_sequence,
+        block_writes: block.writes,
+        block_bytes: block.bytes_written,
+        block_logical_bytes: block.logical_bytes_written,
+    }
+}
+
+fn emit_json(
+    results: &[ScenarioResult],
+    opt: &Options,
+    total_elapsed_s: f64,
+    cost: &DurableCost,
+) -> String {
     let mut s = String::new();
     s.push_str("{\n");
     s.push_str(&format!(
@@ -651,6 +711,14 @@ fn emit_json(results: &[ScenarioResult], opt: &Options, total_elapsed_s: f64) ->
         "  \"totals\": {{ \"ops\": {}, \"violations\": {}, \"wall_clock_engine_s\": {:.4}, \"aggregate_throughput_ops_s\": {:.1} }},\n",
         total_ops, total_violations, total_elapsed_s,
         total_ops as f64 / total_elapsed_s.max(1e-9)
+    ));
+    s.push_str(&format!(
+        "  \"durable\": {{ \"wal_writes\": {}, \"wal_bytes_written\": {}, \"wal_syncs\": {}, \"wal_persistent_bytes\": {}, \"wal_outstanding_sequences\": {}, \"block_writes\": {}, \"block_bytes_written\": {}, \"block_logical_bytes_written\": {}, \"block_amplification\": {:.4}, \"wal_bytes_per_op\": {:.2}, \"durable_bytes_per_op\": {:.2} }},\n",
+        cost.wal_writes, cost.wal_bytes, cost.wal_syncs, cost.wal_persistent_bytes,
+        cost.outstanding_sequences(), cost.block_writes, cost.block_bytes,
+        cost.block_logical_bytes, cost.block_amplification(),
+        cost.wal_bytes as f64 / (total_ops.max(1)) as f64,
+        (cost.wal_bytes + cost.block_bytes) as f64 / (total_ops.max(1)) as f64
     ));
     s.push_str("  \"scenarios\": [\n");
     for (idx, r) in results.iter().enumerate() {
@@ -748,6 +816,11 @@ fn main() {
             r.violations
         );
     }
+    // Push the served index out before reading counters, so the figures include the work a
+    // flush does rather than only the appends.
+    engine.flush_shard_index(shard);
+    let cost = durable_cost(&engine, shard);
+
     let total_ops: u64 = results.iter().map(|r| r.ops).sum();
     let total_viol: u64 = results.iter().map(|r| r.violations).sum();
     println!(
@@ -757,6 +830,29 @@ fn main() {
         total_ops as f64 / total_elapsed.max(1e-9),
         total_viol
     );
+    println!(
+        "\n== durable cost ==\n  \
+         wal:   writes={:<10} bytes={:<12} {:>8.1} B/op   syncs={:<8} persistent={}\n  \
+         block: writes={:<10} bytes={:<12} logical={:<12} amplification={:.2}x\n  \
+         total: {:.1} durable B per engine op",
+        cost.wal_writes,
+        cost.wal_bytes,
+        cost.wal_bytes as f64 / total_ops.max(1) as f64,
+        cost.wal_syncs,
+        cost.wal_persistent_bytes,
+        cost.block_writes,
+        cost.block_bytes,
+        cost.block_logical_bytes,
+        cost.block_amplification(),
+        (cost.wal_bytes + cost.block_bytes) as f64 / total_ops.max(1) as f64,
+    );
+    if cost.outstanding_sequences() > 0 {
+        println!(
+            "  NOTE: {} WAL sequences appended but not flushed, so the byte figures above are a FLOOR",
+            cost.outstanding_sequences()
+        );
+    }
+
     for r in &results {
         println!("\n[{}]", r.name);
         for n in &r.notes {
@@ -773,7 +869,7 @@ fn main() {
     );
 
     if let Some(path) = &opt.out {
-        let json = emit_json(&results, &opt, total_elapsed);
+        let json = emit_json(&results, &opt, total_elapsed, &cost);
         if let Err(e) = std::fs::write(path, json) {
             eprintln!("failed to write {path}: {e}");
         } else {

@@ -160,12 +160,14 @@ impl<'a> TemporalEmbeddingStore<'a> {
         let mut scales = Vec::with_capacity(entries.len());
         let mut vectors = Vec::with_capacity(entries.len().saturating_mul(index.dimensions()));
         for (field, value) in entries {
-            let item_id = field
-                .parse::<u64>()
-                .map_err(|_| TemporalEmbeddingStoreError::InvalidItemId { field })?;
+            let (owner_id, item_id) = decode_embedding_field(&field)?;
             let (scale, row) =
                 decode_compact_row(item_id, &value, index.dimensions(), index.model_hash())?;
-            keys.push(EmbeddingKey { tenant_id, item_id });
+            keys.push(EmbeddingKey {
+                tenant_id,
+                owner_id,
+                item_id,
+            });
             scales.push(scale);
             vectors.extend_from_slice(&row);
         }
@@ -191,7 +193,7 @@ impl<'a> TemporalEmbeddingStore<'a> {
             shard_id: self.shard_id,
             command: Command::HashDelete {
                 key: self.store_key(key.tenant_id, model_hash, dimensions),
-                field: key.item_id.to_string(),
+                field: encode_embedding_field(key),
             },
         });
         ensure_ok(
@@ -272,11 +274,33 @@ fn encode_compact_rows(
     let mut entries = Vec::with_capacity(rows.len());
     for row in rows {
         entries.push((
-            batch.key(row).item_id.to_string(),
+            encode_embedding_field(batch.key(row)),
             encode_compact_row(batch, row),
         ));
     }
     entries
+}
+
+fn encode_embedding_field(key: EmbeddingKey) -> String {
+    if key.owner_id == 0 {
+        key.item_id.to_string()
+    } else {
+        format!("{}:{}", key.owner_id, key.item_id)
+    }
+}
+
+fn decode_embedding_field(field: &str) -> Result<(u64, u64), TemporalEmbeddingStoreError> {
+    let (owner_id, item_id) = match field.split_once(':') {
+        Some((owner, item)) => (owner, item),
+        None => ("0", field),
+    };
+    let invalid = || TemporalEmbeddingStoreError::InvalidItemId {
+        field: field.to_string(),
+    };
+    Ok((
+        owner_id.parse::<u64>().map_err(|_| invalid())?,
+        item_id.parse::<u64>().map_err(|_| invalid())?,
+    ))
 }
 
 fn decode_compact_row(
@@ -343,6 +367,7 @@ mod tests {
             .prepare_batch(&[EmbeddingVector {
                 key: EmbeddingKey {
                     tenant_id: 7,
+                    owner_id: 9,
                     item_id: 42,
                 },
                 values: &source,
@@ -354,7 +379,8 @@ mod tests {
         let mut recovered = EmbeddingIndex::new(config).unwrap();
         let report = store.recover_tenant(7, &mut recovered).unwrap();
         assert_eq!(report.recovered_rows, 1);
-        assert_eq!(recovered.search(7, &source, 1).unwrap()[0].key.item_id, 42);
+        let recovered_key = recovered.search(7, &source, 1).unwrap()[0].key;
+        assert_eq!((recovered_key.owner_id, recovered_key.item_id), (9, 42));
     }
 
     #[test]
@@ -374,6 +400,7 @@ mod tests {
             .map(|(row, values)| EmbeddingVector {
                 key: EmbeddingKey {
                     tenant_id: 7,
+                    owner_id: 0,
                     item_id: row as u64,
                 },
                 values,
@@ -411,6 +438,7 @@ mod tests {
             .map(|(row, values)| EmbeddingVector {
                 key: EmbeddingKey {
                     tenant_id: 7 + (row % 2) as u64,
+                    owner_id: 0,
                     item_id: (row / 2) as u64,
                 },
                 values,

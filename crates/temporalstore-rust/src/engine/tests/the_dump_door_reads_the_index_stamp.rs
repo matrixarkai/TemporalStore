@@ -23,6 +23,17 @@
 //! manifest's embedded index as its recovery base, so an old store with an old manifest met no
 //! gate on a plain restart.
 //!
+//! # HOW A STALE IMAGE IS SPELLED NOW
+//!
+//! The plain-JSON reader is retired, so the stamp has one home: the container header, which
+//! `decode_index_bytes` compares with `SHARD_INDEX_FORMAT_VERSION` before it reads a byte of the
+//! payload. A stale image is this build's payload behind a header that names another version
+//! (`encode_index_bytes_at_version`); it never decodes, and every door refuses it with the decode's
+//! own `Err`. The arms below assert that refusal by code and by message, with
+//! `index_load_path_counts` as corroboration. THE HEADER CHECK IS WHAT EACH OF THEM DEPENDS ON:
+//! remove it and the stale image decodes, carries its stamp, and no door compares it, so every
+//! refusal arm goes red.
+//!
 //! # WHAT THIS MODULE IS FOR
 //!
 //! Eight arms, because a gate needs both halves driven and a behaviour change needs its
@@ -47,7 +58,7 @@
 //!
 //! # WHY THE RETURN VALUES ARE THE EVIDENCE
 //!
-//! `index_load_path_counts` is four process-global atomics, so a parallel test's load moves them.
+//! `index_load_path_counts` is three process-global atomics, so a parallel test's load moves them.
 //! Every arm below asserts on something scoped to its own call -- a `Result`, a served response,
 //! the presence of a file -- and treats the counters as corroboration, printed and asserted only
 //! in the direction that can misreport as a pass rather than as a failure.
@@ -122,30 +133,39 @@ fn a_real_dump_manifest() -> DumpFixture {
 ///
 /// Its blocks, slab ids, bucket summaries and log sequences are untouched, so validation and
 /// preflight pass or fail for the same reasons they do in production and the only variable is the
-/// stamp. Written as plain JSON because `encode_index_bytes`'s container arm is the one arm whose
-/// decode checks a version, and that is not the check under test.
+/// stamp. The stamp is the container HEADER's -- the one place the decode compares a struct
+/// version -- so the image is this build's payload behind a header that says `stamp`.
 fn re_stamp(manifest: &mut crate::engine::reports::BucketDumpManifest, stamp: u32) {
-    let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
+    let restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
         .expect("a manifest this binary wrote must decode");
-    restored.index_format_version = stamp;
-    // PLAIN SERDE, NOT `stamp_index_format_version`: that helper exists to OVERRIDE the field
-    // with the current constant, which is the opposite of what a down-stamped fixture needs.
-    manifest.index_bytes = serde_json::to_vec(&restored).expect("the image serializes");
+    manifest.index_bytes = crate::engine::encode_index_bytes_at_version(&restored, stamp);
     manifest.index_sha256 = sha256_hex_bytes(&manifest.index_bytes);
     manifest.dump_generation_id = bucket_dump_generation_id(manifest);
     manifest.checksum =
         bucket_dump_manifest_checksum(manifest).expect("the manifest checksum recomputes");
-    // THE FIXTURE CHECKS ITSELF. `serialize_index` re-stamps a stale shard on the way out, so a
-    // fixture built through the ordinary encoder would carry the CURRENT stamp however it was set
-    // -- which is exactly how a down-stamped image silently becomes a current one and an arm that
-    // means to test a refusal tests an acceptance.
-    let decoded = crate::engine::decode_index_bytes(&manifest.index_bytes)
-        .expect("the re-stamped image still decodes");
-    assert_eq!(
-        stamp, decoded.index_format_version,
-        "the re-stamped image reads back at {} rather than {stamp}",
-        decoded.index_format_version
-    );
+    // THE FIXTURE CHECKS ITSELF, in the direction each arm needs: a current-stamped image decodes
+    // at its stamp, and a stale one is refused on its header's struct version. `serialize_index`
+    // writes the current header whatever the shard's own field says, which is exactly how a
+    // down-stamped image silently becomes a current one and an arm that means to test a refusal
+    // tests an acceptance.
+    let read_back = crate::engine::decode_index_bytes(&manifest.index_bytes);
+    if stamp == SHARD_INDEX_FORMAT_VERSION {
+        assert_eq!(
+            stamp,
+            read_back
+                .expect("the re-stamped current image decodes")
+                .index_format_version,
+            "the re-stamped current image reads back at another stamp"
+        );
+    } else {
+        let refusal = read_back
+            .err()
+            .expect("a re-stamped stale image must be refused by the decode");
+        assert!(
+            refusal.contains("struct version") && refusal.contains(&stamp.to_string()),
+            "the re-stamped image was refused, but not on its header's struct version: {refusal}"
+        );
+    }
 }
 
 /// A restore target over the SAME blocks, with its own index dir and its shard not loaded.
@@ -219,14 +239,14 @@ fn serves_a_seeded_string(engine: &TemporalEngine) -> bool {
 /// Plant a whole index image at `stamp` where the loader looks.
 fn engine_over_a_planted_base_index(stamp: u32) -> (tempfile::TempDir, TemporalEngine) {
     let mut state = ShardState::default();
-    state.index_format_version = stamp;
     let mut series = BTreeMap::new();
     series.insert(
         ROW_TIMESTAMP_MS,
         ElementEntry::from_parts(1, 4_096, 128, Some(3), Some(7)),
     );
     state.features_mut().insert(SERIES_KEY.into(), series.into());
-    let image = serde_json::to_vec(&state).expect("the image serializes");
+    // The stamp is the header's: this payload behind a header that says `stamp`.
+    let image = crate::engine::encode_index_bytes_at_version(&state, stamp);
 
     let dir = tempfile::tempdir().expect("tempdir");
     let indexes = dir.path().join("indexes");
@@ -251,19 +271,17 @@ fn the_base_index_door_refuses_a_stale_stamp() {
     let loaded = engine
         .load_index_checked(SHARD, false)
         .expect("a refusal is Ok(None), not Err");
-    let (accepted, refused_stale, absent, undecodable) =
-        crate::engine::persistence::index_load_path_counts();
+    let (accepted, absent, undecodable) = crate::engine::persistence::index_load_path_counts();
     println!(
         "\n=== base door, stamp {stale} against {SHARD_INDEX_FORMAT_VERSION} ===\n  \
-         accepted {accepted}, refused-stale {refused_stale}, absent {absent}, undecodable \
-         {undecodable}"
+         accepted {accepted}, absent {absent}, undecodable {undecodable}"
     );
     assert!(
         loaded.is_none(),
-        "the base-index door accepted a stale-stamped image; the shared predicate has inverted \
-         the comparison this whole change rests on"
+        "the base-index door accepted a stale-stamped image; the header's struct-version check \
+         that this whole module rests on is gone or inverted"
     );
-    assert!(refused_stale > 0, "the refusal was not counted");
+    assert!(undecodable > 0, "the refusal was not counted");
 }
 
 /// And accepts the same image at the current stamp, so arm 1 is not a door that refuses
@@ -295,14 +313,9 @@ fn the_dump_manifest_install_refuses_a_stale_stamped_image() {
     re_stamp(&mut fixture.manifest, stale);
 
     let (target, _index_dir) = a_restore_target(fixture.dir.path());
-    crate::engine::persistence::reset_index_load_path_counts();
     let installed = target.install_bucket_dump_manifest(&fixture.manifest);
-    let (accepted, refused_stale, absent, undecodable) =
-        crate::engine::persistence::index_load_path_counts();
     println!(
-        "\n=== install of a stamp-{stale} manifest ===\n  install -> {installed:?}\n  \
-         accepted {accepted}, refused-stale {refused_stale}, absent {absent}, undecodable \
-         {undecodable}"
+        "\n=== install of a stamp-{stale} manifest ===\n  install -> {installed:?}"
     );
     let status = installed.expect_err(
         "install_bucket_dump_manifest ACCEPTED a stale-stamped image. That is the defect this \
@@ -310,17 +323,18 @@ fn the_dump_manifest_install_refuses_a_stale_stamped_image() {
          ever meeting the stamp",
     );
     assert_eq!(
-        "slot_dump_stale_index_stamp", status.code,
-        "the install refused with {:?} rather than on the stamp, so this arm is measuring some \
+        "slot_dump_invalid_index", status.code,
+        "the install refused with {:?} rather than in the decode, so this arm is measuring some \
          other guard -- a fixture that fails validation for an unrelated reason refuses correctly \
          and proves nothing",
         status.code
     );
     assert!(
-        refused_stale > 0,
-        "the install refused on the stamp and did not COUNT it: accepted {accepted}, \
-         refused-stale {refused_stale}, absent {absent}, undecodable {undecodable}. A refusal \
-         that is not counted is indistinguishable downstream from an absent index"
+        status.message.contains("struct version")
+            && status.message.contains(&stale.to_string())
+            && status.message.contains(&SHARD_INDEX_FORMAT_VERSION.to_string()),
+        "the install refused in the decode, but not on the header's struct version, so the \
+         refusal is not attributable to the stamp: {status:?}"
     );
 }
 
@@ -465,13 +479,12 @@ fn the_ordinary_recovery_load_refuses_a_stale_dump_manifest_and_falls_back() {
         readonly: false,
         table_name: String::new(),
     });
-    let (accepted, refused_stale, absent, undecodable) =
-        crate::engine::persistence::index_load_path_counts();
+    let (accepted, absent, undecodable) = crate::engine::persistence::index_load_path_counts();
     let served = serves_a_seeded_string(&target);
     println!(
         "\n=== ordinary load over a stamp-{stale} durable manifest ===\n  load status ok: {}\n  \
-         accepted {accepted}, refused-stale {refused_stale}, absent {absent}, undecodable \
-         {undecodable}\n  serves a seeded string from the manifest: {served}",
+         accepted {accepted}, absent {absent}, undecodable {undecodable}\n  serves a seeded \
+         string from the manifest: {served}",
         response.status.ok
     );
     assert!(
@@ -482,10 +495,10 @@ fn the_ordinary_recovery_load_refuses_a_stale_dump_manifest_and_falls_back() {
         response.status
     );
     assert!(
-        refused_stale > 0,
-        "nothing was counted as a stale-stamp refusal, so this load did not reach the manifest \
-         arm at all and the arm proves nothing: accepted {accepted}, refused-stale \
-         {refused_stale}, absent {absent}, undecodable {undecodable}"
+        undecodable > 0,
+        "nothing was counted as a refused index image, so this load did not reach the manifest \
+         arm at all and the arm proves nothing: accepted {accepted}, absent {absent}, \
+         undecodable {undecodable}"
     );
     assert!(
         !served,
@@ -541,12 +554,13 @@ fn a_manifest_this_binary_writes_is_stamped_current_and_still_installs() {
 // ARM 8: and an operator can see it coming.
 // ---------------------------------------------------------------------------------------------
 
-/// THE PREFLIGHT REPORT NAMES THE STALE STAMP, SO `install_safe` AGREES WITH THE INSTALL.
+/// THE PREFLIGHT REPORT BLOCKS A STALE-STAMPED IMAGE, SO `install_safe` AGREES WITH THE INSTALL.
 ///
 /// A report that calls a manifest installable and an install that then refuses it is a preflight
-/// nobody can act on. Counted nowhere: this path installs nothing, and a read-only report moving
-/// the refusal counter would make the tally mean something other than "an image was refused on
-/// the way in".
+/// nobody can act on. The report decodes the image the way the install does, so an image whose
+/// header names another struct version is the blocker `invalid_manifest_index` -- and the control
+/// is the same manifest at the CURRENT stamp, which carries no such blocker, so the blocker is the
+/// stamp's and not the fixture's.
 #[test]
 fn the_preflight_report_names_the_stale_stamp_as_a_blocker() {
     let stale = SHARD_INDEX_FORMAT_VERSION - 1;
@@ -554,22 +568,17 @@ fn the_preflight_report_names_the_stale_stamp_as_a_blocker() {
     re_stamp(&mut fixture.manifest, stale);
 
     let (target, _index_dir) = a_restore_target(fixture.dir.path());
-    crate::engine::persistence::reset_index_load_path_counts();
     let report = target.bucket_dump_install_preflight_report(&fixture.manifest);
-    let (accepted, refused_stale, absent, undecodable) =
-        crate::engine::persistence::index_load_path_counts();
     println!(
-        "\n=== preflight over a stamp-{stale} manifest ===\n  install_safe: {}\n  blockers: \
-         {:?}\n  accepted {accepted}, refused-stale {refused_stale}, absent {absent}, \
-         undecodable {undecodable}",
+        "\n=== preflight over a stamp-{stale} manifest ===\n  install_safe: {}\n  blockers: {:?}",
         report.install_safe, report.blockers
     );
     assert!(
         report
             .blockers
             .iter()
-            .any(|blocker| blocker == "stale_index_stamp"),
-        "the preflight did not name the stale stamp: blockers {:?}. An operator would be told \
+            .any(|blocker| blocker == "invalid_manifest_index"),
+        "the preflight did not block the stale image: blockers {:?}. An operator would be told \
          this manifest is installable and the install would then refuse it",
         report.blockers
     );
@@ -577,9 +586,19 @@ fn the_preflight_report_names_the_stale_stamp_as_a_blocker() {
         !report.install_safe,
         "the preflight named the blocker and still reported install_safe"
     );
-    assert_eq!(
-        0, refused_stale,
-        "the read-only preflight moved the refusal counter. It installs nothing, so a count here \
-         makes the tally mean something other than an image refused on the way in"
+
+    // THE CONTROL: the same manifest re-stamped at the CURRENT stamp is not blocked on its image.
+    let mut current = a_real_dump_manifest();
+    re_stamp(&mut current.manifest, SHARD_INDEX_FORMAT_VERSION);
+    let (control_target, _control_dir) = a_restore_target(current.dir.path());
+    let control = control_target.bucket_dump_install_preflight_report(&current.manifest);
+    assert!(
+        !control
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "invalid_manifest_index"),
+        "the current-stamped control was blocked on its image too: {:?}, so the blocker above is \
+         not attributable to the stamp",
+        control.blockers
     );
 }

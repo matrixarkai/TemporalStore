@@ -24,6 +24,9 @@ use crate::block_store::ElementEntry;
 use crate::sdk::v1;
 use crate::wal::{StagedBlock, WalOutcomeItem, WriteAheadLogRecord, WriteAheadLogRecordMetadata};
 
+#[path = "wal_indexed.rs"]
+pub(crate) mod indexed;
+
 /// Marks a payload as protobuf.
 ///
 /// A text payload always starts with `{`, so one byte separates the two and a log written before
@@ -225,6 +228,9 @@ fn decompress_payload(framed: &[u8]) -> Result<Vec<u8>, String> {
 
 /// The decompressed length this frame declares, when it declares one this will size for.
 fn declared_inflated_len(framed: &[u8]) -> Option<usize> {
+    if let Some(length) = indexed::inflated_len(framed) {
+        return capacity_within_bound(length);
+    }
     capacity_within_bound(zstd::zstd_safe::get_frame_content_size(framed).ok()??)
 }
 
@@ -529,6 +535,16 @@ pub(crate) fn item_to_proto(
     implied_length: Option<u64>,
     command_key: Option<&str>,
 ) -> v1::EngineWalItem {
+    item_to_proto_with_object_id(item, shard_id, implied_length, command_key, None)
+}
+
+fn item_to_proto_with_object_id(
+    item: &WalOutcomeItem,
+    shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
+    command_key: Option<&str>,
+    derived_object_id: Option<u64>,
+) -> v1::EngineWalItem {
     let block = item.address.as_ref().map(|address| {
         let mut encoded = address_to_proto(address, implied_length);
         // The item already says this. Repeating it costs a full varint on every item whose block
@@ -543,7 +559,10 @@ pub(crate) fn item_to_proto(
         model: 0,
         object_key: item_object_key_to_write(item, command_key).map(str::to_string),
         bucket_id: None,
-        object_id: item_object_id_to_write(item, shard_id),
+        object_id: derived_object_id.map_or_else(
+            || item_object_id_to_write(item, shard_id),
+            |derived| item_object_id_to_write_with_derived(item, derived),
+        ),
         block_id: None,
         ttl_ms: item.ttl,
         deleted: item.deleted,
@@ -571,6 +590,43 @@ pub(crate) fn item_to_proto(
         kind_code: kind_code(&item.kind),
         routing_bucket: Some(item.routing_bucket),
     }
+}
+
+pub(crate) fn items_to_proto(
+    items: &[WalOutcomeItem],
+    shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
+    command_key: Option<&str>,
+) -> Vec<v1::EngineWalItem> {
+    let mut previous: Option<(&str, &str, u64)> = None;
+    items
+        .iter()
+        .map(|item| {
+            let kind = kind_code(&item.kind)
+                .and_then(kind_from_code)
+                .unwrap_or(item.kind.as_str());
+            let derived = previous
+                .and_then(|(previous_kind, previous_key, previous_id)| {
+                    (previous_kind == kind && previous_key == item.object_key)
+                        .then_some(previous_id)
+                })
+                .unwrap_or_else(|| {
+                    crate::engine::hashing::stable_block_object_id(
+                        shard_id,
+                        kind,
+                        &item.object_key,
+                    )
+                });
+            previous = Some((kind, item.object_key.as_str(), derived));
+            item_to_proto_with_object_id(
+                item,
+                shard_id,
+                implied_length,
+                command_key,
+                Some(derived),
+            )
+        })
+        .collect()
 }
 
 /// Bytes an outcome item occupies as an `EngineWalItem` body.
@@ -759,6 +815,16 @@ pub(crate) fn item_from_proto(
     implied_length: Option<u64>,
     command_key: Option<&str>,
 ) -> WalOutcomeItem {
+    item_from_proto_with_object_id(item, shard_id, implied_length, command_key, None)
+}
+
+fn item_from_proto_with_object_id(
+    item: v1::EngineWalItem,
+    shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
+    command_key: Option<&str>,
+    derived_object_id: Option<u64>,
+) -> WalOutcomeItem {
     let kind = item
         .kind_code
         .and_then(kind_from_code)
@@ -779,11 +845,9 @@ pub(crate) fn item_from_proto(
     // omits it exactly when the derivation agrees. This goes FIRST because the address is
     // restored from it below.
     let object_id = item.object_id.unwrap_or_else(|| {
-        crate::engine::hashing::stable_block_object_id(
-            shard_id,
-            &kind,
-            &object_key,
-        )
+        derived_object_id.unwrap_or_else(|| {
+            crate::engine::hashing::stable_block_object_id(shard_id, &kind, &object_key)
+        })
     });
     WalOutcomeItem {
         kind,
@@ -801,6 +865,47 @@ pub(crate) fn item_from_proto(
         deleted: item.deleted,
         meta: item.meta_log,
     }
+}
+
+pub(crate) fn items_from_proto(
+    items: Vec<v1::EngineWalItem>,
+    shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
+    command_key: Option<&str>,
+) -> Vec<WalOutcomeItem> {
+    let mut previous: Option<(String, String, u64)> = None;
+    items
+        .into_iter()
+        .map(|item| {
+            let kind = item
+                .kind_code
+                .and_then(kind_from_code)
+                .or(item.kind_name.as_deref())
+                .unwrap_or_default();
+            let object_key = item
+                .object_key
+                .as_deref()
+                .or(command_key)
+                .unwrap_or_default();
+            let derived = match previous.as_ref() {
+                Some((previous_kind, previous_key, previous_id))
+                    if previous_kind == kind && previous_key == object_key => *previous_id,
+                _ => {
+                    let derived =
+                        crate::engine::hashing::stable_block_object_id(shard_id, kind, object_key);
+                    previous = Some((kind.to_string(), object_key.to_string(), derived));
+                    derived
+                }
+            };
+            item_from_proto_with_object_id(
+                item,
+                shard_id,
+                implied_length,
+                command_key,
+                Some(derived),
+            )
+        })
+        .collect()
 }
 
 /// WHETHER THIS RECORD'S LEADER CLOCK STAMP HAS A READER.
@@ -995,6 +1100,15 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
 
 impl RecordParts<'_> {
     fn put(&self, record: &WriteAheadLogRecord, out: &mut Vec<u8>) -> Result<(), String> {
+        self.put_header(record, out)?;
+        let implied = implied_staged_object_id(record);
+        for block in &record.staged_blocks {
+            crate::raft::wal_proto::put_staged_block(6, block, implied, out);
+        }
+        Ok(())
+    }
+
+    fn put_header(&self, record: &WriteAheadLogRecord, out: &mut Vec<u8>) -> Result<(), String> {
         crate::raft::wal_proto::put_varint_field(1, record.shard_id, out);
         crate::raft::wal_proto::put_varint_field(2, record.sequence, out);
         if let Some(command) = self.command.as_ref() {
@@ -1005,10 +1119,6 @@ impl RecordParts<'_> {
         self.tail.encode(out).map_err(|err| err.to_string())?;
         for (item, derived) in record.outcomes.iter().zip(self.items.iter()) {
             put_wal_item(5, item, derived, out);
-        }
-        let implied = implied_staged_object_id(record);
-        for block in &record.staged_blocks {
-            crate::raft::wal_proto::put_staged_block(6, block, implied, out);
         }
         Ok(())
     }
@@ -1082,9 +1192,93 @@ pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
     })
 }
 
+/// Encode a complete binary frame while retaining the caller's output allocation.
+pub(crate) fn encode_binary_frame_into(
+    record: &WriteAheadLogRecord,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    out.clear();
+    let result = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::LogRecord, || {
+        let prepared = prepare(record)?;
+        if !compress_records_enabled() || prepared.parts.len < COMPRESSION_MIN_BYTES {
+            return crate::log_framing::encode_framed_into(
+                prepared.payload_len(), |out| prepared.put(record, out), out,
+            ).map_err(|err| err.to_string())?;
+        }
+        let parts = prepared.parts;
+        if indexed::eligible(record, parts.len) {
+            indexed::encode(record, &parts, out)?;
+            crate::log_framing::frame_binary_body_in_place(COMPRESSED_RAW_PAYLOAD_MARKER, out);
+            return Ok(());
+        }
+        ENCODE_SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            scratch.clear();
+            reserve_encode_capacity(&mut scratch, parts.len);
+            let result = (|| {
+                parts.put(record, &mut scratch)?;
+                if compress_payload_into(&scratch, out) {
+                    crate::log_framing::frame_binary_body_in_place(COMPRESSED_RAW_PAYLOAD_MARKER, out);
+                    Ok(())
+                } else {
+                    // The failed compression trial already encoded the record; do not encode it twice.
+                    crate::log_framing::encode_framed_into(scratch.len() + 1,
+                        |out| {
+                            out.push(RAW_PAYLOAD_MARKER);
+                            out.extend_from_slice(&scratch);
+                            Ok::<(), String>(())
+                        }, out,
+                    ).map_err(|err| err.to_string())?
+                }
+            })();
+            if scratch.capacity() > MAX_ENCODE_SCRATCH_BYTES {
+                *scratch = Vec::new();
+            }
+            result
+        })
+    });
+    if result.is_err() {
+        out.clear();
+    }
+    result
+}
+
+fn reserve_encode_capacity(out: &mut Vec<u8>, required: usize) {
+    if out.capacity() < required {
+        let step = 64 * 1024;
+        let capacity = if required <= step {
+            required.next_power_of_two()
+        } else {
+            required.div_ceil(step).saturating_mul(step)
+        };
+        // Avoid doubling a nearly full scratch past its retention limit for a few extra bytes.
+        out.reserve_exact(capacity.saturating_sub(out.len()));
+    }
+}
+
+fn compress_payload_into(encoded: &[u8], out: &mut Vec<u8>) -> bool {
+    out.clear();
+    if encoded.len() < COMPRESSION_MIN_BYTES {
+        return false;
+    }
+    reserve_encode_capacity(out, zstd::zstd_safe::compress_bound(encoded.len())
+        + crate::log_framing::MAX_BINARY_HEADER_BYTES + 1);
+    RECORD_COMPRESSOR.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = zstd::bulk::Compressor::new(COMPRESSION_LEVEL).ok();
+        }
+        slot.as_mut()?.compress_to_buffer(encoded, out).ok()
+    }).is_some_and(|written| written < encoded.len())
+}
+
+#[cfg(test)]
+#[path = "wal_proto_frame_buffer_tests.rs"]
+mod frame_buffer_tests;
+
 fn encode_inner(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
     let parts = record_parts(record)?;
-    if compress_records_enabled() {
+    if compress_records_enabled() && parts.len >= COMPRESSION_MIN_BYTES {
         // Compression cannot use the borrowing writer above: that path reserves the frame from
         // `payload_len()` before the payload exists, and how long a compressed payload will be is
         // not knowable until it has been compressed. So this arm builds the payload first and the
@@ -1106,20 +1300,18 @@ fn encode_inner(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
             }
             Ok(compressed)
         })?;
-        if let Some(compressed) = compressed {
+        if let Some(mut compressed) = compressed {
             let escaping = !crate::log_framing::binary_frame_enabled();
-            let mut out = Vec::with_capacity(compressed.len() + 8);
-            out.push(if escaping {
-                COMPRESSED_ESCAPED_PAYLOAD_MARKER
-            } else {
-                COMPRESSED_RAW_PAYLOAD_MARKER
-            });
             if escaping {
+                let mut out = Vec::with_capacity(compressed.len() + 8);
+                out.push(COMPRESSED_ESCAPED_PAYLOAD_MARKER);
                 out.extend_from_slice(&escape_newlines(&compressed));
-            } else {
-                out.extend_from_slice(&compressed);
+                return Ok(out);
             }
-            return Ok(out);
+            // Compression keeps only frames shorter than the input, leaving room in its
+            // compress_bound-sized buffer for the marker without another allocation.
+            compressed.insert(0, COMPRESSED_RAW_PAYLOAD_MARKER);
+            return Ok(compressed);
         }
         // Not worth compressing. Fall through and write it the way it would have been written
         // anyway, under its own marker -- a reader cannot tell that this record was considered.
@@ -1145,6 +1337,22 @@ fn encode_inner(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
 
 /// Decode a payload this module wrote. The caller has already checked the marker byte.
 pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
+    record_from_proto(decode_message(payload)?)
+}
+
+/// Read carried data without rebuilding outcomes that only recovery consumes.
+pub(crate) fn decode_carried_blocks(payload: &[u8]) -> Result<Vec<StagedBlock>, String> {
+    let message = decode_message(payload)?;
+    // Commands and omitted identities can supply a block's identity. Keep their full restore
+    // path, including its validation, instead of guessing at an implied object id.
+    if message.command.is_some() || message.staged_blocks.iter().any(|block| block.object_id.is_none()) {
+        return record_from_proto(message).map(|record| record.staged_blocks);
+    }
+    let _ = message.metadata.map(metadata_from_proto).transpose()?;
+    Ok(staged_blocks_from_proto(message.staged_blocks, None))
+}
+
+fn decode_message(payload: &[u8]) -> Result<v1::EngineWalRecord, String> {
     let body = &payload[1..];
     let marker = payload.first().copied();
     let escaped = marker == Some(BINARY_PAYLOAD_MARKER)
@@ -1165,7 +1373,10 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
     } else {
         framed
     };
-    let message = v1::EngineWalRecord::decode(bytes).map_err(|err| err.to_string())?;
+    v1::EngineWalRecord::decode(bytes).map_err(|err| err.to_string())
+}
+
+fn record_from_proto(message: v1::EngineWalRecord) -> Result<WriteAheadLogRecord, String> {
     // Absent is a legitimate record now, not a malformed one: it carries results instead.
     let command = match message.command.and_then(|command| command.kind) {
         Some(kind) => Some(
@@ -1186,13 +1397,12 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
     // The command is decoded above, so a key an item did not write is available here. Same
     // shape as `implied_length`: read off the record, handed to every item.
     let command_key = command_object_key(command.as_ref());
-    let outcomes = message
-        .items
-        .into_iter()
-        .map(|item| {
-            item_from_proto(item, message.shard_id, implied_length, command_key.as_deref())
-        })
-        .collect::<Vec<_>>();
+    let outcomes = items_from_proto(
+        message.items,
+        message.shard_id,
+        implied_length,
+        command_key.as_deref(),
+    );
     // A block with no object id of its own takes it from the outcome it belongs to. The writer
     // drops it only when there is exactly one of each, so there is never a question of which
     // outcome an unlabelled block means.
@@ -1210,22 +1420,23 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
         sequence: message.sequence,
         command,
         metadata: message.metadata.map(metadata_from_proto).transpose()?,
-        staged_blocks: message
-            .staged_blocks
-            .into_iter()
-            .map(|block| StagedBlock {
-                object_id: block.object_id.or(implied).unwrap_or_default(),
-                // Never defaulted the way the object id is. An absent element name MEANS the block is
-                // its whole object, and inventing one would make a string block claim to be an
-                // element; an absent one on a record written before this field existed means the
-                // same thing that record has always meant.
-                element_name: block.element_name.map(std::sync::Arc::from),
-                bytes: block.block,
-            })
-            .collect(),
+        staged_blocks: staged_blocks_from_proto(message.staged_blocks, implied),
         outcomes,
     })
 }
+
+fn staged_blocks_from_proto(blocks: Vec<v1::WalStagedBlock>, implied: Option<u64>) -> Vec<StagedBlock> {
+    blocks.into_iter().map(|block| StagedBlock {
+        object_id: block.object_id.or(implied).unwrap_or_default(),
+        // An absent name denotes the whole object, not an unnamed container element.
+        element_name: block.element_name.map(std::sync::Arc::from),
+        bytes: block.block,
+    }).collect()
+}
+
+#[cfg(test)]
+#[path = "wal_carried_read_tests.rs"]
+mod carried_read_tests;
 
 
 #[cfg(test)]
@@ -1545,10 +1756,8 @@ mod tests {
 
     /// What `encode` allocates, compressed against raw.
     ///
-    /// The compressed arm builds three buffers per record: the payload, the compressed copy of it,
-    /// and the output the compressed copy is then memcpy'd into. `compress_to_buffer` could put the
-    /// compressor straight into the output and remove the middle one. This measures what that is
-    /// worth before anyone writes it.
+    /// The compressed binary arm retains a payload scratch buffer and the compressor output.
+    /// The marker is inserted into that output rather than copied into a third buffer.
     #[test]
     #[ignore]
     #[cfg(feature = "alloc-probe")]
@@ -1844,6 +2053,15 @@ mod tests {
 
         std::env::set_var("TS_WAL_COMPRESS_RECORDS", "1");
         let compressed = encode(&record).expect("encodes with compression on");
+        if compressed.first() == Some(&COMPRESSED_RAW_PAYLOAD_MARKER) {
+            let mut encoded = Vec::new();
+            record_parts(&record)
+                .unwrap()
+                .put(&record, &mut encoded)
+                .unwrap();
+            let expected = compress_payload(&encoded).expect("compresses");
+            assert_eq!(&compressed[1..], expected.as_slice());
+        }
         // "0", not unset. Unset is ON now, and this line said "off" while meaning "default" -- the
         // kind of test that keeps passing through exactly the change it should have caught.
         std::env::set_var("TS_WAL_COMPRESS_RECORDS", "0");

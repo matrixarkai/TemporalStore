@@ -118,11 +118,8 @@ pub fn embed_drainer_config_from_env(
             d.max_nodes_per_pass,
         )
         .max(1),
-        max_events_per_node: env_usize(
-            "MATRIXARK_EMBED_DRAINER_MAX_EVENTS",
-            d.max_events_per_node,
-        )
-        .max(1),
+        max_events_per_node: env_usize("MATRIXARK_EMBED_DRAINER_MAX_EVENTS", d.max_events_per_node)
+            .max(1),
         interval: Duration::from_millis(env_u64(
             "MATRIXARK_EMBED_DRAINER_INTERVAL_MS",
             d.interval.as_millis() as u64,
@@ -136,10 +133,10 @@ fn node_embed_text(response: ExecuteResponse, max_input_bytes: usize) -> Option<
     match response.response {
         CommandResponse::ContextEvents { events, .. } => {
             let mut text = events
-            .into_iter()
-            .map(|event| event.text)
-            .max_by_key(|text| text.len())
-            .unwrap_or_default();
+                .into_iter()
+                .map(|event| event.text)
+                .max_by_key(|text| text.len())
+                .unwrap_or_default();
             if text.len() > max_input_bytes {
                 let mut end = max_input_bytes;
                 while !text.is_char_boundary(end) {
@@ -450,6 +447,7 @@ mod tests {
                         related_node_hashes: Vec::new(),
                         compact_attrs: Vec::new(),
                         vector: Vec::new(),
+                        embedding_model_hash: 0,
                     }),
                     first_write_only: false,
                     cold_storage: false,
@@ -465,9 +463,9 @@ mod tests {
                 command: Command::ContextMarkEmbeddingDirty {
                     tenant_hash,
                     node_hash,
-                event_time_ms: 1_000,
-                reason: 2,
-                propagate_depth: 0,
+                    event_time_ms: 1_000,
+                    reason: 2,
+                    propagate_depth: 0,
                     clear: false,
                 },
             })
@@ -559,7 +557,10 @@ mod tests {
         });
         match summary.response {
             CommandResponse::ContextSummaryDirtyNodes { nodes, .. } => {
-                assert!(nodes.is_empty(), "embedding-dirty must not set summary-dirty");
+                assert!(
+                    nodes.is_empty(),
+                    "embedding-dirty must not set summary-dirty"
+                );
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -677,7 +678,10 @@ mod tests {
         assert_eq!(count_pending(&engine), 2);
 
         let report = drain_embedding_dirty_once(&engine, &EmbedDrainerConfig::default());
-        assert_eq!(report.pending_scanned, 2, "must scan only pending, not corpus");
+        assert_eq!(
+            report.pending_scanned, 2,
+            "must scan only pending, not corpus"
+        );
         assert_eq!(report.embedded, 2);
         assert_eq!(count_pending(&engine), 0);
     }

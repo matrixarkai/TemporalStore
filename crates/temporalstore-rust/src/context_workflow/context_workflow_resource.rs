@@ -28,7 +28,16 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
     } else {
         context_resource_object_store_uri(&request.raw_uri, payload_size_bytes)
     };
+    let content_hash = stable_hash64_parts(&[
+        "resource_lifecycle:",
+        &request.raw_uri,
+        ":",
+        &request.version,
+        ":",
+        &request.text,
+    ]);
     let units = context_resource_units(&request.text, &resource_type, &request.raw_uri);
+    drop(request.text);
     let mut chunks = Vec::new();
     let mut parser_warnings = Vec::new();
 
@@ -172,14 +181,6 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
     let total_tokens = chunks.iter().fold(0_u32, |total, chunk| {
         total.saturating_add(chunk.token_estimate)
     });
-    let content_hash = stable_hash64_parts(&[
-        "resource_lifecycle:",
-        &request.raw_uri,
-        ":",
-        &request.version,
-        ":",
-        &request.text,
-    ]);
     let watched = request.watch_interval_minutes > 0
         || matches!(import_kind, ContextResourceImportKind::WatchedResource);
     let version = if request.version.trim().is_empty() {
@@ -235,6 +236,29 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
         inline_payload,
         external_object_uri,
         parser_warnings,
+    }
+}
+
+pub(super) fn set_context_resource_embedding_model(
+    report: &mut ContextResourceParseReport,
+    embedding_model: &str,
+) {
+    let embedding_model = embedding_model.trim();
+    if embedding_model.is_empty() || report.embedding_model == embedding_model {
+        return;
+    }
+    report.embedding_model.clear();
+    report.embedding_model.push_str(embedding_model);
+    for chunk in &mut report.chunks {
+        let chunk_hash = chunk.chunk_hash.to_string();
+        chunk.embedding_ref_hash = stable_hash64_parts(&[
+            "resource_chunk_embedding:",
+            &report.raw_uri,
+            ":",
+            &chunk_hash,
+            ":",
+            embedding_model,
+        ]);
     }
 }
 
@@ -463,9 +487,28 @@ fn context_resource_units(
 ) -> Vec<BTreeMap<String, String>> {
     if matches!(resource_type, "md" | "markdown" | "skill") {
         markdown_resource_units(text)
+    } else if resource_type == "pdf" {
+        pdf_resource_units(text)
     } else {
         paragraph_resource_units(text, raw_uri)
     }
+}
+
+fn pdf_resource_units(text: &str) -> Vec<BTreeMap<String, String>> {
+    let mut units = Vec::new();
+    for (page_index, page) in text.split('\u{000c}').enumerate() {
+        for (paragraph_index, paragraph) in split_paragraphs(page).into_iter().enumerate() {
+            let mut unit = BTreeMap::new();
+            let line_count = paragraph.lines().count().max(1);
+            unit.insert("text".to_string(), paragraph);
+            unit.insert("page".to_string(), (page_index + 1).to_string());
+            unit.insert("paragraph_index".to_string(), paragraph_index.to_string());
+            unit.insert("line_start".to_string(), "1".to_string());
+            unit.insert("line_end".to_string(), line_count.to_string());
+            units.push(unit);
+        }
+    }
+    units
 }
 
 fn markdown_resource_units(text: &str) -> Vec<BTreeMap<String, String>> {
@@ -539,7 +582,8 @@ fn markdown_resource_units(text: &str) -> Vec<BTreeMap<String, String>> {
             }
         }
         let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
-        let is_heading = (1..=6).contains(&hash_count)
+        let is_heading = active_code_language.is_none()
+            && (1..=6).contains(&hash_count)
             && trimmed.as_bytes().get(hash_count) == Some(&b' ')
             && trimmed.len() > hash_count + 1;
         if is_heading {
@@ -727,8 +771,13 @@ fn split_context_resource_text(
     let mut pieces = Vec::new();
     let mut start = 0;
     while start < normalized.len() {
-        let mut end =
-            floor_char_boundary(&normalized, (start + max_chunk_chars).min(normalized.len()));
+        let mut end = floor_char_boundary(
+            &normalized,
+            start.saturating_add(max_chunk_chars).min(normalized.len()),
+        );
+        if end == start {
+            end = ceil_char_boundary(&normalized, start.saturating_add(1));
+        }
         if end < normalized.len() {
             let window = &normalized[start..end];
             let paragraph_boundary = window.rfind("\n\n").map(|index| start + index);
@@ -870,6 +919,98 @@ mod resource_chunk_tests {
             vec!["alpha\nbeta".to_string(), "gamma\ndelta".to_string()]
         );
     }
+
+    #[test]
+    fn resource_tiny_chunks_never_discard_utf8_codepoints() {
+        let text = "é中文🙂tail";
+        for budget in 1..=4 {
+            let chunks = split_context_resource_text(text.to_string(), budget, 0);
+            assert_eq!(chunks.concat(), text, "budget={budget}");
+            assert!(chunks.iter().all(|chunk| !chunk.is_empty()));
+            assert!(chunks.iter().all(|chunk| chunk.len() <= budget.max(4)));
+        }
+    }
+
+    #[test]
+    fn markdown_fenced_code_does_not_create_document_headings() {
+        let units = markdown_resource_units(
+            "# Guide\n\n```rust\n# hidden heading\nfn main() {}\n```\n\n## Usage\n\nRun it.",
+        );
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[0]["heading"], "Guide");
+        assert_eq!(units[0]["code_language"], "rust");
+        assert!(units[0]["text"].contains("# hidden heading"));
+        assert!(units[0]["text"].contains("fn main() {}\n```"));
+        assert_eq!(units[1]["heading"], "Usage");
+        assert_eq!(units[1]["heading_path"], "guide/usage");
+    }
+
+    #[test]
+    fn large_markdown_resource_keeps_payload_identity_and_bounded_chunks() {
+        let text = format!("# Attachment\n\n{}", "Large resource text with retrieval facts. ".repeat(32_768));
+        let expected_hash = stable_hash64_parts(&["resource_lifecycle:", "attachment.md", ":", "large", ":", &text]);
+        let payload_size = text.len();
+        let report = parse_context_resource(ContextResourceParseRequest {
+            raw_uri: "attachment.md".to_string(),
+            resource_type: Some("md".to_string()),
+            text,
+            max_chunk_chars: 2_048,
+            overlap_chars: 64,
+            chunk_hash_base: None,
+            owner_scope: "user".to_string(),
+            version: "large".to_string(),
+            watch_interval_minutes: 0,
+            parser_name: "markdown".to_string(),
+        });
+        assert!(report.status.ok);
+        assert_eq!(report.payload_size_bytes, payload_size);
+        assert_eq!(report.lifecycle.content_hash, expected_hash);
+        assert!(report.chunks.len() > 512);
+        assert!(report.chunks.iter().all(|chunk| !chunk.text.is_empty() && chunk.text.len() <= 2_048));
+        assert_eq!(report.chunks[0].metadata["heading"], "Attachment");
+        assert!(report.parser_warnings.is_empty());
+    }
+
+    #[test]
+    fn pdf_text_keeps_page_and_paragraph_chunk_identity() {
+        let mut report = parse_context_resource(ContextResourceParseRequest {
+            raw_uri: "manual.pdf".to_string(),
+            resource_type: Some("pdf".to_string()),
+            text: "Page one first.\n\nPage one second.\u{000c}Page two.".to_string(),
+            max_chunk_chars: 1_400,
+            overlap_chars: 120,
+            chunk_hash_base: None,
+            owner_scope: "user".to_string(),
+            version: "v1".to_string(),
+            watch_interval_minutes: 0,
+            parser_name: "pdf-text".to_string(),
+        });
+
+        assert_eq!(report.chunks.len(), 3);
+        assert_eq!(report.chunks[0].source_ref, "manual.pdf#page=1&paragraph=0");
+        assert_eq!(report.chunks[1].source_ref, "manual.pdf#page=1&paragraph=1");
+        assert_eq!(report.chunks[2].source_ref, "manual.pdf#page=2&paragraph=0");
+        assert_eq!(
+            report.chunks[0].metadata.get("page").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            report.chunks[2].metadata.get("page").map(String::as_str),
+            Some("2")
+        );
+
+        set_context_resource_embedding_model(&mut report, "nomic-embed-text");
+        assert_eq!(report.embedding_model, "nomic-embed-text");
+        for chunk in &report.chunks {
+            assert_eq!(
+                chunk.embedding_ref_hash,
+                stable_hash64(&format!(
+                    "resource_chunk_embedding:manual.pdf:{}:nomic-embed-text",
+                    chunk.chunk_hash
+                ))
+            );
+        }
+    }
 }
 
 fn floor_char_boundary(value: &str, mut index: usize) -> usize {
@@ -890,7 +1031,12 @@ fn ceil_char_boundary(value: &str, mut index: usize) -> usize {
 
 fn context_resource_source_ref(raw_uri: &str, metadata: &BTreeMap<String, String>) -> String {
     let mut suffix = if let Some(block) = metadata.get("page") {
-        format!("block={block}")
+        let mut suffix = format!("page={block}");
+        if let Some(paragraph) = metadata.get("paragraph_index") {
+            suffix.push_str("&paragraph=");
+            suffix.push_str(paragraph);
+        }
+        suffix
     } else if let Some(heading_slug) = metadata.get("heading_slug") {
         format!("heading={heading_slug}")
     } else if let Some(paragraph_index) = metadata.get("paragraph_index") {

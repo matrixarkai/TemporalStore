@@ -11,17 +11,20 @@ keywords = ["temporalstore", "database", "storage", "raft", "memory"]
 categories = ["database-implementations", "data-structures"]
 
 [dependencies]
+ahash = "0.8"
 async-trait = "0.1"
 bytes = "1"
+crc32c = "0.6.9"
 rmp-serde = "1.3"
 hex = "0.4"
 prost = "0.13"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
 base64 = "0.22"
+bloomfilter = { version = "3.0.2", default-features = false }
 sha2 = "0.10"
 matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "58fb9573db087635877323dfbc2bb2ddf2e65702" }
-matrixcache = { git = "https://github.com/matrixarkai/MatrixCache.git", rev = "42f9176075043eedbaca3c76619f0653a3f25012", features = ["rocksdb-ssd"] }
+matrixcache = { git = "https://github.com/matrixarkai/MatrixCache.git", rev = "30a4fb9f36ffecc425049a181e6591973d42a1f2", features = ["rocksdb-ssd"] }
 matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "b2c9f5a832ba9e7c5b23f970f3b57730e0cec50f", optional = true }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
@@ -126,6 +129,8 @@ path = "src/bin/native_persistence_workflow.rs"
 
 [dev-dependencies]
 async-trait = "0.1"
+fastcdc = { version = "5.0", default-features = false }
+syn = { version = "2", features = ["full", "visit"] }
 tempfile = "=3.10.1"
 
 [[bin]]
