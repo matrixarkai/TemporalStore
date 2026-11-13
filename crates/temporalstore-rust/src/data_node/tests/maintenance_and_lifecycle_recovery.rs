@@ -12013,6 +12013,19 @@ fn the_runtime_counts_skipped_stages_round_time_and_overruns_across_rounds() {
     assert!(stats.storage_manager_round_us_max >= slowest_us.min(1));
     assert!(stats.storage_manager_round_us_max <= stats.storage_manager_round_us_total);
     assert_eq!(stats.storage_manager_failed_rounds, 0, "a clean round is not a failed one");
+    // Per-stage time: every stage a round executed is counted once per round, and the sum of
+    // the stage times cannot exceed the time in rounds.
+    let prepare = stats
+        .storage_manager_stage_timing
+        .get("prepare")
+        .expect("the default options run prepare every round");
+    assert_eq!(prepare.rounds_executed, 3);
+    let staged_us: u64 = stats
+        .storage_manager_stage_timing
+        .values()
+        .map(|timing| timing.total_us)
+        .sum();
+    assert!(staged_us <= stats.storage_manager_round_us_total);
 
     // A round that fits in its interval is not an overrun; one that outlasts it is.
     let interval = std::time::Duration::from_millis(30);

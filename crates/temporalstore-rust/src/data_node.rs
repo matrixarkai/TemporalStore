@@ -225,6 +225,18 @@ pub struct DataNodeRuntimeStats {
     pub storage_manager_round_us_total: u64,
     #[serde(default)]
     pub storage_manager_round_us_max: u64,
+    /// Per stage, summed over rounds: how many rounds ran it, the time in it, the longest. The
+    /// per-round report carries these, and the scheduler drops the report, so a running server
+    /// could not say which stage its round time went to.
+    #[serde(default)]
+    pub storage_manager_stage_timing: std::collections::BTreeMap<String, StorageManagerStageTiming>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageManagerStageTiming {
+    pub rounds_executed: u64,
+    pub total_us: u64,
+    pub max_us: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2185,6 +2197,7 @@ struct MutableRuntimeStats {
     storage_manager_overrun_rounds: u64,
     storage_manager_round_us_total: u64,
     storage_manager_round_us_max: u64,
+    storage_manager_stage_timing: std::collections::BTreeMap<String, StorageManagerStageTiming>,
 }
 
 #[derive(Debug)]

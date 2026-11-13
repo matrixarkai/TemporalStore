@@ -75,6 +75,35 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
         out.push_str(&value.to_string());
         out.push('\n');
     }
+    out.push_str("# HELP temporalstore_storage_manager_stage_seconds_total Time spent in each storage manager stage, summed over rounds.
+");
+    out.push_str("# TYPE temporalstore_storage_manager_stage_seconds_total counter
+");
+    out.push_str("# HELP temporalstore_storage_manager_stage_rounds_total Rounds that ran each storage manager stage.
+");
+    out.push_str("# TYPE temporalstore_storage_manager_stage_rounds_total counter
+");
+    out.push_str("# HELP temporalstore_storage_manager_stage_max_seconds Longest single run of each storage manager stage.
+");
+    out.push_str("# TYPE temporalstore_storage_manager_stage_max_seconds gauge
+");
+    for (stage, timing) in &stats.storage_manager_stage_timing {
+        out.push_str(&format!(
+            "temporalstore_storage_manager_stage_seconds_total{{stage=\"{stage}\"}} {}
+",
+            timing.total_us as f64 / 1e6
+        ));
+        out.push_str(&format!(
+            "temporalstore_storage_manager_stage_rounds_total{{stage=\"{stage}\"}} {}
+",
+            timing.rounds_executed
+        ));
+        out.push_str(&format!(
+            "temporalstore_storage_manager_stage_max_seconds{{stage=\"{stage}\"}} {}
+",
+            timing.max_us as f64 / 1e6
+        ));
+    }
     out.push_str("# HELP temporalstore_data_node_runtime_queue_depth Current data node runtime queue depth.\n");
     out.push_str("# TYPE temporalstore_data_node_runtime_queue_depth gauge\n");
     out.push_str("temporalstore_data_node_runtime_queue_depth ");

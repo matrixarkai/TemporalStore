@@ -1728,6 +1728,15 @@ impl DataNodeRuntime {
             stats.storage_manager_round_us_total =
                 stats.storage_manager_round_us_total.saturating_add(round_us);
             stats.storage_manager_round_us_max = stats.storage_manager_round_us_max.max(round_us);
+            for row in spans.rows.iter().filter(|row| row.executed) {
+                let timing = stats
+                    .storage_manager_stage_timing
+                    .entry(row.stage.clone())
+                    .or_default();
+                timing.rounds_executed += 1;
+                timing.total_us = timing.total_us.saturating_add(row.duration_us);
+                timing.max_us = timing.max_us.max(row.duration_us);
+            }
         }
 
         // Compact execution reports above carry the dump manifest needed by index-GC fences.
