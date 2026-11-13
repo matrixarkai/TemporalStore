@@ -399,6 +399,28 @@ pub struct SharedStoreReplicator<O> {
     /// When a consumer cursor stops being treated as live. `None` means never, which is what a
     /// replicator does with no policy configured.
     cursor_abandon: Option<SharedStoreCursorAbandonPolicy>,
+    /// What this replicator has already decoded of each shard's offset index. See
+    /// [`CachedOffsetIndex`]. One lock per shard, so a slow read of one shard's tail does not hold
+    /// up another's.
+    offset_index_cache: Arc<Mutex<BTreeMap<ShardId, Arc<tokio::sync::Mutex<Option<CachedOffsetIndex>>>>>>,
+}
+
+/// The decoded offset index of one shard, and how far into the blob it reaches.
+///
+/// The index is an append-only blob of self-delimiting frames, so a reader that has decoded
+/// `consumed` bytes of it needs only what was appended after. Reading the whole blob on every
+/// call made a follower's replay cost proportional to the length of the log on every poll:
+/// 96.7% of the matrixobject door's instructions in a harness run that replayed after each
+/// write, at one whole-object read per write.
+#[derive(Debug)]
+struct CachedOffsetIndex {
+    /// Bytes of the blob decoded so far. Always the end of a complete frame.
+    consumed: u64,
+    /// The raw bytes of the last complete frame, re-read with every tail and compared. If the
+    /// blob was replaced by a longer one, the bytes at `consumed` would not still be this frame,
+    /// so a mismatch means the cache describes a different object and is discarded.
+    anchor: Vec<u8>,
+    entries: Arc<BTreeMap<u64, SharedStoreWalOffsetMetadata>>,
 }
 
 /// Ownership token carried by a fenced replicator: the `load_version` (monotonic ownership
@@ -450,6 +472,10 @@ impl<O> Clone for SharedStoreReplicator<O> {
             wal_batch_container: self.wal_batch_container,
             fence: self.fence.clone(),
             cursor_abandon: self.cursor_abandon,
+            // SHARED, not copied: a clone reads the same object store under the same cluster id,
+            // so what one has decoded of an index is what the other would decode, and a clone
+            // that started cold would pay a whole read to learn it.
+            offset_index_cache: Arc::clone(&self.offset_index_cache),
         }
     }
 }
@@ -803,6 +829,7 @@ where
             wal_batch_container: true,
             fence: None,
             cursor_abandon: None,
+            offset_index_cache: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -823,6 +850,7 @@ where
             wal_batch_container: true,
             fence: None,
             cursor_abandon: None,
+            offset_index_cache: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -1231,9 +1259,10 @@ where
         wal_index: u64,
     ) -> Result<Option<SharedStoreWalOffsetMetadata>, SharedStoreReplicationError> {
         Ok(self
-            .load_wal_offset_metadata(shard_id)
+            .load_wal_offset_metadata_cached(shard_id)
             .await?
-            .remove(&wal_index))
+            .get(&wal_index)
+            .cloned())
     }
 
     pub async fn read_wal_entry_by_offset_metadata(
@@ -1963,7 +1992,7 @@ where
         after_wal_index: u64,
         engine: &TemporalEngine,
     ) -> Result<Option<ReplayReport>, SharedStoreReplicationError> {
-        let offset_metadata = self.load_wal_offset_metadata(shard_id).await?;
+        let offset_metadata = self.load_wal_offset_metadata_cached(shard_id).await?;
         if offset_metadata.is_empty() {
             return Ok(None);
         }
@@ -2501,6 +2530,86 @@ where
         }
     }
 
+    /// The decoded offset index of `shard_id`, reading only what was appended since the last call.
+    ///
+    /// [`Self::load_wal_offset_metadata`] fetches and decodes the whole blob every time, which for
+    /// a follower that replays after each write is one whole-object read per write and a cost that
+    /// grows with the log. This keeps what it decoded and asks the store for the TAIL from the last
+    /// complete frame on, so a call costs the frames added since rather than the frames there are.
+    ///
+    /// It starts over -- one full read, exactly the uncached load -- whenever it cannot be sure the
+    /// cache still describes the object: the object is shorter than what was consumed, the last
+    /// cached frame no longer reads back byte for byte, or the tail does not decode as whole
+    /// frames. Starting over is always correct; it is only slower. A deleted object is an empty
+    /// index, as it is uncached.
+    async fn load_wal_offset_metadata_cached(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<Arc<BTreeMap<u64, SharedStoreWalOffsetMetadata>>, SharedStoreReplicationError> {
+        let slot = {
+            let mut shards = self
+                .offset_index_cache
+                .lock()
+                .expect("offset index cache poisoned");
+            shards.entry(shard_id).or_default().clone()
+        };
+        let mut held = slot.lock().await;
+        let key = self.wal_offset_index_blob_key(shard_id);
+        let derived = self.wal_blob_key(shard_id);
+        if let Some(cached) = held.as_mut() {
+            let anchor_len = cached.anchor.len();
+            let from = cached.consumed - anchor_len as u64;
+            match self.object_store.get_range_from(&key, from).await {
+                Ok(Some(tail))
+                    if tail.len() >= anchor_len && tail[..anchor_len] == cached.anchor[..] =>
+                {
+                    let fresh = &tail[anchor_len..];
+                    if fresh.is_empty() {
+                        return Ok(cached.entries.clone());
+                    }
+                    // Cloned only if a reader still holds an earlier answer; a replay that
+                    // finished has dropped it, so the usual case grows the map in place.
+                    let entries = Arc::make_mut(&mut cached.entries);
+                    if let Ok(last_frame_len) =
+                        decode_wal_offset_metadata_frames(fresh, &derived, entries)
+                    {
+                        cached.consumed += fresh.len() as u64;
+                        cached.anchor = fresh[fresh.len() - last_frame_len..].to_vec();
+                        return Ok(cached.entries.clone());
+                    }
+                }
+                Err(ObjectStoreError::NotFound(_)) => {
+                    *held = None;
+                    return Ok(Arc::new(BTreeMap::new()));
+                }
+                Err(err) => return Err(err.into()),
+                // A shorter object, a last frame that no longer matches, or a tail that did not
+                // decode: whatever is held may be partly grown, so none of it is trusted.
+                Ok(_) => {}
+            }
+            *held = None;
+        }
+        match self.object_store.get(&key).await {
+            Ok(bytes) => {
+                let mut entries = BTreeMap::new();
+                let last_frame_len =
+                    decode_wal_offset_metadata_frames(&bytes, &derived, &mut entries)?;
+                let entries = Arc::new(entries);
+                *held = Some(CachedOffsetIndex {
+                    consumed: bytes.len() as u64,
+                    anchor: bytes[bytes.len() - last_frame_len..].to_vec(),
+                    entries: entries.clone(),
+                });
+                Ok(entries)
+            }
+            Err(ObjectStoreError::NotFound(_)) => {
+                *held = None;
+                Ok(Arc::new(BTreeMap::new()))
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
     fn replay_cursor_key(&self, shard_id: ShardId) -> String {
         format!(
             "{}replay_cursor{SHARED_STORE_BINARY_OBJECT_SUFFIX}",
@@ -2559,8 +2668,8 @@ where
         &self,
         shard_id: ShardId,
     ) -> Result<u64, SharedStoreReplicationError> {
-        let offset_metadata = self.load_wal_offset_metadata(shard_id).await?;
-        if let Some(max) = offset_metadata.keys().max().copied() {
+        let offset_metadata = self.load_wal_offset_metadata_cached(shard_id).await?;
+        if let Some(max) = offset_metadata.last_key_value().map(|(index, _)| *index) {
             let legacy_max = self.object_store.list(&self.wal_prefix(shard_id)).await?
                 .iter().filter_map(|key| parse_wal_index(key)).max().unwrap_or(0);
             return Ok(max.max(legacy_max));
@@ -4913,9 +5022,26 @@ fn decode_wal_offset_metadata_blob(
     bytes: &[u8],
     derived_blob_key: &str,
 ) -> Result<BTreeMap<u64, SharedStoreWalOffsetMetadata>, SharedStoreReplicationError> {
-    let mut cursor = 0usize;
     let mut entries = BTreeMap::new();
+    decode_wal_offset_metadata_frames(bytes, derived_blob_key, &mut entries)?;
+    Ok(entries)
+}
+
+/// Decode a run of complete frames into `entries`, and say how long the last one was.
+///
+/// The frames are the same ones [`decode_wal_offset_metadata_blob`] reads and a later frame for
+/// an index replaces an earlier one, so decoding a tail into a map that already holds the prefix
+/// gives exactly the map decoding the whole blob would. The returned length is `0` for no frames.
+/// A frame cut short is an error, as it always was: nothing here accepts a partial record.
+fn decode_wal_offset_metadata_frames(
+    bytes: &[u8],
+    derived_blob_key: &str,
+    entries: &mut BTreeMap<u64, SharedStoreWalOffsetMetadata>,
+) -> Result<usize, SharedStoreReplicationError> {
+    let mut cursor = 0usize;
+    let mut last_frame_start = 0usize;
     while cursor < bytes.len() {
+        last_frame_start = cursor;
         if bytes.len().saturating_sub(cursor) < 4 {
             return Err(SharedStoreReplicationError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -4999,7 +5125,7 @@ fn decode_wal_offset_metadata_blob(
             },
         );
     }
-    Ok(entries)
+    Ok(bytes.len() - last_frame_start)
 }
 
 fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
@@ -12793,6 +12919,284 @@ mod tests {
                  loaded once and the decoded records are what the loop iterates",
             );
         }
+    }
+
+    /// A file store that records what a reader asks of an object: whole reads, and tail reads with
+    /// how many bytes each returned.
+    struct TailCountingStore {
+        inner: FileObjectStore,
+        whole_gets: std::sync::Mutex<Vec<String>>,
+        tails: std::sync::Mutex<Vec<(String, u64, usize)>>,
+    }
+
+    impl TailCountingStore {
+        fn new(inner: FileObjectStore) -> Self {
+            Self {
+                inner,
+                whole_gets: std::sync::Mutex::new(Vec::new()),
+                tails: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+        fn whole_gets_of(&self, key: &str) -> usize {
+            self.whole_gets
+                .lock()
+                .expect("tail counting store poisoned")
+                .iter()
+                .filter(|seen| seen.as_str() == key)
+                .count()
+        }
+        fn tail_reads_of(&self, key: &str) -> usize {
+            self.tails
+                .lock()
+                .expect("tail counting store poisoned")
+                .iter()
+                .filter(|(seen, _, _)| seen.as_str() == key)
+                .count()
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for TailCountingStore {
+        async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+            self.inner.put(key, bytes).await
+        }
+        async fn append_blob(
+            &self,
+            key: &str,
+            bytes: Bytes,
+        ) -> Result<AppendBlobReceipt, ObjectStoreError> {
+            self.inner.append_blob(key, bytes).await
+        }
+        async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+            self.whole_gets
+                .lock()
+                .expect("tail counting store poisoned")
+                .push(key.to_string());
+            self.inner.get(key).await
+        }
+        async fn get_range(
+            &self,
+            key: &str,
+            offset: u64,
+            length: u64,
+        ) -> Result<Bytes, ObjectStoreError> {
+            self.inner.get_range(key, offset, length).await
+        }
+        async fn get_range_from(
+            &self,
+            key: &str,
+            offset: u64,
+        ) -> Result<Option<Bytes>, ObjectStoreError> {
+            let tail = self.inner.get_range_from(key, offset).await?;
+            self.tails
+                .lock()
+                .expect("tail counting store poisoned")
+                .push((key.to_string(), offset, tail.as_ref().map_or(0, |bytes| bytes.len())));
+            Ok(tail)
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+            self.inner.list(prefix).await
+        }
+        async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+            self.inner.delete(key).await
+        }
+        fn uri(&self, key: &str) -> String {
+            self.inner.uri(key)
+        }
+    }
+
+    fn indexed_entry(wal_index: u64, width: usize) -> SharedStoreWalEntry {
+        SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index,
+            command: Some(Command::StringSet {
+                key: format!("key-{wal_index}"),
+                value: vec![b'v'; width],
+            }),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        }
+    }
+
+    /// THE CACHED INDEX IS THE FULL INDEX, after every publish, whatever shape the frame was.
+    ///
+    /// Single frames and container batches are interleaved, because the tail decode meets both
+    /// and a frame of either kind can be the last one the cache anchors on. After the first load
+    /// a cached call must not read the whole index at all, and what it returns must equal what the
+    /// uncached whole-blob load returns, compared in full rather than by length.
+    #[tokio::test]
+    async fn a_cached_offset_index_equals_a_full_load_after_every_publish() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(TailCountingStore::new(FileObjectStore::new(
+            dir.path().join("objects"),
+        )));
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+        let index_key = replicator.wal_offset_index_blob_key(1);
+        let mut next = 1u64;
+        for round in 0..40usize {
+            if round % 4 == 3 {
+                let count = 2 + (round % 5) as u64;
+                let batch: Vec<SharedStoreWalEntry> = (0..count)
+                    .map(|offset| {
+                        indexed_entry(next + offset, 5 + (round + offset as usize) * 7 % 40)
+                    })
+                    .collect();
+                replicator.publish_wal_entries_batch(&batch).await.unwrap();
+                next += count;
+            } else {
+                replicator
+                    .publish_wal_entry(indexed_entry(next, 5 + round * 3))
+                    .await
+                    .unwrap();
+                next += 1;
+            }
+            let before = store.whole_gets_of(&index_key);
+            let cached = replicator.load_wal_offset_metadata_cached(1).await.unwrap();
+            if round > 0 {
+                assert_eq!(
+                    store.whole_gets_of(&index_key),
+                    before,
+                    "round {round}: a cached load after the first read the whole index"
+                );
+            }
+            let full = replicator.load_wal_offset_metadata(1).await.unwrap();
+            assert_eq!(*cached, full, "round {round}: the cached index differs from the full one");
+            assert_eq!(cached.len() as u64, next - 1, "round {round}");
+        }
+        assert!(
+            store.tail_reads_of(&index_key) >= 39,
+            "the cache is not what answered: {} tail reads",
+            store.tail_reads_of(&index_key)
+        );
+    }
+
+    /// A CACHE THAT DESCRIBES A DIFFERENT OBJECT IS DISCARDED, not extended.
+    ///
+    /// The index is replaced by a longer log, then a shorter one, then deleted. The longer case is
+    /// the one a length check alone would miss -- the object is bigger than what was consumed --
+    /// so the cached last frame has to be compared against what is actually there.
+    #[tokio::test]
+    async fn a_cached_offset_index_notices_a_replaced_shortened_or_deleted_index() {
+        async fn publish_log(entries: u64, width: usize) -> (tempfile::TempDir, Bytes) {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+            let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+                .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+            for wal_index in 1..=entries {
+                replicator
+                    .publish_wal_entry(indexed_entry(wal_index, width))
+                    .await
+                    .unwrap();
+            }
+            let blob = store
+                .get(&replicator.wal_offset_index_blob_key(1))
+                .await
+                .unwrap();
+            (dir, blob)
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(TailCountingStore::new(FileObjectStore::new(
+            dir.path().join("objects"),
+        )));
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+        let index_key = replicator.wal_offset_index_blob_key(1);
+        for wal_index in 1..=12u64 {
+            replicator
+                .publish_wal_entry(indexed_entry(wal_index, 10))
+                .await
+                .unwrap();
+        }
+        assert_eq!(replicator.load_wal_offset_metadata_cached(1).await.unwrap().len(), 12);
+
+        // LONGER, and different: 30 entries of another width.
+        let (_longer_dir, longer) = publish_log(30, 25).await;
+        store.put(&index_key, longer).await.unwrap();
+        let cached = replicator.load_wal_offset_metadata_cached(1).await.unwrap();
+        assert_eq!(*cached, replicator.load_wal_offset_metadata(1).await.unwrap());
+        assert_eq!(cached.len(), 30, "a longer replacement was not noticed");
+
+        // SHORTER than what was consumed.
+        let (_shorter_dir, shorter) = publish_log(5, 17).await;
+        store.put(&index_key, shorter).await.unwrap();
+        let cached = replicator.load_wal_offset_metadata_cached(1).await.unwrap();
+        assert_eq!(*cached, replicator.load_wal_offset_metadata(1).await.unwrap());
+        assert_eq!(cached.len(), 5, "a shorter replacement was not noticed");
+
+        // DELETED: an empty index, as the uncached load says.
+        store.delete(&index_key).await.unwrap();
+        let cached = replicator.load_wal_offset_metadata_cached(1).await.unwrap();
+        assert!(cached.is_empty(), "a deleted index still answered from the cache");
+        assert!(replicator.load_wal_offset_metadata(1).await.unwrap().is_empty());
+    }
+
+    /// A FOLLOWER THAT REPLAYS AFTER EVERY WRITE READS A FLAT AMOUNT FROM THE DOOR.
+    ///
+    /// Served by the real door. The index grows by a frame a write, so a replay that fetches it
+    /// whole costs more with every write: the bytes received per replay are compared early and
+    /// late in a log of 160, and the late figure may not be twice the early one. Whole reads give
+    /// about six times; the tail read gives one. The same test pins what `get_range_from` answers
+    /// the door for a tail, an empty tail, an offset past the end and a missing key, because the
+    /// 206, 416 and 404 arms of the override are only exercised against a server.
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
+    async fn a_follower_replaying_after_every_write_reads_a_flat_amount_from_the_door() {
+        let (_server, uri) = spawn_matrixobject_object_server();
+        let store = Arc::new(MatrixObjectHttpStore::new(&uri).unwrap());
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+        let dir = tempfile::tempdir().unwrap();
+        let follower = test_engine(dir.path(), "follower");
+        follower.load_shard(1);
+
+        let mut last_replayed = 0u64;
+        let mut received: Vec<u64> = Vec::new();
+        for wal_index in 1..=160u64 {
+            replicator
+                .publish_wal_entry(indexed_entry(wal_index, 12))
+                .await
+                .unwrap();
+            let before = store.wire_bytes_received();
+            let report = replicator
+                .replay_wal(1, last_replayed, &follower)
+                .await
+                .unwrap();
+            received.push(store.wire_bytes_received() - before);
+            last_replayed = report.last_wal_index;
+        }
+        assert_eq!(last_replayed, 160, "the follower must have replayed every entry");
+        let early: u64 = received[5..25].iter().sum();
+        let late: u64 = received[140..160].iter().sum();
+        println!("FOLLOWER_REPLAY_WIRE early_20={early} late_20={late}");
+        assert!(
+            late < early * 2,
+            "bytes received per replay grew with the log: {early} early, {late} late"
+        );
+
+        let key = replicator.wal_offset_index_blob_key(1);
+        let whole = store.get(&key).await.unwrap();
+        let length = whole.len() as u64;
+        assert_eq!(store.get_range_from(&key, 0).await.unwrap(), Some(whole.clone()));
+        assert_eq!(
+            store.get_range_from(&key, length - 10).await.unwrap(),
+            Some(whole.slice(whole.len() - 10..))
+        );
+        assert_eq!(
+            store.get_range_from(&key, length).await.unwrap(),
+            Some(Bytes::new()),
+            "an offset at the end is an empty tail"
+        );
+        assert_eq!(
+            store.get_range_from(&key, length + 1).await.unwrap(),
+            None,
+            "an offset past the end is an object that is not the one being followed"
+        );
+        assert!(matches!(
+            store.get_range_from("no/such/key", 0).await,
+            Err(ObjectStoreError::NotFound(_))
+        ));
     }
 
     /// A BATCH PUBLISHED BY A DEFAULT REPLICATOR IS ONE CONTAINER, AND IT REPLAYS.
