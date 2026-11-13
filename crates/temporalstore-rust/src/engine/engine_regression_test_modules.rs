@@ -527,3 +527,5 @@ mod a_ranked_cell_read_is_a_command;
 mod a_whole_container_read_shares_its_work;
 #[path = "tests/a_worked_example_of_cells.rs"]
 mod a_worked_example_of_cells;
+#[path = "tests/a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key.rs"]
+mod a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key;
