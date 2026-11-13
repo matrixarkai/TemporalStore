@@ -499,6 +499,19 @@ jobs:
             engine::window_aggregate::tests::the_shared_doors_answer_what_the_bodies_they_replaced_answered \
             engine::window_aggregate::tests::a_name_is_known_or_refused_and_the_table_is_case_insensitive \
             engine::window_aggregate::tests::edge_answers_are_the_documented_ones \
+            engine::cell_fan_in::tests::one_key_answers_what_the_single_key_read_answers \
+            engine::cell_fan_in::tests::keys_with_distinct_stamps_answer_what_one_key_holding_all_their_snapshots_answers \
+            engine::cell_fan_in::tests::a_fan_in_answers_what_an_independent_fold_answers \
+            engine::cell_fan_in::tests::the_union_ranks_a_member_that_no_single_key_ranks_first \
+            engine::cell_fan_in::tests::a_tie_between_keys_at_one_stamp_resolves_by_key_position_and_sum_max_min_ignore_it \
+            engine::cell_fan_in::tests::the_same_request_twice_agrees_and_the_key_order_changes_nothing_when_stamps_are_distinct \
+            engine::cell_fan_in::tests::the_window_applies_to_each_key_and_the_answer_counts_what_it_chose \
+            engine::cell_fan_in::tests::nothing_to_rank_is_an_empty_answer_and_a_malformed_key_is_refused_naming_its_position \
+            engine::cell_fan_in::tests::keys_in_a_fan_in_are_bounded_at_exactly_the_limit \
+            engine::cell_fan_in::tests::snapshots_in_a_fan_in_are_bounded_at_exactly_the_limit \
+            engine::cell_fan_in::tests::cells_in_a_fan_in_are_bounded_at_exactly_the_limit \
+            engine::cell_fan_in::tests::the_size_checks_accept_the_limit_and_refuse_one_past_it_by_themselves \
+            engine::cell_fan_in::tests::the_keys_count_is_a_wire_field_that_an_answer_without_it_reads_as_zero \
             engine::cell_rank::tests::each_score_orders_by_the_value_only_it_produces \
             engine::cell_rank::tests::a_wilson_bound_is_the_hand_computed_number_and_rewards_volume \
             engine::cell_rank::tests::an_undefined_score_is_counted_and_not_ranked \
@@ -927,6 +940,10 @@ jobs:
           # snapshots in a bucket and over 50 and over 4,000 members, because the cells are moved
           # and the fold buffers are sized once. It carries a control: the table of cloned cells an
           # obvious implementation builds must grow with both, or the probe cannot see them.
+          # a_fan_in_allocates_the_same_over_a_hundred_members_and_over_two_thousand pins that a ranked
+          # read over several keys allocates the same number of times over 100 and over 2,000 members
+          # (three keys of eight snapshots), because only the snapshot count sizes anything. It carries
+          # a control: the table of members an obvious implementation builds must grow with them.
           for t in \
             engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key \
             engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has \
@@ -940,6 +957,7 @@ jobs:
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_does_not_allocate_more_for_a_longer_key \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_write_does_not_allocate_per_cell \
             engine::cell_set::tests::probe::a_merge_request_costs_the_same_allocations_at_any_cell_count \
+            engine::cell_fan_in::tests::probe::a_fan_in_allocates_the_same_over_a_hundred_members_and_over_two_thousand \
             engine::cell_rank::tests::probe::a_ranked_read_allocates_the_same_over_a_hundred_members_and_over_twenty_thousand \
             engine::cell_rank::tests::options::probe::a_member_set_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
             engine::cell_rollup::tests::probe::a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many \

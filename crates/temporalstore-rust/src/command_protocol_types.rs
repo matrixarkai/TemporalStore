@@ -324,6 +324,12 @@ pub struct RankedCells {
     pub lane_columns: Vec<String>,
     /// Snapshots the window selected.
     pub snapshots: usize,
+    /// Keys that held at least one snapshot in the window: 1 for a read of one key that had
+    /// some, and for a read over several keys how many of them did. A read that names keys the
+    /// serving shard does not hold counts them here as absent, so a caller who named N keys and
+    /// got fewer back can tell the answer is partial.
+    #[serde(default)]
+    pub keys: usize,
     /// Members the selection kept whose score is undefined (a zero denominator, no trials): they
     /// are counted here and left out of `rows`.
     pub unscored: u64,

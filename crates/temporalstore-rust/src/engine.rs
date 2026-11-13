@@ -39,6 +39,10 @@ mod window_aggregate;
 mod cell_rank;
 mod cell_rank_options;
 mod cell_rank_read;
+// The ranked read over several keys that share one spec: a pure function over decoded snapshots.
+// Its command is a separate change, so nothing calls it yet.
+#[allow(dead_code)]
+mod cell_fan_in;
 // Rolling old snapshots up into coarser buckets and capping a label group: a pure function over
 // decoded snapshots, and the engine side that reads the series and plans the replacement.
 mod cell_rollup;

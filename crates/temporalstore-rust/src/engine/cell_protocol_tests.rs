@@ -408,6 +408,7 @@ fn an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time() {
         label_columns: vec!["slot".into()],
         lane_columns: vec!["impressions".into(), "clicks".into()],
         snapshots: 2,
+        keys: 1,
         unscored: 1,
         rows: vec![crate::types::RankedCellRow {
             member: CellMemberId::U64(9),
