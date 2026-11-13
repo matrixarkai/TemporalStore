@@ -271,7 +271,9 @@ pub(super) fn remove_obsolete_bucket_dump_install_markers(
     Ok(removed)
 }
 
-pub(super) fn bucket_dump_install_phase_counts(markers: &[BucketDumpInstallMarker]) -> (usize, usize, usize) {
+pub(super) fn bucket_dump_install_phase_counts(
+    markers: &[BucketDumpInstallMarker],
+) -> (usize, usize, usize) {
     let mut prepared = 0usize;
     let mut installed = 0usize;
     let mut unknown = 0usize;
@@ -376,7 +378,8 @@ where
 /// "safe" rather than as a mistake.
 pub(super) const FOLLOWER_PRECEDES_EVERY_MANIFEST: &str = "follower_cursor_precedes_every_manifest";
 /// The same for a raft snapshot reference.
-pub(super) const RAFT_SNAPSHOT_PRECEDES_EVERY_MANIFEST: &str = "raft_snapshot_precedes_every_manifest";
+pub(super) const RAFT_SNAPSHOT_PRECEDES_EVERY_MANIFEST: &str =
+    "raft_snapshot_precedes_every_manifest";
 
 #[track_caller]
 pub(super) fn bucket_dump_manifest_prune_plan_at(
@@ -686,10 +689,13 @@ pub(super) fn manifest_wal_floor_memoised(
         let cached = MANIFEST_WAL_FLOOR_MEMO.with(|memo| {
             let mut memo = memo.borrow_mut();
             memo.retain(|(manifest, _)| manifest.strong_count() > 0);
-            memo.iter().find(|(held, _)| std::sync::Weak::ptr_eq(held, &allocation))
+            memo.iter()
+                .find(|(held, _)| std::sync::Weak::ptr_eq(held, &allocation))
                 .map(|(_, floor)| *floor)
         });
-        if let Some(floor) = cached { return floor; }
+        if let Some(floor) = cached {
+            return floor;
+        }
     }
     let floor = compute();
     if enabled {
@@ -703,7 +709,8 @@ struct ManifestDigestEntry {
     /// Held, not just compared: the address is the key, and an address can only be reused once its
     /// allocation is freed, which this reference prevents for as long as the entry exists.
     manifest: std::sync::Arc<BucketDumpManifest>,
-    digests: Option<std::sync::Arc<BTreeMap<u32, super::storage_reporting::BucketFingerprintDigest>>>,
+    digests:
+        Option<std::sync::Arc<BTreeMap<u32, super::storage_reporting::BucketFingerprintDigest>>>,
 }
 
 /// THE FINGERPRINT DIGESTS OF MANIFESTS THIS THREAD HAS ALREADY DECODED.
@@ -844,6 +851,41 @@ pub(super) fn list_bucket_dump_manifests_shared_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
 ) -> Result<Vec<std::sync::Arc<BucketDumpManifest>>, std::io::Error> {
+    list_bucket_dump_manifests_with_policy_at(index_dir, shard_id, false)
+}
+
+// Slabs belong to the store, including dumps for shards that are not loaded.
+pub(super) fn list_reclaim_manifests_at(
+    index_dir: &std::path::Path,
+) -> Result<Vec<std::sync::Arc<BucketDumpManifest>>, std::io::Error> {
+    let entries = match fs::read_dir(index_dir.join("slot-dumps")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut manifests = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str().and_then(|name| name.strip_prefix("shard-")) else {
+            continue;
+        };
+        let shard_id = name
+            .parse::<ShardId>()
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        manifests.extend(list_bucket_dump_manifests_with_policy_at(
+            index_dir, shard_id, true,
+        )?);
+    }
+    Ok(manifests)
+}
+
+#[track_caller]
+fn list_bucket_dump_manifests_with_policy_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+    strict: bool,
+) -> Result<Vec<std::sync::Arc<BucketDumpManifest>>, std::io::Error> {
     MANIFEST_DIR_LISTINGS.with(|cell| cell.set(cell.get().saturating_add(1)));
     {
         let caller = std::panic::Location::caller();
@@ -854,11 +896,15 @@ pub(super) fn list_bucket_dump_manifests_shared_at(
     }
     let dir = bucket_dump_manifest_dir(index_dir, shard_id);
     let mut manifests = Vec::new();
-    if !dir.exists() {
-        return Ok(manifests);
-    }
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if !strict && error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(manifests)
+        }
+        Err(error) => return Err(error),
+    };
     let mut present = std::collections::BTreeSet::new();
-    for entry in fs::read_dir(&dir)? {
+    for entry in entries {
         let entry = entry?;
         let path = entry.path();
         if !path
@@ -895,16 +941,20 @@ pub(super) fn list_bucket_dump_manifests_shared_at(
         // files and reject checksum mismatches, keeping every valid manifest.
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
+            Err(error) if strict => return Err(error),
             Err(_) => continue,
         };
         MANIFEST_FILE_READS.with(|cell| cell.set(cell.get().saturating_add(1)));
-        MANIFEST_BYTES_READ
-            .with(|cell| cell.set(cell.get().saturating_add(bytes.len() as u64)));
+        MANIFEST_BYTES_READ.with(|cell| cell.set(cell.get().saturating_add(bytes.len() as u64)));
         if crate::engine::shard_write_guard::any_shard_guard_held() {
             MANIFEST_READS_UNDER_GUARD.with(|cell| cell.set(cell.get().saturating_add(1)));
         }
-        let Ok(mut manifest) = decode_bucket_dump_manifest(&bytes) else {
-            continue;
+        let mut manifest = match decode_bucket_dump_manifest(&bytes) {
+            Ok(manifest) => manifest,
+            Err(error) if strict => {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            }
+            Err(_) => continue,
         };
         if !manifest.checksum.is_empty() {
             // IN PLACE. The value is owned here, so the checksum payload can be produced by
@@ -913,6 +963,12 @@ pub(super) fn list_bucket_dump_manifests_shared_at(
             // bucket summary once per manifest per listing.
             match bucket_dump_manifest_checksum_in_place(&mut manifest) {
                 Ok(expected) if expected == manifest.checksum => {}
+                _ if strict => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "dump manifest checksum mismatch",
+                    ))
+                }
                 _ => continue,
             }
         }
@@ -1053,7 +1109,9 @@ pub(super) fn durable_recovery_bucket_dump_manifest_at(
 /// listing, of which one maintenance round takes many. Callers holding an owned manifest should
 /// use `bucket_dump_manifest_checksum_in_place`; this borrow-only entry point keeps the copy
 /// because there is nothing else it can do with a shared reference.
-pub(super) fn bucket_dump_manifest_checksum(manifest: &BucketDumpManifest) -> Result<String, Status> {
+pub(super) fn bucket_dump_manifest_checksum(
+    manifest: &BucketDumpManifest,
+) -> Result<String, Status> {
     let mut payload = manifest.clone();
     MANIFEST_CHECKSUM_CLONES.with(|cell| cell.set(cell.get().saturating_add(1)));
     bucket_dump_manifest_checksum_in_place(&mut payload)
@@ -1081,9 +1139,7 @@ pub(super) fn bucket_dump_manifest_checksum_in_place(
     result
 }
 
-fn finish_bucket_dump_manifest_checksum(
-    payload: &BucketDumpManifest,
-) -> Result<String, Status> {
+fn finish_bucket_dump_manifest_checksum(payload: &BucketDumpManifest) -> Result<String, Status> {
     MANIFEST_CHECKSUM_SERIALIZES.with(|cell| cell.set(cell.get().saturating_add(1)));
     let (digest, hashed) = bucket_dump_protobuf_digest(payload);
     MANIFEST_CHECKSUM_BYTES.with(|cell| cell.set(cell.get().saturating_add(hashed)));

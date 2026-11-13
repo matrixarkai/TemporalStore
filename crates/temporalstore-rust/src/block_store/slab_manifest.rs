@@ -10,6 +10,10 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(test)]
+#[path = "quarantine_restart_tests.rs"]
+mod quarantine_restart_tests;
+
 /// Every `write(2)` the manifest file is handed, counted for the life of the process.
 ///
 /// COUNTED RATHER THAN TIMED, for the reason `directory_fsyncs` is: how many syscalls one persist
@@ -116,7 +120,7 @@ pub(super) fn rebuild_slab_manifest_at(
             .entry(delayed.block_slab_id)
             .and_modify(|slab| {
                 slab.state = BlockStoreSlabState::DelayedDestroy;
-                slab.updated_unix_ms = delayed.modified_unix_ms;
+                slab.updated_unix_ms = Some(now_unix_ms());
                 slab.physical_bytes = delayed.physical_bytes;
             })
             .or_insert(BlockStoreSlabDescriptor {
@@ -126,7 +130,7 @@ pub(super) fn rebuild_slab_manifest_at(
                 physical_bytes: delayed.physical_bytes,
                 logical_bytes: 0,
                 created_unix_ms: delayed.modified_unix_ms,
-                updated_unix_ms: delayed.modified_unix_ms,
+                updated_unix_ms: Some(now_unix_ms()),
                 first_block_id: None,
                 last_block_id: None,
                 readable_prefix_physical_bytes: 0,
@@ -375,7 +379,13 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                     .as_ref()
                     .and_then(|slab| slab.created_unix_ms)
                     .or(report.modified_unix_ms),
-                updated_unix_ms: report.modified_unix_ms,
+                // A rename preserves the last append's mtime, not the quarantine arrival.
+                // Keep a durable arrival stamp, or restart the grace window if it was lost.
+                updated_unix_ms: old
+                    .as_ref()
+                    .filter(|slab| slab.state == BlockStoreSlabState::DelayedDestroy)
+                    .and_then(|slab| slab.updated_unix_ms)
+                    .or_else(|| Some(now_unix_ms())),
                 first_block_id: old.as_ref().and_then(|slab| slab.first_block_id),
                 last_block_id: old.as_ref().and_then(|slab| slab.last_block_id),
                 readable_prefix_physical_bytes: 0,

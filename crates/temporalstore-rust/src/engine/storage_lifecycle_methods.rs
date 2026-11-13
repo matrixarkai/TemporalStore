@@ -8,6 +8,10 @@ use super::*;
 #[path = "lifecycle_report_work_tests.rs"]
 mod lifecycle_report_work_tests;
 
+#[cfg(test)]
+#[path = "reclaim_manifest_tests.rs"]
+mod reclaim_manifest_tests;
+
 /// How many dirty-object keys the dump drain has looked at, across every call.
 ///
 /// The drain's cost is not visible from outside -- it is a closure inside a `retain` -- and
@@ -636,8 +640,9 @@ impl TemporalEngine {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let manifests =
-            list_bucket_dump_manifests_shared_at(&self.index_dir, shard_id).unwrap_or_default();
+        let manifest_scan = list_reclaim_manifests_at(&self.index_dir);
+        let manifest_scan_failed = manifest_scan.is_err();
+        let manifests = manifest_scan.unwrap_or_default();
         let mut manifest_block_slab_ids = manifests
             .iter()
             .flat_map(|manifest| manifest.block_slab_ids.iter().copied())
@@ -662,6 +667,14 @@ impl TemporalEngine {
         let now = now_ms();
         let mut dependency_blocks = Vec::new();
         for block_slab_id in &candidate_block_slab_ids {
+            if manifest_scan_failed {
+                dependency_blocks.push(StorageBlockGcDependencyBlock {
+                    block_slab_id: *block_slab_id,
+                    dependency: "dump_manifest_unreadable".to_string(),
+                    reason: "retained dump ownership could not be verified".to_string(),
+                    ..StorageBlockGcDependencyBlock::default()
+                });
+            }
             if live_set.contains(block_slab_id) {
                 dependency_blocks.push(StorageBlockGcDependencyBlock {
                     block_slab_id: *block_slab_id,
@@ -1130,20 +1143,54 @@ impl TemporalEngine {
             return Default::default();
         }
         let mut live_block_slab_ids = self.live_block_slab_ids_all_shards();
-        for manifest in
-            list_bucket_dump_manifests_shared_at(&self.index_dir, request.shard_id)
-                .unwrap_or_default()
-        {
+        let manifests = match list_reclaim_manifests_at(&self.index_dir) {
+            Ok(manifests) => manifests,
+            // Recovery can skip damaged dumps; physical deletion cannot assume they own nothing.
+            Err(error) => {
+                tracing::warn!(shard_id = request.shard_id, %error, "reclaim deferred: dump ownership unavailable");
+                return Default::default();
+            }
+        };
+        for manifest in manifests {
             live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
+        }
+        let mut selected = request
+            .purge_delayed_destroy_slab_ids
+            .as_ref()
+            .map(|ids| ids.iter().copied().collect::<BTreeSet<_>>());
+        // Direct lifecycle calls must honor the same retention owners as scheduled cycles.
+        if !request.block_gc_shared_store_cursors.is_empty()
+            || !request.block_gc_raft_snapshot_refs.is_empty()
+            || request.block_gc_checkpoint_floor_slab_id.is_some()
+            || request.block_gc_raft_install_floor_slab_id.is_some()
+        {
+            let candidates = match self.block_store.delayed_destroy_slab_ids() {
+                Ok(ids) => ids,
+                Err(_) => return Default::default(),
+            };
+            let dependencies = self.storage_block_gc_dependency_plan(
+                request.shard_id,
+                candidates,
+                request.block_gc_shared_store_cursors.clone(),
+                request.block_gc_raft_snapshot_refs.clone(),
+                request.block_gc_checkpoint_floor_slab_id,
+                request.block_gc_raft_install_floor_slab_id,
+                0,
+            );
+            // Live slabs are restored, never deleted, by the final store-level check.
+            let allowed = dependencies.reclaimable_block_slab_ids.into_iter()
+                .chain(live_block_slab_ids.iter().copied()).collect::<BTreeSet<_>>();
+            selected = Some(match selected {
+                Some(selected) => selected.intersection(&allowed).copied().collect(),
+                None => allowed,
+            });
         }
         self.block_store
             .purge_delayed_destroy_slabs_selected(
-                crate::block_store::DELAYED_DESTROY_MIN_AGE_MS,
+                request.block_gc_delayed_destroy_grace_ms
+                    .max(crate::block_store::DELAYED_DESTROY_MIN_AGE_MS),
                 live_block_slab_ids,
-                request
-                    .purge_delayed_destroy_slab_ids
-                    .as_ref()
-                    .map(|ids| ids.iter().copied().collect::<BTreeSet<_>>()),
+                selected,
             )
             .unwrap_or_default()
     }
