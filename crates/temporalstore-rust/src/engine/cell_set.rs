@@ -78,7 +78,7 @@ pub(crate) fn within(what: &str, got: usize, limit: usize) -> Result<(), String>
 }
 
 /// `1..=limit`.
-fn within_nonzero(what: &str, got: usize, limit: usize) -> Result<(), String> {
+pub(crate) fn within_nonzero(what: &str, got: usize, limit: usize) -> Result<(), String> {
     if got == 0 {
         return Err(format!("{what} must be at least 1"));
     }

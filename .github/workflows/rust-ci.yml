@@ -546,6 +546,25 @@ jobs:
             engine::cell_set::tests::merging_applies_each_lane_reducer_per_member_and_replaces_labels \
             engine::cell_set::tests::sorted_u64_members_are_stored_as_distances_and_cost_one_byte_each \
             engine::cell_set::tests::the_version_gate_accepts_at_exactly_the_first_additive_version_and_refuses_below \
+            engine::cell_rollup::tests::a_rollup_equals_an_independent_fold_for_every_bucket_size_and_cutoff \
+            engine::cell_rollup::tests::each_lane_combines_oldest_first_and_a_count_is_the_sum_of_counts_not_the_number_of_snapshots \
+            engine::cell_rollup::tests::members_that_meet_merge_and_members_that_do_not_pass_through_in_order \
+            engine::cell_rollup::tests::sums_and_counts_saturate_and_never_wrap \
+            engine::cell_rollup::tests::rolling_a_rolled_result_again_changes_no_byte_and_the_same_request_twice_agrees \
+            engine::cell_rollup::tests::a_snapshot_exactly_at_the_cutoff_is_not_rolled_and_one_below_it_is \
+            engine::cell_rollup::tests::a_late_snapshot_in_an_already_rolled_bucket_folds_in_as_the_newest_contribution \
+            engine::cell_rollup::tests::a_decoded_replay_reaches_the_bytes_the_first_run_reached \
+            engine::cell_rollup::tests::nothing_to_roll_returns_the_snapshots_unchanged \
+            engine::cell_rollup::tests::a_cap_keeps_the_best_of_each_group_breaks_ties_by_member_and_reports_the_drops \
+            engine::cell_rollup::tests::a_cell_whose_score_is_undefined_ranks_after_every_scored_cell \
+            engine::cell_rollup::tests::the_cap_runs_on_the_folded_bucket_not_on_the_snapshots_that_make_it \
+            engine::cell_rollup::tests::a_snapshot_the_cap_does_not_reach_keeps_every_cell \
+            engine::cell_rollup::tests::a_bucket_width_is_bounded_below_at_exactly_one \
+            engine::cell_rollup::tests::keep_is_bounded_at_one_below_and_the_snapshot_limit_above \
+            engine::cell_rollup::tests::snapshots_below_the_cutoff_are_bounded_at_exactly_the_limit \
+            engine::cell_rollup::tests::a_bucket_over_the_snapshot_cell_limit_is_refused_and_one_at_the_limit_is_folded \
+            engine::cell_rollup::tests::a_request_the_key_cannot_serve_is_refused_naming_what_was_wrong \
+            engine::cell_rollup::tests::a_bytes_member_cannot_be_scored_by_member_and_is_otherwise_rolled_like_any_other \
             engine::tests::what_a_high_cardinality_distinct_holds::an_unbounded_distinct_holds_every_member_and_the_bound_holds_a_fixed_sketch \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::an_ordered_read_answers_by_score_whatever_the_window \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::a_score_update_reorders_an_ordered_read \
@@ -830,6 +849,11 @@ jobs:
           # built in one allocation and that a cell costs the same allocations at a 16-byte and a
           # 256-byte member. Each carries a control: the byte count must grow with the size, or
           # the probe cannot see the dimension it claims is flat.
+          # a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many pins that
+          # a rollup of old cell snapshots allocates the same number of times over 4 and over 64
+          # snapshots in a bucket and over 50 and over 4,000 members, because the cells are moved
+          # and the fold buffers are sized once. It carries a control: the table of cloned cells an
+          # obvious implementation builds must grow with both, or the probe cannot see them.
           for t in \
             engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key \
             engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has \
@@ -844,6 +868,7 @@ jobs:
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_write_does_not_allocate_per_cell \
             engine::cell_set::tests::probe::a_merge_request_costs_the_same_allocations_at_any_cell_count \
             engine::cell_rank::tests::probe::a_ranked_read_allocates_the_same_over_a_hundred_members_and_over_twenty_thousand \
+            engine::cell_rollup::tests::probe::a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many \
             engine::cell_set::tests::probe::a_cell_costs_the_same_allocations_at_any_member_size ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \

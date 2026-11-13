@@ -94,7 +94,9 @@ impl Predicate {
     }
 }
 
-enum Scorer {
+/// A [`CellScore`] with every name resolved to a lane position. The ranked read and the capped
+/// group of a rollup score a cell by this one type.
+pub(crate) enum Scorer {
     Lane(usize),
     Ratio(usize, usize),
     Wilson(usize, usize, f64),
@@ -171,7 +173,12 @@ pub(crate) fn validate_spec(spec: &CellRankSpec) -> Result<(), String> {
         }
         _ => {}
     }
-    match &spec.score {
+    validate_score(&spec.score)
+}
+
+/// The checks on a score that need no header.
+pub(crate) fn validate_score(score: &CellScore) -> Result<(), String> {
+    match score {
         CellScore::Wilson { z, .. } if !z.is_finite() || *z < 0.0 => {
             return Err(format!("wilson z must be finite and not negative, got {z}"))
         }
@@ -192,17 +199,10 @@ pub(crate) fn validate_spec(spec: &CellRankSpec) -> Result<(), String> {
     Ok(())
 }
 
-impl Plan {
-    /// Checks `spec` against `header`. Every refusal names what was wrong; nothing is read.
-    pub(crate) fn compile(header: &CellHeader, spec: &CellRankSpec) -> Result<Plan, String> {
-        validate_spec(spec)?;
-
-        let mut predicates = Vec::with_capacity(spec.filters.len());
-        for FeatureFilter { field, op, value } in &spec.filters {
-            predicates.push(Predicate { target: resolve(header, field)?, op: op.clone(), value: *value });
-        }
-
-        let scorer = match &spec.score {
+impl Scorer {
+    /// Resolves the names of `score` against `header`.
+    pub(crate) fn compile(header: &CellHeader, score: &CellScore) -> Result<Scorer, String> {
+        Ok(match score {
             CellScore::Lane { lane } => Scorer::Lane(lane_named(header, lane)?),
             CellScore::Ratio { numerator, denominator } => {
                 Scorer::Ratio(lane_named(header, numerator)?, lane_named(header, denominator)?)
@@ -216,7 +216,21 @@ impl Plan {
                 let indexes = lanes.iter().map(|name| lane_named(header, name)).collect::<Result<Vec<_>, _>>()?;
                 Scorer::Weighted(indexes, weights.clone())
             }
-        };
+        })
+    }
+}
+
+impl Plan {
+    /// Checks `spec` against `header`. Every refusal names what was wrong; nothing is read.
+    pub(crate) fn compile(header: &CellHeader, spec: &CellRankSpec) -> Result<Plan, String> {
+        validate_spec(spec)?;
+
+        let mut predicates = Vec::with_capacity(spec.filters.len());
+        for FeatureFilter { field, op, value } in &spec.filters {
+            predicates.push(Predicate { target: resolve(header, field)?, op: op.clone(), value: *value });
+        }
+
+        let scorer = Scorer::compile(header, &spec.score)?;
 
         let (mut labels_out, mut lanes_out) = (Vec::new(), Vec::new());
         if spec.project.is_empty() {
@@ -257,13 +271,13 @@ impl Plan {
 
 /// An ordering value. Within one query every key is the same variant.
 #[derive(Clone, Copy, Debug)]
-enum Key {
+pub(crate) enum Key {
     Int(i128),
     Float(f64),
 }
 
 impl Key {
-    fn cmp(&self, other: &Key) -> Ordering {
+    pub(crate) fn cmp(&self, other: &Key) -> Ordering {
         match (self, other) {
             (Key::Int(a), Key::Int(b)) => a.cmp(b),
             (Key::Float(a), Key::Float(b)) => a.total_cmp(b),
@@ -283,7 +297,14 @@ impl Key {
 impl Plan {
     /// `None`: the score is undefined for this member (counted, not ranked).
     fn score(&self, member: &Member, last_ms: u64, lanes: &[i64]) -> Result<Option<Key>, String> {
-        Ok(match &self.scorer {
+        self.scorer.score(member, last_ms, lanes)
+    }
+}
+
+impl Scorer {
+    /// The ordering value of one member's `lanes`. `None`: the score is undefined for it.
+    pub(crate) fn score(&self, member: &Member, last_ms: u64, lanes: &[i64]) -> Result<Option<Key>, String> {
+        Ok(match self {
             Scorer::Lane(i) => Some(Key::Int(i128::from(lanes[*i]))),
             Scorer::Ratio(n, d) => ratio(lanes[*n], lanes[*d]).map(Key::Float),
             Scorer::Wilson(s, t, z) => {
