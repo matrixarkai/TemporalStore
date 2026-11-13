@@ -11971,3 +11971,54 @@ fn the_block_gc_budget_reaches_the_periodic_loop() {
          one candidate per round."
     );
 }
+
+/// The all-shards scheduler throws each round's report away, so what a round declined or how long
+/// it took reached nobody on a shipped server. The runtime keeps the sums: skipped stages, time
+/// in rounds (total and longest) and rounds that outlasted the interval.
+#[test]
+fn the_runtime_counts_skipped_stages_round_time_and_overruns_across_rounds() {
+    let engine = TemporalEngine::default();
+    for index in 0..32 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("counted-{index:03}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let before = runtime.stats();
+    assert_eq!(before.storage_manager_stage_skips, 0);
+    assert_eq!(before.storage_manager_round_us_total, 0);
+
+    let mut skipped = 0u64;
+    let mut slowest_us = 0u64;
+    for _ in 0..3 {
+        let report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        skipped += report.skipped_stages.len() as u64;
+        slowest_us = slowest_us.max(report.duration_us);
+    }
+    let stats = runtime.stats();
+    assert!(skipped > 0, "a quiet shard must decline some stage, or this test says nothing");
+    assert_eq!(stats.storage_manager_stage_skips, skipped);
+    assert!(stats.storage_manager_round_us_total > 0);
+    assert!(stats.storage_manager_round_us_max >= slowest_us.min(1));
+    assert!(stats.storage_manager_round_us_max <= stats.storage_manager_round_us_total);
+    assert_eq!(stats.storage_manager_failed_rounds, 0, "a clean round is not a failed one");
+
+    // A round that fits in its interval is not an overrun; one that outlasts it is.
+    let interval = std::time::Duration::from_millis(30);
+    runtime.note_round_overrun(std::time::Duration::from_millis(29), interval);
+    assert_eq!(runtime.stats().storage_manager_overrun_rounds, 0);
+    runtime.note_round_overrun(std::time::Duration::from_millis(31), interval);
+    runtime.note_round_overrun(std::time::Duration::from_secs(52), interval);
+    assert_eq!(runtime.stats().storage_manager_overrun_rounds, 2);
+}

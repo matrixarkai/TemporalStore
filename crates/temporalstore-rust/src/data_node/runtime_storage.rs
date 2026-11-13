@@ -1717,6 +1717,17 @@ impl DataNodeRuntime {
             stats.storage_manager_runs += 1;
             stats.storage_manager_loops += 1;
             stats.storage_manager_last_shard_id = Some(shard_id);
+            // What this round declined to do and whether it failed, kept on the runtime: the
+            // all-shards scheduler throws the report away, and before this the only trace of a
+            // failed or skipped stage on a shipped server was a log line.
+            stats.storage_manager_stage_skips += skipped_stages.len() as u64;
+            if !status.ok {
+                stats.storage_manager_failed_rounds += 1;
+            }
+            let round_us = spans.started.elapsed().as_micros() as u64;
+            stats.storage_manager_round_us_total =
+                stats.storage_manager_round_us_total.saturating_add(round_us);
+            stats.storage_manager_round_us_max = stats.storage_manager_round_us_max.max(round_us);
         }
 
         // Compact execution reports above carry the dump manifest needed by index-GC fences.
@@ -1774,13 +1785,28 @@ impl DataNodeRuntime {
                     if scheduler_stop.load(Ordering::Relaxed) {
                         break;
                     }
+                    let started = std::time::Instant::now();
                     runtime.run_storage_manager_once_with_report_details(shard_id, options.clone(), false);
+                    runtime.note_round_overrun(started.elapsed(), sleep_interval);
                 }
             }
         });
         StorageLifecycleScheduler {
             stop,
             handle: Some(handle),
+        }
+    }
+
+    /// A round that outlasts the interval means the loop never idles: the next round starts the
+    /// moment the sleep after it ends, and the period is `round + interval`, not `interval`.
+    /// Counted so that state is a number an operator can read.
+    pub(crate) fn note_round_overrun(&self, took: Duration, interval: Duration) {
+        if took > interval {
+            self.inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_overrun_rounds += 1;
         }
     }
 
@@ -1800,7 +1826,9 @@ impl DataNodeRuntime {
                 if scheduler_stop.load(Ordering::Relaxed) {
                     break;
                 }
+                let started = std::time::Instant::now();
                 runtime.run_storage_manager_once_with_report_details(shard_id, options.clone(), false);
+                runtime.note_round_overrun(started.elapsed(), sleep_interval);
             }
         });
         StorageLifecycleScheduler {

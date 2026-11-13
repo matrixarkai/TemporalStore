@@ -209,6 +209,22 @@ pub struct DataNodeRuntimeStats {
     /// completed, so a node whose dump keeps failing showed no dumps and no error.
     #[serde(default)]
     pub storage_dump_failures: u64,
+    /// Rounds that ended with a non-ok status (a compaction or block-GC stage reported failure).
+    /// The all-shards scheduler used to drop the round report, so this was visible nowhere.
+    #[serde(default)]
+    pub storage_manager_failed_rounds: u64,
+    /// Stages a round declined to run (disabled, no pressure, not leading, nothing to relocate),
+    /// summed over rounds, so a stage that never runs shows up as a number and not as silence.
+    #[serde(default)]
+    pub storage_manager_stage_skips: u64,
+    /// Rounds that took longer than the loop interval, so the loop never idled.
+    #[serde(default)]
+    pub storage_manager_overrun_rounds: u64,
+    /// Wall time spent inside rounds, and the longest single round, in microseconds.
+    #[serde(default)]
+    pub storage_manager_round_us_total: u64,
+    #[serde(default)]
+    pub storage_manager_round_us_max: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2164,6 +2180,11 @@ struct MutableRuntimeStats {
     storage_manager_compact_runs: u64,
     storage_manager_index_gc_runs: u64,
     storage_manager_evict_runs: u64,
+    storage_manager_failed_rounds: u64,
+    storage_manager_stage_skips: u64,
+    storage_manager_overrun_rounds: u64,
+    storage_manager_round_us_total: u64,
+    storage_manager_round_us_max: u64,
 }
 
 #[derive(Debug)]
