@@ -66,7 +66,7 @@ fn load_on(engine: &TemporalEngine) {
 fn blocks_and_ordinals(engine: &TemporalEngine, object_key: &str) -> (usize, Vec<u64>) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_homes(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup, &shard.bucket_index.hashes, &shard.bucket_index.sets, &shard.bucket_index.zsets, &shard.bucket_index.lists);
     let mut blocks = std::collections::BTreeSet::new();
     let mut ordinals = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -100,7 +100,7 @@ fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
     // `identity_of` RATHER THAN THE LIVE INVERSION, because this listing is the one that
     // includes tombstones -- its rows print `deleted=` -- and a deleted block is named by the
     // bucket's removal row instead of by the object lookup.
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_homes(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup, &shard.bucket_index.hashes, &shard.bucket_index.sets, &shard.bucket_index.zsets, &shard.bucket_index.lists);
     let mut rows = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
@@ -437,7 +437,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
 fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_homes(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup, &shard.bucket_index.hashes, &shard.bucket_index.sets, &shard.bucket_index.zsets, &shard.bucket_index.lists);
     let mut ordinals = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
@@ -612,7 +612,7 @@ fn an_element_name_less_hash_entry_is_still_answered_correctly_by_get_len_and_in
     let live_blocks = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+        let keys = crate::engine::state::BlockKeysByPosition::from_homes(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup, &shard.bucket_index.hashes, &shard.bucket_index.sets, &shard.bucket_index.zsets, &shard.bucket_index.lists);
         shard
             .bucket_index
             .bucket_map
@@ -699,7 +699,7 @@ fn an_element_name_less_hash_entry_is_still_answered_correctly_by_get_len_and_in
 fn named_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_homes(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup, &shard.bucket_index.hashes, &shard.bucket_index.sets, &shard.bucket_index.zsets, &shard.bucket_index.lists);
     shard
         .bucket_index
         .bucket_map

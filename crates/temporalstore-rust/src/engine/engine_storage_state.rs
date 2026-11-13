@@ -1486,6 +1486,117 @@ impl<'a> BlockKeysByPosition<'a> {
     /// rebuild in `storage_bucket_internals` holds `bucket_map` mutably while this inversion is
     /// alive, and only a caller naming the fields can split those borrows apart. Both fields here
     /// are disjoint from `bucket_map`, so that still works.
+    /// THE INVERSION OVER ALL THREE HOMES, FROM DISJOINT FIELD BORROWS.
+    ///
+    /// `CoreIndex::block_identities` is the convenient form and borrows the WHOLE index, which
+    /// several maintenance paths cannot afford: they destructure it so `bucket_map` can be read
+    /// while a container map is borrowed mutably, and `&self` would hold all of it. Taking one
+    /// parameter per home lets those callers keep the borrows disjoint, which is the only reason
+    /// this exists beside the method.
+    ///
+    /// All six homes are fields of `CoreIndex`. While the four container maps were siblings of
+    /// `bucket_index` on `ShardState` this doc named a free `block_identities_of(shard)` that took
+    /// the whole shard to reach them; that function is gone with its reason.
+    pub(super) fn from_homes<H, S, Z, L>(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        hashes: &'a super::recorded_map::RecordedMap<H>,
+        sets: &'a super::recorded_map::RecordedMap<S>,
+        zsets: &'a super::recorded_map::RecordedMap<Z>,
+        lists: &'a super::recorded_map::RecordedMap<L>,
+    ) -> Self
+    where
+        H: super::recorded_map::RecordedKind,
+        S: super::recorded_map::RecordedKind,
+        Z: super::recorded_map::RecordedKind,
+        L: super::recorded_map::RecordedKind,
+    {
+        let mut keys = Self::from_parts(objects, lookup);
+        for (object_key, refs) in hashes.rows_holding_refs() {
+            keys.file_identity(H::KIND, object_key, refs);
+        }
+        for (object_key, refs) in sets.rows_holding_refs() {
+            keys.file_identity(S::KIND, object_key, refs);
+        }
+        for (object_key, refs) in zsets.rows_holding_refs() {
+            keys.file_identity(Z::KIND, object_key, refs);
+        }
+        for (object_key, refs) in lists.rows_holding_refs() {
+            keys.file_identity(L::KIND, object_key, refs);
+        }
+        keys
+    }
+
+    /// THE RESTRICTED INVERSION OVER ALL THREE HOMES: [`Self::from_parts_for_keys`] plus the rows of
+    /// the four container maps, for the same named objects and nothing else.
+    ///
+    /// The restriction is what makes it cheap and the row home is what makes it right: a caller that
+    /// asks only about a hash's blocks and is handed an inversion without the row home reads "no
+    /// block of this object" for an object whose every ref sits on its row.
+    pub(super) fn from_homes_for_keys<'k, H, S, Z, L>(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        hashes: &'a super::recorded_map::RecordedMap<H>,
+        sets: &'a super::recorded_map::RecordedMap<S>,
+        zsets: &'a super::recorded_map::RecordedMap<Z>,
+        lists: &'a super::recorded_map::RecordedMap<L>,
+        keys: impl IntoIterator<Item = &'k str>,
+    ) -> Self
+    where
+        H: super::recorded_map::RecordedKind,
+        S: super::recorded_map::RecordedKind,
+        Z: super::recorded_map::RecordedKind,
+        L: super::recorded_map::RecordedKind,
+    {
+        // Walked twice -- once by the keyed whole-index inversion, once for the rows -- so the keys
+        // are held; there are as many as the command touched and no more.
+        let keys: Vec<&'k str> = keys.into_iter().collect();
+        let mut inversion = Self::from_parts_for_keys(objects, lookup, keys.iter().copied());
+        for key in keys {
+            if let Some((object_key, refs)) = hashes.refs_with_key(key) {
+                inversion.file_identity(H::KIND, object_key, refs);
+            }
+            if let Some((object_key, refs)) = sets.refs_with_key(key) {
+                inversion.file_identity(S::KIND, object_key, refs);
+            }
+            if let Some((object_key, refs)) = zsets.refs_with_key(key) {
+                inversion.file_identity(Z::KIND, object_key, refs);
+            }
+            if let Some((object_key, refs)) = lists.refs_with_key(key) {
+                inversion.file_identity(L::KIND, object_key, refs);
+            }
+        }
+        inversion
+    }
+
+    /// FILE ONE OBJECT'S REFS INTO THE INVERSION, so a home outside `CoreIndex` can be walked in.
+    ///
+    /// `from_parts` walks the two homes it can see. This is how the third — a `RecordedMap` row,
+    /// which is a sibling of `bucket_index` — gets filed, from a caller that holds the whole
+    /// `ShardState`. Same insert the builder's own closure does, so the three homes cannot disagree
+    /// about what filing means.
+    pub(super) fn file_identity(
+        &mut self,
+        model_id: &'a str,
+        object_key: &'a Arc<str>,
+        refs: &'a BlockRefs,
+    ) {
+        for block_ref in refs.iter() {
+            self.by_position.insert(
+                (block_ref.routing_bucket, block_ref.block_ref_key),
+                (model_id, object_key),
+            );
+            self.by_handle
+                .insert(block_ref.block_ref_key, (model_id, object_key));
+        }
+    }
+
     pub(super) fn from_parts(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
@@ -1494,6 +1605,46 @@ impl<'a> BlockKeysByPosition<'a> {
         lookup: &'a ObjectBlockLookup,
     ) -> Self {
         Self::from_parts_filtered(objects, lookup, None)
+    }
+
+    /// THE PER-BUCKET INVERSION OVER ALL THREE HOMES: [`Self::from_parts_for_bucket`] plus the rows of
+    /// the four container maps, restricted to the same bucket.
+    pub(super) fn from_homes_for_bucket<H, S, Z, L>(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        hashes: &'a super::recorded_map::RecordedMap<H>,
+        sets: &'a super::recorded_map::RecordedMap<S>,
+        zsets: &'a super::recorded_map::RecordedMap<Z>,
+        lists: &'a super::recorded_map::RecordedMap<L>,
+        routing_bucket: u32,
+    ) -> Self
+    where
+        H: super::recorded_map::RecordedKind,
+        S: super::recorded_map::RecordedKind,
+        Z: super::recorded_map::RecordedKind,
+        L: super::recorded_map::RecordedKind,
+    {
+        let mut inversion = Self::from_parts_for_bucket(objects, lookup, routing_bucket);
+        let mut file_rows = |kind: &'a str, rows: &mut dyn Iterator<Item = (&'a ModelKey, &'a BlockRefs)>| {
+            for (object_key, refs) in rows {
+                for block_ref in refs.iter() {
+                    if block_ref.routing_bucket == routing_bucket {
+                        inversion.by_position.insert(
+                            (block_ref.routing_bucket, block_ref.block_ref_key),
+                            (kind, object_key),
+                        );
+                    }
+                }
+            }
+        };
+        file_rows(H::KIND, &mut hashes.rows_holding_refs());
+        file_rows(S::KIND, &mut sets.rows_holding_refs());
+        file_rows(Z::KIND, &mut zsets.rows_holding_refs());
+        file_rows(L::KIND, &mut lists.rows_holding_refs());
+        inversion
     }
 
     pub(super) fn from_parts_for_bucket(
@@ -8179,6 +8330,29 @@ impl CoreIndex {
             self.slot_refs_mut(block.model_id().as_str(), object_key.as_ref())
                 .map(|slot| slot.file_ref(value))
                 .unwrap_or(false)
+        } else if let Some(added) = {
+            // STAGED REFS MOVE ONTO THE ROW BEFORE A NEW ONE IS FILED THERE. A path that installs a
+            // row without going through the install that adopts (a bulk write that creates the row
+            // itself) leaves the object's first refs in the lookup; filing the next one onto the
+            // row would then leave refs in two homes, and a first-found reader would see only the
+            // lookup's. Doing it here makes the single home hold for every install path.
+            let kind = block.model_id();
+            if let Some(staged) = self.object_block_lookup.remove(kind.as_str(), object_key.as_ref()) {
+                self.merge_row_refs(kind.as_str(), object_key.as_ref(), staged.clone());
+                if !self.row_exists(kind.as_str(), object_key.as_ref()) {
+                    // No row after all: put them back where they were.
+                    for staged_ref in staged.iter() {
+                        let model: Arc<str> = Arc::from(kind.as_str());
+                        self.object_block_lookup.file(&model, object_key, staged_ref.clone());
+                    }
+                }
+            }
+            self.file_row_ref(kind.as_str(), object_key.as_ref(), value.clone())
+        } {
+            // A CONTAINER OBJECT WITH A ROW FILES ON THE ROW, so it never has refs in two homes. A
+            // second home would be read first-found and hide the other's refs -- the object would
+            // name one block of eight.
+            added
         } else {
             // The lookup is keyed by the kind's SHARED name, and the block no longer carries one --
             // it carries the one-byte spelling. `kind_pool` is where that shared name already
@@ -8223,6 +8397,57 @@ impl CoreIndex {
     /// object has is served from whichever home holds them, and [`Self::object_block_refs`] is the
     /// door that tries both. Keeping the distinction inside this file is what stops every reader
     /// having to know which kinds have rows.
+    /// THE INDEX'S OWN TWO HOMES ONLY -- THE SLOT AND THE LOOKUP, NOT A `RecordedMap` ROW.
+    ///
+    /// PREFER THE FREE `state::object_block_refs(shard, ..)` IN PRODUCTION. There is a third home
+    /// now: the four container kinds keep their refs on a `RecordedMap` row, and a `RecordedMap`
+    /// is a SIBLING of `bucket_index` on `ShardState`, so this method cannot reach it and never
+    /// will. A caller that uses this one for `hash`, `set`, `zset` or `list` silently misses every
+    /// ref that has been adopted onto a row.
+    ///
+    /// It stays because the index's own behaviour is worth testing on its own, and because
+    /// `contains_object_block_address` and the removal doors are index-internal.
+    /// `the_refs_readers_that_see_every_home_are_the_ones_production_uses` pins that no production
+    /// site calls it directly.
+    /// Whether this index holds the block a ref names.
+    ///
+    /// Pulled out of `prune_refs_to_the_pages_the_index_holds`'s own closure so the ROW prune can
+    /// ask the same question. Both pruners must agree about what "the index holds it" means, and
+    /// the way to guarantee that is one predicate rather than two that look alike.
+    /// WHETHER THE BLOCK INDEX STILL HOLDS THIS REF, FROM THE BUCKET MAP ALONE.
+    ///
+    /// THE ONE IMPLEMENTATION, AND IT TAKES THE FIELD RATHER THAN `&self` ON PURPOSE.
+    /// `holds_block_ref` below delegates here, and so does
+    /// `recorded_map::prune_row_refs_to_the_blocks_the_index_holds`, which CANNOT call the method:
+    /// it destructures `CoreIndex` so `bucket_map` can be borrowed immutably while the four
+    /// container maps are borrowed mutably, and once the struct is taken apart there is no `self`
+    /// left to call. Taking `&BucketMap` keeps that caller on this implementation instead of
+    /// copying two lines into a second home, where a change to what "holds" means would reach one
+    /// and not the other.
+    ///
+    /// An associated fn rather than a module-level one because a module-level item placed near a
+    /// declaration inherits whatever attributes sit above it: the first attempt landed between
+    /// `#[derive(..)]` and `struct CoreIndex` and the derive applied to the function, which cost
+    /// the struct its `Debug` and `Clone`. Inside the impl there is no attribute to orphan.
+    pub(super) fn bucket_map_holds_block_ref(
+        bucket_map: &BucketMap,
+        block_ref: &BlockLookupRef,
+    ) -> bool {
+        bucket_map
+            .get(&block_ref.routing_bucket)
+            .is_some_and(|bucket| bucket.block_index.get(&block_ref.block_ref_key).is_some())
+    }
+
+    pub(super) fn holds_block_ref(&self, block_ref: &BlockLookupRef) -> bool {
+        Self::bucket_map_holds_block_ref(&self.bucket_map, block_ref)
+    }
+
+    fn index_object_block_refs_inner(&self, model_id: &str, object_key: &str) -> Option<&BlockRefs> {
+        self.slot_refs(model_id, object_key)
+            .or_else(|| self.object_block_lookup.get(model_id, object_key))
+            .or_else(|| self.row_refs(model_id, object_key))
+    }
+
     fn slot_refs(&self, model_id: &str, object_key: &str) -> Option<&BlockRefs> {
         let kind =
             super::storage_bucket_internals::StoredModelKind::from_stored_name(model_id)?;
@@ -8329,6 +8554,10 @@ impl CoreIndex {
     /// names a block -- the decode-then-rebuild window -- and there is nothing there to walk fast.
     pub(super) fn names_no_object_blocks(&self) -> bool {
         self.object_block_lookup.is_empty()
+            && !(self.hashes.any_row_holds_refs()
+                || self.sets.any_row_holds_refs()
+                || self.zsets.any_row_holds_refs()
+                || self.lists.any_row_holds_refs())
             && self
                 .objects
                 .values()
@@ -8343,6 +8572,7 @@ impl CoreIndex {
     /// with no block is a real state here.
     pub(super) fn objects_naming_blocks(&self) -> usize {
         self.object_block_lookup.len()
+            + self.row_ref_objects()
             + self
                 .objects
                 .values()
@@ -8359,6 +8589,10 @@ impl CoreIndex {
     /// and its new one, and `BlockKeysByPosition` would carry both.
     pub(super) fn clear_object_blocks(&mut self) {
         self.object_block_lookup.clear();
+        self.hashes.take_every_refs();
+        self.sets.take_every_refs();
+        self.zsets.take_every_refs();
+        self.lists.take_every_refs();
         for table in self.objects.values_mut() {
             for slot in table.values_mut() {
                 slot.take_refs();
@@ -8388,6 +8622,18 @@ impl CoreIndex {
                 return Some(Arc::clone(stored));
             }
         }
+        // THE CONTAINER ROWS, which hold the key of a hash, set, sorted set or list now that their
+        // refs live there and the lookup has no entry for them. Without this every dirty mark of a
+        // container object allocated a second copy of a key its own row already holds.
+        if let Some(shared) = self
+            .hashes
+            .shared_key(object_key)
+            .or_else(|| self.sets.shared_key(object_key))
+            .or_else(|| self.zsets.shared_key(object_key))
+            .or_else(|| self.lists.shared_key(object_key))
+        {
+            return Some(shared);
+        }
         // THE LOOKUP'S OWN DOOR, AND IT MUST STAY SPELLED OUT HERE. This is the fallback, so
         // calling the spanning door would be infinite recursion -- which is exactly what a blanket
         // rewrite of `.object_block_lookup.any_shared_object_key(` into `.any_shared_object_key(`
@@ -8410,6 +8656,23 @@ impl CoreIndex {
                 .and_then(|table| table.get_key_value(object_key))
             {
                 return Some(Arc::clone(stored));
+            }
+        }
+        {
+            use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+            let row_key = if model_id == HashKind::KIND {
+                self.hashes.shared_key(object_key)
+            } else if model_id == SetKind::KIND {
+                self.sets.shared_key(object_key)
+            } else if model_id == ZSetKind::KIND {
+                self.zsets.shared_key(object_key)
+            } else if model_id == ListKind::KIND {
+                self.lists.shared_key(object_key)
+            } else {
+                None
+            };
+            if row_key.is_some() {
+                return row_key;
             }
         }
         // The lookup's own door, spelled out for the reason given on the sibling above.
@@ -8648,8 +8911,32 @@ impl CoreIndex {
         Some(stored.as_ptr())
     }
 
+    /// EVERY HOME A BLOCK'S IDENTITY CAN BE IN, COMPOSED FROM THE INDEX ALONE.
+    ///
+    /// `impl Serialize for CoreIndex` composes each live block's written key from this and refuses
+    /// a block it cannot name, so a ref whose home this does not walk is a block the encoder
+    /// cannot write.
+    ///
+    /// THREE HOMES NOW: an object's `ObjectSlot`, the container kinds' per-object rows, and the
+    /// lookup. The row home is reachable from here only because the four container maps are FIELDS
+    /// of `CoreIndex` as of `SHARD_INDEX_FORMAT_VERSION` 31 -- while they were siblings of
+    /// `bucket_index` on `ShardState`, a method on this struct could not see them, which is why
+    /// this was briefly a two-home method with a free function beside it for the other four. That
+    /// reason is gone and so is the free function.
+    ///
+    /// `from_homes` takes a parameter per home rather than `&self` BY DESIGN: several maintenance
+    /// paths destructure the index so `bucket_map` can be borrowed while a container map is
+    /// borrowed mutably, and they call it directly. This method is the convenient form for the
+    /// callers that hold the whole index.
     pub(super) fn block_identities(&self) -> BlockKeysByPosition<'_> {
-        BlockKeysByPosition::from_parts(&self.objects, &self.object_block_lookup)
+        BlockKeysByPosition::from_homes(
+            &self.objects,
+            &self.object_block_lookup,
+            &self.hashes,
+            &self.sets,
+            &self.zsets,
+            &self.lists,
+        )
     }
 
     /// EVERY OBJECT THAT HOLDS BLOCK REFS, WHICHEVER HOME HOLDS THEM.
@@ -8683,6 +8970,7 @@ impl CoreIndex {
     pub(super) fn every_object_with_refs(
         &self,
     ) -> impl Iterator<Item = (&str, &str, &BlockRefs)> + '_ {
+        use super::recorded_map::RecordedKind;
         self.objects
             .iter()
             .flat_map(|(kind, table)| {
@@ -8696,6 +8984,27 @@ impl CoreIndex {
                     .map(|(model_id, object_key, refs)| {
                         (model_id.as_ref(), object_key.as_ref(), refs)
                     }),
+            )
+            // THE THIRD HOME: the rows of the four container maps.
+            .chain(
+                self.hashes
+                    .rows_holding_refs()
+                    .map(|(key, refs)| (super::recorded_map::HashKind::KIND, &**key, refs)),
+            )
+            .chain(
+                self.sets
+                    .rows_holding_refs()
+                    .map(|(key, refs)| (super::recorded_map::SetKind::KIND, &**key, refs)),
+            )
+            .chain(
+                self.zsets
+                    .rows_holding_refs()
+                    .map(|(key, refs)| (super::recorded_map::ZSetKind::KIND, &**key, refs)),
+            )
+            .chain(
+                self.lists
+                    .rows_holding_refs()
+                    .map(|(key, refs)| (super::recorded_map::ListKind::KIND, &**key, refs)),
             )
     }
 
@@ -8715,6 +9024,113 @@ impl CoreIndex {
             .map(BlockRefs::as_slice)
     }
 
+    /// HOW MANY OBJECTS HOLD REFS ON A CONTAINER ROW, across the four kinds.
+    pub(super) fn row_ref_objects(&self) -> usize {
+        self.hashes.rows_with_refs()
+            + self.sets.rows_with_refs()
+            + self.zsets.rows_with_refs()
+            + self.lists.rows_with_refs()
+    }
+
+    /// HOW MANY BLOCK REFS THE CONTAINER ROWS HOLD IN ALL.
+    pub(super) fn row_ref_total(&self) -> usize {
+        let sum = |rows: &mut dyn Iterator<Item = (&ModelKey, &BlockRefs)>| rows.map(|(_, refs)| refs.len()).sum::<usize>();
+        sum(&mut self.hashes.rows_holding_refs())
+            + sum(&mut self.sets.rows_holding_refs())
+            + sum(&mut self.zsets.rows_holding_refs())
+            + sum(&mut self.lists.rows_holding_refs())
+    }
+
+    /// The refs a container kind keeps on its row, if it is one of the four and the row has any.
+    pub(super) fn row_refs(&self, kind: &str, object_key: &str) -> Option<&BlockRefs> {
+        row_refs_of(&self.hashes, &self.sets, &self.zsets, &self.lists, kind, object_key)
+    }
+
+    /// Whether the object has a row in the map of its kind (vacant or not), for the four kinds.
+    fn row_exists(&self, kind: &str, object_key: &str) -> bool {
+        use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+        if kind == HashKind::KIND {
+            self.hashes.has_row(object_key)
+        } else if kind == SetKind::KIND {
+            self.sets.has_row(object_key)
+        } else if kind == ZSetKind::KIND {
+            self.zsets.has_row(object_key)
+        } else if kind == ListKind::KIND {
+            self.lists.has_row(object_key)
+        } else {
+            false
+        }
+    }
+
+    /// Merge refs onto the object's row, whichever of the four kinds it is; answers whether there
+    /// was a row to merge onto.
+    fn merge_row_refs(&mut self, kind: &str, object_key: &str, refs: BlockRefs) -> bool {
+        use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+        if kind == HashKind::KIND {
+            self.hashes.merge_refs(object_key, refs)
+        } else if kind == SetKind::KIND {
+            self.sets.merge_refs(object_key, refs)
+        } else if kind == ZSetKind::KIND {
+            self.zsets.merge_refs(object_key, refs)
+        } else if kind == ListKind::KIND {
+            self.lists.merge_refs(object_key, refs)
+        } else {
+            false
+        }
+    }
+
+    /// File one ref on the object's row, whichever of the four kinds it is; `None` when the kind
+    /// is not one of them or the object has no row yet.
+    fn file_row_ref(&mut self, kind: &str, object_key: &str, value: BlockLookupRef) -> Option<bool> {
+        use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+        if kind == HashKind::KIND {
+            self.hashes.file_ref(object_key, value)
+        } else if kind == SetKind::KIND {
+            self.sets.file_ref(object_key, value)
+        } else if kind == ZSetKind::KIND {
+            self.zsets.file_ref(object_key, value)
+        } else if kind == ListKind::KIND {
+            self.lists.file_ref(object_key, value)
+        } else {
+            None
+        }
+    }
+
+    /// Drop one ref from the object's row, whichever of the four kinds it is.
+    fn remove_row_ref(&mut self, kind: &str, object_key: &str, block_ref: &BlockLookupRef) -> bool {
+        use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+        if kind == HashKind::KIND {
+            self.hashes.remove_ref(object_key, block_ref)
+        } else if kind == SetKind::KIND {
+            self.sets.remove_ref(object_key, block_ref)
+        } else if kind == ZSetKind::KIND {
+            self.zsets.remove_ref(object_key, block_ref)
+        } else if kind == ListKind::KIND {
+            self.lists.remove_ref(object_key, block_ref)
+        } else {
+            false
+        }
+    }
+
+    /// Drop the object's whole ref set from its row; the row's refs go to `None`, not to empty.
+    ///
+    /// Answers HOW MANY refs went, because the maintained ref total is advanced from that answer.
+    fn clear_row_refs(&mut self, kind: &str, object_key: &str) -> usize {
+        use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+        let taken = if kind == HashKind::KIND {
+            self.hashes.take_refs(object_key)
+        } else if kind == SetKind::KIND {
+            self.sets.take_refs(object_key)
+        } else if kind == ZSetKind::KIND {
+            self.zsets.take_refs(object_key)
+        } else if kind == ListKind::KIND {
+            self.lists.take_refs(object_key)
+        } else {
+            None
+        };
+        taken.map_or(0, |refs| refs.len())
+    }
+
     /// Every block ref of this object, whatever its element name.
     pub(super) fn object_block_refs(
         &self,
@@ -8725,8 +9141,12 @@ impl CoreIndex {
         // picks by whether the row exists and the adoption moves a set when a row arrives -- so
         // the order is for determinism rather than to resolve a disagreement. A reader must not
         // have to know which home a kind uses.
-        self.slot_refs(model_id, object_key)
-            .or_else(|| self.object_block_lookup.get(model_id, object_key))
+        //
+        // THERE IS A THIRD HOME THIS CANNOT SEE, and the sentence above is exactly why that
+        // matters: a reader must not have to know which home a kind uses, so the complete reader
+        // is the free `state::object_block_refs(shard, ..)` below and not this. See
+        // `index_object_block_refs_inner`.
+        self.index_object_block_refs_inner(model_id, object_key)
     }
 
     pub(super) fn remove_object_block_lookup_entry(
@@ -8762,7 +9182,9 @@ impl CoreIndex {
             .remove(model_id, object_key)
             // By value, so the closure form: `remove` hands back an owned `BlockRefs`.
             .map_or(0, |refs| refs.len());
-        let removed = from_slot + from_lookup;
+        // The row home too: a deleter must span the homes the reader does.
+        let from_row = self.clear_row_refs(model_id, object_key);
+        let removed = from_slot + from_lookup + from_row;
         if removed > 0 {
             if let Some(total) = self.object_element_name_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);
@@ -8848,7 +9270,14 @@ impl CoreIndex {
                 *total = total.saturating_sub(1);
             }
         }
-        removed
+        // Asked too, not short-circuited: a double-homed ref is cleaned here, not hidden.
+        let from_row = self.remove_row_ref(model_id, object_key, block_ref);
+        if from_row && !removed {
+            if let Some(total) = self.object_element_name_block_refs.as_mut() {
+                *total = total.saturating_sub(1);
+            }
+        }
+        removed || from_row
     }
 
     /// Drop every ref an object holds under one kind.
@@ -8876,7 +9305,8 @@ impl CoreIndex {
             .object_block_lookup
             .remove(model_id, object_key)
             .map_or(0, |refs| refs.len());
-        let removed = from_slot + from_lookup;
+        let from_row = self.clear_row_refs(model_id, object_key);
+        let removed = from_slot + from_lookup + from_row;
         if removed > 0 {
             if let Some(total) = self.object_element_name_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);
@@ -8930,16 +9360,67 @@ pub(super) fn object_element_name_lookup_key(model_id: &str, object_key: &str) -
     key
 }
 
-/// The next block index this object may use, which is one past the highest it holds.
+/// THE BLOCK-TO-OBJECT INVERSION OVER ALL THREE REF HOMES.
 ///
-/// A block id is an index INSIDE its object, which is what keeps it small. It must never be
-/// REUSED, and that is a different requirement from being small: this store keeps a rewritten
-/// block's predecessor live -- still referenced by the points it holds that were not rewritten --
-/// so an object numbering its new blocks from zero again would have two live blocks claiming the
-/// same position, and a reload would serve whichever it reached first.
+/// # WHY THIS IS THE FOURTH CONSUMER CLASS AND THE EASIEST ONE TO MISS
 ///
-/// Read from the blocks the object already has rather than from a counter, so it survives a
-/// restart without anything having to be persisted for it.
+/// A ref has three homes, and each needs a writer, a reader, a deleter AND an inversion. The
+/// inversion is the one that hides, because by its nature it reads the HOMES THEMSELVES rather than
+/// calling the reader — `from_parts` takes `&objects` and `&object_block_lookup` directly. So every
+/// search for "who reads refs" that looks for the reader's name misses it, and adding a home breaks
+/// it without breaking the build.
+///
+
+/// INSTALL A RECONSTRUCTED INDEX AND BRING THE ROW HOME INTO LINE WITH IT.
+///
+/// `CoreIndex::install_reconstructed` runs two sweeps of its own -- adopt every lookup ref into its
+/// slot, then prune every ref to the blocks the new index holds -- and NEITHER CAN REACH A
+/// `RecordedMap` ROW, because the maps are siblings of `bucket_index` on `ShardState`. So the row
+/// home needs the same two sweeps run for it, from a level that can see both sides, and this is
+/// the only door through which a reconstruct reaches a live shard.
+///
+/// ORDER MATTERS AND IT IS THE INDEX'S OWN ORDER: adopt first, prune second. Adopting after a prune
+/// would move refs the prune had already judged, and the prune is the one that knows what the new
+/// index holds.
+///
+/// Answers `(adopted, pruned)` so a guard can assert the sweeps did something rather than merely
+/// ran -- an empty population is the failure mode a sweep like this always has.
+pub(super) fn install_reconstructed_into_shard(
+    shard: &mut ShardState,
+    rebuilt: CoreIndex,
+) -> (usize, usize) {
+    shard.bucket_index.install_reconstructed(rebuilt);
+    let adopted = super::recorded_map::adopt_every_lookup_ref_into_its_row(shard);
+    let pruned = super::recorded_map::prune_row_refs_to_the_blocks_the_index_holds(shard);
+    (adopted, pruned)
+}
+
+/// THE ROW HOME OF AN OBJECT'S REFS, TAKEN FROM THE FOUR MAPS RATHER THAN FROM THE INDEX.
+///
+/// A caller holding the bucket map mutably cannot ask `CoreIndex::row_refs`, which borrows the
+/// whole index however disjoint the fields really are; it names the four maps instead.
+pub(super) fn row_refs_of<'a>(
+    hashes: &'a super::recorded_map::RecordedMap<super::recorded_map::HashKind>,
+    sets: &'a super::recorded_map::RecordedMap<super::recorded_map::SetKind>,
+    zsets: &'a super::recorded_map::RecordedMap<super::recorded_map::ZSetKind>,
+    lists: &'a super::recorded_map::RecordedMap<super::recorded_map::ListKind>,
+    kind: &str,
+    object_key: &str,
+) -> Option<&'a BlockRefs> {
+    use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+    if kind == HashKind::KIND {
+        hashes.refs(object_key)
+    } else if kind == SetKind::KIND {
+        sets.refs(object_key)
+    } else if kind == ZSetKind::KIND {
+        zsets.refs(object_key)
+    } else if kind == ListKind::KIND {
+        lists.refs(object_key)
+    } else {
+        None
+    }
+}
+
 pub(super) fn next_block_index_for_object(
     bucket_index: &CoreIndex,
     routing_bucket: u32,

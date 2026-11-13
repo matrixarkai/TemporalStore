@@ -195,6 +195,48 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "RecordedElement",
         "RecordedElementRemoval",
         "RecordedObjectRemoval",
+        //
+        // THE NEXT TWO ARE THE ROW HOME'S SWEEPS AND ITS DELETER. Both MUTATE WITHOUT A
+        // RECORD and both are on the same ground as `set_refs`: what they touch is DERIVED
+        // state -- refs are absent from the stored bytes and re-filed by the load path -- so there
+        // is no durable statement for a record to be consistent with. None can add or drop a KEY.
+        //
+        //   * `adopt_every_lookup_ref_into_its_row` -- the whole-lookup sweep, mirroring
+        //     `CoreIndex::adopt_every_lookup_ref_into_its_slot`, for the door that installs a
+        //     reconstructed index.
+        //   * `prune_row_refs_to_the_blocks_the_index_holds` -- the DELETER, mirroring
+        //     `CoreIndex::prune_refs_to_the_pages_the_index_holds`, which cannot reach a row.
+        //     Without it a reconstruct leaves row refs naming blocks the new index does not hold.
+        //
+        // THEY ARE REACHED but the WRITER they exist for is not, so today they only ever run over
+        // rows whose refs are `None`. That is deliberate and is explained at `adopt_refs_into_row`
+        // below: the inversion `BlockKeysByPosition::from_parts` reads the ref homes as FIELDS, has
+        // never heard of a row, and an enabled adoption made an object deletion mark nothing --
+        // caught by `every_kind_records_exactly_once_through_the_one_operation`, which is green
+        // again with the writer off.
+        "adopt_every_lookup_ref_into_its_row",
+        "prune_row_refs_to_the_blocks_the_index_holds",
+        //
+        // `adopt_refs_into_row` MUTATES TWO MAPS WITHOUT A RECORD, and it is NOT CALLED.
+        //
+        // What it would do: take an object's refs out of `CoreIndex::object_block_lookup` and merge
+        // them onto its row, which is the counterpart of `CoreIndex::adopt_refs_into_slot` for the
+        // kinds whose rows are not `ObjectSlot`s. Both maps it touches hold DERIVED state -- refs
+        // are absent from the stored bytes and re-filed by the load path -- so there is no durable
+        // statement for a record to be consistent with, which is the same ground `set_refs` and
+        // `take_refs` stand on below.
+        //
+        // It cannot add or drop a key in either map: it returns `false` unless the row already
+        // exists, and removing a lookup entry is what the lookup's own removal doors do.
+        //
+        // WHY IT IS HERE WHILE UNCALLED, against the standing rule not to build a mechanism with no
+        // consumer: the blocking reason is specific, external to this module and written at the
+        // function -- `CoreIndex::install_reconstructed` replaces the whole index, and a
+        // `RecordedMap` is a sibling of `bucket_index`, so row refs would survive a reconstruct
+        // that invalidated them. Wiring this before that door can reach a row trades a duplicated
+        // ref for a stale one. If this entry is still uncalled when that is fixed, delete it rather
+        // than leave it.
+        "adopt_refs_into_row",
         // THE OPERATIONS, written once for every kind.
         "install_element",
         // Fresh append placement still obtains a filing witness before changing the map.
@@ -246,13 +288,87 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "keys",
         "values",
         "iter",
-        "entries",
+        // `entries` IS GONE FROM THIS LIST, AND ITS REMOVAL IS NOT A LOOSENING. It handed out
+        // `&HashMap<ModelKey, K::Elements>` so a serde adapter could pass the inner shape to a
+        // codec. The map's value is a per-object ROW now and the row is private to this module, so
+        // a `pub(super)` return would leak a private type -- the door is still there as a private
+        // `rows()`, reachable only by the codecs in this file, which is strictly tighter than it
+        // was. The two codecs it fed take an ITERATOR of `(key, elements)` instead, which is what
+        // `iter` above already yields.
+        //
+        // THE FOUR BELOW ARE THE ROW'S REFS SURFACE. `refs` and `rows_with_refs` are reads: `&self`,
+        // borrow and a count. The other two need declaring honestly, because the answer to this
+        // guard's question is not "no":
+        //
+        //   `set_refs` and `take_refs` MUTATE A MAP WITHOUT A RECORD.
+        //
+        // What they mutate is a DERIVED field, and that is the whole of the justification. A row's
+        // refs are not in the stored bytes, no index image carries them, and the load path re-files
+        // every block it reads -- so there is no durable statement for a record to be consistent
+        // with, and nothing a replay could double-apply. They are on exactly the same footing as
+        // `ObjectSlot::refs`, which the same filer sets for the three kinds that already have a row,
+        // also without a record.
+        //
+        // The membership of the map is untouched by both: `set_refs` answers `false` rather than
+        // creating a row, and `take_refs` leaves the row and its elements in place. So the invariant
+        // this module exists to hold -- that no element appears or disappears without a record --
+        // is not what these touch. If either ever gains the power to add or drop a key, it belongs
+        // on the exception list below with a reason, not here.
+        "refs",
+        // A READ: the row's own key allocation beside its refs, for the keyed inversion.
+        "refs_with_key",
+        "set_refs",
+        // THE FILER'S DOOR ONTO A ROW, same ground: it answers `None` when there is no row rather
+        // than creating one, and the first ref of a row is built into it.
+        "file_ref",
+        // A READ: whether a row exists at all, vacant or not.
+        "has_row",
+        // A READ: the key allocation the map already holds, for another structure to share.
+        "shared_key",
+        // MAKES A VACANT ROW, NOT AN OBJECT: no elements, so `get`, `contains_key`, `len` and `iter`
+        // all skip it and no existence answer changes. It exists so a first write has a row to file
+        // its ref on; it records nothing because there is no durable statement in an empty row.
+        "ensure_row",
+        "take_refs",
+        // ALSO MUTATES WITHOUT A RECORD, on the same ground as `set_refs` and `take_refs`:
+        // derived state, no durable statement to be consistent with, and it cannot add or drop a
+        // key -- it answers `false` when there is no row rather than creating one. It MERGES rather
+        // than assigns, which is the rule `CoreIndex::adopt_refs_into_slot` states at its own
+        // merge: an overwrite can have filed a block into the row already, so assigning would drop
+        // it, and that is one block of an object going missing with nothing raised.
+        "merge_refs",
+        // NOTE ON "CANNOT DROP A KEY" FOR THE REF DELETERS: they may remove a row, but only one
+        // that is VACANT -- no elements -- and holds no refs once they have run. Such a row is not a
+        // key by any existence reader (`get`, `contains_key`, `len`, `iter` skip it), so what they
+        // drop is the husk of an object that no longer exists, never an object.
+        // THE TWO PER-MAP DELETERS the sweeps above are built from. Same ground again: derived
+        // state, no key added or dropped. Both clear a row's refs to `None` rather than to an
+        // empty set, which is the rule the slot home states at its own removal -- an empty `Some`
+        // makes a reader answer `Some(&[])` where callers distinguish "names nothing" by `None`,
+        // after which a re-add takes the wrong branch and leaks a tombstone.
+        "retain_refs",
+        "remove_ref",
+        // TWO MORE ON THE SAME GROUND, and the first is a read. `rows_holding_refs` lends every row
+        // that carries refs, for the inversion to file; it is `&self` and yields borrows.
+        // `take_every_refs` clears every row's refs to `None` for the whole-shard rebuild that is
+        // about to re-file them. It mutates without a record because refs are DERIVED state, and it
+        // cannot add or drop a key: the rows and their elements stay where they are.
+        "rows_holding_refs",
+        "take_every_refs",
+        // A READ that stops at the first row carrying refs -- the cheap form of the census question.
+        "any_row_holds_refs",
+        "rows_with_refs",
         // A READ, AND IT CANNOT MUTATE A MAP. `block_an_element_vacates` takes `&self` and returns a
         // CLONE of an address the map already holds -- the block an element is moving off, which the
         // filer needs because an index entry no longer names its element. There is no `&mut` on it
         // and nothing it returns can be written through, so it is on the same footing as the reads
         // above rather than on the exception list below.
         "block_an_element_vacates",
+        // A NAMED ITERATOR, AND IT EXISTS BECAUSE AN ASSOCIATED TYPE CANNOT BE `impl Iterator`.
+        // `&RecordedMap<K>` yielded `hash_map::Iter<'_, ModelKey, K::Elements>` while the value WAS
+        // the elements; it now projects the elements out of each row, and `IntoIterator::IntoIter`
+        // has to be a type with a name. It lends `&K::Elements`, so it is a read like `iter`.
+        "RowElements",
         // The five shared exceptions.
         "from_decoded",
         "reconcile_from_durable",

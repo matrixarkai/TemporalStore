@@ -136,7 +136,7 @@ impl BlockObjects {
 pub(super) fn blocks_with_identity(
     index: &crate::engine::state::CoreIndex,
 ) -> Vec<(u32, u64, std::sync::Arc<str>, &crate::engine::state::BlockIndex)> {
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_homes(&index.objects, &index.object_block_lookup, &index.hashes, &index.sets, &index.zsets, &index.lists);
     let mut out = Vec::new();
     for bucket in index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {

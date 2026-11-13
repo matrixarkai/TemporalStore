@@ -55,9 +55,9 @@ fn hint_keys_are_shared_and_hints_are_not_cloned_or_serialized() {
     let before = serde_json::to_vec(&serde_json::to_value(&map).unwrap()).unwrap();
     map.remember_timestamp("row", "ts", Some((10, 0)));
     let (held, hint) = map.timestamp_hints.get_key_value("row").unwrap();
-    let (key, fields) = map.entries.get_key_value("row").unwrap();
+    let (key, row) = map.entries.get_key_value("row").unwrap();
     assert!(std::sync::Arc::ptr_eq(held, key));
-    assert!(std::sync::Arc::ptr_eq(&hint.field, fields.named_entry("ts").unwrap().0));
+    assert!(std::sync::Arc::ptr_eq(&hint.field, row.elements.named_entry("ts").unwrap().0));
     let canonical: ModelKey = std::sync::Arc::from("row");
     assert!(map.adopt_key("row", &canonical));
     assert!(std::sync::Arc::ptr_eq(map.timestamp_hints.get_key_value("row").unwrap().0, &canonical));

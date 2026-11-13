@@ -166,7 +166,7 @@ fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
     // THE KEY A BLOCK IS FILED UNDER COMES FROM THE LOOKUP BESIDE IT. It is both the grouping
     // key below and the argument the id is derived from, so there is exactly one source for it
     // here where there used to be one source read twice off the block.
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_homes(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup, &shard.bucket_index.hashes, &shard.bucket_index.sets, &shard.bucket_index.zsets, &shard.bucket_index.lists);
     let mut by_key: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {

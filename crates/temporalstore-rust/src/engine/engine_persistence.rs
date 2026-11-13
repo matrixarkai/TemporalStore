@@ -543,13 +543,29 @@ impl TemporalEngine {
             // order that pass already pays; built per bucket it would be that order per bucket.
             let index = &mut shard.bucket_index;
             let keys =
-                crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
+                crate::engine::state::BlockKeysByPosition::from_homes(&index.objects, &index.object_block_lookup, &index.hashes, &index.sets, &index.zsets, &index.lists);
             for bucket in index.bucket_map.values_mut() {
                 update_bucket_layout(shard_id, bucket, &keys);
             }
             // AFTER the block index has settled, because this asks of every carried element whether
             // the fold left a block at its address -- a question only the finished index can answer.
             fold_carried_container_elements(shard, &carried_container_elements);
+            // THE ROW HOME, WHICH THE FOLD ITSELF COULD NOT REACH.
+            //
+            // `fold_delta_block_items` un-files refs through `CoreIndex` alone, and the carried
+            // container elements just applied may have CREATED rows for objects whose refs the
+            // fold filed into the lookup. A `RecordedMap` is a sibling of `bucket_index`, so
+            // neither step can touch a row.
+            //
+            // ONE SWEEP AFTER THE WHOLE FOLD, NOT ONE PER RECORD. A fold replays a suffix of the
+            // log, so only the final state is meaningful -- the same argument
+            // `fold_carried_container_elements` makes for collecting blobs and applying them once
+            // -- and a per-record sweep would cost O(rows) per record.
+            //
+            // Adopt before prune, which is the order the index's own install uses: the prune is
+            // the step that knows which blocks survived.
+            let _ = crate::engine::recorded_map::adopt_every_lookup_ref_into_its_row(shard);
+            let _ = crate::engine::recorded_map::prune_row_refs_to_the_blocks_the_index_holds(shard);
             shard.applied_wal_sequence = Some(max_anchor);
         }
         Ok(())

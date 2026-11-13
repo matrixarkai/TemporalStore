@@ -1763,7 +1763,14 @@ pub(super) fn rebuild_bucket_block_ownership(
     // method that would borrow the whole index. Built ONCE above a whole-shard pass, which is the
     // order that pass already pays; built per bucket it would be that order per bucket.
     let index = &mut shard.bucket_index;
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_homes(
+        &index.objects,
+        &index.object_block_lookup,
+        &index.hashes,
+        &index.sets,
+        &index.zsets,
+        &index.lists,
+    );
     for bucket in index.bucket_map.values_mut() {
         bucket.set_meta_loaded(true);
         bucket.set_loading(false);
@@ -2044,7 +2051,7 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
     // materializes the indexed blocks and then, whenever anything is released, the whole shard.
     let mut from_index = 0usize;
     // THE IDENTITY COMES FROM BESIDE THE BLOCK, once for the walk. `shard` is immutable here.
-    let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    let identities = shard.bucket_index.block_identities();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
         // Preserve the scalar lookup's first match without rescanning all tombstones per block.
         // This borrowed map lives for one bucket only, not for the shard's lifetime.
@@ -2584,10 +2591,7 @@ pub(super) fn release_bucket_blocks(
         // Keep only owned candidate identities across mutations. A successful release removes
         // lookup rows local to that bucket, so it cannot change another candidate's identities.
         let names = names_by_bucket.get_or_insert_with(|| {
-            let keys = crate::engine::state::BlockKeysByPosition::from_parts(
-                &shard.bucket_index.objects,
-                &shard.bucket_index.object_block_lookup,
-            );
+            let keys = shard.bucket_index.block_identities();
             wanted.iter().filter_map(|routing_bucket| {
                 shard.bucket_index.bucket_map.get(routing_bucket)
                     .filter(|node| {
@@ -2637,11 +2641,7 @@ pub(super) fn release_bucket_blocks(
         let lookup_is_local = !lookup_established
             || bucket.block_index.iter().all(|(handle, block)| {
                 names.get(handle).is_some_and(|beside| {
-                    shard
-                        .bucket_index
-                        // `None`: the lookup files every block of an object under one nameless
-                        // slot, which is the slot an entry has always been filed in here.
-                        .block_refs_for(block.model_id().as_str(), beside, None)
+                    shard.bucket_index.block_refs_for(block.model_id().as_str(), beside, None)
                         .map(|refs| {
                             refs.iter().all(|block_ref| block_ref.routing_bucket == routing_bucket)
                         })
@@ -2692,8 +2692,7 @@ pub(super) fn release_bucket_blocks(
         let block_count = dropped.len();
         if lookup_established {
             for (model_id, object_key) in &dropped {
-                shard.bucket_index.remove_object_block_lookup_entry(
-                    model_id.as_str(),
+                shard.bucket_index.remove_object_block_lookup_entry(model_id.as_str(),
                     object_key,
                     // `None` -- the slot the lookup filed every block of this object under. The
                     // triple this walked used to carry `block.element_name` as its third term and the
@@ -4666,9 +4665,7 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
     // against the key. The old predicate retained a deleted block of the object and removed the
     // live ones, and the lookup names exactly the live ones -- so the set it hands back IS the set
     // that predicate removed.
-    let targets: Vec<(u32, u64)> = shard
-        .bucket_index
-        .object_block_refs(model_id.as_str(), object_key)
+    let targets: Vec<(u32, u64)> = shard.bucket_index.object_block_refs(model_id.as_str(), object_key)
         .map(|refs| {
             refs.iter()
                 .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
@@ -5338,8 +5335,7 @@ fn upsert_bucket_index_block_inner(
         match mine {
             Some(mine) => {
                 for block_ref in &mine {
-                    shard.bucket_index.remove_object_block_lookup_ref(
-                        entry.kind.as_str(),
+                    shard.bucket_index.remove_object_block_lookup_ref(entry.kind.as_str(),
                         &entry.object_key,
                         None,
                         block_ref,
@@ -5348,8 +5344,7 @@ fn upsert_bucket_index_block_inner(
                 Some(mine)
             }
             None => {
-                shard.bucket_index.remove_object_block_lookup_entry(
-                    entry.kind.as_str(),
+                shard.bucket_index.remove_object_block_lookup_entry(entry.kind.as_str(),
                     &entry.object_key,
                     None,
                 );
@@ -5369,8 +5364,7 @@ fn upsert_bucket_index_block_inner(
         } else {
             None
         };
-        shard.bucket_index.remove_object_block_lookup_entry(
-            entry.kind.as_str(),
+        shard.bucket_index.remove_object_block_lookup_entry(entry.kind.as_str(),
             &entry.object_key,
             None,
         );
@@ -5733,9 +5727,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             .copied()
             .collect::<BTreeSet<_>>()
     } else {
-        shard
-            .bucket_index
-            .object_block_refs(kind, object_key)
+        shard.bucket_index.object_block_refs(kind, object_key)
             .map(|block_refs| {
                 block_refs
                     .iter()
@@ -5748,14 +5740,24 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // first iteration, so the condition lives where the cost does. An additive publish reaches
     // this loop with nothing to iterate; nothing already filed is disturbed, exactly as before.
     for routing_bucket in target_buckets {
+        // NAMED BEFORE THE MUTATION, AND THE BORROW SCOPED SO IT ENDS WITH THE NAMING.
+        //
+        // `block_identities_in` returns an OWNED projection, so the index only has to be borrowed
+        // while it is built. The lookup here is the IMMUTABLE one; the mutable `get_mut` below is
+        // what the retain needs. Both are necessary since `SHARD_INDEX_FORMAT_VERSION` 31 made the
+        // four container maps fields OF `bucket_index` rather than siblings of it: the inversion
+        // now reads places inside the very struct the bucket is borrowed out of, so `&self` on the
+        // index cannot coexist with `&mut` on its `bucket_map`.
+        let names = {
+            let keys = shard.bucket_index.block_identities();
+            let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
+                continue;
+            };
+            crate::engine::state::block_identities_in(bucket, &keys)
+        };
         let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
-        // NAMED BEFORE THE MUTATION, for the reason at `state::block_identities_in`.
-        let names = crate::engine::state::block_identities_in(
-            &bucket,
-            &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
-        );
         let before = bucket.block_index.len();
         bucket.block_index.retain(
             &mut shard.bucket_index.block_slab_live,
@@ -6727,7 +6729,14 @@ fn refresh_all_bucket_runtime_flags(
     // INDEX IS BEING REBUILT. The TTL rollup selects blocks by the object held BESIDE them, so a
     // `Recompute` needs the inversion even on the reconstruct path, which skips the rescan.
     let keys = if rebuild_object_index || matches!(ttl_rollup, BucketTtlRollup::Recompute) {
-        Some(crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup))
+        Some(crate::engine::state::BlockKeysByPosition::from_homes(
+        &index.objects,
+        &index.object_block_lookup,
+        &index.hashes,
+        &index.sets,
+        &index.zsets,
+        &index.lists,
+    ))
     } else {
         None
     };
@@ -6916,7 +6925,14 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     // method that would borrow the whole index. Built ONCE above a whole-shard pass, which is the
     // order that pass already pays; built per bucket it would be that order per bucket.
     let index = &mut shard.bucket_index;
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_homes(
+        &index.objects,
+        &index.object_block_lookup,
+        &index.hashes,
+        &index.sets,
+        &index.zsets,
+        &index.lists,
+    );
     for routing_bucket in touched_buckets {
         let Some(mut bucket) = index.bucket_map.get_mut(&routing_bucket) else {
             continue;
@@ -7185,7 +7201,10 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
     // struct now, so a wholesale assignment discards every object in the shard -- measured as a
     // `SET` then `EXPIRE` leaving `strings` empty. The installer carries the rows across and
     // re-homes this reconstruct's own filings into them.
-    shard.bucket_index.install_reconstructed(bucket_index);
+    // THROUGH THE SHARD-LEVEL DOOR, because the install's own two sweeps cannot reach a
+    // `RecordedMap` row and a reconstruct would otherwise leave row refs naming blocks the new
+    // index does not hold. See `state::install_reconstructed_into_shard`.
+    let _ = crate::engine::state::install_reconstructed_into_shard(shard, bucket_index);
     // The local index charged every block it filed, and it arrived empty, so the tally travelled
     // here with it and is already right. Same reason as `rebuild_bucket_block_ownership`: a walk to
     // confirm it is the walk being removed.
@@ -7939,7 +7958,14 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // method that would borrow the whole index. Built ONCE above a whole-shard pass, which is the
     // order that pass already pays; built per bucket it would be that order per bucket.
     let index = &mut shard.bucket_index;
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_homes(
+        &index.objects,
+        &index.object_block_lookup,
+        &index.hashes,
+        &index.sets,
+        &index.zsets,
+        &index.lists,
+    );
     for bucket in index.bucket_map.values_mut() {
         match shard_id {
             Some(shard_id) => update_bucket_layout(shard_id, bucket, &keys),
