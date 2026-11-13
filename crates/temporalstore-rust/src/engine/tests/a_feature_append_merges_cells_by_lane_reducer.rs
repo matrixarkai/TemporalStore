@@ -608,4 +608,35 @@ mod probe {
         let (long_more, _) = per_write(200, 150);
         assert!(((short_more - short_allocs) - (long_more - long_allocs)).abs() < 1.0);
     }
+
+    /// A merge-reduce write spends a fixed number of allocations whatever the cell count: the
+    /// snapshot is decoded, merged and encoded in a few vectors for the whole snapshot, not a few
+    /// allocations per cell. Measured: 130.9 per write at 50, 150 and 1,000 cells (it was 687.8,
+    /// 1,699.7 and 10,211.8). The slope is asserted between 50 and 1,000 cells, where a per-cell
+    /// allocation of even one would add 950; the absolute bound is the measured 131 plus margin.
+    #[test]
+    #[ignore = "measurement: run with --features alloc-probe --ignored"]
+    fn a_merge_write_does_not_allocate_per_cell() {
+        let (few, few_bytes) = per_write(8, 50);
+        let (many, many_bytes) = per_write(8, 1000);
+        eprintln!("MERGE_PER_CELL 50 cells: {few} allocs {few_bytes} B; 1000 cells: {many} allocs {many_bytes} B");
+        // The control: the probe sees SIZE, so a flat count is not a blind instrument.
+        assert!(many_bytes > few_bytes * 4.0, "the probe cannot see the cell count: {few_bytes} -> {many_bytes}");
+        assert!(few > 20.0, "the probe is blind: {few}");
+        assert!(
+            (many - few).abs() < 10.0,
+            "the allocations of a write moved with the cell count ({few} at 50, {many} at 1000): a per-cell allocation is back"
+        );
+        assert!(many < 160.0, "a write at 1000 cells spends {many} allocations; measured 131");
+    }
+
+    /// Prints the allocations one write spends at several cell counts, for the before/after table.
+    #[test]
+    #[ignore = "measurement: run with --features alloc-probe --ignored"]
+    fn merge_write_allocation_table() {
+        for cells in [50usize, 150, 1000] {
+            let (a, b) = per_write(8, cells);
+            eprintln!("MERGE_TABLE cells={cells} allocs/write={a:.1} allocs/cell={:.2} bytes/write={b:.0}", a / cells as f64);
+        }
+    }
 }

@@ -3548,6 +3548,7 @@ pub(crate) fn execute_on_shard(
                     &key,
                     routing_bucket,
                     &points,
+                    crate::engine::cell_merge_append::PlanOutput::Values,
                 ) {
                     Ok(plan) => {
                         merge_receipt = Some((
