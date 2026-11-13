@@ -4825,7 +4825,7 @@ fn a_loaded_shard_arrives_with_its_deadline_index_built() {
     assert_eq!(
         deadline_index_len(&engine, 1),
         held,
-        "the shard was installed without its deadline-ordered view; the first sweep would build          it under the shard-table write guard"
+        "the shard was installed without its deadline-ordered view; the first sweep would build it under the shard-table write guard"
     );
     assert_eq!(disagreements(&engine, 1), 0);
 
@@ -4850,7 +4850,7 @@ fn a_loaded_shard_arrives_with_its_deadline_index_built() {
     crate::engine::ensure_expiry_order(shard);
     let ensure_us = started.elapsed().as_micros();
     println!(
-        "  {KEYS} deadlines: insert-by-insert {old_us} us, collected {new_us} us,          ensure_expiry_order {ensure_us} us"
+        "  {KEYS} deadlines: insert-by-insert {old_us} us, collected {new_us} us, ensure_expiry_order {ensure_us} us"
     );
     assert_eq!(shard.expiry_by_deadline.len(), KEYS);
 }
