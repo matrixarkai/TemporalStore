@@ -1493,7 +1493,7 @@ impl<'a> BlockKeysByPosition<'a> {
         >,
         lookup: &'a ObjectBlockLookup,
     ) -> Self {
-        Self::from_parts_filtered(objects, lookup, None)
+        Self::from_parts_selected(objects, lookup, |_| true, false)
     }
 
     pub(super) fn from_parts_for_bucket(
@@ -1504,16 +1504,28 @@ impl<'a> BlockKeysByPosition<'a> {
         lookup: &'a ObjectBlockLookup,
         routing_bucket: u32,
     ) -> Self {
-        Self::from_parts_filtered(objects, lookup, Some(routing_bucket))
+        Self::from_parts_selected(objects, lookup, |bucket| bucket == routing_bucket, true)
     }
 
-    fn from_parts_filtered(
+    pub(super) fn from_parts_for_buckets(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
             HashMap<ModelKey, super::object_record::ObjectSlot>,
         >,
         lookup: &'a ObjectBlockLookup,
-        routing_bucket: Option<u32>,
+        routing_buckets: &BTreeSet<u32>,
+    ) -> Self {
+        Self::from_parts_selected(objects, lookup, |bucket| routing_buckets.contains(&bucket), true)
+    }
+
+    fn from_parts_selected(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        selected: impl Fn(u32) -> bool,
+        restricted: bool,
     ) -> Self {
         #[cfg(test)]
         BLOCK_IDENTITY_BUILDS.with(|count| count.set(count.get() + 1));
@@ -1521,14 +1533,14 @@ impl<'a> BlockKeysByPosition<'a> {
         let mut by_handle = std::collections::HashMap::new();
         let mut file = |model_id: &'a str, object_key: &'a Arc<str>, refs: &'a BlockRefs| {
             for block_ref in refs.iter() {
-                if routing_bucket.is_some_and(|bucket| bucket != block_ref.routing_bucket) {
+                if !selected(block_ref.routing_bucket) {
                     continue;
                 }
                 by_position.insert(
                     (block_ref.routing_bucket, block_ref.block_ref_key),
                     (model_id, object_key),
                 );
-                if routing_bucket.is_none() {
+                if !restricted {
                     by_handle.insert(block_ref.block_ref_key, (model_id, object_key));
                 }
             }
@@ -1548,7 +1560,7 @@ impl<'a> BlockKeysByPosition<'a> {
         Self {
             by_position,
             by_handle,
-            restricted: routing_bucket.is_some(),
+            restricted,
         }
     }
 

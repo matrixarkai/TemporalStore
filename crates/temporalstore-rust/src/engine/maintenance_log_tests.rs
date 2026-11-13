@@ -39,6 +39,42 @@ fn value(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
     value
 }
 
+#[test]
+fn one_identity_capture_covers_multiple_logged_deletion_frames() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path(), "indexes");
+    engine.load_shard(1);
+    let keys = (0..513)
+        .map(|n| format!("captured-delete-{n:04}"))
+        .collect::<Vec<_>>();
+    for key in &keys {
+        write(&engine, key, b"remove");
+    }
+    write(&engine, "captured-survivor", b"keep");
+    let mut shards = engine.shards.write().unwrap();
+    let shard = shards.get_mut(&1).unwrap();
+    let deletions = keys
+        .iter()
+        .map(|key| MaintenanceDeletion::capture(shard, key).unwrap())
+        .collect();
+    let mut appends = 0;
+    let (result, builds) = state::measure_block_identity_builds_for_test(|| {
+        engine.append_maintenance_deletions(1, shard, deletions, || appends += 1)
+    });
+    assert!(result.error.is_none());
+    assert_eq!(result.removed_keys, keys.len());
+    assert_eq!(appends, 3);
+    assert_eq!(
+        builds, 1,
+        "the deletion-only run must reuse its first identity capture"
+    );
+    drop(shards);
+    for key in &keys {
+        assert_eq!(value(&engine, key), None);
+    }
+    assert_eq!(value(&engine, "captured-survivor"), Some(b"keep".to_vec()));
+}
+
 fn deletion_round_replays(expire: bool) {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_at(dir.path(), "indexes");

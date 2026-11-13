@@ -557,7 +557,7 @@ fn every_kind_records_exactly_once_through_the_one_operation() {
         .map(|b| b.deleted_object_index.object_count())
         .sum();
     let staged_before = staged();
-    let (marked, deletion) = mark_bucket_index_object_deleted_filed(&mut shard, "rec-hash");
+    let (marked, deletion) = mark_bucket_index_object_deleted_filed(&mut shard, "rec-hash", None);
     let deleted_after: usize = shard
         .bucket_index
         .bucket_map
