@@ -4069,6 +4069,62 @@ pub(crate) fn execute_on_shard(
                 CommandResponse::Aggregate { value }
             }
         }
+        Command::FeatureReduceQuery {
+            key,
+            start_ms,
+            end_ms,
+            reducer,
+            rounding,
+            scale,
+            count,
+        } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "feature", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Aggregate { value: 0 },
+                    mutated,
+                };
+            }
+            // The same points the name-based aggregate reads, in the same order, each parsed in
+            // place and dropped when it is not a number.
+            let mut page_keys = crate::engine::PageKeys::new();
+            let value = shard
+                .features()
+                .get(&key[..])
+                .map(|series| {
+                    let points = series
+                        .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                        .take(count.unwrap_or(feature_max_size))
+                        .filter_map(|(timestamp_ms, address)| {
+                            read_feature_value_with(
+                                cache,
+                                block_store,
+                                shard_id,
+                                timestamp_ms,
+                                address,
+                                BlockIdentity::of(shard_id, "feature", &key, None),
+                                Some(block_routing_bucket(
+                                    &key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
+                                &mut page_keys,
+                                parse_i64_slice,
+                            )
+                            .flatten()
+                            .map(|number| (timestamp_ms, number))
+                        });
+                    super::window_aggregate::reduce_typed(
+                        &reducer, rounding, scale, start_ms, end_ms, points,
+                    )
+                })
+                .unwrap_or(Ok(0));
+            match value {
+                Ok(value) => CommandResponse::Aggregate { value },
+                Err(_) => CommandResponse::Empty,
+            }
+        }
         Command::SequenceAdd { key, rows } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let routing_bucket =
