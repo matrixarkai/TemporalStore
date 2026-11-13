@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::cmp::{Ordering, Reverse};
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 
 use thiserror::Error;
 
@@ -17,6 +17,10 @@ const SIGNATURE_SAMPLES_PER_BIT: usize = 16;
 const SIGNATURE_CANDIDATES_PER_HIT: usize = 128;
 const SIGNATURE_MIN_CANDIDATES: usize = 4096;
 const SIGNATURE_MAX_CANDIDATES: usize = 32_768;
+const OWNER_EXACT_MAX_CANDIDATES: usize = 1_024;
+const MAX_VECTOR_GROWTH_BYTES: usize = 1024 * 1024;
+const OWNER_RANGE_MIN_ROWS: usize = 8192;
+const OWNER_COUNT_PROBE_MAX_OWNERS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EmbeddingKey {
@@ -279,10 +283,75 @@ pub struct EmbeddingIndex {
 struct TenantRows {
     owner_ids: Vec<u64>,
     item_ids: Vec<u64>,
-    positions: HashMap<(u64, u64), usize>,
+    positions: IdentityPositions,
     scales: Vec<f32>,
     vectors: Vec<i8>,
     signature_routing: Option<SignatureRouting>,
+}
+
+#[derive(Debug)]
+enum IdentityPositions {
+    Small(HashMap<(u64, u64), usize>),
+    Ordered(BTreeMap<(u64, u64), usize>),
+}
+
+impl Default for IdentityPositions {
+    fn default() -> Self {
+        Self::Small(HashMap::new())
+    }
+}
+
+impl IdentityPositions {
+    fn promote_for(&mut self, additional: usize) {
+        if !matches!(self, Self::Small(map) if map.len().saturating_add(additional) >= OWNER_RANGE_MIN_ROWS)
+        {
+            return;
+        }
+        let Self::Small(map) = std::mem::take(self) else {
+            unreachable!()
+        };
+        *self = Self::Ordered(map.into_iter().collect());
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.promote_for(additional);
+        if let Self::Small(map) = self {
+            map.reserve(additional);
+        }
+    }
+
+    fn get(&self, key: &(u64, u64)) -> Option<&usize> {
+        match self {
+            Self::Small(map) => map.get(key),
+            Self::Ordered(map) => map.get(key),
+        }
+    }
+
+    fn contains_key(&self, key: &(u64, u64)) -> bool {
+        self.get(key).is_some()
+    }
+
+    fn insert(&mut self, key: (u64, u64), position: usize) -> Option<usize> {
+        self.promote_for(1);
+        match self {
+            Self::Small(map) => map.insert(key, position),
+            Self::Ordered(map) => map.insert(key, position),
+        }
+    }
+
+    fn remove(&mut self, key: &(u64, u64)) -> Option<usize> {
+        match self {
+            Self::Small(map) => map.remove(key),
+            Self::Ordered(map) => map.remove(key),
+        }
+    }
+
+    fn ordered(&self) -> Option<&BTreeMap<(u64, u64), usize>> {
+        match self {
+            Self::Small(_) => None,
+            Self::Ordered(map) => Some(map),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -507,6 +576,22 @@ impl SignatureTable {
 }
 
 impl TenantRows {
+    fn reserve_vector_rows(&mut self, additional_rows: usize, dimensions: usize) {
+        let required = self
+            .vectors
+            .len()
+            .saturating_add(additional_rows.saturating_mul(dimensions));
+        let capacity = self.vectors.capacity();
+        if required <= capacity {
+            return;
+        }
+        // Small buffers grow geometrically; large tenants retain bounded growth headroom.
+        let growth = capacity.max(dimensions).min(MAX_VECTOR_GROWTH_BYTES);
+        let target = required.max(capacity.saturating_add(growth));
+        self.vectors
+            .reserve_exact(target.saturating_sub(self.vectors.len()));
+    }
+
     fn signature_at(&self, dimensions: usize, position: usize) -> Option<u64> {
         self.signature_routing.as_ref()?;
         let start = position * dimensions;
@@ -629,6 +714,7 @@ impl EmbeddingIndex {
             (0, 1)
         } else {
             let position = rows.item_ids.len();
+            rows.reserve_vector_rows(1, self.config.dimensions);
             rows.owner_ids.push(input.key.owner_id);
             rows.item_ids.push(input.key.item_id);
             rows.positions.insert(identity, position);
@@ -757,8 +843,7 @@ impl EmbeddingIndex {
             rows.item_ids.reserve(new_entries);
             rows.positions.reserve(new_entries);
             rows.scales.reserve(new_entries);
-            rows.vectors
-                .reserve(new_entries.saturating_mul(self.config.dimensions));
+            rows.reserve_vector_rows(new_entries, self.config.dimensions);
         }
 
         let mut inserted = 0usize;
@@ -956,7 +1041,9 @@ impl EmbeddingIndex {
         self.search_prepared_rows(tenant_id, rows, query, limit)
     }
 
-    pub(crate) fn search_prepared_owners(
+    /// Search selected application owners without materializing their vectors.
+    /// A validated query can be reused across compatible embedding spaces.
+    pub fn search_prepared_owners(
         &self,
         tenant_id: u64,
         query: PreparedEmbeddingQuery<'_>,
@@ -1062,11 +1149,44 @@ impl EmbeddingIndex {
         owner_ids: &HashSet<u64>,
     ) -> Vec<EmbeddingHit> {
         let limit = limit.min(rows.item_ids.len());
+        let Some(positions) = rows.positions.ordered() else {
+            return self.search_positions(
+                dot,
+                tenant_id,
+                rows,
+                query.values,
+                query.inverse_norm,
+                limit,
+                (0..rows.item_ids.len())
+                    .filter(|position| owner_ids.contains(&rows.owner_ids[*position])),
+            );
+        };
+        if let (Some((first, _)), Some((last, _))) =
+            (positions.first_key_value(), positions.last_key_value())
+        {
+            if first.0 == last.0 && owner_ids.contains(&first.0) {
+                return self.search_prepared_rows_with(dot, tenant_id, rows, query, limit);
+            }
+        }
+        let candidate_budget = limit
+            .saturating_mul(SIGNATURE_CANDIDATES_PER_HIT)
+            .clamp(SIGNATURE_MIN_CANDIDATES, SIGNATURE_MAX_CANDIDATES)
+            .min(rows.item_ids.len());
+        let exact_budget = candidate_budget.min(OWNER_EXACT_MAX_CANDIDATES);
+        if rows.signature_routing.is_none()
+            || Self::prefer_exact_owner_scope(rows, owner_ids, exact_budget)
+        {
+            return self.search_positions(
+                dot,
+                tenant_id,
+                rows,
+                query.values,
+                query.inverse_norm,
+                limit,
+                Self::owner_positions(rows, owner_ids),
+            );
+        }
         if let Some(routing) = &rows.signature_routing {
-            let candidate_budget = limit
-                .saturating_mul(SIGNATURE_CANDIDATES_PER_HIT)
-                .clamp(SIGNATURE_MIN_CANDIDATES, SIGNATURE_MAX_CANDIDATES)
-                .min(rows.item_ids.len());
             let mut heap = BinaryHeap::<Reverse<HeapHit>>::with_capacity(limit);
             let mut matched = 0usize;
             routing.visit_candidates(
@@ -1094,21 +1214,52 @@ impl EmbeddingIndex {
             }
         }
 
-        let mut heap = BinaryHeap::<Reverse<HeapHit>>::with_capacity(limit);
-        for position in 0..rows.item_ids.len() {
-            if owner_ids.contains(&rows.owner_ids[position]) {
-                self.score_position(
-                    dot,
-                    rows,
-                    query.values,
-                    query.inverse_norm,
-                    limit,
-                    position,
-                    &mut heap,
-                );
-            }
+        self.search_positions(
+            dot,
+            tenant_id,
+            rows,
+            query.values,
+            query.inverse_norm,
+            limit,
+            Self::owner_positions(rows, owner_ids),
+        )
+    }
+
+    fn prefer_exact_owner_scope(
+        rows: &TenantRows,
+        owner_ids: &HashSet<u64>,
+        budget: usize,
+    ) -> bool {
+        if owner_ids.len() <= OWNER_COUNT_PROBE_MAX_OWNERS {
+            return Self::owner_positions(rows, owner_ids)
+                .take(budget.saturating_add(1))
+                .count()
+                <= budget;
         }
-        Self::finish_search(tenant_id, rows, heap)
+        if owner_ids.len() > budget {
+            return false;
+        }
+        let Some(positions) = rows.positions.ordered() else {
+            return false;
+        };
+        owner_ids.iter().all(|owner| {
+            let mut range = positions.range((*owner, 0)..=(*owner, u64::MAX));
+            range.next();
+            range.next().is_none()
+        })
+    }
+
+    fn owner_positions<'a>(
+        rows: &'a TenantRows,
+        owner_ids: &'a HashSet<u64>,
+    ) -> impl Iterator<Item = usize> + 'a {
+        owner_ids.iter().flat_map(move |owner| {
+            rows.positions
+                .ordered()
+                .into_iter()
+                .flat_map(move |positions| positions.range((*owner, 0)..=(*owner, u64::MAX)))
+                .map(|(_, position)| *position)
+        })
     }
 
     fn search_positions<D: CompactDotProduct>(
@@ -1818,13 +1969,226 @@ mod tests {
     }
 
     #[test]
+    fn owner_ranges_match_exact_scoring_with_extreme_identity_values() {
+        let mut index = EmbeddingIndex::new(EmbeddingIndexConfig::new(2, 16)).unwrap();
+        for owner_id in [0, 1, u64::MAX] {
+            for item_id in [0, u64::MAX] {
+                index
+                    .upsert_batch(&[EmbeddingVector {
+                        key: EmbeddingKey {
+                            tenant_id: 7,
+                            owner_id,
+                            item_id,
+                        },
+                        values: &[1.0, if item_id == 0 { 0.5 } else { -0.5 }],
+                    }])
+                    .unwrap();
+            }
+        }
+        let owners = HashSet::from([1, u64::MAX]);
+        index
+            .tenants
+            .get_mut(&7)
+            .unwrap()
+            .positions
+            .reserve(OWNER_RANGE_MIN_ROWS);
+        let rows = &index.tenants[&7];
+        let query = PreparedEmbeddingQuery::new(&[1.0, 0.25]).unwrap();
+        let expected = index.search_positions(
+            &ScalarDotProduct,
+            7,
+            rows,
+            query.values,
+            query.inverse_norm,
+            3,
+            (0..rows.item_ids.len()).filter(|position| owners.contains(&rows.owner_ids[*position])),
+        );
+        let actual =
+            index.search_prepared_owner_rows_with(&ScalarDotProduct, 7, rows, query, 3, &owners);
+        assert_eq!(actual, expected);
+        assert_eq!(EmbeddingIndex::owner_positions(rows, &owners).count(), 4);
+        assert!(index
+            .search_prepared_owners(8, query, 3, &owners)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn owner_scope_probe_skips_dense_multi_owner_counts() {
+        let mut rows = TenantRows::default();
+        rows.positions.reserve(OWNER_RANGE_MIN_ROWS);
+        for owner in 0..32 {
+            for item in 0..100 {
+                rows.positions.insert((owner, item), 0);
+            }
+            rows.positions.insert((128 + owner, 0), 0);
+        }
+        assert!(EmbeddingIndex::prefer_exact_owner_scope(
+            &rows,
+            &HashSet::from([0]),
+            1024
+        ));
+        assert!(!EmbeddingIndex::prefer_exact_owner_scope(
+            &rows,
+            &(0..32).collect(),
+            1024
+        ));
+        assert!(EmbeddingIndex::prefer_exact_owner_scope(
+            &rows,
+            &(128..160).collect(),
+            1024
+        ));
+        assert!(!EmbeddingIndex::prefer_exact_owner_scope(
+            &rows,
+            &(128..160).collect(),
+            16
+        ));
+    }
+
+    #[test]
+    fn identity_index_promotes_without_losing_rows() {
+        let mut positions = IdentityPositions::default();
+        for item in 0..OWNER_RANGE_MIN_ROWS - 1 {
+            positions.insert(((item % 8) as u64, item as u64), item);
+        }
+        assert!(matches!(positions, IdentityPositions::Small(_)));
+        let last = OWNER_RANGE_MIN_ROWS - 1;
+        positions.insert(((last % 8) as u64, last as u64), last);
+        assert_eq!(positions.ordered().unwrap().len(), OWNER_RANGE_MIN_ROWS);
+        for item in 0..OWNER_RANGE_MIN_ROWS {
+            assert_eq!(
+                positions.get(&((item % 8) as u64, item as u64)),
+                Some(&item)
+            );
+        }
+        assert_eq!(positions.remove(&(0, 0)), Some(0));
+        assert!(!positions.contains_key(&(0, 0)));
+        positions.insert((u64::MAX, u64::MAX), 7);
+        assert_eq!(positions.get(&(u64::MAX, u64::MAX)), Some(&7));
+        let mut reserved = IdentityPositions::default();
+        reserved.insert((4, 7), 1);
+        reserved.reserve(OWNER_RANGE_MIN_ROWS);
+        assert_eq!(reserved.ordered().unwrap().get(&(4, 7)), Some(&1));
+    }
+
+    #[test]
+    fn vector_growth_keeps_bounded_spare_capacity() {
+        let mut rows = TenantRows::default();
+        let dimensions = 384;
+        let mut previous = 0;
+        for count in [1, 8, 512, 2_048, 8_192, 100_000] {
+            rows.reserve_vector_rows(count - previous, dimensions);
+            rows.vectors.resize(count * dimensions, 0);
+            if count == 1 {
+                assert!(rows.vectors.capacity() <= dimensions * 2);
+            }
+            assert!(rows.vectors.capacity() - rows.vectors.len() <= MAX_VECTOR_GROWTH_BYTES);
+            previous = count;
+        }
+        let capacity = rows.vectors.capacity();
+        rows.reserve_vector_rows(0, dimensions);
+        assert_eq!(rows.vectors.capacity(), capacity);
+    }
+
+    #[test]
+    fn uniform_owner_filters_preserve_unfiltered_ranking() {
+        let mut index = EmbeddingIndex::new(EmbeddingIndexConfig::new(2, 8)).unwrap();
+        for item_id in 0..4 {
+            index
+                .upsert_batch(&[EmbeddingVector {
+                    key: EmbeddingKey {
+                        tenant_id: 7,
+                        owner_id: 42,
+                        item_id,
+                    },
+                    values: &[1.0, item_id as f32],
+                }])
+                .unwrap();
+        }
+        index
+            .tenants
+            .get_mut(&7)
+            .unwrap()
+            .positions
+            .reserve(OWNER_RANGE_MIN_ROWS);
+        let query = PreparedEmbeddingQuery::new(&[1.0, 0.25]).unwrap();
+        let expected = index.search_prepared(7, query, 3).unwrap();
+        let hits = index
+            .search_prepared_owners(7, query, 3, &HashSet::from([42, 99]))
+            .unwrap();
+        assert_eq!(hits, expected);
+        assert!(index
+            .search_prepared_owners(7, query, 3, &HashSet::from([99]))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn owner_ranges_follow_updates_and_swap_removals() {
+        let mut index = EmbeddingIndex::new(EmbeddingIndexConfig::new(2, 16)).unwrap();
+        let keys: Vec<_> = (0..6)
+            .map(|item_id| EmbeddingKey {
+                tenant_id: 7,
+                owner_id: item_id % 3,
+                item_id,
+            })
+            .collect();
+        for key in &keys {
+            index
+                .upsert_batch(&[EmbeddingVector {
+                    key: *key,
+                    values: &[1.0, 0.0],
+                }])
+                .unwrap();
+        }
+        index
+            .tenants
+            .get_mut(&7)
+            .unwrap()
+            .positions
+            .reserve(OWNER_RANGE_MIN_ROWS);
+        index.remove(keys[0]);
+        index.remove(keys[2]);
+        index
+            .upsert_batch(&[EmbeddingVector {
+                key: keys[1],
+                values: &[0.0, 1.0],
+            }])
+            .unwrap();
+        for owner in 0..4 {
+            let owners = HashSet::from([owner]);
+            let rows = &index.tenants[&7];
+            let positions: Vec<_> = EmbeddingIndex::owner_positions(rows, &owners).collect();
+            assert_eq!(
+                positions.len(),
+                rows.owner_ids.iter().filter(|id| **id == owner).count()
+            );
+            for position in positions {
+                assert_eq!(rows.owner_ids[position], owner);
+                assert_eq!(
+                    *rows
+                        .positions
+                        .get(&(owner, rows.item_ids[position]))
+                        .unwrap(),
+                    position
+                );
+            }
+        }
+        let query = PreparedEmbeddingQuery::new(&[0.0, 1.0]).unwrap();
+        let hits = index
+            .search_prepared_owners(7, query, 2, &HashSet::from([1]))
+            .unwrap();
+        assert_eq!(hits[0].key, keys[1]);
+    }
+
+    #[test]
     fn routed_search_streams_the_same_hits_as_a_full_scan() {
         let dimensions = SIGNATURE_ROUTING_MIN_DIMENSIONS;
         let row_count = 256;
         let mut rows = TenantRows {
             owner_ids: vec![0; row_count],
             item_ids: (0..row_count as u64).collect(),
-            positions: HashMap::new(),
+            positions: IdentityPositions::default(),
             scales: vec![1.0 / 127.0; row_count],
             vectors: vec![1; row_count * dimensions],
             signature_routing: None,

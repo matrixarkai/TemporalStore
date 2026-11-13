@@ -142,6 +142,14 @@ jobs:
             -- --test-threads=1 2>&1 | tee /tmp/resource-chunk-content.log
           grep -q 'test result: ok\. 8 passed; 0 failed;' /tmp/resource-chunk-content.log
 
+      - name: Embedding owner search checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe llm_context::embedding_index::tests:: \
+            -- --test-threads=1 2>&1 | tee /tmp/embedding-owner-search.log
+          grep -q 'test result: ok\. 16 passed; 0 failed;' /tmp/embedding-owner-search.log
+
       - name: Inferred memory fact checks
         timeout-minutes: 30
         run: |
