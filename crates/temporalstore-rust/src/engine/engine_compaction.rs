@@ -308,6 +308,9 @@ pub(super) struct CompactionRewriteStats {
     pub(super) skipped_off_drain_set: usize,
     /// Blocks whose bytes could not be read, left where they are while the round carries on.
     pub(super) skipped_unreadable: usize,
+    /// Blocks `should_relocate` was asked about. A drain round is bounded by what its drain set
+    /// names, and this is what shows it: keys with no block on a drain slab are never asked.
+    pub(super) decisions: usize,
 }
 
 #[derive(Debug, Default)]
@@ -363,6 +366,7 @@ impl CompactionRewriteStats {
     /// open for the next one -- and a round kept open by blocks nobody will ever want moved never
     /// closes.
     pub(super) fn should_relocate(&mut self, address: &ElementEntry) -> bool {
+        self.decisions = self.decisions.saturating_add(1);
         if address.block_slab_id() == self.target_block_slab_id {
             return false;
         }
