@@ -2150,29 +2150,18 @@ impl DataNodeRuntime {
         }
     }
 
-    /// Sweep every loaded shard with a per-round bound, resuming each from where it stopped.
+    /// Sweep every loaded shard with a per-round bound.
     ///
-    /// `hot_limit` / `cold_limit` of 0 mean no limit, and then this is exactly
-    /// `sweep_expired_records`: the window reaches the end, returns no cursor, and the stored
-    /// cursor stays `None`. With a bound it takes a window per round and advances, which is what
-    /// keeps one tick from walking the whole deadline map.
+    /// `hot_limit` / `cold_limit` of 0 mean no limit. With a bound a round takes at most that many
+    /// due keys from the front of the deadline-ordered view, so there is nothing to resume: what
+    /// is due is always the front, and a key not reached this round is still there next round.
     pub fn sweep_expired_records_bounded(&self, hot_limit: usize, cold_limit: usize) -> usize {
         let shard_ids = self.inner.engine.loaded_shard_ids();
         let mut removed = 0usize;
         for shard_id in shard_ids {
-            let (hot_cursor, cold_cursor) = self
-                .inner
-                .expiry_cursors
-                .lock()
-                .expect("expiry cursor lock poisoned")
-                .get(&shard_id)
-                .cloned()
-                .unwrap_or((None, None));
             let Ok(report) = self.inner.engine.sweep_expired_records_with_request(
                 crate::engine::reports::ShardExpirySweepRequest {
                     shard_id,
-                    hot_cursor,
-                    cold_cursor,
                     max_hot_buckets_per_round: hot_limit,
                     max_cold_buckets_per_round: cold_limit,
                     load_cold_buckets: true,
@@ -2181,14 +2170,6 @@ impl DataNodeRuntime {
                 continue;
             };
             removed = removed.saturating_add(report.expired_records_removed);
-            self.inner
-                .expiry_cursors
-                .lock()
-                .expect("expiry cursor lock poisoned")
-                .insert(
-                    shard_id,
-                    (report.next_hot_cursor.clone(), report.next_cold_cursor.clone()),
-                );
         }
         let mut stats = self
             .inner

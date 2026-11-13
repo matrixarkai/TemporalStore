@@ -302,10 +302,6 @@ pub struct ShardExpirySweepReport {
     #[serde(default)]
     pub loaded_for_expire: usize,
     #[serde(default)]
-    pub next_hot_cursor: Option<String>,
-    #[serde(default)]
-    pub next_cold_cursor: Option<String>,
-    #[serde(default)]
     pub round_limit: usize,
     #[serde(default)]
     pub load_on_expire_only_when_needed: bool,
@@ -314,10 +310,6 @@ pub struct ShardExpirySweepReport {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShardExpirySweepRequest {
     pub shard_id: ShardId,
-    #[serde(default)]
-    pub hot_cursor: Option<String>,
-    #[serde(default)]
-    pub cold_cursor: Option<String>,
     #[serde(default)]
     pub max_hot_buckets_per_round: usize,
     #[serde(default)]
@@ -3433,10 +3425,6 @@ pub struct StorageManagerCycleRequest {
     pub max_expire_hot_buckets_per_round: usize,
     #[serde(default = "default_max_expire_cold_buckets_per_round")]
     pub max_expire_cold_buckets_per_round: usize,
-    #[serde(default)]
-    pub expire_hot_cursor: Option<String>,
-    #[serde(default)]
-    pub expire_cold_cursor: Option<String>,
     /// Periodic expiry includes released buckets unless explicitly disabled.
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub load_cold_buckets_for_expire: bool,
@@ -3727,8 +3715,6 @@ impl Default for StorageManagerCycleRequest {
             eviction_dump_before_evict: false,
             max_expire_hot_buckets_per_round: DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND,
             max_expire_cold_buckets_per_round: DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND,
-            expire_hot_cursor: None,
-            expire_cold_cursor: None,
             load_cold_buckets_for_expire: true,
             follower_replay_cursors: Vec::new(),
             raft_snapshot_refs: Vec::new(),

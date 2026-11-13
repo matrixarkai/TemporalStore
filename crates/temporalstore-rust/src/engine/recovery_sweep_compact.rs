@@ -1081,8 +1081,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
         //
         // `expiry_by_deadline` orders the same deadlines by deadline, so the due keys are a
         // PREFIX and the walk stops at the first one in the future. The cursors are no longer
-        // needed for correctness -- a due key is at the front, not somewhere ahead of a cursor --
-        // and the request/report fields are kept so the wire format does not change.
+        // needed -- a due key is at the front, not somewhere ahead of a cursor -- and the
+        // request and report fields that carried them are gone.
         let phase = std::time::Instant::now();
         crate::engine::ensure_expiry_order(shard);
         let hot_selected =
@@ -1094,8 +1094,6 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 !expiry_record_is_hot(shard, key)
             });
         EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.select, phase);
-        let next_hot_cursor: Option<String> = None;
-        let next_cold_cursor: Option<String> = None;
         let mut expired_records_removed = 0;
         let mut skipped_records = 0usize;
         // Both paths delete from retained metadata; neither reloads payloads or bucket indexes.
@@ -1330,8 +1328,6 @@ fn expiry_scan_budget(limit: usize) -> usize {
             scanned_records: hot_selected.len().saturating_add(cold_selected.len()),
             skipped_records,
             loaded_for_expire,
-            next_hot_cursor,
-            next_cold_cursor,
             round_limit: hot_limit.saturating_add(cold_limit),
             load_on_expire_only_when_needed: true,
         })
