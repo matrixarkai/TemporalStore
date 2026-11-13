@@ -681,6 +681,57 @@ fn a_warm_cache_survives_a_default_round_and_an_explicit_bound_still_drops_it() 
     );
 }
 
+/// THE CACHE-BOUND STAGE DUMPS NOTHING.
+///
+/// `reclaim_memory` invalidates cached blocks, which are copies; the data is in the log and the
+/// resident index whether or not a bucket was dumped. It used to run a whole lifecycle request that
+/// also dumped up to `max_dump_buckets_per_round` dirty buckets, so a stage named for memory spent
+/// the dump stage's I/O. Every other stage is switched off here, so the only thing that could
+/// shrink the dirty set is this one, and the count has to be the same on both sides while the cache
+/// is emptied.
+#[test]
+fn the_cache_bound_stage_drops_the_cache_and_dumps_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 400);
+    let engine = runtime.engine();
+    for index in 0..50 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("loop-{index:06}"),
+            },
+        });
+        assert!(response.status.ok);
+    }
+    let only_this_stage = StorageManagerOptions {
+        enable_prepare: false,
+        enable_wal_reclaim: false,
+        enable_expire: false,
+        enable_block_gc: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        enable_metrics_reap: false,
+        enable_evict: false,
+        cache_memory_bytes_pressure: 1,
+        ..StorageManagerOptions::default()
+    };
+    let (before, _) = runtime.storage_manager_pressure_snapshot(1, &only_this_stage);
+    assert!(before.dirty_bucket_count > 0, "the fixture has no dirty bucket, so a dump would show nothing");
+    assert!(before.cache_memory_bytes > 0, "the fixture never warmed the cache");
+    let report = runtime.run_storage_manager_once(1, only_this_stage.clone());
+    assert!(
+        report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
+        "the stage did not run: {:?}",
+        report.executed_stages
+    );
+    let (after, _) = runtime.storage_manager_pressure_snapshot(1, &only_this_stage);
+    assert_eq!(after.cache_memory_bytes, 0, "the cache was not dropped");
+    assert_eq!(
+        after.dirty_bucket_count, before.dirty_bucket_count,
+        "the cache-bound stage dumped dirty buckets"
+    );
+}
+
 /// Measurement harness, not a gate: `--ignored --nocapture`, one test thread, `LOOP_KEYS=<n>`,
 /// `LOOP_WRITES=<writes per round>`. A shard that takes writes between rounds is dirty at every
 /// round, so this prices what a round pays then, stage by stage and by the call site that walked.

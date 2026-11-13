@@ -1019,38 +1019,24 @@ impl DataNodeRuntime {
         // lowering the bound below the threshold lands on the wide arm, whose input this
         // invalidation would zero.
         if options.enable_memory_reclaim && cache_pressure {
-            let response = self.apply_storage_lifecycle_with_report_details(StorageLifecycleRequest {
-                item_amplification_full_dump_ppm: 0,
-                shard_id,
-                selected_dump_buckets: Vec::new(),
-                // The cap, not 0. This stage dumps before it invalidates, and an unbounded dump
-                // here made the cap `reclaim_wal` respects meaningless: measured, one round with
-                // every stage on dumped 1,280 of 1,280 dirty buckets, while `reclaim_wal` alone
-                // dumped exactly 64. Bounding is safe -- invalidation drops CACHED blocks, and the
-                // data is in the write-ahead log whether or not its bucket was dumped this round.
-                max_dump_buckets_per_round: options.max_dump_buckets_per_round,
-                min_undumped_wal_records: 0,
-                min_undumped_wal_bytes: 0,
-                purge_delayed_destroy: false,
-                purge_delayed_destroy_slab_ids: None,
-                prune_bucket_dump_manifests: false,
-                roll_forward_bucket_dump_installs: false,
-                follower_replay_cursors: options.follower_replay_cursors.clone(),
-                block_gc_shared_store_cursors: Vec::new(),
-                block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                block_gc_checkpoint_floor_slab_id: None,
-                block_gc_raft_install_floor_slab_id: None,
-                block_gc_delayed_destroy_grace_ms: 0,
-                invalidate_cache: true,
-                warm_cache: false,
-            }, detailed_report);
+            // NO DUMP AND NO PLAN. This stage used to run a whole lifecycle request with
+            // `invalidate_cache: true`: a plan walking the shard, then up to
+            // `max_dump_buckets_per_round` bucket dumps, then the invalidation. The invalidation
+            // drops COPIES -- every cached block is also in the resident index or a slab, and every
+            // write is in the log whether or not its bucket was dumped -- so the dump bought
+            // nothing here and the plan only named what it would dump. Relieving memory by
+            // dumping is what the reclaim_wal stage's bound is for.
+            //
+            // The retain floors of the stages after this one read the last `lifecycle_report`'s
+            // dump manifest. This stage no longer replaces it, so they read an older manifest:
+            // a lower floor, which retains more and never less.
+            self.inner.engine.invalidate_shard_cache(shard_id);
             let mut stats = self
                 .inner
                 .stats
                 .lock()
                 .expect("runtime stats lock poisoned");
             stats.storage_manager_reclaim_memory_runs += 1;
-            lifecycle_report = Some(response.report);
             executed_stages.push("reclaim_memory".to_string());
         } else if !options.enable_memory_reclaim {
             skipped_stages.push("reclaim_memory_disabled".to_string());

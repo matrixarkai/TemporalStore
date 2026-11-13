@@ -2219,6 +2219,19 @@ impl TemporalEngine {
         report
     }
 
+    /// Drop this shard's cached blocks and nothing else.
+    ///
+    /// The cache holds copies: every block it serves is also in the shard's resident index or its
+    /// slab, and every write is in the write-ahead log whether or not its bucket has been dumped.
+    /// Invalidating it therefore needs no dump first and no lifecycle plan, which walks the shard
+    /// to say what it would dump. Returns (memory entries removed, disk bytes removed).
+    pub fn invalidate_shard_cache(&self, shard_id: ShardId) -> (usize, u64) {
+        self.cache
+            .invalidate_shard(shard_id)
+            .map(|report| (report.memory_entries_removed, report.disk_bytes_removed))
+            .unwrap_or_default()
+    }
+
     pub fn apply_storage_eviction(
         &self,
         shard_id: ShardId,
