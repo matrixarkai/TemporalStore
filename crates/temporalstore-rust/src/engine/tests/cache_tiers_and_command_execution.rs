@@ -5346,16 +5346,17 @@ fn control_state_distinct_sketch_bounds_high_cardinality() {
     fn distinct_count(gate: bool, n: usize) -> i64 {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
-        if gate {
-            let mut config = Config {
-                version: 2,
-                ..Config::default()
-            };
-            config
-                .extend_config
-                .insert("control_distinct_sketch".to_string(), "on".to_string());
-            assert!(engine.set_config(SetConfigRequest { shard_id: 1, config }).ok);
-        }
+        // Both arms are set explicitly: the sketch is ON by default, so leaving the gate-off arm
+        // unset would silently measure the default and not the opt-out.
+        let mut config = Config {
+            version: 2,
+            ..Config::default()
+        };
+        config.extend_config.insert(
+            "control_distinct_sketch".to_string(),
+            if gate { "on" } else { "off" }.to_string(),
+        );
+        assert!(engine.set_config(SetConfigRequest { shard_id: 1, config }).ok);
         for i in 0..n {
             engine.execute(ExecuteRequest {
                 shard_id: 1,
