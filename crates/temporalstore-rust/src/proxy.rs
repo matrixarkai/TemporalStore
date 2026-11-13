@@ -884,6 +884,14 @@ pub struct ProxySequenceQueryCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyCellRollupCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub spec: crate::types::CellRollupSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyCellRankQueryCommandRequest {
     pub namespace: String,
     pub table_name: String,

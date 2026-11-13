@@ -8295,6 +8295,7 @@ mod tests {
         ("SequenceQuery", std::mem::size_of::<(String, u64, u64, usize, Vec<FeatureFilter>)>()),
         ("SequenceBatchQuery", std::mem::size_of::<(Vec<SequenceQuerySpec>)>()),
         ("CellRankQuery", std::mem::size_of::<(String, CellRankSpec)>()),
+        ("CellRollup", std::mem::size_of::<(String, CellRollupSpec)>()),
         ("ControlStateIncrement", std::mem::size_of::<(String, u64, i64)>()),
         ("ControlStateIncrementWithOptions", std::mem::size_of::<(String, u64, i64, Option<u64>, Option<u64>)>()),
         ("ControlStateChangeAdd", std::mem::size_of::<(String, u64, Vec<u8>, Option<u64>, Option<u64>)>()),

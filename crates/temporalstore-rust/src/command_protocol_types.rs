@@ -262,6 +262,40 @@ pub struct CellRankSpec {
     pub project: Vec<String>,
 }
 
+/// Keep the best `keep` cells of each group of a rolled snapshot. Cells are grouped by the value
+/// of the label `group_by` (all cells are one group when it is `None`), scored by `score`, and
+/// ties break by member, smaller first.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CellCapSpec {
+    #[serde(default)]
+    pub group_by: Option<String>,
+    pub score: CellScore,
+    pub keep: usize,
+}
+
+/// Roll the snapshots stamped strictly below `older_than_ms` up into buckets of `bucket_ms`, each
+/// stored at its bucket start, and optionally cap each rolled snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CellRollupSpec {
+    pub older_than_ms: u64,
+    pub bucket_ms: u64,
+    #[serde(default)]
+    pub cap: Option<CellCapSpec>,
+}
+
+/// What a rollup did, as the client reports it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CellRollupSummary {
+    /// Snapshots the key held before and after, over the whole series.
+    pub snapshots_before: u64,
+    pub snapshots_after: u64,
+    /// Cells in the snapshots below the cutoff, before and after; the others are not read.
+    pub cells_before: u64,
+    pub cells_after: u64,
+    /// Cells the cap removed.
+    pub cells_dropped: u64,
+}
+
 /// A member as a read returns it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -1776,6 +1810,12 @@ pub enum Command {
         key: String,
         spec: CellRankSpec,
     },
+    /// Rolls the old cell snapshots under `key` up into coarser buckets and optionally caps each
+    /// rolled snapshot. A write: the series below the cutoff is replaced.
+    CellRollup {
+        key: String,
+        spec: CellRollupSpec,
+    },
     ControlStateIncrement {
         key: String,
         timestamp_ms: u64,
@@ -2913,6 +2953,14 @@ pub enum CommandResponse {
     },
     CellRanking {
         ranked: RankedCells,
+    },
+    /// What a rollup did: snapshots and cells before and after, and the cells the cap removed.
+    CellRollupReceipt {
+        snapshots_before: u64,
+        snapshots_after: u64,
+        cells_before: u64,
+        cells_after: u64,
+        cells_dropped: u64,
     },
     ContextNode {
         object_key: String,

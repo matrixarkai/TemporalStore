@@ -565,6 +565,15 @@ jobs:
             engine::cell_rollup::tests::a_bucket_over_the_snapshot_cell_limit_is_refused_and_one_at_the_limit_is_folded \
             engine::cell_rollup::tests::a_request_the_key_cannot_serve_is_refused_naming_what_was_wrong \
             engine::cell_rollup::tests::a_bytes_member_cannot_be_scored_by_member_and_is_otherwise_rolled_like_any_other \
+            engine::tests::a_cell_rollup_is_a_command::a_ranking_over_the_rolled_buckets_answers_what_it_answered_over_the_snapshots_they_replaced \
+            engine::tests::a_cell_rollup_is_a_command::a_cold_reload_reads_the_rolled_bytes_and_rolling_again_changes_nothing \
+            engine::tests::a_cell_rollup_is_a_command::replaying_the_log_reaches_the_bytes_the_live_engine_reached \
+            engine::tests::a_cell_rollup_is_a_command::the_same_request_on_two_engines_leaves_the_same_bytes \
+            engine::tests::a_cell_rollup_is_a_command::a_request_the_key_cannot_serve_is_refused_and_writes_nothing \
+            engine::tests::a_cell_rollup_is_a_command::each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it \
+            engine::tests::a_cell_rollup_is_a_command::an_absent_key_and_an_expired_key_roll_nothing_up \
+            engine::tests::a_cell_rollup_is_a_command::a_rollup_is_a_write_the_log_can_carry_in_every_score_spelling \
+            engine::tests::a_cell_rollup_is_a_command::a_worked_example_of_a_rollup \
             engine::tests::what_a_high_cardinality_distinct_holds::an_unbounded_distinct_holds_every_member_and_the_bound_holds_a_fixed_sketch \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::an_ordered_read_answers_by_score_whatever_the_window \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::a_score_update_reorders_an_ordered_read \
