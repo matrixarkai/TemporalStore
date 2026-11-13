@@ -3154,81 +3154,51 @@ pub(super) fn sync_context_blocks_for_object(
     if let Some(address) = shard.context_nodes().get(object_key) {
         groups.push(("context_node", object_key.to_string(), vec![address.clone()]));
     }
-    // THE EVENT SERIES IS NO LONGER THE SAME TYPE AS THE OTHER FIVE, so it cannot ride in the
-    // array below -- an array needs one element type, and this coupling is exactly the "all six or
-    // none" the series trait was introduced to break. Lifted out, with the SAME selection rule.
-    //
-    // THE RULE IS `max_by` OVER THE ADDRESS ORDERING AND NOT THE LAST INSTANT. Those are different
-    // answers: the loop below takes the greatest (slab, offset, length), which is what the
-    // deduplicated sorted list it replaced ended on, and the greatest INSTANT is a different
-    // address whenever a later point was written to an earlier slab. Written as `next_back()`
-    // first, which is the ordering this representation makes convenient rather than the one the
-    // caller needs.
-    // THE NEWEST ADDRESS A SERIES HOLDS, over whichever representation holds it.
-    //
-    // Three callers below want exactly this and they no longer agree on the container:
-    // `context_events` and `context_indexes` hold the owned sorted array, the four maps after them
-    // still hold a B-tree a key. Taken through the shared trait, so the answer cannot drift between
-    // the one written twice and the one written once.
-    //
-    // ONLY THE NEWEST BLOCK IS FILED, which is what makes a maximum sufficient: the caller pops the
-    // last address and drops the rest, because these kinds carry no element name and the index holds
-    // one ref per object. Collecting every address the series ever held, into a HashSet and then a
-    // sorted Vec, made a write carry the node's whole history -- 8,322 bytes to add a summary to a
-    // node holding 20, 78,626 to add one to a node holding 320, 90.7% of the write and still
-    // climbing. The maximum equals the last element of that deduplicated sorted list, so this is
-    // the same address by the same ordering, without the set or the sort.
-    fn newest_filed_address<S>(series: &S) -> Option<ElementEntry>
+    // This is the exact-set fallback. Ordinary appends use ContextSeriesBefore
+    // and publish only their new frames; replacement/removal paths retain every live frame.
+    fn live_filed_addresses<S>(series: &S) -> Option<Vec<ElementEntry>>
     where
         S: super::timestamped_series::TimestampedSeries,
     {
-        series
-            .addresses()
-            .max_by(|left, right| {
-                left.block_slab_id()
-                    .cmp(&right.block_slab_id())
-                    .then(left.offset().cmp(&right.offset()))
-                    .then(left.length().cmp(&right.length()))
-            })
-            .cloned()
+        Some(series.addresses().cloned().collect())
     }
 
-    if let Some(newest) = shard
+    if let Some(live) = shard
         .context_events()
         .get(object_key)
-        .and_then(newest_filed_address)
+        .and_then(live_filed_addresses)
     {
-        groups.push(("context_event", object_key.to_string(), vec![newest]));
+        groups.push(("context_event", object_key.to_string(), live));
     }
     // `context_indexes` IS NOT IN THE LITERAL BELOW, because it no longer shares a type with the
     // four that are. Pulled out rather than converted at the call, so this files from the array it
     // holds instead of building a B-tree to read once and drop -- the same split `context_events`
     // above already has, for the same reason.
-    if let Some(newest) = shard
+    if let Some(live) = shard
         .context_indexes()
         .get(object_key)
-        .and_then(newest_filed_address)
+        .and_then(live_filed_addresses)
     {
-        groups.push(("context_index", object_key.to_string(), vec![newest]));
+        groups.push(("context_index", object_key.to_string(), live));
     }
     // `context_children` IS NOT IN THE LITERAL ANY MORE, for the reason `context_events` and
     // `context_indexes` are not: it lives in the consolidated map now, so its value type is
     // `ObjectSlot` and the literal's members must share one. Pulled out rather than converted at
     // the call, so this files from the slot it holds.
-    if let Some(newest) = shard
+    if let Some(live) = shard
         .context_children()
         .get(object_key)
-        .and_then(newest_filed_address)
+        .and_then(live_filed_addresses)
     {
-        groups.push(("context_child", object_key.to_string(), vec![newest]));
+        groups.push(("context_child", object_key.to_string(), live));
     }
     for (kind, series) in [
         ("context_audit", shard.context_audits()),
         ("context_summary", shard.context_summaries()),
         ("context_compression", shard.context_compressions()),
     ] {
-        if let Some(newest) = series.get(object_key).and_then(newest_filed_address) {
-            groups.push((kind, object_key.to_string(), vec![newest]));
+        if let Some(live) = series.get(object_key).and_then(live_filed_addresses) {
+            groups.push((kind, object_key.to_string(), live));
         }
     }
     // Entities live grouped by node but index one entry per entity, under the composed key.
@@ -3320,27 +3290,7 @@ pub(super) fn sync_context_blocks_for_object(
         uncovered_maintenance::note(object_key);
         return false;
     }
-    for (kind, key, mut live) in groups {
-        // File the newest block, not every block the object has ever had.
-        //
-        // These kinds carry no element name, so all of an object's blocks file under the same
-        // (kind, key, None). `upsert_bucket_index_block_with` drops that entry's existing refs
-        // before inserting, so filing a list leaves only its last element -- the other entries
-        // are removed again on the way past. The index holds ONE ref per object here either way;
-        // this reaches it without the removals and inserts in between.
-        //
-        // That is worth stating plainly because the list is the object's whole series and this
-        // runs on every write: a node holding 850 events re-filed 850 blocks to add its 851st, so
-        // filling a node cost the square of its length -- 2,072 allocations per message at 50
-        // events, 23,822 at 800.
-        //
-        // Whether the index SHOULD hold every block of a series rather than the newest is a
-        // separate question. It holds one today, and this keeps that.
-        if live.len() > 1 {
-            let newest = live.pop().expect("length checked");
-            live.clear();
-            live.push(newest);
-        }
+    for (kind, key, live) in groups {
         sync_bucket_index_object_blocks(shard, shard_id, kind, &key, live, true);
     }
     true
@@ -7353,6 +7303,24 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     shard: &mut ShardState,
     warm: Option<(&MultiLayerCache, ShardId)>,
 ) {
+    reconcile_secondary_views_inner(block_store, shard, warm, warm.map(|(_, id)| id));
+}
+
+pub(super) fn reconcile_secondary_views_for_shard(
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    warm: Option<(&MultiLayerCache, ShardId)>,
+) {
+    reconcile_secondary_views_inner(block_store, shard, warm, Some(shard_id));
+}
+
+fn reconcile_secondary_views_inner(
+    block_store: &BlockStore,
+    shard: &mut ShardState,
+    warm: Option<(&MultiLayerCache, ShardId)>,
+    read_shard: Option<ShardId>,
+) {
     if shard.bucket_index.bucket_map.is_empty() {
         return;
     }
@@ -7421,7 +7389,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut features =
         HashMap::<std::sync::Arc<str>, super::object_record::ObjectSlot>::new();
     let mut control_state = HashMap::<super::state::ModelKey, BTreeMap<u64, i64>>::new();
-    let mut control_state_blocks = HashMap::new();
+    let mut control_state_blocks = HashMap::<Arc<str>, ElementEntry>::new();
     // SLOTS, as every other context kind's accumulator is now.
     let mut context_events = HashMap::<std::sync::Arc<str>, super::object_record::ObjectSlot>::new();
     let mut context_event_timeline = HashMap::<std::sync::Arc<str>, BTreeMap<u64, u64>>::new();
@@ -7471,6 +7439,9 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         HashMap::<std::sync::Arc<str>, super::object_record::ObjectSlot>::new();
 
     for entry in entries {
+        let read_identity = read_shard.map(|id| (
+            id, stable_block_object_id(id, entry.kind.as_str(), &entry.object_key),
+        ));
         match entry.kind.as_str() {
             "string" => {
                 saw_strings = true;
@@ -7521,6 +7492,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 saw_features = true;
                 insert_timestamped_secondary_view(
                     block_store,
+                    read_identity,
                     warm_shard,
                     &mut warm_batch,
                     &mut features,
@@ -7537,6 +7509,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 saw_features = true;
                 insert_timestamped_secondary_view(
                     block_store,
+                    read_identity,
                     warm_shard,
                     &mut warm_batch,
                     &mut features,
@@ -7551,7 +7524,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             }
             "control_state" => {
                 saw_control_state = true;
-                if let Ok(bytes) = block_store.read(&entry.address) {
+                if let Some(bytes) = read_block_for_view_rebuild(block_store, &entry.address, read_identity) {
                     if let Some(shard_id) = warm_shard {
                         let key = CacheKey::page_with_slot(
                             shard_id,
@@ -7583,6 +7556,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 saw_context_events = true;
                 insert_context_event_views(
                     block_store,
+                    read_identity,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_events,
@@ -7600,6 +7574,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 saw_context_indexes = true;
                 insert_timestamped_secondary_view(
                     block_store,
+                    read_identity,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_indexes,
@@ -7616,6 +7591,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 saw_context_audits = true;
                 insert_timestamped_secondary_view(
                     block_store,
+                    read_identity,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_audits,
@@ -7646,6 +7622,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 saw_context_children = true;
                 insert_timestamped_secondary_view(
                     block_store,
+                    read_identity,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_children,
@@ -7664,6 +7641,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 saw_context_summaries = true;
                 insert_timestamped_secondary_view(
                     block_store,
+                    read_identity,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_summaries,
@@ -7680,6 +7658,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 saw_context_compressions = true;
                 insert_timestamped_secondary_view(
                     block_store,
+                    read_identity,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_compressions,
@@ -7844,21 +7823,16 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         let mut merged = control_state;
         merged.extend(persisted);
         *shard.control_state_mut() = merged;
-        // CONVERTED AT THE BOUNDARY, so the walk that built this map keeps producing bare
-        // addresses and no reconcile site moves. Each address becomes a record whose other slots
-        // are default -- which is correct here: a reconcile re-derives addresses from the bucket
-        // index and has no deadline or dirty state to carry, and the dirty flags are cleared on
-        // load anyway.
-        shard.set_all_control_state_blocks(
-            control_state_blocks
-                .into_iter()
-                .map(|(key, address)| {
-                    let mut record = super::object_record::ObjectRecord::default();
-                    record.set_address(&address);
-                    (key, record.into())
-                })
-                .collect(),
-        );
+        // Refresh addresses without discarding the slot's metadata or block ownership.
+        let blocks = control_state_blocks
+            .into_iter()
+            .map(|(key, address)| {
+                let mut slot = shard.remove_control_state_block(&key).unwrap_or_default();
+                slot.set_address(&address);
+                (key, slot)
+            })
+            .collect();
+        shard.set_all_control_state_blocks(blocks);
         // The rollup ladder is a derived view of control_state; drop it so it rebuilds
         // lazily from the series reconcile just materialized.
         super::control_rollup::clear_all(shard);
@@ -7991,19 +7965,31 @@ pub fn reset_view_rebuild_block_failure_counts() {
 /// reads through the seam and nothing exercised the arm that runs in production. A torn block is
 /// producible on demand -- truncate the slab files the store was written into -- so the seam was
 /// buying a `cfg(test)` hook to cover a path it is not on. The guards tear the files instead.
-fn read_block_for_view_rebuild(block_store: &BlockStore, address: &ElementEntry) -> Option<Vec<u8>> {
-    match block_store.read(address) {
-        Ok(bytes) => Some(bytes),
-        Err(_) => {
-            VIEW_REBUILD_BLOCK_READ_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            None
+fn read_block_for_view_rebuild(
+    block_store: &BlockStore,
+    address: &ElementEntry,
+    identity: Option<(ShardId, u64)>,
+) -> Option<Vec<u8>> {
+    if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
+        if let Ok(bytes) = block_store.read(address) {
+            return Some(bytes);
         }
     }
+    if let Some((shard_id, object_id)) = identity {
+        if let Some(bytes) = super::block_in_wal::read_block_at(
+            block_store, shard_id, object_id, None, address,
+        ) {
+            return Some(bytes);
+        }
+    }
+    VIEW_REBUILD_BLOCK_READ_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn insert_timestamped_secondary_view<K, S>(
     block_store: &BlockStore,
+    read_identity: Option<(ShardId, u64)>,
     warm_shard: Option<ShardId>,
     warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
     target: &mut HashMap<K, S>,
@@ -8029,7 +8015,7 @@ where
     // `context_events` or `context_indexes`: both are `skip_serializing` on `ShardState`
     // (`engine_storage_state.rs`), so the persisted map is EMPTY by construction and this derived view is the only
     // copy. A swallowed read there does not degrade an answer, it removes the events.
-    let bytes = read_block_for_view_rebuild(block_store, &address);
+    let bytes = read_block_for_view_rebuild(block_store, &address, read_identity);
     // Fold the disk->memory promotion into the load read we already perform here.
     // page_store.read is mutex-serialized, so a separate post-load warm pass would
     // re-read every block under the same lock; collect the bytes we just read for a
@@ -8109,6 +8095,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub(super) fn insert_context_event_views<K, S>(
     block_store: &BlockStore,
+    read_identity: Option<(ShardId, u64)>,
     warm_shard: Option<ShardId>,
     warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
     // GENERIC OVER THE SERIES AND THE KEY, which is a change of mind from this branch's first
@@ -8132,7 +8119,7 @@ pub(super) fn insert_context_event_views<K, S>(
     // Through the same seam, counted the same way, and for the sharper reason: `context_events`
     // and `context_event_timeline` are rebuilt here and the primary map is `skip_serializing`, so
     // there is no durable copy behind this derived one.
-    let bytes = read_block_for_view_rebuild(block_store, &address);
+    let bytes = read_block_for_view_rebuild(block_store, &address, read_identity);
     if let (Some(shard_id), Some(bytes)) = (warm_shard, bytes.as_ref()) {
         let key = CacheKey::page_with_slot(
             shard_id,

@@ -3663,7 +3663,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     let binary = encode_index_bytes(&shard);
 
     assert!(binary.starts_with(b"TSIDX\x01"), "binary payload must ride the container");
-    assert_eq!(binary[6], 2, "payload codec id");
+    assert_eq!(binary[6], crate::engine::INDEX_CODEC_ZSTD_MSGPACK, "payload codec id");
 
     // Exact round-trip: the durable image has to come back as the same state, not merely a
     // plausible one -- so compare the maps, not just that it decoded.

@@ -1137,6 +1137,24 @@ pub struct LocalWriteAheadLogStore {
     flat_append: Arc<AtomicBool>,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct DumpGrowthPosition {
+    bytes: u128,
+    objects: u128,
+}
+
+/// Process-local growth captured with one checkpoint, scoped to its WAL namespace.
+#[derive(Debug, Clone)]
+pub(crate) struct WalDumpFence {
+    store: std::sync::Weak<Mutex<WriteAheadLogInner>>,
+    shard_id: ShardId,
+    position: DumpGrowthPosition,
+}
+
+#[cfg(test)]
+#[path = "wal_dump_fence_tests.rs"]
+mod dump_fence_tests;
+
 /// Identifies one log owner without extending its files' lifetime through a derived cache.
 #[derive(Debug, Clone)]
 pub(crate) struct WriteAheadLogIdentity {
@@ -1255,6 +1273,8 @@ struct WriteAheadLogInner {
     /// what delaying a dump actually costs, and it is the same number whichever way the writer
     /// grouped the writes.
     undumped_objects_by_shard: HashMap<ShardId, u64>,
+    /// Absolute retired growth makes repeated and out-of-order publications idempotent.
+    dumped_growth_by_shard: HashMap<ShardId, DumpGrowthPosition>,
     /// Per shard: how far the ACTIVE segment has actually been made durable, and the highest
     /// sequence covered by that barrier.
     ///
@@ -1321,6 +1341,7 @@ impl LocalWriteAheadLogStore {
                 last_sequence_by_shard: HashMap::new(),
                 undumped_bytes_by_shard: HashMap::new(),
                 undumped_objects_by_shard: HashMap::new(),
+                dumped_growth_by_shard: HashMap::new(),
                 durable_active_bytes_by_shard: HashMap::new(),
                 block_last_record_by_shard: HashMap::new(),
                 block_mode_by_shard: HashMap::new(),
@@ -3086,14 +3107,55 @@ impl LocalWriteAheadLogStore {
             .unwrap_or(0)
     }
 
-    /// Record that a dump captured this shard's log, resetting its undumped growth to 0.
-    ///
-    /// Called only once the dump manifest is durably written, so the counter never clears past
-    /// state a crash could lose -- a restart mid-dump re-dumps rather than skipping.
-    pub fn mark_dumped(&self, shard_id: ShardId) {
+    /// Observe growth only when the log has no newer record than the captured image.
+    /// No file scan or per-record bookkeeping is needed. A frozen image behind the
+    /// tail receives no fence, so publishing it cannot erase newer dump debt.
+    pub(crate) fn capture_dump_fence(
+        &self,
+        shard_id: ShardId,
+        through_sequence: u64,
+    ) -> Option<WalDumpFence> {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        if inner.last_sequence_by_shard.get(&shard_id).copied().unwrap_or(0) > through_sequence {
+            return None;
+        }
+        let retired = inner.dumped_growth_by_shard.get(&shard_id).copied().unwrap_or_default();
+        Some(WalDumpFence {
+            store: Arc::downgrade(&self.inner),
+            shard_id,
+            position: DumpGrowthPosition {
+                bytes: retired.bytes + u128::from(inner.undumped_bytes_by_shard.get(&shard_id).copied().unwrap_or(0)),
+                objects: retired.objects + u128::from(inner.undumped_objects_by_shard.get(&shard_id).copied().unwrap_or(0)),
+            },
+        })
+    }
+
+    /// Retire only captured growth after durable publication. Later appends stay owed.
+    /// A fence from another WAL namespace is refused without changing either counter.
+    pub(crate) fn mark_dumped_through(&self, fence: &WalDumpFence) -> bool {
+        if !std::sync::Weak::ptr_eq(&fence.store, &Arc::downgrade(&self.inner)) {
+            return false;
+        }
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        inner.undumped_bytes_by_shard.insert(shard_id, 0);
-        inner.undumped_objects_by_shard.insert(shard_id, 0);
+        let shard_id = fence.shard_id;
+        let retired = inner.dumped_growth_by_shard.get(&shard_id).copied().unwrap_or_default();
+        let bytes = inner.undumped_bytes_by_shard.get(&shard_id).copied().unwrap_or(0);
+        let objects = inner.undumped_objects_by_shard.get(&shard_id).copied().unwrap_or(0);
+        let covered_bytes = fence.position.bytes.saturating_sub(retired.bytes).min(u128::from(bytes)) as u64;
+        let covered_objects = fence.position.objects.saturating_sub(retired.objects).min(u128::from(objects)) as u64;
+        inner.undumped_bytes_by_shard.insert(shard_id, bytes - covered_bytes);
+        inner.undumped_objects_by_shard.insert(shard_id, objects - covered_objects);
+        inner.dumped_growth_by_shard.insert(shard_id, DumpGrowthPosition {
+            bytes: retired.bytes + u128::from(covered_bytes),
+            objects: retired.objects + u128::from(covered_objects),
+        });
+        true
+    }
+
+    /// Retire growth observed at this call. Checkpoint publishers use their captured fence instead.
+    pub fn mark_dumped(&self, shard_id: ShardId) {
+        let fence = self.capture_dump_fence(shard_id, u64::MAX).expect("unbounded dump fence");
+        self.mark_dumped_through(&fence);
     }
 
     pub fn stats(&self, shard_id: ShardId) -> WriteAheadLogStats {

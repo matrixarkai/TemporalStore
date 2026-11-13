@@ -149,7 +149,7 @@ fn a_shard_that_was_never_stamped_is_written_as_msgpack_and_reads_back_current()
 
     let bytes = serialize_index(&shard);
     assert!(bytes.starts_with(b"TSIDX\x01"), "served index must be the container");
-    assert_eq!(bytes[6], 2, "an unstamped shard must be written as msgpack (codec 2), not JSON (codec 1)");
+    assert_eq!(bytes[6], crate::engine::INDEX_CODEC_ZSTD_MSGPACK, "an unstamped shard must use the current binary codec, not JSON");
 
     let decoded = decode_index_bytes(&bytes).expect("the image decodes");
     assert!(decoded.strings().contains_key("stamp-probe"), "the content must survive");

@@ -223,7 +223,7 @@ pub(super) struct ShardState {
     /// A stale entry costs a miss, never wrong bytes. The resolver reads the record at that log
     /// id and looks for the object inside it, so a reclaimed record or a superseded block simply
     /// is not found, and the read falls through exactly as it did before this existed.
-    #[serde(default)]
+    #[serde(default, with = "super::wal_locator_wire")]
     pub(super) wal_resident_blocks: BTreeMap<u64, WalResidentBlock>,
     /// Routing buckets whose derived runtime flags may be stale, so a write can refresh the
     /// buckets it touched instead of sweeping the shard.
@@ -1305,6 +1305,12 @@ impl<'de> Deserialize<'de> for CoreIndex {
                 // relied on to.
                 index.object_element_name_block_refs = Some(0);
                 for (routing_bucket, decoded) in buckets.unwrap_or_default() {
+                    for (object_key, record) in decoded.object_records {
+                        let rows = index.objects.entry(super::storage_bucket_internals::StoredModelKind::String).or_default();
+                        if rows.insert(object_key, super::object_record::ObjectSlot::from_record(record)).is_some() {
+                            return Err(M::Error::custom("duplicate embedded object record"));
+                        }
+                    }
                     for (handle, object_key) in &decoded.block_keys {
                         // THE BLOCK IS LOOKED UP BY THE HANDLE IT WAS FILED UNDER rather than
                         // carried beside its key, so the entry the lookup records is the entry the
@@ -1761,6 +1767,7 @@ impl Serialize for CoreIndex {
             &BucketMapAt {
                 buckets: &self.bucket_map,
                 keys: &keys,
+                index: self,
             },
         )?;
         // TWO FIELDS NOW, AND THE COUNT IS PART OF THE ENCODING: the served index is msgpack
@@ -1768,7 +1775,7 @@ impl Serialize for CoreIndex {
         // `objects` moved in from `ShardState`'s top level so the inversion above can be composed
         // from it. Same key spelling, same value bytes, different parent map -- which is the whole
         // of what the `SHARD_INDEX_FORMAT_VERSION` step pays for.
-        index.serialize_field("objects", &self.objects)?;
+        index.serialize_field("objects", &super::checkpoint_object_rows::ObjectRows { index: self, keys: &keys })?;
         // THE FOUR CONTAINER MAPS, AND LEAVING THEM OUT IS SILENT DATA LOSS.
         //
         // They were top-level `ShardState` fields with `#[serde(default)]`, so a derive wrote
@@ -1801,6 +1808,7 @@ impl Serialize for CoreIndex {
 struct BucketMapAt<'a> {
     buckets: &'a BucketMap,
     keys: &'a BlockKeysByPosition<'a>,
+    index: &'a CoreIndex,
 }
 
 impl Serialize for BucketMapAt<'_> {
@@ -1816,6 +1824,7 @@ impl Serialize for BucketMapAt<'_> {
                 &BucketNodeAt {
                     node,
                     keys: self.keys,
+                    index: self.index,
                 },
             )?;
         }
@@ -1843,6 +1852,7 @@ impl Serialize for BucketMapAt<'_> {
 struct BucketNodeAt<'a> {
     node: &'a BucketNode,
     keys: &'a BlockKeysByPosition<'a>,
+    index: &'a CoreIndex,
 }
 
 impl Serialize for BucketNodeAt<'_> {
@@ -1852,7 +1862,7 @@ impl Serialize for BucketNodeAt<'_> {
     {
         serialize_bucket_node(
             self.node,
-            &BlockIndexAt { node: self.node, keys: self.keys },
+            &BlockIndexAt { node: self.node, keys: self.keys, index: self.index },
             serializer,
         )
     }
@@ -4682,21 +4692,33 @@ impl FromIterator<(Arc<str>, BlockIndex)> for BlockIndexMap {
 /// UNACCOUNTED, as it always was: this is how a `ShardState` arrives from serde and the live tally
 /// is derived AFTER a load by `reconcile_block_slab_live`. Charging here would count a loaded index
 /// twice over.
+struct DecodedBlockIndex {
+    block_index: BlockIndexMap,
+    block_keys: Vec<(u64, Arc<str>)>,
+    object_records: Vec<(Arc<str>, super::object_record::ObjectRecord)>,
+}
+
 fn block_index_and_identities(
     flat: BTreeMap<String, StoredBlockEntry>,
-) -> Result<(BlockIndexMap, Vec<(u64, Arc<str>)>), String> {
+) -> Result<DecodedBlockIndex, String> {
     let mut map = BlockIndexMap::default();
     let mut identities = Vec::with_capacity(flat.len());
+    let mut object_records = Vec::new();
     // INTO_ITER AND NOT INTO_VALUES, WHICH IS THE WHOLE CHANGE ON THIS SIDE. The stored map's keys
     // were thrown away here, which is why #2350 could measure that the characters of a block key
     // are not read back: they reached this loop and were dropped. They are the SOURCE now.
     for (key, stored) in flat {
+        let mut stored = stored;
+        let metadata = stored.object_record.take();
         let (object_key, block) = stored.into_parts_from_key(&key)?;
+        if let Some(record) = metadata {
+            object_records.push((Arc::clone(&object_key), super::checkpoint_object_rows::restore_record(record, &block)?));
+        }
         let handle = block_index_handle(&object_key, &block);
         map.insert_unaccounted(handle, block);
         identities.push((handle, object_key));
     }
-    Ok((map, identities))
+    Ok(DecodedBlockIndex { block_index: map, block_keys: identities, object_records })
 }
 
 /// THE FIXTURE DOOR onto the same builder, for the bare maps that decode with no node around them.
@@ -4711,7 +4733,11 @@ impl TryFrom<BTreeMap<String, StoredBlockEntry>> for BlockIndexMap {
     type Error = String;
 
     fn try_from(flat: BTreeMap<String, StoredBlockEntry>) -> Result<Self, Self::Error> {
-        Ok(block_index_and_identities(flat)?.0)
+        let decoded = block_index_and_identities(flat)?;
+        if !decoded.object_records.is_empty() {
+            return Err("embedded object records require a core index decoder".into());
+        }
+        Ok(decoded.block_index)
     }
 }
 
@@ -4735,6 +4761,7 @@ impl TryFrom<BTreeMap<String, StoredBlockEntry>> for BlockIndexMap {
 struct BlockIndexAt<'a> {
     node: &'a BucketNode,
     keys: &'a BlockKeysByPosition<'a>,
+    index: &'a CoreIndex,
 }
 
 impl Serialize for BlockIndexAt<'_> {
@@ -4742,7 +4769,7 @@ impl Serialize for BlockIndexAt<'_> {
     where
         S: serde::Serializer,
     {
-        serialize_block_index(self.node, self.keys, serializer)
+        serialize_block_index(self.node, self.keys, self.index, serializer)
     }
 }
 
@@ -4792,6 +4819,11 @@ pub(super) struct BlockEntryAt<'a> {
     pub(super) block: &'a BlockIndex,
 }
 
+struct BlockEntryWithRecordAt<'a> {
+    block: &'a BlockIndex,
+    object_record: Option<&'a super::object_record::ObjectSlot>,
+}
+
 /// THE ENTRY AS IT ARRIVES FROM THE WIRE, AND THE IDENTITY IS NOT ON IT ANY MORE.
 ///
 /// # IT STILL EXISTS, AND FOR A SHARPER REASON THAN BEFORE
@@ -4816,6 +4848,8 @@ pub(super) struct StoredBlockEntry {
     pub(super) address: ElementEntry,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
+    #[serde(default, rename = "r")]
+    pub(super) object_record: Option<super::object_record::ObjectRecord>,
 }
 
 impl StoredBlockEntry {
@@ -4856,7 +4890,10 @@ impl StoredBlockEntry {
                         parts.kind
                     )
                 })?;
-        let StoredBlockEntry { address, dirty, deleted } = self;
+        let StoredBlockEntry { address, dirty, deleted, object_record } = self;
+        if object_record.is_some() {
+            return Err("embedded object record requires a core index decoder".into());
+        }
         Ok((
             // ONE ALLOCATION, WHICH IS THE ONE THE REMOVED FIELD COST. The parse borrows out of the
             // key; this is where the borrow becomes the `Arc<str>` the filing map and the
@@ -4873,6 +4910,21 @@ impl Serialize for BlockEntryAt<'_> {
     where
         S: serde::Serializer,
     {
+        serialize_block_entry(self.block, None, serializer)
+    }
+}
+
+impl Serialize for BlockEntryWithRecordAt<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_block_entry(self.block, self.object_record, serializer)
+    }
+}
+
+fn serialize_block_entry<S: serde::Serializer>(
+    block: &BlockIndex,
+    object_record: Option<&super::object_record::ObjectSlot>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         // NAMED `BlockIndex`, which is what the derive named it. A `serialize_struct` name reaches
         // some formats and not others, and this one must not move either.
@@ -4880,12 +4932,14 @@ impl Serialize for BlockEntryAt<'_> {
         // THREE, NOT FIVE. `object_key` and `model_id` are the key's own second and first slots and
         // the decoder reads them back out of it now; the arity is part of the stored shape, which is
         // what the stamp step pays for.
-        let mut entry = serializer.serialize_struct("BlockIndex", 3)?;
-        entry.serialize_field("address", &self.block.address)?;
-        entry.serialize_field("dirty", &self.block.dirty())?;
-        entry.serialize_field("deleted", &self.block.deleted())?;
+        let mut entry = serializer.serialize_struct("BlockIndex", 3 + usize::from(object_record.is_some()))?;
+        entry.serialize_field("address", &block.address)?;
+        entry.serialize_field("dirty", &block.dirty())?;
+        entry.serialize_field("deleted", &block.deleted())?;
+        if let Some(slot) = object_record {
+            entry.serialize_field("r", &super::checkpoint_object_rows::metadata(slot))?;
+        }
         entry.end()
-    }
 }
 
 /// EVERY BLOCK THIS BUCKET WRITES, NAMED BY THE IDENTITY HELD BESIDE IT.
@@ -4967,13 +5021,14 @@ impl Serialize for BlockEntryAt<'_> {
 fn serialize_block_index<'k, S>(
     node: &'k BucketNode,
     keys: &BlockKeysByPosition<'k>,
+    index: &CoreIndex,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
     use serde::ser::{Error as _, SerializeMap};
-    let mut entries: Vec<(String, BlockEntryAt<'_>)> =
+    let mut entries: Vec<(String, BlockEntryWithRecordAt<'_>)> =
         Vec::with_capacity(node.block_index.len());
     for (handle, block) in node.block_index.iter() {
         // THROUGH THE ONE DOOR, so the encoder and the readers cannot disagree about where an
@@ -5015,7 +5070,7 @@ where
         // binary that still had the field decodes.
         entries.push((
             block_index_written_key(beside.object_key, block),
-            BlockEntryAt { block },
+            BlockEntryWithRecordAt { block, object_record: super::checkpoint_object_rows::embedded_slot(index, keys, node.routing_bucket, *handle, beside.object_key, block) },
         ));
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -7198,6 +7253,7 @@ impl<'de> Deserialize<'de> for BucketNodeField {
 pub(super) struct BucketNodeWithBlockKeys {
     pub(super) node: BucketNode,
     pub(super) block_keys: Vec<(u64, Arc<str>)>,
+    pub(super) object_records: Vec<(Arc<str>, super::object_record::ObjectRecord)>,
 }
 
 /// THE FIXTURE DOOR: a node on its own, with its block identities dropped.
@@ -7206,7 +7262,11 @@ impl<'de> Deserialize<'de> for BucketNode {
     where
         D: serde::Deserializer<'de>,
     {
-        Ok(BucketNodeWithBlockKeys::deserialize(deserializer)?.node)
+        let decoded = BucketNodeWithBlockKeys::deserialize(deserializer)?;
+        if !decoded.object_records.is_empty() {
+            return Err(serde::de::Error::custom("embedded object records require a core index decoder"));
+        }
+        Ok(decoded.node)
     }
 }
 
@@ -7332,11 +7392,12 @@ impl<'de> Deserialize<'de> for BucketNodeWithBlockKeys {
                 // UNDER A GUESS. The identity is read back out of the key now, so this is the one
                 // place a stored block key can be rejected -- and the refusal is an `Err`, which
                 // `load_index` turns into a replay of the write-ahead log.
-                let (block_index, block_keys) =
+                let DecodedBlockIndex { block_index, block_keys, object_records } =
                     block_index_and_identities(block_index.unwrap_or_default())
                         .map_err(M::Error::custom)?;
 
                 Ok(BucketNodeWithBlockKeys {
+                    object_records,
                     node: BucketNode {
                         routing_bucket: routing_bucket
                             .ok_or_else(|| M::Error::missing_field("routing_slot"))?,

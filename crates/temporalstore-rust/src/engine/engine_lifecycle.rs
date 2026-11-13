@@ -101,6 +101,7 @@ fn insert_timestamped_point_if_absent(
     use super::timestamped_series::insert_point_if_absent as insert;
     Some(match kind {
         "feature" => insert(shard.features_mut(), object_key, at, address),
+        "context_event" => insert(shard.context_events_mut(), object_key, at, address),
         "context_index" => insert(shard.context_indexes_mut(), object_key, at, address),
         "context_audit" => insert(shard.context_audits_mut(), object_key, at, address),
         "context_child" => insert(shard.context_children_mut(), object_key, at, address),
@@ -1066,6 +1067,7 @@ impl TemporalEngine {
 
         #[cfg(test)]
         restore_phase_probe::begin();
+        let mut manifest_base = false;
         let (loaded, replay_watermark) = if wal_single_barrier() {
             // SINGLE-BARRIER RECOVERY TRUST (base-only). The data-block + delta fdatasyncs are
             // deferred, so neither the served-index delta nor the anchor it advances can be
@@ -1080,8 +1082,10 @@ impl TemporalEngine {
             // config-log, re-applying config-driven eviction at the exact frontier. The delta is
             // deliberately NOT folded (load_index_base_only), so each tail record is applied
             // EXACTLY ONCE -- no double-apply of non-idempotent commands (counters, appends).
-            let base_only =
-                self.load_index_base_only(request.shard_id, self.eager_cache_warm());
+            let base_only = match self.load_index_for_recovery(request.shard_id, false) {
+                Ok(loaded) => loaded,
+                Err(status) => return LoadShardResponse { status },
+            };
             let base_watermark = base_only
                 .as_ref()
                 .and_then(|state| state.applied_wal_sequence)
@@ -1132,44 +1136,10 @@ impl TemporalEngine {
                     // an ORDINARY restart, not by anyone calling an install endpoint, so an old
                     // store with an old dump manifest on disk met no gate whatsoever.
                     match crate::engine::decode_index_bytes(&manifest.index_bytes) {
-                        Ok(mut restored) => {
-                            // RE-DERIVE THE UNSERIALIZED MODEL MAPS BEFORE REBUILDING OWNERSHIP,
-                            // for the reason `install_bucket_dump_manifest` states at its own call
-                            // to the same pair. Three of the maps
-                            // `collect_model_live_block_entries` walks are `skip_serializing`, so a
-                            // manifest index decodes with them EMPTY while its `bucket_map` --
-                            // which does serialize -- still names every block they owned.
-                            // `rebuild_bucket_block_ownership` clears `bucket_map` and repopulates
-                            // it FROM the model maps, so on its own here it deleted exactly the
-                            // blocks only the index still knew about, and this restored state is
-                            // what becomes the shard.
-                            //
-                            // Measured before this line existed, on the DEFAULT recovery arm: a
-                            // shard dumped holding six hash fields and six strings came back
-                            // serving 0 of 6 hash fields and 6 of 6 strings. The install path has
-                            // always done this; only this arm did not.
-                            //
-                            // `hashes` is the map this re-derives. `context_events` and
-                            // `context_indexes` are keyed by timestamp and their index entries
-                            // carry `element_name: None`, so their keys are not recoverable from the
-                            // index and they stay dropped here -- the same hole the install path
-                            // carries, recorded at
-                            // `rebuild_unserialized_model_maps_from_bucket_index`.
-                            rebuild_unserialized_model_maps_from_bucket_index(&mut restored);
-                            // THE WHOLE RANGE, for the same reason `install_bucket_dump_manifest`
-                            // keeps it: `restored` is a DECODED MANIFEST INDEX, a whole-shard image
-                            // carrying explicit routing buckets from whatever range wrote it, and
-                            // `rebuild_bucket_block_ownership` FILTERS on the range it is given. A
-                            // load that narrows the range would silently drop every block the
-                            // manifest holds outside it rather than re-file it. The promote below
-                            // this match passes `request`'s range and should: it runs over this
-                            // shard's own live model maps, not over a foreign image.
-                            rebuild_bucket_block_ownership(
-                                request.shard_id,
-                                &mut restored,
-                                0,
-                                u32::MAX,
-                            );
+                        Ok(restored) => {
+                            // Rebuild views only after this image wins selection and
+                            // its WAL locations are available. Ownership follows views.
+                            manifest_base = true;
                             (Some(restored), manifest.wal_sequence)
                         }
                         // COUNTED, exactly as `load_index_inner` counts an image it refuses, and
@@ -1202,7 +1172,7 @@ impl TemporalEngine {
             // Fold-aware load: a corrupt served-index delta log is fatal here. Silently
             // folding a holed delta prefix would advance the anchor past a removal/eviction
             // recorded only in the delta -> silent loss. Refuse the load instead.
-            let loaded = match self.load_index_checked(request.shard_id, self.eager_cache_warm()) {
+            let loaded = match self.load_index_for_recovery(request.shard_id, true) {
                 Ok(loaded) => loaded,
                 Err(status) => return LoadShardResponse { status },
             };
@@ -1243,6 +1213,16 @@ impl TemporalEngine {
             let _ = self.block_store.install_slab_catalog(&meta.slabs);
         }
         let mut state = loaded.unwrap_or_default();
+        if let Err(status) = self.rehydrate_wal_resident_blocks_from_state(request.shard_id, &state) {
+            super::block_in_wal::clear_shard(&self.block_store, request.shard_id);
+            return LoadShardResponse { status };
+        }
+        let warm = self.eager_cache_warm().then_some((&self.cache, request.shard_id));
+        reconcile_secondary_views_for_shard(&self.block_store, request.shard_id, &mut state, warm);
+        if manifest_base {
+            // Preserve the source image's whole routing range before promoting it.
+            rebuild_bucket_block_ownership(request.shard_id, &mut state, 0, u32::MAX);
+        }
         promote_model_maps_to_bucket_index_authority(
             request.shard_id,
             &mut state,
@@ -1308,15 +1288,11 @@ impl TemporalEngine {
         // in-memory state the way startup load replays the wal. Without
         // this an async_storage write (WAL entry recorded, block/index deferred to the
         // dump) is silently lost on restart if the crash beats the dump.
-        // Hand the resolver the log ids the index has been carrying. Without this a block whose
-        // only durable copy is a WAL record stays unreadable by address after a reload -- the
-        // served index points at a synthetic address and the resolver's table starts empty.
-        let rehydrated = self.rehydrate_wal_resident_blocks(request.shard_id);
         #[cfg(test)]
         restore_phase_probe::mark("publish_and_seed");
-        let restore_result = rehydrated
-            .and_then(|_| self.replay_wal_into_shard(request.shard_id, replay_watermark));
+        let restore_result = self.replay_wal_into_shard(request.shard_id, replay_watermark);
         if let Err(status) = restore_result {
+            super::block_in_wal::clear_shard(&self.block_store, request.shard_id);
             // ReplayWal returns DataLoss on a WAL hole and aborts Load. Unwind the
             // partially-loaded shard and refuse the load rather than serve truncated
             // state -- a not-loaded shard is recoverable/re-routable; silent truncation
@@ -2458,6 +2434,21 @@ impl TemporalEngine {
                 if !item.deleted && item.address.is_none() {
                     return false;
                 }
+                if let Some(address) = item.resolved_address().filter(|_| !item.deleted) {
+                    if insert_timestamped_point_if_absent(
+                        shard, "context_event", &item.object_key, event_id_hash, &address,
+                    ) == Some(true) {
+                        let stored_key = shard.bucket_index.any_shared_object_key(&item.object_key)
+                            .unwrap_or_else(|| std::sync::Arc::from(item.object_key.as_str()));
+                        shard.context_event_timeline.entry(stored_key).or_default()
+                            .insert(timeline_key, event_id_hash);
+                        super::sync_bucket_index_object_blocks_with_mode(
+                            shard, shard_id, "context_event", &item.object_key,
+                            vec![address], true, false,
+                        );
+                        return true;
+                    }
+                }
                 let live_addresses = {
                     // ONE POINT, THROUGH THE SHARED GENERIC OPERATION. That helper takes the key
                     // out of the map when the series empties, which is what the two statements at
@@ -2484,6 +2475,7 @@ impl TemporalEngine {
                         .context_event_timeline
                         .entry(std::sync::Arc::clone(&stored_key))
                         .or_default();
+                    timeline.retain(|_, id| *id != event_id_hash);
                     if item.deleted {
                         timeline.remove(&timeline_key);
                     } else {
@@ -2877,12 +2869,22 @@ impl TemporalEngine {
 
     /// Restore persisted locations one record at a time, including packed-frame field aliases.
     pub(super) fn rehydrate_wal_resident_blocks(&self, shard_id: ShardId) -> Result<(), Status> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return Ok(());
+        let (required, placements) = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            let Some(shard) = shards.get(&shard_id) else { return Ok(()); };
+            Self::wal_block_placements(shard)
         };
+        self.rehydrate_wal_block_placements(shard_id, required, placements)
+    }
+
+    pub(super) fn rehydrate_wal_resident_blocks_from_state(&self, shard_id: ShardId, shard: &ShardState) -> Result<(), Status> {
+        let (required, placements) = Self::wal_block_placements(shard);
+        self.rehydrate_wal_block_placements(shard_id, required, placements)
+    }
+
+    fn wal_block_placements(shard: &ShardState) -> (bool, std::collections::BTreeMap<u64, Vec<(u64, u64)>>) {
         if shard.wal_resident_blocks.is_empty() {
-            return Ok(());
+            return (false, std::collections::BTreeMap::new());
         }
         // A complete checkpoint can carry old placement metadata after its blocks moved to
         // durable slabs. Such an image needs only those slabs, not the source node's WAL.
@@ -2900,7 +2902,15 @@ impl TemporalEngine {
                 .or_default()
                 .push((*folded, placement.sequence));
         }
-        drop(shards);
+        (require_wal, unresolved)
+    }
+
+    fn rehydrate_wal_block_placements(
+        &self,
+        shard_id: ShardId,
+        require_wal: bool,
+        unresolved: std::collections::BTreeMap<u64, Vec<(u64, u64)>>,
+    ) -> Result<(), Status> {
         for (log_id, placements) in unresolved {
             if !super::block_in_wal::register_from_record(
                 &self.block_store,
@@ -3359,8 +3369,9 @@ impl TemporalEngine {
                             start_routing_bucket,
                             end_routing_bucket,
                         ) {
-                            reconcile_secondary_views_from_bucket_index(
+                            reconcile_secondary_views_for_shard(
                                 &self.block_store,
+                                shard_id,
                                 shard,
                                 None,
                             );

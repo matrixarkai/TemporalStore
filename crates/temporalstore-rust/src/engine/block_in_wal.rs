@@ -187,6 +187,11 @@ pub(super) fn take_outcomes() -> Vec<crate::wal::WalOutcomeItem> {
     OUTCOMES.with(|outcomes| std::mem::take(&mut *outcomes.borrow_mut()))
 }
 
+pub(super) fn outcomes_for_key_since(start: usize, key: &str) -> Vec<crate::wal::WalOutcomeItem> {
+    OUTCOMES.with(|outcomes| outcomes.borrow().get(start..).unwrap_or(&[])
+        .iter().filter(|item| item.object_key == key).cloned().collect())
+}
+
 /// Take what this write staged, leaving nothing behind.
 pub(super) fn take_staged() -> Vec<StagedBlock> {
     STAGED.with(|staged| std::mem::take(&mut *staged.borrow_mut()))

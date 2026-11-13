@@ -987,7 +987,7 @@ impl TemporalEngine {
                 start_routing_bucket,
                 end_routing_bucket,
             ) {
-                reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
+                reconcile_secondary_views_for_shard(&self.block_store, shard_id, shard, None);
             }
             if self.wal_store.flat_append() && shard_has_model_entries(shard) {
                 shard.promote_scan_done = true;
@@ -1386,7 +1386,7 @@ impl TemporalEngine {
                 start_routing_bucket,
                 end_routing_bucket,
             ) {
-                reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
+                reconcile_secondary_views_for_shard(&self.block_store, shard_id, shard, None);
             }
             // Latch only once the shard actually holds model-map state: `promote` returns false
             // without establishing anything on an empty shard, so guarding on non-emptiness
@@ -1585,6 +1585,10 @@ impl TemporalEngine {
             let defer_object_key_clone = reuse_consumed_metadata && !persist_index_delta;
             let mut owned_object_keys =
                 (!defer_object_key_clone).then(|| command_object_keys(&command));
+            let context_before = super::context_series_index::ContextSeriesBefore::capture(
+                shard, owned_object_keys.as_deref().unwrap_or(&[]),
+            );
+            let context_outcome_start = super::block_in_wal::staged_outcome_count();
             // Only a persisted served-index delta consumes this state. Async and bulk writes
             // defer that delta, so avoid even the map probes on their per-row path.
             let membership_before = persist_index_delta.then(|| {
@@ -1893,11 +1897,13 @@ impl TemporalEngine {
                     narrow_hash
                         || narrow
                         || (!object_keys.is_empty()
-                            && object_keys.iter().all(|object_key| {
-                                crate::engine::storage_bucket_internals::sync_context_blocks_for_object(
+                            && object_keys.iter().enumerate().all(|(index, object_key)| {
+                                context_before.sync(
                                     shard,
                                     shard_id,
                                     object_key,
+                                    index,
+                                    context_outcome_start,
                                 )
                             }))
                 };

@@ -1020,6 +1020,8 @@ pub struct BucketDumpManifestPruneReport {
     pub plan: BucketDumpManifestPrunePlan,
     pub removed_manifest_ids: Vec<String>,
     pub removed_marker_files: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Status>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
