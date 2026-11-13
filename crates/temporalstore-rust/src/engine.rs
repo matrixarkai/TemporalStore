@@ -929,6 +929,25 @@ impl TemporalEngine {
         }
     }
 
+    /// Whether any admission limit would meter a READ of this shard: shard, table or tenant scope.
+    ///
+    /// Asks `admission_limits`, the function the slow path enforces from, rather than listing the
+    /// knobs here. A list restated in this place misses the next scope someone adds -- it already
+    /// missed `tenant_read_qps` once -- and a read that took the fast path past a limit it should
+    /// have met is silent. A table name is supplied so the table scope is considered; a limit that
+    /// could not apply (no table or tenant name) still sends the read the slow way, which is the
+    /// safe direction to be wrong in.
+    ///
+    /// One shared config lock and a map get, on the path that exists to avoid the engine write lock.
+    fn read_admission_limited(&self, shard_id: ShardId) -> bool {
+        self.configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .map(|config| !admission_limits(shard_id, false, config, Some("-")).is_empty())
+            .unwrap_or(false)
+    }
+
     fn execute_with_storage_override(
         &self,
         request: ExecuteRequest,
@@ -970,7 +989,11 @@ impl TemporalEngine {
         if let Some(response) = self.execute_resource_blob_command(&request) {
             return response;
         }
-        if async_storage_override.is_some() {
+        // A plain read takes the fast path too, unless a read limit is configured for the shard:
+        // only the slow path below enforces `read_qps` and `table_read_qps`, so a read that left
+        // through here would escape them. A durable or replicated read (an override is present)
+        // has always skipped that check and still does.
+        if async_storage_override.is_some() || !self.read_admission_limited(request.shard_id) {
             if let Some(response) = self.execute_read_only_fast_path(&request) {
                 return response;
             }
