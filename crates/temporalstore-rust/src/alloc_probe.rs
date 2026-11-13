@@ -102,6 +102,49 @@ pub fn chunk_behind<T>(boxed: &Box<T>) -> usize {
     chunk_of(&**boxed as *const T as *mut u8, std::mem::size_of::<T>())
 }
 
+/// LIVE ALLOCATIONS BY EXACT REQUEST SIZE, 0..=254 B one row each and row 255 for everything larger.
+///
+/// A size is a fingerprint: a 64-byte value, a 24-byte string handle and a 16-byte entry each land
+/// in their own row, so the difference between two corpora says WHICH structure grew without any
+/// class label having to be right about who was in scope when a free happened.
+pub const SIZE_ROWS: usize = 256;
+pub static LIVE_BY_SIZE: [std::sync::atomic::AtomicI64; SIZE_ROWS] =
+    [const { std::sync::atomic::AtomicI64::new(0) }; SIZE_ROWS];
+
+fn size_row(size: usize) -> usize {
+    size.min(SIZE_ROWS - 1)
+}
+
+/// A copy of the live-by-size table, for a before/after difference.
+pub fn live_by_size_now() -> [i64; SIZE_ROWS] {
+    let mut out = [0i64; SIZE_ROWS];
+    for (slot, live) in out.iter_mut().zip(LIVE_BY_SIZE.iter()) {
+        *slot = live.load(Ordering::Relaxed);
+    }
+    out
+}
+
+/// LIVE BYTES BY POWER-OF-TWO SIZE CLASS (row n holds requests of 2^(n-1) < size <= 2^n bytes).
+///
+/// The exact-size table above names the small blocks; this one names the BIG buffers, where a table
+/// that grows with the store keeps its capacity. Compared across two corpus sizes it says which
+/// size class gained the bytes, and a hash table or vector shows up as the class of its capacity.
+pub const LOG2_ROWS: usize = 48;
+pub static LIVE_BYTES_LOG2: [std::sync::atomic::AtomicI64; LOG2_ROWS] =
+    [const { std::sync::atomic::AtomicI64::new(0) }; LOG2_ROWS];
+
+fn log2_row(size: usize) -> usize {
+    ((usize::BITS - size.saturating_sub(1).leading_zeros()) as usize).min(LOG2_ROWS - 1)
+}
+
+pub fn live_bytes_by_log2_now() -> [i64; LOG2_ROWS] {
+    let mut out = [0i64; LOG2_ROWS];
+    for (slot, live) in out.iter_mut().zip(LIVE_BYTES_LOG2.iter()) {
+        *slot = live.load(Ordering::Relaxed);
+    }
+    out
+}
+
 pub struct CountingAllocator;
 
 unsafe impl GlobalAlloc for CountingAllocator {
@@ -109,6 +152,8 @@ unsafe impl GlobalAlloc for CountingAllocator {
         ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
         ALLOC_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
         charge_class_alloc(layout.size());
+        LIVE_BY_SIZE[size_row(layout.size())].fetch_add(1, Ordering::Relaxed);
+        LIVE_BYTES_LOG2[log2_row(layout.size())].fetch_add(layout.size() as i64, Ordering::Relaxed);
         let ptr = System.alloc(layout);
         ALLOC_CHUNK_BYTES.fetch_add(chunk_of(ptr, layout.size()) as u64, Ordering::Relaxed);
         ptr
@@ -118,6 +163,8 @@ unsafe impl GlobalAlloc for CountingAllocator {
         FREE_CALLS.fetch_add(1, Ordering::Relaxed);
         FREE_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
         charge_class_free(layout.size());
+        LIVE_BY_SIZE[size_row(layout.size())].fetch_sub(1, Ordering::Relaxed);
+        LIVE_BYTES_LOG2[log2_row(layout.size())].fetch_sub(layout.size() as i64, Ordering::Relaxed);
         System.dealloc(ptr, layout)
     }
 
@@ -133,6 +180,10 @@ unsafe impl GlobalAlloc for CountingAllocator {
         // total treat a grow identically and a `Vec` push storm cannot land in one and not the
         // other.
         charge_class_alloc(new_size.saturating_sub(layout.size()));
+        LIVE_BY_SIZE[size_row(layout.size())].fetch_sub(1, Ordering::Relaxed);
+        LIVE_BY_SIZE[size_row(new_size)].fetch_add(1, Ordering::Relaxed);
+        LIVE_BYTES_LOG2[log2_row(layout.size())].fetch_sub(layout.size() as i64, Ordering::Relaxed);
+        LIVE_BYTES_LOG2[log2_row(new_size)].fetch_add(new_size as i64, Ordering::Relaxed);
         // The chunk column charges the GROWTH in set-aside bytes, the same net-change rule the
         // request column above uses, so a `Vec` push storm lands identically in both.
         let before = chunk_of(ptr, layout.size());

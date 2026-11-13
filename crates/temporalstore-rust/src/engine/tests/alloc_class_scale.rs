@@ -792,11 +792,11 @@ fn what_a_stored_record_allocates_by_class_at_two_corpus_sizes() {
 /// it happens and the ref home is exactly the kind of structure that is allocated in one place and
 /// released in another. The independent counter has no such attribution to get wrong.
 #[cfg(feature = "alloc-probe")]
-fn ingest_hashes(objects: usize, fields: usize) -> (i64, i64) {
+fn ingest_hashes(objects: usize, fields: usize, settle: bool, cache_bytes: usize) -> (i64, i64, crate::alloc_probe::ClassLedger, [i64; crate::alloc_probe::SIZE_ROWS]) {
     use crate::alloc_probe::ClassSpan;
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = TemporalEngine::with_local_dirs(
-        64 * 1024 * 1024,
+        cache_bytes,
         dir.path().join("cache"),
         dir.path().join("blocks"),
         dir.path().join("indexes"),
@@ -815,6 +815,7 @@ fn ingest_hashes(objects: usize, fields: usize) -> (i64, i64) {
     // the store; a NET figure wants every allocation the fixture makes to be freed INSIDE the same
     // window, because the engine drops each command when it is done and a window that saw those
     // frees without the allocations that matched them reads negative.
+    let sizes_before = crate::alloc_probe::live_by_size_now();
     let span = ClassSpan::open();
     let total = objects * fields;
     let mut done = 0usize;
@@ -834,11 +835,23 @@ fn ingest_hashes(objects: usize, fields: usize) -> (i64, i64) {
         assert!(response.status.ok, "ingest failed: {:?}", response.status);
         done = end;
     }
+    // SETTLED: the index flushed and the catalog dumped, so what is left allocated is the resident
+    // structure and not data still waiting in the log to be dumped.
+    if settle {
+        engine.flush_shard_index(1);
+        let _ = engine.dump_index_catalog(1);
+    }
     let counts = span.close().expect("built with `alloc-probe`");
     let net_allocs = counts.total.allocs as i64 - counts.total.frees as i64;
     let net_bytes = counts.total.alloc_bytes as i64 - counts.total.free_bytes as i64;
+    let classes = counts.classes;
+    let sizes_after = crate::alloc_probe::live_by_size_now();
+    let mut sizes = [0i64; crate::alloc_probe::SIZE_ROWS];
+    for (slot, (after, before)) in sizes.iter_mut().zip(sizes_after.iter().zip(sizes_before.iter())) {
+        *slot = after - before;
+    }
     drop(engine);
-    (net_allocs, net_bytes)
+    (net_allocs, net_bytes, classes, sizes)
 }
 
 /// How many allocations and bytes one stored hash object leaves behind, at two sizes.
@@ -850,20 +863,178 @@ fn ingest_hashes(objects: usize, fields: usize) -> (i64, i64) {
 #[ignore = "builds two corpora; run with --features alloc-probe --ignored --nocapture"]
 fn what_a_stored_hash_object_leaves_allocated_at_rest() {
     const FIELDS: usize = 8;
-    let (a_small, b_small) = ingest_hashes(500, FIELDS);
-    let (a_large, b_large) = ingest_hashes(2_000, FIELDS);
+    let (a_small, b_small, _, _) = ingest_hashes(500, FIELDS, false, 64 * 1024 * 1024);
+    let (a_large, b_large, _, _) = ingest_hashes(2_000, FIELDS, false, 64 * 1024 * 1024);
+    // ONLY THE BYTES ARE PRINTED. `allocs - frees` from the span is not a live count: a realloc adds
+    // an allocation call and no free, so the difference counts growth events. The live count by size
+    // is `alloc_probe::live_by_size_now`, used below.
     println!(
-        "HASHREST objects=500 fields={FIELDS} net_allocs_per_object={:.3} net_bytes_per_object={:.1}",
-        a_small as f64 / 500.0,
+        "HASHREST objects=500 fields={FIELDS} net_bytes_per_object={:.1}",
         b_small as f64 / 500.0
     );
     println!(
-        "HASHREST objects=2000 fields={FIELDS} net_allocs_per_object={:.3} net_bytes_per_object={:.1}",
-        a_large as f64 / 2_000.0,
+        "HASHREST objects=2000 fields={FIELDS} net_bytes_per_object={:.1}",
         b_large as f64 / 2_000.0
     );
     assert!(
         a_small > 0 && a_large > 0,
         "nothing was left allocated, so nothing was counting"
     );
+}
+
+/// THE SAME FIGURE AT FIVE FIELD COUNTS, so the per-object cost and the per-field cost separate.
+///
+/// A line through (fields, net) has an INTERCEPT, which is what one object costs however many
+/// fields it holds -- a map entry, a row, a bucket-node share -- and a SLOPE, which is what one
+/// more field costs: a block entry, a key allocation, a cached value. The two want different cures,
+/// and a single point at eight fields cannot say which one a number belongs to.
+#[cfg(feature = "alloc-probe")]
+#[test]
+#[ignore = "builds five corpora; run with --features alloc-probe --ignored --nocapture"]
+fn what_a_stored_hash_object_costs_per_object_and_per_field() {
+    for (settle, cache_bytes) in [(false, 64 * 1024 * 1024)] {
+        println!("HASHMODE settle={settle} cache_bytes={cache_bytes}");
+        hash_cost_lines(settle, cache_bytes);
+    }
+}
+
+#[cfg(feature = "alloc-probe")]
+fn hash_cost_lines(settle: bool, cache_bytes: usize) {
+    const OBJECTS: usize = 400;
+    let mut points: Vec<(f64, f64, f64)> = Vec::new();
+    let mut class_rows: Vec<(usize, crate::alloc_probe::ClassLedger)> = Vec::new();
+    let mut size_rows: Vec<[i64; crate::alloc_probe::SIZE_ROWS]> = Vec::new();
+    for fields in [1usize, 2, 4, 8, 16] {
+        let (allocs, bytes, classes, sizes) = ingest_hashes(OBJECTS, fields, settle, cache_bytes);
+        if fields == 1 || fields == 16 {
+            size_rows.push(sizes);
+        }
+        if fields == 1 || fields == 16 {
+            class_rows.push((fields, classes));
+        }
+        let per_allocs = allocs as f64 / OBJECTS as f64;
+        let per_bytes = bytes as f64 / OBJECTS as f64;
+        println!(
+            "HASHFIELDS fields={fields:>2} net_allocs_per_object={per_allocs:>8.3} net_bytes_per_object={per_bytes:>9.1}"
+        );
+        points.push((fields as f64, per_allocs, per_bytes));
+    }
+    // Least squares through the five points, for each of the two figures.
+    let n = points.len() as f64;
+    let sx: f64 = points.iter().map(|p| p.0).sum();
+    let sxx: f64 = points.iter().map(|p| p.0 * p.0).sum();
+    for (label, pick) in [
+        ("allocs", (|p: &(f64, f64, f64)| p.1) as fn(&(f64, f64, f64)) -> f64),
+        ("bytes", (|p: &(f64, f64, f64)| p.2) as fn(&(f64, f64, f64)) -> f64),
+    ] {
+        let sy: f64 = points.iter().map(pick).sum();
+        let sxy: f64 = points.iter().map(|p| p.0 * pick(p)).sum();
+        let slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+        let intercept = (sy - slope * sx) / n;
+        println!(
+            "HASHFIT {label}: per_object={intercept:.3} per_field={slope:.3}"
+        );
+    }
+    // PER CLASS, as the difference between the sixteen-field and the one-field corpus over the
+    // fifteen fields between them. A free is charged to the class in scope when it happens, so a
+    // class row is a direction and not an audit; the SIGN and rough size are what to read.
+    let (_, one) = &class_rows[0];
+    let (_, sixteen) = &class_rows[1];
+    for class in crate::alloc_probe::AllocClass::ALL.iter() {
+        let a = one.row(*class);
+        let b = sixteen.row(*class);
+        let net = |c: &crate::alloc_probe::ClassCounts| (c.allocs as i64 - c.frees as i64) as f64 / OBJECTS as f64;
+        let bytes = |c: &crate::alloc_probe::ClassCounts| (c.alloc_bytes as i64 - c.free_bytes as i64) as f64 / OBJECTS as f64;
+        println!(
+            "HASHCLASS {:<20} per_field_allocs={:>7.3} per_field_bytes={:>8.1} at_one_field_allocs={:>7.3}",
+            class.label(),
+            (net(&b) - net(&a)) / 15.0,
+            (bytes(&b) - bytes(&a)) / 15.0,
+            net(&a)
+        );
+    }
+    // LIVE ALLOCATIONS BY SIZE, per field: the sixteen-field corpus minus the one-field corpus over
+    // the fifteen fields between them, per object. A row is printed only where it is a real
+    // share of a field, so the table is the handful of structures that grow with fields.
+    for size in 0..crate::alloc_probe::SIZE_ROWS {
+        let per_field = (size_rows[1][size] - size_rows[0][size]) as f64 / (15.0 * OBJECTS as f64);
+        if per_field.abs() >= 0.02 {
+            println!("HASHSIZE {:>3}{} per_field_allocs={:>7.3}", size, if size == crate::alloc_probe::SIZE_ROWS - 1 { "+" } else { " " }, per_field);
+        }
+    }
+    for (label, row) in [("1 field", &size_rows[0]), ("16 fields", &size_rows[1])] {
+        let live: i64 = row.iter().sum();
+        println!("HASHLIVE {label}: live_allocations_per_object={:.3}", live as f64 / OBJECTS as f64);
+        for size in 0..crate::alloc_probe::SIZE_ROWS {
+            let per_object = row[size] as f64 / OBJECTS as f64;
+            if per_object.abs() >= 0.2 {
+                println!("HASHLIVESIZE {label} size={size:>3}{} per_object={per_object:>7.3}", if size == crate::alloc_probe::SIZE_ROWS - 1 { "+" } else { " " });
+            }
+        }
+    }
+    let (mut grow, mut shrink) = (0.0f64, 0.0f64);
+    for size in 0..crate::alloc_probe::SIZE_ROWS {
+        let per_field = (size_rows[1][size] - size_rows[0][size]) as f64 / (15.0 * OBJECTS as f64);
+        if per_field > 0.0 { grow += per_field } else { shrink += per_field }
+    }
+    println!("HASHSIZE-TOTAL rows_that_grow={grow:.3} rows_that_shrink={shrink:.3} net={:.3}", grow + shrink);
+    assert!(points.iter().all(|p| p.1 > 0.0), "nothing was left allocated");
+}
+
+/// WHICH SIZE CLASS GAINS THE BYTES AS THE STORE GROWS, for one-field hash objects.
+///
+/// A table that grows with the number of objects keeps its capacity in ONE big buffer, so the live
+/// bytes per object land in the class of that capacity -- and the per-object share of a class that
+/// is a handful of large blocks is the table's slack plus its entries, spread over the objects.
+#[cfg(feature = "alloc-probe")]
+#[test]
+#[ignore = "builds two corpora; run with --features alloc-probe --ignored --nocapture"]
+fn what_a_stored_hash_object_keeps_by_size_class() {
+    fn live(objects: usize) -> [i64; crate::alloc_probe::LOG2_ROWS] {
+        let before = crate::alloc_probe::live_bytes_by_log2_now();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("blocks"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let mut done = 0usize;
+        while done < objects {
+            let end = (done + BATCH).min(objects);
+            let commands: Vec<Command> = (done..end)
+                .map(|n| Command::HashSet {
+                    // THE KEY LENGTH IS A KNOB: a block that holds the key text changes size class when
+                    // it grows, and a block that does not stays where it was.
+                    key: format!("h-{n:0>width$}", width = std::env::var("KEYWIDTH").ok().and_then(|v| v.parse().ok()).unwrap_or(8usize)),
+                    field: "f".to_string(),
+                    value: incompressible(64, n as u64),
+                })
+                .collect();
+            let response = engine.batch_execute(crate::types::BatchExecuteRequest { shard_id: 1, commands });
+            assert!(response.status.ok, "ingest failed: {:?}", response.status);
+            done = end;
+        }
+        let after = crate::alloc_probe::live_bytes_by_log2_now();
+        let mut out = [0i64; crate::alloc_probe::LOG2_ROWS];
+        for (slot, (a, b)) in out.iter_mut().zip(after.iter().zip(before.iter())) {
+            *slot = a - b;
+        }
+        drop(engine);
+        out
+    }
+    let (small, large) = (400usize, 1_600usize);
+    let a = live(small);
+    let b = live(large);
+    let mut total = 0.0f64;
+    for class in 0..crate::alloc_probe::LOG2_ROWS {
+        let per_object = (b[class] - a[class]) as f64 / (large - small) as f64;
+        total += per_object;
+        if per_object.abs() >= 2.0 {
+            println!("HASHCLASS2 size<=2^{class:<2} ({:>8} B) per_object_bytes={per_object:>8.1}", 1u64 << class.min(40));
+        }
+    }
+    println!("HASHCLASS2-TOTAL per_object_bytes={total:.1}");
+    assert!(total > 0.0, "nothing was left allocated");
 }

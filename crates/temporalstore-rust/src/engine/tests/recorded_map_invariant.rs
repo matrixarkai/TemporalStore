@@ -323,6 +323,8 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "file_ref",
         // A READ: whether a row exists at all, vacant or not.
         "has_row",
+        // A READ: the key allocation the map already holds, for another structure to share.
+        "shared_key",
         // MAKES A VACANT ROW, NOT AN OBJECT: no elements, so `get`, `contains_key`, `len` and `iter`
         // all skip it and no existence answer changes. It exists so a first write has a row to file
         // its ref on; it records nothing because there is no durable statement in an empty row.

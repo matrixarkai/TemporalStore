@@ -8622,6 +8622,18 @@ impl CoreIndex {
                 return Some(Arc::clone(stored));
             }
         }
+        // THE CONTAINER ROWS, which hold the key of a hash, set, sorted set or list now that their
+        // refs live there and the lookup has no entry for them. Without this every dirty mark of a
+        // container object allocated a second copy of a key its own row already holds.
+        if let Some(shared) = self
+            .hashes
+            .shared_key(object_key)
+            .or_else(|| self.sets.shared_key(object_key))
+            .or_else(|| self.zsets.shared_key(object_key))
+            .or_else(|| self.lists.shared_key(object_key))
+        {
+            return Some(shared);
+        }
         // THE LOOKUP'S OWN DOOR, AND IT MUST STAY SPELLED OUT HERE. This is the fallback, so
         // calling the spanning door would be infinite recursion -- which is exactly what a blanket
         // rewrite of `.object_block_lookup.any_shared_object_key(` into `.any_shared_object_key(`
@@ -8644,6 +8656,23 @@ impl CoreIndex {
                 .and_then(|table| table.get_key_value(object_key))
             {
                 return Some(Arc::clone(stored));
+            }
+        }
+        {
+            use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+            let row_key = if model_id == HashKind::KIND {
+                self.hashes.shared_key(object_key)
+            } else if model_id == SetKind::KIND {
+                self.sets.shared_key(object_key)
+            } else if model_id == ZSetKind::KIND {
+                self.zsets.shared_key(object_key)
+            } else if model_id == ListKind::KIND {
+                self.lists.shared_key(object_key)
+            } else {
+                None
+            };
+            if row_key.is_some() {
+                return row_key;
             }
         }
         // The lookup's own door, spelled out for the reason given on the sibling above.

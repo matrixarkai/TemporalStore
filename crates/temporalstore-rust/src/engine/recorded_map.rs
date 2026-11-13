@@ -1165,6 +1165,14 @@ impl<K: RecordedKind> RecordedMap<K> {
         self.entries.contains_key(object_key)
     }
 
+    /// THE ALLOCATION THIS MAP HOLDS FOR AN OBJECT'S KEY, so another structure keyed by the same
+    /// object can hold that handle instead of a second copy of the characters.
+    pub(super) fn shared_key(&self, object_key: &str) -> Option<ModelKey> {
+        self.entries
+            .get_key_value(object_key)
+            .map(|(key, _)| std::sync::Arc::clone(key))
+    }
+
     /// GIVE AN OBJECT A ROW BEFORE ITS FIRST BLOCK IS FILED, so the filer has somewhere to put the
     /// ref and no object ever has refs anywhere but its row.
     ///
