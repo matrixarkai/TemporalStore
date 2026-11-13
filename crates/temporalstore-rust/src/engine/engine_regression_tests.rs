@@ -274,3 +274,5 @@ mod a_row_append_publishes_only_what_it_added;
 mod the_holders_of_a_key_allocation;
 #[path = "tests/what_a_high_cardinality_distinct_holds.rs"]
 mod what_a_high_cardinality_distinct_holds;
+#[path = "tests/an_ordered_zset_read_pays_for_its_answer.rs"]
+mod an_ordered_zset_read_pays_for_its_answer;
