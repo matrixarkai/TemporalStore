@@ -5702,6 +5702,81 @@ fn the_periodic_reclaim_quarantines_what_it_collects() {
     );
 }
 
+/// A slab the periodic loop quarantined is kept for 24 hours, not one.
+///
+/// The loop passed a grace of 0, which the purge raises to the store's one-hour floor, so a
+/// quarantined slab was destroyed an hour after it was set aside. Both halves are pinned: two hours old and the shipped
+/// loop must still hold it; twenty-five hours old and the same loop must destroy it. The second
+/// half keeps the first from passing because nothing is ever purged.
+#[test]
+fn the_periodic_loop_holds_a_quarantined_slab_for_a_day() {
+    const KEYSPACE: usize = 100;
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let options = StorageManagerOptions::default();
+    let mut written = 0usize;
+    for _ in 0..6 {
+        let engine = runtime.engine();
+        for index in 0..400usize {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("grace-{:06}", (written + index) % KEYSPACE),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += 400;
+        runtime.run_storage_manager_once(1, options.clone());
+    }
+    let quarantined = |runtime: &DataNodeRuntime| {
+        runtime
+            .engine()
+            .block_store()
+            .delayed_destroy_slab_ids()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<u64>>()
+    };
+    let before = quarantined(&runtime);
+    assert!(!before.is_empty(), "nothing was quarantined, so the grace is unmeasured");
+
+    let backdated = runtime
+        .engine()
+        .block_store()
+        .backdate_delayed_destroy_stamps_for_test(2 * 60 * 60 * 1_000)
+        .expect("backdating the quarantine stamps");
+    assert!(backdated > 0, "nothing was backdated");
+    runtime.run_storage_manager_once(1, options.clone());
+    // A round may quarantine MORE slabs; what it must not do is destroy one of these.
+    let after_two_hours = quarantined(&runtime);
+    assert!(
+        before.is_subset(&after_two_hours),
+        "slabs two hours old were destroyed by the loop: the grace is shorter than 24 hours"
+    );
+
+    let backdated = runtime
+        .engine()
+        .block_store()
+        .backdate_delayed_destroy_stamps_for_test(24 * 60 * 60 * 1_000)
+        .expect("backdating the quarantine stamps");
+    assert!(backdated > 0, "nothing was backdated");
+    runtime.run_storage_manager_once(1, options.clone());
+    let after_a_day = quarantined(&runtime);
+    assert!(
+        before.iter().any(|id| !after_a_day.contains(id)),
+        "slabs over 24 hours old were not destroyed: the purge never fires"
+    );
+}
+
 /// The maintenance round runs its stages in the intended order.
 ///
 /// Every other assertion about stages in this suite asks whether one RAN -- `.any(|s| s == ..)` --
@@ -10005,7 +10080,7 @@ cap {max_rounds}"
     let injected_age_purge = inject_age.then(|| {
         let backdated = engine
             .block_store()
-            .backdate_delayed_destroy_stamps_for_test(2 * 60 * 60 * 1_000)
+            .backdate_delayed_destroy_stamps_for_test(25 * 60 * 60 * 1_000)
             .expect("backdating the quarantine stamps");
         let by_round = runtime
             .run_storage_manager_once(1, options.clone())
