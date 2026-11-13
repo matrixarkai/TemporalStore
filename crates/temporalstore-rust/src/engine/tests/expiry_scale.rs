@@ -322,15 +322,15 @@ fn the_deadline_index_is_rebuilt_on_load_manifest_install_and_wal_replay() {
 
         let engine = make_engine();
         engine.load_shard(1);
-        // The emptiness this whole test exists for: the deadline-ordered view is not in the
-        // persisted format, so a freshly loaded shard has none of it.
+        // The view is not in the persisted format, so it is built when the state is installed
+        // (`install_shard_state`), not on the first sweep under the shard-table guard. It must
+        // already be complete here; `a_loaded_shard_arrives_with_its_deadline_index_built` pins
+        // that on its own.
         let ordered = deadline_index_len(&engine, 1);
         let (held, _) = deadline_census(&engine, 1);
         assert!(
-            ordered == 0 && held > 0,
-            "LOAD was expected to produce {held} deadlines and an EMPTY ordered view \
-             (#[serde(skip)]), but the ordered view already holds {ordered}. If the field became \
-             serialized, this test no longer covers the rebuild it claims to."
+            ordered == held && held > 0,
+            "LOAD produced {held} deadlines and an ordered view of {ordered}"
         );
         assert_rebuilt(&engine, "LOAD", LIVE_KEYS + DUE_KEYS, DUE_KEYS);
     }
@@ -353,12 +353,12 @@ fn the_deadline_index_is_rebuilt_on_load_manifest_install_and_wal_replay() {
             .install_bucket_dump_manifest(&manifest)
             .expect("manifest should install");
         // The install replaces the whole ShardState with one decoded from the manifest's index
-        // bytes, so the ordered view is empty again -- even though this shard never left memory.
+        // bytes, and hands it over through `install_shard_state`, which builds the view.
         let ordered = deadline_index_len(&engine, 1);
-        assert_eq!(
-            ordered, 0,
-            "MANIFEST INSTALL should have swapped in a state decoded from the manifest, whose \
-             ordered view is empty; it holds {ordered}"
+        let (held, _) = deadline_census(&engine, 1);
+        assert!(
+            ordered == held && held > 0,
+            "MANIFEST INSTALL produced {held} deadlines and an ordered view of {ordered}"
         );
         assert_rebuilt(&engine, "MANIFEST INSTALL", LIVE_KEYS + DUE_KEYS, DUE_KEYS);
     }
@@ -4785,4 +4785,72 @@ fn what_one_listing_of_an_expiry_fixtures_cache_costs_in_syscalls() {
             elapsed as f64 / repeats as f64
         },
     );
+}
+
+/// A shard that arrives from disk already has its deadline-ordered view.
+///
+/// `expiry_by_deadline` is `serde(skip)`, so a decoded state has none. It used to be rebuilt by
+/// the first expiry sweep, inside the shard-table WRITE guard: one pass over every deadline the
+/// shard holds, with every reader and writer on every shard waiting. It is now built in
+/// `install_shard_state`, while the state is still private to the loading thread.
+///
+/// The test reads the view straight after the load, before any sweep, so a build that moved back
+/// into the sweep leaves it empty and this fails on the number. It also prints the cost of the
+/// build against the insert-by-insert construction it replaced, on the same deadlines in the same
+/// process, because the first is a placement claim and the second is a size claim.
+#[test]
+fn a_loaded_shard_arrives_with_its_deadline_index_built() {
+    const KEYS: usize = 200_000;
+    let dir = tempfile::tempdir().unwrap();
+    let make = || {
+        TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("blocks"),
+            dir.path().join("indexes"),
+        )
+    };
+    let engine = make();
+    engine.load_shard(1);
+    let seed = (0..KEYS)
+        .map(|index| (format!("k-{index:08}"), 3_600_000u64 + (index as u64 * 7919) % 100_000))
+        .collect();
+    write_keys(&engine, 1, seed);
+    engine.unload_shard(1);
+
+    let engine = make();
+    engine.load_shard(1);
+    let (held, _) = deadline_census(&engine, 1);
+    assert_eq!(held, KEYS, "the fixture did not survive the reload");
+    assert_eq!(
+        deadline_index_len(&engine, 1),
+        held,
+        "the shard was installed without its deadline-ordered view; the first sweep would build          it under the shard-table write guard"
+    );
+    assert_eq!(disagreements(&engine, 1), 0);
+
+    // The cost, matched: the same deadlines, built the old way and the new way.
+    let mut shards = engine.shards.write().expect("engine lock poisoned");
+    let shard = shards.get_mut(&1).unwrap();
+    let pairs: Vec<((u64, Arc<str>), ())> = shard
+        .expires_at_ms()
+        .iter()
+        .map(|(key, at)| ((*at, Arc::from(&**key)), ()))
+        .collect();
+    let started = std::time::Instant::now();
+    let mut one_by_one = BTreeMap::new();
+    one_by_one.extend(pairs.clone());
+    let old_us = started.elapsed().as_micros();
+    let started = std::time::Instant::now();
+    let bulk: BTreeMap<(u64, Arc<str>), ()> = pairs.into_iter().collect();
+    let new_us = started.elapsed().as_micros();
+    assert_eq!(one_by_one.len(), bulk.len());
+    shard.expiry_by_deadline.clear();
+    let started = std::time::Instant::now();
+    crate::engine::ensure_expiry_order(shard);
+    let ensure_us = started.elapsed().as_micros();
+    println!(
+        "  {KEYS} deadlines: insert-by-insert {old_us} us, collected {new_us} us,          ensure_expiry_order {ensure_us} us"
+    );
+    assert_eq!(shard.expiry_by_deadline.len(), KEYS);
 }

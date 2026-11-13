@@ -2587,6 +2587,14 @@ impl TemporalEngine {
         // The id it is being INSERTED UNDER, so the shard and the key the served map routes it by
         // can never be two different numbers.
         state.set_shard_id(shard_id);
+        // BUILT HERE, BEFORE THE TABLE LOCK, so the first sweep after a load or a manifest
+        // install does not pay for it. `expiry_by_deadline` is `serde(skip)`, so every state that
+        // arrives from disk has it empty, and `ensure_expiry_order` rebuilt it on the first
+        // expiry sweep -- UNDER the shard-table write guard, one pass over every deadline the
+        // shard holds, excluding every reader and writer on every shard for the duration. The
+        // state is still private to this thread here, so the same pass excludes nobody.
+        // `ensure_expiry_order` stays at its call sites as the repair for an emptied mirror.
+        ensure_expiry_order(&mut state);
         self.shards
             .write()
             .expect("engine lock poisoned")
@@ -6292,7 +6300,10 @@ pub(in crate::engine) fn ensure_expiry_order(shard: &mut ShardState) {
             .iter()
             .map(|(key, expires_at)| ((*expires_at, key.clone()), ()))
             .collect();
-        shard.expiry_by_deadline.extend(pairs);
+        // `collect` into a map sorts once and builds the tree bottom-up; `extend` on the empty
+        // map this is would insert the key-ordered (so deadline-random) pairs one root-to-leaf
+        // descent at a time.
+        shard.expiry_by_deadline = pairs.into_iter().collect();
     }
 }
 
