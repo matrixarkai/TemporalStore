@@ -843,10 +843,16 @@ pub(super) fn select_container_element(bytes: &[u8], element_name: &str) -> Cont
     // block's own first eight bytes, real score or placeholder alike, are never examined. Every
     // other spelling keeps the exact-key comparison, which stays correct because none of them
     // dropped anything from what the element name spells.
-    enum Wanted {
-        Key(Vec<u8>),
+    //
+    // THE EXACT-KEY ARM BORROWS ITS KEY. A hash field and a list word are compared as the bytes
+    // their element name already holds (or eight bytes on the stack), so a point read of one of
+    // those does not build a `Vec` to search with -- one allocation per read, one per field of a
+    // whole-hash read. Only the arms that decode a member still own one.
+    enum Wanted<'k> {
+        Key(std::borrow::Cow<'k, [u8]>),
         Member(Vec<u8>),
     }
+    let mut key_scratch = [0_u8; 8];
     let wanted = if matches!(
         spelling,
         ElementKeySpelling::ScoreThenMember | ElementKeySpelling::ScoreThenMemberName
@@ -858,7 +864,7 @@ pub(super) fn select_container_element(bytes: &[u8], element_name: &str) -> Cont
             None => return ContainerElementRead::Absent,
         }
     } else {
-        match element_key_from_element_name(spelling, element_name) {
+        match element_key_view(spelling, element_name, &mut key_scratch) {
             Some(key) => Wanted::Key(key),
             // The frame is fine and this element name is not one its spelling can name, so no item
             // in it can be the one asked for. An answer, not a corruption.
@@ -874,7 +880,7 @@ pub(super) fn select_container_element(bytes: &[u8], element_name: &str) -> Cont
         match take_item_bytes(bytes, &mut cursor, index, shape) {
             Ok((key, value, deleted)) => {
                 let matched = match &wanted {
-                    Wanted::Key(key_wanted) => key == key_wanted.as_slice(),
+                    Wanted::Key(key_wanted) => key == key_wanted.as_ref(),
                     // THE MEMBER SUFFIX ONLY -- never the first eight bytes, which this spelling's
                     // element name no longer names.
                     Wanted::Member(member) => key.get(8..) == Some(member.as_slice()),
@@ -1081,13 +1087,33 @@ pub(super) fn element_key_from_element_name(
     spelling: ElementKeySpelling,
     element_name: &str,
 ) -> Option<Vec<u8>> {
+    let mut scratch = [0_u8; 8];
+    element_key_view(spelling, element_name, &mut scratch).map(std::borrow::Cow::into_owned)
+}
+
+/// The same key, borrowed wherever the spelling already holds its bytes.
+///
+/// A hash field IS its element name, and a list element name is sixteen hex digits that read back as
+/// one eight-byte word, so neither needs a heap allocation to be compared against a stored key: the
+/// first lends the name's own bytes and the second is written into `scratch`. Only the spellings that
+/// decode a member (set and zset hex or tagged names) build a `Vec`. This is the one home of the
+/// rule: [`element_key_from_element_name`] is this function with the borrow turned into a copy, so
+/// the owned key and the borrowed key cannot disagree.
+pub(super) fn element_key_view<'a>(
+    spelling: ElementKeySpelling,
+    element_name: &'a str,
+    scratch: &'a mut [u8; 8],
+) -> Option<std::borrow::Cow<'a, [u8]>> {
+    use std::borrow::Cow;
     match spelling {
-        ElementKeySpelling::Utf8 => Some(element_name.as_bytes().to_vec()),
+        ElementKeySpelling::Utf8 => Some(Cow::Borrowed(element_name.as_bytes())),
         // BOTH SPELLINGS, for `Hex` as well as for `Name`. A hex element name is what every block on
         // disk today is filed under; a tagged one is what a later writer will file. Accepting both
         // in the one arm is what makes the two interchangeable for a reader, and it cannot widen
         // what `Hex` accepts by accident, because a hex string never begins with the tag.
-        ElementKeySpelling::Hex | ElementKeySpelling::Name => member_from_element_name(element_name),
+        ElementKeySpelling::Hex | ElementKeySpelling::Name => {
+            member_from_element_name(element_name).map(Cow::Owned)
+        }
         ElementKeySpelling::ScoreThenMember | ElementKeySpelling::ScoreThenMemberName => {
             // LOSSY BY DESIGN, IN THIS ONE ARM ONLY. The element name used to be the score and the
             // member both; it is the member alone now, so this direction cannot recover the score
@@ -1109,14 +1135,15 @@ pub(super) fn element_key_from_element_name(
             let mut key = Vec::with_capacity(8 + member.len());
             key.extend_from_slice(&[0u8; 8]);
             key.extend_from_slice(&member);
-            Some(key)
+            Some(Cow::Owned(key))
         }
         ElementKeySpelling::BiasedWord => {
             if element_name.len() != 16 {
                 return None;
             }
             let biased = u64::from_str_radix(element_name, 16).ok()?;
-            Some(biased.to_be_bytes().to_vec())
+            *scratch = biased.to_be_bytes();
+            Some(Cow::Borrowed(&scratch[..]))
         }
     }
 }

@@ -2215,19 +2215,11 @@ pub(crate) fn execute_on_shard(
             // answered, so a divergence is OBSERVED rather than SUFFERED and no read is lost
             // while the measurement is being taken.
             let indexed = bucket_index_element_name_block_addresses(shard, "hash", &key);
-            // Copied out before the block reads: those borrow the cache and the block store while
-            // this borrows the shard, and the addresses are what both halves of the union need.
-            let contained: Vec<(String, crate::block_store::ElementEntry)> = shard
-                .bucket_index
-                .hashes
-                .get(&key)
-                .map(|fields| {
-                    fields
-                        .iter()
-                        .map(|(name, address)| (name.to_string(), address.clone()))
-                        .collect()
-                })
-                .unwrap_or_default();
+            // READ IN PLACE. The block reads below take the cache and the block store and nothing
+            // from the shard, so the container is borrowed for the whole answer instead of being
+            // copied out first: that copy was a name `String` and an address per field, spent
+            // before the first block was read and then spent again to build the answer.
+            let container = shard.bucket_index.hashes.get(&key);
 
             // THE UNION, KEYED ON THE FIELD NAME, AND WHICH SIDE WINS A TIE.
             //
@@ -2236,14 +2228,35 @@ pub(crate) fn execute_on_shard(
             // the index does not name. A union that preferred the container would change the
             // address served for every read in the store, and a change whose purpose is to
             // measure is not entitled to do that.
-            let mut resolved: Vec<(
-                String,
-                Option<std::sync::Arc<str>>,
-                crate::block_store::ElementEntry,
-            )> = Vec::with_capacity(indexed.len() + contained.len());
-            let mut named_by_index: std::collections::HashSet<String> =
+            //
+            // BORROWED, NOT COPIED. Each name below is held as a `&str` of the entry or the
+            // container it came from, and the only `String` built per field is the one the answer
+            // returns. The union used to spell every container field three times -- once to copy it
+            // out, once as an `Arc<str>` to name its block, once more to return -- and to key a
+            // set with a clone of each index name.
+            let routing_bucket =
+                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let mut page_keys = crate::engine::PageKeys::new();
+            let mut entries: Vec<(String, Vec<u8>)> =
+                Vec::with_capacity(indexed.len() + container.map_or(0, |fields| fields.len()));
+            let mut read_field =
+                |name: &str, address: &crate::block_store::ElementEntry| {
+                    let cache_key = page_keys.key(shard_id, address, Some(routing_bucket));
+                    if let Some(value) = read_block_value_keyed(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        // The element the whole-object door handed back beside this address.
+                        BlockIdentity::of(shard_id, "hash", &key, Some(name)),
+                        cache_key,
+                    ) {
+                        entries.push((name.to_string(), value));
+                    }
+                };
+            let mut named_by_index: std::collections::HashSet<&str> =
                 std::collections::HashSet::with_capacity(indexed.len());
-            for (element_name, address) in indexed {
+            for (element_name, address) in &indexed {
                 // A `None` ELEMENT NAMES NO FIELD, SO IT IS NOT SERVED AS ONE.
                 //
                 // THIS USED TO DEFAULT IT TO `""` AND SERVE IT. The paragraph here said a nameless
@@ -2266,22 +2279,20 @@ pub(crate) fn execute_on_shard(
                 // carry, arriving on the READ path. The field a nameless block holds is named inside
                 // the block's own frame and in `shard.bucket_index.hashes`, and the union below serves it from
                 // there -- so nothing is lost by skipping, only a name that was never written.
-                let Some(name) = element_name.as_deref().map(str::to_string) else {
+                let Some(name) = element_name.as_deref() else {
                     continue;
                 };
-                named_by_index.insert(name.clone());
-                resolved.push((name, element_name, address));
+                named_by_index.insert(name);
+                read_field(name, address);
             }
 
             // THE MEASUREMENT. See `hash_read_divergence` for what a zero from it does and does
             // not mean; the short form is that a zero is a statement about the routes traffic
             // took and NOT a proof of completeness on the routes it did not.
             {
-                let held: std::collections::HashSet<&str> =
-                    contained.iter().map(|(name, _)| name.as_str()).collect();
                 for name in named_by_index
                     .iter()
-                    .filter(|name| !held.contains(name.as_str()))
+                    .filter(|name| !container.is_some_and(|fields| fields.contains_key(name)))
                 {
                     hash_read_divergence::note(&key, name);
                 }
@@ -2291,34 +2302,16 @@ pub(crate) fn execute_on_shard(
             // The container's own fields that the index does not name. These are the reads the
             // union ADDS: without it they are not served at all, which is why the union is the
             // part that makes observing a divergence safe rather than merely informative.
-            for (name, address) in contained {
-                if !named_by_index.contains(&name) {
-                    let element_name: std::sync::Arc<str> = std::sync::Arc::from(name.as_str());
-                    resolved.push((name, Some(element_name), address));
-                }
-            }
-
+            //
             // The routing bucket is the object's, so it is one value for every field; and the
             // fields of one hash sit in few slabs, so the page keys share their record key.
-            let routing_bucket =
-                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            let mut page_keys = crate::engine::PageKeys::new();
-            let entries = resolved
-                .into_iter()
-                .filter_map(|(name, element_name, address)| {
-                    let cache_key = page_keys.key(shard_id, &address, Some(routing_bucket));
-                    read_block_value_keyed(
-                        cache,
-                        block_store,
-                        shard_id,
-                        &address,
-                        // The element the whole-object door handed back beside this address.
-                        BlockIdentity::of(shard_id, "hash", &key, element_name.as_deref()),
-                        cache_key,
-                    )
-                    .map(|value| (name, value))
-                })
-                .collect();
+            if let Some(fields) = container {
+                for (name, address) in fields.iter() {
+                    if !named_by_index.contains(&**name) {
+                        read_field(&**name, address);
+                    }
+                }
+            }
             CommandResponse::HashEntries { entries }
         }
         Command::HashLen { key } => {
