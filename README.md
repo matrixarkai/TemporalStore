@@ -61,6 +61,56 @@ See [latency, amplification, and allocation choices](integrations/feast/feast_te
 before comparing latest-only serving, history queries, or another backend. Provider
 vector-search hooks and offline point-in-time retrieval are not implemented here.
 
+### Configure Feast
+
+Start the data node with the [quick start](#quick-start). From this checkout,
+install Feast and enable the native provider on Python's import path:
+
+```bash
+pip install feast msgpack
+export PYTHONPATH="$PWD/integrations/feast${PYTHONPATH:+:$PYTHONPATH}"
+```
+
+In your existing Feast repository, keep its project, registry, provider, entity
+definitions, and offline sources. Set its `feature_store.yaml` online-store block:
+
+```yaml
+online_store:
+  type: feast_temporalstore_command.TemporalStoreCommandOnlineStore
+  host: 127.0.0.1
+  port: 17102
+  shard_id: 1
+  max_batch_commands: 512
+  max_write_batch_commands: 4096
+  max_batch_request_bytes: 4194304
+  skip_dedup: false
+  adaptive_timestamp_prefetch: true
+  key_ttl_seconds: null
+  write_feature_history: false
+  track_keys_for_teardown: false
+```
+
+Use the reachable data-node address and assigned shard for your deployment.
+The configuration above selects latest-value serving without history, expiry,
+or teardown tracking. Set a positive `key_ttl_seconds` to enable whole-key expiry;
+enable `track_keys_for_teardown` before writing if exact cleanup is required.
+History and tracking add storage work and can change the write route.
+
+Run Feast's normal workflow from that repository, with the provider import path
+still exported:
+
+```bash
+feast apply
+feast materialize-incremental "$(date -u +%Y-%m-%dT%H:%M:%S)"
+```
+
+Read using `FeatureStore(repo_path=".").get_online_features(...)` with your
+registered feature names and entity rows. TemporalStore serves the materialized
+online values; Feast's configured offline source and materialization engine
+remain responsible for loading them. Async API calls do not relax the node's
+durability policy. See the [provider configuration and API guide](integrations/feast/feast_temporalstore_command/README.md)
+for history, aggregates, async calls, older-node behavior, and cleanup limits.
+
 ### Choose a Feast materialization path
 
 Use the [native provider guide](integrations/feast/feast_temporalstore_command/README.md)
