@@ -6465,6 +6465,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.control_state_selection.remove(key).is_some();
     removed |= shard.context_nodes_mut().remove(key).is_some();
     removed |= shard.context_events_mut().remove(key).is_some();
+    removed |= shard.context_event_timeline.remove(key).is_some();
     removed |= shard.context_indexes_mut().remove(key).is_some();
     removed |= shard.context_audits_mut().remove(key).is_some();
     removed |= shard.context_entities_mut().remove(key).is_some();

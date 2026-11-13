@@ -39,6 +39,104 @@ fn value(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
     value
 }
 
+#[test]
+fn deleting_or_expiring_an_event_series_removes_its_persisted_timeline() {
+    for expire in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_at(dir.path(), "indexes");
+        engine.load_shard(1);
+        let event = ContextEvent {
+            event_id_hash: 5,
+            event_time_ms: 1000,
+            ingestion_time_ms: 1000,
+            kind: 9,
+            event_type: 2,
+            actor_hash: 77,
+            status: 1,
+            valid_until_ms: 0,
+            confidence: 0.9,
+            importance: 0.7,
+            text: "event".into(),
+            source_ref: "source".into(),
+            related_node_hashes: vec![42],
+            compact_attrs: vec![1, 2, 3],
+            vector: Vec::new(),
+            embedding_model_hash: 0,
+        };
+        assert!(
+            engine
+                .execute_durable(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextWriteEvent {
+                        tenant_hash: 11,
+                        node_hash: 42,
+                        event: Box::new(event),
+                        first_write_only: true,
+                        cold_storage: false
+                    },
+                })
+                .status
+                .ok
+        );
+        let key = "ctx:event:11:42";
+        {
+            let shards = engine.shards.read().unwrap();
+            let state = shards.get(&1).unwrap();
+            assert_eq!(state.context_event_timeline.get(key).unwrap().len(), 1);
+            assert!(state.context_events().contains_key(key));
+        }
+        if expire {
+            {
+                let mut shards = engine.shards.write().unwrap();
+                set_expiry(
+                    shards.get_mut(&1).unwrap(),
+                    key.into(),
+                    now_ms().saturating_sub(1),
+                );
+            }
+            let report = engine
+                .sweep_expired_records_with_request(ShardExpirySweepRequest {
+                    shard_id: 1,
+                    load_cold_buckets: true,
+                    max_hot_buckets_per_round: 1024,
+                    max_cold_buckets_per_round: 1024,
+                    ..Default::default()
+                })
+                .unwrap();
+            assert_eq!(report.expired_records_removed, 1);
+        } else {
+            assert!(
+                engine
+                    .execute_durable(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::CommonDelete { key: key.into() },
+                    })
+                    .status
+                    .ok
+            );
+        }
+        {
+            let shards = engine.shards.read().unwrap();
+            let state = shards.get(&1).unwrap();
+            assert!(!state.context_events().contains_key(key));
+            assert!(
+                !state.context_event_timeline.contains_key(key),
+                "a removed series must not retain its persisted timeline; expire={expire}"
+            );
+        }
+        let manifest = engine.create_bucket_dump_manifest(1, []).unwrap();
+        let image = crate::engine::decode_index_bytes(&manifest.index_bytes).unwrap();
+        assert!(!image.context_event_timeline.contains_key(key));
+        engine.wal_store.flush(1).unwrap();
+        drop(engine);
+        let restored = engine_at(dir.path(), "indexes");
+        restored.load_shard(1);
+        let shards = restored.shards.read().unwrap();
+        assert!(!shards[&1].context_events().contains_key(key));
+        assert!(!shards[&1].context_event_timeline.contains_key(key));
+    }
+}
+
 fn deletion_round_replays(expire: bool) {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_at(dir.path(), "indexes");
