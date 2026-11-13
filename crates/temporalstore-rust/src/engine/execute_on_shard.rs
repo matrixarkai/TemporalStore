@@ -2531,7 +2531,7 @@ pub(crate) fn execute_on_shard(
             rev,
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let mut ordered = zset_ordered_members(shard, &key);
+            let mut ordered = zset_ordered_refs(shard, &key);
             if rev {
                 ordered.reverse();
             }
@@ -2545,7 +2545,7 @@ pub(crate) fn execute_on_shard(
                 ordered[from as usize..=to as usize]
                     .iter()
                     .flat_map(|(member, biased)| {
-                        [member.clone(), zset_score_string(*biased).into_bytes()]
+                        [member.to_vec(), zset_score_string(*biased).into_bytes()]
                     })
                     .collect()
             };
@@ -2957,13 +2957,19 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let mut ordered = zset_ordered_members(shard, &key);
+            let mut ordered = zset_ordered_refs(shard, &key);
             if !min {
                 ordered.reverse();
             }
             ordered.truncate(count as usize);
+            // The borrows end here: the removals below take `&mut shard`, so the few members the
+            // pop returns are copied out first. The clone count is the answer size, not the set size.
+            let doomed: Vec<(Vec<u8>, u64)> = ordered
+                .into_iter()
+                .map(|(member, biased)| (member.to_vec(), biased))
+                .collect();
             let mut members = Vec::new();
-            for (member, biased) in ordered {
+            for (member, biased) in doomed {
                 let element_name = zset_element_name(&member);
                 let removal = remove_container_element(
                     cache,
@@ -6782,7 +6788,7 @@ pub(super) fn zset_score_string(biased: u64) -> String {
 /// USED TO BE SCORE BITS THEN MEMBER -- the comment this replaces said so, and the lexical order
 /// it bought was never built on: every zset serving arm that returns members in score order
 /// reads the score out of `shard.bucket_index.zsets` and sorts explicitly (`zset_members_in_score_range`,
-/// `zset_ordered_members`), so dropping the score from this string costs that ordering nothing.
+/// `zset_ordered_refs`), so dropping the score from this string costs that ordering nothing.
 /// What it buys is the thing this change is for: `BlockIndex.element_name` for a zset entry is now
 /// the same shape as a set's, so zset can collapse to one index entry a block the way set and list
 /// already have. The score still rides every write -- see `RecordedKind::outcome_value` and the
@@ -6810,7 +6816,7 @@ pub(super) fn set_element_name(member: &[u8]) -> String {
 
 /// The members whose score falls in `[min_bits, max_bits]`, in score order.
 ///
-/// Same scan as `zset_ordered_members` -- the map is keyed by member, so every member has to be
+/// Same scan as `zset_ordered_refs` -- the map is keyed by member, so every member has to be
 /// looked at either way -- but the score test happens BEFORE the member bytes are copied, so a
 /// narrow window copies a narrow window. The full-order helper below clones all n up front, which
 /// cost 4,115 allocations and 324 KB to return eight members from a set of 4,096.
@@ -6846,23 +6852,35 @@ fn zset_members_in_score_range(
                 .collect()
         })
         .unwrap_or_default();
-    ordered.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    ordered.sort_unstable_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     ordered
 }
 
-fn zset_ordered_members(shard: &ShardState, key: &str) -> Vec<(Vec<u8>, u64)> {
-    let mut ordered: Vec<(Vec<u8>, u64)> = shard
+/// Every member of a zset in score order, as BORROWS rather than copies.
+///
+/// The helper that stood here cloned every member before it knew which ones the caller wanted, so
+/// a rank range of eight out of 4,096 paid one allocation per member. The ordering needs the bytes
+/// only to COMPARE them, and a comparison needs no allocation. One allocation for the buffer of
+/// borrows; the caller clones only the members it returns, so the clone count becomes the answer
+/// size and not the set size. The time is unchanged at O(n log n); the figure that moves is
+/// allocations.
+///
+/// `sort_unstable_by`: the map is keyed by member, so `(score, member)` is a total order with no
+/// ties for a stable sort to break, and a stable sort allocates a scratch buffer. The order is
+/// score-then-member, as before.
+fn zset_ordered_refs<'a>(shard: &'a ShardState, key: &str) -> Vec<(&'a [u8], u64)> {
+    let mut ordered: Vec<(&'a [u8], u64)> = shard
         .bucket_index
         .zsets
         .get(key)
         .map(|members| {
             members
                 .iter()
-                .map(|(member, (biased, _))| (member.clone(), *biased))
+                .map(|(member, (biased, _))| (member.as_slice(), *biased))
                 .collect()
         })
         .unwrap_or_default();
-    ordered.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    ordered.sort_unstable_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)));
     ordered
 }
 

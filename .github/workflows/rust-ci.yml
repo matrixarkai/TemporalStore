@@ -546,7 +546,10 @@ jobs:
             engine::cell_set::tests::merging_applies_each_lane_reducer_per_member_and_replaces_labels \
             engine::cell_set::tests::sorted_u64_members_are_stored_as_distances_and_cost_one_byte_each \
             engine::cell_set::tests::the_version_gate_accepts_at_exactly_the_first_additive_version_and_refuses_below \
-            engine::tests::what_a_high_cardinality_distinct_holds::an_unbounded_distinct_holds_every_member_and_the_bound_holds_a_fixed_sketch ; do
+            engine::tests::what_a_high_cardinality_distinct_holds::an_unbounded_distinct_holds_every_member_and_the_bound_holds_a_fixed_sketch \
+            engine::tests::an_ordered_zset_read_pays_for_its_answer::an_ordered_read_answers_by_score_whatever_the_window \
+            engine::tests::an_ordered_zset_read_pays_for_its_answer::a_score_update_reorders_an_ordered_read \
+            engine::tests::an_ordered_zset_read_pays_for_its_answer::popping_takes_the_extreme_and_leaves_the_rest_in_order ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/gate.log
