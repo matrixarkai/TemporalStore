@@ -243,6 +243,19 @@ jobs:
               || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
           done
 
+      - name: Compaction reconstruction checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for spec in compaction_view_rebuild_tests:4 compaction_execution_tests:4 compaction_retention_tests:3; do
+            filter=${spec%:*}
+            expected=${spec##*:}
+            cargo test -p temporalstore-rust --lib --features alloc-probe "$filter" \
+              -- --test-threads=1 --nocapture 2>&1 | tee /tmp/compaction-rebuild-gate.log
+            grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/compaction-rebuild-gate.log \
+              || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
+          done
+
       # This example requires the optional backend and are skipped by default builds.
       # Run the assertions: compiling a report does not enforce its byte ceilings.
       - name: One append storage cost and recovery

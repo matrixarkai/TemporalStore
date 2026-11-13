@@ -1992,14 +1992,12 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // non-durable block, then persist -- leaving volatile == durable so reclaim is safe --
             // and propagate the original error so the caller knows compaction did not fully
             // complete (a later run retries the not-yet-moved blocks).
-            rebuild_bucket_first_index(
+            storage_bucket_internals::rebuild_compacted_bucket_views(
                 shard_id,
                 shard,
                 start_routing_bucket,
                 end_routing_bucket,
             );
-            refresh_bucket_runtime_flags(shard);
-            rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
             self.block_store.sync_durable().map_err(|barrier| {
                 Status::error(
                     "block_compaction_failed",
@@ -2042,14 +2040,12 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 rounds.remove(&shard_id);
             }
         }
-        rebuild_bucket_first_index(
+        storage_bucket_internals::rebuild_compacted_bucket_views(
             shard_id,
             shard,
             start_routing_bucket,
             end_routing_bucket,
         );
-        refresh_bucket_runtime_flags(shard);
-        rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
         // Durability barrier BEFORE publishing the base index that names the relocated blocks.
         // Under deferred-fsync modes (bulk / block_wal_single_barrier -> append.rs
         // defer_data_sync) compaction relocates blocks fsync-deferred, so the moved
