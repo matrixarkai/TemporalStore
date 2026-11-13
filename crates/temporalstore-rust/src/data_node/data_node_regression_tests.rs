@@ -22,3 +22,5 @@ mod evict_live;
 mod loop_report;
 #[path = "tests/evict_dump_drop.rs"]
 mod evict_dump_drop;
+#[path = "tests/the_wal_reclaim_stage_waits_for_the_byte_gate.rs"]
+mod the_wal_reclaim_stage_waits_for_the_byte_gate;

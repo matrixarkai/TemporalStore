@@ -6569,6 +6569,9 @@ fn a_capped_index_dump_still_reclaims() {
         );
         let options = StorageManagerOptions {
             index_gc_max_dump_buckets_per_round: cap,
+            // The old trigger, on purpose: these rounds exist to reclaim a small fixture's log, which
+            // the shipped byte gate would (correctly) leave alone.
+            dirty_bucket_pressure: 1,
             ..StorageManagerOptions::default()
         };
         let mut written = 0usize;
@@ -6660,7 +6663,7 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
             });
         }
     }
-    runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    runtime.run_storage_manager_once(1, StorageManagerOptions { dirty_bucket_pressure: 1, ..StorageManagerOptions::default() });
 
     // Phase two: keep writing, but only to a handful of keys. Every bucket the wide phase touched
     // and this one does not is now CLEAN, holding a manifest from phase one.
@@ -6677,7 +6680,7 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
             });
         }
         written += BATCH;
-        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        runtime.run_storage_manager_once(1, StorageManagerOptions { dirty_bucket_pressure: 1, ..StorageManagerOptions::default() });
     }
 
     let engine = runtime.engine();
@@ -8674,7 +8677,7 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
         },
     );
     // Round 0 dumps. After it the writer is gone and every later round is an idle one.
-    let first = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    let first = runtime.run_storage_manager_once(1, StorageManagerOptions { dirty_bucket_pressure: 1, ..StorageManagerOptions::default() });
     assert!(
         first
             .executed_stages
@@ -8693,7 +8696,7 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
             .storage_wal_reclaim_plan(1, Vec::new(), Vec::new())
             .safe_to_reclaim;
         drop(engine);
-        let report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        let report = runtime.run_storage_manager_once(1, StorageManagerOptions { dirty_bucket_pressure: 1, ..StorageManagerOptions::default() });
         if !reclaimable {
             continue;
         }
