@@ -64,6 +64,7 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
         ("rejected_background", stats.rejected_background_total),
         ("timed_out", stats.timed_out_total),
         ("dump", stats.dump_runs),
+        ("dump_failed", stats.storage_dump_failures),
         ("compaction", stats.compaction_runs),
         ("gc", stats.gc_runs),
         ("storage_manager", stats.storage_manager_runs),

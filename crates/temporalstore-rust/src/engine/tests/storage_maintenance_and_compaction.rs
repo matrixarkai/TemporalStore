@@ -11003,3 +11003,63 @@ fn a_round_walks_past_one_unreadable_block_and_still_fails() {
         second_round.rewritten_block_refs,
     );
 }
+
+/// A dump that fails is counted, and a dump that succeeds is not.
+///
+/// `apply_storage_lifecycle` consumes a dump error and leaves the buckets dirty for the next round,
+/// which is safe and was silent: nothing recorded that a dump had been attempted and refused, so a
+/// persistent failure looked like a shard with nothing to do. The failing dump here names a shard
+/// this engine never loaded, which `create_bucket_dump_manifest` refuses with `shard_not_loaded`;
+/// the counter must read exactly that many failures and the successful dump beside it must add
+/// none.
+#[test]
+fn a_dump_that_fails_is_counted_and_one_that_succeeds_is_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let written = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "dump-failure-key".to_string(),
+            value: vec![b'v'; 64],
+        },
+    });
+    assert!(written.status.ok, "fixture write: {:?}", written.status);
+    assert_eq!(engine.storage_dump_failures(), 0, "nothing has failed yet");
+
+    for attempt in 1..=2u64 {
+        let refused = engine.apply_storage_lifecycle(crate::StorageLifecycleRequest {
+            shard_id: 99,
+            selected_dump_buckets: vec![0],
+            ..Default::default()
+        });
+        assert!(
+            refused.dump_manifest.is_none(),
+            "a dump of a shard that is not loaded produced a manifest"
+        );
+        assert_eq!(
+            engine.storage_dump_failures(),
+            attempt,
+            "failed dump {attempt} was not counted"
+        );
+    }
+
+    let dumped = engine.apply_storage_lifecycle(crate::StorageLifecycleRequest {
+        shard_id: 1,
+        ..Default::default()
+    });
+    assert!(
+        dumped.dump_manifest.is_some(),
+        "the control dump of the loaded dirty shard did not run, so it proves nothing"
+    );
+    assert_eq!(
+        engine.storage_dump_failures(),
+        2,
+        "a dump that succeeded was counted as a failure"
+    );
+}

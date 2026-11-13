@@ -551,6 +551,7 @@ impl TemporalEngine {
             context_embedding_indexes: Arc::default(),
             promote_scans: Arc::default(),
             replay_installs: Arc::default(),
+            dump_failures: Arc::default(),
             maintenance_mirror: Arc::default(),
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
             compaction_rounds: Arc::default(),
@@ -842,6 +843,12 @@ impl TemporalEngine {
     /// How many recorded outcomes recovery has installed (see `replay_installs`).
     pub(crate) fn replay_installs_for_test(&self) -> u64 {
         self.replay_installs
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Dumps that failed and were retried by a later round (see `dump_failures`).
+    pub fn storage_dump_failures(&self) -> u64 {
+        self.dump_failures
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 

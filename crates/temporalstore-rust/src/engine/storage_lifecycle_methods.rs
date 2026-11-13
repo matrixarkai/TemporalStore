@@ -983,8 +983,23 @@ impl TemporalEngine {
         let dump_manifest = if plan.selected_dump_buckets.is_empty() {
             None
         } else {
-            self.create_bucket_dump_manifest(request.shard_id, plan.selected_dump_buckets.clone())
-                .ok()
+            match self
+                .create_bucket_dump_manifest(request.shard_id, plan.selected_dump_buckets.clone())
+            {
+                Ok(manifest) => Some(manifest),
+                Err(status) => {
+                    // The buckets stay dirty and the next round retries, so this is not fatal --
+                    // but it must not be silent either: count it and say why.
+                    self.dump_failures
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    tracing::warn!(
+                        shard_id = request.shard_id,
+                        error = %status.message,
+                        "storage dump failed; buckets stay dirty and the next round retries",
+                    );
+                    None
+                }
+            }
         };
         if let Some(manifest) = &dump_manifest {
             // Once a bucket is dumped its dirty flag is cleared, so the storage cycle
