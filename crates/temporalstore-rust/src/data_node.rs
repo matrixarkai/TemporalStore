@@ -2106,12 +2106,6 @@ struct DataNodeRuntimeInner {
     stats: Mutex<MutableRuntimeStats>,
     meta_heartbeat: Mutex<DataNodeMetaHeartbeatReport>,
     lifecycle: Mutex<HashMap<ShardId, DataNodeShardLifecycleState>>,
-    /// Where each shard's expiry sweep left off, as (hot, cold).
-    ///
-    /// Only meaningful when a bound is set: an unbounded window always reaches the end and
-    /// returns `None`, so at the shipped default these stay `None` and cost nothing. Live-path
-    /// state, never persisted -- a reload re-derives deadlines and a fresh pass is correct.
-    expiry_cursors: Mutex<HashMap<ShardId, (Option<String>, Option<String>)>>,
     /// What the loop's WAL-reclaim stage saw the last time it found nothing to reclaim, per shard.
     ///
     /// A quiet shard asks the same question every round and gets the same answer; this is how the
@@ -2438,7 +2432,6 @@ impl DataNodeRuntime {
             stats: Mutex::default(),
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
-            expiry_cursors: Mutex::default(),
             quiet_wal_reclaim: Mutex::default(),
             reap_cursors: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
@@ -2597,7 +2590,6 @@ impl DataNodeRuntime {
             stats: Mutex::default(),
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
-            expiry_cursors: Mutex::default(),
             quiet_wal_reclaim: Mutex::default(),
             reap_cursors: Mutex::default(),
             lifecycle_tokens: Mutex::default(),

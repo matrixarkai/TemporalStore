@@ -527,8 +527,6 @@ impl TemporalEngine {
         if request.enable_expire && !request.dry_run {
             match self.sweep_expired_records_with_request(ShardExpirySweepRequest {
                 shard_id: request.shard_id,
-                hot_cursor: request.expire_hot_cursor.clone(),
-                cold_cursor: request.expire_cold_cursor.clone(),
                 max_hot_buckets_per_round: request.max_expire_hot_buckets_per_round,
                 max_cold_buckets_per_round: request.max_expire_cold_buckets_per_round,
                 load_cold_buckets: request.load_cold_buckets_for_expire,
