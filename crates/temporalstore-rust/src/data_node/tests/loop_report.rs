@@ -418,7 +418,12 @@ fn index_stage_walk(report: &StorageManagerLoopReport) -> u64 {
 fn a_shard_with_nothing_for_the_index_stage_stops_paying_for_it_and_a_dirty_one_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = seeded_runtime(dir.path(), 200);
-    let options = StorageManagerOptions::default();
+    // The stage dumps through the shipped byte gate, so this fixture crosses it; below the gate a
+    // dirty shard is left undumped on purpose and keeps walking, which is a different property.
+    let options = StorageManagerOptions {
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
 
     // Settle: the first round dumps the whole dirty set through this stage. Bound the wait so a
     // stage that never settles fails here and does not hang the suite.

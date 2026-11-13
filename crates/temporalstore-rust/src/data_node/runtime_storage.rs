@@ -1316,6 +1316,37 @@ impl DataNodeRuntime {
                 .storage_manager_index_gc_runs += 1;
             executed_stages.push("reclaim_index".to_string());
         } else if options.enable_index_gc {
+            // THE DUMP IS GATED LIKE THE WAL STAGE'S, NOT FORCED EVERY ROUND.
+            //
+            // A manifest embeds the whole shard index, so every dump this stage forced cost
+            // O(shard) bytes however few buckets were dirty: measured per-SET bytes written
+            // grew with run length (one dump per round, each larger than the last) while the
+            // per-op families stayed flat. So the shipped byte gate decides here, as it does
+            // in the WAL stage, and a dump is forced only when the index log itself has
+            // outgrown the floor the collector declines below, which is the one case where
+            // waiting would let that log grow without bound (its truncation rides on the
+            // dump frontier). Replay bound: the index log can reach max(1 MiB, last image)
+            // before a forced dump.
+            //
+            // The floor scales with the last image. A dump costs about one image of bytes, so
+            // forcing one per fixed 1 MiB of index log made bytes written per SET grow with the
+            // key count again. Waiting until the log is as long as the image keeps the dump to
+            // at most one byte written per index-log byte, which is flat per operation.
+            let last_image_bytes = self
+                .inner
+                .engine
+                .latest_bucket_dump_image_bytes(shard_id);
+            let index_log_over_floor = self
+                .inner
+                .engine
+                .index_log_store()
+                .log_len_bytes(shard_id)
+                >= index_log_floor.max(last_image_bytes);
+            let (dump_min_records, dump_min_bytes) = if index_log_over_floor {
+                (0, 0)
+            } else {
+                (options.min_undumped_wal_records, options.min_undumped_wal_bytes)
+            };
             let index_gc_request = StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
@@ -1336,8 +1367,8 @@ impl DataNodeRuntime {
                 // floor, so the cap is now reachable and its effect is measurable rather than
                 // assumed. Defaults to 0, which is exactly the behaviour above.
                 max_dump_buckets_per_round: options.index_gc_max_dump_buckets_per_round,
-                min_undumped_wal_records: 0,
-                min_undumped_wal_bytes: 0,
+                min_undumped_wal_records: dump_min_records,
+                min_undumped_wal_bytes: dump_min_bytes,
                 purge_delayed_destroy: true,
                 purge_delayed_destroy_slab_ids: None,
                 prune_bucket_dump_manifests: true,

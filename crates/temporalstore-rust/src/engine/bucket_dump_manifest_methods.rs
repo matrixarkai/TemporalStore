@@ -409,6 +409,14 @@ impl TemporalEngine {
         Ok(manifest)
     }
 
+    /// Length in bytes of the index image embedded in the newest dump manifest of this shard,
+    /// 0 when none exists. A dump writes about this many bytes, whatever number of buckets it names.
+    pub fn latest_bucket_dump_image_bytes(&self, shard_id: ShardId) -> u64 {
+        latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id)
+            .map(|manifest| manifest.index_bytes.len() as u64)
+            .unwrap_or(0)
+    }
+
     #[track_caller]
     pub fn list_bucket_dump_manifests(&self, shard_id: ShardId) -> Vec<BucketDumpManifest> {
         list_bucket_dump_manifests_at(&self.index_dir, shard_id).unwrap_or_default()

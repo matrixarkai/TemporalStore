@@ -6488,8 +6488,11 @@ fn can_the_index_dump_be_capped_now() {
                 max_background_queue_depth: 2,
             },
         );
+        // The index stage dumps through the shipped byte gate, so this fixture crosses it: the
+        // property under test is that a capped dump reclaims, which needs a dump to happen.
         let options = StorageManagerOptions {
             index_gc_max_dump_buckets_per_round: cap,
+            min_undumped_wal_bytes: 1,
             ..StorageManagerOptions::default()
         };
         let mut written = 0usize;
@@ -6567,11 +6570,14 @@ fn a_capped_index_dump_still_reclaims() {
                 max_background_queue_depth: 2,
             },
         );
+        // The index stage dumps through the shipped byte gate, so this fixture crosses it: the
+        // property under test is that a capped dump reclaims, which needs a dump to happen.
         let options = StorageManagerOptions {
             index_gc_max_dump_buckets_per_round: cap,
             // The old trigger, on purpose: these rounds exist to reclaim a small fixture's log, which
             // the shipped byte gate would (correctly) leave alone.
             dirty_bucket_pressure: 1,
+            min_undumped_wal_bytes: 1,
             ..StorageManagerOptions::default()
         };
         let mut written = 0usize;
@@ -6663,7 +6669,12 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
             });
         }
     }
-    runtime.run_storage_manager_once(1, StorageManagerOptions { dirty_bucket_pressure: 1, ..StorageManagerOptions::default() });
+    let gate_crossed = StorageManagerOptions {
+        dirty_bucket_pressure: 1,
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
+    runtime.run_storage_manager_once(1, gate_crossed.clone());
 
     // Phase two: keep writing, but only to a handful of keys. Every bucket the wide phase touched
     // and this one does not is now CLEAN, holding a manifest from phase one.
@@ -6680,7 +6691,7 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
             });
         }
         written += BATCH;
-        runtime.run_storage_manager_once(1, StorageManagerOptions { dirty_bucket_pressure: 1, ..StorageManagerOptions::default() });
+        runtime.run_storage_manager_once(1, gate_crossed.clone());
     }
 
     let engine = runtime.engine();
@@ -12112,4 +12123,208 @@ fn the_runtime_counts_skipped_stages_round_time_and_overruns_across_rounds() {
     runtime.note_round_overrun(std::time::Duration::from_millis(31), interval);
     runtime.note_round_overrun(std::time::Duration::from_secs(52), interval);
     assert_eq!(runtime.stats().storage_manager_overrun_rounds, 2);
+}
+
+/// The index stage does not dump on every round: a round under the byte gate and under the
+/// index-log floor writes no manifest.
+///
+/// Every dump embeds the whole shard index, so a dump per round wrote bytes per operation that
+/// grew with the key count (measured 220 KB per dump at the start of a 60,000-SET run, 1.5 MB at
+/// the end, 46% of all bytes written). The stage is gated like the WAL stage and forced only by an
+/// index log past its floor.
+///
+/// Planted fault: restoring `min_undumped_wal_records: 0, min_undumped_wal_bytes: 0` in the
+/// `reclaim_index` request makes the first round dump and this fail.
+#[test]
+fn the_index_stage_below_the_gate_and_the_floor_writes_no_manifest() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    assert_eq!(runtime.engine().latest_bucket_dump_image_bytes(1), 0);
+    for round in 0..4usize {
+        for index in 0..200usize {
+            runtime.engine().execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("gated-{:04}", round * 200 + index),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    }
+    let manifests = runtime.engine().list_bucket_dump_manifests(1);
+    assert!(
+        manifests.is_empty(),
+        "{} manifest(s) written by rounds that were under the byte gate and the log floor",
+        manifests.len()
+    );
+    assert_eq!(runtime.engine().latest_bucket_dump_image_bytes(1), 0);
+}
+
+/// The gate is not a way to never dump: once the gate is met the stage dumps, and the accessor
+/// the scaled floor reads reports the image that dump embedded.
+#[test]
+fn the_index_stage_dumps_once_the_byte_gate_is_met_and_reports_the_image() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    for index in 0..300usize {
+        runtime.engine().execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("gate-met-{index:04}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    let options = StorageManagerOptions {
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
+    runtime.run_storage_manager_once(1, options);
+    let manifests = runtime.engine().list_bucket_dump_manifests(1);
+    assert!(!manifests.is_empty(), "a met byte gate produced no manifest");
+    let newest = manifests.last().expect("one manifest");
+    assert_eq!(
+        runtime.engine().latest_bucket_dump_image_bytes(1),
+        newest.index_bytes.len() as u64
+    );
+    assert!(newest.index_bytes.len() > 0);
+}
+
+/// A reopen after gated rounds replays only what the gate allowed to stay undumped, and loses
+/// nothing.
+///
+/// Two arms over the same writes. Under a gate no round crosses, nothing is dumped, so the whole
+/// write-ahead log is the replay and it is bounded by the gate by construction: this arm pins
+/// that the stage did not truncate a log no dump covers. Under a gate every round crosses, a dump
+/// covers the log and the reclaim truncates it, so the replay is a fraction of the writes. BOTH
+/// arms must reopen with every key readable: the log is never cut past what a dump covers.
+///
+/// Planted fault: truncating the write-ahead log without a covering dump loses keys in the first
+/// arm; restoring the always-dump request makes the first arm's log shrink and its assertion fail.
+#[test]
+fn a_reopen_after_gated_rounds_replays_only_the_gated_bytes_and_loses_nothing() {
+    const KEYS: usize = 600;
+    const ROUNDS: usize = 4;
+    // Overwrites, so records genuinely become garbage and the index log has something to reclaim.
+    const SPACE: usize = 100;
+
+    fn run(gate_bytes: u64) -> (usize, usize, usize, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let open = || {
+            let engine = TemporalEngine::with_local_dirs(
+                16 * 1024 * 1024,
+                dir.path().join("cache"),
+                dir.path().join("blocks"),
+                dir.path().join("indexes"),
+            );
+            let response = engine.load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "reopen-gated".to_string(),
+                shard_uri: "local://reopen-gated/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: u32::MAX,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            });
+            assert!(response.status.ok, "load shard 1: {:?}", response.status);
+            engine
+        };
+        let wal_records;
+        let index_records;
+        let manifests;
+        {
+            let runtime = DataNodeRuntime::new_without_workers_with_options(
+                open(),
+                DataNodeRuntimeOptions {
+                    worker_threads: 0,
+                    max_queue_depth: 4,
+                    max_background_queue_depth: 2,
+                },
+            );
+            let options = StorageManagerOptions {
+                min_undumped_wal_bytes: gate_bytes,
+                ..StorageManagerOptions::default()
+            };
+            for round in 0..ROUNDS {
+                for index in 0..KEYS / ROUNDS {
+                    let response = runtime.engine().execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: format!("reopen-{:05}", (round * (KEYS / ROUNDS) + index) % SPACE),
+                            value: vec![b'v'; 64],
+                        },
+                    });
+                    assert!(response.status.ok, "write: {:?}", response.status);
+                }
+                runtime.run_storage_manager_once(1, options.clone());
+            }
+            wal_records = runtime
+                .engine()
+                .write_ahead_log_store()
+                .scan(1, 0, u64::MAX, u64::MAX)
+                .map(|records| records.len())
+                .unwrap_or(0);
+            index_records = runtime
+                .engine()
+                .index_log_store()
+                .scan(1, 0, u64::MAX, u64::MAX)
+                .map(|records| records.len())
+                .unwrap_or(0);
+            manifests = runtime.engine().list_bucket_dump_manifests(1).len();
+        }
+        let reopened = open();
+        let mut readable = 0usize;
+        for index in 0..SPACE {
+            let response = reopened.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("reopen-{index:05}"),
+                },
+            });
+            if response.status.ok {
+                readable += 1;
+            }
+        }
+        (wal_records, readable, index_records, manifests)
+    }
+
+    let (ungated_wal, ungated_readable, ungated_index, ungated_manifests) = run(u64::MAX);
+    let (gated_wal, gated_readable, gated_index, gated_manifests) = run(1);
+    eprintln!("ungated wal={ungated_wal} index={ungated_index} manifests={ungated_manifests}; gated wal={gated_wal} index={gated_index} manifests={gated_manifests}");
+    assert_eq!(ungated_readable, SPACE, "a reopen lost keys under a gate no round crossed");
+    assert_eq!(gated_readable, SPACE, "a reopen lost keys under a gate every round crossed");
+    assert!(
+        ungated_wal >= SPACE,
+        "the log was cut to {ungated_wal} records with no dump covering it (live keys {SPACE})"
+    );
+    assert!(
+        gated_wal < ungated_wal,
+        "a dump covered the log and it was not reclaimed ({gated_wal} against {ungated_wal})"
+    );
+    // The index log and the manifests ride on the same dump: once the gate is crossed both must
+    // advance, and below it neither may.
+    assert_eq!(ungated_manifests, 0, "a manifest was written below the gate");
+    assert!(gated_manifests >= 1, "the gate was crossed and no manifest was written");
+    assert!(
+        gated_index < ungated_index,
+        "a dump covered the index log and it was not reclaimed ({gated_index} against {ungated_index})"
+    );
 }
