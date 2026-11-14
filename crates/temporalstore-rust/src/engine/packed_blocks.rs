@@ -102,7 +102,7 @@ pub(super) fn timestamped_element_name(stored_key: u64, identity: Option<u64>) -
     }
 }
 
-fn stage_timestamped_outcomes(
+pub(super) fn stage_timestamped_outcomes(
     kind: &str,
     key: &str,
     object_id: u64,
@@ -118,7 +118,8 @@ fn stage_timestamped_outcomes(
         super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
             kind: kind.to_string(),
             object_key: key.to_string(),
-            element_name: Some(element_name.clone()),
+            // MOVED, NOT CLONED: the name is built for this item and read by nothing after it.
+            element_name: Some(element_name),
             object_id,
             routing_bucket,
             address: Some(address.clone()),
@@ -134,7 +135,7 @@ fn stage_timestamped_outcomes(
 ///
 /// The insert above records where a point landed; without this its removal is invisible, and a
 /// shard rebuilt from records alone would keep points the shard itself has dropped.
-fn stage_timestamped_removal(
+pub(super) fn stage_timestamped_removal(
     kind: &str,
     key: &str,
     object_id: u64,
@@ -145,7 +146,8 @@ fn stage_timestamped_removal(
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
         kind: kind.to_string(),
         object_key: key.to_string(),
-        element_name: Some(element_name.clone()),
+        // MOVED, NOT CLONED: the name is built for this item and read by nothing after it.
+        element_name: Some(element_name),
         object_id,
         routing_bucket,
         address: None,
