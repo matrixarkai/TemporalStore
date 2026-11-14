@@ -106,6 +106,18 @@ members in a member list (1024 each side), quota entries (sum within the top-k c
 lanes (8), lanes (16), table name bytes (64), top-k (1000), more entities (63). Each is refused one
 past the limit and accepted at it.
 
+## Read-side options now in the engine
+
+The ranked read has three optional controls (`RankOptions`): a member set (`MemberFilter` with `include`
+and `exclude`, each at most 1024 entries, an empty include set refused, exclusion wins), an anchor
+(`Newest` ends a trailing window at the newest stored snapshot), and a quota (`Quota`: per lane a
+name and a count, plus `others`, the count of cells that satisfy no still-unmet lane). They are not
+fields of `CellRankSpec` yet, so the translator still refuses the modes that need them. When they are,
+the mapping is: `members` with its presence flag to `include`, `excluded_members` to `exclude`,
+the trailing-from-newest window kinds to `Anchor::Newest`, and `quota_lanes[i]` (a lane position,
+named through the profile) with `quota_counts[i]` to a lane quota, with `quota_counts[0]` as `others`.
+The bounds already match: 1024 members per side, 16 quota lanes, a quota total within the top-k cap.
+
 ## Owned elsewhere
 
 Idempotent retry (a per-key ring of recent tokens), read filters, anchors, quota and decay, the
