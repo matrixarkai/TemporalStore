@@ -2220,3 +2220,35 @@ fn where_the_bytes_of_one_in_tree_raft_wal_record_go() {
         println!("RECBYTES  other: {:?}", record);
     }
 }
+
+/// CPU of one record checksum: the SHA-256 of a JSON rendering this WAL used to take, against the
+/// CRC-32C of the protobuf bytes it takes now, on the record a one-entry append writes.
+/// Ignored: it prices.
+#[test]
+#[ignore]
+fn what_one_raft_wal_checksum_costs_in_cpu() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 91, [1], RaftConfig::default()).unwrap();
+    for i in 0..5 {
+        cluster
+            .propose(Command::StringSet { key: format!("k{i:06}"), value: vec![7u8; 32] })
+            .unwrap();
+    }
+    let record = LocalRaftWal::new(dir.path()).load_node(91, 1).unwrap().unwrap();
+    const N: u32 = 20_000;
+    let mut sink = 0u64;
+    let t = std::time::Instant::now();
+    for _ in 0..N {
+        let json = serde_json::to_vec(&record).unwrap();
+        sink ^= Sha256::digest(&json)[0] as u64;
+    }
+    let old_ns = t.elapsed().as_nanos() as f64 / N as f64;
+    let t = std::time::Instant::now();
+    for _ in 0..N {
+        sink ^= raft_wal_checksum(&record).unwrap() as u64;
+    }
+    let new_ns = t.elapsed().as_nanos() as f64 / N as f64;
+    println!("CHECKSUMCPU old(json+sha256)={old_ns:.0} ns  new(proto+crc32c)={new_ns:.0} ns  ratio={:.1}x sink={sink}", old_ns / new_ns);
+}
