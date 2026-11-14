@@ -34,8 +34,33 @@
 //! Only a `Last` window has a clock to replace: an anchor on any other window is refused rather
 //! than ignored. A key with no snapshot has no newest stamp and yields an empty window.
 
-use super::cell_set::{within, Member, MAX_MEMBER_BYTES};
+//! # QUOTA
+//!
+//! A [`Quota`] guarantees that the answer holds at least so many members with a non-zero value in
+//! each of some lanes, where the best-ranked `top_k` alone might hold none. It is applied to the
+//! ranked members, best first, after they are reduced and scored:
+//!
+//! * Every lane of the quota has a count. A member FITS a lane while that lane is still short and
+//!   the member's reduced value of it is non-zero. A member that fits at least one short lane is
+//!   kept, and counts toward every short lane it fits.
+//! * A member that fits no short lane is kept while fewer than `others` such members have been
+//!   kept.
+//! * The walk stops as soon as every lane is satisfied (a quota with no lane: as soon as `others`
+//!   are kept), even when `others` is not yet met. A lane no member can fill stays short and the
+//!   walk ends with the members it was given.
+//!
+//! The walk covers the `top_k` best members and no others, so a quota never returns more than
+//! `top_k` rows, and it only ever drops members from that list. A count is at least 1, a lane is
+//! named once, and the counts plus `others` are bounded by [`MAX_QUOTA`]. A quota with no lane and
+//! `others == 0` is no quota.
+
+use super::cell_set::{within, Member, MAX_MEMBER_BYTES, MAX_TOP_K};
 use crate::types::{CellMemberId, CellWindow};
+
+/// Lanes one quota may name, and the sum of its counts plus its `others`.
+pub(crate) const MAX_QUOTA_LANES: usize = 16;
+/// The most members a quota may reserve: the same ceiling as `top_k`.
+pub(crate) const MAX_QUOTA: usize = MAX_TOP_K;
 
 /// Members one side (include or exclude) of a [`MemberFilter`] may name, as sent.
 pub(crate) const MAX_FILTER_MEMBERS: usize = 1024;
@@ -63,6 +88,27 @@ pub(crate) struct MemberFilter {
 pub(crate) struct RankOptions {
     pub(crate) members: MemberFilter,
     pub(crate) anchor: Anchor,
+    pub(crate) quota: Quota,
+}
+
+/// One lane of a [`Quota`] and how many members must fit it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LaneQuota {
+    pub(crate) lane: String,
+    pub(crate) count: usize,
+}
+
+/// See the module notes. `Default` asks for nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Quota {
+    pub(crate) lanes: Vec<LaneQuota>,
+    pub(crate) others: usize,
+}
+
+impl Quota {
+    pub(crate) fn is_none(&self) -> bool {
+        self.lanes.is_empty() && self.others == 0
+    }
 }
 
 fn as_member(id: &CellMemberId) -> Member {
@@ -121,9 +167,67 @@ impl CompiledMembers {
     }
 }
 
+/// The checks on a quota that need no header.
+pub(crate) fn validate_quota(quota: &Quota) -> Result<(), String> {
+    within("lanes in a quota", quota.lanes.len(), MAX_QUOTA_LANES)?;
+    let mut reserved = quota.others;
+    for (at, entry) in quota.lanes.iter().enumerate() {
+        if entry.count == 0 {
+            return Err(format!("the quota for lane `{}` asks for no member", entry.lane));
+        }
+        if quota.lanes[..at].iter().any(|earlier| earlier.lane == entry.lane) {
+            return Err(format!("lane `{}` is in the quota twice", entry.lane));
+        }
+        reserved = reserved.saturating_add(entry.count);
+    }
+    within("members a quota reserves", reserved, MAX_QUOTA)
+}
+
+/// A [`Quota`] with its lanes resolved to positions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CompiledQuota {
+    /// `(lane position, count)`.
+    lanes: Vec<(usize, usize)>,
+    others: usize,
+}
+
+impl CompiledQuota {
+    pub(crate) fn new(lanes: Vec<(usize, usize)>, others: usize) -> CompiledQuota {
+        CompiledQuota { lanes, others }
+    }
+
+    /// Keeps the members of `ranked` the quota selects, in place and in order. `lanes_of` gives a
+    /// member's reduced lanes. Allocates once, for the lanes still short.
+    pub(crate) fn retain<T>(&self, ranked: &mut Vec<T>, lanes_of: impl Fn(&T) -> &[i64]) {
+        let mut short: Vec<usize> = self.lanes.iter().map(|&(_, count)| count).collect();
+        let mut others_left = self.others;
+        let mut finished = false;
+        ranked.retain(|member| {
+            if finished {
+                return false;
+            }
+            let lanes = lanes_of(member);
+            let mut fits = false;
+            for (left, &(lane, _)) in short.iter_mut().zip(&self.lanes) {
+                if *left > 0 && lanes[lane] != 0 {
+                    *left -= 1;
+                    fits = true;
+                }
+            }
+            let keep = fits || (others_left > 0 && {
+                others_left -= 1;
+                true
+            });
+            finished = if self.lanes.is_empty() { others_left == 0 } else { short.iter().all(|&left| left == 0) };
+            keep
+        });
+    }
+}
+
 /// The checks on the options that need no header. A command runs this at admission.
 pub(crate) fn validate_options(window: &CellWindow, options: &RankOptions) -> Result<(), String> {
     CompiledMembers::compile(&options.members)?;
+    validate_quota(&options.quota)?;
     if options.anchor == Anchor::Newest && !matches!(window, CellWindow::Last { .. }) {
         return Err("an anchor at the newest snapshot applies to a `last` window only".to_string());
     }

@@ -506,6 +506,12 @@ jobs:
             engine::cell_rank::tests::lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit \
             engine::cell_rank::tests::snapshots_in_a_window_are_bounded_at_exactly_the_limit \
             engine::cell_rank::tests::the_merge_answers_what_a_per_member_table_answers \
+            engine::cell_rank::tests::quota::a_quota_keeps_the_best_members_that_fit_a_short_lane_and_stops_when_every_lane_is_full \
+            engine::cell_rank::tests::quota::members_that_fit_no_short_lane_are_kept_up_to_the_others_count_and_the_walk_ends_with_the_lanes \
+            engine::cell_rank::tests::quota::a_quota_never_looks_past_the_top_k_and_never_returns_more_than_it \
+            engine::cell_rank::tests::quota::a_quota_only_drops_members_and_leaves_every_surviving_row_as_the_plain_read_has_it \
+            engine::cell_rank::tests::quota::a_quota_answers_what_a_literal_scan_of_the_ranking_answers \
+            engine::cell_rank::tests::quota::a_quota_is_bounded_at_exactly_its_limits \
             engine::cell_rank::tests::options::an_include_and_an_exclude_set_keep_exactly_the_members_they_name \
             engine::cell_rank::tests::options::the_member_set_is_anded_with_the_predicates_and_cuts_before_the_reduction \
             engine::cell_rank::tests::options::the_order_and_repetition_of_a_set_do_not_change_the_answer \

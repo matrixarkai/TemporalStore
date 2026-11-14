@@ -39,7 +39,9 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
-use super::cell_rank_options::{last_bounds, validate_options, Anchor, CompiledMembers, RankOptions};
+use super::cell_rank_options::{
+    last_bounds, validate_options, Anchor, CompiledMembers, CompiledQuota, RankOptions,
+};
 use super::cell_set::{validate_top_k, within, Cell, CellHeader, LaneReducer, Member};
 use super::product_model::filter_op_holds;
 use super::window_aggregate::{ratio, weighted_sum, wilson_lower_bound, Reduced, Reducer};
@@ -111,6 +113,7 @@ pub(crate) struct Plan {
     window: CellWindow,
     members: CompiledMembers,
     anchor: Anchor,
+    quota: Option<CompiledQuota>,
     predicates: Vec<Predicate>,
     scorer: Scorer,
     top_k: usize,
@@ -235,6 +238,17 @@ impl Plan {
         validate_spec(spec)?;
         validate_options(&spec.window, options)?;
         let members = CompiledMembers::compile(&options.members)?;
+        let quota = if options.quota.is_none() {
+            None
+        } else {
+            let lanes = options
+                .quota
+                .lanes
+                .iter()
+                .map(|entry| lane_named(header, &entry.lane).map(|lane| (lane, entry.count)))
+                .collect::<Result<Vec<_>, _>>()?;
+            Some(CompiledQuota::new(lanes, options.quota.others))
+        };
 
         let mut predicates = Vec::with_capacity(spec.filters.len());
         for FeatureFilter { field, op, value } in &spec.filters {
@@ -264,6 +278,7 @@ impl Plan {
             window: spec.window.clone(),
             members,
             anchor: options.anchor,
+            quota,
             predicates,
             scorer,
             top_k: spec.top_k,
@@ -559,8 +574,11 @@ impl Plan {
         }
 
         let TopK { heap, lanes, labels, last, lane_count, label_count, .. } = top;
-        let rows = heap
-            .into_sorted_vec()
+        let mut ranked = heap.into_sorted_vec();
+        if let Some(quota) = &self.quota {
+            quota.retain(&mut ranked, |entry| &lanes[entry.slot * lane_count..(entry.slot + 1) * lane_count]);
+        }
+        let rows = ranked
             .into_iter()
             .map(|entry| {
                 let (lane_base, label_base) = (entry.slot * lane_count, entry.slot * label_count);
