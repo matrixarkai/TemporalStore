@@ -1344,7 +1344,12 @@ impl DataNodeRuntime {
                 block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
                 block_gc_checkpoint_floor_slab_id: None,
                 block_gc_raft_install_floor_slab_id: None,
-                block_gc_delayed_destroy_grace_ms: 0,
+                // A DAY, NOT THE STORE'S ONE-HOUR FLOOR. This was 0, which the purge raises to
+                // `DELAYED_DESTROY_MIN_AGE_MS` (one hour), so a quarantined slab was destroyed an
+                // hour after it was set aside. The cycle request already defaulted to this
+                // constant; only the periodic loop, the path a server actually runs, did not.
+                block_gc_delayed_destroy_grace_ms:
+                    crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
                 invalidate_cache: false,
                 warm_cache: false,
             };
