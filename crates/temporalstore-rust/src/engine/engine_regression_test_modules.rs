@@ -126,6 +126,8 @@ mod reclaiming_space_is_its_own_pass;
 mod cache_invalidation_cost;
 #[path = "tests/cache_read_cost.rs"]
 mod cache_read_cost;
+#[path = "tests/a_timestamped_point_names_itself_once.rs"]
+mod a_timestamped_point_names_itself_once;
 #[path = "tests/a_hash_write_files_only_what_it_wrote.rs"]
 mod a_hash_write_files_only_what_it_wrote;
 #[path = "tests/a_write_names_only_the_blocks_of_the_objects_it_touched.rs"]
