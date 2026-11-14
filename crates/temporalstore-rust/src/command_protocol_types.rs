@@ -200,6 +200,13 @@ pub fn parse_feature_filters<'a>(
     Ok(parsed)
 }
 
+/// One read of a batch of independent ranked cell reads: a key and what to ask of it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CellRankBatchItem {
+    pub key: String,
+    pub spec: CellRankSpec,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SequenceQuerySpec {
     pub key: String,
@@ -1835,6 +1842,21 @@ pub enum Command {
         key: String,
         spec: CellRollupSpec,
     },
+    /// A ranked windowed read over the cell snapshots of several keys that share one spec: the
+    /// answer one key holding all of their snapshots would give. The keys are read on the shard
+    /// the request names, so they must live together; `RankedCells::keys` says how many of them
+    /// held a snapshot in the window.
+    CellFanInRankQuery {
+        keys: Vec<String>,
+        spec: CellRankSpec,
+    },
+    /// N independent ranked reads in one request, each with its own key and spec, answered in
+    /// request order, one [`RankedCells`] each (a key with nothing to rank answers empty, a read
+    /// that cannot be served answers with `refused` set, and neither fails the others). The keys
+    /// are read on the shard the request names.
+    CellRankBatchQuery {
+        queries: Vec<CellRankBatchItem>,
+    },
     ControlStateIncrement {
         key: String,
         timestamp_ms: u64,
@@ -2984,6 +3006,10 @@ pub enum CommandResponse {
         cells_before: u64,
         cells_after: u64,
         cells_dropped: u64,
+    },
+    /// The answers of a batch of ranked cell reads, in request order.
+    CellRankings {
+        rankings: Vec<RankedCells>,
     },
     ContextNode {
         object_key: String,

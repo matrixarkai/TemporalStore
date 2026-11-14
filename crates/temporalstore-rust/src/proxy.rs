@@ -899,6 +899,21 @@ pub struct ProxyCellRankQueryCommandRequest {
     pub spec: crate::types::CellRankSpec,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyCellRankBatchQueryCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub queries: Vec<crate::types::CellRankBatchItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyCellFanInRankQueryCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub keys: Vec<String>,
+    pub spec: crate::types::CellRankSpec,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyControlStateIncrementCommandRequest {
     pub namespace: String,
