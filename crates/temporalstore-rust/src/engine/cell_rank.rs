@@ -503,7 +503,7 @@ fn snapshots_between<'s, 'a>(
 
 impl Plan {
     /// The snapshots the window covers, in ascending stamp order.
-    fn select_window<'s, 'a>(
+    pub(crate) fn select_window<'s, 'a>(
         &self,
         now_ms: u64,
         snapshots: &'s [SnapshotView<'a>],
@@ -575,7 +575,17 @@ impl Plan {
     /// is the instant a `Last` window ends at.
     pub(crate) fn run<'a>(&self, now_ms: u64, snapshots: &[SnapshotView<'a>]) -> Result<RankedCells, String> {
         let chosen = self.select_window(now_ms, snapshots)?;
+        let mut ranked = self.run_ordered(chosen)?;
+        ranked.keys = usize::from(!chosen.is_empty());
+        Ok(ranked)
+    }
 
+    /// Ranks the members of `chosen`, snapshots already picked and in the order their cells are
+    /// to be combined: ascending by stamp, and where two share a stamp the earlier one in the
+    /// slice is combined first (`First` and `Last` lanes resolve a tie by that order). The window
+    /// is not applied again. A caller that merges snapshots of more than one series builds the
+    /// slice itself; [`Plan::run`] hands it one series' window.
+    pub(crate) fn run_ordered<'a>(&self, chosen: &[SnapshotView<'a>]) -> Result<RankedCells, String> {
         // Everything sized by the snapshot count, the lane count or k is allocated here, once.
         let mut at = vec![0usize; chosen.len()];
         let mut queue: BinaryHeap<Reverse<(&'a Member, usize)>> = BinaryHeap::with_capacity(chosen.len());
@@ -636,6 +646,8 @@ impl Plan {
             label_columns: self.label_names.clone(),
             lane_columns: self.lane_names.clone(),
             snapshots: chosen.len(),
+            // The caller knows how many series `chosen` came from.
+            keys: 0,
             unscored,
             rows,
             refused: String::new(),
