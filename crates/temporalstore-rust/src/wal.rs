@@ -8399,7 +8399,7 @@ mod tests {
         ("SetMembers", std::mem::size_of::<(String)>()),
         ("SetRemove", std::mem::size_of::<(String, Vec<u8>)>()),
         ("FeatureAppend", std::mem::size_of::<(String, Vec<FeaturePoint>)>()),
-        ("FeatureAppendWithPolicy", std::mem::size_of::<(String, Vec<FeaturePoint>, FeatureWritePolicy)>()),
+        ("FeatureAppendWithPolicy", std::mem::size_of::<(String, Vec<FeaturePoint>, FeatureWritePolicy, Option<u64>)>()),
         ("FeatureQuery", std::mem::size_of::<(String, u64, u64, Option<usize>)>()),
         ("FeatureQueryFiltered", std::mem::size_of::<(String, u64, u64, Option<usize>, Vec<FeatureFilter>)>()),
         ("FeatureReplace", std::mem::size_of::<(String, u64, u64, Vec<FeaturePoint>)>()),

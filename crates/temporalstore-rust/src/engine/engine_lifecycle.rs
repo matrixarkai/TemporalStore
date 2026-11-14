@@ -32,7 +32,11 @@ fn remove_timestamped_series(
     object_key: &str,
 ) -> bool {
     match kind {
-        "feature" => shard.features_mut().remove(object_key).is_some(),
+        "feature" => {
+            // The ring of a key that is gone is gone with it (see `delete_record_exact`).
+            shard.forget_retry_ring(object_key);
+            shard.features_mut().remove(object_key).is_some()
+        }
         "context_index" => shard.context_indexes_mut().remove(object_key).is_some(),
         "context_audit" => shard.context_audits_mut().remove(object_key).is_some(),
         "context_child" => shard.context_children_mut().remove(object_key).is_some(),

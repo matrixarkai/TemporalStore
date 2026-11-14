@@ -89,11 +89,12 @@ fn write(engine: &TemporalEngine, key: &str, timestamp_ms: u64, cells: &[Cell]) 
             key: key.to_string(),
             points: vec![FeaturePoint { timestamp_ms, value: encode_value(&header(), cells).unwrap() }],
             policy: FeatureWritePolicy::MergeReduce,
+            retry_token: None,
         },
     });
     assert!(response.status.ok, "{:?}", response.status);
     match response.response {
-        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged } => {
+        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged, .. } => {
             (snapshots_written, cells_created, cells_merged)
         }
         other => panic!("a merge-reduce append answers a receipt, got {other:?}"),

@@ -304,6 +304,9 @@ message CommandResponse {
   // A merge-reduce feature append reports what landed. `count` stays the snapshots written.
   uint64 cells_created = 9;
   uint64 cells_merged = 10;
+  // Set when the append carried a retry token the key still remembered: the counts are the first
+  // application's and nothing was written.
+  bool replayed = 15;
   // A rollup reports what it did: `count` is the snapshots after, these are the rest.
   uint64 snapshots_before = 11;
   uint64 cells_before = 12;
@@ -1160,6 +1163,9 @@ message FeatureAppendWithPolicy {
   string key = 1;
   repeated FeaturePoint points = 2;
   FeatureWritePolicy policy = 3;
+  // A caller-chosen retry token, honoured under the merge-reduce policy only. Absent is the
+  // request every client sent before tokens existed; zero is a token like any other.
+  optional uint64 retry_token = 16;
 }
 
 // Rolls the cell snapshots of `key` stamped strictly below `older_than_ms` up into buckets of

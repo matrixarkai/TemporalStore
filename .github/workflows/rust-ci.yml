@@ -340,7 +340,22 @@ jobs:
             shared_store::tests::one_offset_frame_per_container::entry_frames_and_container_frames_share_one_stream_in_order \
             shared_store::tests::one_offset_frame_per_container::a_damaged_container_frame_is_an_error_not_a_short_map \
             shared_store::tests::one_offset_frame_per_container::an_entry_frame_never_sets_the_container_flag \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_delete_an_expiry_and_a_trim_to_nothing_each_forget_the_ring \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_refused_request_does_not_consume_its_token_and_the_wrong_policy_is_refused \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_repeated_token_answers_the_first_receipt_and_writes_nothing \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_replay_is_admitted_before_the_request_is_checked_against_the_key \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_token_belongs_to_its_key \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_token_survives_a_crash_and_a_storage_cycle_that_reclaimed_the_log \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::an_append_without_a_token_stores_what_it_always_stored \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::an_image_that_holds_rings_cannot_be_read_by_a_binary_that_does_not_know_them \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::the_ring_holds_sixteen_through_the_engine_and_the_seventeenth_token_evicts_the_first \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::the_token_rides_the_command_bytes_and_a_tokenless_command_is_unchanged_on_every_wire \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::two_engines_given_the_same_requests_hold_the_same_bytes \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::two_tokens_interleaved_and_one_token_twice_apart_apply_once_each \
             engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_element_name \
+            engine::tests::the_side_table_codec_resolves_shape_from_spelling::every_side_table_domain_round_trips_as_its_own_shape \
+            engine::tests::the_side_table_codec_resolves_shape_from_spelling::the_seven_spellings_are_distinct_and_the_six_old_ones_are_unchanged \
+            engine::tests::the_side_table_codec_resolves_shape_from_spelling::the_stored_image_carries_the_spellings_without_a_variant_tag \
             engine::tests::what_each_maintenance_bound_costs_per_round::a_cycle_request_that_names_no_bound_still_arrives_bounded \
             engine::tests::part4::every_maintenance_round_is_bounded_by_default \
             engine::tests::part4::the_counter_coalesce_cure_is_inert_under_default_config \

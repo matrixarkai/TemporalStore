@@ -152,7 +152,7 @@ fn an_add_becomes_one_merge_reduce_append_per_key_that_decodes_back_to_its_cells
     assert_eq!(commands.len(), 2, "two entities are two keys");
     let mut seen = 0;
     for command in &commands {
-        let Command::FeatureAppendWithPolicy { key, points, policy } = command else { panic!("{command:?}") };
+        let Command::FeatureAppendWithPolicy { key, points, policy, .. } = command else { panic!("{command:?}") };
         assert_eq!(*policy, FeatureWritePolicy::MergeReduce);
         assert_eq!(points.len(), 1, "500 microseconds share one millisecond");
         assert_eq!(points[0].timestamp_ms, (NOW_US / 1000) as u64);

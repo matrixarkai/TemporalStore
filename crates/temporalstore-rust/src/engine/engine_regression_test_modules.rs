@@ -523,6 +523,8 @@ mod the_sequence_row_is_protobuf_only;
 mod a_plan_lists_the_shards_blocks_once;
 #[path = "tests/a_feature_append_merges_cells_by_lane_reducer.rs"]
 mod a_feature_append_merges_cells_by_lane_reducer;
+#[path = "tests/a_retried_merge_append_answers_its_first_receipt.rs"]
+mod a_retried_merge_append_answers_its_first_receipt;
 #[path = "tests/a_ranked_cell_read_is_a_command.rs"]
 mod a_ranked_cell_read_is_a_command;
 #[path = "tests/a_cell_rollup_is_a_command.rs"]

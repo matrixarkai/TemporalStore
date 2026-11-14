@@ -1280,6 +1280,9 @@ pub fn execute_redis_command_with_state(
                     value: args[3].clone(),
                 }],
                 policy,
+                // The text protocol has no way to name a token: a request through it is the
+                // request every client sent before tokens existed.
+                retry_token: None,
             });
             // A merge-reduce append answers with what landed rather than a changed/unchanged flag:
             // [snapshots written, cells created, cells merged].
@@ -1288,6 +1291,7 @@ pub fn execute_redis_command_with_state(
                     snapshots_written,
                     cells_created,
                     cells_merged,
+                    ..
                 }) => RespValue::Array(vec![
                     RespValue::Integer(snapshots_written as i64),
                     RespValue::Integer(cells_created as i64),

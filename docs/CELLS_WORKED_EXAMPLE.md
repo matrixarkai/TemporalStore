@@ -53,6 +53,39 @@ the hour: item 1 has 60 impressions, 3 clicks and a peak of 9, item 2 has 10, 5 
 6 cells before, 3 after. Capped to one item per `slot` by click rate (`clicks / impressions`),
 item 2 (0.5) stays and item 1 (0.05) goes; item 3 is alone in its slot.
 
+## Retrying a merge append
+
+A merge-reduce append counts its `Sum` and `Count` lanes again when it is sent twice, so a client
+that does not know whether a request landed cannot simply send it again. A request may carry a
+**retry token**, a `u64` the caller chooses (`retry_token` on the append; zero is a token like any
+other). The first request with a token is applied as usual. The same token again, on the same key,
+answers the receipt the first application landed, with `replayed` set, and writes nothing to the
+store.
+
+* **Per key, and a window of 16.** A key remembers the last 16 tokens it applied, each with its
+  receipt. The 17th evicts the oldest. A retry that arrives after 16 newer tokens have been applied
+  is not protected: it is applied again as a new request. The window is a count of appends, never a
+  time, so it is the same on a leader, on a follower and on a replay of the log.
+* **Only a request that was applied files its token.** A request that is refused (a header that
+  disagrees with the stored one, a bound) leaves its token unused, so the corrected request goes
+  through. A replay is admitted before the request is checked at all: a retry of a request that was
+  accepted is never refused for what the key has grown into since.
+* **Only merge-reduce.** A token on any other write policy is refused, not ignored.
+* **A key that goes forgets its tokens.** Deleting the key, its expiry, and a trim that leaves it no
+  snapshot each clear the ring: the same token on the key written again is a new request.
+* **Durable.** The rings are stored with the shard's index image (a new `retry_rings` domain, one
+  byte string per key), so they come back after a restart and after the log has been reclaimed.
+  Like a deadline or a seen set, a ring is held in the image and not in the blocks: tokens filed
+  since the last image flush are rebuilt where the log is replayed (a replicated deployment), and
+  a single node that crashes without replaying a log forgets them. A shard that never used a token
+  stores exactly the bytes it stored before, the image stamp aside, and a key that never uses one
+  pays nothing.
+* **What the answer says.** `snapshots_written`, `cells_created` and `cells_merged` are the first
+  application's, so a retry of a request that created a cell reads "created", where a request that
+  merged again would read "merged". A request without a token is applied every time, as before.
+
+A replay still reaches the log as a small record that changes nothing when applied.
+
 ## Not included
 
 A time-to-live per group: a key has one time-to-live, as every feature key does.

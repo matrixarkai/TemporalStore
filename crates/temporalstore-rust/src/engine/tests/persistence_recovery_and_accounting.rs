@@ -17835,6 +17835,7 @@ fn feature_append_cost_stays_bounded_by_request() {
                     key: "fp".to_string(),
                     points: vec![FeaturePoint { timestamp_ms: ts, value: vec![b'v'; 8] }],
                     policy: FeatureWritePolicy::Upsert,
+                    retry_token: None,
                 },
                 "FeatureReplace" => Command::FeatureReplace {
                     key: "fr".to_string(),

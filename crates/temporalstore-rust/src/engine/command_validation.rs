@@ -686,16 +686,45 @@ pub(super) fn validate_command_preconditions(
             key,
             points,
             policy,
+            retry_token,
         } => {
             if *policy == FeatureWritePolicy::Block {
                 return Err(Status::error("invalid_argument", "Invalid write policy"));
             }
+            // A token means something to the merge only: under any other policy it would be
+            // silently ignored, and a client that believed its retry was protected would not be.
+            if retry_token.is_some() && *policy != FeatureWritePolicy::MergeReduce {
+                return Err(Status::error(
+                    "invalid_argument",
+                    "a retry token needs the merge-reduce policy",
+                ));
+            }
+            // A key past its deadline reads as absent, as it does everywhere else.
+            let expired = shard
+                .expires_at_ms()
+                .get(key.as_str())
+                .map(|expires_at| *expires_at <= resolve_now_ms())
+                .unwrap_or(false);
+            // A REPLAY IS ADMITTED BEFORE ANYTHING ELSE IS CHECKED. It will write nothing and answer
+            // the receipt the first application landed, so the ceiling and the merge, which a
+            // request that is applied again must pass, have nothing to say about it: a retry of a
+            // request that was accepted is never refused for what the key has grown into since.
+            let replay = !expired
+                && retry_token.is_some_and(|token| {
+                    shard.features().get(&key[..]).is_some_and(|series| series.len() > 0)
+                        && matches!(
+                            shard
+                                .retry_ring(key)
+                                .map(|ring| ring.admit(token)),
+                            Some(crate::engine::cell_retry_ring::Admission::Replay(_))
+                        )
+                });
             let current = shard
                 .features()
                 .get(&key[..])
                 .map(|series| series.len())
                 .unwrap_or(0);
-            if current.saturating_add(points.len()) > FEATURE_ADD_HARD_MAX_SIZE {
+            if !replay && current.saturating_add(points.len()) > FEATURE_ADD_HARD_MAX_SIZE {
                 return Err(Status::error(
                     "invalid_argument",
                     format!("{key} size bigger than {FEATURE_ADD_HARD_MAX_SIZE}"),
@@ -703,14 +732,8 @@ pub(super) fn validate_command_preconditions(
             }
             // Merge-reduce is refused HERE, like `Block`, so a bad request writes nothing and
             // reaches no log. The plan is thrown away; execution plans again (see the module note).
-            if *policy == FeatureWritePolicy::MergeReduce {
+            if *policy == FeatureWritePolicy::MergeReduce && !replay {
                 let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-                // A key past its deadline reads as absent, as it does everywhere else.
-                let expired = shard
-                    .expires_at_ms()
-                    .get(key.as_str())
-                    .map(|expires_at| *expires_at <= resolve_now_ms())
-                    .unwrap_or(false);
                 crate::engine::cell_merge_append::plan_cell_merge(
                     cache,
                     block_store,

@@ -27,6 +27,7 @@ impl TemporalStoreTable {
                 key: key.into(),
                 points,
                 policy,
+                retry_token: None,
             })?
             .response
         {
@@ -51,6 +52,7 @@ impl TemporalStoreTable {
                 key: key.into(),
                 points,
                 policy: FeatureWritePolicy::MergeReduce,
+                retry_token: None,
             })?
             .response
         {
@@ -58,6 +60,7 @@ impl TemporalStoreTable {
                 snapshots_written,
                 cells_created,
                 cells_merged,
+                ..
             } => Ok((snapshots_written, cells_created, cells_merged)),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "feature_merge_cells",
