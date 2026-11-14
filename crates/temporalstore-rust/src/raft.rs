@@ -1338,7 +1338,8 @@ impl RaftReadSafetyRuntimeState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct RaftWalEnvelope {
     sequence: u64,
-    checksum: String,
+    /// CRC-32C of the record's protobuf encoding.
+    checksum: u32,
     record: RaftWalRecord,
     /// Present on an incremental record: `record.entries` then carries ONLY the log
     /// entries appended since `from_index`, and recovery folds it onto the most recent
@@ -6541,14 +6542,8 @@ fn validate_raft_storage_apply_fence(record: &RaftWalRecord) -> Result<(), RaftE
     Ok(())
 }
 
-fn raft_wal_checksum(record: &RaftWalRecord) -> io::Result<String> {
-    let bytes = serde_json::to_vec(record).map_err(io::Error::other)?;
-    let digest = Sha256::digest(bytes);
-    let mut checksum = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        checksum.push_str(&format!("{byte:02x}"));
-    }
-    Ok(checksum)
+fn raft_wal_checksum(record: &RaftWalRecord) -> io::Result<u32> {
+    Ok(crc32c::crc32c(&wal_proto::encode_record(record)?))
 }
 
 fn majority(replica_count: usize) -> usize {
