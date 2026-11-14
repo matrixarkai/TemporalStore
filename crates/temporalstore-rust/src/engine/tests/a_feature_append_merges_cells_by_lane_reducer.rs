@@ -106,6 +106,7 @@ fn merge(engine: &TemporalEngine, key: &str, points: Vec<FeaturePoint>) -> Execu
             key: key.to_string(),
             points,
             policy: FeatureWritePolicy::MergeReduce,
+            retry_token: None,
         },
     })
 }
@@ -113,7 +114,7 @@ fn merge(engine: &TemporalEngine, key: &str, points: Vec<FeaturePoint>) -> Execu
 fn landed(response: &ExecuteResponse) -> (u64, u64, u64) {
     assert!(response.status.ok, "the request was refused: {:?}", response.status);
     match &response.response {
-        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged } => {
+        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged, .. } => {
             (*snapshots_written, *cells_created, *cells_merged)
         }
         other => panic!("a merge-reduce append answers a receipt, got {other:?}"),
@@ -391,6 +392,7 @@ fn a_key_that_does_not_fit_its_spec_a_junk_value_a_plain_value_and_an_empty_requ
             key: key.clone(),
             points: vec![],
             policy: FeatureWritePolicy::Block,
+            retry_token: None,
         },
     });
     assert!(!blocked.status.ok);

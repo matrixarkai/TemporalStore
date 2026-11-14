@@ -1245,6 +1245,7 @@ fn insert_if_absent_keeps_the_first_in_batch_duplicate_timestamp() {
                 },
             ],
             policy: FeatureWritePolicy::InsertIfAbsent,
+            retry_token: None,
         },
     });
     assert_eq!(
@@ -1295,6 +1296,7 @@ fn feature_write_policy_sequence_batch_dimensions_and_control_state_precision_wo
                         value: b"ignored".to_vec(),
                     }],
                     policy: FeatureWritePolicy::InsertIfAbsent,
+                    retry_token: None,
                 },
             })
             .response,
@@ -1311,6 +1313,7 @@ fn feature_write_policy_sequence_batch_dimensions_and_control_state_precision_wo
                         value: b"new".to_vec(),
                     }],
                     policy: FeatureWritePolicy::ReplaceExisting,
+                    retry_token: None,
                 },
             })
             .response,

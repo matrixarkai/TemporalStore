@@ -583,6 +583,7 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                     .map(sdk_feature_point_to_types)
                     .collect(),
                 policy: feature_write_policy_from_proto(command.policy)?,
+                retry_token: command.retry_token,
             }
         }
         v1::command::Kind::CellRollup(command) => types::Command::CellRollup {
@@ -1438,11 +1439,13 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             snapshots_written,
             cells_created,
             cells_merged,
+            replayed,
         } => v1::CommandResponse {
             status: Some(types_status_to_sdk(types::Status::ok())),
             count: snapshots_written,
             cells_created,
             cells_merged,
+            replayed,
             ..Default::default()
         },
         types::CommandResponse::CellRollupReceipt {

@@ -1748,6 +1748,14 @@ pub enum Command {
         key: String,
         points: Vec<FeaturePoint>,
         policy: FeatureWritePolicy,
+        /// A caller-chosen retry token, honoured under `MergeReduce` only (any other policy
+        /// refuses a request that carries one). The first request with a token is applied; the
+        /// same token again on the same key, while it is among the last
+        /// `cell_retry_ring::RETRY_RING_CAPACITY` tokens the key has applied, answers the first
+        /// receipt with `replayed` set and writes nothing. `None` is the request every client
+        /// sent before tokens existed, and its stored and wire bytes are unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_token: Option<u64>,
     },
     FeatureQuery {
         key: String,
@@ -2944,6 +2952,10 @@ pub enum CommandResponse {
         snapshots_written: u64,
         cells_created: u64,
         cells_merged: u64,
+        /// Set when the request carried a retry token the key still remembered: the counts above
+        /// are the ones the first application landed and this request wrote nothing.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        replayed: bool,
     },
     SequenceRows {
         rows: Vec<SequenceFeatureRow>,

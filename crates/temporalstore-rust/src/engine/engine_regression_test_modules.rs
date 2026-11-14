@@ -527,6 +527,8 @@ mod a_feature_append_merges_cells_by_lane_reducer;
 mod a_ranked_cell_read_is_a_command;
 #[path = "tests/a_cell_rollup_is_a_command.rs"]
 mod a_cell_rollup_is_a_command;
+#[path = "tests/a_retried_merge_append_answers_its_first_receipt.rs"]
+mod a_retried_merge_append_answers_its_first_receipt;
 #[path = "tests/a_whole_container_read_shares_its_work.rs"]
 mod a_whole_container_read_shares_its_work;
 #[path = "tests/a_worked_example_of_cells.rs"]

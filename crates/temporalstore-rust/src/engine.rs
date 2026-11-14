@@ -31,9 +31,7 @@ mod object_manager;
 mod packed_blocks;
 mod product_model;
 mod cell_merge_append;
-// The per-key retry ring of a merge-reduce append: a pure type. Its caller is a separate change,
-// so nothing calls it yet; the allow comes off in that change.
-#[allow(dead_code)]
+// The per-key retry ring of a merge-reduce append.
 mod cell_retry_ring;
 mod window_aggregate;
 mod cell_rank;
@@ -3152,8 +3150,26 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// refuses a lower stamp before anything acts on it, and the refusal falls back to WAL replay,
 /// which rebuilds the map through the ordinary write path.
 ///
+/// # 32: A SIDE TABLE OF RETRY RINGS
+///
+/// A merge-reduce append may carry a retry token, and the last 16 tokens of each key that has used
+/// one are remembered with the receipt each landed (`cell_retry_ring`). They live in the image, in a
+/// new domain of `side_tables` spelled `retry_rings`, one byte string per key.
+///
+/// A SHARD THAT NEVER USES A TOKEN WRITES THE BYTES IT ALWAYS WROTE. The table is created by the
+/// first token and written only while it holds a ring, so no key and no image of a tokenless shard
+/// pays a byte for it; the stamp is the one thing that moves.
+///
+/// ONLY AN OLD BINARY READING NEW BYTES NEEDS THE STAMP. The codec skips a domain it does not
+/// declare, so without a bump an older binary would load an image that holds rings, drop them
+/// without a word, and write the image back without them: every retry it then served would be
+/// applied twice. The bump makes that refusal clean. A new binary reading an older image would need
+/// no stamp (the domain is absent and means no ring), but the refusal on a lower stamp applies to
+/// it too and falls back to replay, which rebuilds the same state through the ordinary write path:
+/// the cost of the step is one replay for each existing store, spent deliberately.
+///
 /// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 31;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 32;
 
 /// What the serving read fast path decided to serve: chosen under the shard-table read guard,
 /// read off the block store after it drops.
@@ -4283,7 +4299,7 @@ fn command_will_trim_feature_membership(
     let (key, points, may_add) = match command {
         Command::FeatureAppend { key, points }
         | Command::FeatureAppendWithTtl { key, points, .. } => (key, points, true),
-        Command::FeatureAppendWithPolicy { key, points, policy } => (
+        Command::FeatureAppendWithPolicy { key, points, policy, .. } => (
             key,
             points,
             matches!(
@@ -6461,6 +6477,10 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.remove_string_row(key).is_some();
     removed |= shard.buckets.remove(key).is_some();
     removed |= shard.seen.remove(key).is_some();
+    // THE RETRY RING OF A KEY GOES WHEN THE KEY DOES, on every path that deletes a record -- a
+    // delete, an expiry, a sweep. A key written again afterwards is a new key, and a token it saw
+    // before is not a replay. Never creates the table, so a shard without tokens is untouched.
+    shard.forget_retry_ring(key);
     if shard.features_mut().remove(key).is_some() {
         removed = true;
         control_rollup::feature_forget(shard, key);

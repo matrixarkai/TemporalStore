@@ -261,6 +261,7 @@ impl ProxyService {
                                 key: req.key,
                                 points: req.points,
                                 policy,
+                                retry_token: None,
                             }
                         } else {
                             Command::FeatureAppend {
