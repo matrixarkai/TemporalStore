@@ -1324,6 +1324,11 @@ impl TemporalEngine {
         restore_phase_probe::mark("publish_and_seed");
         let restore_result = rehydrated
             .and_then(|_| self.replay_wal_into_shard(request.shard_id, replay_watermark));
+        if restore_result.is_ok() {
+            // The log above the replay point is undumped, whatever process wrote it.
+            self.wal_store
+                .seed_undumped_from_sequence(request.shard_id, replay_watermark);
+        }
         if let Err(status) = restore_result {
             // ReplayWal returns DataLoss on a WAL hole and aborts Load. Unwind the
             // partially-loaded shard and refuse the load rather than serve truncated

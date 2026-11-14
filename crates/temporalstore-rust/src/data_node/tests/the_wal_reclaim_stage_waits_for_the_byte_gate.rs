@@ -145,3 +145,112 @@ fn a_capped_dump_does_not_rearm_the_byte_gate() {
         after.wal_bytes
     );
 }
+
+/// A SHARD OPENED OVER A LOG THAT A PREVIOUS PROCESS LEFT UNDUMPED MUST COUNT THAT LOG.
+///
+/// The byte figure is built from appends in this process, so a restart read it as zero and the
+/// stage then waited for a whole further gate of appends before touching the old tail.
+#[test]
+fn a_shard_opened_over_an_undumped_tail_runs_the_stage_in_its_first_round() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let runtime = seeded(dir.path(), 400);
+        drop(runtime);
+    }
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    let response = engine.load_shard_with(crate::control::LoadShardRequest {
+        shard_id: 1,
+        table_name: "byte-gate".to_string(),
+        shard_uri: "local://byte-gate/1".to_string(),
+        start_routing_bucket: 0,
+        end_routing_bucket: 1023,
+        readonly: false,
+        load_version: 2,
+        local_node_id: Some(1),
+    });
+    assert!(response.status.ok, "reopen shard 1: {:?}", response.status);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 64,
+            max_background_queue_depth: 8,
+        },
+    );
+    let options = StorageManagerOptions {
+        min_undumped_wal_bytes: 20_000,
+        enable_index_gc: false,
+        enable_memory_reclaim: false,
+        enable_block_compaction: false,
+        enable_block_gc: false,
+        enable_expire: false,
+        ..StorageManagerOptions::default()
+    };
+    let (pressure, _) = runtime.storage_manager_pressure_snapshot(1, &options);
+    // NON-VACUITY: the log the first process left is above the gate, and only the log can say so.
+    assert!(
+        pressure.wal_bytes >= options.min_undumped_wal_bytes,
+        "the reopened shard counts {} undumped bytes against a {}-byte gate, so a tail the          previous process left is not counted",
+        pressure.wal_bytes,
+        options.min_undumped_wal_bytes
+    );
+    let report = runtime.run_storage_manager_once(1, options);
+    assert!(
+        ran_wal_stage(&report),
+        "the first round over an undumped tail above the gate did not run the stage"
+    );
+}
+
+/// A SHARD THAT ALWAYS HAS A DIRTY BUCKET HAS NO IDLE PROBE, AND ITS LOG MUST STILL BE BOUNDED.
+///
+/// The idle probe is skipped while any bucket is dirty, so a hot key re-dirtied every round never
+/// takes it. The byte gate is then the only path that reclaims its already-dumped prefix, and it
+/// has to keep the log near the gate rather than letting it grow with everything written.
+#[test]
+fn a_hot_bucket_dirtied_every_round_keeps_the_log_near_the_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded(dir.path(), 200);
+    let options = StorageManagerOptions {
+        min_undumped_wal_bytes: 20_000,
+        enable_index_gc: false,
+        enable_memory_reclaim: false,
+        enable_block_compaction: false,
+        enable_block_gc: false,
+        enable_expire: false,
+        ..StorageManagerOptions::default()
+    };
+    let mut written = 200usize;
+    for round in 0..60usize {
+        for index in 0..20usize {
+            let response = runtime.inner.engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "the-hot-key".to_string(),
+                    value: format!("v-{round}-{index}").into_bytes(),
+                },
+            });
+            assert!(response.status.ok, "hot write: {:?}", response.status);
+            written += 1;
+        }
+        runtime.run_storage_manager_once(1, options.clone());
+    }
+    let (pressure, _) = runtime.storage_manager_pressure_snapshot(1, &options);
+    // NON-VACUITY: the shard really is dirty at the end, so the idle probe was never available.
+    assert!(pressure.dirty_bucket_count > 0, "the hot bucket is not dirty");
+    let records = runtime
+        .inner
+        .engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .map(|records| records.len())
+        .unwrap_or(usize::MAX);
+    assert!(
+        records < written / 2,
+        "the log holds {records} of {written} written records after 60 rounds with one hot          dirty bucket, so the byte gate is not reclaiming it"
+    );
+}

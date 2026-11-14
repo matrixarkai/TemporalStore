@@ -1241,13 +1241,23 @@ impl TemporalEngine {
         if claims.is_empty() {
             return counter;
         }
-        if claims.values().any(|(wal_claim, _)| *wal_claim == 0) {
-            return counter;
+        // A claim of 0 is "no claim recorded": that bucket cannot be placed in the log, so the
+        // figure from the buckets that CAN be placed is a lower bound. The counter is a lower bound
+        // too (a capped dump zeroes it), so the larger of the two is the tighter one and is never
+        // below what the counter alone said.
+        let placed_oldest = claims
+            .values()
+            .map(|(wal_claim, _)| *wal_claim)
+            .filter(|wal_claim| *wal_claim > 0)
+            .min();
+        let from_claims = placed_oldest.and_then(|oldest| {
+            self.wal_store.appended_len_since_sequence(shard_id, oldest)
+        });
+        match from_claims {
+            Some(bytes) if claims.values().all(|(wal_claim, _)| *wal_claim > 0) => bytes,
+            Some(bytes) => bytes.max(counter),
+            None => counter,
         }
-        let oldest = claims.values().map(|(wal_claim, _)| *wal_claim).min().unwrap_or(0);
-        self.wal_store
-            .appended_len_since_sequence(shard_id, oldest)
-            .unwrap_or(counter)
     }
 
     pub fn storage_wal_reclaim_plan(
