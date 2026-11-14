@@ -313,9 +313,18 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
 
     // Settle: the first rounds do the shard's real work (dump, reclaim). Bound the wait so a stage
     // that never settles fails here instead of hanging the suite.
+    //
+    // THE SEEDED WRITES ARE RELEASED WITH A ONE-BYTE GATE. A dirty shard below the byte gate is
+    // deliberately left undumped, so settling under the shipped gate would never finish: the seed
+    // is a few kilobytes of log. The quiet rounds below then run under `options`, where nothing
+    // is dirty and the memory alone decides.
+    let settling = StorageManagerOptions {
+        min_undumped_wal_bytes: 1,
+        ..options.clone()
+    };
     let mut settled_after = None;
     for round in 1..=12 {
-        let report = runtime.run_storage_manager_once(1, options.clone());
+        let report = runtime.run_storage_manager_once(1, settling.clone());
         // Settled means IDLE and not asking: a round that skips the stage because the shard is
         // still dirty below the byte gate walks nothing either, and is not the memory at work.
         if wal_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
