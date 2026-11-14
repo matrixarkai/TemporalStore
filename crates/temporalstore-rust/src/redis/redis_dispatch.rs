@@ -1022,6 +1022,46 @@ pub fn execute_redis_command_with_state(
                 (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
             }
         }
+        "LINDEX" if args.len() == 3 => match parse_i64_arg(&args[2], "index") {
+            // One element is a one-element range: LRANGE already resolves a negative index
+            // from the tail and answers empty when it falls outside the list.
+            Ok(index) => match execute(Command::ListRange {
+                key: name_arg(&args[1]),
+                start: index,
+                stop: index,
+            }) {
+                Ok(CommandResponse::Members { mut members }) => {
+                    RespValue::Bulk(if members.is_empty() { None } else { Some(members.remove(0)) })
+                }
+                Ok(_) => RespValue::Error("ERR invalid lindex response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            },
+            Err(err) => RespValue::Error(err),
+        },
+        "LPUSHX" | "RPUSHX" if args.len() >= 3 => {
+            let key = name_arg(&args[1]);
+            let left = command == "LPUSHX";
+            // Push only onto a list that already exists; otherwise answer 0 and write nothing.
+            match execute(Command::ListLen { key: key.clone() }) {
+                Ok(CommandResponse::Integer { value }) if value > 0 => {}
+                Ok(CommandResponse::Integer { .. }) => return RespValue::Integer(0),
+                Ok(_) => return RespValue::Error("ERR invalid llen response".to_string()),
+                Err(err) => return RespValue::Error(format!("ERR {err}")),
+            }
+            let mut length = 0;
+            for member in args.iter().skip(2) {
+                match execute(Command::ListPush {
+                    key: key.clone(),
+                    member: member.clone(),
+                    left,
+                }) {
+                    Ok(CommandResponse::Integer { value }) => length = value,
+                    Ok(_) => return RespValue::Error("ERR invalid lpushx response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            RespValue::Integer(length)
+        }
         "LLEN" if args.len() == 2 => match execute(Command::ListLen {
             key: name_arg(&args[1]),
         }) {
