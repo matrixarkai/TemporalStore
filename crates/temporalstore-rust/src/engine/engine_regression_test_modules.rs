@@ -536,3 +536,5 @@ mod a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key;
 
 #[path = "tests/a_container_point_read_searches_without_building_its_key.rs"]
 mod a_container_point_read_searches_without_building_its_key;
+#[path = "tests/the_undumped_byte_figure_survives_one_claimless_bucket.rs"]
+mod the_undumped_byte_figure_survives_one_claimless_bucket;

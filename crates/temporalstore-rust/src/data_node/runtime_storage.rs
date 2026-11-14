@@ -388,7 +388,9 @@ impl DataNodeRuntime {
                 dirty_bucket_count: plan.dirty_buckets.len(),
                 selected_dirty_bucket_count: plan.selected_dump_buckets.len(),
                 undumped_wal_records: plan.undumped_wal_records,
-                wal_bytes: plan.undumped_wal_records,
+                // BYTES, as the field says. This was the record count copied into a field named for
+                // bytes, which is what the byte gate would have read had anything read it.
+                wal_bytes: self.inner.engine.undumped_wal_bytes_above_oldest_dirty(shard_id),
                 index_log_bytes: log_pressure.index_log_bytes,
                 stale_block_slab_count: plan.stale_block_slab_ids.len(),
                 reclaim_candidate_count: plan.reclaim_candidates.len(),
@@ -526,8 +528,15 @@ impl DataNodeRuntime {
             (!options.enable_prepare).then(|| "prepare_disabled".to_string()),
         ));
 
+        // THE LOG BYTES ARE A TRIGGER OF THEIR OWN, and on a default deployment the only one.
+        // Until the undumped log reaches the byte gate nothing here needs to look at a dirty bucket.
+        // This stage used to run its dump, two plans and a reclaim on every round that found one
+        // dirty bucket, because `dirty_bucket_pressure` shipped at 1.
+        let wal_bytes_pressure = options.min_undumped_wal_bytes > 0
+            && pressure.wal_bytes >= options.min_undumped_wal_bytes;
         let dump_pressure = pressure.dirty_bucket_count >= options.dirty_bucket_pressure.max(1)
-            || pressure.undumped_wal_records >= options.min_undumped_wal_records.max(1);
+            || pressure.undumped_wal_records >= options.min_undumped_wal_records.max(1)
+            || wal_bytes_pressure;
         let cache_pressure = pressure.cache_memory_bytes
             >= options.cache_memory_bytes_pressure.max(1)
             || pressure.cache_disk_bytes >= options.cache_disk_bytes_pressure.max(1);
@@ -577,8 +586,11 @@ impl DataNodeRuntime {
                 .map(|(_, reclaimable)| *reclaimable)
         });
         let unchanged_since_nothing_to_reclaim = memo_hit.is_some();
+        // A SHARD WITH DIRTY BUCKETS IS NOT IDLE, so it waits for the byte gate like any other. The
+        // probe is the idle shard's question and costs a walk of every live block.
         let probe_safe = (options.enable_wal_reclaim
             && !dump_pressure
+            && pressure.dirty_bucket_count == 0
             && !unchanged_since_nothing_to_reclaim)
             .then(|| {
                 self.inner

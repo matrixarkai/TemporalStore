@@ -316,7 +316,9 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
     let mut settled_after = None;
     for round in 1..=12 {
         let report = runtime.run_storage_manager_once(1, options.clone());
-        if wal_stage_walk(&report) == 0 {
+        // Settled means IDLE and not asking: a round that skips the stage because the shard is
+        // still dirty below the byte gate walks nothing either, and is not the memory at work.
+        if wal_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
             settled_after = Some(round);
             break;
         }
@@ -336,7 +338,8 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
         );
     }
 
-    // A WRITE changes what the stage reads, so the very next round must ask again.
+    // A WRITE makes the shard dirty, and a dirty shard below the byte gate is not idle: the stage
+    // does not ask the question at all (no walk), because the log bytes decide, not the memory.
     let response = runtime.inner.engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
@@ -346,24 +349,32 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
     });
     assert!(response.status.ok, "write after the quiet rounds: {:?}", response.status);
     let report = runtime.run_storage_manager_once(1, options.clone());
-    assert!(
-        wal_stage_walk(&report) > 0,
-        "a write after the quiet rounds did not make the WAL-reclaim stage ask again, so it is \
-         skipping on a stale answer"
+    assert_eq!(
+        wal_stage_walk(&report),
+        0,
+        "a dirty shard below the byte gate asked the WAL-reclaim question"
     );
 
-    // QUIET AGAIN, then change only what the CALLER passes. A reader that appears registers no
-    // write, so nothing on the shard moves; the retention inputs are the only part of the memory's
-    // key that can notice, and a stage that answered from the old key would keep skipping.
+    // Release the write with a one-byte gate until the shard is clean again, then QUIET AGAIN.
+    let releasing = StorageManagerOptions {
+        min_undumped_wal_bytes: 1,
+        ..options.clone()
+    };
+    for _ in 0..12 {
+        runtime.run_storage_manager_once(1, releasing.clone());
+    }
     let mut quiet_again = false;
     for _ in 0..12 {
         let report = runtime.run_storage_manager_once(1, options.clone());
-        if wal_stage_walk(&report) == 0 {
+        if wal_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
             quiet_again = true;
             break;
         }
     }
     assert!(quiet_again, "the stage never went quiet again after the write");
+    // Change only what the CALLER passes. A reader that appears registers no write, so nothing on
+    // the shard moves; the retention inputs are the only part of the memory's key that can notice,
+    // and a stage that answered from the old key would keep skipping.
     let with_a_reader = StorageManagerOptions {
         follower_replay_cursors: vec![crate::BucketDumpFollowerReplayCursor {
             follower_id: "a-reader-that-just-appeared".to_string(),

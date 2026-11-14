@@ -47,6 +47,61 @@
 //! would need none of that, was measured and made no difference: the cost is persisting the size,
 //! not allocating the blocks.
 
+/// How many appended bytes pass between two marks of the byte-by-sequence index.
+const BYTE_MARK_STRIDE: u64 = 256 * 1024;
+/// Marks kept per shard: 4,096 of them span a gigabyte of log, past any dump gate.
+const BYTE_MARK_CAP: usize = 4096;
+
+/// Record a byte mark when `stride` bytes have passed since the last one.
+///
+/// At the cap the marks are THINNED, every other one dropped, rather than the oldest dropped: the
+/// oldest mark is the one a long-undumped write is looked up against, and losing it sent the figure
+/// back to a counter that a capped dump zeroes.
+fn push_byte_mark(
+    marks: &mut std::collections::VecDeque<(u64, u64)>,
+    sequence: u64,
+    total: u64,
+    stride: u64,
+    cap: usize,
+) {
+    if marks.back().map_or(true, |(_, through)| total - through >= stride) {
+        if marks.len() >= cap {
+            let kept: std::collections::VecDeque<(u64, u64)> =
+                marks.iter().copied().step_by(2).collect();
+            *marks = kept;
+        }
+        marks.push_back((sequence, total));
+    }
+}
+
+/// Bytes of log above `sequence`, to the granularity of a piece: the same walk as
+/// `log_id_after_sequence`, measured to where the records end.
+fn log_bytes_above_sequence(
+    root: &std::path::Path,
+    shard_id: ShardId,
+    sequence: u64,
+) -> Result<u64, WriteAheadLogError> {
+    let mut start = 0u64;
+    let mut end = 0u64;
+    let mut found = false;
+    for path in wal_segment_paths(root, shard_id) {
+        if !path.exists() {
+            continue;
+        }
+        let (last, record_end) = last_wal_sequence_in(&path)?;
+        let (base, header_len) = read_wal_base(&path)?;
+        let piece_end = base.saturating_add(record_end.saturating_sub(header_len));
+        if !found && last > 0 && last > sequence {
+            found = true;
+        }
+        if !found {
+            start = piece_end;
+        }
+        end = piece_end;
+    }
+    Ok(end.saturating_sub(start))
+}
+
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -1240,6 +1295,15 @@ struct WriteAheadLogInner {
     /// saturates to zero, so the threshold never fires again. Counting growth is immune to that,
     /// and growth is what the threshold is about.
     undumped_bytes_by_shard: HashMap<ShardId, u64>,
+    /// Every byte appended for each shard since this process opened it. Never reset.
+    ///
+    /// `undumped_bytes_by_shard` is zeroed by ANY dump, including one capped at a few hundred
+    /// buckets that leaves most of the dirty set undumped. This is the quantity a byte figure
+    /// RELATIVE TO A SEQUENCE is read from, so the gate can ask how much log sits above the oldest
+    /// write nobody has dumped, which a capped dump does not move.
+    appended_bytes_by_shard: HashMap<ShardId, u64>,
+    /// `(sequence, appended bytes through that record)`, one mark per `BYTE_MARK_STRIDE` bytes.
+    byte_marks_by_shard: HashMap<ShardId, std::collections::VecDeque<(u64, u64)>>,
     /// OBJECT MUTATIONS in the undumped log suffix, beside the bytes above.
     ///
     /// Neither quantity the dump budget compares today survives a change in how the writer groups
@@ -1320,6 +1384,8 @@ impl LocalWriteAheadLogStore {
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
                 undumped_bytes_by_shard: HashMap::new(),
+                appended_bytes_by_shard: HashMap::new(),
+                byte_marks_by_shard: HashMap::new(),
                 undumped_objects_by_shard: HashMap::new(),
                 durable_active_bytes_by_shard: HashMap::new(),
                 block_last_record_by_shard: HashMap::new(),
@@ -3086,6 +3152,33 @@ impl LocalWriteAheadLogStore {
             .unwrap_or(0)
     }
 
+    /// Bytes appended at and above `sequence`, to within one mark stride (`BYTE_MARK_STRIDE`).
+    ///
+    /// `None` when no mark reaches back that far (the process opened the shard after that record,
+    /// or the marks aged out), which tells the caller to fall back to the whole undumped figure.
+    pub fn appended_len_since_sequence(&self, shard_id: ShardId, sequence: u64) -> Option<u64> {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let marks = inner.byte_marks_by_shard.get(&shard_id)?;
+        let at = marks.partition_point(|(mark_sequence, _)| *mark_sequence <= sequence);
+        let (_, through) = *marks.get(at.checked_sub(1)?)?;
+        let total = inner.appended_bytes_by_shard.get(&shard_id).copied().unwrap_or(0);
+        Some(total.saturating_sub(through))
+    }
+
+    /// Seed the undumped-bytes counter from what is already on disk above `sequence`.
+    ///
+    /// The counter counts appends in this process, so a shard opened over a log that a previous
+    /// process left undumped read 0 and waited a whole further gate of appends before anything
+    /// reclaimed the old tail. Called by the load path once it knows where replay started.
+    pub fn seed_undumped_from_sequence(&self, shard_id: ShardId, sequence: u64) {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let Ok(bytes) = log_bytes_above_sequence(&inner.root, shard_id, sequence) else {
+            return;
+        };
+        let counter = inner.undumped_bytes_by_shard.entry(shard_id).or_default();
+        *counter = (*counter).max(bytes);
+    }
+
     /// Record that a dump captured this shard's log, resetting its undumped growth to 0.
     ///
     /// Called only once the dump manifest is durably written, so the counter never clears past
@@ -3094,6 +3187,20 @@ impl LocalWriteAheadLogStore {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         inner.undumped_bytes_by_shard.insert(shard_id, 0);
         inner.undumped_objects_by_shard.insert(shard_id, 0);
+        // A mark at EXACTLY the dump boundary, so a write made after the dump is measured from the
+        // dump and not from the last stride mark, which can sit up to a whole stride before it.
+        let total = inner.appended_bytes_by_shard.get(&shard_id).copied().unwrap_or(0);
+        if let Some(sequence) = inner.last_sequence_by_shard.get(&shard_id).copied() {
+            let marks = inner.byte_marks_by_shard.entry(shard_id).or_default();
+            if marks.back().map_or(true, |(last, _)| *last < sequence) {
+                if marks.len() >= BYTE_MARK_CAP {
+                    let kept: std::collections::VecDeque<(u64, u64)> =
+                        marks.iter().copied().step_by(2).collect();
+                    *marks = kept;
+                }
+                marks.push_back((sequence, total));
+            }
+        }
     }
 
     pub fn stats(&self, shard_id: ShardId) -> WriteAheadLogStats {
@@ -4914,6 +5021,13 @@ fn append_record_locked_on(
         *durable_sequence = (*durable_sequence).max(record.sequence);
     }
     let size = bytes.len() as u64;
+    {
+        let total = inner.appended_bytes_by_shard.entry(record.shard_id).or_default();
+        *total += size;
+        let total = *total;
+        let marks = inner.byte_marks_by_shard.entry(record.shard_id).or_default();
+        push_byte_mark(marks, record.sequence, total, BYTE_MARK_STRIDE, BYTE_MARK_CAP);
+    }
     // Every append path funnels through here, so this is the one place the undumped growth has
     // to be counted for all of them.
     *inner
@@ -13502,5 +13616,33 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod byte_mark_tests {
+    use super::push_byte_mark;
+    use std::collections::VecDeque;
+
+    /// Past the cap the OLDEST mark must still be there: it is what a long-undumped write is
+    /// looked up against. Dropping the front sent that lookup back to a counter a dump zeroes.
+    #[test]
+    fn thinning_at_the_cap_keeps_the_oldest_mark_reachable() {
+        let mut marks: VecDeque<(u64, u64)> = VecDeque::new();
+        let (stride, cap) = (10u64, 8usize);
+        let mut total = 0u64;
+        for sequence in 1..=500u64 {
+            total += 10;
+            push_byte_mark(&mut marks, sequence, total, stride, cap);
+        }
+        // NON-VACUITY: far more marks were due than the cap holds.
+        assert!(marks.len() <= cap, "the cap did not hold: {}", marks.len());
+        assert_eq!(
+            marks.front().copied(),
+            Some((1, 10)),
+            "the oldest mark was dropped, so the oldest undumped write has nothing to read from"
+        );
+        let sequences: Vec<u64> = marks.iter().map(|(sequence, _)| *sequence).collect();
+        assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]), "marks out of order");
     }
 }

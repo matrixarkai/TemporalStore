@@ -1032,7 +1032,7 @@ pub struct StorageManagerOptions {
     /// Durable write-ahead log bytes that release the dump whatever the record count says.
     #[serde(default = "default_storage_manager_min_undumped_wal_bytes")]
     pub min_undumped_wal_bytes: u64,
-    #[serde(default)]
+    #[serde(default = "default_storage_manager_dirty_bucket_pressure")]
     pub dirty_bucket_pressure: usize,
     #[serde(default)]
     pub stale_block_slab_pressure: usize,
@@ -1371,6 +1371,10 @@ fn default_storage_manager_min_undumped_wal_records() -> u64 {
 /// much log a restart can face -- raising it lengthens the replay window and lowers the round
 /// cost, lowering it does the reverse. It bounds the quantity that actually matters: a record
 /// count says nothing about how many bytes those records are.
+fn default_storage_manager_dirty_bucket_pressure() -> usize {
+    usize::MAX
+}
+
 fn default_storage_manager_min_undumped_wal_bytes() -> u64 {
     128 * 1024 * 1024
 }
@@ -1381,7 +1385,8 @@ impl Default for StorageManagerOptions {
             max_dump_buckets_per_round: default_storage_manager_max_dump_buckets_per_round(),
             min_undumped_wal_records: default_storage_manager_min_undumped_wal_records(),
             min_undumped_wal_bytes: default_storage_manager_min_undumped_wal_bytes(),
-            dirty_bucket_pressure: 1,
+            // Off: the log bytes decide. See `default_storage_manager_min_undumped_wal_bytes`.
+            dirty_bucket_pressure: default_storage_manager_dirty_bucket_pressure(),
             stale_block_slab_pressure: 1,
             reclaimable_physical_bytes_pressure: 1,
             // OFF BY DEFAULT: the stage these open drops every cached block of the shard, so a

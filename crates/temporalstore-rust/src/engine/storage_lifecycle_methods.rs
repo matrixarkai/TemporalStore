@@ -371,7 +371,8 @@ impl TemporalEngine {
         // log across every segment, so a log that is large but fully dumped cleared this
         // threshold on every round: a shard that had written one record since its last dump
         // earned another whole-index serialize, which is the cost this cadence exists to avoid.
-        let undumped_wal_bytes = self.wal_store.undumped_len_since_dump(request.shard_id);
+        let undumped_wal_bytes =
+            self.undumped_wal_bytes_from_claims(request.shard_id, &dirty_claims);
         // Reported, not compared. See `StorageLifecyclePlan::undumped_wal_objects`.
         let undumped_wal_objects = self.wal_store.undumped_objects_since_dump(request.shard_id);
         // Each threshold can only RELEASE the dump, never hold it: a delay needs both to agree
@@ -1208,6 +1209,55 @@ impl TemporalEngine {
                 selected,
             )
             .unwrap_or_default()
+    }
+
+    /// Undumped log bytes, measured from the OLDEST UNDUMPED WRITE rather than from the last dump.
+    ///
+    /// The WAL's own counter is zeroed by any dump manifest, including one capped at a few hundred
+    /// buckets while thousands stay dirty. Gated on that figure, a capped dump re-armed the byte
+    /// threshold in full and the rest of the dirty set waited another whole threshold of log. Here
+    /// the figure is the log above the lowest first-dirty claim any bucket still holds, which a
+    /// capped dump moves only as far as it actually dumped. A dirty bucket with no claim, or a
+    /// claim older than the byte marks reach, falls back to the counter, which is the larger
+    /// answer on a fresh process and so errs toward dumping.
+    pub fn undumped_wal_bytes_above_oldest_dirty(&self, shard_id: ShardId) -> u64 {
+        let claims = self
+            .shards
+            .read()
+            .expect("shards lock poisoned")
+            .get(&shard_id)
+            .map(crate::engine::storage_reporting::dirty_bucket_claims)
+            .unwrap_or_default();
+        self.undumped_wal_bytes_from_claims(shard_id, &claims)
+    }
+
+    /// [`Self::undumped_wal_bytes_above_oldest_dirty`] for a caller that already holds the claims.
+    pub(super) fn undumped_wal_bytes_from_claims(
+        &self,
+        shard_id: ShardId,
+        claims: &BTreeMap<u32, (u64, u64)>,
+    ) -> u64 {
+        let counter = self.wal_store.undumped_len_since_dump(shard_id);
+        if claims.is_empty() {
+            return counter;
+        }
+        // A claim of 0 is "no claim recorded": that bucket cannot be placed in the log, so the
+        // figure from the buckets that CAN be placed is a lower bound. The counter is a lower bound
+        // too (a capped dump zeroes it), so the larger of the two is the tighter one and is never
+        // below what the counter alone said.
+        let placed_oldest = claims
+            .values()
+            .map(|(wal_claim, _)| *wal_claim)
+            .filter(|wal_claim| *wal_claim > 0)
+            .min();
+        let from_claims = placed_oldest.and_then(|oldest| {
+            self.wal_store.appended_len_since_sequence(shard_id, oldest)
+        });
+        match from_claims {
+            Some(bytes) if claims.values().all(|(wal_claim, _)| *wal_claim > 0) => bytes,
+            Some(bytes) => bytes.max(counter),
+            None => counter,
+        }
     }
 
     pub fn storage_wal_reclaim_plan(
