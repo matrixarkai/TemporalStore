@@ -703,7 +703,20 @@ jobs:
             engine::cell_protocol::tests::the_table_name_is_accepted_at_64_bytes_and_refused_at_65 \
             engine::cell_protocol::tests::the_limit_of_a_read_is_accepted_at_1000_and_refused_at_1001 \
             engine::cell_protocol::tests::weighted_lanes_are_accepted_at_8_and_refused_at_9 \
-            engine::cell_protocol::tests::member_lists_and_extra_entities_are_bounded_before_they_are_refused_as_untranslated \
+            engine::cell_protocol::tests::member_lists_and_extra_entities_are_accepted_at_the_limit_and_refused_one_past_it \
+            engine::cell_protocol::tests::a_member_set_round_trips_the_wire_and_becomes_the_include_and_exclude_filter \
+            engine::cell_protocol::tests::a_flagged_empty_include_set_is_refused_and_an_unflagged_one_restricts_nothing \
+            engine::cell_protocol::tests::a_window_anchored_on_the_newest_snapshot_becomes_the_newest_anchor_and_the_clock_one_does_not \
+            engine::cell_protocol::tests::a_quota_names_lanes_by_position_and_its_first_count_is_also_the_others_count \
+            engine::cell_protocol::tests::a_quota_whose_wire_counts_sum_to_500_reserves_1000_and_one_more_is_refused \
+            engine::cell_protocol::tests::a_quota_is_accepted_at_16_lanes_and_refused_at_17_and_a_malformed_one_is_refused \
+            engine::cell_protocol::tests::a_decayed_lane_takes_its_half_life_from_decay_made_whole_by_its_rounding \
+            engine::cell_protocol::tests::a_half_life_is_accepted_at_one_and_at_ten_years_and_refused_outside_them \
+            engine::cell_protocol::tests::more_entities_become_one_merged_read_over_every_key_in_request_order \
+            engine::cell_protocol::tests::a_merged_read_refuses_a_key_named_twice_and_an_entity_that_is_not_an_id \
+            engine::cell_protocol::tests::a_merged_answer_reports_how_many_keys_held_a_snapshot \
+            engine::cell_protocol::tests::a_batch_becomes_one_batch_command_that_the_engine_admits_and_a_merged_read_has_no_place_in_it \
+            engine::cell_protocol::tests::a_batch_answer_holds_one_answer_per_query_in_order_each_with_its_own_status \
             engine::cell_protocol::tests::the_accepted_timestamp_range_is_open_at_both_ends \
             engine::cell_protocol::tests::each_translated_rank_mode_becomes_the_score_it_names \
             engine::cell_protocol::tests::the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_and_kind \

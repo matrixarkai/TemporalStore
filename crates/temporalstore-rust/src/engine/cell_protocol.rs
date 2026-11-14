@@ -11,21 +11,34 @@
 //! [`super::cell_set::within`], so a request over a limit costs work proportional to the limit and
 //! not to its size. A refused request produces no command at all: nothing is partly translated.
 //!
+//! # WHAT IS TRANSLATED
+//!
+//! A query becomes one ranked read ([`Command::CellRankQuery`]); a query that names `more_entities`
+//! becomes one merged read over all of their keys ([`Command::CellFanInRankQuery`]); a batch of
+//! queries becomes [`Command::CellRankBatchQuery`]. The selector's member set, the window kinds
+//! anchored on the newest snapshot, the quota and the decayed-lane mode map onto the options the
+//! ranked read carries in its spec. Every translated spec is also passed through the engine's own
+//! admission check ([`super::cell_rank::validate_spec`]), so a request the translator accepts is one
+//! the command accepts.
+//!
 //! # WHAT IS NOT TRANSLATED YET
 //!
 //! Rank modes and windows that the ranked read cannot express today (`RECENT`, `MATCH_LANE`,
-//! `MEMBERS_ONLY`, a quota, the newest-anchored window and the newest-rows window) are refused with
-//! a message that says so; they map onto read-side options another change adds. `REMOVE` and
+//! `MEMBERS_ONLY` and the newest-rows window) are refused with a message that says so. `REMOVE` and
 //! `DELETE` have no command to map to here.
 
+use super::cell_fan_in;
+use super::cell_rank;
+use super::cell_rank_options::MAX_QUOTA_LANES;
 use super::cell_set::{
     self, within, within_nonzero, Cell, CellHeader, CellKey, DimSpec, DimType, DimValue, EntityType,
     EntityValue, KeySpec, LaneSpec, Member, HEADER_VERSION, MAX_CELLS_PER_REQUEST, MAX_KEY_DIMENSIONS,
     MAX_LANES_PER_CELL, MAX_NAME_BYTES, MAX_TOP_K,
 };
 use crate::types::{
-    CellMemberId, CellRankSpec, CellScore, CellWindow, Command, FeatureFilter, FeatureFilterOp,
-    FeaturePoint, FeatureWritePolicy, RankedCells,
+    CellAnchor, CellLaneQuota, CellMemberFilter, CellMemberId, CellQuota, CellRankBatchItem, CellRankSpec,
+    CellScore, CellWindow, Command, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy,
+    RankedCells,
 };
 
 pub(crate) mod wire {
@@ -475,11 +488,27 @@ pub(crate) fn refused_add_response(refusal: &Refusal) -> wire::CellAddResponse {
 // Reads
 // ------------------------------------------------------------------------------------------
 
-/// A query as the engine reads it: the key and the ranked spec.
+/// A query as the engine reads it: the key, the keys read together with it (empty for a one-key
+/// read) and the ranked spec.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ReadPlan {
     pub(crate) key: String,
+    /// The keys of `more_entities`, in request order. Non-empty makes the read a merged one.
+    pub(crate) more_keys: Vec<String>,
     pub(crate) spec: CellRankSpec,
+}
+
+impl ReadPlan {
+    /// The command that runs this read: a one-key ranked read, or one merged read over every key.
+    pub(crate) fn command(self) -> Command {
+        if self.more_keys.is_empty() {
+            return Command::CellRankQuery { key: self.key, spec: self.spec };
+        }
+        let mut keys = Vec::with_capacity(1 + self.more_keys.len());
+        keys.push(self.key);
+        keys.extend(self.more_keys);
+        Command::CellFanInRankQuery { keys, spec: self.spec }
+    }
 }
 
 fn lane_name(profile: &TableProfile, at: i32, what: &str) -> Result<String, Refusal> {
@@ -495,7 +524,13 @@ fn window_of(window: &wire::Window) -> Result<CellWindow, Refusal> {
         return Err(invalid(format!("window span {} is negative", window.span)));
     }
     match window.kind() {
-        wire::WindowKind::TrailingFromNow => Ok(CellWindow::Last { duration_ms: (window.span / 1000) as u64 }),
+        // The two newest-anchored kinds are the same span; they differ from the first only in the
+        // anchor, which `anchor_of` reads.
+        wire::WindowKind::TrailingFromNow
+        | wire::WindowKind::TrailingFromNewest
+        | wire::WindowKind::TrailingFromNewestOfKind => {
+            Ok(CellWindow::Last { duration_ms: (window.span / 1000) as u64 })
+        }
         wire::WindowKind::FromStart => {
             if window.span == 0 {
                 return Err(invalid("a window of span 0 holds nothing"));
@@ -514,6 +549,73 @@ fn window_of(window: &wire::Window) -> Result<CellWindow, Refusal> {
             "window kind {other:?} is not translated yet: it needs a read-side option that is not built"
         ))),
     }
+}
+
+/// Which instant a trailing window ends at: the newest stored snapshot for the two newest-anchored
+/// kinds, the request clock for the rest.
+fn anchor_of(window: &wire::Window) -> CellAnchor {
+    match window.kind() {
+        wire::WindowKind::TrailingFromNewest | wire::WindowKind::TrailingFromNewestOfKind => CellAnchor::Newest,
+        _ => CellAnchor::Request,
+    }
+}
+
+/// The half-life a decayed-lane rank asks for: `decay`, made a whole number of milliseconds by
+/// `decay_rounding`. The engine's own bounds on a half-life are applied by admission afterwards.
+fn half_life_of(selector: &wire::CellSelector) -> Result<u64, Refusal> {
+    let decay = selector.decay;
+    if !decay.is_finite() || decay < 0.0 {
+        return Err(invalid(format!("decay {decay} is not a non-negative number of milliseconds")));
+    }
+    let whole = match selector.decay_rounding() {
+        wire::Rounding::Floor => decay.floor(),
+        wire::Rounding::Ceil => decay.ceil(),
+        wire::Rounding::Round => decay.round(),
+    };
+    // 9e18 is far past any half-life the engine accepts, and keeps the cast exact.
+    if whole >= 9.0e18 {
+        return Err(invalid(format!("decay {decay} is too large to be a number of milliseconds")));
+    }
+    Ok(whole as u64)
+}
+
+/// The member set a selector names. `members` is the include set: present when flagged or when it
+/// holds anything, so a present, empty set reaches admission and is refused there.
+fn member_filter_of(selector: &wire::CellSelector) -> CellMemberFilter {
+    let id = |member: &i64| CellMemberId::U64(*member as u64);
+    CellMemberFilter {
+        include: (selector.has_members || !selector.members.is_empty())
+            .then(|| selector.members.iter().map(id).collect()),
+        exclude: selector.excluded_members.iter().map(id).collect(),
+    }
+}
+
+/// The quota a selector names: `quota_lanes[i]` (a lane position) with `quota_counts[i]`, and
+/// `quota_counts[0]` as the count of members that fit no lane. The first count therefore appears
+/// TWICE in what the quota reserves (see docs/CELLS_PROTOCOL.md, Quota). A request that names only
+/// the count of members that fit no lane sends one count and no lane.
+fn quota_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<CellQuota, Refusal> {
+    let (lanes, counts) = (&selector.quota_lanes, &selector.quota_counts);
+    if lanes.is_empty() && counts.is_empty() {
+        return Ok(CellQuota::default());
+    }
+    bound("lanes in a quota", lanes.len(), MAX_QUOTA_LANES)?;
+    if counts.len() != lanes.len() && !(lanes.is_empty() && counts.len() == 1) {
+        return Err(invalid(format!(
+            "a quota names {} lanes and {} counts: one count for each lane",
+            lanes.len(),
+            counts.len()
+        )));
+    }
+    let count_of = |count: &i32| {
+        usize::try_from(*count).map_err(|_| invalid(format!("quota count {count} is negative")))
+    };
+    let others = count_of(&counts[0])?;
+    let mut entries = Vec::with_capacity(lanes.len());
+    for (lane, count) in lanes.iter().zip(counts) {
+        entries.push(CellLaneQuota { lane: lane_name(profile, *lane, "quota lane")?, count: count_of(count)? });
+    }
+    Ok(CellQuota { lanes: entries, others })
 }
 
 fn score_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<CellScore, Refusal> {
@@ -557,6 +659,10 @@ fn score_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<Cel
                 .collect::<Result<Vec<_>, _>>()?;
             CellScore::Weighted { lanes, weights: selector.weights.iter().map(|w| f64::from(*w)).collect() }
         }
+        Mode::DecayedLane => {
+            let at = if selector.has_sort_lane { selector.sort_lane } else { 0 };
+            CellScore::Decay { lane: lane_name(profile, at, "sort lane")?, half_life_ms: half_life_of(selector)? }
+        }
         other => {
             return Err(invalid(format!(
                 "rank mode {other:?} is not translated yet: it needs a read-side option that is not built"
@@ -572,21 +678,27 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::CellQuery) -
         bound("members", selector.members.len(), MAX_MEMBER_LIST)?;
         bound("excluded members", selector.excluded_members.len(), MAX_MEMBER_LIST)?;
     }
-    if !query.more_entities.is_empty() {
-        return Err(invalid("reading several entities together is not translated yet"));
-    }
     let window = query.window.as_ref().ok_or_else(|| invalid("a query needs a window"))?;
     let selector = query.selector.as_ref().ok_or_else(|| invalid("a query needs a selector"))?;
     let entity = entity_of(profile, query.entity, &query.entity_text, &query.entity_bytes)?;
     let key = key_of(profile, entity, selector.channel, selector.kind)?;
+    let mut more_keys = Vec::with_capacity(query.more_entities.len());
+    if !query.more_entities.is_empty() && profile.entity != EntityType::U64 {
+        return Err(invalid("more entities are 64 bit ids, and this table's entity is not one"));
+    }
+    for more in &query.more_entities {
+        more_keys.push(key_of(profile, EntityValue::U64(*more as u64), selector.channel, selector.kind)?);
+    }
+    if !more_keys.is_empty() {
+        // How many keys, and none twice: the merged read counts a key as often as it is named.
+        let named: Vec<String> = std::iter::once(key.clone()).chain(more_keys.iter().cloned()).collect();
+        cell_fan_in::validate_keys(&named).map_err(invalid)?;
+    }
+    let anchor = anchor_of(window);
     let window = window_of(window)?;
     let score = score_of(profile, selector)?;
-    if !selector.quota_lanes.is_empty() || !selector.quota_counts.is_empty() {
-        return Err(invalid("a quota is not translated yet"));
-    }
-    if !selector.members.is_empty() || !selector.excluded_members.is_empty() {
-        return Err(invalid("a member list is not translated yet"));
-    }
+    let quota = quota_of(profile, selector)?;
+    let members = member_filter_of(selector);
     let limit = selector.limit;
     let top_k = usize::try_from(limit)
         .ok()
@@ -606,7 +718,10 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::CellQuery) -
         }
         None => {}
     }
-    Ok(ReadPlan { key, spec: CellRankSpec { window, filters, score, top_k, project: Vec::new(), members: Default::default(), anchor: Default::default(), quota: Default::default() } })
+    let spec = CellRankSpec { window, filters, score, top_k, project: Vec::new(), members, anchor, quota };
+    // The engine's own admission: what is accepted here is accepted by the command.
+    cell_rank::validate_spec(&spec).map_err(invalid)?;
+    Ok(ReadPlan { key, more_keys, spec })
 }
 
 /// A batch as its independent reads, in request order. A query that cannot be translated refuses
@@ -626,6 +741,53 @@ pub(crate) fn translate_batch(
                 .map_err(|r| Refusal { code: r.code, message: format!("query {at}: {}", r.message) })
         })
         .collect()
+}
+
+/// A batch's plans as one batch command. A merged read (a query with `more_entities`) has no place in
+/// a batch, whose reads are independent and answer one each: it is refused, naming its position. The
+/// keys of a batch are read on the shard the request names, so they must live together.
+pub(crate) fn batch_command(plans: Vec<ReadPlan>) -> Result<Command, Refusal> {
+    let mut queries = Vec::with_capacity(plans.len());
+    for (at, plan) in plans.into_iter().enumerate() {
+        if !plan.more_keys.is_empty() {
+            return Err(invalid(format!(
+                "query {at}: a read over several entities cannot ride in a batch, send it on its own"
+            )));
+        }
+        queries.push(CellRankBatchItem { key: plan.key, spec: plan.spec });
+    }
+    cell_fan_in::validate_batch(&queries).map_err(invalid)?;
+    Ok(Command::CellRankBatchQuery { queries })
+}
+
+/// The answers of a batch, in request order, one per query, each with its own status.
+pub(crate) fn batch_answer(
+    profiles: &Profiles,
+    batch: &wire::CellBatchQuery,
+    rankings: &[RankedCells],
+) -> wire::CellBatchAnswer {
+    if rankings.len() != batch.queries.len() {
+        return wire::CellBatchAnswer {
+            code: CellStatusCode::Error as i32,
+            message: format!("{} queries were answered with {} rankings", batch.queries.len(), rankings.len()),
+            ..Default::default()
+        };
+    }
+    let answers = batch
+        .queries
+        .iter()
+        .zip(rankings)
+        .map(|(query, ranked)| match profiles.lookup(&query.table) {
+            Ok(profile) => answer_of(profile, query, ranked),
+            Err(refusal) => wire::CellAnswer {
+                entity: query.entity,
+                code: refusal.code as i32,
+                message: refusal.message,
+                ..Default::default()
+            },
+        })
+        .collect();
+    wire::CellBatchAnswer { answers, code: CellStatusCode::Ok as i32, message: String::new() }
 }
 
 /// The engine's ranked answer as a wire answer.
@@ -685,6 +847,7 @@ pub(crate) fn answer_of(profile: &TableProfile, query: &wire::CellQuery, ranked:
         message: String::new(),
         snapshots: ranked.snapshots as u64,
         unscored: ranked.unscored,
+        keys: ranked.keys as u64,
     }
 }
 
