@@ -31,6 +31,10 @@ mod object_manager;
 mod packed_blocks;
 mod product_model;
 mod cell_merge_append;
+// The per-key retry ring of a merge-reduce append: a pure type. Its caller is a separate change,
+// so nothing calls it yet; the allow comes off in that change.
+#[allow(dead_code)]
+mod cell_retry_ring;
 mod window_aggregate;
 mod cell_rank;
 mod cell_rank_options;
