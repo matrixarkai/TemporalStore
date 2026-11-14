@@ -4204,6 +4204,8 @@ pub(crate) fn execute_on_shard(
                     shard, shard_id, "feature", &key, published, mutated, false,
                 );
             }
+            // A sequence row is a feature point: retire cached feature answers, as the append does.
+            let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
         Command::SequenceQuery {
