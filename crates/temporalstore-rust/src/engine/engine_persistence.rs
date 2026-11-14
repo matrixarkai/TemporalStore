@@ -820,8 +820,20 @@ impl TemporalEngine {
         // depends on: such a record holds the ONLY copy of a block the served index points at
         // (the write was acked off a synthetic address), so truncating it turns an acked write
         // into a MISSING read while the process is still serving.
-        let wal_retention_floor =
+        //
+        // AND THE LOWEST SEQUENCE A PERSISTED IMAGE STILL NAMES. The registrations are the live
+        // process's view; a restart loads the served index or a dump manifest, and each can name a
+        // placement whose registration has since moved. This used to set the floor from the
+        // registrations alone, which also replaced the richer floor the reclaim stage had set, and
+        // the truncation below then freed a record a loadable image still needs. An image that
+        // cannot be read leaves the log untouched.
+        let registered_floor =
             super::block_in_wal::min_registered_sequence(&self.block_store, shard_id, &self.wal_store);
+        let persisted_floor = self.persisted_images_wal_floor(shard_id);
+        let wal_retention_floor = registered_floor
+            .into_iter()
+            .chain(persisted_floor.clone().ok().flatten())
+            .min();
         match wal_retention_floor {
             Some(sequence) => self.wal_store.set_block_retention_floor(shard_id, sequence),
             None => self.wal_store.clear_block_retention_floor(shard_id),
@@ -834,10 +846,13 @@ impl TemporalEngine {
         // `wal_anchor`. That completed work IS the proof this reclaim needs.
         let durable_index =
             crate::wal::DurableIndexAnchor::proven_durable_through(shard_id, wal_anchor);
-        let wal_gc = self
-            .wal_store
-            .gc_before_sequence(shard_id, wal_anchor.saturating_add(1), &durable_index)
-            .ok();
+        let wal_gc = if persisted_floor.is_err() {
+            None
+        } else {
+            self.wal_store
+                .gc_before_sequence(shard_id, wal_anchor.saturating_add(1), &durable_index)
+                .ok()
+        };
         Some(super::reports::CatalogDumpReclaimReport {
             shard_id,
             wal_anchor,

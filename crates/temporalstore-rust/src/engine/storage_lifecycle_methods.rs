@@ -1678,6 +1678,34 @@ impl TemporalEngine {
         }
     }
 
+    /// The lowest WAL sequence any PERSISTED image still needs, or `None` when none needs the log.
+    ///
+    /// Every retained dump manifest's embedded index and the persisted served index are what a
+    /// restart can load, and each names WAL-resident blocks by placement. `Err` means an image could
+    /// not be read, which a caller truncating the log must treat as "keep everything".
+    pub(super) fn persisted_images_wal_floor(&self, shard_id: ShardId) -> Result<Option<u64>, ()> {
+        let manifests =
+            list_bucket_dump_manifests_shared_at(&self.index_dir, shard_id).map_err(|_| ())?;
+        let mut floor: Option<u64> = None;
+        for manifest in &manifests {
+            let image = bucket_dump_io::manifest_wal_floor_memoised(manifest, || {
+                let snapshot = decode_index_bytes(&manifest.index_bytes).map_err(|_| ())?;
+                Ok(wal_floor_of_index_image(&snapshot))
+            })?;
+            if let Some(sequence) = image {
+                floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
+            }
+        }
+        let base = std::fs::read(self.index_path(shard_id))
+            .ok()
+            .and_then(|bytes| decode_index_bytes(&bytes).ok())
+            .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
+        if let Some(sequence) = base {
+            floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
+        }
+        Ok(floor)
+    }
+
     pub fn apply_storage_wal_reclaim(
         &self,
         mut plan: StorageWalReclaimPlan,
