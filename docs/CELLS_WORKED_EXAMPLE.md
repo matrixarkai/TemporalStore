@@ -24,13 +24,24 @@ Nothing in the engine knows what the names mean; a deployment declares them once
   value, or all cells), scored like a ranked read, ties by member, and runs after the fold. The
   receipt says snapshots before and after, cells before and after, and cells dropped. Rolling
   an already-rolled bucket again, with the same arguments, changes nothing.
+  Optional fields extend it, and a request that sets none of them is the request above, unchanged:
+  `coarser_tiers` add tiers (an `older_than_ms` and a `bucket_ms` each, finest first, a coarser
+  bucket a multiple of the finer, a last bucket of `u64::MAX` being the catch-all, one snapshot at
+  stamp 0), so recent history stays fine and old history gets coarser in one request; `anchor`
+  reads every `older_than_ms` as an age against the newest snapshot the key holds
+  (`newest_minus_age`) instead of a stamp; `truncate` keeps the newest `keep_last` snapshots, acting
+  once the key holds more than its `trigger`; and the cap takes `protect_newest_ppm` (a share of
+  `keep` reserved for the members seen most recently) and `trigger_over` (a group is cut only when
+  it holds more than `keep + trigger_over`).
 
 Bounds: 8 dimensions, 4 labels, 16 lanes, 1 000 top-k, 512 snapshots per window, 8 predicates and
 8 lanes in a weighted score.
-A rollup touches at most 1 024 snapshots below its cutoff (a longer history is rolled in steps, by
-moving the cutoff forward), keeps between 1 and 4 096 cells per group, and a bucket whose members
-would exceed the 4 096 cells of one snapshot is refused: use a smaller bucket. A request the key
-cannot serve is refused before anything is written.
+A rollup touches at most 1 024 snapshots below its first cutoff (a longer history is rolled in
+steps, by moving the cutoff forward), keeps between 1 and 4 096 cells per group, adds at most 8
+coarser tiers, truncates to between 1 and 1 000 000 snapshots (trigger at most 10 000 000), protects
+at most 1 000 000 parts per million of `keep` and tolerates at most 4 096 members over it. A bucket
+whose members would exceed the 4 096 cells of one snapshot is refused: use a smaller bucket. A
+request the key cannot serve is refused before anything is written.
 
 ## A worked example
 
@@ -52,6 +63,18 @@ the hour: item 1 has 60 impressions, 3 clicks and a peak of 9, item 2 has 10, 5 
 100, 1 and 3, and the later snapshot is untouched. The receipt reads 4 snapshots before, 2 after,
 6 cells before, 3 after. Capped to one item per `slot` by click rate (`clicks / impressions`),
 item 2 (0.5) stays and item 1 (0.05) goes; item 3 is alone in its slot.
+
+### Tiers, an age and a truncation
+
+`a_tiered_request_coarsens_old_history_in_one_command_and_ranks_the_same`,
+`an_age_resolves_against_the_newest_stored_snapshot_and_follows_it` and
+`a_truncation_acts_over_its_trigger_and_keeps_the_newest_snapshots`, in the same test file, work one
+twelve-snapshot key (stamps 100 to 1 200). Below 1 100 the buckets are 200 wide, below 700 they are
+400 wide (700 is aligned down to 600, a multiple of 200), so the twelve become seven, at 0, 400,
+600, 800, 1 000, 1 100 and 1 200. Asked as ages (100 and 500) against the newest stamp, 1 200, the
+same request gives the same bytes; after a snapshot at 1 300 arrives the same ages are other
+cutoffs (1 200 and 800) and the key settles at six snapshots. With a `truncate` of the newest 4,
+the seven become 800, 1 000, 1 100 and 1 200.
 
 ## Retrying a merge append
 

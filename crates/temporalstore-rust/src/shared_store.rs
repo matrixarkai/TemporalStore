@@ -5528,15 +5528,7 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                 retry_token: *retry_token,
             })
         }
-        Command::CellRollup { key, spec } => {
-            let (older_than_ms, bucket_ms, cap) = sdk::cell_rollup_spec_to_proto(spec);
-            v1::command::Kind::CellRollup(v1::CellRollup {
-                key: key.clone(),
-                older_than_ms,
-                bucket_ms,
-                cap,
-            })
-        }
+        Command::CellRollup { key, spec } => v1::command::Kind::CellRollup(sdk::cell_rollup_to_proto(key, spec)),
         Command::SeenCheck {
             key,
             member,

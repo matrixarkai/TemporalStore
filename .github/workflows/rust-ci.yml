@@ -676,6 +676,13 @@ jobs:
             engine::tests::a_cell_rollup_is_a_command::an_absent_key_and_an_expired_key_roll_nothing_up \
             engine::tests::a_cell_rollup_is_a_command::a_rollup_is_a_write_the_log_can_carry_in_every_score_spelling \
             engine::tests::a_cell_rollup_is_a_command::a_worked_example_of_a_rollup \
+            engine::tests::a_cell_rollup_is_a_command::a_tiered_request_coarsens_old_history_in_one_command_and_ranks_the_same \
+            engine::tests::a_cell_rollup_is_a_command::an_age_resolves_against_the_newest_stored_snapshot_and_follows_it \
+            engine::tests::a_cell_rollup_is_a_command::a_truncation_acts_over_its_trigger_and_keeps_the_newest_snapshots \
+            engine::tests::a_cell_rollup_is_a_command::a_protected_share_of_the_newest_members_and_a_cap_trigger_act_through_the_engine \
+            engine::tests::a_cell_rollup_is_a_command::replaying_the_log_reaches_the_tiered_truncated_bytes_the_live_engine_reached \
+            engine::tests::a_cell_rollup_is_a_command::a_new_control_that_cannot_be_served_is_refused_and_writes_nothing_and_each_bound_is_exact \
+            engine::tests::a_cell_rollup_is_a_command::a_request_with_none_of_the_new_fields_keeps_its_wire_and_json_bytes \
             engine::cell_retry_ring::tests::a_remembered_token_replays_its_first_receipt_and_a_new_one_is_fresh \
             engine::cell_retry_ring::tests::the_capacity_is_sixteen_and_a_full_ring_holds_exactly_that_many \
             engine::cell_retry_ring::tests::the_token_past_the_limit_evicts_the_oldest_and_nothing_else \

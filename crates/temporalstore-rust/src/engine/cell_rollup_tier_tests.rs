@@ -341,7 +341,7 @@ fn a_request_that_names_every_new_control_at_its_default_is_the_single_tier_requ
     let legacy = RollupSpec {
         older_than_ms: 2000,
         bucket_ms: 300,
-        cap: Some(CapSpec { group_by: Some("slot".to_string()), score: lane_score("shown"), keep: 2 }),
+        cap: Some(CapSpec { group_by: Some("slot".to_string()), score: lane_score("shown"), keep: 2, protect_newest_ppm: 0, trigger_over: 0 }), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None,
     };
     let spelled_out = PlanSpec {
         anchor: Anchor::Request,
@@ -355,7 +355,7 @@ fn a_request_that_names_every_new_control_at_its_default_is_the_single_tier_requ
             trigger_over: 0,
         }),
     };
-    assert_eq!(PlanSpec::from_legacy(&legacy), spelled_out);
+    assert_eq!(PlanSpec::from_wire(&legacy), spelled_out);
     let old = rollup(&header(), snaps.clone(), &legacy).unwrap();
     assert!(old.stats.cells_dropped > 0);
     assert_eq!(rollup_tiered(&header(), snaps, &spelled_out, 123).unwrap(), old);
