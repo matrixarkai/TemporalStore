@@ -2347,7 +2347,7 @@ fn wal_backed_raft_cluster_auto_persists_commits_leadership_and_membership() {
 fn wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state() {
     let dir = tempfile::tempdir().unwrap();
     let config = RaftConfig {
-        max_segment_bytes: 512,
+        max_segment_bytes: 400,
         min_keep_segment_num: 2,
         ..RaftConfig::default()
     };

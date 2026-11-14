@@ -726,10 +726,12 @@ message WalRecord {
 
 message WalEnvelope {
   uint64 sequence = 1;
-  bytes checksum = 2;
+  reserved 2, 5;
   WalRecord record = 3;
   WalEntryDelta delta = 4;
-  bool checksum_is_text = 5;
+  // CRC-32C of the encoded `record`. Four bytes, fixed width: a digest the length of the data it
+  // guards is not what a torn-write check needs, and a varint of a random u32 is 4.9 bytes anyway.
+  fixed32 checksum = 6;
 }
 
 // One engine write-ahead log record.

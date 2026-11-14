@@ -919,8 +919,7 @@ pub(crate) fn decode_append_entries(body: &[u8]) -> io::Result<AppendEntriesRequ
 }
 
 /// Encode one envelope as a binary message.
-pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>> {
-    let record = &envelope.record;
+pub(super) fn record_to_proto(record: &RaftWalRecord) -> io::Result<v1::WalRecord> {
     // The snapshot gets first-class fields: its state image is slab and index BYTES, and in
     // the side blob those become text again -- re-inflating exactly what compaction bounds.
     let installed_snapshot = match &record.installed_snapshot {
@@ -970,13 +969,8 @@ pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>>
 
     let (fence_checksum, fence_checksum_is_text) =
         checksum_to_bytes(&record.storage_apply_fence.checksum);
-    let (checksum, checksum_is_text) = checksum_to_bytes(&envelope.checksum);
 
-    let message = v1::WalEnvelope {
-        sequence: envelope.sequence,
-        checksum,
-        checksum_is_text,
-        record: Some(v1::WalRecord {
+    Ok(v1::WalRecord {
             hard_state: Some(v1::WalHardState {
                 current_term: record.hard_state.current_term,
                 voted_for: record.hard_state.voted_for,
@@ -1010,7 +1004,20 @@ pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>>
                 .collect::<io::Result<Vec<_>>>()?,
             installed_snapshot,
             rest: rest_message,
-        }),
+    })
+}
+
+/// The bytes a record's checksum covers: the record message exactly as it is written.
+pub(super) fn encode_record(record: &RaftWalRecord) -> io::Result<Vec<u8>> {
+    Ok(record_to_proto(record)?.encode_to_vec())
+}
+
+/// Encode one envelope as a binary message.
+pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>> {
+    let message = v1::WalEnvelope {
+        sequence: envelope.sequence,
+        checksum: envelope.checksum,
+        record: Some(record_to_proto(&envelope.record)?),
         delta: envelope.delta.as_ref().map(|delta| v1::WalEntryDelta {
             from_index: delta.from_index,
             log_first_index: delta.log_first_index,
@@ -1068,7 +1075,7 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
     };
     Ok(RaftWalEnvelope {
         sequence: message.sequence,
-        checksum: checksum_from_bytes(&message.checksum, message.checksum_is_text),
+        checksum: message.checksum,
         record: RaftWalRecord {
             hard_state: RaftHardState {
                 current_term: hard_state.current_term,
@@ -1263,7 +1270,7 @@ fn every_command_the_raft_wal_carries_is_protobuf() {
     fn envelope_with(command: Command) -> RaftWalEnvelope {
         RaftWalEnvelope {
             sequence: 7,
-            checksum: "9e0126c499690a34b92dc5cac030ea79a3b75a6d92cd9636afc7bfa457b34a01".into(),
+            checksum: 0x9e01_26c4,
             record: RaftWalRecord {
                 hard_state: RaftHardState {
                     current_term: 3,
@@ -1515,7 +1522,7 @@ fn every_command_the_raft_wal_carries_is_protobuf() {
             key: "k".into(),
             value: b"v".to_vec(),
         });
-        envelope.checksum = "not-a-digest".into();
+        envelope.checksum = u32::MAX;
         envelope.record.storage_apply_fence.checksum = "also/not/hex".into();
         let encoded = encode_envelope(&envelope).expect("encode");
         assert_eq!(decode_envelope(&encoded).expect("decode"), envelope);
