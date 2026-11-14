@@ -1423,7 +1423,19 @@ impl DataNodeRuntime {
                     "storage manager reclaimed index-log records"
                 );
             }
-            lifecycle_report = Some(response.report);
+            // A round's report names the manifest the round wrote, whichever stage wrote it: this
+            // stage no longer dumps below its gate, so its own report would otherwise erase the
+            // manifest the WAL stage just produced.
+            let mut stage_report = response.report;
+            if stage_report.dump_manifest.is_none() {
+                if let Some(earlier) = lifecycle_report
+                    .as_mut()
+                    .and_then(|earlier| earlier.dump_manifest.take())
+                {
+                    stage_report.dump_manifest = Some(earlier);
+                }
+            }
+            lifecycle_report = Some(stage_report);
             self.inner
                 .stats
                 .lock()

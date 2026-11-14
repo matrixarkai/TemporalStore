@@ -4832,12 +4832,13 @@ fn the_dump_cap_bounds_a_stage_but_not_a_round() {
         "reclaim_wal alone must dump exactly its cap: {before} -> {after}"
     );
 
-    // A whole round does not, because reclaim_index dumps the rest on purpose.
+    // A whole round does not dump more: reclaim_index waits for its own gate instead of forcing
+    // the rest of the dirty set out, so the round dumps the stage's cap and no more.
     let (before, after) = dirty_after_one_round(keys, cadence());
     assert_eq!(
-        after, 0,
-        "a default round dumps the whole dirty set, because index GC needs the coverage: \
-         {before} -> {after}"
+        before.saturating_sub(after),
+        cap,
+        "a whole round must dump the stage's cap and leave the rest to the gate: {before} -> {after}"
     );
 }
 
@@ -7921,7 +7922,11 @@ fn an_idle_shard_collects_the_slab_compaction_vacated() {
         },
     );
     let engine = runtime.engine();
-    let options = StorageManagerOptions::default();
+    let options = StorageManagerOptions {
+        // The index stage dumps through the byte gate, so this fixture crosses it.
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
 
     let mut compacting_rounds = 0_usize;
     let mut went_stale = std::collections::BTreeSet::<u64>::new();
@@ -9110,7 +9115,15 @@ fn the_change_that_moves_only_this_flag_cannot_close_its_gate() {
 
     // CONTROL, RESTATED: the shipped default REACHES the stage -- it is on -- and the stage
     // declines, because the bound is the bar. This used to assert `evict_disabled`.
-    let shipped = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    // The control round crosses the byte gate so that it writes these buckets out, which is what
+    // makes them clean by the time the treatment round picks victims.
+    let shipped = runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            min_undumped_wal_bytes: 1,
+            ..StorageManagerOptions::default()
+        },
+    );
     let shipped_eviction = shipped
         .eviction
         .as_ref()
@@ -9964,7 +9977,11 @@ fn drive_long_footprint_run(records: usize, tail_rounds: usize, inject_age: bool
         },
     );
     let engine = runtime.engine();
-    let options = StorageManagerOptions::default();
+    let options = StorageManagerOptions {
+        // The index stage dumps through the byte gate, so this fixture crosses it.
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
 
     // FROM HERE ON NOTHING WRITES. `objects` is carried as a column so that is checkable rather
     // than asserted in prose: a run whose object count moves had a writer, and every "did not
