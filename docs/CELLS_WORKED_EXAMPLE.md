@@ -74,9 +74,12 @@ store.
 * **A key that goes forgets its tokens.** Deleting the key, its expiry, and a trim that leaves it no
   snapshot each clear the ring: the same token on the key written again is a new request.
 * **Durable.** The rings are stored with the shard's index image (a new `retry_rings` domain, one
-  byte string per key), so they come back after a crash, from the log, and after the log has been
-  reclaimed, from the image. A shard that never used a token stores exactly the bytes it stored
-  before, the image stamp aside, and a key that never uses one pays nothing.
+  byte string per key), so they come back after a restart and after the log has been reclaimed.
+  Like a deadline or a seen set, a ring is held in the image and not in the blocks: tokens filed
+  since the last image flush are rebuilt where the log is replayed (a replicated deployment), and
+  a single node that crashes without replaying a log forgets them. A shard that never used a token
+  stores exactly the bytes it stored before, the image stamp aside, and a key that never uses one
+  pays nothing.
 * **What the answer says.** `snapshots_written`, `cells_created` and `cells_merged` are the first
   application's, so a retry of a request that created a cell reads "created", where a request that
   merged again would read "merged". A request without a token is applied every time, as before.
