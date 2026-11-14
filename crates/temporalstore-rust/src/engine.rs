@@ -6346,6 +6346,13 @@ where
 {
     let mut selected = Vec::new();
     let mut walked = 0usize;
+    // A long run of due keys that `keep` rejects -- the other residency class, which a sweep that
+    // does not load cold buckets never removes -- sits at the FRONT of the view round after round.
+    // A walk capped at `scan_budget` ended inside that run and never reached an accepted key
+    // behind it, so one class could starve the other for as long as the run lasted. The walk gets
+    // a multiple of the budget instead: still bounded, and wide enough to step over a run the
+    // size of the budget many times over.
+    let walk_cap = scan_budget.saturating_mul(16);
     for ((expires_at, key), ()) in shard.expiry_by_deadline.iter() {
         if *expires_at > now {
             break;
@@ -6353,7 +6360,7 @@ where
         if limit > 0 && selected.len() >= limit {
             break;
         }
-        if scan_budget > 0 && walked >= scan_budget {
+        if scan_budget > 0 && walked >= walk_cap {
             break;
         }
         walked = walked.saturating_add(1);

@@ -4825,7 +4825,7 @@ fn a_loaded_shard_arrives_with_its_deadline_index_built() {
     assert_eq!(
         deadline_index_len(&engine, 1),
         held,
-        "the shard was installed without its deadline-ordered view; the first sweep would build          it under the shard-table write guard"
+        "the shard was installed without its deadline-ordered view; the first sweep would build it under the shard-table write guard"
     );
     assert_eq!(disagreements(&engine, 1), 0);
 
@@ -4850,7 +4850,63 @@ fn a_loaded_shard_arrives_with_its_deadline_index_built() {
     crate::engine::ensure_expiry_order(shard);
     let ensure_us = started.elapsed().as_micros();
     println!(
-        "  {KEYS} deadlines: insert-by-insert {old_us} us, collected {new_us} us,          ensure_expiry_order {ensure_us} us"
+        "  {KEYS} deadlines: insert-by-insert {old_us} us, collected {new_us} us, ensure_expiry_order {ensure_us} us"
     );
     assert_eq!(shard.expiry_by_deadline.len(), KEYS);
+}
+
+/// A run of due keys the window refuses must not hide an accepted one behind it.
+///
+/// With cold buckets not loaded, a due cold key is skipped and stays at the front of the
+/// deadline-ordered view forever. The hot window used to charge its scan budget for every key it
+/// walked, accepted or not, so once the cold run was as long as the budget the hot window ended
+/// inside it and a due hot key behind it never expired. Here 200 due cold keys (a deadline and no
+/// record, so not hot) sort ahead of one due hot key, the budget is 64, and the round limits are 1.
+#[test]
+fn a_long_run_of_due_cold_keys_does_not_starve_a_due_hot_key() {
+    const COLD: usize = 200;
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    write_keys(&engine, 1, vec![("hot-due".to_string(), 1u64)]);
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).unwrap();
+        for index in 0..COLD {
+            crate::engine::set_expiry(shard, format!("cold-{index:04}"), 1);
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (held, due) = deadline_census(&engine, 1);
+    assert_eq!((held, due), (COLD + 1, COLD + 1), "the fixture did not land");
+
+    // CONTROL: the walk is still bounded. A budget of 4 gives a cap of 64 keys, which ends inside
+    // the 200-key cold run, so the accepted key is not reached; a budget of 64 (cap 1,024) is.
+    {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).unwrap();
+        let now = now_ms();
+        let only_hot = |key: &str| key == "hot-due";
+        assert!(crate::engine::due_window(shard, now, 1, 4, only_hot).is_empty());
+        assert_eq!(crate::engine::due_window(shard, now, 1, 64, only_hot).len(), 1);
+    }
+
+    let mut removed = 0;
+    for _ in 0..5 {
+        let report = engine
+            .sweep_expired_records_with_request(ShardExpirySweepRequest {
+                shard_id: 1,
+                load_cold_buckets: false,
+                max_hot_buckets_per_round: 1,
+                max_cold_buckets_per_round: 1,
+                ..ShardExpirySweepRequest::default()
+            })
+            .expect("shard 1 is loaded");
+        removed += report.expired_records_removed;
+    }
+    assert_eq!(
+        removed, 1,
+        "the due hot key was not removed: {COLD} due cold keys at the front of the view hid it"
+    );
+    let (held, _) = deadline_census(&engine, 1);
+    assert_eq!(held, COLD, "only the cold keys should remain");
 }
