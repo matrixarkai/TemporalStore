@@ -5401,6 +5401,15 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                 policy: sdk::feature_write_policy_to_proto(*policy) as i32,
             })
         }
+        Command::CellRollup { key, spec } => {
+            let (older_than_ms, bucket_ms, cap) = sdk::cell_rollup_spec_to_proto(spec);
+            v1::command::Kind::CellRollup(v1::CellRollup {
+                key: key.clone(),
+                older_than_ms,
+                bucket_ms,
+                cap,
+            })
+        }
         Command::SeenCheck {
             key,
             member,

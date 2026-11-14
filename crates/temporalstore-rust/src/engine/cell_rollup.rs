@@ -82,22 +82,8 @@ pub(crate) const MAX_ROLLUP_SNAPSHOTS: usize = 1024;
 /// Cells one group may keep.
 pub(crate) const MAX_KEEP: usize = MAX_CELLS_PER_SNAPSHOT;
 
-/// Keep the best `keep` cells of each group.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CapSpec {
-    /// The label whose value names a group; `None`: all cells are one group.
-    pub(crate) group_by: Option<String>,
-    pub(crate) score: CellScore,
-    pub(crate) keep: usize,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct RollupSpec {
-    /// Snapshots stamped strictly below this are rolled up.
-    pub(crate) older_than_ms: u64,
-    pub(crate) bucket_ms: u64,
-    pub(crate) cap: Option<CapSpec>,
-}
+/// The request, as the command carries it.
+pub(crate) use crate::types::{CellCapSpec as CapSpec, CellRollupSpec as RollupSpec};
 
 /// One decoded snapshot: its stamp and its cells, strictly ascending by member.
 #[derive(Clone, Debug, PartialEq)]
@@ -231,6 +217,7 @@ fn apply_cap(cap: &Cap, cells: &mut Vec<Cell>, scratch: &mut CapScratch) -> Resu
 }
 
 /// Applies `cap` to one snapshot's cells on its own. Returns how many cells were removed.
+#[allow(dead_code)] // the command applies a cap through `rollup`; this is the one-snapshot form
 pub(crate) fn cap_cells(header: &CellHeader, cap: &CapSpec, cells: &mut Vec<Cell>) -> Result<u64, String> {
     let spec = RollupSpec { older_than_ms: 0, bucket_ms: 1, cap: Some(cap.clone()) };
     validate_spec(&spec)?;

@@ -288,6 +288,7 @@ message Command {
     HashMultiSetWithTtl hash_multi_set_with_ttl = 66;
     ZSetCountAdjust zset_count_adjust = 67;
     ZSetScan zset_scan = 68;
+    CellRollup cell_rollup = 69;
   }
 }
 
@@ -303,6 +304,11 @@ message CommandResponse {
   // A merge-reduce feature append reports what landed. `count` stays the snapshots written.
   uint64 cells_created = 9;
   uint64 cells_merged = 10;
+  // A rollup reports what it did: `count` is the snapshots after, these are the rest.
+  uint64 snapshots_before = 11;
+  uint64 cells_before = 12;
+  uint64 cells_after = 13;
+  uint64 cells_dropped = 14;
 }
 
 message StringSet {
@@ -1154,6 +1160,50 @@ message FeatureAppendWithPolicy {
   string key = 1;
   repeated FeaturePoint points = 2;
   FeatureWritePolicy policy = 3;
+}
+
+// Rolls the cell snapshots of `key` stamped strictly below `older_than_ms` up into buckets of
+// `bucket_ms`, each stored at its bucket start, and optionally caps each rolled snapshot.
+message CellRollup {
+  string key = 1;
+  uint64 older_than_ms = 2;
+  uint64 bucket_ms = 3;
+  CellRollupCap cap = 4;
+}
+
+// Keep the best `keep` cells of each group. Absent `group_by`: every cell is one group.
+message CellRollupCap {
+  optional string group_by = 1;
+  CellRollupScore score = 2;
+  uint64 keep = 3;
+}
+
+// What a cap orders cells by. Lanes are named, never numbered.
+message CellRollupScore {
+  oneof kind {
+    string lane = 1;
+    CellRollupRatio ratio = 2;
+    CellRollupWilson wilson = 3;
+    bool member = 4;
+    bool time = 5;
+    CellRollupWeighted weighted = 6;
+  }
+}
+
+message CellRollupRatio {
+  string numerator = 1;
+  string denominator = 2;
+}
+
+message CellRollupWilson {
+  string successes = 1;
+  string trials = 2;
+  double z = 3;
+}
+
+message CellRollupWeighted {
+  repeated string lanes = 1;
+  repeated double weights = 2;
 }
 
 message SeenCheck {

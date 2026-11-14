@@ -585,6 +585,14 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 policy: feature_write_policy_from_proto(command.policy)?,
             }
         }
+        v1::command::Kind::CellRollup(command) => types::Command::CellRollup {
+            key: command.key,
+            spec: cell_rollup_spec_from_proto(
+                command.older_than_ms,
+                command.bucket_ms,
+                command.cap,
+            )?,
+        },
         v1::command::Kind::SeenCheck(command) => types::Command::SeenCheck {
             key: command.key,
             member: command.member,
@@ -1207,6 +1215,77 @@ pub(crate) fn feature_write_policy_from_proto(
     }
 }
 
+pub(crate) fn cell_rollup_score_to_proto(score: &types::CellScore) -> v1::CellRollupScore {
+    use v1::cell_rollup_score::Kind;
+    let kind = match score {
+        types::CellScore::Lane { lane } => Kind::Lane(lane.clone()),
+        types::CellScore::Ratio { numerator, denominator } => Kind::Ratio(v1::CellRollupRatio {
+            numerator: numerator.clone(),
+            denominator: denominator.clone(),
+        }),
+        types::CellScore::Wilson { successes, trials, z } => Kind::Wilson(v1::CellRollupWilson {
+            successes: successes.clone(),
+            trials: trials.clone(),
+            z: *z,
+        }),
+        types::CellScore::Member => Kind::Member(true),
+        types::CellScore::Time => Kind::Time(true),
+        types::CellScore::Weighted { lanes, weights } => Kind::Weighted(v1::CellRollupWeighted {
+            lanes: lanes.clone(),
+            weights: weights.clone(),
+        }),
+    };
+    v1::CellRollupScore { kind: Some(kind) }
+}
+
+/// REFUSED, NOT DEFAULTED: a score with no kind, or a flag kind that is not `true`, is not a
+/// score this build can apply.
+pub(crate) fn cell_rollup_score_from_proto(
+    score: Option<v1::CellRollupScore>,
+) -> Result<types::CellScore, TonicStatus> {
+    use v1::cell_rollup_score::Kind;
+    match score.and_then(|score| score.kind) {
+        Some(Kind::Lane(lane)) => Ok(types::CellScore::Lane { lane }),
+        Some(Kind::Ratio(r)) => Ok(types::CellScore::Ratio { numerator: r.numerator, denominator: r.denominator }),
+        Some(Kind::Wilson(w)) => Ok(types::CellScore::Wilson { successes: w.successes, trials: w.trials, z: w.z }),
+        Some(Kind::Member(true)) => Ok(types::CellScore::Member),
+        Some(Kind::Time(true)) => Ok(types::CellScore::Time),
+        Some(Kind::Weighted(w)) => Ok(types::CellScore::Weighted { lanes: w.lanes, weights: w.weights }),
+        Some(Kind::Member(false)) | Some(Kind::Time(false)) | None => Err(TonicStatus::invalid_argument(
+            "a cell rollup score names no kind this build can apply",
+        )),
+    }
+}
+
+pub(crate) fn cell_rollup_spec_to_proto(spec: &types::CellRollupSpec) -> (u64, u64, Option<v1::CellRollupCap>) {
+    (
+        spec.older_than_ms,
+        spec.bucket_ms,
+        spec.cap.as_ref().map(|cap| v1::CellRollupCap {
+            group_by: cap.group_by.clone(),
+            score: Some(cell_rollup_score_to_proto(&cap.score)),
+            keep: cap.keep as u64,
+        }),
+    )
+}
+
+pub(crate) fn cell_rollup_spec_from_proto(
+    older_than_ms: u64,
+    bucket_ms: u64,
+    cap: Option<v1::CellRollupCap>,
+) -> Result<types::CellRollupSpec, TonicStatus> {
+    let cap = match cap {
+        None => None,
+        Some(cap) => Some(types::CellCapSpec {
+            group_by: cap.group_by,
+            score: cell_rollup_score_from_proto(cap.score)?,
+            keep: usize::try_from(cap.keep)
+                .map_err(|_| TonicStatus::invalid_argument("cell rollup keep does not fit this platform"))?,
+        }),
+    };
+    Ok(types::CellRollupSpec { older_than_ms, bucket_ms, cap })
+}
+
 /// THE FAMILY TAG, RUST SPELLING TO WIRE NUMBER.
 ///
 /// Infallible in this direction on purpose: every Rust variant has a number, so an encoder cannot
@@ -1364,6 +1443,21 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             count: snapshots_written,
             cells_created,
             cells_merged,
+            ..Default::default()
+        },
+        types::CommandResponse::CellRollupReceipt {
+            snapshots_before,
+            snapshots_after,
+            cells_before,
+            cells_after,
+            cells_dropped,
+        } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            count: snapshots_after,
+            snapshots_before,
+            cells_before,
+            cells_after,
+            cells_dropped,
             ..Default::default()
         },
         types::CommandResponse::Members { members } => v1::CommandResponse {
