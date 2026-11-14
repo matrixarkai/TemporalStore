@@ -19,6 +19,7 @@
 //! key, or a key with no snapshots, is an empty answer with `refused` empty: nothing to rank.
 
 use super::cell_rank::{Plan, SnapshotView, MAX_WINDOW_SNAPSHOTS};
+use super::cell_rank_options::last_bounds;
 use super::cell_set::{check_header, decode_snapshot, split_value, Cell, CellHeader};
 use super::*;
 use crate::block_store::ElementEntry;
@@ -81,7 +82,12 @@ pub(super) fn serve(
     };
     let named: Vec<(u64, &ElementEntry)> = match &spec.window {
         CellWindow::Between { start_ms, end_ms } => bounded(*start_ms, *end_ms),
-        CellWindow::Last { duration_ms } => bounded(now_ms.saturating_sub(*duration_ms), now_ms),
+        // The window's ends come from the same function the pure read uses, so the two agree on what
+        // an anchor at the newest snapshot means. A window that holds no stamp reads nothing.
+        CellWindow::Last { duration_ms } => match last_bounds(spec.anchor, *duration_ms, now_ms, Some(newest_ms)) {
+            Some((from_ms, to_ms)) => bounded(from_ms, to_ms),
+            None => Vec::new(),
+        },
         CellWindow::Since { start_ms } => bounded(*start_ms, u64::MAX),
         CellWindow::LastN { n } => series.range(..).rev().take(*n).collect(),
     };

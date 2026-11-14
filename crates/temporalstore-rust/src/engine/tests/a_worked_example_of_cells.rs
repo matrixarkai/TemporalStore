@@ -113,6 +113,9 @@ fn rank(engine: &TemporalEngine, key: &str, filters: Vec<FeatureFilter>, score: 
                 score,
                 top_k: 10,
                 project: Vec::new(),
+                members: Default::default(),
+                anchor: Default::default(),
+                quota: Default::default(),
             },
         },
     });
@@ -235,6 +238,9 @@ fn a_worked_example_of_cells() {
                 score: CellScore::Lane { lane: "views".to_string() },
                 top_k: 10,
                 project: Vec::new(),
+                members: Default::default(),
+                anchor: Default::default(),
+                quota: Default::default(),
             },
         },
     });

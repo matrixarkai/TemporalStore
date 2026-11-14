@@ -163,6 +163,9 @@ fn rank(engine: &TemporalEngine, key: &str, score: CellScore) -> RankedCells {
                 score,
                 top_k: 100,
                 project: Vec::new(),
+                members: Default::default(),
+                anchor: Default::default(),
+                quota: Default::default(),
             },
         },
     );
