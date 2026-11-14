@@ -413,6 +413,17 @@ fn the_size_checks_accept_the_limit_and_refuse_one_past_it_by_themselves() {
 }
 
 #[test]
+fn a_key_named_twice_is_refused_naming_both_positions_and_the_limit_is_accepted() {
+    let names = |n: usize| (0..n).map(|i| format!("key-{i}")).collect::<Vec<_>>();
+    assert!(validate_keys(&names(1)).is_ok() && validate_keys(&names(MAX_FAN_IN_KEYS)).is_ok());
+    assert!(validate_keys(&names(MAX_FAN_IN_KEYS + 1)).unwrap_err().contains("keys in a fan-in read"));
+    assert!(validate_keys(&[]).unwrap_err().contains("at least 1"));
+    let mut twice = names(5);
+    twice[3] = "key-1".to_string();
+    assert_eq!(validate_keys(&twice).unwrap_err(), "key 3 repeats key 1: a key is read once per request");
+}
+
+#[test]
 fn the_keys_count_is_a_wire_field_that_an_answer_without_it_reads_as_zero() {
     let ranked = RankedCells { keys: 3, snapshots: 5, ..RankedCells::default() };
     let json = serde_json::to_string(&ranked).unwrap();
