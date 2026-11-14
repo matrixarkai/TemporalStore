@@ -2267,7 +2267,12 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
     // appearing or the invalidation missing one.
     assert_eq!(output.cache_entries_removed, 1);
     assert!(output.cache_disk_bytes_removed > 0);
-    assert_eq!(output.wal_records_removed, 2);
+    // NO WAL RECORD GOES. The three writes above register their blocks against the log, and a
+    // truncation takes the retention floor from those registrations. This used to expect 2
+    // records removed, because the /gc path truncated against whatever floor was last stored --
+    // nothing here -- and freed records that live registrations still pointed into. The index-log
+    // and slab counts below are unaffected.
+    assert_eq!(output.wal_records_removed, 0);
     assert_eq!(output.index_log_records_removed, 1);
     assert_eq!(output.block_slabs_removed, 1);
     assert!(output.block_slabs_removed_physical_bytes > 0);
