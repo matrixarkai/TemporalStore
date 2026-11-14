@@ -152,7 +152,9 @@ and memory costs; compare mixed reads and writes, not write QPS alone.
 A cell-based model within Feature stores timestamped snapshots of members,
 labels, and numeric lanes. Writes merge lanes with declared reducers.
 `CellRankQuery` selects a window, filters, reduces per member, scores, returns
-bounded top-k, and projects fields. Build engagement rankings, conversion rates,
+bounded top-k, and projects fields. `CellRollup` folds old snapshots into coarser
+time buckets and can cap each label group, so a key written every minute does
+not keep every snapshot. Build engagement rankings, conversion rates,
 and multi-signal features alongside scalar aggregates, with explicit schema and
 query bounds.
 

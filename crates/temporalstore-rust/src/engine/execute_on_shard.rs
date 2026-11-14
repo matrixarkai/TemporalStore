@@ -1371,6 +1371,95 @@ mod packed_hash_entry_tests {
     }
 }
 
+/// Replaces every point of `key`'s series stamped in `[start_ms, end_ms]` with `points`, trims
+/// to the feature ceiling and restates the bucket index with the live blocks. Returns whether
+/// anything changed, OR-ed with `mutated`. `FeatureReplace` and `CellRollup` replace a range the
+/// same way.
+#[allow(clippy::too_many_arguments)]
+fn replace_feature_range(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+    points: Vec<FeaturePoint>,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    async_storage: bool,
+    feature_max_size: usize,
+    trim_boundary_record: bool,
+    mut mutated: bool,
+) -> bool {
+    let routing_bucket =
+        block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+    // HOISTED ABOVE THE SERIES BORROW. `features_mut()` borrows the whole
+    // `ShardState` where `&mut shard.features` borrowed one field, so this read of
+    // `shard.bucket_index` can no longer sit inside the append call below -- the
+    // two borrows are no longer disjoint. Taken here, before the series is
+    // borrowed, which is also the order this block reads best in.
+    let next_block_index = crate::engine::state::next_block_index_for_object(
+        &shard.bucket_index,
+        routing_bucket,
+        "feature",
+        key,
+    );
+    let series = shard
+        .features_mut()
+        .entry(std::sync::Arc::from(key))
+        .or_default();
+    let replaced = series
+        .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+        .map(|(timestamp_ms, _)| timestamp_ms)
+        .collect::<Vec<_>>();
+    mutated |= drop_timestamped_points(
+        shard_id,
+        "feature",
+        key,
+        routing_bucket,
+        series,
+        &replaced,
+    );
+    let points = sorted_feature_points(points);
+    if let Ok(addresses) = append_timestamped_kv_blocks(
+        cache,
+        block_store,
+        shard_id,
+        "feature",
+        key,
+        points,
+        routing_bucket,
+        async_storage,
+        true,
+        next_block_index,
+    ) {
+        for (timestamp_ms, address) in addresses {
+            series.set(timestamp_ms, address);
+            mutated = true;
+        }
+    }
+    mutated |= trim_timestamped_series(
+        shard_id,
+        "feature",
+        key,
+        routing_bucket,
+        series,
+        feature_max_size,
+        trim_boundary_record,
+    );
+    let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
+    sync_bucket_index_object_blocks(
+        shard,
+        shard_id,
+        "feature",
+        key,
+        live_addresses,
+        mutated,
+    );
+    mutated
+}
+
 pub(crate) fn execute_on_shard(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -3808,69 +3897,20 @@ pub(crate) fn execute_on_shard(
             points,
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let routing_bucket =
-                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            // HOISTED ABOVE THE SERIES BORROW. `features_mut()` borrows the whole
-            // `ShardState` where `&mut shard.features` borrowed one field, so this read of
-            // `shard.bucket_index` can no longer sit inside the append call below -- the
-            // two borrows are no longer disjoint. Taken here, before the series is
-            // borrowed, which is also the order this block reads best in.
-            let next_block_index = crate::engine::state::next_block_index_for_object(
-                &shard.bucket_index,
-                routing_bucket,
-                "feature",
-                &key,
-            );
-            let series = shard
-                .features_mut()
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default();
-            let replaced = series
-                .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                .map(|(timestamp_ms, _)| timestamp_ms)
-                .collect::<Vec<_>>();
-            mutated |= drop_timestamped_points(
-                shard_id,
-                "feature",
-                &key,
-                routing_bucket,
-                series,
-                &replaced,
-            );
-            let points = sorted_feature_points(points);
-            if let Ok(addresses) = append_timestamped_kv_blocks(
+            mutated = replace_feature_range(
                 cache,
                 block_store,
                 shard_id,
-                "feature",
+                shard,
                 &key,
+                start_ms,
+                end_ms,
                 points,
-                routing_bucket,
+                start_routing_bucket,
+                end_routing_bucket,
                 async_storage,
-                true,
-                next_block_index,
-            ) {
-                for (timestamp_ms, address) in addresses {
-                    series.set(timestamp_ms, address);
-                    mutated = true;
-                }
-            }
-            mutated |= trim_timestamped_series(
-                shard_id,
-                "feature",
-                &key,
-                routing_bucket,
-                series,
                 feature_max_size,
                 trim_boundary_record,
-            );
-            let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-            sync_bucket_index_object_blocks(
-                shard,
-                shard_id,
-                "feature",
-                &key,
-                live_addresses,
                 mutated,
             );
             let _ = cache.invalidate_record(shard_id, "feature", &key);
@@ -4279,6 +4319,68 @@ pub(crate) fn execute_on_shard(
                     resolve_now_ms(),
                 ),
             }
+        }
+        Command::CellRollup { key, spec } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            // THE SAME PLANNER AS ADMISSION, over the same series, so a follower and a replay
+            // reach the leader's bytes. A plan that fails here passed validation on the leader:
+            // that is a divergence, not a bad request, so it writes nothing and receipts zeros.
+            let plan = crate::engine::cell_rollup_apply::plan_cell_rollup(
+                cache,
+                block_store,
+                shard_id,
+                shard.features().get(&key[..]),
+                &key,
+                routing_bucket,
+                &spec,
+            )
+            .ok();
+            let receipt = match plan {
+                Some(plan) => {
+                    // The stored snapshots below the cutoff are exactly `plan.replaced`; the
+                    // range from the first to the last of them holds nothing else.
+                    if let (true, Some(&first), Some(&last)) =
+                        (plan.changed, plan.replaced.first(), plan.replaced.last())
+                    {
+                        mutated = replace_feature_range(
+                            cache,
+                            block_store,
+                            shard_id,
+                            shard,
+                            &key,
+                            first,
+                            last,
+                            plan.points,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            async_storage,
+                            feature_max_size,
+                            trim_boundary_record,
+                            mutated,
+                        );
+                        // The numeric view of the series is rebuilt only when its length moves; a
+                        // rollup can change the values and keep the length.
+                        control_rollup::feature_forget(shard, &key);
+                        let _ = cache.invalidate_record(shard_id, "feature", &key);
+                    }
+                    CommandResponse::CellRollupReceipt {
+                        snapshots_before: plan.snapshots_before,
+                        snapshots_after: plan.snapshots_after,
+                        cells_before: plan.cells_before,
+                        cells_after: plan.cells_after,
+                        cells_dropped: plan.cells_dropped,
+                    }
+                }
+                None => CommandResponse::CellRollupReceipt {
+                    snapshots_before: 0,
+                    snapshots_after: 0,
+                    cells_before: 0,
+                    cells_after: 0,
+                    cells_dropped: 0,
+                },
+            };
+            receipt
         }
         Command::ControlStateIncrement {
             key,

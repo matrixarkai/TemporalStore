@@ -395,6 +395,7 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::Aggregate { .. } => "aggregate",
         CommandResponse::CellMergeReceipt { .. } => "cell_merge_receipt",
         CommandResponse::CellRanking { .. } => "cell_ranking",
+        CommandResponse::CellRollupReceipt { .. } => "cell_rollup_receipt",
         CommandResponse::SequenceRows { .. } => "sequence_rows",
         CommandResponse::SequenceRowGroups { .. } => "sequence_row_groups",
         CommandResponse::ContextNode { .. } => "context_node",

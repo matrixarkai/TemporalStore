@@ -87,6 +87,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::FeatureQuery { key, .. }
         | Command::FeatureQueryFiltered { key, .. }
         | Command::FeatureReplace { key, .. }
+        | Command::CellRollup { key, .. }
         | Command::FeatureDelete { key }
         | Command::FeatureAggQuery { key, .. }
         | Command::FeatureProtoAggQuery { key, .. }

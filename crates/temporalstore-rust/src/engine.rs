@@ -33,11 +33,12 @@ mod product_model;
 mod cell_merge_append;
 mod window_aggregate;
 mod cell_rank;
+mod cell_rank_options;
 mod cell_rank_read;
 // Rolling old snapshots up into coarser buckets and capping a label group: a pure function over
-// decoded snapshots. Its command is a separate change, so nothing calls it yet.
-#[allow(dead_code)]
+// decoded snapshots, and the engine side that reads the series and plans the replacement.
 mod cell_rollup;
+mod cell_rollup_apply;
 // Merged cell sets: the key, the per-key header and the packed snapshot. The merge-reduce write
 // policy of the feature append is its caller.
 mod cell_set;

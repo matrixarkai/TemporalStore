@@ -177,6 +177,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::FeatureAppendWithTtl { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureReplace { key, .. }
+        | Command::CellRollup { key, .. }
         | Command::FeatureDelete { key }
         | Command::SequenceAdd { key, .. }
         | Command::ControlStateIncrement { key, .. }
@@ -424,6 +425,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::FeatureAppendWithTtl { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
+            | Command::CellRollup { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
     )
@@ -479,6 +481,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::FeatureAppendWithTtl { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
+            | Command::CellRollup { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
             | Command::ControlStateIncrement { .. }
@@ -723,6 +726,28 @@ pub(super) fn validate_command_preconditions(
                     crate::engine::cell_merge_append::PlanOutput::CountOnly,
                 )?;
             }
+        }
+        // A rollup is refused HERE, before the log, like a merge-reduce append: the plan reads the
+        // snapshots below the cutoff and runs the pure rollup, so a name the key does not declare,
+        // a bucket over the snapshot limit and a snapshot that is not a cell snapshot all write
+        // nothing. The plan is thrown away; execution plans again (see `cell_rollup_apply`).
+        Command::CellRollup { key, spec } => {
+            let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+            // A key past its deadline reads as absent, as it does everywhere else.
+            let expired = shard
+                .expires_at_ms()
+                .get(key.as_str())
+                .map(|expires_at| *expires_at <= resolve_now_ms())
+                .unwrap_or(false);
+            crate::engine::cell_rollup_apply::plan_cell_rollup(
+                cache,
+                block_store,
+                shard_id,
+                shard.features().get(&key[..]).filter(|_| !expired),
+                key,
+                crate::engine::hashing::block_routing_bucket(key, start_routing_bucket, end_routing_bucket),
+                spec,
+            )?;
         }
         Command::FeatureReplace { key, points, .. } => {
             let current = shard

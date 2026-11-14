@@ -232,6 +232,39 @@ impl TemporalStoreTable {
         }
     }
 
+    /// Rolls the cell snapshots under `key` stamped strictly below `spec.older_than_ms` up into
+    /// buckets, optionally capping each rolled snapshot, and says what it did. A request the key
+    /// cannot serve is refused and nothing is written; rolling up again with the same arguments
+    /// changes nothing.
+    pub fn cell_rollup(
+        &self,
+        key: impl Into<String>,
+        spec: crate::types::CellRollupSpec,
+    ) -> Result<crate::types::CellRollupSummary, ClientError> {
+        match self
+            .execute(Command::CellRollup { key: key.into(), spec })?
+            .response
+        {
+            CommandResponse::CellRollupReceipt {
+                snapshots_before,
+                snapshots_after,
+                cells_before,
+                cells_after,
+                cells_dropped,
+            } => Ok(crate::types::CellRollupSummary {
+                snapshots_before,
+                snapshots_after,
+                cells_before,
+                cells_after,
+                cells_dropped,
+            }),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "cell_rollup",
+                response,
+            }),
+        }
+    }
+
     pub fn sequence_batch_query(
         &self,
         queries: Vec<SequenceQuerySpec>,

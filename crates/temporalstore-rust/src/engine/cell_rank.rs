@@ -39,6 +39,7 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
+use super::cell_rank_options::{last_bounds, validate_options, Anchor, CompiledMembers, RankOptions};
 use super::cell_set::{validate_top_k, within, Cell, CellHeader, LaneReducer, Member};
 use super::product_model::filter_op_holds;
 use super::window_aggregate::{ratio, weighted_sum, wilson_lower_bound, Reduced, Reducer};
@@ -108,6 +109,8 @@ pub(crate) enum Scorer {
 /// A query checked against a header: every name resolved to a position, every bound met.
 pub(crate) struct Plan {
     window: CellWindow,
+    members: CompiledMembers,
+    anchor: Anchor,
     predicates: Vec<Predicate>,
     scorer: Scorer,
     top_k: usize,
@@ -223,7 +226,15 @@ impl Scorer {
 impl Plan {
     /// Checks `spec` against `header`. Every refusal names what was wrong; nothing is read.
     pub(crate) fn compile(header: &CellHeader, spec: &CellRankSpec) -> Result<Plan, String> {
+        Plan::compile_with(header, spec, &RankOptions::default())
+    }
+
+    /// [`Plan::compile`] with the controls a spec does not carry. `RankOptions::default()` is
+    /// exactly `compile`.
+    pub(crate) fn compile_with(header: &CellHeader, spec: &CellRankSpec, options: &RankOptions) -> Result<Plan, String> {
         validate_spec(spec)?;
+        validate_options(&spec.window, options)?;
+        let members = CompiledMembers::compile(&options.members)?;
 
         let mut predicates = Vec::with_capacity(spec.filters.len());
         for FeatureFilter { field, op, value } in &spec.filters {
@@ -251,6 +262,8 @@ impl Plan {
 
         Ok(Plan {
             window: spec.window.clone(),
+            members,
+            anchor: options.anchor,
             predicates,
             scorer,
             top_k: spec.top_k,
@@ -445,7 +458,13 @@ impl Plan {
         }
         let chosen = match &self.window {
             CellWindow::Between { start_ms, end_ms } => snapshots_between(snapshots, *start_ms, *end_ms),
-            CellWindow::Last { duration_ms } => snapshots_between(snapshots, now_ms.saturating_sub(*duration_ms), now_ms),
+            CellWindow::Last { duration_ms } => {
+                let newest = snapshots.last().map(|s| s.timestamp_ms);
+                match last_bounds(self.anchor, *duration_ms, now_ms, newest) {
+                    Some((from_ms, to_ms)) => snapshots_between(snapshots, from_ms, to_ms),
+                    None => &snapshots[..0],
+                }
+            }
             CellWindow::Since { start_ms } => snapshots_between(snapshots, *start_ms, u64::MAX),
             CellWindow::LastN { n } => &snapshots[snapshots.len().saturating_sub(*n)..],
         };
@@ -470,7 +489,7 @@ impl Plan {
             if *at > 0 && cells[*at - 1].member >= cell.member {
                 return Err("a snapshot is not strictly ascending by member".to_string());
             }
-            if self.predicates.iter().all(|predicate| predicate.holds(cell)) {
+            if self.members.allows(&cell.member) && self.predicates.iter().all(|predicate| predicate.holds(cell)) {
                 return Ok(Some(&cell.member));
             }
             *at += 1;
