@@ -15398,9 +15398,10 @@ fn the_covered_writes_in_the_eight_batch_are_framed_as_protobuf_and_round_trip()
             },
         ),
     ];
-    // DENOMINATOR FIRST: eleven cases over the eight commands this batch mapped -- three of them
-    // appear more than once because their enum tag and their presence rules are what could break.
-    assert_eq!(cases.len(), 11, "eleven cases over the eight commands this batch mapped");
+    // DENOMINATOR FIRST: thirteen cases over the eight commands this batch mapped -- three of them
+    // appear more than once because their enum tag and their presence rules are what could break,
+    // and the merge-reduce append has two more for a retry token (a large one, and zero).
+    assert_eq!(cases.len(), 13, "thirteen cases over the eight commands this batch mapped");
 
     for (name, command) in cases {
         assert!(
