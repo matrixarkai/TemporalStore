@@ -109,19 +109,6 @@ fn drive(async_storage: bool) {
         records_left < written,
         "the log still holds all {written} records, so nothing was reclaimed"
     );
-    eprintln!(
-        "diag: resident={} wal_first_log_id={:?} wal_records={} floor={:?}",
-        runtime.inner.engine.wal_resident_block_count(1),
-        runtime
-            .inner
-            .engine
-            .write_ahead_log_store()
-            .scan(1, 0, u64::MAX, u64::MAX)
-            .ok()
-            .and_then(|records| records.first().map(|(log_id, _)| *log_id)),
-        records_left,
-        runtime.inner.engine.write_ahead_log_store().block_retention_floor(1),
-    );
     let mut live_missing = 0usize;
     for item in 0..KEYS {
         let response = runtime.inner.engine.execute(ExecuteRequest {
@@ -133,7 +120,10 @@ fn drive(async_storage: bool) {
             _ => live_missing += 1,
         }
     }
-    eprintln!("diag: live reads missing or stale before the restart: {live_missing} of {KEYS}");
+    assert_eq!(
+        live_missing, 0,
+        "{live_missing} of {KEYS} keys read back wrong or missing while the server was still running"
+    );
     drop(runtime);
 
     let reopened = open(dir.path());
