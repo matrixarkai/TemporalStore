@@ -354,6 +354,7 @@ fn a_request_the_key_cannot_serve_is_refused_and_writes_nothing() {
     refused(capped(Some("gid"), lane("clicks"), 1), "gid");
     refused(capped(None, lane("views"), 1), "views");
     refused(capped(None, CellScore::Time, 1), "time");
+    refused(capped(None, CellScore::Decay { lane: "clicks".to_string(), half_life_ms: 10 }, 1), "decay");
     refused(capped(None, lane("clicks"), 0), "at least 1");
     refused(capped(None, lane("clicks"), 4097), "over the limit");
 

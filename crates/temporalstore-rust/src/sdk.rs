@@ -1234,6 +1234,9 @@ pub(crate) fn cell_rollup_score_to_proto(score: &types::CellScore) -> v1::CellRo
             lanes: lanes.clone(),
             weights: weights.clone(),
         }),
+        // A decay reads a member's snapshots and a rollup cap scores one folded cell, so the rollup has no
+        // such kind. Sending none is refused by `cell_rollup_score_from_proto`, never defaulted.
+        types::CellScore::Decay { .. } => return v1::CellRollupScore { kind: None },
     };
     v1::CellRollupScore { kind: Some(kind) }
 }

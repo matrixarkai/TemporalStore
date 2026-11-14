@@ -535,12 +535,23 @@ jobs:
             engine::cell_rank::tests::options::the_anchored_window_spans_exactly_its_duration_and_a_duration_of_zero_holds_nothing \
             engine::cell_rank::tests::options::an_anchor_on_any_window_but_last_is_refused_and_a_request_anchor_is_accepted_on_all \
             engine::cell_rank::tests::options::a_read_that_uses_no_option_answers_what_compile_has_always_answered \
+            engine::cell_rank::tests::decay::recency_outweighs_volume_exactly_when_the_half_life_says_it_does \
+            engine::cell_rank::tests::decay::a_decayed_sum_is_the_hand_computed_total_as_of_the_newest_snapshot_of_the_window \
+            engine::cell_rank::tests::decay::a_decay_reads_the_values_the_snapshots_store_and_not_the_lanes_reduction \
+            engine::cell_rank::tests::decay::a_decay_equals_an_independent_fold_exactly_on_whole_half_lives_and_closely_otherwise \
+            engine::cell_rank::tests::decay::a_half_life_is_bounded_at_exactly_its_limits \
+            engine::cell_rank::tests::decay::a_total_past_the_integer_range_neither_wraps_nor_goes_unranked \
+            engine::cell_rank::tests::decay::a_member_whose_weights_have_all_vanished_is_ranked_at_zero_not_dropped \
+            engine::cell_rank::tests::decay::a_decay_names_a_lane_and_has_no_value_for_a_single_folded_cell \
             engine::tests::a_ranked_cell_read_is_a_command::a_ranked_read_answers_from_what_was_stored_live_and_after_a_restart \
             engine::tests::a_ranked_cell_read_is_a_command::an_absent_key_and_an_expired_key_rank_nothing \
             engine::tests::a_ranked_cell_read_is_a_command::a_read_the_key_cannot_serve_is_refused_with_its_reason \
             engine::tests::a_ranked_cell_read_is_a_command::a_bound_is_refused_at_admission_and_accepted_at_exactly_the_limit \
             engine::tests::a_ranked_cell_read_is_a_command::a_window_over_the_bound_is_refused_after_a_bounded_read_and_one_at_the_bound_is_served \
             engine::tests::a_ranked_cell_read_is_a_command::a_lane_added_later_reads_as_zero_in_the_snapshots_written_before_it \
+            engine::tests::a_ranked_cell_read_is_a_command::a_decay_score_answers_its_hand_computed_value_live_and_after_a_restart \
+            engine::tests::a_ranked_cell_read_is_a_command::a_half_life_is_refused_at_admission_past_its_limits_and_served_at_them \
+            engine::tests::a_ranked_cell_read_is_a_command::a_decay_total_past_the_integer_range_does_not_wrap_through_the_engine \
             engine::tests::a_worked_example_of_cells::a_worked_example_of_cells \
             engine::window_aggregate::algorithm_tests::each_reducer_answers_the_value_only_that_reducer_produces \
             engine::window_aggregate::algorithm_tests::the_three_roundings_differ_on_a_fraction \
@@ -942,6 +953,7 @@ jobs:
             engine::cell_set::tests::probe::a_merge_request_costs_the_same_allocations_at_any_cell_count \
             engine::cell_rank::tests::probe::a_ranked_read_allocates_the_same_over_a_hundred_members_and_over_twenty_thousand \
             engine::cell_rank::tests::options::probe::a_member_set_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
+            engine::cell_rank::tests::decay::probe::a_decay_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
             engine::cell_rollup::tests::probe::a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many \
             engine::cell_retry_ring::tests::probe::a_retry_ring_allocates_once_when_started_and_never_again \
             engine::cell_set::tests::probe::a_cell_costs_the_same_allocations_at_any_member_size ; do

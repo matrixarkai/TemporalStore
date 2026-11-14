@@ -279,3 +279,80 @@ fn a_lane_added_later_reads_as_zero_in_the_snapshots_written_before_it() {
     assert_eq!(ranked.rows.iter().map(|r| r.lanes.clone()).collect::<Vec<_>>(), vec![vec![20, 4], vec![20, 0]]);
     assert_eq!(members(&rank(&engine, &key, spec(ALL, lane("shown"), 5))), vec![1, 2]);
 }
+
+// ---- the decay score, through the same path ------------------------------------------------------
+
+fn decay(lane_name: &str, half_life_ms: u64) -> CellScore {
+    CellScore::Decay { lane: lane_name.to_string(), half_life_ms }
+}
+
+fn scores(ranked: &RankedCells) -> Vec<f64> {
+    ranked.rows.iter().map(|r| r.score).collect()
+}
+
+#[test]
+fn a_decay_score_answers_its_hand_computed_value_live_and_after_a_restart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let key = stored_key(8);
+    seed(&engine, &key);
+
+    // Half-life 100, as of the newest snapshot of the window (400). Weights: 400 -> 1, 300 -> 1/2,
+    // 200 -> 1/4, 100 -> 1/8. The `shown` values the snapshots store:
+    //   m1 10@100 10@200 10@300 = 8.75      m2 20@100 30@200 10@400 = 20
+    //   m3 100@100 100@300      = 62.5      m4 8@200 2@400          = 4
+    let all = rank(&engine, &key, spec(ALL, decay("shown", 100), 10));
+    assert_eq!((members(&all), scores(&all)), (vec![3, 2, 1, 4], vec![62.5, 20.0, 8.75, 4.0]));
+    // The window 100..=300 is as of 300: m3 100/4 + 100, m2 20/4 + 30/2, m1 10/4 + 10/2 + 10, m4 8/2.
+    let early = rank(&engine, &key, spec(CellWindow::Between { start_ms: 100, end_ms: 300 }, decay("shown", 100), 10));
+    assert_eq!((members(&early), scores(&early)), (vec![3, 2, 1, 4], vec![125.0, 20.0, 17.5, 4.0]));
+    // `peak` is a Max lane; the decay reads what each snapshot stored: m2 7/8 + 3/4 + 8 = 9.625 leads
+    // where the lane's own Max puts m1 (9) first.
+    let peaks = rank(&engine, &key, spec(ALL, decay("peak", 100), 10));
+    assert_eq!((members(&peaks), peaks.rows[0].score), (vec![2, 1, 3, 4], 9.625));
+    assert_eq!(members(&rank(&engine, &key, spec(ALL, lane("peak"), 10))), vec![1, 2, 3, 4]);
+
+    drop(engine);
+    let reloaded = engine_on(dir.path());
+    assert_eq!(rank(&reloaded, &key, spec(ALL, decay("shown", 100), 10)), all);
+    // A name the key does not declare is a served refusal, as for every other score.
+    assert!(rank(&reloaded, &key, spec(ALL, decay("views", 100), 10)).refused.contains("views"));
+}
+
+#[test]
+fn a_half_life_is_refused_at_admission_past_its_limits_and_served_at_them() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let key = stored_key(9);
+    seed(&engine, &key);
+    let status_of = |half_life_ms: u64| {
+        exec(&engine, Command::CellRankQuery { key: key.clone(), spec: spec(ALL, decay("shown", half_life_ms), 5) }).status
+    };
+    let longest = crate::engine::cell_rank::MAX_HALF_LIFE_MS;
+    assert_eq!(longest, 315_360_000_000);
+    assert!(status_of(1).ok);
+    assert!(status_of(longest).ok);
+    for refused in [0, longest + 1, u64::MAX] {
+        let status = status_of(refused);
+        assert_eq!((status.ok, status.code.as_str()), (false, "invalid_argument"), "half-life {refused}: {status:?}");
+    }
+    // Served at the limits means ranked, not just admitted.
+    let at_limit = rank(&engine, &key, spec(ALL, decay("shown", longest), 5));
+    assert_eq!(members(&at_limit), vec![3, 2, 1, 4]);
+}
+
+#[test]
+fn a_decay_total_past_the_integer_range_does_not_wrap_through_the_engine() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let key = stored_key(10);
+    let h = header(&[("shown", LaneReducer::Sum)]);
+    put(&engine, &key, &h, 100, &[cell(1, 0, vec![i64::MAX]), cell(2, 0, vec![i64::MIN])]);
+    put(&engine, &key, &h, 200, &[cell(1, 0, vec![i64::MAX])]);
+    let max = i64::MAX as f64; // 2^63 once rounded
+    // m1: MAX at weight 1/2 plus MAX at weight 1 is 1.5 * 2^63, past i64::MAX and never negative.
+    // m2: MIN at weight 1/2 is -2^62.
+    let ranked = rank(&engine, &key, spec(ALL, decay("shown", 100), 5));
+    assert_eq!((members(&ranked), scores(&ranked)), (vec![1, 2], vec![1.5 * max, -0.5 * max]));
+    assert_eq!(ranked.unscored, 0);
+}

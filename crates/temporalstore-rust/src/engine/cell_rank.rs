@@ -20,6 +20,12 @@
 //!   reducers, in snapshot order. Labels are the newest surviving cell's.
 //! * SCORE turns the reduced lanes into the ordering value: [`CellScore`]. A member whose score is
 //!   undefined (a zero denominator, no trials) is counted in `unscored` and not ranked.
+//!   The one score that is not a function of the reduced lanes is `Decay`: it reads the value each of
+//!   the member's snapshots stores for a lane and halves it for every half-life between that snapshot
+//!   and the NEWEST snapshot of the window (so it does not read the clock, and a key read later or
+//!   replayed scores the same). Every member's score is scaled by the same factor when that instant
+//!   moves, so the order never depends on it. Its half-life is bounded [`MIN_HALF_LIFE_MS`]..=
+//!   [`MAX_HALF_LIFE_MS`]; the total is a float and cannot wrap.
 //! * TOP-K keeps the `k` best in a bounded heap. Equal scores order by member, smaller first
 //!   (`u64` members before bytes members), so the answer is a function of the data alone.
 //! * PROJECT returns the named labels and lanes, or all of them.
@@ -44,7 +50,7 @@ use super::cell_rank_options::{
 };
 use super::cell_set::{validate_top_k, within, Cell, CellHeader, LaneReducer, Member};
 use super::product_model::filter_op_holds;
-use super::window_aggregate::{ratio, weighted_sum, wilson_lower_bound, Reduced, Reducer};
+use super::window_aggregate::{ratio, weighted_sum, wilson_lower_bound, DecayedSumAcc, Reduced, Reducer};
 use crate::types::{
     CellMemberId, CellRankSpec, CellScore, CellWindow, FeatureFilter, FeatureFilterOp, RankedCellRow,
     RankedCells,
@@ -56,6 +62,10 @@ pub(crate) const MAX_WINDOW_SNAPSHOTS: usize = 512;
 pub(crate) const MAX_PREDICATES: usize = 8;
 /// Lanes in one weighted score.
 pub(crate) const MAX_WEIGHTED_LANES: usize = 8;
+/// The shortest half-life of a decay score: one millisecond.
+pub(crate) const MIN_HALF_LIFE_MS: u64 = 1;
+/// The longest half-life of a decay score: ten years of 365 days.
+pub(crate) const MAX_HALF_LIFE_MS: u64 = 10 * 365 * 24 * 60 * 60 * 1000;
 
 /// One decoded snapshot: its stamp and its cells, sorted strictly ascending by member.
 #[derive(Clone, Copy, Debug)]
@@ -106,6 +116,7 @@ pub(crate) enum Scorer {
     Member,
     Time,
     Weighted(Vec<usize>, Vec<f64>),
+    Decay(usize, u64),
 }
 
 /// A query checked against a header: every name resolved to a position, every bound met.
@@ -200,6 +211,13 @@ pub(crate) fn validate_score(score: &CellScore) -> Result<(), String> {
                 return Err(format!("weight {bad} is not finite"));
             }
         }
+        CellScore::Decay { half_life_ms, .. } => {
+            if !(MIN_HALF_LIFE_MS..=MAX_HALF_LIFE_MS).contains(half_life_ms) {
+                return Err(format!(
+                    "half-life {half_life_ms} ms is outside {MIN_HALF_LIFE_MS}..={MAX_HALF_LIFE_MS}"
+                ));
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -222,6 +240,7 @@ impl Scorer {
                 let indexes = lanes.iter().map(|name| lane_named(header, name)).collect::<Result<Vec<_>, _>>()?;
                 Scorer::Weighted(indexes, weights.clone())
             }
+            CellScore::Decay { lane, half_life_ms } => Scorer::Decay(lane_named(header, lane)?, *half_life_ms),
         })
     }
 }
@@ -324,8 +343,26 @@ impl Key {
 
 impl Plan {
     /// `None`: the score is undefined for this member (counted, not ranked).
-    fn score(&self, member: &Member, last_ms: u64, lanes: &[i64]) -> Result<Option<Key>, String> {
-        self.scorer.score(member, last_ms, lanes)
+    /// `points` are the member's occurrences in ascending snapshot order and `as_of_ms` the newest
+    /// stamp of the window: the two things a decay score reads that a reduced lane does not hold.
+    fn score(
+        &self,
+        member: &Member,
+        last_ms: u64,
+        lanes: &[i64],
+        points: &[(u64, &Cell)],
+        as_of_ms: u64,
+    ) -> Result<Option<Key>, String> {
+        match &self.scorer {
+            Scorer::Decay(lane, half_life_ms) => {
+                let mut acc = DecayedSumAcc::new(*half_life_ms, as_of_ms).map_err(|e| e.0)?;
+                for (timestamp_ms, cell) in points {
+                    acc.push(*timestamp_ms, cell.lanes[*lane]);
+                }
+                Ok(Some(Key::Float(acc.finish_f64())))
+            }
+            scorer => scorer.score(member, last_ms, lanes),
+        }
     }
 }
 
@@ -356,6 +393,9 @@ impl Scorer {
                     *slot = lanes[lane];
                 }
                 weighted_sum(&picked[..indexes.len()], weights).map(Key::Float)
+            }
+            Scorer::Decay(..) => {
+                return Err("a decay score reads a member's snapshots, not one folded cell".to_string())
             }
         })
     }
@@ -543,6 +583,7 @@ impl Plan {
         let mut reduced = vec![0i64; self.lane_count];
         let mut top = TopK::new(self.top_k, self.lane_count, self.label_count);
         let mut unscored = 0u64;
+        let as_of_ms = chosen.last().map_or(0, |snapshot| snapshot.timestamp_ms);
 
         for (i, snapshot) in chosen.iter().enumerate() {
             if let Some(member) = self.settle(snapshot.cells, &mut at[i])? {
@@ -567,7 +608,7 @@ impl Plan {
                 }
             }
             let &(last_ms, newest) = occurrences.last().ok_or("a member has no occurrence")?;
-            match self.score(member, last_ms, &reduced)? {
+            match self.score(member, last_ms, &reduced, &occurrences, as_of_ms)? {
                 Some(key) => top.offer(key, member, last_ms, &newest.labels, &reduced),
                 None => unscored += 1,
             }

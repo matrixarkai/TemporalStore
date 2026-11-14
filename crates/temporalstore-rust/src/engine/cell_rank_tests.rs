@@ -583,6 +583,10 @@ mod options;
 #[path = "cell_rank_quota_tests.rs"]
 mod quota;
 
+// The decay score.
+#[path = "cell_rank_decay_tests.rs"]
+mod decay;
+
 #[cfg(feature = "alloc-probe")]
 mod probe {
     use super::*;

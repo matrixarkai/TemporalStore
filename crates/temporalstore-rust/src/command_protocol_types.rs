@@ -244,6 +244,11 @@ pub enum CellScore {
     Time,
     /// `sum(lane[i] * weights[i])` over reduced lanes.
     Weighted { lanes: Vec<String>, weights: Vec<f64> },
+    /// The member's values of one lane, each halved for every `half_life_ms` between its snapshot and
+    /// the newest snapshot of the window, and summed: `sum(value * 0.5^(age / half_life_ms))`. The
+    /// values are the ones each snapshot stores (not the lane's reduction across snapshots). The
+    /// score is a float, so a total past 2^53 is rounded and never wraps.
+    Decay { lane: String, half_life_ms: u64 },
 }
 
 /// A ranked windowed read: `window -> select -> reduce per member -> score -> top-k -> project`.
