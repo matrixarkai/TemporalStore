@@ -431,3 +431,20 @@ fn an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time() {
     let refused = answer_of(&profile, &q, &RankedCells { refused: "why".into(), ..Default::default() });
     assert_eq!((refused.code, refused.message.as_str()), (CellStatusCode::InvalidArgument as i32, "why"));
 }
+
+#[test]
+fn the_skip_existing_flag_is_carried_and_refused_with_a_message_that_says_what_to_use() {
+    let mut request = add(vec![observation(7, NOW_US, vec![pair_entry(9, 1, 1)])]);
+    assert!(translate_add(&pair_profile(), &request, NOW_US).is_ok());
+    request.skip_existing = true;
+    let err = translate_add(&pair_profile(), &request, NOW_US).unwrap_err();
+    assert_eq!(err.code, CellStatusCode::InvalidArgument);
+    assert!(err.message.contains("retry token"), "{err:?}");
+    let restore = CellRestoreRequest {
+        table: b"stats".to_vec(),
+        skip_existing: true,
+        observations: vec![RestoredObservation { entity: 7, latest_us: NOW_US, earliest_us: NOW_US, entries: vec![pair_entry(9, 1, 1)], ..Default::default() }],
+        ..Default::default()
+    };
+    assert!(translate_restore(&pair_profile(), &restore, NOW_US).is_err());
+}

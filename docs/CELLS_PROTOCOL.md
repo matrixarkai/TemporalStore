@@ -11,7 +11,7 @@ this one says the same way.
 * Numbers 1..15 of a message are the established ones. Numbers 16 and up are additive; a reader
   that does not know one skips it.
 * Timestamps on the wire are microseconds; the store keeps milliseconds, so a timestamp is floored
-  to a millisecond. Two observations in one millisecond share a snapshot and merge.
+  to a millisecond (accepted and documented). Two observations in one millisecond share a snapshot and merge.
 * An entity is a 64 bit id (field 1), or text or bytes through the additive fields.
 * Lane values are 64 bit. Readers that declare them 32 bit see the low 32 bits.
 * A table name selects a declared **profile** (below). An unknown table answers `NO_SUCH_TABLE`.
@@ -58,8 +58,8 @@ one key; cells with the same member merge lane by lane under the profile's reduc
 request is validated before anything is written: a refusal writes nothing. A list shorter than the
 profile's lanes is padded with zeros; a longer one is refused. The shorthand fields 2 and 3 fill a
 pair when neither pair nor list is present. A cell with no `has_label` takes its label from the
-profile's rule. `skip_existing` leaves a cell that is already stored at that timestamp untouched
-(a separate write mode, see "Owned elsewhere"). `group_on_server` is accepted and always on.
+profile's rule. `skip_existing` is carried but refused for now, with a message pointing at the retry token that makes a
+retried add safe; no write mode implements it. `group_on_server` is accepted and always on.
 
 **Restore.** Writes pre-aggregated cells at `latest_us`; `earliest_us` must not exceed it and is
 checked only.
@@ -88,7 +88,7 @@ under a no-merge profile DUPLICATE_REFUSED, an exhausted quota QUOTA_EXHAUSTED, 
 ## Where this deliberately differs from the narrower shape
 
 * Unknown table answers NO_SUCH_TABLE (the narrower shape declares the code and answers NO_DATA).
-* `skip_existing` is honoured; the narrower server never read it.
+* `skip_existing` is refused with a clear message; the narrower server never read it.
 * A custom weighted rank works; the narrower server dereferenced an unset pointer.
 * Rank results are ordered; the narrower server returned an unordered selection.
 * A batch reports a status per answer, not only the last.
@@ -96,7 +96,8 @@ under a no-merge profile DUPLICATE_REFUSED, an exhausted quota QUOTA_EXHAUSTED, 
 * Every count is bounded; the narrower server bounded none of them.
 * A timestamp outside the profile's accepted range is refused, as before; a negative channel or
   kind is refused instead of wrapping into 16 bits.
-* `decay` and `decay_rounding` are carried and ignored: no behaviour is defined for them.
+* `decay` and `decay_rounding` are accepted with no effect: no behaviour is defined for them. A decaying
+  score is a separate, named rank mode.
 
 ## Bounds
 

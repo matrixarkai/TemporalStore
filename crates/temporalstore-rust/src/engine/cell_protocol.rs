@@ -298,6 +298,17 @@ fn micros_to_ms(micros: i64) -> u64 {
     micros.div_euclid(1000) as u64
 }
 
+/// The flag is carried on the wire, but no write mode implements it yet: a retried add is covered
+/// by the retry token, and a silent merge would double-count what the sender meant to skip.
+fn refuse_skip_existing(requested: bool) -> Result<(), Refusal> {
+    if requested {
+        return Err(invalid(
+            "skip_existing is not supported yet: use a retry token to make a retried add safe",
+        ));
+    }
+    Ok(())
+}
+
 /// One request's observations as feature appends: one command per distinct key, each holding one
 /// point per distinct millisecond. `now_us` is the clock the accepted range is measured from.
 pub(crate) fn translate_add(
@@ -305,6 +316,7 @@ pub(crate) fn translate_add(
     request: &wire::CellAddRequest,
     now_us: i64,
 ) -> Result<Vec<Command>, Refusal> {
+    refuse_skip_existing(request.skip_existing)?;
     let observations: Vec<Obs<'_>> = request
         .observations
         .iter()
@@ -327,6 +339,7 @@ pub(crate) fn translate_restore(
     request: &wire::CellRestoreRequest,
     now_us: i64,
 ) -> Result<Vec<Command>, Refusal> {
+    refuse_skip_existing(request.skip_existing)?;
     for o in &request.observations {
         if o.earliest_us > o.latest_us {
             return Err(invalid(format!(
