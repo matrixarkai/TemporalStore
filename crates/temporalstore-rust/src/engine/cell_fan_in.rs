@@ -64,6 +64,30 @@ pub(crate) fn validate_key_count(keys: usize) -> Result<(), String> {
     within_nonzero("keys in a fan-in read", keys, MAX_FAN_IN_KEYS)
 }
 
+/// The checks on the key list a command carries: how many, and none twice. A key named twice
+/// would contribute twice, so the request is refused naming it.
+pub(crate) fn validate_keys(keys: &[String]) -> Result<(), String> {
+    validate_key_count(keys.len())?;
+    for (position, key) in keys.iter().enumerate() {
+        if let Some(first) = keys[..position].iter().position(|earlier| earlier == key) {
+            return Err(format!("key {position} repeats key {first}: a key is read once per request"));
+        }
+    }
+    Ok(())
+}
+
+/// Reads one batch of independent ranked reads may carry.
+pub(crate) const MAX_BATCH_READS: usize = 64;
+
+/// The checks on a batch of independent reads: how many, and each read's own spec.
+pub(crate) fn validate_batch(queries: &[crate::types::CellRankBatchItem]) -> Result<(), String> {
+    within_nonzero("reads in a batch", queries.len(), MAX_BATCH_READS)?;
+    for (position, query) in queries.iter().enumerate() {
+        super::cell_rank::validate_spec(&query.spec).map_err(|why| format!("read {position}: {why}"))?;
+    }
+    Ok(())
+}
+
 /// The checks on what the window chose, summed over the keys.
 pub(crate) fn validate_chosen(snapshots: usize, cells: usize) -> Result<(), String> {
     within("snapshots in a fan-in read", snapshots, MAX_FAN_IN_SNAPSHOTS)?;
