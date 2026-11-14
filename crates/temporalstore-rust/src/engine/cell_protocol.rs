@@ -330,7 +330,9 @@ pub(crate) fn translate_add(
             entries: &o.entries,
         })
         .collect();
-    translate_observations(profile, &observations, now_us)
+    // A zero token is the wire's way of carrying none.
+    let retry_token = (request.retry_token != 0).then_some(request.retry_token);
+    translate_observations(profile, &observations, now_us, retry_token)
 }
 
 /// Pre-aggregated cells written at their latest timestamp; the earliest must not follow it.
@@ -361,7 +363,7 @@ pub(crate) fn translate_restore(
             entries: &o.entries,
         })
         .collect();
-    translate_observations(profile, &observations, now_us)
+    translate_observations(profile, &observations, now_us, None)
 }
 
 struct Obs<'a> {
@@ -378,6 +380,7 @@ fn translate_observations(
     profile: &TableProfile,
     observations: &[Obs<'_>],
     now_us: i64,
+    retry_token: Option<u64>,
 ) -> Result<Vec<Command>, Refusal> {
     within_nonzero("observations", observations.len(), MAX_CELLS_PER_REQUEST).map_err(invalid)?;
     let mut total = 0usize;
@@ -433,20 +436,22 @@ fn translate_observations(
                 key,
                 points: vec![point],
                 policy: FeatureWritePolicy::MergeReduce,
-                // The wire's token is not carried through yet; every key of a request is applied
-                // as a request without one.
-                retry_token: None,
+                // The same token rides on every key of the request: each key remembers it
+                // separately, so a retried request is recognised key by key.
+                retry_token,
             }),
         }
     }
     Ok(commands)
 }
 
-/// The response to a write, from what the engine's receipts add up to.
+/// The response to a write, from what the engine's receipts add up to. `replayed` is true only when
+/// every key of the request answered a remembered token, so nothing at all was written.
 pub(crate) fn add_response(
     snapshots_written: u64,
     cells_created: u64,
     cells_merged: u64,
+    replayed: bool,
 ) -> wire::CellAddResponse {
     wire::CellAddResponse {
         code: CellStatusCode::Ok as i32,
@@ -454,7 +459,7 @@ pub(crate) fn add_response(
         snapshots_written,
         cells_created,
         cells_merged,
-        replayed: false,
+        replayed,
     }
 }
 

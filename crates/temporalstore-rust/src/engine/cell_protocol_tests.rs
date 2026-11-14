@@ -449,3 +449,61 @@ fn the_skip_existing_flag_is_carried_and_refused_with_a_message_that_says_what_t
     };
     assert!(translate_restore(&pair_profile(), &restore, NOW_US).is_err());
 }
+
+fn tokens_of(commands: &[Command]) -> Vec<Option<u64>> {
+    commands
+        .iter()
+        .map(|c| match c {
+            Command::FeatureAppendWithPolicy { retry_token, .. } => *retry_token,
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn a_retry_token_on_the_wire_rides_on_every_key_of_the_append_and_a_zero_token_is_none() {
+    let profile = pair_profile();
+    let mut request = add(vec![
+        observation(7, NOW_US, vec![pair_entry(9, 1, 1)]),
+        observation(8, NOW_US, vec![pair_entry(9, 1, 1)]),
+    ]);
+    assert_eq!(tokens_of(&translate_add(&profile, &request, NOW_US).unwrap()), vec![None, None]);
+    let wide: u64 = (3u64 << 40) + 77;
+    request.retry_token = wide;
+    let sent = CellAddRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(
+        tokens_of(&translate_add(&profile, &sent, NOW_US).unwrap()),
+        vec![Some(wide), Some(wide)]
+    );
+    request.retry_token = u64::MAX;
+    assert_eq!(tokens_of(&translate_add(&profile, &request, NOW_US).unwrap())[0], Some(u64::MAX));
+}
+
+#[test]
+fn the_token_and_the_replayed_flag_have_the_established_field_numbers() {
+    let request = CellAddRequest { table: b"t".to_vec(), retry_token: 300, ..Default::default() };
+    assert_eq!(request.encode_to_vec(), vec![0x0a, 0x01, b't', 0x80, 0x01, 0xac, 0x02]);
+    let response = add_response(0, 0, 0, true);
+    assert_eq!(response.encode_to_vec(), vec![0x98, 0x01, 0x01]);
+}
+
+#[test]
+fn a_replayed_receipt_is_reported_with_the_counts_of_the_first_application() {
+    let first = add_response(2, 5, 1, false);
+    let replay = add_response(2, 5, 1, true);
+    assert!(!first.replayed && replay.replayed);
+    assert_eq!((replay.snapshots_written, replay.cells_created, replay.cells_merged), (2, 5, 1));
+    assert_eq!(replay.code, CellStatusCode::Ok as i32);
+    let encoded = replay.encode_to_vec();
+    assert_eq!(CellAddResponse::decode(encoded.as_slice()).unwrap(), replay);
+}
+
+#[test]
+fn a_restore_never_carries_a_token() {
+    let restore = CellRestoreRequest {
+        table: b"stats".to_vec(),
+        observations: vec![RestoredObservation { entity: 7, latest_us: NOW_US, earliest_us: NOW_US, entries: vec![pair_entry(9, 1, 1)], ..Default::default() }],
+        ..Default::default()
+    };
+    assert_eq!(tokens_of(&translate_restore(&pair_profile(), &restore, NOW_US).unwrap()), vec![None]);
+}
