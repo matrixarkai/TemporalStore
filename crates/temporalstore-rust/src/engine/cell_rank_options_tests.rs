@@ -20,7 +20,7 @@ fn zz() -> CellMemberId {
 }
 
 fn members(include: Option<Vec<CellMemberId>>, exclude: Vec<CellMemberId>) -> RankOptions {
-    RankOptions { members: MemberFilter { include, exclude }, anchor: Anchor::Request }
+    RankOptions { members: MemberFilter { include, exclude }, ..RankOptions::default() }
 }
 
 fn anchored() -> RankOptions {

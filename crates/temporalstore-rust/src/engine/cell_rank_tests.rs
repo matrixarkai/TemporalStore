@@ -579,6 +579,10 @@ fn the_merge_answers_what_a_per_member_table_answers() {
 #[path = "cell_rank_options_tests.rs"]
 mod options;
 
+// The quota.
+#[path = "cell_rank_quota_tests.rs"]
+mod quota;
+
 #[cfg(feature = "alloc-probe")]
 mod probe {
     use super::*;
