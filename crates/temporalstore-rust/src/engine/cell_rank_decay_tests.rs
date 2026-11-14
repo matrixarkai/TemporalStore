@@ -113,7 +113,8 @@ fn a_decay_equals_an_independent_fold_exactly_on_whole_half_lives_and_closely_ot
                 *table.entry(m).or_insert(0.0) += c.lanes[0] as f64 * weight;
             }
         }
-        let got = ranked_by(decay("shown", half_life), ALL, &snapshots, 0);
+        // k past the members, so every member is ranked and compared.
+        let got = run_on(&spec(ALL, decay("shown", half_life), 1000), &snapshots, 0).unwrap();
         assert_eq!(got.rows.len(), table.len(), "round {round}");
         for (member, score) in pairs(&got) {
             let want = table[&member];
