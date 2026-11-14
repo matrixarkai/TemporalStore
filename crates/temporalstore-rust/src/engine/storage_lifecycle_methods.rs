@@ -1678,20 +1678,6 @@ impl TemporalEngine {
         }
     }
 
-    /// The lowest sequence among the placements the LIVE index holds, which the next index flush
-    /// will persist whether or not a block still needs its record.
-    ///
-    /// A placement can outlive the registration that made it, and the next flush writes it into the
-    /// served index, where a load validates its record strictly. So the floor has to cover what is
-    /// about to be persisted as well as what already was.
-    pub(super) fn live_index_wal_floor(&self, shard_id: ShardId) -> Option<u64> {
-        self.shards
-            .read()
-            .expect("engine lock poisoned")
-            .get(&shard_id)
-            .and_then(|shard| shard.wal_resident_blocks.values().map(|placement| placement.sequence).min())
-    }
-
     /// Compute and install the block-retention floor, immediately before a truncation.
     ///
     /// The floor is a side entry in the log store that the truncation reads, so a caller that
@@ -1700,7 +1686,8 @@ impl TemporalEngine {
     /// removes WAL records calls this first, and an image that cannot be read refuses the truncation.
     ///
     /// The floor is the lowest of: the live registrations, what each retained dump manifest names,
-    /// what the persisted served index names, and what the live index will persist next.
+    /// and what the persisted served index names. An image counts only when a served block in it
+    /// still names a WAL-resident address; placement metadata that outlived its frames does not.
     pub(crate) fn refresh_wal_retention_floor(&self, shard_id: ShardId) -> Result<(), ()> {
         let persisted = self.persisted_images_wal_floor(shard_id)?;
         let registered =
@@ -1735,9 +1722,6 @@ impl TemporalEngine {
             .and_then(|bytes| decode_index_bytes(&bytes).ok())
             .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
         if let Some(sequence) = base {
-            floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
-        }
-        if let Some(sequence) = self.live_index_wal_floor(shard_id) {
             floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
         }
         Ok(floor)
@@ -1808,9 +1792,6 @@ impl TemporalEngine {
             .and_then(|bytes| decode_index_bytes(&bytes).ok())
             .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
         if let Some(sequence) = base_floor {
-            manifest_floor = Some(manifest_floor.map_or(sequence, |old: u64| old.min(sequence)));
-        }
-        if let Some(sequence) = self.live_index_wal_floor(plan.shard_id) {
             manifest_floor = Some(manifest_floor.map_or(sequence, |old: u64| old.min(sequence)));
         }
         let registered_floor = super::block_in_wal::min_registered_sequence(
