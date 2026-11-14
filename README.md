@@ -37,7 +37,7 @@ others; choose the API and acknowledgement policy before measuring a workload.
 | **Latest features and profiles** | User/item profiles, lookup features, hashes, and online state for recommendation, search, ads, and personalization | [One-cluster architecture](https://github.com/matrixarkai/TemporalStore/blob/main/docs/TEMPORALSTORE_ONE_CLUSTER_TEMPORAL_FEATURES.md) |
 | **Long-sequence features** | Recent clicks, sessions, interactions, and typed behavior histories; timestamp-window reads and count-based retention | [Sequences and aggregates](https://github.com/matrixarkai/TemporalStore/blob/main/docs/blog_feature_sequences_and_aggregates.md) |
 | **High-cardinality features** | Separate user-item, user-category, user-author, device, or campaign histories; exact windowed count, sum, average, min/max, and first/last | [Aggregate example](https://github.com/matrixarkai/TemporalStore/blob/main/docs/feature_aggregate_high_cardinality_example.md) |
-| **WindowReduce Features** | Merge cell snapshots, reduce member statistics over a time window, and rank candidates by counts, ratios, or weighted scores | [Cell-based feature model](#windowreduce-features) |
+| **WindowReduce Features** | Merge cell snapshots, reduce member statistics over a time window, and rank candidates by counts, ratios, or weighted scores | [Cell-based feature model](#windowreduce-features), [worked example](docs/CELLS_WORKED_EXAMPLE.md) |
 | **Control state** | Set/get online state, atomic single-key counters, quotas, pacing, suppression, and risk/fraud decisions | [Control-state guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/blog_control_state_frequency_caps.md) |
 | **Frequency caps** | Per-user, campaign, or placement exposure limits using windowed counters | [Frequency-cap guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/blog_control_state_frequency_caps.md) |
 | **LLM context and agent memory** | Conversations, resources, entities, reusable memory, retrieval, and token-budgeted context assembly | [Context guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/context_management_on_temporalstore.md) |
@@ -157,6 +157,118 @@ time buckets and can cap each label group, so a key written every minute does
 not keep every snapshot. Build engagement rankings, conversion rates,
 and multi-signal features alongside scalar aggregates, with explicit schema and
 query bounds.
+
+The vocabulary is small. Nothing in the engine knows what the names mean; a
+deployment declares them once, in the header its first write carries, and every
+later write is checked against that header.
+
+| Term | Meaning |
+|---|---|
+| **Entity** and **dimensions** | An entity (a `u64`, text or bytes) plus up to eight named dimensions become one stored feature key, so a read by those values is one lookup. |
+| **Snapshot** | The set of cells stored at one timestamp of that key. |
+| **Cell** | A **member** (an id or bytes), up to four named `u64` **labels**, and one to sixteen named `i64` **lanes**. |
+| **Lane reducer** | The verb that merges two values of a lane for one member: `Sum`, `Max`, `Min`, `First`, `Last` or `Count`. |
+
+#### Use cases
+
+Each scenario below is exercised by a test named in the last column.
+
+| Scenario | How the cell model is used | Test |
+|---|---|---|
+| **Per-user engagement counters by channel and content kind** | Entity = user; dimensions = `channel`, `kind`; members = items shown; lanes = `impressions`, `clicks` (both `Sum`). Writes at the same timestamp merge into one snapshot and the receipt says what was created and what merged. | `a_worked_example_of_cells` |
+| **Per-item rolling ratios** | `CellRankQuery` over `Last { duration_ms: 60_000 }` reduces each item across the window and scores it by `Ratio` (click rate) or `Wilson` (a lower confidence bound that does not trust a rate seen once). In the example the two scores order the same three items oppositely. | `a_worked_example_of_cells` |
+| **Best items for a placement** | A predicate on a label (`slot < 3`) cuts cells before a member's snapshots are reduced, then the read ranks the rest. | `a_worked_example_of_cells` |
+| **Rolling history compacted into coarser buckets** | `CellRollup` with `older_than_ms` and `bucket_ms` folds minute snapshots into one snapshot per hour. Each lane folds by its own verb: summed lanes add, a `Max` lane keeps the peak, a `Last` lane keeps the newest value. Rolling an already-rolled bucket again changes nothing. | `a_worked_example_of_a_rollup` |
+| **Bounded member sets per label** | The rollup's optional cap keeps the best `keep` cells of each label group, scored like a ranked read, so a long-lived key does not grow without bound. | `a_worked_example_of_a_rollup` |
+| **Multi-signal features from one key** | One header can declare up to sixteen lanes with different reducers (counts, maxima, latest values), read back together in one ranked read with `Weighted` scores. | `a_cell_rollup_is_a_command`, `a_ranked_cell_read_is_a_command` |
+
+The tests are in `crates/temporalstore-rust/src/engine/tests/`. The write, read
+and rollup walk-throughs, with the numbers each step produces, are in
+[Cells: merged, windowed, ranked statistics](docs/CELLS_WORKED_EXAMPLE.md).
+
+#### Commands
+
+| Command | What it does |
+|---|---|
+| `FeatureAppendWithPolicy` with `MergeReduce` | Merges the request's cells into the snapshot stored at each point's timestamp, lane by lane. Answers a receipt: snapshots written, cells created, cells merged. Mismatch with the stored header is refused naming the differing field. |
+| `CellRankQuery` | Window (`Between`, `Last`, `Since`, `LastN`), named predicates over labels, lanes or `member`, a score (`Lane`, `Ratio`, `Wilson`, `Member`, `Time`, `Weighted`), `top_k`, and optional projected fields. A name the key does not declare is refused. |
+| `CellRollup` | Folds every snapshot stamped strictly before `older_than_ms` into `bucket_ms` buckets (cells merge by member, oldest first) and optionally caps each group. Answers snapshots and cells before and after, and cells dropped. A rollup that would change nothing writes nothing. |
+
+The shape of each request, copied from the tests:
+
+```rust
+// Write: merge cells into the snapshot at a timestamp.
+Command::FeatureAppendWithPolicy {
+    key: key.to_string(),
+    points: vec![FeaturePoint { timestamp_ms, value: encode_value(&header(), cells).unwrap() }],
+    policy: FeatureWritePolicy::MergeReduce,
+}
+
+// Read: rank the last minute by click rate.
+Command::CellRankQuery {
+    key: key.to_string(),
+    spec: CellRankSpec {
+        window: CellWindow::Last { duration_ms: 60_000 },
+        filters,
+        score: CellScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
+        top_k: 10,
+        project: Vec::new(),
+    },
+}
+
+// Roll old snapshots into hours, keeping the best item of each slot.
+Command::CellRollup {
+    key: key.to_string(),
+    spec: CellRollupSpec {
+        older_than_ms: hour,
+        bucket_ms: hour,
+        cap: Some(CellCapSpec {
+            group_by: Some("slot".to_string()),
+            score: CellScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
+            keep: 1,
+        }),
+    },
+}
+```
+
+#### Limits
+
+A request over a limit is refused, not truncated.
+
+| Limit | Value |
+|---|---|
+| Dimensions per key, labels per cell, lanes per cell | 8, 4, 16 |
+| Member bytes, entity bytes, text dimension bytes | 256 each |
+| Field name bytes | 64 |
+| Cells per write request, cells per snapshot | 1,024, 4,096 |
+| `top_k` | 1,000 |
+| Snapshots in one ranked window | 512 (a wider window is refused, not truncated) |
+| Predicates per read, lanes in a `Weighted` score | 8, 8 |
+| Snapshots below one rollup cutoff | 1,024 (roll a longer history in steps by moving the cutoff forward) |
+| Cells kept per group by a rollup cap | 1 to 4,096 |
+
+A rollup bucket whose members would exceed the 4,096 cells of one snapshot is
+refused; use a smaller bucket. A key has one time-to-live, as every feature key
+does; a time-to-live per group is not provided. The in-process C-string door
+refuses `MergeReduce` because it cannot carry a binary value; use the proxy
+client.
+
+#### Measured write cost
+
+A merge-reduce write spends a fixed number of allocations whatever the cell
+count: 130.9 per write at 50, 150 and 1,000 cells, down from 687.8, 1,699.7 and
+10,211.8 (release build, `alloc-probe` feature, 8-byte key, local measurement).
+Source: the `#[ignore]` measurement `a_merge_write_does_not_allocate_per_cell`
+and pull request #3076. This counts allocations, not latency or throughput.
+
+#### In progress
+
+Open pull requests, not yet part of `main`: a time-decayed score for ranked
+reads (#3090), a ranked read that guarantees members with a non-zero value in chosen lanes (#3094), a ranked read that merges the
+cells of several keys (#3093), a per-key retry ring so a retried write can be
+recognized (#3087), the wire messages and translator for these commands (#3088),
+tiered rollup relative to the newest snapshot (#3095), and a typed reducer for
+feature aggregates (#2864). Until they merge, treat them as unavailable.
 
 Feast remains a first-class integration, not a replacement for native clients.
 Use the [Rust SDK](https://github.com/matrixarkai/TemporalStore/tree/main/sdk/rust/temporalstore),
