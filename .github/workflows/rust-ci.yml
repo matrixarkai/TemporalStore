@@ -850,6 +850,9 @@ jobs:
             engine::tests::a_hash_get_all_shares_its_page_keys::a_whole_hash_read_answers_what_the_per_field_reads_answer \
             engine::tests::a_whole_container_read_shares_its_work::a_list_range_answers_the_pushes_it_was_given \
             engine::tests::a_whole_container_read_shares_its_work::a_list_element_name_spells_what_the_formatted_name_spells \
+            engine::tests::a_container_point_read_searches_without_building_its_key::the_borrowed_key_is_the_key_each_spelling_has_always_built \
+            engine::tests::a_container_point_read_searches_without_building_its_key::a_point_selection_answers_what_it_always_answered \
+            engine::tests::a_container_point_read_searches_without_building_its_key::a_whole_hash_read_answers_the_fields_a_hash_holds_in_order \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
@@ -909,6 +912,12 @@ jobs:
           # installing the counting allocator process-wide turns a number of other tests red, and
           # a filtered run never reaches them.
           #
+          # a_block_lookup_allocates_only_its_answer pins that picking one element out of a framed hash
+          # or list block builds no key to search with: an absent element costs no allocation and a
+          # present one costs its value copy alone (a set, whose member must be decoded, is the
+          # control and still allocates). a_whole_hash_read_spends_no_allocation_on_a_name_it_does_not_return
+          # pins the slope of a warm whole-hash read at the three allocations a field's answer needs
+          # plus a margin; it was 5.02 per field.
           # an_element_write_into_a_live_object_does_not_copy_its_key pins that an install into an
           # object that ALREADY EXISTS reaches it through a borrow. `Arc::from(&str)` always mallocs
           # and copies and `entry()` takes its key by value, so the pre-fix path allocated, copied
@@ -946,6 +955,8 @@ jobs:
             engine::tests::a_hash_get_all_shares_its_page_keys::probe::a_whole_hash_read_does_not_pay_three_allocations_a_field_for_its_key \
             engine::tests::a_whole_container_read_shares_its_work::probe::a_list_range_does_not_pay_for_its_key_name_and_frame_copy_per_element \
             engine::tests::a_whole_container_read_shares_its_work::probe::a_whole_hash_read_does_not_copy_the_frame_for_each_field \
+            engine::tests::a_container_point_read_searches_without_building_its_key::probe::a_block_lookup_allocates_only_its_answer \
+            engine::tests::a_container_point_read_searches_without_building_its_key::probe::a_whole_hash_read_spends_no_allocation_on_a_name_it_does_not_return \
             engine::window_aggregate::probe::the_reducers_do_not_allocate_per_point \
             engine::cell_set::tests::probe::a_cell_set_key_costs_one_allocation_whatever_its_size \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_does_not_allocate_more_for_a_longer_key \
