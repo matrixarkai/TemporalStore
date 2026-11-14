@@ -459,44 +459,6 @@ fn rest_from_proto(message: v1::WalRecordRest) -> io::Result<RaftWalRecordRest> 
 /// A checksum is a hex digest in practice, and storing the digest costs half what its text does.
 /// Anything that is not a clean round-trip through hex is kept as its own bytes instead, so this
 /// never has to assume what a checksum looks like in order to return it unchanged.
-fn checksum_to_bytes(checksum: &str) -> (Vec<u8>, bool) {
-    match decode_hex(checksum) {
-        Some(digest) if encode_hex(&digest) == checksum => (digest, false),
-        _ => (checksum.as_bytes().to_vec(), true),
-    }
-}
-
-fn checksum_from_bytes(bytes: &[u8], is_text: bool) -> String {
-    if is_text {
-        String::from_utf8_lossy(bytes).into_owned()
-    } else {
-        encode_hex(bytes)
-    }
-}
-
-fn decode_hex(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 || text.is_empty() {
-        return None;
-    }
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(text.len() / 2);
-    for pair in bytes.chunks(2) {
-        let hi = (pair[0] as char).to_digit(16)?;
-        let lo = (pair[1] as char).to_digit(16)?;
-        out.push(((hi << 4) | lo) as u8);
-    }
-    Some(out)
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
-}
-
 /// Map a command onto its modelled form, or carry it verbatim.
 ///
 /// A modelled arm is used ONLY when it can reproduce the command exactly. `StringSetEx` with a
@@ -968,7 +930,6 @@ pub(super) fn record_to_proto(record: &RaftWalRecord) -> io::Result<v1::WalRecor
     };
 
     let fence = &record.storage_apply_fence;
-    let (fence_checksum, fence_checksum_is_text) = checksum_to_bytes(&fence.checksum);
     // A non-default fence restates three values the record already holds. Writing a fence that
     // disagrees with them would persist a record recovery refuses, so it is refused here.
     if *fence != RaftStorageApplyFence::default()
@@ -979,6 +940,19 @@ pub(super) fn record_to_proto(record: &RaftWalRecord) -> io::Result<v1::WalRecor
         return Err(io::Error::other(
             "storage apply fence disagrees with the record's membership shard, term or commit index",
         ));
+    }
+    if *fence != RaftStorageApplyFence::default()
+        && fence.checksum
+            != raft_storage_apply_fence_checksum(
+                fence.shard_id,
+                fence.raft_term,
+                fence.committed_index,
+                fence.applied_index,
+                fence.snapshot_id.as_deref(),
+                fence.storage_epoch,
+            )
+    {
+        return Err(io::Error::other("storage apply fence checksum mismatch"));
     }
 
     Ok(v1::WalRecord {
@@ -1003,8 +977,6 @@ pub(super) fn record_to_proto(record: &RaftWalRecord) -> io::Result<v1::WalRecor
                 applied_index: record.storage_apply_fence.applied_index,
                 snapshot_id: record.storage_apply_fence.snapshot_id.clone(),
                 storage_epoch: record.storage_apply_fence.storage_epoch,
-                checksum: fence_checksum,
-                checksum_is_text: fence_checksum_is_text,
             }),
             entries: record
                 .entries
@@ -1108,15 +1080,25 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
             },
             storage_apply_fence: match storage_apply_fence {
                 None => RaftStorageApplyFence::default(),
-                Some(fence) => RaftStorageApplyFence {
-                    shard_id: membership.shard_id,
-                    raft_term: hard_state.current_term,
-                    committed_index: hard_state.commit_index,
-                    applied_index: fence.applied_index,
-                    snapshot_id: fence.snapshot_id,
-                    storage_epoch: fence.storage_epoch,
-                    checksum: checksum_from_bytes(&fence.checksum, fence.checksum_is_text),
-                },
+                Some(fence) => {
+                    let checksum = raft_storage_apply_fence_checksum(
+                        membership.shard_id,
+                        hard_state.current_term,
+                        hard_state.commit_index,
+                        fence.applied_index,
+                        fence.snapshot_id.as_deref(),
+                        fence.storage_epoch,
+                    );
+                    RaftStorageApplyFence {
+                        shard_id: membership.shard_id,
+                        raft_term: hard_state.current_term,
+                        committed_index: hard_state.commit_index,
+                        applied_index: fence.applied_index,
+                        snapshot_id: fence.snapshot_id,
+                        storage_epoch: fence.storage_epoch,
+                        checksum,
+                    }
+                }
             },
             pipeline_state: rest.pipeline_state,
             read_safety_state: rest.read_safety_state,
@@ -1298,8 +1280,7 @@ fn every_command_the_raft_wal_carries_is_protobuf() {
                     applied_index: 41,
                     snapshot_id: None,
                     storage_epoch: 41,
-                    checksum: "5d694524421e20e2c7be7c646b30d7a13b4266dfffd1231e2b4e10b3bbd4a6f7"
-                        .into(),
+                    checksum: raft_storage_apply_fence_checksum(1, 3, 41, 41, None, 41),
                 },
                 entries: vec![RaftLogEntry {
                     leader_time_ms: 0,
@@ -1523,29 +1504,29 @@ fn every_command_the_raft_wal_carries_is_protobuf() {
         });
     }
 
-    /// A checksum is a hex digest in practice and is stored as one, but the encoding must not
-    /// assume that: anything else is kept as its own bytes and returned unchanged.
+    /// The fence's checksum is not written, so the writer must refuse one that is not the digest
+    /// of its fields: otherwise a wrong checksum would be silently replaced on the way back.
     #[test]
-    fn a_checksum_that_is_not_a_hex_digest_is_returned_unchanged() {
+    fn a_fence_whose_checksum_is_not_its_digest_is_refused_at_encode() {
         let mut envelope = envelope_with(Command::StringSet {
             key: "k".into(),
             value: b"v".to_vec(),
         });
         envelope.checksum = u32::MAX;
+        assert_eq!(
+            decode_envelope(&encode_envelope(&envelope).expect("a consistent fence encodes"))
+                .expect("decode"),
+            envelope,
+            "control: a consistent fence round-trips with its checksum restored"
+        );
         envelope.record.storage_apply_fence.checksum = "also/not/hex".into();
-        let encoded = encode_envelope(&envelope).expect("encode");
-        assert_eq!(decode_envelope(&encoded).expect("decode"), envelope);
-    }
-
-    /// A hex digest must actually be stored as its digest rather than its text, since that is
-    /// where the saving comes from.
-    #[test]
-    fn a_hex_digest_is_stored_as_bytes_not_text() {
-        let digest = "9e0126c499690a34b92dc5cac030ea79a3b75a6d92cd9636afc7bfa457b34a01";
-        let (bytes, is_text) = checksum_to_bytes(digest);
-        assert!(!is_text);
-        assert_eq!(bytes.len(), 32, "64 hex characters are 32 bytes");
-        assert_eq!(checksum_from_bytes(&bytes, is_text), digest);
+        let error = encode_envelope(&envelope).expect_err("a wrong checksum was written");
+        assert!(error.to_string().contains("checksum mismatch"), "{error}");
+        envelope.record.storage_apply_fence.checksum =
+            raft_storage_apply_fence_checksum(1, 3, 41, 41, None, 41);
+        envelope.record.storage_apply_fence.committed_index = 40;
+        let error = encode_envelope(&envelope).expect_err("a disagreeing fence was written");
+        assert!(error.to_string().contains("disagrees"), "{error}");
     }
 
     /// The record's rarely-set fields travel whole, so a record that does set them still comes

@@ -2210,11 +2210,10 @@ fn where_the_bytes_of_one_in_tree_raft_wal_record_go() {
         println!("RECBYTES  checksum=0x{:08x} (fixed32, 5 B with tag)", envelope.checksum);
         let record = envelope.record.clone().unwrap();
         println!("RECBYTES  record encoded_len={}", record.encoded_len());
-        println!("RECBYTES  hard_state={} membership={} fence={} (fence checksum {}B) delta={} entries={}",
+        println!("RECBYTES  hard_state={} membership={} fence={} delta={} entries={}",
             record.hard_state.as_ref().map(|m| m.encoded_len()).unwrap_or(0),
             record.membership.as_ref().map(|m| m.encoded_len()).unwrap_or(0),
             record.storage_apply_fence.as_ref().map(|m| m.encoded_len()).unwrap_or(0),
-            record.storage_apply_fence.as_ref().map(|m| m.checksum.len()).unwrap_or(0),
             envelope.delta.as_ref().map(|m| m.encoded_len()).unwrap_or(0),
             record.entries.iter().map(|e| e.encoded_len()).sum::<usize>());
         println!("RECBYTES  other: {:?}", record);

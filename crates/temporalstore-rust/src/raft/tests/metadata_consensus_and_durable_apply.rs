@@ -2347,7 +2347,7 @@ fn wal_backed_raft_cluster_auto_persists_commits_leadership_and_membership() {
 fn wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state() {
     let dir = tempfile::tempdir().unwrap();
     let config = RaftConfig {
-        max_segment_bytes: 400,
+        max_segment_bytes: 320,
         min_keep_segment_num: 2,
         ..RaftConfig::default()
     };
@@ -2643,18 +2643,17 @@ fn wal_recovery_rejects_corrupt_storage_apply_fence() {
     let wal = LocalRaftWal::new(dir.path());
     let mut record = wal.load_node(84, 1).unwrap().unwrap();
     record.storage_apply_fence.checksum = "bad-checksum".to_string();
-    wal.persist_node_segmented(84, 1, &record, 1024, 1).unwrap();
-
-    let error = RaftCluster::restore_single_shard_from_wal(
+    // The checksum is not stored, so a wrong one cannot reach the disk: the write is refused.
+    let error = wal.persist_node_segmented(84, 1, &record, 1024, 1).unwrap_err();
+    assert!(error.to_string().contains("checksum mismatch"), "{error}");
+    // And the log the refused write would have replaced still recovers.
+    RaftCluster::restore_single_shard_from_wal(
         dir.path(),
         84,
         [1, 2, 3],
         RaftConfig::default(),
     )
-    .unwrap_err();
-    assert!(
-        matches!(error, RaftError::ApplySnapshotFence(message) if message.contains("checksum mismatch"))
-    );
+    .unwrap();
 }
 
 #[test]

@@ -511,15 +511,13 @@ message WalStorageApplyFence {
   // The fence's shard, term and committed index are the record's membership shard, hard-state term
   // and commit index, and recovery refuses a record where they differ. They are not written: the
   // writer refuses to encode a fence that disagrees, and the reader restores them from the record.
-  reserved 1, 2, 3;
+  //
+  // Its checksum is a digest of the fields above and those three, so it is not written either:
+  // the writer refuses a fence whose checksum is not the digest, and the reader recomputes it.
+  reserved 1, 2, 3, 7, 8;
   uint64 applied_index = 4;
   optional string snapshot_id = 5;
   uint64 storage_epoch = 6;
-  // Raw digest bytes: stored as text, the same digest costs twice the space to say the same
-  // thing. A checksum that is not a hex digest is kept as its own bytes with `checksum_is_text`
-  // set, so nothing has to assume what a checksum looks like to round-trip it.
-  bytes checksum = 7;
-  bool checksum_is_text = 8;
 }
 
 // One command as it appears in the log.
