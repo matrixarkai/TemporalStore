@@ -665,3 +665,58 @@ fn what_each_layer_costs_here_against_the_captured_layout() {
     }
     println!();
 }
+
+#[test]
+fn a_frame_built_here_is_the_frame_in_every_captured_file() {
+    use crate::record_framing::frame_payload;
+    let mut checked = 0;
+    for (name, bytes) in everything() {
+        let contents = read(&name, &bytes);
+        if !contents.footers.is_empty() {
+            // A footer interrupts the run of frames; the writer test covers those files.
+            continue;
+        }
+        let proto_size = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let body = &bytes[crate::stream_format::header_block_size(proto_size, 0)..];
+        let mut built = Vec::new();
+        for record in &contents.records {
+            built.extend_from_slice(&frame_payload(&record.payload));
+        }
+        assert_eq!(built, body, "{name}: the frames differ from the file's data region");
+        checked += 1;
+    }
+    assert_eq!(checked, 12, "twelve of the fifteen captures have no footer");
+}
+
+#[test]
+fn a_captured_frame_is_decoded_here_and_a_damaged_or_short_one_is_refused() {
+    use crate::record_framing::{decode_framed_at, frame_payload};
+    let oplog = capture!("hash_oplog");
+    let contents = read("hash_oplog", &oplog);
+    let frame = frame_payload(&contents.records[0].payload);
+    let (record, next): (WalRecord, usize) = decode_framed_at(&frame, 0).expect("decodes");
+    assert_eq!(next, frame.len());
+    assert_eq!(record.items[0].object_key, b"key1");
+    for at in 0..frame.len() {
+        let mut damaged = frame.clone();
+        damaged[at] ^= 0x01;
+        assert!(decode_framed_at::<WalRecord>(&damaged, 0).is_err(), "a flipped bit at byte {at} was accepted");
+    }
+    for length in 0..frame.len() {
+        assert!(decode_framed_at::<WalRecord>(&frame[..length], 0).is_err(), "a {length}-byte prefix was accepted");
+    }
+}
+
+#[cfg(feature = "alloc-probe")]
+#[test]
+fn record_frame_alloc_probe_is_flat_in_the_payload_size() {
+    use crate::record_framing::frame_payload;
+    for size in [10_usize, 1_000, 100_000] {
+        let payload = vec![7u8; size];
+        let probe = crate::alloc_probe::Probe::start();
+        let framed = frame_payload(&payload);
+        let counts = probe.stop();
+        std::hint::black_box(&framed);
+        assert_eq!(counts.allocs, 1, "framing {size} bytes allocated {} times", counts.allocs);
+    }
+}
