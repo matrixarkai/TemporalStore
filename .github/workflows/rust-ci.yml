@@ -234,7 +234,7 @@ jobs:
         timeout-minutes: 30
         run: |
           set -o pipefail
-          for spec in retention_work_tests:4 compaction_retention_tests:3 physical_wal_:5 block_owner_query_tests:3; do
+          for spec in retention_work_tests:4 compaction_retention_tests:3 physical_wal_:5 block_owner_query_tests:3 record_frame_alloc_probe:1; do
             filter=${spec%:*}
             expected=${spec##*:}
             cargo test -p temporalstore-rust --lib --features alloc-probe "$filter" \
@@ -466,6 +466,8 @@ jobs:
             real_capture_tests::every_captured_page_record_is_reproduced_byte_for_byte_by_the_block_codec \
             real_capture_tests::a_captured_page_body_holds_the_elements_the_operation_log_recorded_in_order \
             real_capture_tests::a_damaged_capture_is_refused_or_visibly_shorter_and_never_read_as_the_same_records \
+            real_capture_tests::a_frame_built_here_is_the_frame_in_every_captured_file \
+            real_capture_tests::a_captured_frame_is_decoded_here_and_a_damaged_or_short_one_is_refused \
             shared_store::tests::a_group_commit_container::a_reader_without_this_batch_format_refuses_the_container_by_name \
             shared_store::tests::a_group_commit_container::a_tampered_payload_in_a_container_is_refused_and_its_neighbours_are_not \
             engine::tests::part4::the_shipped_dump_gate_decides_on_bytes_and_the_record_trigger_is_still_configurable \
