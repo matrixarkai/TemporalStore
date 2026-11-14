@@ -433,6 +433,9 @@ fn translate_observations(
                 key,
                 points: vec![point],
                 policy: FeatureWritePolicy::MergeReduce,
+                // The wire's token is not carried through yet; every key of a request is applied
+                // as a request without one.
+                retry_token: None,
             }),
         }
     }
