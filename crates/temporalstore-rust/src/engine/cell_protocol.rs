@@ -560,6 +560,10 @@ fn score_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<Cel
 /// One wire query as the engine's ranked read.
 pub(crate) fn translate_query(profile: &TableProfile, query: &wire::CellQuery) -> Result<ReadPlan, Refusal> {
     bound("more entities", query.more_entities.len(), MAX_MORE_ENTITIES)?;
+    if let Some(selector) = query.selector.as_ref() {
+        bound("members", selector.members.len(), MAX_MEMBER_LIST)?;
+        bound("excluded members", selector.excluded_members.len(), MAX_MEMBER_LIST)?;
+    }
     if !query.more_entities.is_empty() {
         return Err(invalid("reading several entities together is not translated yet"));
     }
@@ -573,8 +577,6 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::CellQuery) -
         return Err(invalid("a quota is not translated yet"));
     }
     if !selector.members.is_empty() || !selector.excluded_members.is_empty() {
-        bound("members", selector.members.len(), MAX_MEMBER_LIST)?;
-        bound("excluded members", selector.excluded_members.len(), MAX_MEMBER_LIST)?;
         return Err(invalid("a member list is not translated yet"));
     }
     let limit = selector.limit;
