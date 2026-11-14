@@ -1715,21 +1715,7 @@ impl TemporalEngine {
         for manifest in &manifests {
             let floor = bucket_dump_io::manifest_wal_floor_memoised(manifest, || {
                 let snapshot = decode_index_bytes(&manifest.index_bytes).map_err(|_| ())?;
-                let floor = snapshot.wal_resident_blocks.values().map(|placement| placement.sequence).min();
-                let mut visited = 0;
-                let indexed_wal = snapshot.bucket_index.bucket_map.values()
-                    .flat_map(|bucket| bucket.block_index.values()).any(|block| {
-                        visited += 1;
-                        crate::wal_record::is_wal_resident(block.address.block_slab_id())
-                    });
-                storage_bucket_internals::note_bucket_block_visits(visited);
-                let needs_wal = indexed_wal
-                    || storage_bucket_internals::collect_model_live_block_entries(&snapshot).iter().any(|entry| {
-                    crate::wal_record::is_wal_resident(entry.address.block_slab_id())
-                });
-                // Placement metadata can outlive its frames. A legacy frame without
-                // a placement, however, cannot prove a narrower retention floor.
-                Ok(if needs_wal { Some(floor.unwrap_or(0)) } else { None })
+                Ok(wal_floor_of_index_image(&snapshot))
             });
             match floor {
                 Ok(Some(sequence)) => manifest_floor = Some(manifest_floor.map_or(sequence, |old: u64| old.min(sequence))),
@@ -1741,6 +1727,23 @@ impl TemporalEngine {
                     };
                 },
             }
+        }
+        // THE PERSISTED SERVED INDEX NAMES PLACEMENTS TOO. A restart loads it when no newer dump
+        // manifest exists, and the loop rewrites it on its own cadence, so a value that lives only in
+        // a WAL record and is named by that image has to keep the record, exactly as one named by a
+        // retained manifest does. The floor used to read the manifests and the live registrations
+        // only: a placement superseded after the image was written was held by neither, the record
+        // was freed, and the next load refused with `wal_resident_block_missing`.
+        //
+        // The same reading a load makes -- the file as it is, no delta folded -- and the same answer
+        // a manifest gives. An image that is absent names nothing; one that will not decode is not
+        // what a load would use either (it falls back to the log), so neither narrows the floor.
+        let base_floor = std::fs::read(self.index_path(plan.shard_id))
+            .ok()
+            .and_then(|bytes| decode_index_bytes(&bytes).ok())
+            .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
+        if let Some(sequence) = base_floor {
+            manifest_floor = Some(manifest_floor.map_or(sequence, |old: u64| old.min(sequence)));
         }
         let registered_floor = super::block_in_wal::min_registered_sequence(
             &self.block_store,
@@ -5070,4 +5073,36 @@ mod eviction_round_scale {
             );
         }
     }
+}
+
+
+/// The lowest WAL sequence an index image still needs, or `None` when it needs none.
+///
+/// An image names a WAL-resident block by a placement, and a block whose only durable copy is a log
+/// record needs that record until a newer image stops naming it. A resident block with no placement
+/// cannot prove a narrower floor, so it reads as 0.
+fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
+    let floor = snapshot
+        .wal_resident_blocks
+        .values()
+        .map(|placement| placement.sequence)
+        .min();
+    let mut visited = 0;
+    let indexed_wal = snapshot
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.block_index.values())
+        .any(|block| {
+            visited += 1;
+            crate::wal_record::is_wal_resident(block.address.block_slab_id())
+        });
+    storage_bucket_internals::note_bucket_block_visits(visited);
+    let needs_wal = indexed_wal
+        || storage_bucket_internals::collect_model_live_block_entries(snapshot)
+            .iter()
+            .any(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()));
+    // Placement metadata can outlive its frames. A legacy frame without a placement, however,
+    // cannot prove a narrower retention floor.
+    if needs_wal { Some(floor.unwrap_or(0)) } else { None }
 }
