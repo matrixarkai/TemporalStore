@@ -43,6 +43,9 @@ mod cell_rank_read;
 mod cell_fan_in;
 // Rolling old snapshots up into coarser buckets and capping a label group: a pure function over
 // decoded snapshots, and the engine side that reads the series and plans the replacement.
+// The tiers, the anchor, the truncation and the cap controls are a pure function until the command
+// carries them, so nothing outside the tests calls them yet.
+#[allow(dead_code)]
 mod cell_rollup;
 mod cell_rollup_apply;
 // Merged cell sets: the key, the per-key header and the packed snapshot. The merge-reduce write
