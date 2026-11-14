@@ -827,17 +827,7 @@ impl TemporalEngine {
         // registrations alone, which also replaced the richer floor the reclaim stage had set, and
         // the truncation below then freed a record a loadable image still needs. An image that
         // cannot be read leaves the log untouched.
-        let registered_floor =
-            super::block_in_wal::min_registered_sequence(&self.block_store, shard_id, &self.wal_store);
-        let persisted_floor = self.persisted_images_wal_floor(shard_id);
-        let wal_retention_floor = registered_floor
-            .into_iter()
-            .chain(persisted_floor.clone().ok().flatten())
-            .min();
-        match wal_retention_floor {
-            Some(sequence) => self.wal_store.set_block_retention_floor(shard_id, sequence),
-            None => self.wal_store.clear_block_retention_floor(shard_id),
-        }
+        let floor_refreshed = self.refresh_wal_retention_floor(shard_id);
         // WAL prefix below the anchor: the durable base reflects those records, replay-on-load
         // starts above the anchor, and gc itself additionally retains the highest-sequence
         // record (sequence continuity) and everything at or above the floor just set.
@@ -846,7 +836,7 @@ impl TemporalEngine {
         // `wal_anchor`. That completed work IS the proof this reclaim needs.
         let durable_index =
             crate::wal::DurableIndexAnchor::proven_durable_through(shard_id, wal_anchor);
-        let wal_gc = if persisted_floor.is_err() {
+        let wal_gc = if floor_refreshed.is_err() {
             None
         } else {
             self.wal_store

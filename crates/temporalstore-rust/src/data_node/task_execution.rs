@@ -231,11 +231,26 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
                 }
                 _ => crate::wal::DurableIndexAnchor::unproven(request.shard_id),
             };
-            match inner.engine.write_ahead_log_store().gc_before_sequence(
-                request.shard_id,
-                retain_from_sequence,
-                &durable_index,
-            ) {
+            // The retention floor is refreshed HERE, where the truncation happens. It is an entry
+            // the log store reads, and nothing else guarantees it is current on this path: left as
+            // it was last stored (often nothing), a retain point at the log's tail removed every
+            // record while live registrations still pointed into it.
+            if inner.engine.refresh_wal_retention_floor(request.shard_id).is_err() {
+                status = Status::error(
+                    "wal_gc_refused",
+                    "a persisted index image could not be read, so no record is safe to remove",
+                );
+            }
+            let wal_gc_result = if status.ok {
+                inner.engine.write_ahead_log_store().gc_before_sequence(
+                    request.shard_id,
+                    retain_from_sequence,
+                    &durable_index,
+                )
+            } else {
+                Ok(crate::wal::WriteAheadLogGcReport::default())
+            };
+            match wal_gc_result {
                 Ok(report) => {
                     wal_records_removed = report.records_removed;
                     wal_gc_clamped_by_durable_index = report.clamped_by_durable_index;
