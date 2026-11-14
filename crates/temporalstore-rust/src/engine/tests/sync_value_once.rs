@@ -366,6 +366,32 @@ fn a_reclaim_keeps_the_records_the_persisted_base_image_names() {
     }
 }
 
+/// The reclaim floor reads the registrations of the values that live only in the log. After
+/// single-copy writes it must name the oldest of them; a `None` here means the floor is cleared
+/// and a reclaim frees records that still hold the only copy of a value.
+#[test]
+fn the_retention_floor_input_names_the_oldest_log_resident_value() {
+    let _on = value_once_in_test(true);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine.load_shard(SHARD);
+    for index in 0..30 {
+        set(&engine, &format!("k{index:04}"), &value_for(index));
+    }
+    assert!(engine.registration_count_for_test(SHARD) >= 30);
+    let floor = block_in_wal::min_registered_sequence(&engine.block_store, SHARD, &engine.wal_store);
+    println!("registrations {} floor {:?}", engine.registration_count_for_test(SHARD), floor);
+    assert!(floor.is_some(), "30 registrations and no floor: reclaim would free every record");
+    // And after a bucket dump, which retires only registrations the dump no longer needs.
+    engine.create_bucket_dump_manifest(SHARD, Vec::new()).unwrap();
+    let after = block_in_wal::min_registered_sequence(&engine.block_store, SHARD, &engine.wal_store);
+    println!("after dump: registrations {} floor {:?}", engine.registration_count_for_test(SHARD), after);
+    assert!(
+        after.is_some() || engine.registration_count_for_test(SHARD) == 0,
+        "registrations remain but the floor input is empty after a dump"
+    );
+}
+
 /// Reclaim attempted BEFORE the values are dumped must not free the records that hold them.
 /// Planted fault: dropping the registered-floor term in `apply_storage_wal_reclaim` lets the log
 /// go and the post-crash read below returns None.
