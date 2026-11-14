@@ -61,6 +61,11 @@ pair when neither pair nor list is present. A cell with no `has_label` takes its
 profile's rule. `skip_existing` is carried but refused for now, with a message pointing at the retry token that makes a
 retried add safe; no write mode implements it. `group_on_server` is accepted and always on.
 
+**Retry token.** A non-zero `retry_token` (add request, field 16) rides on the append of every key of the
+request; zero means none. A key remembers its last 16 tokens: the same token again answers the counts of
+the first application with `replayed` (response field 19) set and writes nothing. `replayed` is true on
+the response only when every key replayed. A token is not carried by a restore.
+
 **Restore.** Writes pre-aggregated cells at `latest_us`; `earliest_us` must not exceed it and is
 checked only.
 

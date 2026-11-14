@@ -677,6 +677,10 @@ jobs:
             engine::cell_protocol::tests::a_window_from_a_start_covers_whole_milliseconds_and_excludes_its_end \
             engine::cell_protocol::tests::an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time \
             engine::cell_protocol::tests::the_skip_existing_flag_is_carried_and_refused_with_a_message_that_says_what_to_use \
+            engine::cell_protocol::tests::a_retry_token_on_the_wire_rides_on_every_key_of_the_append_and_a_zero_token_is_none \
+            engine::cell_protocol::tests::the_token_and_the_replayed_flag_have_the_established_field_numbers \
+            engine::cell_protocol::tests::a_replayed_receipt_is_reported_with_the_counts_of_the_first_application \
+            engine::cell_protocol::tests::a_restore_never_carries_a_token \
             engine::tests::what_a_high_cardinality_distinct_holds::an_unbounded_distinct_holds_every_member_and_the_bound_holds_a_fixed_sketch \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::an_ordered_read_answers_by_score_whatever_the_window \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::a_score_update_reorders_an_ordered_read \
