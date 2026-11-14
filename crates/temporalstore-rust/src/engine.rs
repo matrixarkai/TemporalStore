@@ -33,6 +33,7 @@ mod product_model;
 mod cell_merge_append;
 mod window_aggregate;
 mod cell_rank;
+mod cell_rank_options;
 mod cell_rank_read;
 // Rolling old snapshots up into coarser buckets and capping a label group: a pure function over
 // decoded snapshots, and the engine side that reads the series and plans the replacement.
