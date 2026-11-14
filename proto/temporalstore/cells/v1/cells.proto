@@ -1,0 +1,289 @@
+syntax = "proto3";
+
+package temporalstore.cells.v1;
+
+// The cell protocol: add, restore, remove, delete and batched ranked reads over merged cell
+// snapshots. Field numbers and wire types are fixed so existing clients of this message shape are
+// understood; every name here is ours. Numbers below 16 in a message are the established ones,
+// numbers from 16 up are additive and unknown to older clients (which skip them).
+// See docs/CELLS_PROTOCOL.md for the semantics of every field.
+
+enum CellOperation {
+  CELL_OPERATION_ADD = 0;
+  CELL_OPERATION_BATCH_QUERY = 1;
+  CELL_OPERATION_REMOVE = 2;
+  CELL_OPERATION_RESTORE = 3;
+  CELL_OPERATION_DELETE = 4;
+}
+
+enum CellStatusCode {
+  CELL_STATUS_CODE_OK = 0;
+  CELL_STATUS_CODE_ERROR = 1;
+  CELL_STATUS_CODE_STORAGE_ERROR = 2;
+  CELL_STATUS_CODE_OUT_OF_MEMORY = 3;
+  CELL_STATUS_CODE_NO_DATA = 4;
+  CELL_STATUS_CODE_QUOTA_EXHAUSTED = 5;
+  CELL_STATUS_CODE_REQUEST_ILLEGAL = 6;
+  CELL_STATUS_CODE_NO_SUCH_TABLE = 7;
+  CELL_STATUS_CODE_INVALID_ARGUMENT = 8;
+  CELL_STATUS_CODE_DUPLICATE_REFUSED = 9;
+}
+
+// Lanes of a pair-shaped table. Values are 64 bit; a reader that declares them 32 bit sees the
+// low 32 bits, which is the same bytes on the wire.
+message PairLanes {
+  int64 first = 1;
+  int64 second = 2;
+  int64 timestamp_us = 3;
+}
+
+message LaneList {
+  int64 timestamp_us = 1;
+  repeated int64 values = 2;
+}
+
+enum CellShape {
+  CELL_SHAPE_PAIR = 0;
+  CELL_SHAPE_LIST = 1;
+}
+
+message CellEntry {
+  int64 member = 1;
+  int64 shorthand_first = 2;
+  int64 shorthand_second = 3;
+  CellShape shape = 4;
+  PairLanes pair = 5;
+  LaneList list = 6;
+  int32 label = 7;
+  bool has_label = 8;
+  // Additive: a member that is bytes, not a 64 bit id. Set at most one of member_bytes and a
+  // non-zero member.
+  bytes member_bytes = 16;
+}
+
+message Observation {
+  int64 entity = 1;
+  int64 timestamp_us = 2;
+  int32 kind = 3;
+  int32 channel = 4;
+  repeated CellEntry entries = 5;
+  reserved 6;
+  // Additive: an entity that is text or bytes. At most one of the three entity forms is set.
+  string entity_text = 16;
+  bytes entity_bytes = 17;
+}
+
+message RestoredObservation {
+  int64 entity = 1;
+  int64 latest_us = 2;
+  int64 earliest_us = 3;
+  int32 kind = 4;
+  int32 channel = 5;
+  repeated CellEntry entries = 6;
+  reserved 7;
+  string entity_text = 16;
+  bytes entity_bytes = 17;
+}
+
+message CellAddRequest {
+  bytes table = 1;
+  repeated Observation observations = 2;
+  bool group_on_server = 3;
+  bool skip_existing = 4;
+  // Additive: a retry token; a repeated token answers the first receipt and writes nothing.
+  uint64 retry_token = 16;
+}
+
+message CellAddResponse {
+  CellStatusCode code = 1;
+  string message = 2;
+  // Additive receipt.
+  uint64 snapshots_written = 16;
+  uint64 cells_created = 17;
+  uint64 cells_merged = 18;
+  bool replayed = 19;
+}
+
+message CellRestoreRequest {
+  bytes table = 1;
+  repeated RestoredObservation observations = 2;
+  bool group_on_server = 3;
+  bool skip_existing = 4;
+}
+
+message CellRestoreResponse {
+  CellStatusCode code = 1;
+  string message = 2;
+}
+
+enum RankMode {
+  RANK_MODE_FIRST_LANE = 0;
+  RANK_MODE_SECOND_LANE = 1;
+  RANK_MODE_RATIO = 2;
+  RANK_MODE_MEMBER = 3;
+  RANK_MODE_RECENT = 4;
+  RANK_MODE_NAMED_LANE = 5;
+  RANK_MODE_MATCH_LANE = 6;
+  RANK_MODE_WEIGHTED = 7;
+  RANK_MODE_MEMBERS_ONLY = 8;
+  RANK_MODE_WILSON = 9;
+}
+
+enum Rounding {
+  ROUNDING_FLOOR = 0;
+  ROUNDING_CEIL = 1;
+  ROUNDING_ROUND = 2;
+}
+
+message CellSelector {
+  int32 channel = 1;
+  int32 kind = 2;
+  int32 label = 3;
+  RankMode mode = 4;
+  int32 limit = 5;
+  bool has_limit = 6;
+  int32 sort_lane = 7;
+  int64 match_lane = 8;
+  int64 match_value = 9;
+  double decay = 10;
+  Rounding decay_rounding = 11;
+  int32 limit_members = 12;
+  bool has_limit_members = 13;
+  repeated int32 quota_lanes = 14;
+  repeated int32 quota_counts = 15;
+  repeated int32 weighted_lanes = 16;
+  repeated int32 weights = 17;
+  repeated int64 members = 18;
+  bool want_snapshot_info = 19;
+  double wilson_z = 20;
+  bool has_sort_lane = 21;
+  bool has_quota_counts = 22;
+  bool has_quota_lanes = 23;
+  bool has_members = 24;
+  bool has_match_lane = 25;
+  bool has_match_value = 26;
+  bool has_wilson_z = 27;
+  bool has_weighted_lanes = 28;
+  bool has_weights = 29;
+  bool has_want_snapshot_info = 30;
+  // Additive: members to leave out.
+  repeated int64 excluded_members = 40;
+}
+
+enum WindowKind {
+  // The trailing span ending at the instant the read runs.
+  WINDOW_KIND_TRAILING_FROM_NOW = 0;
+  // The trailing span ending at the newest stored snapshot of the key.
+  WINDOW_KIND_TRAILING_FROM_NEWEST = 1;
+  // The newest `span` stored rows (timestamp, member pairs).
+  WINDOW_KIND_NEWEST_ROWS = 2;
+  // [start, start + span).
+  WINDOW_KIND_FROM_START = 3;
+  // As TRAILING_FROM_NEWEST; the original code treats the two identically.
+  WINDOW_KIND_TRAILING_FROM_NEWEST_OF_KIND = 4;
+}
+
+message Window {
+  WindowKind kind = 1;
+  int64 span = 2;
+  int64 start_us = 3;
+}
+
+message CellQuery {
+  int64 entity = 1;
+  Window window = 2;
+  CellSelector selector = 3;
+  bool echo = 4;
+  bytes table = 5;
+  bool has_echo = 6;
+  // Additive: more entities whose keys are read together with `entity`; bounded.
+  repeated int64 more_entities = 20;
+  string entity_text = 16;
+  bytes entity_bytes = 17;
+}
+
+message CellBatchQuery {
+  repeated CellQuery queries = 1;
+}
+
+message SnapshotInfo {
+  repeated int64 starts_us = 1;
+  repeated int64 ends_us = 2;
+  repeated int64 member_counts = 3;
+}
+
+message CellAnswer {
+  int64 entity = 1;
+  int64 first_us = 3;
+  int64 last_us = 4;
+  reserved 5;
+  repeated CellEntry entries = 6;
+  SnapshotInfo snapshot_info = 7;
+  CellSelector echoed_selector = 8;
+  Window echoed_window = 9;
+  // Additive: a status for this answer alone.
+  CellStatusCode code = 16;
+  string message = 17;
+  uint64 snapshots = 18;
+  uint64 unscored = 19;
+}
+
+message CellBatchAnswer {
+  repeated CellAnswer answers = 1;
+  CellStatusCode code = 2;
+  string message = 3;
+}
+
+message TimeSpan {
+  int64 start_us = 1;
+  int64 end_us = 2;
+}
+
+message KeyFilter {
+  int32 label = 1;
+  int32 kind = 2;
+  int32 channel = 3;
+}
+
+message CellRemoveRequest {
+  int64 entity = 1;
+  TimeSpan span = 2;
+  bytes table = 3;
+  KeyFilter key_filter = 4;
+}
+
+message CellRemoveResponse {
+  CellStatusCode code = 1;
+  TimeSpan span = 2;
+  string message = 3;
+  bool has_message = 4;
+}
+
+message CellDeleteRequest {
+  int64 entity = 1;
+  CellSelector selector = 2;
+  bytes table = 3;
+}
+
+message CellDeleteResponse {
+  CellStatusCode code = 1;
+  string message = 2;
+}
+
+// The thin envelope of a call: which module and operation, and the encoded request.
+message CellCall {
+  uint32 module_id = 1;
+  uint32 operation_id = 2;
+  bytes payload = 3;
+}
+
+message CallStatus {
+  int32 code = 1;
+  string message = 2;
+}
+
+message CellReply {
+  CallStatus status = 1;
+  CallStatus response_status = 2;
+  bytes payload = 3;
+}

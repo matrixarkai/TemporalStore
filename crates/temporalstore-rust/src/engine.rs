@@ -46,6 +46,10 @@ mod cell_rollup_apply;
 // Merged cell sets: the key, the per-key header and the packed snapshot. The merge-reduce write
 // policy of the feature append is its caller.
 mod cell_set;
+// The cell protocol as a pure translator between wire messages and commands; its wiring into a
+// route is a separate change, so nothing calls it yet.
+#[allow(dead_code)]
+mod cell_protocol;
 // Step one of three: the container lands with nothing using it, so the design can be reviewed
 // without a call-site conversion riding on it. The allow is the honest consequence and comes off
 // in the step that converts a map to it.

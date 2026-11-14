@@ -616,6 +616,28 @@ jobs:
             engine::cell_retry_ring::tests::a_token_twice_in_one_stored_ring_is_refused \
             engine::cell_retry_ring::tests::a_value_that_is_not_the_canonical_spelling_is_refused \
             engine::cell_retry_ring::tests::a_truncated_or_corrupt_value_is_an_error_and_never_a_panic \
+            engine::cell_protocol::tests::the_add_request_wire_bytes_follow_the_established_field_numbers \
+            engine::cell_protocol::tests::an_unknown_field_is_skipped_and_the_rest_reads_the_same \
+            engine::cell_protocol::tests::a_query_and_its_answer_round_trip_through_the_wire \
+            engine::cell_protocol::tests::a_wide_lane_value_keeps_its_low_32_bits_for_a_narrow_reader \
+            engine::cell_protocol::tests::an_add_becomes_one_merge_reduce_append_per_key_that_decodes_back_to_its_cells \
+            engine::cell_protocol::tests::a_shorthand_pair_fills_the_pair_and_a_list_shorter_than_the_lanes_is_padded_with_zeros \
+            engine::cell_protocol::tests::a_request_with_a_wrong_shape_an_unknown_table_or_a_duplicate_is_refused_with_its_own_code \
+            engine::cell_protocol::tests::an_unreadable_channel_or_label_is_refused_not_wrapped \
+            engine::cell_protocol::tests::cells_per_request_are_accepted_at_the_limit_and_refused_one_past_it \
+            engine::cell_protocol::tests::queries_per_batch_are_accepted_at_the_limit_and_refused_one_past_it \
+            engine::cell_protocol::tests::a_batch_names_the_position_of_the_query_that_refused_it \
+            engine::cell_protocol::tests::the_table_name_is_accepted_at_64_bytes_and_refused_at_65 \
+            engine::cell_protocol::tests::the_limit_of_a_read_is_accepted_at_1000_and_refused_at_1001 \
+            engine::cell_protocol::tests::weighted_lanes_are_accepted_at_8_and_refused_at_9 \
+            engine::cell_protocol::tests::member_lists_and_extra_entities_are_bounded_before_they_are_refused_as_untranslated \
+            engine::cell_protocol::tests::the_accepted_timestamp_range_is_open_at_both_ends \
+            engine::cell_protocol::tests::each_translated_rank_mode_becomes_the_score_it_names \
+            engine::cell_protocol::tests::the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_and_kind \
+            engine::cell_protocol::tests::a_mode_or_window_that_is_not_built_yet_is_refused_and_says_so \
+            engine::cell_protocol::tests::a_window_from_a_start_covers_whole_milliseconds_and_excludes_its_end \
+            engine::cell_protocol::tests::an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time \
+            engine::cell_protocol::tests::the_skip_existing_flag_is_carried_and_refused_with_a_message_that_says_what_to_use \
             engine::tests::what_a_high_cardinality_distinct_holds::an_unbounded_distinct_holds_every_member_and_the_bound_holds_a_fixed_sketch \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::an_ordered_read_answers_by_score_whatever_the_window \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::a_score_update_reorders_an_ordered_read \
