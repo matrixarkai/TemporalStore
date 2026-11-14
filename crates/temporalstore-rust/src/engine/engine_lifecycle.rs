@@ -3447,6 +3447,10 @@ impl TemporalEngine {
             let mut shards = self.shards.write().expect("engine lock poisoned");
             self.checkpoint_publications.forget(request.shard_id);
             shards.remove(&request.shard_id);
+            // The index was flushed above and a reload reads it, so nothing is left to hold.
+            self.unpublished_compaction_slabs
+                .write().expect("unpublished compaction lock poisoned")
+                .remove(&request.shard_id);
         }
         self.infos
             .write()
