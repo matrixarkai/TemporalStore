@@ -139,6 +139,9 @@ pub(crate) fn validate_spec(spec: &RollupSpec) -> Result<(), String> {
         if matches!(cap.score, CellScore::Time) {
             return Err("a cap cannot score by time: every cell of a snapshot shares its stamp".to_string());
         }
+        if matches!(cap.score, CellScore::Decay { .. }) {
+            return Err("a cap cannot score by decay: it scores one folded cell, and a decay reads a member's snapshots".to_string());
+        }
     }
     Ok(())
 }
