@@ -455,6 +455,17 @@ jobs:
             wal_record::tests::the_synthetic_slab_sentinels_are_not_the_top_of_the_u64_range \
             wal_record::tests::is_wal_resident_covers_both_sentinels_and_refuses_a_real_slab \
             wal_record::tests::the_hot_block_sentinel_is_declared_in_exactly_one_file \
+            real_capture_tests::every_data_capture_reads_and_carries_the_raw_checksum_the_standard_one_is_not \
+            real_capture_tests::our_writer_reproduces_every_data_capture_byte_for_byte \
+            real_capture_tests::every_captured_operation_record_is_a_wal_record_and_re_encodes_identically \
+            real_capture_tests::the_hash_capture_carries_a_key_a_field_and_a_value_as_length_prefixed_text \
+            real_capture_tests::a_captured_feature_point_is_a_varint_timestamp_key_and_a_length_prefixed_message_value \
+            real_capture_tests::a_captured_deadline_and_a_captured_block_item_are_the_fields_this_crate_names \
+            real_capture_tests::every_captured_index_record_is_a_plain_schema_record_and_re_encodes_identically \
+            real_capture_tests::a_page_item_names_the_page_record_it_points_at_and_the_two_agree \
+            real_capture_tests::every_captured_page_record_is_reproduced_byte_for_byte_by_the_block_codec \
+            real_capture_tests::a_captured_page_body_holds_the_elements_the_operation_log_recorded_in_order \
+            real_capture_tests::a_damaged_capture_is_refused_or_visibly_shorter_and_never_read_as_the_same_records \
             shared_store::tests::a_group_commit_container::a_reader_without_this_batch_format_refuses_the_container_by_name \
             shared_store::tests::a_group_commit_container::a_tampered_payload_in_a_container_is_refused_and_its_neighbours_are_not \
             engine::tests::part4::the_shipped_dump_gate_decides_on_bytes_and_the_record_trigger_is_still_configurable \

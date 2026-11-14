@@ -97,6 +97,8 @@ pub mod index_log_wire;
 pub mod stream_format;
 pub mod block_image;
 pub mod wal_record;
+/// The streams the design we studied writes for data, read and reproduced from captured files -- tests only.
+mod real_capture_tests;
 /// NO FOREIGN TYPE NAMES IN RUST SOURCE -- a repo-wide scan, tests only. The vendor-vocabulary
 /// scrub covers product and company names; this covers another implementation's IDENTIFIERS,
 /// which is a different failure and had no gate at all until this module.
