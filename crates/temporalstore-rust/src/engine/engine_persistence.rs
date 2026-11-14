@@ -880,7 +880,7 @@ impl TemporalEngine {
             // failure is now SAID rather than rendered as three zeros indistinguishable from an
             // empty log.
             wal_sweep_failed: wal_gc.is_none(),
-            wal_retention_floor,
+            wal_retention_floor: self.wal_store.block_retention_floor(shard_id),
         })
     }
 
