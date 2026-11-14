@@ -506,6 +506,16 @@ jobs:
             engine::cell_rank::tests::lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit \
             engine::cell_rank::tests::snapshots_in_a_window_are_bounded_at_exactly_the_limit \
             engine::cell_rank::tests::the_merge_answers_what_a_per_member_table_answers \
+            engine::cell_rank::tests::options::an_include_and_an_exclude_set_keep_exactly_the_members_they_name \
+            engine::cell_rank::tests::options::the_member_set_is_anded_with_the_predicates_and_cuts_before_the_reduction \
+            engine::cell_rank::tests::options::the_order_and_repetition_of_a_set_do_not_change_the_answer \
+            engine::cell_rank::tests::options::an_include_set_that_names_nothing_is_refused_and_an_empty_exclude_set_is_not \
+            engine::cell_rank::tests::options::a_member_set_read_equals_the_same_read_over_cells_filtered_by_an_independent_fold \
+            engine::cell_rank::tests::options::a_set_holds_at_most_the_limit_as_sent_and_a_bytes_member_at_most_its_own_limit \
+            engine::cell_rank::tests::options::an_anchored_last_window_ends_at_the_newest_snapshot_whatever_the_clock_says \
+            engine::cell_rank::tests::options::the_anchored_window_spans_exactly_its_duration_and_a_duration_of_zero_holds_nothing \
+            engine::cell_rank::tests::options::an_anchor_on_any_window_but_last_is_refused_and_a_request_anchor_is_accepted_on_all \
+            engine::cell_rank::tests::options::a_read_that_uses_no_option_answers_what_compile_has_always_answered \
             engine::tests::a_ranked_cell_read_is_a_command::a_ranked_read_answers_from_what_was_stored_live_and_after_a_restart \
             engine::tests::a_ranked_cell_read_is_a_command::an_absent_key_and_an_expired_key_rank_nothing \
             engine::tests::a_ranked_cell_read_is_a_command::a_read_the_key_cannot_serve_is_refused_with_its_reason \
@@ -868,6 +878,7 @@ jobs:
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_write_does_not_allocate_per_cell \
             engine::cell_set::tests::probe::a_merge_request_costs_the_same_allocations_at_any_cell_count \
             engine::cell_rank::tests::probe::a_ranked_read_allocates_the_same_over_a_hundred_members_and_over_twenty_thousand \
+            engine::cell_rank::tests::options::probe::a_member_set_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
             engine::cell_rollup::tests::probe::a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many \
             engine::cell_set::tests::probe::a_cell_costs_the_same_allocations_at_any_member_size ; do
             echo "--- $t (ignored, alloc-probe) ---"

@@ -575,6 +575,10 @@ fn the_merge_answers_what_a_per_member_table_answers() {
     assert!(compared > 1000, "the comparison covered {compared} rows, too few to mean anything");
 }
 
+// The member set and the newest-snapshot anchor.
+#[path = "cell_rank_options_tests.rs"]
+mod options;
+
 #[cfg(feature = "alloc-probe")]
 mod probe {
     use super::*;
