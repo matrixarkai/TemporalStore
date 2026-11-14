@@ -109,6 +109,31 @@ pub trait ObjectStore: Send + Sync {
         }
         Ok(bytes.slice(start..end))
     }
+    /// The bytes of `key` from `offset` to its end, or `None` when the object is SHORTER than
+    /// `offset`. At exactly the object's length the answer is `Some` of nothing.
+    ///
+    /// For a reader that follows an append-only object: it already holds everything before
+    /// `offset` and wants only what has been added since, so asking for the whole object --
+    /// which grows without bound -- every time it checks is a cost proportional to the log, paid
+    /// on every poll. `None` is how a store says the object is not the one the caller was
+    /// following any more (it was replaced by something shorter), which the caller must treat as
+    /// a reason to start over rather than as an error.
+    ///
+    /// The default reads the whole object and slices it, which is correct for every store and
+    /// leaves the saving to the stores that can range-read.
+    async fn get_range_from(
+        &self,
+        key: &str,
+        offset: u64,
+    ) -> Result<Option<Bytes>, ObjectStoreError> {
+        let bytes = self.get(key).await?;
+        let start = usize::try_from(offset)
+            .map_err(|_| ObjectStoreError::InvalidKey(format!("{key}: range offset too large")))?;
+        if start > bytes.len() {
+            return Ok(None);
+        }
+        Ok(Some(bytes.slice(start..)))
+    }
     async fn get_many(&self, keys: &[String]) -> Result<Vec<(String, Bytes)>, ObjectStoreError> {
         let mut objects = Vec::with_capacity(keys.len());
         for key in keys {
@@ -668,6 +693,51 @@ impl ObjectStore for MatrixObjectHttpStore {
         }
     }
 
+    async fn get_range_from(
+        &self,
+        key: &str,
+        offset: u64,
+    ) -> Result<Option<Bytes>, ObjectStoreError> {
+        // AN OPEN-ENDED RANGE, so one request returns the tail whatever the object's length is.
+        let response = self.send(
+            "GET",
+            &self.object_target(key),
+            &[("range", format!("bytes={offset}-"))],
+            &[],
+        )?;
+        match response.status {
+            206 => Ok(Some(Bytes::from(response.body))),
+            // THE SERVER IGNORED THE RANGE and sent the whole object, which is a legal answer to
+            // any range request: slice it here rather than trust the body to be the tail.
+            200 => {
+                let start = usize::try_from(offset).map_err(|_| {
+                    ObjectStoreError::InvalidKey(format!("{key}: range offset too large"))
+                })?;
+                if start > response.body.len() {
+                    return Ok(None);
+                }
+                Ok(Some(Bytes::from(response.body).slice(start..)))
+            }
+            // UNSATISFIABLE says the offset is at or past the end, and `Content-Range: bytes */len`
+            // says where the end is: AT it is an empty tail, PAST it is an object that is no
+            // longer the one being followed. A reply that does not say is treated as the second,
+            // because starting over is the safe reading.
+            416 => {
+                let length = response
+                    .header("content-range")
+                    .and_then(|value| value.trim().strip_prefix("bytes */"))
+                    .and_then(|length| length.trim().parse::<u64>().ok());
+                if length == Some(offset) {
+                    Ok(Some(Bytes::new()))
+                } else {
+                    Ok(None)
+                }
+            }
+            404 => Err(ObjectStoreError::NotFound(key.to_string())),
+            status => Err(response.failure(status, key)),
+        }
+    }
+
     async fn get_many(&self, keys: &[String]) -> Result<Vec<(String, Bytes)>, ObjectStoreError> {
         let mut objects = Vec::with_capacity(keys.len());
         for key in keys {
@@ -1115,6 +1185,30 @@ impl ObjectStore for FileObjectStore {
             }
             Err(err) => Err(ObjectStoreError::Io(err)),
         }
+    }
+
+    async fn get_range_from(
+        &self,
+        key: &str,
+        offset: u64,
+    ) -> Result<Option<Bytes>, ObjectStoreError> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        let path = self.resolve(key)?;
+        let mut file = match tokio::fs::File::open(path).await {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ObjectStoreError::NotFound(key.to_string()))
+            }
+            Err(err) => return Err(ObjectStoreError::Io(err)),
+        };
+        let length = file.metadata().await?.len();
+        if offset > length {
+            return Ok(None);
+        }
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        let mut tail = Vec::with_capacity((length - offset) as usize);
+        file.read_to_end(&mut tail).await?;
+        Ok(Some(Bytes::from(tail)))
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
