@@ -853,7 +853,14 @@ jobs:
             engine::tests::a_container_point_read_searches_without_building_its_key::the_borrowed_key_is_the_key_each_spelling_has_always_built \
             engine::tests::a_container_point_read_searches_without_building_its_key::a_point_selection_answers_what_it_always_answered \
             engine::tests::a_container_point_read_searches_without_building_its_key::a_whole_hash_read_answers_the_fields_a_hash_holds_in_order \
-            wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
+            wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier \
+            wal::group_write_tests::group_write_one_barrier_writes_every_buffered_record_in_one_call \
+            wal::group_write_tests::group_write_a_record_that_was_never_acknowledged_is_not_on_disk \
+            wal::group_write_tests::group_write_torn_batch_loses_no_acked_record_and_promotes_no_unacked_one \
+            wal::group_write_tests::group_write_a_failed_batch_is_retried_whole_and_never_duplicated \
+            wal::group_write_tests::group_write_a_failed_batch_does_not_let_a_later_writer_be_told_it_is_durable \
+            wal::group_write_tests::group_write_readers_see_records_that_are_still_buffered \
+            wal::group_write_tests::group_write_concurrent_writers_share_writes_and_every_acked_record_is_durable ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
