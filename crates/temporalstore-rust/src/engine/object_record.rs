@@ -853,7 +853,14 @@ impl<'de> serde::Deserialize<'de> for ObjectSlotWire {
             fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut slot: A) -> Result<Self::Value, A::Error> {
                 use serde::de::Error;
                 let r = slot.next_element()?.ok_or_else(|| A::Error::invalid_length(0, &self))?;
-                let e: Vec<(u64, ElementEntry)> = slot.next_element()?.unwrap_or_default();
+                // No elements is the one-element row; a present empty array is not canonical.
+                let e: Vec<(u64, ElementEntry)> = match slot.next_element::<Vec<(u64, ElementEntry)>>()? {
+                    Some(v) if v.is_empty() => {
+                        return Err(A::Error::custom("object slot row spells no elements as an empty array"))
+                    }
+                    Some(v) => v,
+                    None => Vec::new(),
+                };
                 if slot.next_element::<serde::de::IgnoredAny>()?.is_some() {
                     return Err(A::Error::invalid_length(3, &self));
                 }
@@ -1005,7 +1012,12 @@ impl<'de> serde::Deserialize<'de> for ObjectRecordWire {
                 let block_size = row.next_element()?.ok_or_else(|| A::Error::invalid_length(1, &self))?;
                 let flags = row.next_element()?.ok_or_else(|| A::Error::invalid_length(2, &self))?;
                 let model_id = row.next_element()?.ok_or_else(|| A::Error::invalid_length(3, &self))?;
-                let logical_size_class = row.next_element()?.unwrap_or(0);
+                // An unknown size class is an ABSENT fifth element; a present 0 is not canonical.
+                let logical_size_class = match row.next_element()? {
+                    Some(0) => return Err(A::Error::custom("object record row spells an unknown size class as 0")),
+                    Some(v) => v,
+                    None => 0,
+                };
                 // LONGER THAN THIS STRUCT IS REFUSED BY LENGTH, never read with the extra dropped.
                 if row.next_element::<serde::de::IgnoredAny>()?.is_some() {
                     return Err(A::Error::invalid_length(6, &self));
@@ -1965,5 +1977,43 @@ mod what_moving_one_kinds_refs_onto_its_record_would_cost {
         // so the number is recorded and a later shape change has to re-run it rather than inherit
         // a claim.
         assert!(pair > 0 && layout_inline > 0, "the shapes have a size");
+    }
+}
+
+#[cfg(test)]
+mod a_positional_row_is_refused_unless_it_is_canonical {
+    use super::{ObjectRecord, ObjectSlotWire};
+
+    fn record(wire: &str) -> Result<ObjectRecord, serde_json::Error> {
+        serde_json::from_str(wire)
+    }
+
+    fn slot(wire: &str) -> Result<ObjectSlotWire, serde_json::Error> {
+        serde_json::from_str(wire)
+    }
+
+    #[test]
+    fn a_record_row_longer_than_five_is_refused_by_length() {
+        assert!(record("[64,8,8,7]").is_ok(), "control: the four-element row must read");
+        assert!(record("[64,8,8,7,3]").is_ok(), "control: the five-element row must read");
+        let error = record("[64,8,8,7,3,9]").expect_err("a six-element row was read with its tail dropped");
+        assert!(error.to_string().contains("invalid length 6"), "unnamed refusal: {error}");
+    }
+
+    #[test]
+    fn a_record_row_spelling_an_unknown_class_as_zero_is_refused() {
+        let error = record("[64,8,8,7,0]").expect_err("a present zero size class was read");
+        assert!(error.to_string().contains("unknown size class"), "unnamed refusal: {error}");
+    }
+
+    #[test]
+    fn a_slot_row_longer_than_two_is_refused_and_an_empty_elements_array_is_not_canonical() {
+        let r = "[64,8,8,7]";
+        assert!(slot(&format!("[{r}]")).is_ok(), "control: the one-element slot must read");
+        // The elements array here is empty too, so either refusal may fire first; the point is
+        // that a third element is never read as nothing.
+        assert!(slot(&format!("[{r},[],0]")).is_err(), "a three-element slot row was read");
+        let error = slot(&format!("[{r},[]]")).expect_err("an empty elements array was read");
+        assert!(error.to_string().contains("as an empty array"), "unnamed refusal: {error}");
     }
 }
