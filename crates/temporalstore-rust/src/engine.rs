@@ -269,6 +269,15 @@ pub struct TemporalEngine {
     /// Not durable: a restart loses at most the knowledge that a round was open, and the next
     /// round then rolls, which is correct if wasteful once.
     compaction_rounds: Arc<RwLock<HashMap<ShardId, (u64, u64)>>>,
+    /// Slabs a compaction round vacated in MEMORY but whose new index never reached disk.
+    ///
+    /// Compaction advances no applied sequence and emits no record, so the durable index is the
+    /// only place a relocation exists. When the barrier or the publish fails after the volatile
+    /// index moved, the on-disk index still names the pre-round slabs; reclaim derives "stale"
+    /// from the volatile live set and would destroy them, and a restart would then load an index
+    /// that dangles. These ids are held live until a round publishes. Not durable: a restart
+    /// reloads the on-disk index, which names them.
+    unpublished_compaction_slabs: Arc<RwLock<HashMap<ShardId, BTreeSet<u64>>>>,
     /// Where the bounded readability probe should START reading on this shard's next round.
     ///
     /// The probe reads at most `RECOVERY_READABLE_PROBE_PER_ROUND` live blocks per round so its
