@@ -19,7 +19,8 @@ use crate::engine::cell_set::{
     DimValue, KeySpec, LaneReducer, LaneSpec, Member, HEADER_VERSION,
 };
 use crate::types::{
-    CellMemberId, CellRankSpec, CellScore, CellWindow, FeatureFilter, FeatureFilterOp, RankedCells,
+    CellAnchor, CellLaneQuota, CellMemberFilter, CellMemberId, CellQuota, CellRankSpec, CellScore, CellWindow,
+    FeatureFilter, FeatureFilterOp, RankedCells,
 };
 
 fn engine_on(dir: &std::path::Path) -> TemporalEngine {
@@ -92,7 +93,7 @@ fn seed(engine: &TemporalEngine, key: &str) {
 }
 
 fn spec(window: CellWindow, score: CellScore, top_k: usize) -> CellRankSpec {
-    CellRankSpec { window, filters: Vec::new(), score, top_k, project: Vec::new() }
+    CellRankSpec { window, filters: Vec::new(), score, top_k, project: Vec::new(), members: Default::default(), anchor: Default::default(), quota: Default::default() }
 }
 
 const ALL: CellWindow = CellWindow::Between { start_ms: 0, end_ms: u64::MAX };
@@ -355,4 +356,283 @@ fn a_decay_total_past_the_integer_range_does_not_wrap_through_the_engine() {
     let ranked = rank(&engine, &key, spec(ALL, decay("shown", 100), 5));
     assert_eq!((members(&ranked), scores(&ranked)), (vec![1, 2], vec![1.5 * max, -0.5 * max]));
     assert_eq!(ranked.unscored, 0);
+}
+
+// ---- the optional controls on the command: a member set, an anchor, a quota --------------------
+
+fn id(v: u64) -> CellMemberId {
+    CellMemberId::U64(v)
+}
+
+fn with_members(include: Option<Vec<u64>>, exclude: Vec<u64>, base: CellRankSpec) -> CellRankSpec {
+    CellRankSpec {
+        members: CellMemberFilter {
+            include: include.map(|set| set.into_iter().map(id).collect()),
+            exclude: exclude.into_iter().map(id).collect(),
+        },
+        ..base
+    }
+}
+
+fn status_of(engine: &TemporalEngine, key: &str, query: CellRankSpec) -> (bool, String) {
+    let status = exec(engine, Command::CellRankQuery { key: key.to_string(), spec: query }).status;
+    (status.ok, status.code.clone())
+}
+
+/// The `shown` values `seed` stores: (member, shown). The fold below reads this table and nothing
+/// the engine produced.
+const SEEDED: [(u64, i64); 10] = [(1, 10), (2, 20), (3, 100), (1, 10), (2, 30), (4, 8), (1, 10), (3, 100), (2, 10), (4, 2)];
+
+#[test]
+fn a_member_set_changes_the_answer_exactly_as_an_independent_fold_says() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let key = stored_key(11);
+    seed(&engine, &key);
+
+    // Every include set (none, and each non-empty subset of m1..m4) against every exclude set.
+    let universe = [1u64, 2, 3, 4];
+    let subsets: Vec<Vec<u64>> =
+        (0..16u32).map(|bits| universe.iter().copied().filter(|m| (bits >> (m - 1)) & 1 == 1).collect()).collect();
+    let (mut reads, mut narrowed) = (0, 0);
+    for include in std::iter::once(None).chain(subsets.iter().skip(1).map(Some)) {
+        for exclude in &subsets {
+            // The fold: a table of shown totals over the seeded rows, a member kept when the sets say so.
+            let mut totals: std::collections::BTreeMap<u64, i64> = Default::default();
+            for (member, shown) in SEEDED.iter() {
+                if include.map_or(true, |set| set.contains(member)) && !exclude.contains(member) {
+                    *totals.entry(*member).or_insert(0) += shown;
+                }
+            }
+            let mut want: Vec<(u64, i64)> = totals.into_iter().collect();
+            want.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+            let query = with_members(include.cloned(), exclude.clone(), spec(ALL, lane("shown"), 10));
+            let got = rank(&engine, &key, query);
+            let got_pairs: Vec<(u64, i64)> =
+                members(&got).into_iter().zip(got.rows.iter().map(|r| r.score as i64)).collect();
+            assert_eq!(got_pairs, want, "include {include:?} exclude {exclude:?}");
+            reads += 1;
+            narrowed += usize::from(want.len() < 4);
+        }
+    }
+    assert_eq!(reads, 16 * 16);
+    assert!(narrowed > 150, "{narrowed} reads were narrowed");
+
+    // ANDed with a predicate, which cuts before the reduction: peak > 4 keeps (100,m1) (100,m2)
+    // (200,m1) (300,m3) (400,m2), so m1 20 and m2 30 among m1, m2.
+    let mut query = with_members(Some(vec![1, 2]), vec![], spec(ALL, lane("shown"), 10));
+    query.filters = vec![FeatureFilter { field: "peak".to_string(), op: FeatureFilterOp::GreaterThan, value: 4 }];
+    let both = rank(&engine, &key, query.clone());
+    assert_eq!((members(&both), scores(&both)), (vec![2, 1], vec![30.0, 20.0]));
+
+    // And the same after a restart that reads every block cold.
+    drop(engine);
+    let reloaded = engine_on(dir.path());
+    assert_eq!(rank(&reloaded, &key, query), both);
+}
+
+#[test]
+fn the_member_set_is_bounded_at_admission_and_accepted_at_exactly_the_limit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let key = stored_key(12);
+    seed(&engine, &key);
+    let many = |n: u64| (1..=n).collect::<Vec<u64>>();
+    let plain = || spec(ALL, lane("shown"), 10);
+    let outcome = |query: CellRankSpec| status_of(&engine, &key, query);
+    let refused = (false, "invalid_argument".to_string());
+    // 1024 a side is served; 1025 is refused before any snapshot is read.
+    assert!(outcome(with_members(Some(many(1024)), vec![], plain())).0);
+    assert_eq!(outcome(with_members(Some(many(1025)), vec![], plain())), refused);
+    assert!(outcome(with_members(None, many(1024), plain())).0);
+    assert_eq!(outcome(with_members(None, many(1025), plain())), refused);
+    // A set that names nothing is refused rather than answered empty.
+    assert_eq!(outcome(with_members(Some(vec![]), vec![], plain())), refused);
+    // At the limit the set is a real set: 1024 ids holding m1..m4 keep all four.
+    assert_eq!(members(&rank(&engine, &key, with_members(Some(many(1024)), vec![], plain()))), vec![3, 2, 1, 4]);
+}
+
+#[test]
+fn an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let key = stored_key(13);
+    seed(&engine, &key); // snapshots at 100 200 300 400
+    let anchored = |duration_ms: u64| CellRankSpec {
+        anchor: CellAnchor::Newest,
+        ..spec(CellWindow::Last { duration_ms }, lane("shown"), 10)
+    };
+    // [301, 400]: the snapshot at 400 alone: m2 10, m4 2.
+    let one = rank(&engine, &key, anchored(100));
+    assert_eq!((members(&one), scores(&one), one.snapshots), (vec![2, 4], vec![10.0, 2.0], 1));
+    // [101, 400]: 200, 300 and 400. m1 20, m2 30 + 10, m3 100, m4 8 + 2.
+    let three = rank(&engine, &key, anchored(300));
+    assert_eq!(
+        (members(&three), scores(&three), three.snapshots),
+        (vec![3, 2, 1, 4], vec![100.0, 40.0, 20.0, 10.0], 3)
+    );
+    // The start is inclusive: 301 reaches back to 100.
+    assert_eq!(rank(&engine, &key, anchored(301)).snapshots, 4);
+    // A duration of 0 holds nothing.
+    assert_eq!(rank(&engine, &key, anchored(0)).snapshots, 0);
+    // The request clock is the real clock, far past every stamp: the same window on it is empty.
+    let on_the_clock = rank(&engine, &key, spec(CellWindow::Last { duration_ms: 100 }, lane("shown"), 10));
+    assert_eq!((on_the_clock.snapshots, on_the_clock.rows.len()), (0, 0));
+    // An anchor on any other window is refused at admission.
+    for window in [ALL, CellWindow::Since { start_ms: 1 }, CellWindow::LastN { n: 2 }] {
+        let status =
+            status_of(&engine, &key, CellRankSpec { anchor: CellAnchor::Newest, ..spec(window, lane("shown"), 10) });
+        assert_eq!(status, (false, "invalid_argument".to_string()));
+    }
+    // A key with no snapshot is an empty answer.
+    let absent = rank(&engine, &stored_key(99), anchored(100));
+    assert_eq!((absent.rows.len(), absent.refused.as_str()), (0, ""));
+
+    drop(engine);
+    let reloaded = engine_on(dir.path());
+    assert_eq!(rank(&reloaded, &key, anchored(100)), one);
+}
+
+/// One snapshot of eight members ranked by `shown` 80 .. 10; `clicked` is non-zero for m3, m6, m8.
+fn ladder_key(engine: &TemporalEngine, key: &str) {
+    let h = header(&[("shown", LaneReducer::Sum), ("clicked", LaneReducer::Sum)]);
+    let rows: [(u64, i64, i64); 8] =
+        [(1, 80, 0), (2, 70, 0), (3, 60, 1), (4, 50, 0), (5, 40, 0), (6, 30, 1), (7, 20, 0), (8, 10, 1)];
+    let cells: Vec<Cell> = rows.iter().map(|(m, shown, clicked)| cell(*m, 0, vec![*shown, *clicked])).collect();
+    put(engine, key, &h, 100, &cells);
+}
+
+fn quota(lanes: &[(&str, usize)], others: usize, top_k: usize) -> CellRankSpec {
+    CellRankSpec {
+        quota: CellQuota {
+            lanes: lanes.iter().map(|(lane, count)| CellLaneQuota { lane: lane.to_string(), count: *count }).collect(),
+            others,
+        },
+        ..spec(ALL, lane("shown"), top_k)
+    }
+}
+
+#[test]
+fn a_quota_selects_exactly_as_a_fold_of_the_ranking_says() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let key = stored_key(14);
+    ladder_key(&engine, &key);
+    let clicked: [(u64, i64); 8] = [(1, 0), (2, 0), (3, 1), (4, 0), (5, 0), (6, 1), (7, 0), (8, 1)];
+
+    // The fold: walk the best `k` members; keep one that has `clicked` while the lane is short, else
+    // up to `others`; stop when the lane is full. Written without the ranked read.
+    let fold = |count: usize, others: usize, k: usize| -> Vec<u64> {
+        let (mut short, mut spare, mut kept) = (count, others, Vec::new());
+        for (member, value) in clicked.iter().take(k) {
+            if short > 0 && *value != 0 {
+                short -= 1;
+                kept.push(*member);
+            } else if spare > 0 {
+                spare -= 1;
+                kept.push(*member);
+            }
+            if short == 0 {
+                break;
+            }
+        }
+        kept
+    };
+    let mut compared = 0;
+    for count in 1..=3 {
+        for others in 0..=3 {
+            for k in 1..=8 {
+                let got = rank(&engine, &key, quota(&[("clicked", count)], others, k));
+                assert_eq!(members(&got), fold(count, others, k), "count {count} others {others} k {k}");
+                assert!(got.rows.len() <= k);
+                compared += got.rows.len();
+            }
+        }
+    }
+    assert!(compared > 100);
+    // The boundary the fold implies: the second `clicked` member is the sixth best.
+    assert_eq!(members(&rank(&engine, &key, quota(&[("clicked", 2)], 0, 6))), vec![3, 6]);
+    assert_eq!(members(&rank(&engine, &key, quota(&[("clicked", 2)], 0, 5))), vec![3]);
+    // Without a quota the same read is the plain top-k.
+    assert_eq!(members(&rank(&engine, &key, spec(ALL, lane("shown"), 4))), vec![1, 2, 3, 4]);
+
+    drop(engine);
+    let reloaded = engine_on(dir.path());
+    assert_eq!(members(&rank(&reloaded, &key, quota(&[("clicked", 2)], 2, 8))), vec![1, 2, 3, 6]);
+}
+
+#[test]
+fn a_quota_is_refused_at_admission_past_its_bounds_and_served_at_them() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let key = stored_key(15);
+    ladder_key(&engine, &key);
+    let outcome = |query: CellRankSpec| status_of(&engine, &key, query);
+    let refused = (false, "invalid_argument".to_string());
+    // The reservation, counts plus others, is at most 1000.
+    assert!(outcome(quota(&[("clicked", 1000)], 0, 8)).0);
+    assert_eq!(outcome(quota(&[("clicked", 1001)], 0, 8)), refused);
+    assert!(outcome(quota(&[("clicked", 999)], 1, 8)).0);
+    assert_eq!(outcome(quota(&[("clicked", 999)], 2, 8)), refused);
+    assert!(outcome(quota(&[], 1000, 8)).0);
+    assert_eq!(outcome(quota(&[], 1001, 8)), refused);
+    // A count of zero and a lane named twice.
+    assert_eq!(outcome(quota(&[("clicked", 0)], 0, 8)), refused);
+    assert_eq!(outcome(quota(&[("clicked", 1), ("clicked", 1)], 0, 8)), refused);
+    // Lanes in a quota: 16 distinct names are admitted (and then refused by name as a served
+    // refusal, the key declaring two lanes); 17 are refused at admission.
+    let named = |n: usize| CellRankSpec {
+        quota: CellQuota {
+            lanes: (0..n).map(|i| CellLaneQuota { lane: format!("l{i}"), count: 1 }).collect(),
+            others: 0,
+        },
+        ..spec(ALL, lane("shown"), 8)
+    };
+    assert!(outcome(named(16)).0);
+    assert!(rank(&engine, &key, named(16)).refused.contains("l0"));
+    assert_eq!(outcome(named(17)), refused);
+    // A lane the key does not declare is a served refusal naming it, like every other name.
+    assert!(rank(&engine, &key, quota(&[("views", 1)], 0, 8)).refused.contains("views"));
+}
+
+#[test]
+fn a_query_that_uses_none_of_the_controls_is_encoded_and_answered_as_it_always_was() {
+    // The encoding: none of the new keys appears, so a spec written by an older client and a spec
+    // written today are the same bytes.
+    let plain = spec(CellWindow::Last { duration_ms: 150 }, lane("shown"), 5);
+    let json = serde_json::to_string(&plain).unwrap();
+    assert_eq!(
+        json,
+        r#"{"window":{"last":{"duration_ms":150}},"filters":[],"score":{"lane":{"lane":"shown"}},"top_k":5,"project":[]}"#
+    );
+    // A spec that lacks the keys still reads, as the spec with the controls at rest.
+    assert_eq!(serde_json::from_str::<CellRankSpec>(&json).unwrap(), plain);
+    // And one that names them at rest is the same spec.
+    let explicit = r#"{"window":{"last":{"duration_ms":150}},"filters":[],"score":{"lane":{"lane":"shown"}},"top_k":5,"project":[],"anchor":"request","members":{},"quota":{}}"#;
+    assert_eq!(serde_json::from_str::<CellRankSpec>(explicit).unwrap(), plain);
+
+    // With the controls set, their encoding is the one the docs show.
+    let used = CellRankSpec {
+        members: CellMemberFilter { include: Some(vec![id(1)]), exclude: vec![id(2)] },
+        anchor: CellAnchor::Newest,
+        quota: CellQuota { lanes: vec![CellLaneQuota { lane: "peak".to_string(), count: 2 }], others: 1 },
+        ..plain.clone()
+    };
+    let used_json = serde_json::to_string(&used).unwrap();
+    assert_eq!(
+        used_json,
+        r#"{"window":{"last":{"duration_ms":150}},"filters":[],"score":{"lane":{"lane":"shown"}},"top_k":5,"project":[],"members":{"include":[{"u64":1}],"exclude":[{"u64":2}]},"anchor":"newest","quota":{"lanes":[{"lane":"peak","count":2}],"others":1}}"#
+    );
+    assert_eq!(serde_json::from_str::<CellRankSpec>(&used_json).unwrap(), used);
+
+    // The answer: the same through the engine whether the spec was built or read from its bytes.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let key = stored_key(16);
+    seed(&engine, &key);
+    let all = spec(ALL, lane("shown"), 10);
+    let from_bytes: CellRankSpec = serde_json::from_str(&serde_json::to_string(&all).unwrap()).unwrap();
+    assert_eq!(rank(&engine, &key, all.clone()), rank(&engine, &key, from_bytes));
+    assert_eq!(members(&rank(&engine, &key, all)), vec![3, 2, 1, 4]);
 }

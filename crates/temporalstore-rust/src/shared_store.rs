@@ -5514,7 +5514,7 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                 })
                 .collect(),
         }),
-        Command::FeatureAppendWithPolicy { key, points, policy } => {
+        Command::FeatureAppendWithPolicy { key, points, policy, retry_token } => {
             v1::command::Kind::FeatureAppendWithPolicy(v1::FeatureAppendWithPolicy {
                 key: key.clone(),
                 points: points
@@ -5525,6 +5525,7 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                     })
                     .collect(),
                 policy: sdk::feature_write_policy_to_proto(*policy) as i32,
+                retry_token: *retry_token,
             })
         }
         Command::CellRollup { key, spec } => {
@@ -15325,6 +15326,7 @@ fn the_covered_writes_in_the_eight_batch_are_framed_as_protobuf_and_round_trip()
                 key: "k".into(),
                 points: vec![point(3, b"c")],
                 policy: FeatureWritePolicy::Block,
+                retry_token: None,
             },
         ),
         (
@@ -15333,6 +15335,7 @@ fn the_covered_writes_in_the_eight_batch_are_framed_as_protobuf_and_round_trip()
                 key: "k".into(),
                 points: Vec::new(),
                 policy: FeatureWritePolicy::InsertIfAbsent,
+                retry_token: None,
             },
         ),
         (
@@ -15341,6 +15344,25 @@ fn the_covered_writes_in_the_eight_batch_are_framed_as_protobuf_and_round_trip()
                 key: "k".into(),
                 points: vec![point(4, &[0x0a, 0xff, 0x00])],
                 policy: FeatureWritePolicy::MergeReduce,
+                retry_token: None,
+            },
+        ),
+        (
+            "FeatureAppendWithPolicy (MergeReduce, retry token)",
+            Command::FeatureAppendWithPolicy {
+                key: "k".into(),
+                points: vec![point(4, &[0x0a, 0xff, 0x00])],
+                policy: FeatureWritePolicy::MergeReduce,
+                retry_token: Some(u64::MAX),
+            },
+        ),
+        (
+            "FeatureAppendWithPolicy (MergeReduce, retry token zero)",
+            Command::FeatureAppendWithPolicy {
+                key: "k".into(),
+                points: Vec::new(),
+                policy: FeatureWritePolicy::MergeReduce,
+                retry_token: Some(0),
             },
         ),
         (
@@ -15376,9 +15398,10 @@ fn the_covered_writes_in_the_eight_batch_are_framed_as_protobuf_and_round_trip()
             },
         ),
     ];
-    // DENOMINATOR FIRST: eleven cases over the eight commands this batch mapped -- three of them
-    // appear more than once because their enum tag and their presence rules are what could break.
-    assert_eq!(cases.len(), 11, "eleven cases over the eight commands this batch mapped");
+    // DENOMINATOR FIRST: thirteen cases over the eight commands this batch mapped -- three of them
+    // appear more than once because their enum tag and their presence rules are what could break,
+    // and the merge-reduce append has two more for a retry token (a large one, and zero).
+    assert_eq!(cases.len(), 13, "thirteen cases over the eight commands this batch mapped");
 
     for (name, command) in cases {
         assert!(

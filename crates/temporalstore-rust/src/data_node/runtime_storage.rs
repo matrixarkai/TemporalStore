@@ -448,6 +448,38 @@ impl DataNodeRuntime {
         options: StorageManagerOptions,
         detailed_report: bool,
     ) -> StorageManagerLoopReport {
+        // A SHARD STILL REPLAYING ITS LOG GETS NO ROUND. The all-shards scheduler visits every
+        // key of `shards`, and a shard is inserted there BEFORE its replay and flagged
+        // `recovering` until the replay ends. The plan, the dump, compaction and the index-log
+        // truncation below all read a half-reconstructed index in that window: a dump would
+        // persist it, compaction would relocate against it, and a block the replay has not yet
+        // re-filed looks dead. The cycle path and the block GC already decline such a shard;
+        // this loop did not, and the stages it runs are the ones that change the most.
+        // Declined, not failed: the next round after recovery runs normally.
+        if self.inner.engine.shard_is_recovering(shard_id) {
+            self.inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_stage_skips += 1;
+            return StorageManagerLoopReport {
+                shard_id,
+                pressure: StorageManagerPressureSnapshot::default(),
+                executed_stages: Vec::new(),
+                skipped_stages: vec!["shard_recovering".to_string()],
+                pressure_decisions: Vec::new(),
+                lifecycle_plan: StorageLifecyclePlan::default(),
+                lifecycle_report: None,
+                expired_records_removed: 0,
+                metrics_reap: None,
+                compaction_report: None,
+                gc_report: None,
+                eviction: None,
+                status: Status::ok(),
+                stage_spans: Vec::new(),
+                duration_us: 0,
+            };
+        }
         // The stage walk counters are read-and-cleared at each stage boundary, so the first span
         // must not inherit whatever ran before this round.
         let mut spans = LoopSpans::start();

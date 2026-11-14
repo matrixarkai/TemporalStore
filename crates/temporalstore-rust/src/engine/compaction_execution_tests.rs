@@ -310,3 +310,106 @@ fn a_compaction_whose_index_publish_failed_keeps_the_slabs_the_disk_index_names(
     );
     check_values(&engine, 16);
 }
+
+fn assert_pre_round_slabs_still_live(engine: &TemporalEngine, before: &[u64]) {
+    let after = engine.live_block_slab_ids(1);
+    let all_shards = engine.live_block_slab_ids_all_shards();
+    for slab in before {
+        assert!(after.contains(slab), "slab {slab} the on-disk index names was released");
+        assert!(all_shards.contains(slab), "slab {slab} released for all-shard reclaim");
+    }
+}
+
+/// The barrier arm of a normal round, which the publish test above does not reach.
+#[test]
+fn a_compaction_whose_barrier_failed_keeps_the_slabs_the_disk_index_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path(), false);
+    seed(&engine, 16);
+    let before = engine.live_block_slab_ids(1);
+    fail_next_compaction_barrier_for_test(true);
+    let failed = engine.compact_shard_blocks_relocating_inner(1, u64::MAX, usize::MAX, None, false);
+    fail_next_compaction_barrier_for_test(false);
+    let status = failed.expect_err("the barrier must fail");
+    assert!(status.message.contains("before publishing"), "wrong arm: {}", status.message);
+    assert_pre_round_slabs_still_live(&engine, &before);
+}
+
+/// The barrier arm of the partial-failure handler.
+#[test]
+fn a_partial_compaction_whose_barrier_failed_keeps_the_slabs_the_disk_index_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path(), false);
+    seed(&engine, 16);
+    let before = engine.live_block_slab_ids(1);
+    crate::engine::compaction::fail_compaction_block_read_after_for_test(Some(4));
+    fail_next_compaction_barrier_for_test(true);
+    let failed = engine.compact_shard_blocks_relocating_inner(1, u64::MAX, usize::MAX, None, false);
+    crate::engine::compaction::fail_compaction_block_read_after_for_test(None);
+    fail_next_compaction_barrier_for_test(false);
+    let status = failed.expect_err("the barrier must fail");
+    assert!(status.message.contains("partial compaction"), "wrong arm: {}", status.message);
+    assert_pre_round_slabs_still_live(&engine, &before);
+    // Only some blocks moved, so the old slabs stay live by their remaining blocks alone: the hold
+    // itself is what must name them.
+    let held = engine.unpublished_compaction_slabs.read().unwrap().get(&1).cloned().unwrap_or_default();
+    assert!(before.iter().all(|slab| held.contains(slab)), "the hold lost a slab: {held:?} vs {before:?}");
+}
+
+/// An unloaded shard holds nothing: the index was flushed and a reload reads it.
+#[test]
+fn unloading_a_shard_drops_its_unpublished_compaction_hold() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path(), false);
+    seed(&engine, 4);
+    fail_next_compaction_barrier_for_test(true);
+    let _ = engine.compact_shard_blocks_relocating_inner(1, u64::MAX, usize::MAX, None, false);
+    fail_next_compaction_barrier_for_test(false);
+    assert!(engine.unpublished_compaction_slabs.read().unwrap().contains_key(&1));
+    engine.unload_shard(1);
+    assert!(!engine.unpublished_compaction_slabs.read().unwrap().contains_key(&1));
+}
+
+/// THE LOSS ITSELF, not a proxy for it: a failed barrier leaves the on-disk index naming the old
+/// slabs; a reclaim that treats them as stale quarantines and purges them; a restart over that
+/// index then cannot read its keys.
+#[test]
+fn a_failed_compaction_barrier_followed_by_reclaim_and_a_restart_loses_no_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path(), false);
+    seed(&engine, 16);
+    // Publish the index first: it now carries the applied sequence, so a restart reads the keys
+    // through the slabs it names instead of replaying the log.
+    engine.flush_shard_index(1);
+    fail_next_compaction_barrier_for_test(true);
+    let failed = engine.compact_shard_blocks_relocating_inner(1, u64::MAX, usize::MAX, None, false);
+    fail_next_compaction_barrier_for_test(false);
+    assert!(failed.is_err(), "the barrier must fail");
+    // Reclaim as the lifecycle does it: slabs before the newest that the live set does not name.
+    let live = engine.live_block_slab_ids_all_shards();
+    let newest = *engine.block_store.slab_ids().unwrap().iter().max().unwrap();
+    engine
+        .block_store
+        .gc_slabs_before_with_live_refs_delayed_destroy(newest, live)
+        .unwrap();
+    engine.block_store.purge_delayed_destroy_slabs_older_than(0).unwrap();
+    drop(engine);
+    check_values(&open(dir.path(), false), 16);
+}
+
+/// Pins accumulate. The second failing round starts from the index the first one already moved,
+/// which no longer names the first round's old slabs, so replacing the pin would drop them.
+#[test]
+fn two_failed_compaction_rounds_keep_the_slabs_of_the_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path(), false);
+    seed(&engine, 16);
+    let before = engine.live_block_slab_ids(1);
+    for _ in 0..2 {
+        fail_next_compaction_barrier_for_test(true);
+        let failed = engine.compact_shard_blocks_relocating_inner(1, u64::MAX, usize::MAX, None, false);
+        fail_next_compaction_barrier_for_test(false);
+        assert!(failed.is_err(), "the barrier must fail");
+    }
+    assert_pre_round_slabs_still_live(&engine, &before);
+}

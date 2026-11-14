@@ -27,6 +27,7 @@ impl TemporalStoreTable {
                 key: key.into(),
                 points,
                 policy,
+                retry_token: None,
             })?
             .response
         {
@@ -51,6 +52,7 @@ impl TemporalStoreTable {
                 key: key.into(),
                 points,
                 policy: FeatureWritePolicy::MergeReduce,
+                retry_token: None,
             })?
             .response
         {
@@ -58,6 +60,7 @@ impl TemporalStoreTable {
                 snapshots_written,
                 cells_created,
                 cells_merged,
+                ..
             } => Ok((snapshots_written, cells_created, cells_merged)),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "feature_merge_cells",
@@ -260,6 +263,41 @@ impl TemporalStoreTable {
             }),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "cell_rollup",
+                response,
+            }),
+        }
+    }
+
+    /// The ranked windowed read over the cell snapshots of several keys that share one spec: the
+    /// answer one key holding all of their snapshots would give. The keys must live on one shard
+    /// (the request is routed by the first); `RankedCells::keys` says how many held a snapshot in
+    /// the window, so an answer missing a key the shard did not hold is visible.
+    pub fn cell_fan_in_rank_query(
+        &self,
+        keys: Vec<String>,
+        spec: crate::types::CellRankSpec,
+    ) -> Result<crate::types::RankedCells, ClientError> {
+        match self.execute(Command::CellFanInRankQuery { keys, spec })?.response {
+            CommandResponse::CellRanking { ranked } if ranked.refused.is_empty() => Ok(ranked),
+            CommandResponse::CellRanking { ranked } => Err(ClientError::Status(ranked.refused)),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "cell_fan_in_rank_query",
+                response,
+            }),
+        }
+    }
+
+    /// N independent ranked cell reads in one request, answered in request order. A read that
+    /// cannot be served carries its reason in `refused` and does not fail the others. The keys
+    /// must live on one shard (the request is routed by the first).
+    pub fn cell_rank_batch_query(
+        &self,
+        queries: Vec<crate::types::CellRankBatchItem>,
+    ) -> Result<Vec<crate::types::RankedCells>, ClientError> {
+        match self.execute(Command::CellRankBatchQuery { queries })?.response {
+            CommandResponse::CellRankings { rankings } => Ok(rankings),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "cell_rank_batch_query",
                 response,
             }),
         }

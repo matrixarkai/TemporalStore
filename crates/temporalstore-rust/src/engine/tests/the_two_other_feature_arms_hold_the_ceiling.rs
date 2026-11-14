@@ -131,6 +131,7 @@ fn a_policy_append_past_the_ceiling_is_refused_before_it_writes() {
             key: POLICY_KEY.to_string(),
             points: oversized,
             policy: FeatureWritePolicy::Upsert,
+            retry_token: None,
         },
     });
     assert_refused(
@@ -166,6 +167,7 @@ fn a_policy_append_at_the_ceiling_is_accepted() {
             key: POLICY_KEY.to_string(),
             points: at_the_limit,
             policy: FeatureWritePolicy::Upsert,
+            retry_token: None,
         },
     });
     assert!(

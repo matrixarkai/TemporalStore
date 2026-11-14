@@ -523,6 +523,8 @@ mod the_sequence_row_is_protobuf_only;
 mod a_plan_lists_the_shards_blocks_once;
 #[path = "tests/a_feature_append_merges_cells_by_lane_reducer.rs"]
 mod a_feature_append_merges_cells_by_lane_reducer;
+#[path = "tests/a_retried_merge_append_answers_its_first_receipt.rs"]
+mod a_retried_merge_append_answers_its_first_receipt;
 #[path = "tests/a_ranked_cell_read_is_a_command.rs"]
 mod a_ranked_cell_read_is_a_command;
 #[path = "tests/a_cell_rollup_is_a_command.rs"]
@@ -538,3 +540,5 @@ mod a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key;
 mod a_container_point_read_searches_without_building_its_key;
 #[path = "tests/the_undumped_byte_figure_survives_one_claimless_bucket.rs"]
 mod the_undumped_byte_figure_survives_one_claimless_bucket;
+#[path = "tests/a_ranked_read_over_several_cell_keys.rs"]
+mod a_ranked_read_over_several_cell_keys;

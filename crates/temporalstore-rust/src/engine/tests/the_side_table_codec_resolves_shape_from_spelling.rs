@@ -57,6 +57,21 @@ fn every_domain() -> HashMap<SideTable, SideTableData> {
                 table.insert(key, 1_700_000_000_123_u64);
                 tables.insert(*domain, SideTableData::U64s(table));
             }
+            SideTableShape::Rings => {
+                let mut ring = crate::engine::cell_retry_ring::RetryRing::new();
+                ring.record(
+                    41,
+                    crate::engine::cell_retry_ring::RetryReceipt {
+                        snapshots_written: 1,
+                        cells_created: 2,
+                        cells_merged: 3,
+                    },
+                )
+                .unwrap();
+                let mut table = BTreeMap::new();
+                table.insert(key, ring);
+                tables.insert(*domain, SideTableData::Rings(table));
+            }
         }
     }
     tables
@@ -117,6 +132,23 @@ fn every_side_table_domain_round_trips_as_its_own_shape() {
                     domain.as_str()
                 );
             }
+            (SideTableShape::Rings, Some(SideTableData::Rings(table))) => {
+                let ring = table
+                    .get(&*format!("k-{}", domain.as_str()))
+                    .unwrap_or_else(|| panic!("{} lost its key", domain.as_str()));
+                assert_eq!(
+                    ring.admit(41),
+                    crate::engine::cell_retry_ring::Admission::Replay(
+                        crate::engine::cell_retry_ring::RetryReceipt {
+                            snapshots_written: 1,
+                            cells_created: 2,
+                            cells_merged: 3,
+                        }
+                    ),
+                    "{} round-tripped its table but not its ring",
+                    domain.as_str()
+                );
+            }
             (wanted, other) => panic!(
                 "{} came back as the WRONG SHAPE. It should hold {wanted:?}; read back: {}. This \
                  is the invariant the whole codec rests on -- the spelling decides the shape -- \
@@ -126,6 +158,7 @@ fn every_side_table_domain_round_trips_as_its_own_shape() {
                     Some(SideTableData::Addresses(_)) => "an address table",
                     Some(SideTableData::Counters(_)) => "a counter table",
                     Some(SideTableData::U64s(_)) => "a u64 ledger",
+                    Some(SideTableData::Rings(_)) => "a table of rings",
                     None => "absent",
                 }
             ),
@@ -134,7 +167,7 @@ fn every_side_table_domain_round_trips_as_its_own_shape() {
 }
 
 #[test]
-fn the_six_spellings_are_distinct_and_are_the_ones_the_old_fields_used() {
+fn the_seven_spellings_are_distinct_and_the_six_old_ones_are_unchanged() {
     // DISTINCT, because the wire key is the only thing separating two domains. A collision would
     // not fail -- it would merge them, and the second written would win.
     let mut seen = std::collections::HashSet::new();
@@ -157,6 +190,8 @@ fn the_six_spellings_are_distinct_and_are_the_ones_the_old_fields_used() {
         (SideTable::ControlStateUuid, "control_state_uuid"),
         (SideTable::ContextCompressionWatermark, "context_compression_watermark"),
         (SideTable::Expiry, "expires_at_ms"),
+        // The seventh is new with the retry token, and no older image carries it.
+        (SideTable::RetryRings, "retry_rings"),
     ];
     assert_eq!(
         expected.len(),
@@ -209,7 +244,7 @@ fn the_stored_image_carries_the_spellings_without_a_variant_tag() {
             "the stored image does not carry the spelling {spelling:?}"
         );
     }
-    for tag in ["Addresses", "Counters", "U64s", "addresses", "counters", "u64s"] {
+    for tag in ["Addresses", "Counters", "U64s", "Rings", "addresses", "counters", "u64s"] {
         assert!(
             !json.contains(tag),
             "the stored image carries the variant tag {tag:?}. The shape is supposed to be \

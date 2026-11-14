@@ -10238,6 +10238,9 @@ pub(super) enum SideTable {
     /// Per-object expiry instants. Paired with `expiry_by_deadline`, which is the deadline-ORDERED
     /// mirror and keeps its own field: a different key shape answering a different question.
     Expiry,
+    /// The retry ring of each feature key that has used a retry token. A key that never has is
+    /// not in the table, and the table is not in the image while it is empty.
+    RetryRings,
 }
 
 /// WHICH TABLE SHAPE A DOMAIN HOLDS. Three of them, so this is an enum and not the bool it was --
@@ -10252,6 +10255,9 @@ pub(super) enum SideTableShape {
     /// One `u64` per object key, ORDERED -- three production sites iterate the expiry table and a
     /// hash order would make those walks depend on a per-process seed.
     U64s,
+    /// One retry ring per object key, ORDERED for the same reason, stored as the ring's own byte
+    /// string. An empty table is never written.
+    Rings,
 }
 
 impl SideTable {
@@ -10263,6 +10269,7 @@ impl SideTable {
         SideTable::ControlStateUuid,
         SideTable::ContextCompressionWatermark,
         SideTable::Expiry,
+        SideTable::RetryRings,
     ];
 
     /// THE STORED SPELLING, which is the old field or domain name in every case. A serialized map
@@ -10275,6 +10282,7 @@ impl SideTable {
             SideTable::ControlStateUuid => "control_state_uuid",
             SideTable::ContextCompressionWatermark => "context_compression_watermark",
             SideTable::Expiry => "expires_at_ms",
+            SideTable::RetryRings => "retry_rings",
         }
     }
 
@@ -10287,6 +10295,7 @@ impl SideTable {
             "control_state_uuid" => Some(SideTable::ControlStateUuid),
             "context_compression_watermark" => Some(SideTable::ContextCompressionWatermark),
             "expires_at_ms" => Some(SideTable::Expiry),
+            "retry_rings" => Some(SideTable::RetryRings),
             _ => None,
         }
     }
@@ -10302,6 +10311,7 @@ impl SideTable {
             SideTable::ControlStateUuid
             | SideTable::ContextCompressionWatermark
             | SideTable::Expiry => SideTableShape::U64s,
+            SideTable::RetryRings => SideTableShape::Rings,
         }
     }
 }
@@ -10322,6 +10332,8 @@ pub(super) enum SideTableData {
     Counters(HashMap<ModelKey, BTreeMap<u64, i64>>),
     /// One `u64` per object key, in an ORDERED map for the reason `SideTableShape::U64s` gives.
     U64s(BTreeMap<ModelKey, u64>),
+    /// One retry ring per object key, ordered for the same reason.
+    Rings(BTreeMap<ModelKey, super::cell_retry_ring::RetryRing>),
 }
 
 /// One domain's ADDRESS table, created on first use, reached through the map rather than through
@@ -10457,7 +10469,13 @@ pub(super) mod side_table_serde {
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(tables.len()))?;
+        // A table of rings with no ring in it is not written, so a shard that never used a token
+        // stores the bytes it always stored. The count is of what is written.
+        let written = tables
+            .values()
+            .filter(|table| !matches!(table, SideTableData::Rings(rings) if rings.is_empty()))
+            .count();
+        let mut map = serializer.serialize_map(Some(written))?;
         // ORDERED BY THE DECLARATION, not by the hash, so the stored bytes do not depend on a
         // per-process hash seed. An index whose bytes move without its contents moving defeats
         // every byte-for-byte comparison this campaign relies on.
@@ -10466,6 +10484,11 @@ pub(super) mod side_table_serde {
                 Some(SideTableData::Addresses(table)) => map.serialize_entry(domain, table)?,
                 Some(SideTableData::Counters(table)) => map.serialize_entry(domain, table)?,
                 Some(SideTableData::U64s(table)) => map.serialize_entry(domain, table)?,
+                Some(SideTableData::Rings(table)) => {
+                    if !table.is_empty() {
+                        map.serialize_entry(domain, table)?
+                    }
+                }
                 None => {}
             }
         }
@@ -10502,6 +10525,11 @@ pub(super) mod side_table_serde {
                         Some((domain, SideTableShape::U64s)) => {
                             let table: BTreeMap<ModelKey, u64> = access.next_value()?;
                             out.insert(domain, SideTableData::U64s(table));
+                        }
+                        Some((domain, SideTableShape::Rings)) => {
+                            let table: BTreeMap<ModelKey, super::super::cell_retry_ring::RetryRing> =
+                                access.next_value()?;
+                            out.insert(domain, SideTableData::Rings(table));
                         }
                         // A spelling this binary does not declare. Skipped, not refused: see the
                         // module note above.
@@ -10976,6 +11004,58 @@ impl ShardState {
     /// The expiry instants, for writing. Creates the domain's table on first use.
     pub(super) fn expires_at_ms_mut(&mut self) -> &mut BTreeMap<ModelKey, u64> {
         u64s_in(&mut self.side_tables, SideTable::Expiry)
+    }
+
+    /// The retry ring of `key`, if it has used a retry token and still holds one.
+    pub(super) fn retry_ring(&self, key: &str) -> Option<&super::cell_retry_ring::RetryRing> {
+        match self.side_tables.get(&SideTable::RetryRings) {
+            Some(SideTableData::Rings(table)) => table.get(key),
+            _ => None,
+        }
+    }
+
+    /// Files a token's first receipt in `key`'s ring, starting the ring and the table on first
+    /// use. The only door that creates either. Refused for a token the ring already holds.
+    pub(super) fn record_retry_token(
+        &mut self,
+        key: &str,
+        token: u64,
+        receipt: super::cell_retry_ring::RetryReceipt,
+    ) -> Result<(), String> {
+        let table = match self
+            .side_tables
+            .entry(SideTable::RetryRings)
+            .or_insert_with(|| SideTableData::Rings(BTreeMap::new()))
+        {
+            SideTableData::Rings(table) => table,
+            _ => unreachable!(
+                "the retry_rings domain does not hold rings; a table's shape is resolved from its \
+                 spelling on decode, so this cannot come off the wire"
+            ),
+        };
+        if !table.contains_key(key) {
+            table.insert(std::sync::Arc::from(key), super::cell_retry_ring::RetryRing::new());
+        }
+        let ring = table.get_mut(key).expect("the ring was just filed");
+        let outcome = ring.record(token, receipt).map(|_| ());
+        if ring.is_empty() {
+            table.remove(key);
+        }
+        outcome
+    }
+
+    /// Forgets `key`'s ring, and the table when it was the last. Never creates anything, so a
+    /// shard that never used a token is not touched by the deletes that call this.
+    pub(super) fn forget_retry_ring(&mut self, key: &str) -> bool {
+        let Some(SideTableData::Rings(table)) = self.side_tables.get_mut(&SideTable::RetryRings)
+        else {
+            return false;
+        };
+        let forgot = table.remove(key).is_some();
+        if table.is_empty() {
+            self.side_tables.remove(&SideTable::RetryRings);
+        }
+        forgot
     }
 
     /// The control-state dedup ledger's expiry instants.

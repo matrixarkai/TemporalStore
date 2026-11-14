@@ -89,11 +89,12 @@ fn write(engine: &TemporalEngine, key: &str, timestamp_ms: u64, cells: &[Cell]) 
             key: key.to_string(),
             points: vec![FeaturePoint { timestamp_ms, value: encode_value(&header(), cells).unwrap() }],
             policy: FeatureWritePolicy::MergeReduce,
+            retry_token: None,
         },
     });
     assert!(response.status.ok, "{:?}", response.status);
     match response.response {
-        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged } => {
+        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged, .. } => {
             (snapshots_written, cells_created, cells_merged)
         }
         other => panic!("a merge-reduce append answers a receipt, got {other:?}"),
@@ -112,6 +113,9 @@ fn rank(engine: &TemporalEngine, key: &str, filters: Vec<FeatureFilter>, score: 
                 score,
                 top_k: 10,
                 project: Vec::new(),
+                members: Default::default(),
+                anchor: Default::default(),
+                quota: Default::default(),
             },
         },
     });
@@ -234,6 +238,9 @@ fn a_worked_example_of_cells() {
                 score: CellScore::Lane { lane: "views".to_string() },
                 top_k: 10,
                 project: Vec::new(),
+                members: Default::default(),
+                anchor: Default::default(),
+                quota: Default::default(),
             },
         },
     });

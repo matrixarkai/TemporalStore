@@ -42,6 +42,17 @@ fn note_compaction_flush_publish() {
     FLUSH_PUBLISHED_UNDER_GUARD.with(|cell| cell.set(Some(held)));
 }
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_BARRIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make the next compaction durability barrier on this thread fail once.
+#[cfg(test)]
+pub(crate) fn fail_next_compaction_barrier_for_test(fail: bool) {
+    FAIL_NEXT_BARRIER.with(|cell| cell.set(fail));
+}
+
 /// `None` until a round has published since the last reset; then whether the guard was held.
 #[cfg(test)]
 pub(crate) fn compaction_flush_published_under_guard_for_test() -> Option<bool> {
@@ -1494,6 +1505,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
             .entry(shard_id).or_default().extend(pre_round_slabs.iter().copied());
     }
 
+    /// The block durability barrier, with a test seam in front of it.
+    fn compaction_barrier(&self) -> Result<(), crate::block_store::BlockStoreError> {
+        #[cfg(test)]
+        if FAIL_NEXT_BARRIER.with(|cell| cell.replace(false)) {
+            return Err(std::io::Error::other("injected barrier failure").into());
+        }
+        self.block_store.sync_durable()
+    }
+
     fn clear_unpublished_compaction(&self, shard_id: ShardId) {
         self.unpublished_compaction_slabs
             .write().expect("unpublished compaction lock poisoned").remove(&shard_id);
@@ -2022,7 +2042,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             );
             refresh_bucket_runtime_flags(shard);
             rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
-            if let Err(barrier) = self.block_store.sync_durable() {
+            if let Err(barrier) = self.compaction_barrier() {
                 self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
                 return Err(Status::error(
                     "block_compaction_failed",
@@ -2088,7 +2108,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // slab (compaction does not advance applied_wal_sequence, so WAL replay does not
         // re-derive them) = permanent silent loss. The partial-failure path above already
         // syncs here; the success path must too. Unconditional, matching that path.
-        if let Err(barrier) = self.block_store.sync_durable() {
+        if let Err(barrier) = self.compaction_barrier() {
             self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
             return Err(Status::error(
                 "block_compaction_failed",

@@ -2267,7 +2267,12 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
     // appearing or the invalidation missing one.
     assert_eq!(output.cache_entries_removed, 1);
     assert!(output.cache_disk_bytes_removed > 0);
-    assert_eq!(output.wal_records_removed, 2);
+    // NO WAL RECORD GOES. The three writes above register their blocks against the log, and a
+    // truncation takes the retention floor from those registrations. This used to expect 2
+    // records removed, because the /gc path truncated against whatever floor was last stored --
+    // nothing here -- and freed records that live registrations still pointed into. The index-log
+    // and slab counts below are unaffected.
+    assert_eq!(output.wal_records_removed, 0);
     assert_eq!(output.index_log_records_removed, 1);
     assert_eq!(output.block_slabs_removed, 1);
     assert!(output.block_slabs_removed_physical_bytes > 0);
@@ -12343,5 +12348,52 @@ fn a_reopen_after_gated_rounds_replays_only_the_gated_bytes_and_loses_nothing() 
     assert!(
         gated_index < ungated_index,
         "a dump covered the index log and it was not reclaimed ({gated_index} against {ungated_index})"
+    );
+}
+
+/// A shard that is still replaying its log gets no round from the periodic loop: the plan, the
+/// dump, compaction and the index-log truncation all read an index the replay has not finished
+/// building. Once the replay ends the same shard gets a normal round.
+#[test]
+fn the_loop_runs_no_stage_on_a_shard_that_is_still_replaying() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for index in 0..16 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("replaying-{index:02}"),
+                value: vec![b'v'; 32],
+            },
+        });
+        assert!(response.status.ok);
+    }
+    let watermark = engine.test_publish_recovering_shard(1);
+    assert!(engine.shard_is_recovering(1), "the fixture must park the shard mid-recovery");
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let declined = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert!(
+        declined.executed_stages.is_empty(),
+        "a recovering shard ran stages: {:?}",
+        declined.executed_stages
+    );
+    assert_eq!(declined.skipped_stages, vec!["shard_recovering".to_string()]);
+    assert!(declined.status.ok, "declining a round is not a failed round");
+    assert_eq!(runtime.stats().storage_manager_failed_rounds, 0);
+    assert_eq!(runtime.stats().storage_manager_stage_skips, 1);
+
+    runtime.inner.engine.test_finish_recovery(1, watermark);
+    let ran = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert!(
+        ran.executed_stages.iter().any(|stage| stage == "prepare"),
+        "after recovery the same shard must get a normal round: {:?}",
+        ran.executed_stages
     );
 }

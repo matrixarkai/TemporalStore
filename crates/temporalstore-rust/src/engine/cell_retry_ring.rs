@@ -67,6 +67,7 @@ impl RetryRing {
         Self::default()
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
@@ -147,6 +148,45 @@ impl RetryRing {
             return Err("retry ring is not in its canonical spelling".to_string());
         }
         Ok(ring)
+    }
+}
+
+/// A ring is stored as the one byte string `encode` writes, wherever a serde format carries it:
+/// a byte string in the index image, an array of numbers where a format has no byte type. The
+/// image is stamped, so there is no second spelling to read.
+impl serde::Serialize for RetryRing {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(&self.encode())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for RetryRing {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = RetryRing;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a retry ring in its stored byte spelling")
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<RetryRing, E> {
+                RetryRing::decode(bytes).map_err(E::custom)
+            }
+
+            fn visit_byte_buf<E: serde::de::Error>(self, bytes: Vec<u8>) -> Result<RetryRing, E> {
+                self.visit_bytes(&bytes)
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<RetryRing, A::Error> {
+                let mut bytes = Vec::new();
+                while let Some(byte) = seq.next_element::<u8>()? {
+                    bytes.push(byte);
+                }
+                self.visit_bytes(&bytes)
+            }
+        }
+        deserializer.deserialize_bytes(Visitor)
     }
 }
 

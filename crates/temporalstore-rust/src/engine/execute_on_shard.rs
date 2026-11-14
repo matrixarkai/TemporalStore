@@ -3612,8 +3612,36 @@ pub(crate) fn execute_on_shard(
             key,
             points,
             policy,
+            retry_token,
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            // RETRY TOKEN ADMISSION, BEFORE ANYTHING IS PLANNED OR WRITTEN. A token the key still
+            // remembers answers the receipt its first application landed, marked as a replay, and
+            // returns here: no plan, no block, no series change, no new ring entry. The decision
+            // is a function of the key's stored ring and the request alone -- no clock -- so a
+            // follower applying the entry and a replay after a restart answer the same. A token
+            // under any other policy cannot reach here (validation refuses it) and is ignored.
+            let retry_token = retry_token.filter(|_| policy == FeatureWritePolicy::MergeReduce);
+            if let Some(token) = retry_token {
+                // A ring belongs to a series: a key that holds none remembers nothing. The
+                // deletes clear the ring where they remove the series; this states the same rule
+                // where the ring is read.
+                let live = shard.features().get(&key[..]).is_some_and(|series| series.len() > 0);
+                if let (true, Some(crate::engine::cell_retry_ring::Admission::Replay(first))) = (
+                    live,
+                    shard.retry_ring(&key).map(|ring| ring.admit(token)),
+                ) {
+                    return ExecuteOutcome {
+                        response: CommandResponse::CellMergeReceipt {
+                            snapshots_written: first.snapshots_written,
+                            cells_created: first.cells_created,
+                            cells_merged: first.cells_merged,
+                            replayed: true,
+                        },
+                        mutated,
+                    };
+                }
+            }
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // MERGE-REDUCE: the request's cells are merged into what is stored BEFORE the series
@@ -3646,6 +3674,7 @@ pub(crate) fn execute_on_shard(
                                 snapshots_written: 0,
                                 cells_created: 0,
                                 cells_merged: 0,
+                                replayed: false,
                             },
                             mutated,
                         };
@@ -3673,6 +3702,9 @@ pub(crate) fn execute_on_shard(
             let mut accepted_timestamps = BTreeSet::new();
             let mut published: Vec<ElementEntry> = Vec::new();
             let mut replaced_any = false;
+            // Whether THIS command wrote a point. `mutated` can already be set by the expiry
+            // above, so it cannot say.
+            let mut appended = false;
             // Process points in REQUEST order, NOT pre-collapsed by timestamp. feature ADD
             // FIRST policy walks the point list in order and
             // skips any ts already present, so for an in-batch duplicate timestamp the FIRST
@@ -3715,6 +3747,7 @@ pub(crate) fn execute_on_shard(
                         series.set(timestamp_ms, address.clone());
                         published.push(address);
                         mutated = true;
+                        appended = true;
                     }
                 }
             }
@@ -3743,6 +3776,28 @@ pub(crate) fn execute_on_shard(
                     shard, shard_id, "feature", &key, published, mutated, false,
                 );
             }
+            // THE TOKEN IS FILED AFTER THE SERIES IS DONE WITH, because the ring lives in the shard
+            // and the series borrows the whole of it until here. It is filed only when this command
+            // wrote, and only while the key still holds a series: an append that the trim emptied
+            // leaves no key for a ring to belong to, so the ring goes with it.
+            if let (Some(token), Some((snapshots_written, cells_created, cells_merged))) =
+                (retry_token, merge_receipt)
+            {
+                let live = shard.features().get(&key[..]).is_some_and(|series| series.len() > 0);
+                if !live {
+                    shard.forget_retry_ring(&key);
+                } else if appended {
+                    let _ = shard.record_retry_token(
+                        &key,
+                        token,
+                        crate::engine::cell_retry_ring::RetryReceipt {
+                            snapshots_written,
+                            cells_created,
+                            cells_merged,
+                        },
+                    );
+                }
+            }
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             match merge_receipt {
                 // A plan that was never appended reports nothing landed.
@@ -3751,12 +3806,14 @@ pub(crate) fn execute_on_shard(
                         snapshots_written,
                         cells_created,
                         cells_merged,
+                        replayed: false,
                     }
                 }
                 Some(_) => CommandResponse::CellMergeReceipt {
                     snapshots_written: 0,
                     cells_created: 0,
                     cells_merged: 0,
+                    replayed: false,
                 },
                 None => CommandResponse::Integer {
                     value: if mutated { 1 } else { 0 },
@@ -3935,6 +3992,9 @@ pub(crate) fn execute_on_shard(
             // one; no other command is.
             mutated |= mark_bucket_index_object_deleted(shard, &key);
             mutated |= shard.features_mut().remove(&key[..]).is_some();
+            // THE RETRY RING GOES WITH THE SERIES: a key written again afterwards is a new key, and
+            // a token it saw before is not a replay.
+            shard.forget_retry_ring(&key);
             // THE ONE FEATURE WRITE THAT DOES NOT PUBLISH BLOCKS, so the invalidation in
             // `sync_bucket_index_object_blocks_with_mode` does not cover it. The expiry path's
             // `forget_object` already drops the view beside its own `features_mut().remove`; this
@@ -4374,6 +4434,54 @@ pub(crate) fn execute_on_shard(
                 },
             };
             receipt
+        }
+        Command::CellRankBatchQuery { queries } => {
+            // Each read is the one-key read: an expired key is dropped and answers empty, a read
+            // that cannot be served answers with its reason, and neither touches the others.
+            let mut rankings = Vec::with_capacity(queries.len());
+            for crate::types::CellRankBatchItem { key, spec } in queries {
+                if drop_if_expired(cache, shard_id, shard, &key) {
+                    mutated = true;
+                    let _ = cache.invalidate_record(shard_id, "feature", &key);
+                    rankings.push(crate::types::RankedCells::default());
+                    continue;
+                }
+                rankings.push(cell_rank_read::serve(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard,
+                    &key,
+                    &spec,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    resolve_now_ms(),
+                ));
+            }
+            CommandResponse::CellRankings { rankings }
+        }
+        Command::CellFanInRankQuery { keys, spec } => {
+            // An expired key is dropped exactly as a one-key read drops it, and then holds
+            // nothing: it contributes no snapshot and is not counted as read.
+            for key in &keys {
+                if drop_if_expired(cache, shard_id, shard, key) {
+                    mutated = true;
+                    let _ = cache.invalidate_record(shard_id, "feature", key);
+                }
+            }
+            CommandResponse::CellRanking {
+                ranked: cell_rank_read::serve_many(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard,
+                    &keys,
+                    &spec,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    resolve_now_ms(),
+                ),
+            }
         }
         Command::ControlStateIncrement {
             key,

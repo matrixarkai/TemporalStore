@@ -261,6 +261,7 @@ impl ProxyService {
                                 key: req.key,
                                 points: req.points,
                                 policy,
+                                retry_token: None,
                             }
                         } else {
                             Command::FeatureAppend {
@@ -392,6 +393,38 @@ impl ProxyService {
                             count: req.count,
                             filters: req.filters,
                         };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/CellRankBatchQuery") => {
+                match parse_json::<ProxyCellRankBatchQueryCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::CellRankBatchQuery { queries: req.queries };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/CellFanInRankQuery") => {
+                match parse_json::<ProxyCellFanInRankQueryCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::CellFanInRankQuery { keys: req.keys, spec: req.spec };
                         json_response(
                             200,
                             &self.table_execute(ProxyTableExecuteRequest {
