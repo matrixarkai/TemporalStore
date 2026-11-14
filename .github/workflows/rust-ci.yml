@@ -633,6 +633,21 @@ jobs:
             engine::cell_rollup::tests::a_bucket_over_the_snapshot_cell_limit_is_refused_and_one_at_the_limit_is_folded \
             engine::cell_rollup::tests::a_request_the_key_cannot_serve_is_refused_naming_what_was_wrong \
             engine::cell_rollup::tests::a_bytes_member_cannot_be_scored_by_member_and_is_otherwise_rolled_like_any_other \
+            engine::cell_rollup::tier_tests::a_tiered_rollup_equals_an_independent_fold_with_a_bucket_per_tier \
+            engine::cell_rollup::tier_tests::a_snapshot_takes_the_coarsest_tier_whose_cutoff_is_above_it_and_each_cutoff_is_strict \
+            engine::cell_rollup::tier_tests::a_cutoff_that_is_not_a_multiple_of_the_finer_width_is_aligned_down_to_it \
+            engine::cell_rollup::tier_tests::the_catch_all_tier_holds_everything_older_in_one_snapshot_at_stamp_zero \
+            engine::cell_rollup::tier_tests::an_age_resolves_against_the_newest_stamp_and_a_request_cutoff_ignores_it \
+            engine::cell_rollup::tier_tests::a_tiered_capped_result_rolled_again_changes_no_byte \
+            engine::cell_rollup::tier_tests::a_request_that_names_every_new_control_at_its_default_is_the_single_tier_request \
+            engine::cell_rollup::tier_tests::a_truncation_acts_only_over_its_trigger_and_then_keeps_the_newest_n \
+            engine::cell_rollup::tier_tests::truncating_a_rolled_series_keeps_the_newest_snapshots_of_what_the_rollup_left \
+            engine::cell_rollup::tier_tests::a_protected_share_of_the_newest_members_survives_whatever_its_score \
+            engine::cell_rollup::tier_tests::a_member_is_as_new_as_the_newest_snapshot_that_wrote_it \
+            engine::cell_rollup::tier_tests::a_group_is_cut_only_when_it_is_over_its_keep_plus_the_trigger_and_then_down_to_keep \
+            engine::cell_rollup::tier_tests::the_tier_count_the_order_and_the_widths_are_bounded_at_exactly_the_limit \
+            engine::cell_rollup::tier_tests::truncation_and_cap_controls_are_bounded_at_exactly_the_limit \
+            engine::cell_rollup::tier_tests::snapshots_below_the_first_cutoff_are_bounded_at_exactly_the_limit_whatever_the_tiers \
             engine::tests::a_cell_rollup_is_a_command::a_ranking_over_the_rolled_buckets_answers_what_it_answered_over_the_snapshots_they_replaced \
             engine::tests::a_cell_rollup_is_a_command::a_cold_reload_reads_the_rolled_bytes_and_rolling_again_changes_nothing \
             engine::tests::a_cell_rollup_is_a_command::replaying_the_log_reaches_the_bytes_the_live_engine_reached \
@@ -979,6 +994,10 @@ jobs:
           # read over several keys allocates the same number of times over 100 and over 2,000 members
           # (three keys of eight snapshots), because only the snapshot count sizes anything. It carries
           # a control: the table of members an obvious implementation builds must grow with them.
+          # a_tiered_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many pins
+          # the same for a request with tiers and a cap that protects its newest members: the buffers that
+          # follow each cell's newest stamp are sized once per bucket, so allocations still do not move
+          # with the snapshots in a bucket or the members. Its control is the same cloning table.
           for t in \
             engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key \
             engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has \
@@ -1000,6 +1019,7 @@ jobs:
             engine::cell_rank::tests::decay::probe::a_decay_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
             engine::cell_rollup::tests::probe::a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many \
             engine::cell_retry_ring::tests::probe::a_retry_ring_allocates_once_when_started_and_never_again \
+            engine::cell_rollup::tier_tests::probe::a_tiered_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many \
             engine::cell_set::tests::probe::a_cell_costs_the_same_allocations_at_any_member_size ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
