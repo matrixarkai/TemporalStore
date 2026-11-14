@@ -2000,6 +2000,21 @@ mod a_positional_row_is_refused_unless_it_is_canonical {
         assert!(error.to_string().contains("invalid length 6"), "unnamed refusal: {error}");
     }
 
+    /// The row used to be written by name. There is no reader for that shape, so an image that
+    /// still spells it is refused (and the format stamp refuses it before this is reached).
+    #[test]
+    fn an_old_named_row_is_refused() {
+        assert!(
+            slot(r#"{"r":{"a":64,"n":8,"f":8,"m":7}}"#).is_err(),
+            "a named slot row was read as something"
+        );
+        assert!(
+            record(r#"{"a":64,"n":8,"f":8,"m":7}"#).is_err(),
+            "a named record row was read as something"
+        );
+        assert!(slot("[[64,8,8,7]]").is_ok(), "control: the positional slot row must read");
+    }
+
     #[test]
     fn a_record_row_spelling_an_unknown_class_as_zero_is_refused() {
         let error = record("[64,8,8,7,0]").expect_err("a present zero size class was read");
