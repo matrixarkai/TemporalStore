@@ -5938,10 +5938,36 @@ fn append_entry(node: &mut RaftNode, entry: RaftLogEntry) {
     node.log.push(entry);
 }
 
+/// A writer that keeps only how many bytes were written to it.
+struct ByteCounter(u64);
+
+impl std::io::Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len() as u64);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// How many bytes `value` is as JSON, counted while it is written and not kept.
+///
+/// This is `serde_json::to_vec(value).len()` -- `to_vec` is `to_writer` into a `Vec` -- without
+/// the `Vec`: no buffer is grown, filled and thrown away to learn a length. A command that carries
+/// hundreds of rows made every size question an allocation and a copy of the whole command. A
+/// value that fails to serialize counts as zero, as it did.
+fn json_size_bytes<T: serde::Serialize + ?Sized>(value: &T) -> u64 {
+    let mut counter = ByteCounter(0);
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => counter.0,
+        Err(_) => 0,
+    }
+}
+
 fn command_size_bytes(command: &Command) -> u64 {
-    serde_json::to_vec(command)
-        .map(|bytes| bytes.len() as u64)
-        .unwrap_or_default()
+    json_size_bytes(command)
 }
 
 fn raft_log_bytes_after(log: &[RaftLogEntry], index: u64) -> u64 {
@@ -5954,11 +5980,7 @@ fn raft_log_bytes_after(log: &[RaftLogEntry], index: u64) -> u64 {
 fn meta_log_bytes_after(log: &[MetaLogEntry], index: u64) -> u64 {
     log.iter()
         .filter(|entry| entry.index > index)
-        .map(|entry| {
-            serde_json::to_vec(&entry.command)
-                .map(|bytes| bytes.len() as u64)
-                .unwrap_or_default()
-        })
+        .map(|entry| json_size_bytes(&entry.command))
         .sum()
 }
 
@@ -8125,3 +8147,7 @@ fn install_meta_leader_snapshot_tail(
 #[cfg(test)]
 #[path = "raft/raft_regression_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "raft/command_size_tests.rs"]
+mod command_size_tests;
