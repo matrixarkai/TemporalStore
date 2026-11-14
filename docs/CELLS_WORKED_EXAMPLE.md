@@ -14,7 +14,7 @@ Nothing in the engine knows what the names mean; a deployment declares them once
   written, cells created, cells merged.
 * **Ranked read.** `CellRankQuery` takes a window (`Between`, `Last`, `Since`, `LastN`), named
   predicates over labels, lanes or `member`, a score (`Lane`, `Ratio`, `Wilson`, `Member`, `Time`,
-  `Weighted`) and `top_k`. It reduces each member across the window's snapshots, scores it and
+  `Weighted`, `Decay`) and `top_k`. It reduces each member across the window's snapshots, scores it and
   returns the best `k`. A name the key does not declare is refused.
 * **Rollup.** `CellRollup` takes `older_than_ms`, `bucket_ms` and an optional cap. Every snapshot
   stamped strictly below the cutoff is folded, with the others of its bucket, into one snapshot
@@ -85,6 +85,62 @@ store.
   merged again would read "merged". A request without a token is applied every time, as before.
 
 A replay still reaches the log as a small record that changes nothing when applied.
+
+
+## Narrowing a ranked read: members, anchor, quota, decay
+
+A `CellRankQuery` can carry four more things. A read that carries none of them is encoded and
+answered exactly as before: the fields are left out of the encoding when they are at rest, and a
+spec that lacks them reads as one that has them at rest.
+
+* **Member set** (`members`). `include` is a set the member must belong to and `exclude` one it must
+  not; both apply to a cell before the member's snapshots are reduced, together with the predicates.
+  `include` left out restricts nothing, and an include set that names nothing is refused (an empty
+  list of members to read is almost always a caller that lost its list). A member in both sets is
+  excluded. Each set holds at most 1 024 entries as sent, duplicates included, and a bytes member at
+  most 256 bytes; a request past either is refused at admission. The request's order and repeats do
+  not change the answer.
+* **Anchor** (`anchor`: `request`, the default, or `newest`). A `Last` window ends at the clock the
+  request carries; with `newest` it ends at the newest snapshot the key holds, so a key whose writes
+  stopped reads the same whenever it is read. With newest stamp `n` and duration `d` the window is
+  `[n + 1 - d, n]`, floored at zero: it spans exactly `d` stamps, and `d = 0` holds nothing. (On the
+  request clock the window is `[now - d, now]`, one stamp wider.) An anchor on `Between`, `Since` or
+  `LastN` is refused: they have no clock to replace.
+* **Quota** (`quota`: `lanes`, each a lane name and a `count`, and `others`). The ranking is walked
+  best first over the `top_k` members. A member that has a non-zero reduced value in a lane still
+  short is kept and counts toward every short lane it fits; a member that fits none is kept while
+  fewer than `others` such members were kept; the walk ends when every lane is full. It only drops
+  members from the top-k list, so it never returns more than `top_k` rows, and a lane no member can
+  fill leaves the answer short rather than padded. Counts plus `others` are at most 1 000, a quota
+  names at most 16 lanes, a count is at least 1 and a lane is named once.
+* **Decay score** (`CellScore::Decay { lane, half_life_ms }`). A member's score is
+  `sum(value * 0.5^(age / half_life_ms))` over the values its snapshots store for the lane, with
+  `age` measured from the newest snapshot of the window, so no clock is read. The half-life is
+  between 1 ms and ten years. The total is a float and cannot wrap. A rollup cap refuses it: a cap
+  scores one folded cell.
+
+### An example
+
+`a_quota_selects_exactly_as_a_fold_of_the_ranking_says`, in
+`crates/temporalstore-rust/src/engine/tests/a_ranked_cell_read_is_a_command.rs`, stores one snapshot
+of eight members with the lanes `shown` and `clicked`. Ranked by `shown` they come 1 to 8, and only
+members 3, 6 and 8 have a click. The plain top four are 1, 2, 3, 4. With a quota of two members with
+a click and `top_k` 8, the answer is members 3 and 6; with `top_k` 5 it is member 3 alone, because
+the quota never reaches past the top-k; with `others` 2 added, members 1 and 2 come first, so the
+answer is 1, 2, 3, 6.
+
+`an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says` stores four snapshots at
+100, 200, 300 and 400 and ranks by `shown`: an anchored `Last` of 100 is `[301, 400]`, one snapshot;
+300 is `[101, 400]`, three; 301 reaches the snapshot at 100. The same `Last` of 100 on the request
+clock, read long after the writes, is empty.
+
+On the wire (JSON), a read that uses them looks like this; the three keys appear only when set:
+
+```json
+{"window":{"last":{"duration_ms":150}},"filters":[],"score":{"lane":{"lane":"shown"}},"top_k":5,
+ "project":[],"members":{"include":[{"u64":1}],"exclude":[{"u64":2}]},"anchor":"newest",
+ "quota":{"lanes":[{"lane":"peak","count":2}],"others":1}}
+```
 
 ## Not included
 

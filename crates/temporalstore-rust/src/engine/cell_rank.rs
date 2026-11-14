@@ -190,6 +190,7 @@ pub(crate) fn validate_spec(spec: &CellRankSpec) -> Result<(), String> {
         }
         _ => {}
     }
+    validate_options(&spec.window, &RankOptions::of(spec))?;
     validate_score(&spec.score)
 }
 
@@ -248,11 +249,11 @@ impl Scorer {
 impl Plan {
     /// Checks `spec` against `header`. Every refusal names what was wrong; nothing is read.
     pub(crate) fn compile(header: &CellHeader, spec: &CellRankSpec) -> Result<Plan, String> {
-        Plan::compile_with(header, spec, &RankOptions::default())
+        Plan::compile_with(header, spec, &RankOptions::of(spec))
     }
 
-    /// [`Plan::compile`] with the controls a spec does not carry. `RankOptions::default()` is
-    /// exactly `compile`.
+    /// [`Plan::compile`] with the controls given instead of the ones the spec carries; `compile` is
+    /// this with `RankOptions::of(spec)`.
     pub(crate) fn compile_with(header: &CellHeader, spec: &CellRankSpec, options: &RankOptions) -> Result<Plan, String> {
         validate_spec(spec)?;
         validate_options(&spec.window, options)?;

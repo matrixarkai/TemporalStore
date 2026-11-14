@@ -601,7 +601,7 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::CellQuery) -
         }
         None => {}
     }
-    Ok(ReadPlan { key, spec: CellRankSpec { window, filters, score, top_k, project: Vec::new() } })
+    Ok(ReadPlan { key, spec: CellRankSpec { window, filters, score, top_k, project: Vec::new(), members: Default::default(), anchor: Default::default(), quota: Default::default() } })
 }
 
 /// A batch as its independent reads, in request order. A query that cannot be translated refuses

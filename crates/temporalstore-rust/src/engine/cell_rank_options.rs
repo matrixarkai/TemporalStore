@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Optional controls of the ranked cell read that are not part of its spec: which members it may
-//! read, and which instant a `Last` window ends at. Both are pure data plus pure functions, so the
-//! read can be proven against an independent fold without an engine.
+//! Optional controls of the ranked cell read, carried by its spec: which members it may read, which
+//! instant a `Last` window ends at, and which members it must keep. They are plain data plus pure
+//! functions, so the read can be proven against an independent fold without an engine.
 //!
 //! # MEMBER SET
 //!
@@ -55,7 +55,11 @@
 //! `others == 0` is no quota.
 
 use super::cell_set::{within, Member, MAX_MEMBER_BYTES, MAX_TOP_K};
-use crate::types::{CellMemberId, CellWindow};
+// The request-side types are the public ones: a spec carries them as they are.
+pub(crate) use crate::types::{
+    CellAnchor as Anchor, CellLaneQuota as LaneQuota, CellMemberFilter as MemberFilter, CellQuota as Quota,
+};
+use crate::types::{CellMemberId, CellRankSpec, CellWindow};
 
 /// Lanes one quota may name, and the sum of its counts plus its `others`.
 pub(crate) const MAX_QUOTA_LANES: usize = 16;
@@ -64,23 +68,6 @@ pub(crate) const MAX_QUOTA: usize = MAX_TOP_K;
 
 /// Members one side (include or exclude) of a [`MemberFilter`] may name, as sent.
 pub(crate) const MAX_FILTER_MEMBERS: usize = 1024;
-
-/// The instant a `Last` window ends at.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Anchor {
-    /// The clock the request carries.
-    #[default]
-    Request,
-    /// The newest snapshot of the key.
-    Newest,
-}
-
-/// The members a read may use, as a request states them.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct MemberFilter {
-    pub(crate) include: Option<Vec<CellMemberId>>,
-    pub(crate) exclude: Vec<CellMemberId>,
-}
 
 /// The controls of one read beyond its spec. `Default` is a read exactly as it was before they
 /// existed.
@@ -91,23 +78,10 @@ pub(crate) struct RankOptions {
     pub(crate) quota: Quota,
 }
 
-/// One lane of a [`Quota`] and how many members must fit it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LaneQuota {
-    pub(crate) lane: String,
-    pub(crate) count: usize,
-}
-
-/// See the module notes. `Default` asks for nothing.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Quota {
-    pub(crate) lanes: Vec<LaneQuota>,
-    pub(crate) others: usize,
-}
-
-impl Quota {
-    pub(crate) fn is_none(&self) -> bool {
-        self.lanes.is_empty() && self.others == 0
+impl RankOptions {
+    /// The controls a spec carries.
+    pub(crate) fn of(spec: &CellRankSpec) -> RankOptions {
+        RankOptions { members: spec.members.clone(), anchor: spec.anchor, quota: spec.quota.clone() }
     }
 }
 

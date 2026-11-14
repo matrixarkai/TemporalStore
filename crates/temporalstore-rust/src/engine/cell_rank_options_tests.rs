@@ -399,6 +399,9 @@ mod probe {
             score: lane("shown"),
             top_k: 10,
             project: Vec::new(),
+            members: Default::default(),
+            anchor: Default::default(),
+            quota: Default::default(),
         };
         let plan = Plan::compile_with(&header(), &query, &options).unwrap();
         let probe = Probe::start();

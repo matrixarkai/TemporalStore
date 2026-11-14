@@ -251,6 +251,64 @@ pub enum CellScore {
     Decay { lane: String, half_life_ms: u64 },
 }
 
+/// Which instant a `Last` window ends at.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CellAnchor {
+    /// The clock the request carries.
+    #[default]
+    Request,
+    /// The newest snapshot the key holds: the window is `[newest + 1 - duration_ms, newest]`, so a
+    /// key whose writes stopped reads the same whenever it is read. Only a `Last` window takes it.
+    Newest,
+}
+
+impl CellAnchor {
+    pub fn is_request(&self) -> bool {
+        *self == CellAnchor::Request
+    }
+}
+
+/// The members a ranked read may use. `include: None` restricts nothing and `Some([])` is refused;
+/// a member in both sets is excluded; each side holds at most 1024 entries as sent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CellMemberFilter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<CellMemberId>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<CellMemberId>,
+}
+
+impl CellMemberFilter {
+    pub fn is_open(&self) -> bool {
+        self.include.is_none() && self.exclude.is_empty()
+    }
+}
+
+/// How many members must have a non-zero value in `lane`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CellLaneQuota {
+    pub lane: String,
+    pub count: usize,
+}
+
+/// Members guaranteed a place among the top-k: per lane, that many members with a non-zero reduced
+/// value in it, and `others` members that fit no lane still short. Counts plus `others` are at most
+/// 1000 and a quota names at most 16 lanes. See `engine::cell_rank_options`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CellQuota {
+    #[serde(default)]
+    pub lanes: Vec<CellLaneQuota>,
+    #[serde(default)]
+    pub others: usize,
+}
+
+impl CellQuota {
+    pub fn is_none(&self) -> bool {
+        self.lanes.is_empty() && self.others == 0
+    }
+}
+
 /// A ranked windowed read: `window -> select -> reduce per member -> score -> top-k -> project`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CellRankSpec {
@@ -265,6 +323,31 @@ pub struct CellRankSpec {
     /// Label and lane names to return. Empty returns every label and every lane.
     #[serde(default)]
     pub project: Vec<String>,
+    /// The members the read may use. Left out of the encoding when it restricts nothing.
+    #[serde(default, skip_serializing_if = "CellMemberFilter::is_open")]
+    pub members: CellMemberFilter,
+    /// The instant a `Last` window ends at. Left out of the encoding when it is the request clock.
+    #[serde(default, skip_serializing_if = "CellAnchor::is_request")]
+    pub anchor: CellAnchor,
+    /// Members guaranteed a place among the top-k. Left out of the encoding when it asks for nothing.
+    #[serde(default, skip_serializing_if = "CellQuota::is_none")]
+    pub quota: CellQuota,
+}
+
+impl CellRankSpec {
+    /// A read with no predicate, every column and none of the optional controls.
+    pub fn new(window: CellWindow, score: CellScore, top_k: usize) -> Self {
+        CellRankSpec {
+            window,
+            filters: Vec::new(),
+            score,
+            top_k,
+            project: Vec::new(),
+            members: CellMemberFilter::default(),
+            anchor: CellAnchor::default(),
+            quota: CellQuota::default(),
+        }
+    }
 }
 
 /// Keep the best `keep` cells of each group of a rolled snapshot. Cells are grouped by the value

@@ -64,7 +64,7 @@ fn views(snaps: &Snapshots) -> Vec<SnapshotView<'_>> {
 const ALL: CellWindow = CellWindow::Between { start_ms: 0, end_ms: u64::MAX };
 
 fn spec(window: CellWindow, score: CellScore, top_k: usize) -> CellRankSpec {
-    CellRankSpec { window, filters: Vec::new(), score, top_k, project: Vec::new() }
+    CellRankSpec { window, filters: Vec::new(), score, top_k, project: Vec::new(), members: Default::default(), anchor: Default::default(), quota: Default::default() }
 }
 
 fn lane(name: &str) -> CellScore {
@@ -624,6 +624,9 @@ mod probe {
             score: CellScore::Ratio { numerator: "a".to_string(), denominator: "b".to_string() },
             top_k,
             project: Vec::new(),
+            members: Default::default(),
+            anchor: Default::default(),
+            quota: Default::default(),
         }
     }
 
