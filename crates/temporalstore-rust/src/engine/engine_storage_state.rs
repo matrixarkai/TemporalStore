@@ -11314,9 +11314,25 @@ impl ShardState {
         &mut self,
         blocks: HashMap<ModelKey, super::object_record::ObjectSlot>,
     ) {
-        self.bucket_index
+        // MERGED INTO THE TABLE, NOT ASSIGNED OVER IT: the row carries this key's block refs, and a
+        // fresh table of address-only rows left every control-state block named by nothing after a
+        // reload. The incoming map stays the authority on WHICH keys exist (an absent key is
+        // dropped); for a key it carries, only the address is written onto the row already there.
+        let mut incoming = blocks;
+        let table = self
+            .bucket_index
             .objects
-            .insert(super::storage_bucket_internals::StoredModelKind::ControlState, blocks);
+            .entry(super::storage_bucket_internals::StoredModelKind::ControlState)
+            .or_default();
+        table.retain(|key, _| incoming.contains_key(key));
+        for (key, fresh) in incoming.drain() {
+            match table.get_mut(&key) {
+                Some(row) => row.set_address(&fresh.address()),
+                None => {
+                    table.insert(key, fresh);
+                }
+            }
+        }
     }
 
 }
