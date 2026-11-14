@@ -967,8 +967,19 @@ pub(super) fn record_to_proto(record: &RaftWalRecord) -> io::Result<v1::WalRecor
         Some(rest_to_proto(&rest))
     };
 
-    let (fence_checksum, fence_checksum_is_text) =
-        checksum_to_bytes(&record.storage_apply_fence.checksum);
+    let fence = &record.storage_apply_fence;
+    let (fence_checksum, fence_checksum_is_text) = checksum_to_bytes(&fence.checksum);
+    // A non-default fence restates three values the record already holds. Writing a fence that
+    // disagrees with them would persist a record recovery refuses, so it is refused here.
+    if *fence != RaftStorageApplyFence::default()
+        && (fence.shard_id != record.membership.shard_id
+            || fence.raft_term != record.hard_state.current_term
+            || fence.committed_index != record.hard_state.commit_index)
+    {
+        return Err(io::Error::other(
+            "storage apply fence disagrees with the record's membership shard, term or commit index",
+        ));
+    }
 
     Ok(v1::WalRecord {
             hard_state: Some(v1::WalHardState {
@@ -987,10 +998,8 @@ pub(super) fn record_to_proto(record: &RaftWalRecord) -> io::Result<v1::WalRecor
                 installed_snapshot_index: record.apply_snapshot_fence.installed_snapshot_index,
                 first_retained_log_index: record.apply_snapshot_fence.first_retained_log_index,
             }),
-            storage_apply_fence: Some(v1::WalStorageApplyFence {
-                shard_id: record.storage_apply_fence.shard_id,
-                raft_term: record.storage_apply_fence.raft_term,
-                committed_index: record.storage_apply_fence.committed_index,
+            storage_apply_fence: (*fence != RaftStorageApplyFence::default())
+                .then_some(v1::WalStorageApplyFence {
                 applied_index: record.storage_apply_fence.applied_index,
                 snapshot_id: record.storage_apply_fence.snapshot_id.clone(),
                 storage_epoch: record.storage_apply_fence.storage_epoch,
@@ -1036,7 +1045,7 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
     let hard_state = record.hard_state.unwrap_or_default();
     let membership = record.membership.unwrap_or_default();
     let apply_snapshot_fence = record.apply_snapshot_fence.unwrap_or_default();
-    let storage_apply_fence = record.storage_apply_fence.unwrap_or_default();
+    let storage_apply_fence = record.storage_apply_fence;
     let rest = match record.rest {
         Some(rest) => rest_from_proto(rest)?,
         None => RaftWalRecordRest::default(),
@@ -1097,17 +1106,17 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
                 installed_snapshot_index: apply_snapshot_fence.installed_snapshot_index,
                 first_retained_log_index: apply_snapshot_fence.first_retained_log_index,
             },
-            storage_apply_fence: RaftStorageApplyFence {
-                shard_id: storage_apply_fence.shard_id,
-                raft_term: storage_apply_fence.raft_term,
-                committed_index: storage_apply_fence.committed_index,
-                applied_index: storage_apply_fence.applied_index,
-                snapshot_id: storage_apply_fence.snapshot_id,
-                storage_epoch: storage_apply_fence.storage_epoch,
-                checksum: checksum_from_bytes(
-                    &storage_apply_fence.checksum,
-                    storage_apply_fence.checksum_is_text,
-                ),
+            storage_apply_fence: match storage_apply_fence {
+                None => RaftStorageApplyFence::default(),
+                Some(fence) => RaftStorageApplyFence {
+                    shard_id: membership.shard_id,
+                    raft_term: hard_state.current_term,
+                    committed_index: hard_state.commit_index,
+                    applied_index: fence.applied_index,
+                    snapshot_id: fence.snapshot_id,
+                    storage_epoch: fence.storage_epoch,
+                    checksum: checksum_from_bytes(&fence.checksum, fence.checksum_is_text),
+                },
             },
             pipeline_state: rest.pipeline_state,
             read_safety_state: rest.read_safety_state,
