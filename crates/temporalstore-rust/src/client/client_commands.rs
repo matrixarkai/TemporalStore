@@ -108,6 +108,10 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ControlStateSelectionQuery { key }
         | Command::ControlStateManager { key, .. }
         | Command::ControlStateDebug { key, .. } => Some(key),
+        // Several keys that must live together: routed by the first, as the other reads that
+        // name many ids are.
+        Command::CellFanInRankQuery { keys, .. } => keys.first().map(String::as_str),
+        Command::CellRankBatchQuery { queries } => queries.first().map(|query| query.key.as_str()),
         Command::SequenceBatchQuery { .. }
         | Command::ContextUpsertNode { .. }
         | Command::ContextGetNode { .. }

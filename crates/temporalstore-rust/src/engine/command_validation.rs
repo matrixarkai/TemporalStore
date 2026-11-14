@@ -339,6 +339,8 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
             ..
         } => CommandObjectKeys::one(context_compression_key(*tenant_hash, *node_hash)),
         Command::SequenceBatchQuery { .. }
+        | Command::CellFanInRankQuery { .. }
+        | Command::CellRankBatchQuery { .. }
         | Command::CommonTtl { .. }
         | Command::CommonExists { .. }
         | Command::StringGet { .. }
@@ -647,6 +649,23 @@ pub(super) fn validate_command_preconditions(
         // bounds, the window, the score parameters. Names are checked against the key's header when
         // the read runs.
         Command::CellRankQuery { spec, .. } => {
+            if let Err(why) = super::cell_rank::validate_spec(spec) {
+                return Err(Status::error("invalid_argument", why));
+            }
+        }
+        // A fan-in read is refused at admission for what needs no snapshot too: how many keys,
+        // a key named twice (it would count twice), and everything a one-key read is refused for.
+        // A batch is refused at admission for how many reads it carries and for any one read a
+        // single-key read would be refused for: the whole request, before any key is read.
+        Command::CellRankBatchQuery { queries } => {
+            if let Err(why) = super::cell_fan_in::validate_batch(queries) {
+                return Err(Status::error("invalid_argument", why));
+            }
+        }
+        Command::CellFanInRankQuery { keys, spec } => {
+            if let Err(why) = super::cell_fan_in::validate_keys(keys) {
+                return Err(Status::error("invalid_argument", why));
+            }
             if let Err(why) = super::cell_rank::validate_spec(spec) {
                 return Err(Status::error("invalid_argument", why));
             }

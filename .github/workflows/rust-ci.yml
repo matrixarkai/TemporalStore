@@ -518,6 +518,7 @@ jobs:
             engine::cell_fan_in::tests::keys_with_distinct_stamps_answer_what_one_key_holding_all_their_snapshots_answers \
             engine::cell_fan_in::tests::a_fan_in_answers_what_an_independent_fold_answers \
             engine::cell_fan_in::tests::the_union_ranks_a_member_that_no_single_key_ranks_first \
+            engine::cell_fan_in::tests::a_key_named_twice_is_refused_naming_both_positions_and_the_limit_is_accepted \
             engine::cell_fan_in::tests::a_tie_between_keys_at_one_stamp_resolves_by_key_position_and_sum_max_min_ignore_it \
             engine::cell_fan_in::tests::the_same_request_twice_agrees_and_the_key_order_changes_nothing_when_stamps_are_distinct \
             engine::cell_fan_in::tests::the_window_applies_to_each_key_and_the_answer_counts_what_it_chose \
@@ -580,6 +581,16 @@ jobs:
             engine::tests::a_ranked_cell_read_is_a_command::a_decay_score_answers_its_hand_computed_value_live_and_after_a_restart \
             engine::tests::a_ranked_cell_read_is_a_command::a_half_life_is_refused_at_admission_past_its_limits_and_served_at_them \
             engine::tests::a_ranked_cell_read_is_a_command::a_decay_total_past_the_integer_range_does_not_wrap_through_the_engine \
+            engine::tests::a_ranked_read_over_several_cell_keys::a_worked_example_of_a_ranked_read_across_the_channels_of_one_user \
+            engine::tests::a_ranked_read_over_several_cell_keys::a_key_the_shard_does_not_hold_or_that_expired_contributes_nothing_and_is_not_counted \
+            engine::tests::a_ranked_read_over_several_cell_keys::a_request_that_breaks_a_bound_is_refused_at_admission_and_the_limit_is_accepted \
+            engine::tests::a_ranked_read_over_several_cell_keys::keys_whose_headers_differ_only_by_an_added_lane_read_under_the_wider_and_any_other_difference_is_refused \
+            engine::tests::a_ranked_read_over_several_cell_keys::the_snapshot_ceiling_holds_while_reading_and_the_limit_is_served \
+            engine::tests::a_ranked_read_over_several_cell_keys::the_cell_ceiling_holds_while_reading_and_the_limit_is_served \
+            engine::tests::a_ranked_read_over_several_cell_keys::a_batch_of_reads_answers_each_as_the_single_read_would_in_request_order_and_one_failing_read_fails_no_other \
+            engine::tests::a_ranked_read_over_several_cell_keys::a_batch_is_refused_at_admission_for_its_size_and_for_any_read_a_single_read_would_be_refused_for \
+            engine::tests::a_ranked_read_over_several_cell_keys::a_batch_read_drops_an_expired_key_and_answers_it_empty \
+            engine::tests::a_ranked_read_over_several_cell_keys::a_fan_in_read_is_a_read \
             engine::tests::a_worked_example_of_cells::a_worked_example_of_cells \
             engine::window_aggregate::algorithm_tests::each_reducer_answers_the_value_only_that_reducer_produces \
             engine::window_aggregate::algorithm_tests::the_three_roundings_differ_on_a_fraction \

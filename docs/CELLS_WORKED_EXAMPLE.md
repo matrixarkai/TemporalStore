@@ -86,6 +86,45 @@ store.
 
 A replay still reaches the log as a small record that changes nothing when applied.
 
+## Reading across keys
+
+When the dimensions you always query by are in the key, a question that spans them ("which items did
+this user respond to best over ALL channels?") spans keys. `CellFanInRankQuery` takes up to 64 keys
+that share one spec and the same read as `CellRankQuery` (window, predicates, score, `top_k`,
+projection). It merges the cells of every key BEFORE it scores, so the answer is the one a single
+key holding all their snapshots would give. Merging the per-key top lists afterwards cannot match
+it: an item that is second in each of two keys can lead their sum.
+
+* The window applies to each key: `LastN { n }` is the newest `n` snapshots of every key.
+* Cells combine in stamp order, a tie between keys broken by the key's position in the request, so
+  `Sum`, `Max` and `Min` lanes do not depend on the order of the keys while a `First` lane takes the
+  earliest stamp and a `Last` lane the latest.
+* Keys whose headers differ only by labels or lanes added at the end read under the widest; any
+  other difference is refused naming the key.
+* A key the shard does not hold, an expired key, and a key with nothing in the window contribute
+  nothing. `keys` in the answer counts the keys that did, so a caller who named five and got four
+  can tell the answer is partial.
+* The keys are read on the shard the request names (it is routed by the first key), so they must
+  live together.
+* Bounds, each refused whole and never truncated: 64 keys, 1 024 snapshots and 262 144 cells per
+  request, a key named once.
+
+### A batch of independent reads
+
+When the questions are separate, `CellRankBatchQuery` carries up to 64 reads, each with its own key
+and read spec, and answers them in request order, one `RankedCells` each. The reads do not affect
+one another: a key with nothing to rank answers empty, an expired key is dropped and answers empty,
+and a read the key cannot serve (an undeclared name, say) answers with `refused` set while the rest
+are answered normally. Each answer equals the one `CellRankQuery` gives for that key and spec. A
+read over a bound (top-k, window, predicates) refuses the whole batch at admission, naming the
+read's position, before any key is read. As with the fan-in read, the keys are read on the shard the
+request names.
+
+`crates/temporalstore-rust/src/engine/tests/a_ranked_read_over_several_cell_keys.rs` is the runnable
+example: one user, a `channel` dimension in the key, three channels and six snapshots, ranked by a
+summed lane and by a maximum lane, checked equal to a single key that holds the same six snapshots,
+and then read again after a restart.
+
 ## Not included
 
 A time-to-live per group: a key has one time-to-live, as every feature key does.

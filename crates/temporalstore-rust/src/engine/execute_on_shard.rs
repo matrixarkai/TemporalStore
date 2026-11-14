@@ -4435,6 +4435,54 @@ pub(crate) fn execute_on_shard(
             };
             receipt
         }
+        Command::CellRankBatchQuery { queries } => {
+            // Each read is the one-key read: an expired key is dropped and answers empty, a read
+            // that cannot be served answers with its reason, and neither touches the others.
+            let mut rankings = Vec::with_capacity(queries.len());
+            for crate::types::CellRankBatchItem { key, spec } in queries {
+                if drop_if_expired(cache, shard_id, shard, &key) {
+                    mutated = true;
+                    let _ = cache.invalidate_record(shard_id, "feature", &key);
+                    rankings.push(crate::types::RankedCells::default());
+                    continue;
+                }
+                rankings.push(cell_rank_read::serve(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard,
+                    &key,
+                    &spec,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    resolve_now_ms(),
+                ));
+            }
+            CommandResponse::CellRankings { rankings }
+        }
+        Command::CellFanInRankQuery { keys, spec } => {
+            // An expired key is dropped exactly as a one-key read drops it, and then holds
+            // nothing: it contributes no snapshot and is not counted as read.
+            for key in &keys {
+                if drop_if_expired(cache, shard_id, shard, key) {
+                    mutated = true;
+                    let _ = cache.invalidate_record(shard_id, "feature", key);
+                }
+            }
+            CommandResponse::CellRanking {
+                ranked: cell_rank_read::serve_many(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard,
+                    &keys,
+                    &spec,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    resolve_now_ms(),
+                ),
+            }
+        }
         Command::ControlStateIncrement {
             key,
             timestamp_ms,
