@@ -4233,7 +4233,7 @@ pub(crate) fn execute_on_shard(
                 start_routing_bucket,
                 end_routing_bucket,
             ));
-            let mut packed_block_cache = HashMap::new();
+            let mut reader = crate::engine::product_model::SequenceBlockReader::new();
             let rows = shard
                 .features()
                 .get(&key[..])
@@ -4242,7 +4242,7 @@ pub(crate) fn execute_on_shard(
                         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                         .take(count)
                         .filter_map(|(timestamp_ms, address)| {
-                            read_sequence_row_cached(
+                            read_sequence_row_in_place(
                                 cache,
                                 block_store,
                                 shard_id,
@@ -4250,7 +4250,7 @@ pub(crate) fn execute_on_shard(
                                 address,
                                 identity,
                                 routing_bucket,
-                                &mut packed_block_cache,
+                                &mut reader,
                             )
                         })
                         .filter(|row| {
