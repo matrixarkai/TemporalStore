@@ -5991,18 +5991,25 @@ fn split_command_for_raft_limit(command: Command, limit: u64) -> Result<Vec<Comm
     }
     match command {
         Command::SequenceAdd { key, rows } if rows.len() > 1 => {
+            // A `SequenceAdd` of k rows is the command with no rows, plus each row's own JSON, plus
+            // the k-1 commas between them. Each row is measured once and the total is kept, instead
+            // of building and serializing the whole candidate command for every row.
+            let bare = command_size_bytes(&Command::SequenceAdd {
+                key: key.clone(),
+                rows: Vec::new(),
+            });
             let mut chunks = Vec::new();
             let mut current = Vec::new();
+            let mut current_row_bytes = 0u64;
             for row in rows {
-                let mut candidate = current.clone();
-                candidate.push(row.clone());
-                let candidate_command = Command::SequenceAdd {
-                    key: key.clone(),
-                    rows: candidate,
-                };
-                let candidate_bytes = command_size_bytes(&candidate_command);
+                let row_bytes = json_size_bytes(&row);
+                let candidate_bytes = bare
+                    .saturating_add(current_row_bytes)
+                    .saturating_add(row_bytes)
+                    .saturating_add(current.len() as u64);
                 if candidate_bytes <= limit {
                     current.push(row);
+                    current_row_bytes = current_row_bytes.saturating_add(row_bytes);
                     continue;
                 }
                 if current.is_empty() {
@@ -6015,11 +6022,7 @@ fn split_command_for_raft_limit(command: Command, limit: u64) -> Result<Vec<Comm
                     key: key.clone(),
                     rows: std::mem::take(&mut current),
                 });
-                let single_command = Command::SequenceAdd {
-                    key: key.clone(),
-                    rows: vec![row.clone()],
-                };
-                let single_bytes = command_size_bytes(&single_command);
+                let single_bytes = bare.saturating_add(row_bytes);
                 if single_bytes > limit {
                     return Err(RaftError::LogEntryTooLarge {
                         bytes: single_bytes,
@@ -6027,6 +6030,7 @@ fn split_command_for_raft_limit(command: Command, limit: u64) -> Result<Vec<Comm
                     });
                 }
                 current.push(row);
+                current_row_bytes = row_bytes;
             }
             if !current.is_empty() {
                 chunks.push(Command::SequenceAdd { key, rows: current });
@@ -8151,3 +8155,6 @@ mod tests;
 #[cfg(test)]
 #[path = "raft/command_size_tests.rs"]
 mod command_size_tests;
+#[cfg(test)]
+#[path = "raft/split_tests.rs"]
+mod split_tests;
