@@ -595,6 +595,19 @@ jobs:
             engine::tests::a_cell_rollup_is_a_command::an_absent_key_and_an_expired_key_roll_nothing_up \
             engine::tests::a_cell_rollup_is_a_command::a_rollup_is_a_write_the_log_can_carry_in_every_score_spelling \
             engine::tests::a_cell_rollup_is_a_command::a_worked_example_of_a_rollup \
+            engine::cell_retry_ring::tests::a_remembered_token_replays_its_first_receipt_and_a_new_one_is_fresh \
+            engine::cell_retry_ring::tests::the_capacity_is_sixteen_and_a_full_ring_holds_exactly_that_many \
+            engine::cell_retry_ring::tests::the_token_past_the_limit_evicts_the_oldest_and_nothing_else \
+            engine::cell_retry_ring::tests::eviction_follows_arrival_order_over_a_long_run \
+            engine::cell_retry_ring::tests::a_token_already_held_is_refused_and_changes_nothing \
+            engine::cell_retry_ring::tests::two_tokens_interleaved_and_one_token_twice_apart_each_apply_once \
+            engine::cell_retry_ring::tests::the_same_requests_give_the_same_bytes_and_a_decoded_ring_continues_as_the_original_would \
+            engine::cell_retry_ring::tests::an_empty_ring_holds_nothing_and_stores_no_bytes \
+            engine::cell_retry_ring::tests::the_stored_bytes_are_the_hand_written_ones_and_round_trip \
+            engine::cell_retry_ring::tests::a_stored_ring_of_sixteen_is_read_and_one_of_seventeen_is_refused \
+            engine::cell_retry_ring::tests::a_token_twice_in_one_stored_ring_is_refused \
+            engine::cell_retry_ring::tests::a_value_that_is_not_the_canonical_spelling_is_refused \
+            engine::cell_retry_ring::tests::a_truncated_or_corrupt_value_is_an_error_and_never_a_panic \
             engine::tests::what_a_high_cardinality_distinct_holds::an_unbounded_distinct_holds_every_member_and_the_bound_holds_a_fixed_sketch \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::an_ordered_read_answers_by_score_whatever_the_window \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::a_score_update_reorders_an_ordered_read \
@@ -900,6 +913,7 @@ jobs:
             engine::cell_rank::tests::probe::a_ranked_read_allocates_the_same_over_a_hundred_members_and_over_twenty_thousand \
             engine::cell_rank::tests::options::probe::a_member_set_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
             engine::cell_rollup::tests::probe::a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many \
+            engine::cell_retry_ring::tests::probe::a_retry_ring_allocates_once_when_started_and_never_again \
             engine::cell_set::tests::probe::a_cell_costs_the_same_allocations_at_any_member_size ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
