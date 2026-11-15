@@ -141,6 +141,13 @@ a list table `list`; `timestamp_us` is the newest snapshot holding the member.
 **Errors.** Refusals answer INVALID_ARGUMENT, an unknown table NO_SUCH_TABLE, a duplicate refused
 under a no-merge profile DUPLICATE_REFUSED, an exhausted quota QUOTA_EXHAUSTED, anything else ERROR.
 
+**Options no read honours.** `want_snapshot_info` (selector field 19) and `limit_members` (field 12)
+are in the wire shape, and no read implements either: an answer carries no per-snapshot summary and a
+read cannot cap the members it considers. A selector that sets `want_snapshot_info` to true, or
+`limit_members` to anything but 0, is refused with INVALID_ARGUMENT and a message naming the field
+(`limit` caps the rows returned). A `want_snapshot_info` of false and a `limit_members` of 0 mean "not
+asked", with or without their presence flags, and read as if absent.
+
 ## Where this deliberately differs from the narrower shape
 
 * Unknown table answers NO_SUCH_TABLE (the narrower shape declares the code and answers NO_DATA).

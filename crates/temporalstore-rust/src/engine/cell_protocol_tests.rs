@@ -827,3 +827,59 @@ fn a_batch_answer_holds_one_answer_per_query_in_order_each_with_its_own_status()
     assert_eq!(short.code, CellStatusCode::Error as i32);
     assert!(short.answers.is_empty());
 }
+
+// ---------------------------------------------------------------- options no read honours
+
+#[test]
+fn a_selector_that_asks_for_snapshot_info_or_a_member_limit_is_refused_naming_the_field() {
+    // The unset request is translated: the refusals below are the option, not the selector.
+    assert!(translate_query(&pair_profile(), &query(trailing(), selector(RankMode::FirstLane))).is_ok());
+
+    // `want_snapshot_info` is a request for something the answer cannot carry, with or without its
+    // presence flag.
+    for flagged in [false, true] {
+        let asked = CellSelector { want_snapshot_info: true, has_want_snapshot_info: flagged, ..selector(RankMode::FirstLane) };
+        let err = refusal(asked);
+        assert_eq!(err.code, CellStatusCode::InvalidArgument);
+        assert!(err.message.contains("want_snapshot_info is not supported"), "{err:?}");
+    }
+
+    // A member limit refuses at 1, the first value that limits anything, and at the extremes.
+    for limit in [1, 2, 1000, i32::MAX, -1, i32::MIN] {
+        for flagged in [false, true] {
+            let capped = CellSelector { limit_members: limit, has_limit_members: flagged, ..selector(RankMode::FirstLane) };
+            let err = refusal(capped);
+            assert_eq!(err.code, CellStatusCode::InvalidArgument);
+            assert!(err.message.contains(&format!("limit_members {limit} is not supported")), "{limit}: {err:?}");
+            assert!(err.message.contains("use `limit`"), "{err:?}");
+        }
+    }
+
+    // Every mode that reads is refused alike, and so is a query inside a batch, by position.
+    for mode in [RankMode::SecondLane, RankMode::Member, RankMode::MembersOnly, RankMode::DecayedLane] {
+        let asked = CellSelector { want_snapshot_info: true, members: vec![1], ..selector(mode) };
+        assert!(refusal(asked).message.contains("want_snapshot_info"), "{mode:?}");
+    }
+    let profiles = Profiles::new(vec![pair_profile()]).unwrap();
+    let good = query(trailing(), selector(RankMode::FirstLane));
+    let mut capped = good.clone();
+    capped.selector.as_mut().unwrap().limit_members = 5;
+    let err = translate_batch(&profiles, &CellBatchQuery { queries: vec![good.clone(), capped] }).unwrap_err();
+    assert!(err.message.starts_with("query 1:") && err.message.contains("limit_members 5"), "{err:?}");
+}
+
+#[test]
+fn a_selector_that_sets_them_off_is_translated_to_exactly_the_read_it_was_without_them() {
+    let plain = plan(selector(RankMode::FirstLane));
+    // A false `want_snapshot_info` and a limit of 0 are statements that nothing is wanted, even
+    // when their presence flags are on; they change no byte of the read.
+    let off = plan(CellSelector {
+        want_snapshot_info: false,
+        has_want_snapshot_info: true,
+        limit_members: 0,
+        has_limit_members: true,
+        ..selector(RankMode::FirstLane)
+    });
+    assert_eq!(off.spec, plain.spec);
+    assert_eq!(off.key, plain.key);
+}
