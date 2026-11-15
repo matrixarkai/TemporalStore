@@ -49,6 +49,8 @@
 //! clock value and touches no engine state.
 
 use super::cell_rank::{Plan, SnapshotRead};
+#[cfg(test)]
+use super::cell_rank::SnapshotView;
 use super::cell_set::{within, within_nonzero};
 use crate::types::RankedCells;
 
