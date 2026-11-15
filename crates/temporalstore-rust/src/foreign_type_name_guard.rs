@@ -63,6 +63,11 @@ const FIXED_WIDTH_INT_NEEDLES: &[&str] =
 /// The common argument, which does most of the work: this crate's methods are `snake_case`, so a
 /// `CamelCase` method name is already not Rust and its presence can only be a copy. The type
 /// names each get a specific argument about the word OUR vocabulary uses instead.
+///
+/// THESE NEEDLES ARE SOMEONE ELSE'S SPELLINGS, SO A RENAME SWEEP MUST NOT TOUCH THEM. A sweep that
+/// rewrote `page` to `block` here turned `MultiPageObject` into `MultiBlockObject`, which is the
+/// name of our own `BucketLayoutState` variant, and the guard then failed on our own source. A
+/// needle that equals a name this crate uses is the symptom.
 const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
     (
         "META_DIRTY",
@@ -73,7 +78,7 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
          generic notion of metadata to be dirty.",
     ),
     (
-        "TRIVIAL_BLOCK",
+        "TRIVIAL_PAGE",
         "From the same source and removed by the same change, as REDUNDANT rather than merely \
          foreign: its documented meaning was that the block is deleted, which `BLOCK_DELETED` \
          already carries. Our word for this is `deleted`, which 141 files already use. Two bits \
@@ -102,8 +107,8 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
          present in one `docs/` file, which this Rust-only scan does not reach.",
     ),
     (
-        "MultiBlockObject",
-        "Our word for a stored unit is BLOCK, not block: `ElementEntry`, `block_size`, \
+        "MultiPageObject",
+        "Our word for a stored unit is BLOCK, not PAGE: `ElementEntry`, `block_size`, \
          `block_in_log`, and `page_segment_id` was renamed to `block_slab_id`. A new CamelCase \
          `*Block*` type name is therefore a copy rather than a coinage. Our own layout policies \
          spell this concept `single_block_object` and `element_block_object`, in snake_case, and \
@@ -135,7 +140,7 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
         "CamelCase method, so not Rust, and built on the `slot` vocabulary described above.",
     ),
     (
-        "BlindDumpNewBlocks",
+        "BlindDumpNewPages",
         "CamelCase method, so not Rust, and built on the `page`-for-`block` vocabulary above.",
     ),
     (
