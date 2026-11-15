@@ -728,6 +728,7 @@ jobs:
             engine::cell_protocol::tests::each_translated_rank_mode_becomes_the_score_it_names \
             engine::cell_protocol::tests::the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_and_kind \
             engine::cell_protocol::tests::a_mode_or_window_that_is_not_built_yet_is_refused_and_says_so \
+            engine::cell_protocol::tests::a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time \
             engine::cell_protocol::tests::a_window_from_a_start_covers_whole_milliseconds_and_excludes_its_end \
             engine::cell_protocol::tests::an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time \
             engine::cell_protocol::tests::the_skip_existing_flag_is_carried_and_refused_with_a_message_that_says_what_to_use \

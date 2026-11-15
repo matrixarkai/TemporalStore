@@ -387,13 +387,50 @@ fn the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_an
 #[test]
 fn a_mode_or_window_that_is_not_built_yet_is_refused_and_says_so() {
     let profile = pair_profile();
-    for mode in [RankMode::Recent, RankMode::MatchLane, RankMode::MembersOnly] {
+    for mode in [RankMode::Recent, RankMode::MatchLane] {
         let err = translate_query(&profile, &query(trailing(), selector(mode))).unwrap_err();
         assert!(err.message.contains("not translated yet"), "{mode:?}: {err:?}");
     }
     let w = Window { kind: WindowKind::NewestRows as i32, span: 1, start_us: 0 };
     let err = translate_query(&profile, &query(w, selector(RankMode::FirstLane))).unwrap_err();
     assert!(err.message.contains("not translated yet"), "{err:?}");
+}
+
+#[test]
+fn a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time() {
+    let profile = pair_profile();
+    let plan = |s: CellSelector| translate_query(&profile, &query(trailing(), s));
+    // The limit of the request is ignored, even a limit of zero: the read asks for as many rows as
+    // the set holds, and orders them by the stamp of each member's newest snapshot.
+    let only = |members: Vec<i64>| CellSelector {
+        has_members: true,
+        members,
+        limit: 0,
+        has_limit: false,
+        ..selector(RankMode::MembersOnly)
+    };
+    let planned = plan(only(vec![3, 4, 5])).unwrap();
+    assert_eq!(3, planned.spec.top_k, "the limit of the request was used");
+    assert_eq!(CellScore::Time, planned.spec.score);
+    assert_eq!(
+        Some(vec![CellMemberId::U64(3), CellMemberId::U64(4), CellMemberId::U64(5)]),
+        planned.spec.members.include
+    );
+    // The label predicate every read carries is still there.
+    assert_eq!(
+        vec![FeatureFilter { field: "slot".into(), op: FeatureFilterOp::Equal, value: 5 }],
+        planned.spec.filters
+    );
+    // No members named is refused, and the set is bounded by what a read can return: accepted at
+    // exactly 1000, refused at 1001.
+    assert!(plan(only(Vec::new())).is_err());
+    assert!(plan(selector(RankMode::MembersOnly)).is_err());
+    assert_eq!(MAX_TOP_K, plan(only((0..MAX_TOP_K as i64).collect())).unwrap().spec.top_k);
+    let over = plan(only((0..=MAX_TOP_K as i64).collect())).unwrap_err();
+    assert!(over.message.contains("over the limit"), "{over:?}");
+    // CONTROL: the same selector in another mode keeps its limit.
+    let ranked = CellSelector { has_members: true, members: vec![3, 4, 5], ..selector(RankMode::FirstLane) };
+    assert_eq!(10, plan(ranked).unwrap().spec.top_k);
 }
 
 #[test]
