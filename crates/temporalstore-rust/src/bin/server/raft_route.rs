@@ -557,6 +557,7 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::HashMultiGet { .. }
             | Command::HashGetAll { .. }
             | Command::HashLen { .. }
+            | Command::HashFieldExists { .. }
             | Command::SetMembers { .. }
             | Command::SetCard { .. }
             | Command::SetIsMember { .. }

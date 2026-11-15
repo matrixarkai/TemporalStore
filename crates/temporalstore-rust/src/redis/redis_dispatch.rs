@@ -555,12 +555,12 @@ pub fn execute_redis_command_with_state(
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
         }
-        "HSETNX" if args.len() == 4 => match execute(Command::HashGet {
+        "HSETNX" if args.len() == 4 => match execute(Command::HashFieldExists {
             key: name_arg(&args[1]),
             field: name_arg(&args[2]),
         }) {
-            Ok(CommandResponse::Bytes { value: Some(_) }) => RespValue::Integer(0),
-            Ok(CommandResponse::Bytes { value: None }) => match execute(Command::HashSet {
+            Ok(CommandResponse::Integer { value: 1 }) => RespValue::Integer(0),
+            Ok(CommandResponse::Integer { value: 0 }) => match execute(Command::HashSet {
                 key: name_arg(&args[1]),
                 field: name_arg(&args[2]),
                 value: args[3].clone(),
@@ -604,14 +604,10 @@ pub fn execute_redis_command_with_state(
             Ok(_) => RespValue::Error("ERR invalid hstrlen response".to_string()),
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
-        "HEXISTS" if args.len() == 3 => match execute(Command::HashGet {
+        "HEXISTS" if args.len() == 3 => integer_response(execute(Command::HashFieldExists {
             key: name_arg(&args[1]),
             field: name_arg(&args[2]),
-        }) {
-            Ok(CommandResponse::Bytes { value }) => RespValue::Integer(i64::from(value.is_some())),
-            Ok(_) => RespValue::Error("ERR invalid hget response".to_string()),
-            Err(err) => RespValue::Error(format!("ERR {err}")),
-        },
+        })),
         "HMGET" if args.len() >= 3 => {
             match execute(Command::HashMultiGet {
                 key: name_arg(&args[1]),

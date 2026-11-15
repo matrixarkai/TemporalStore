@@ -2131,6 +2131,28 @@ pub(crate) fn execute_on_shard(
             invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
             CommandResponse::Empty
         }
+        Command::HashFieldExists { key, field } => {
+            if drop_if_expired(cache, shard_id, shard, &key) {
+                mutated = true;
+                invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            // THE FIELD MAP IS THE SOURCE `HashGet` READS A FIELD'S ADDRESS FROM, so asking it
+            // whether the field is there answers what `HashGet` would answer `Some` or `None` to,
+            // without opening the field's block and copying its value out to be dropped.
+            CommandResponse::Integer {
+                value: i64::from(
+                    shard
+                        .bucket_index
+                        .hashes
+                        .get(&key)
+                        .is_some_and(|fields| fields.contains_key(&field)),
+                ),
+            }
+        }
         Command::HashGet { key, field } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;

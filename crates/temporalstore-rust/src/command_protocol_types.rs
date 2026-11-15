@@ -1768,6 +1768,13 @@ pub enum Command {
         #[serde(with = "crate::bytes_serde")]
         value: Vec<u8>,
     },
+    /// Whether one field is in the hash, as an integer 1 or 0. The point read copies the field's
+    /// value out of its block to be asked only whether it is there; this answers from the field map
+    /// the hash already keeps, with no block read.
+    HashFieldExists {
+        key: String,
+        field: String,
+    },
     HashGet {
         key: String,
         field: String,

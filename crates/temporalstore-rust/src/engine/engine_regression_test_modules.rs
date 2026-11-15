@@ -563,5 +563,7 @@ mod a_set_length_and_membership_read_the_member_map;
 mod an_expiry_sweep_that_fails_is_counted;
 #[path = "tests/the_figure_after_a_dump_is_the_bytes_appended_since_it.rs"]
 mod the_figure_after_a_dump_is_the_bytes_appended_since_it;
+#[path = "tests/a_hash_field_presence_is_read_from_its_row.rs"]
+mod a_hash_field_presence_is_read_from_its_row;
 #[path = "tests/sync_value_once.rs"]
 mod sync_value_once;
