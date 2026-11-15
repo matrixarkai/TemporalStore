@@ -466,3 +466,42 @@ fn a_drain_round_asks_only_about_keys_that_hold_a_block_on_the_drain_slab() {
         assert!(matches!(response.response, CommandResponse::Bytes { value: Some(v) } if v == vec![9u8; 96]));
     }
 }
+
+
+/// A round rebuilds the bucket views from the model maps, and a rebuild must not move the
+/// generation a dump manifest is compared against. Each bucket's dirty generation is read before
+/// the round and after it.
+#[test]
+fn a_compaction_round_keeps_every_buckets_dirty_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path(), false);
+    seed(&engine, 8);
+    for member in ["id-1", "id-4"] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SetRemove { key: "order".into(), member: member.as_bytes().to_vec() },
+        });
+        assert!(response.status.ok);
+    }
+    let generations = |engine: &TemporalEngine| {
+        let shards = engine.shards.read().unwrap();
+        let shard = shards.get(&1).unwrap();
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(bucket, node)| (*bucket, node.dirty_generation))
+            .collect::<BTreeMap<u32, u64>>()
+    };
+    let before = generations(&engine);
+    assert!(
+        before.values().any(|generation| *generation > 1),
+        "the fixture must hold a bucket whose generation a reset would change: {before:?}"
+    );
+    engine.compact_shard_blocks(1).unwrap();
+    assert_eq!(
+        generations(&engine),
+        before,
+        "a compaction round changed a bucket's dirty generation"
+    );
+}

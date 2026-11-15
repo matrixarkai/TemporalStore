@@ -2118,14 +2118,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // non-durable block, then persist -- leaving volatile == durable so reclaim is safe --
             // and propagate the original error so the caller knows compaction did not fully
             // complete (a later run retries the not-yet-moved blocks).
-            rebuild_bucket_first_index(
-                shard_id,
-                shard,
-                start_routing_bucket,
-                end_routing_bucket,
-            );
-            refresh_bucket_runtime_flags(shard);
-            rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
+            rebuild_compacted_bucket_views(shard_id, shard, start_routing_bucket, end_routing_bucket);
             if let Err(barrier) = self.compaction_barrier() {
                 self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
                 return Err(Status::error(
@@ -2176,14 +2169,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 rounds.remove(&shard_id);
             }
         }
-        rebuild_bucket_first_index(
-            shard_id,
-            shard,
-            start_routing_bucket,
-            end_routing_bucket,
-        );
-        refresh_bucket_runtime_flags(shard);
-        rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
+        rebuild_compacted_bucket_views(shard_id, shard, start_routing_bucket, end_routing_bucket);
         // Durability barrier BEFORE publishing the base index that names the relocated blocks.
         // Under deferred-fsync modes (bulk / block_wal_single_barrier -> append.rs
         // defer_data_sync) compaction relocates blocks fsync-deferred, so the moved
@@ -2339,6 +2325,26 @@ fn expiry_scan_budget(limit: usize) -> usize {
             after,
         }))
     }
+}
+
+/// Re-derive the bucket views a relocation leaves stale, ONCE.
+///
+/// A round moves addresses in the model maps and nothing else, so the bucket index, the block
+/// lookup and the per-slab live tally have to be rebuilt from them. The ownership rebuild does all
+/// of that: it clears and refiles every bucket and carries over what the model maps cannot
+/// re-derive (tombstone rows) and what a rebuild must not reset (each bucket's dirty generation).
+/// The first-index rebuild that used to run before it derives the same views from the same maps,
+/// so it only repeated the work -- and it reset every dirty generation to a fresh value, which the
+/// ownership rebuild then carried over as if it were the original. A round therefore changed the
+/// generation a dump manifest is compared against. Running one rebuild keeps the generations.
+fn rebuild_compacted_bucket_views(
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) {
+    refresh_bucket_runtime_flags(shard);
+    rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
 }
 
 #[track_caller]
