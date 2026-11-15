@@ -288,7 +288,8 @@ A request over a limit is refused, not truncated.
 | Dimensions per key, labels per cell, lanes per cell | 8, 4, 16 |
 | Member bytes, entity bytes, text dimension bytes | 256 each |
 | Field name bytes | 64 |
-| Cells per write request, cells per snapshot | 1,024, 4,096 |
+| Cells per point of a write request, cells per snapshot | 1,024, 4,096 |
+| Cells in all the points of one merge-reduce command | 262,144 |
 | `top_k` | 1,000 |
 | Snapshots in one ranked window | 512 (a wider window is refused, not truncated) |
 | Predicates per read, lanes in a `Weighted` score | 8, 8 |
