@@ -146,6 +146,8 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::StringSet { key, .. }
         | Command::StringSetEx { key, .. }
         | Command::StringSetConditional { key, .. }
+        | Command::StringIncrBy { key, .. }
+        | Command::StringAppend { key, .. }
         | Command::StringDelete { key }
         | Command::HashSet { key, .. }
         | Command::HashMultiSet { key, .. }
@@ -398,6 +400,8 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::StringSet { .. }
             | Command::StringSetEx { .. }
             | Command::StringSetConditional { .. }
+            | Command::StringIncrBy { .. }
+            | Command::StringAppend { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
             | Command::HashMultiSetWithTtl { .. }
@@ -461,6 +465,8 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::StringSet { .. }
             | Command::StringSetEx { .. }
             | Command::StringSetConditional { .. }
+            | Command::StringIncrBy { .. }
+            | Command::StringAppend { .. }
             | Command::StringDelete { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
@@ -1239,6 +1245,27 @@ pub(super) fn validate_command_preconditions(
             .checked_add(*increment)
             .map(|_| ())
             .ok_or_else(|| Status::error("out_of_range", "hash increment overflows i64"))?;
+    }
+    if let Command::StringIncrBy { key, increment } = command {
+        // A lapsed key is about to be collected, so the stored bytes are not the caller's to be
+        // refused over: the increment starts from nothing, as the hash one does above.
+        if shard
+            .expires_at_ms()
+            .get(key.as_str())
+            .map(|expires_at| *expires_at <= resolve_now_ms())
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        // The reader `StringGet` uses, so the value refused here is the value a read returns.
+        let current = match read_bucket_index_value(cache, block_store, shard_id, shard, "string", key, None) {
+            None => 0_i64,
+            Some(bytes) => parse_i64(&bytes)
+                .ok_or_else(|| Status::error("unmatched", "value is not an integer"))?,
+        };
+        current.checked_add(*increment).ok_or_else(|| {
+            Status::error("out_of_range", "increment or decrement would overflow")
+        })?;
     }
     Ok(())
 }

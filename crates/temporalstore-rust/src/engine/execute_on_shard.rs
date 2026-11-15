@@ -1460,6 +1460,102 @@ fn replace_feature_range(
     mutated
 }
 
+/// What a read-modify-write on one string does to the value it finds.
+enum StringChange {
+    /// `INCRBY`: add a signed amount to the integer the value spells.
+    Add(i64),
+    /// `APPEND`: put these bytes after the value.
+    Append(Vec<u8>),
+}
+
+/// `INCRBY` and `APPEND` as ONE command: read the value, compute the new one and store it while
+/// the caller holds the shard, so two writers on a key cannot both read the old value.
+///
+/// THE STORE IS THE EXISTING ONE. The write is handed to `execute_on_shard` as an unconditional
+/// `StringSetConditional` that keeps the deadline, so the block, the index entry, the logical
+/// size, the logged outcome and the cache drop are the ones every string write already makes --
+/// the bytes this puts on disk are the bytes a `SET ... KEEPTTL` of the same value puts there.
+/// Only the answer differs: the new integer, or the new length.
+///
+/// A stored value that is not an integer, or a sum past the `i64` range, was refused before this
+/// ran (`validate_command_preconditions`); if one still arrives it is answered with nothing and
+/// writes nothing.
+#[allow(clippy::too_many_arguments)]
+fn execute_string_read_modify_write(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    feature_max_size: usize,
+    async_storage: bool,
+    control_rollup_enabled: bool,
+    control_coalesce_persist: bool,
+    control_state_max_size: usize,
+    control_distinct_sketch: bool,
+    trim_boundary_record: bool,
+    set_listing_from_map: bool,
+    shard_id: ShardId,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    shard: &mut ShardState,
+    key: String,
+    change: StringChange,
+) -> ExecuteOutcome {
+    // A lapsed key is collected first, so the read below finds nothing and the write starts a
+    // fresh value, exactly as `StringSetConditional` treats it.
+    let mut mutated = false;
+    mutated |= drop_if_expired(cache, shard_id, shard, &key);
+    let old = read_bucket_index_value(cache, block_store, shard_id, shard, "string", &key, None);
+    let (new_value, answer) = match change {
+        StringChange::Add(increment) => {
+            let current = match old.as_deref() {
+                None => Some(0_i64),
+                Some(bytes) => parse_i64_slice(bytes),
+            };
+            match current.and_then(|current| current.checked_add(increment)) {
+                Some(sum) => (sum.to_string().into_bytes(), sum),
+                None => {
+                    return ExecuteOutcome {
+                        response: CommandResponse::Empty,
+                        mutated,
+                    }
+                }
+            }
+        }
+        StringChange::Append(tail) => {
+            let mut joined = old.unwrap_or_default();
+            joined.extend_from_slice(&tail);
+            let length = joined.len() as i64;
+            (joined, length)
+        }
+    };
+    let mut outcome = execute_on_shard(
+        cache,
+        block_store,
+        feature_max_size,
+        async_storage,
+        control_rollup_enabled,
+        control_coalesce_persist,
+        control_state_max_size,
+        control_distinct_sketch,
+        trim_boundary_record,
+        set_listing_from_map,
+        shard_id,
+        start_routing_bucket,
+        end_routing_bucket,
+        shard,
+        Command::StringSetConditional {
+            key,
+            value: new_value,
+            ttl_ms: None,
+            condition: StringSetCondition::Always,
+            return_old: false,
+            keep_ttl: true,
+        },
+    );
+    outcome.mutated |= mutated;
+    outcome.response = CommandResponse::Integer { value: answer };
+    outcome
+}
+
 pub(crate) fn execute_on_shard(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -1509,6 +1605,46 @@ pub(crate) fn execute_on_shard(
                 entries,
             )
             .0
+        }
+        Command::StringIncrBy { key, increment } => {
+            return execute_string_read_modify_write(
+                cache,
+                block_store,
+                feature_max_size,
+                async_storage,
+                control_rollup_enabled,
+                control_coalesce_persist,
+                control_state_max_size,
+                control_distinct_sketch,
+                trim_boundary_record,
+                set_listing_from_map,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                key,
+                StringChange::Add(increment),
+            );
+        }
+        Command::StringAppend { key, value } => {
+            return execute_string_read_modify_write(
+                cache,
+                block_store,
+                feature_max_size,
+                async_storage,
+                control_rollup_enabled,
+                control_coalesce_persist,
+                control_state_max_size,
+                control_distinct_sketch,
+                trim_boundary_record,
+                set_listing_from_map,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                key,
+                StringChange::Append(value),
+            );
         }
         command => command,
     };
@@ -2092,6 +2228,9 @@ pub(crate) fn execute_on_shard(
         }
         Command::HashMultiSetIfTimestampOlder { .. } => unreachable!(
             "conditional hash writes are handled before command dispatch"
+        ),
+        Command::StringIncrBy { .. } | Command::StringAppend { .. } => unreachable!(
+            "string read-modify-write commands are handled before command dispatch"
         ),
         Command::HashIncrBy {
             key,

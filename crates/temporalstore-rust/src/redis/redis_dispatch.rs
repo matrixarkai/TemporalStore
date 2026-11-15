@@ -455,20 +455,16 @@ pub fn execute_redis_command_with_state(
             response
         }
         "APPEND" if args.len() == 3 => {
+            // ONE COMMAND: the shard appends while it holds the key, so two clients appending to
+            // one string cannot both read the old value and drop each other's bytes.
             let key = name_arg(&args[1]);
-            match execute(Command::StringGet { key: key.clone() }) {
-                Ok(CommandResponse::Bytes { value }) => {
-                    let mut new_value = value.unwrap_or_default();
-                    new_value.extend_from_slice(&args[2]);
-                    let new_len = new_value.len() as i64;
-                    if let Err(err) = execute(Command::StringSet {
-                        key: key.clone(),
-                        value: new_value,
-                    }) {
-                        return RespValue::Error(format!("ERR {err}"));
-                    }
+            match execute(Command::StringAppend {
+                key: key.clone(),
+                value: args[2].clone(),
+            }) {
+                Ok(CommandResponse::Integer { value }) => {
                     state.keyspace.insert(key);
-                    RespValue::Integer(new_len)
+                    RespValue::Integer(value)
                 }
                 Ok(_) => RespValue::Error("ERR invalid append response".to_string()),
                 Err(err) => RespValue::Error(format!("ERR {err}")),
