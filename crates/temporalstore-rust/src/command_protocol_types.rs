@@ -366,16 +366,70 @@ pub struct CellCapSpec {
     pub group_by: Option<String>,
     pub score: CellScore,
     pub keep: usize,
+    /// Parts per million of `keep` (rounded down) reserved for the group's most recently seen
+    /// members, which survive whatever their score. A member is as recent as the newest snapshot
+    /// that wrote it; ties go to the smaller member. 0 (the default) protects none. At most
+    /// 1 000 000.
+    #[serde(default)]
+    pub protect_newest_ppm: u32,
+    /// A group is cut only when it holds more than `keep + trigger_over` members, and then down
+    /// to `keep`. 0 (the default) cuts every group over `keep`. At most 4 096.
+    #[serde(default)]
+    pub trigger_over: usize,
+}
+
+/// What `older_than_ms` means, for the first tier and every coarser one.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CellRollupAnchor {
+    /// An absolute stamp: snapshots stamped strictly below it are in the tier.
+    #[default]
+    Request,
+    /// An age: the cutoff is the stamp of the newest snapshot the key holds minus the age,
+    /// saturating at 0. The newest snapshot is stored state, not a clock, so a follower and a
+    /// replay resolve the same cutoff.
+    NewestMinusAge,
+}
+
+/// A tier coarser than the first: the snapshots below its cutoff are folded into buckets of
+/// `bucket_ms`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CellRollupTier {
+    pub older_than_ms: u64,
+    pub bucket_ms: u64,
+}
+
+/// Keep the newest `keep_last` snapshots of the key (1 to 1 000 000), acting only when it holds
+/// more than `trigger` (at least `keep_last`, at most 10 000 000; default `keep_last`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CellTruncateSpec {
+    pub keep_last: usize,
+    #[serde(default)]
+    pub trigger: Option<usize>,
 }
 
 /// Roll the snapshots stamped strictly below `older_than_ms` up into buckets of `bucket_ms`, each
 /// stored at its bucket start, and optionally cap each rolled snapshot.
+///
+/// A request that sets none of `anchor`, `coarser_tiers` and `truncate`, and none of the cap's two
+/// controls, is the single-tier request: it means, and stores, what it always has.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CellRollupSpec {
     pub older_than_ms: u64,
     pub bucket_ms: u64,
     #[serde(default)]
     pub cap: Option<CellCapSpec>,
+    /// Whether `older_than_ms` (and each tier's) is a stamp or an age.
+    #[serde(default)]
+    pub anchor: CellRollupAnchor,
+    /// Coarser tiers, at most 8, after the first pair. Each cutoff reaches further back than the
+    /// one before (stamps fall, ages grow) and each `bucket_ms` is a multiple of the one before; a
+    /// last tier of `u64::MAX` is the catch-all, one snapshot at stamp 0.
+    #[serde(default)]
+    pub coarser_tiers: Vec<CellRollupTier>,
+    /// Remove the oldest snapshots of the key once it holds more than the trigger.
+    #[serde(default)]
+    pub truncate: Option<CellTruncateSpec>,
 }
 
 /// What a rollup did, as the client reports it.

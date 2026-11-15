@@ -51,7 +51,7 @@ fn snap(timestamp_ms: u64, cells: Vec<Cell>) -> Snapshot {
 }
 
 fn spec(older_than_ms: u64, bucket_ms: u64) -> RollupSpec {
-    RollupSpec { older_than_ms, bucket_ms, cap: None }
+    RollupSpec { older_than_ms, bucket_ms, cap: None, anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None }
 }
 
 fn lane_score(name: &str) -> CellScore {
@@ -59,7 +59,7 @@ fn lane_score(name: &str) -> CellScore {
 }
 
 fn cap(group_by: Option<&str>, score: CellScore, keep: usize) -> CapSpec {
-    CapSpec { group_by: group_by.map(str::to_string), score, keep }
+    CapSpec { group_by: group_by.map(str::to_string), score, keep, protect_newest_ppm: 0, trigger_over: 0 }
 }
 
 fn bytes_of(snapshots: &[Snapshot]) -> Vec<(u64, Vec<u8>)> {
@@ -254,7 +254,7 @@ fn rolling_a_rolled_result_again_changes_no_byte_and_the_same_request_twice_agre
     let request = RollupSpec {
         older_than_ms: last_ts / 2,
         bucket_ms: 250,
-        cap: Some(cap(Some("slot"), lane_score("shown"), 6)),
+        cap: Some(cap(Some("slot"), lane_score("shown"), 6)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None,
     };
     let once = rollup(&header(), snaps.clone(), &request).unwrap();
     let twice_from_scratch = rollup(&header(), snaps, &request).unwrap();
@@ -306,7 +306,7 @@ fn a_decoded_replay_reaches_the_bytes_the_first_run_reached() {
     let request = RollupSpec {
         older_than_ms: u64::MAX,
         bucket_ms: 400,
-        cap: Some(cap(None, CellScore::Ratio { numerator: "shown".to_string(), denominator: "events".to_string() }, 20)),
+        cap: Some(cap(None, CellScore::Ratio { numerator: "shown".to_string(), denominator: "events".to_string() }, 20)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None,
     };
     let leader = rollup(&header(), snaps, &request).unwrap();
     // A follower or a replay starts from the stored bytes, not from the leader's values.
@@ -406,7 +406,7 @@ fn the_cap_runs_on_the_folded_bucket_not_on_the_snapshots_that_make_it() {
         snap(1, vec![cell(1, 0, [1, 1, 0, 0, 0, 0]), cell(2, 0, [50, 1, 0, 0, 0, 0])]),
         snap(2, vec![cell(1, 0, [100, 1, 0, 0, 0, 0]), cell(2, 0, [0, 1, 0, 0, 0, 0])]),
     ];
-    let request = RollupSpec { older_than_ms: 10, bucket_ms: 10, cap: Some(cap(None, lane_score("shown"), 1)) };
+    let request = RollupSpec { older_than_ms: 10, bucket_ms: 10, cap: Some(cap(None, lane_score("shown"), 1)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None };
     let got = rollup(&header(), snaps, &request).unwrap();
     assert_eq!(got.snapshots.len(), 1);
     assert_eq!(got.snapshots[0].cells, vec![cell(1, 0, [101, 2, 0, 0, 0, 0])]);
@@ -419,7 +419,7 @@ fn the_cap_runs_on_the_folded_bucket_not_on_the_snapshots_that_make_it() {
 #[test]
 fn a_snapshot_the_cap_does_not_reach_keeps_every_cell() {
     let snaps = vec![snap(5, group_data()), snap(500, group_data())];
-    let request = RollupSpec { older_than_ms: 100, bucket_ms: 100, cap: Some(cap(Some("slot"), lane_score("shown"), 1)) };
+    let request = RollupSpec { older_than_ms: 100, bucket_ms: 100, cap: Some(cap(Some("slot"), lane_score("shown"), 1)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None };
     let got = rollup(&header(), snaps, &request).unwrap();
     assert_eq!(members(&got.snapshots[0].cells), vec![2, 5, 6]);
     assert_eq!(got.snapshots[1].cells, group_data(), "at the cutoff and after it: untouched, uncapped");
@@ -444,7 +444,7 @@ fn a_bucket_width_is_bounded_below_at_exactly_one() {
 
 #[test]
 fn keep_is_bounded_at_one_below_and_the_snapshot_limit_above() {
-    let with_keep = |keep: usize| RollupSpec { older_than_ms: 10, bucket_ms: 10, cap: Some(cap(None, lane_score("shown"), keep)) };
+    let with_keep = |keep: usize| RollupSpec { older_than_ms: 10, bucket_ms: 10, cap: Some(cap(None, lane_score("shown"), keep)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None };
     assert!(run_ok(&with_keep(1)));
     assert!(run_ok(&with_keep(MAX_KEEP)));
     let zero = validate_spec(&with_keep(0)).unwrap_err();
@@ -480,7 +480,7 @@ fn a_bucket_over_the_snapshot_cell_limit_is_refused_and_one_at_the_limit_is_fold
 #[test]
 fn a_request_the_key_cannot_serve_is_refused_naming_what_was_wrong() {
     let good = vec![snap(1, vec![cell(1, 0, [1, 1, 1, 1, 1, 1])])];
-    let with = |c: CapSpec| RollupSpec { older_than_ms: 10, bucket_ms: 10, cap: Some(c) };
+    let with = |c: CapSpec| RollupSpec { older_than_ms: 10, bucket_ms: 10, cap: Some(c), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None };
 
     let err = rollup(&header(), good.clone(), &with(cap(Some("nope"), lane_score("shown"), 1))).unwrap_err();
     assert!(err.contains("`nope`") && err.contains("slot"), "{err}");
@@ -513,7 +513,7 @@ fn a_bytes_member_cannot_be_scored_by_member_and_is_otherwise_rolled_like_any_ot
     let got = rollup(&header(), snaps.clone(), &spec(10, 10)).unwrap();
     assert_eq!(got.snapshots[0].cells.len(), 2);
     assert_eq!(got.snapshots[0].cells[1].lanes[SUM], 5);
-    let request = RollupSpec { older_than_ms: 10, bucket_ms: 10, cap: Some(cap(None, CellScore::Member, 1)) };
+    let request = RollupSpec { older_than_ms: 10, bucket_ms: 10, cap: Some(cap(None, CellScore::Member, 1)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None };
     let err = rollup(&header(), snaps, &request).unwrap_err();
     assert!(err.contains("u64 members"), "{err}");
 }
@@ -540,7 +540,7 @@ mod probe {
         let request = RollupSpec {
             older_than_ms: u64::MAX,
             bucket_ms: 1 << 40,
-            cap: capped.then(|| cap(Some("slot"), lane_score("shown"), 5)),
+            cap: capped.then(|| cap(Some("slot"), lane_score("shown"), 5)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None,
         };
         let header = header();
         let probe = Probe::start();

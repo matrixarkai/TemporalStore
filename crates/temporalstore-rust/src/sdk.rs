@@ -586,14 +586,10 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 retry_token: command.retry_token,
             }
         }
-        v1::command::Kind::CellRollup(command) => types::Command::CellRollup {
-            key: command.key,
-            spec: cell_rollup_spec_from_proto(
-                command.older_than_ms,
-                command.bucket_ms,
-                command.cap,
-            )?,
-        },
+        v1::command::Kind::CellRollup(command) => {
+            let (key, spec) = cell_rollup_from_proto(command)?;
+            types::Command::CellRollup { key, spec }
+        }
         v1::command::Kind::SeenCheck(command) => types::Command::SeenCheck {
             key: command.key,
             member: command.member,
@@ -1261,33 +1257,82 @@ pub(crate) fn cell_rollup_score_from_proto(
     }
 }
 
-pub(crate) fn cell_rollup_spec_to_proto(spec: &types::CellRollupSpec) -> (u64, u64, Option<v1::CellRollupCap>) {
-    (
-        spec.older_than_ms,
-        spec.bucket_ms,
-        spec.cap.as_ref().map(|cap| v1::CellRollupCap {
+pub(crate) fn cell_rollup_to_proto(key: &str, spec: &types::CellRollupSpec) -> v1::CellRollup {
+    v1::CellRollup {
+        key: key.to_string(),
+        older_than_ms: spec.older_than_ms,
+        bucket_ms: spec.bucket_ms,
+        cap: spec.cap.as_ref().map(|cap| v1::CellRollupCap {
             group_by: cap.group_by.clone(),
             score: Some(cell_rollup_score_to_proto(&cap.score)),
             keep: cap.keep as u64,
+            protect_newest_ppm: cap.protect_newest_ppm,
+            trigger_over: cap.trigger_over as u64,
         }),
-    )
+        anchor: match spec.anchor {
+            types::CellRollupAnchor::Request => v1::CellRollupAnchor::Request,
+            types::CellRollupAnchor::NewestMinusAge => v1::CellRollupAnchor::NewestMinusAge,
+        } as i32,
+        coarser_tiers: spec
+            .coarser_tiers
+            .iter()
+            .map(|tier| v1::CellRollupTier { older_than_ms: tier.older_than_ms, bucket_ms: tier.bucket_ms })
+            .collect(),
+        truncate: spec.truncate.map(|truncate| v1::CellRollupTruncate {
+            keep_last: truncate.keep_last as u64,
+            trigger: truncate.trigger.map(|trigger| trigger as u64),
+        }),
+    }
 }
 
-pub(crate) fn cell_rollup_spec_from_proto(
-    older_than_ms: u64,
-    bucket_ms: u64,
-    cap: Option<v1::CellRollupCap>,
-) -> Result<types::CellRollupSpec, TonicStatus> {
-    let cap = match cap {
+fn platform_usize(value: u64, what: &str) -> Result<usize, TonicStatus> {
+    usize::try_from(value).map_err(|_| TonicStatus::invalid_argument(format!("cell rollup {what} does not fit this platform")))
+}
+
+/// REFUSED, NOT DEFAULTED: an anchor this build does not know is not the request's anchor.
+pub(crate) fn cell_rollup_from_proto(command: v1::CellRollup) -> Result<(String, types::CellRollupSpec), TonicStatus> {
+    let anchor = match v1::CellRollupAnchor::try_from(command.anchor) {
+        Ok(v1::CellRollupAnchor::Request) => types::CellRollupAnchor::Request,
+        Ok(v1::CellRollupAnchor::NewestMinusAge) => types::CellRollupAnchor::NewestMinusAge,
+        Err(_) => {
+            return Err(TonicStatus::invalid_argument(format!(
+                "cell rollup anchor {} is not one this build can apply",
+                command.anchor
+            )))
+        }
+    };
+    let cap = match command.cap {
         None => None,
         Some(cap) => Some(types::CellCapSpec {
             group_by: cap.group_by,
             score: cell_rollup_score_from_proto(cap.score)?,
-            keep: usize::try_from(cap.keep)
-                .map_err(|_| TonicStatus::invalid_argument("cell rollup keep does not fit this platform"))?,
+            keep: platform_usize(cap.keep, "keep")?,
+            protect_newest_ppm: cap.protect_newest_ppm,
+            trigger_over: platform_usize(cap.trigger_over, "trigger_over")?,
         }),
     };
-    Ok(types::CellRollupSpec { older_than_ms, bucket_ms, cap })
+    let truncate = match command.truncate {
+        None => None,
+        Some(truncate) => Some(types::CellTruncateSpec {
+            keep_last: platform_usize(truncate.keep_last, "keep_last")?,
+            trigger: truncate.trigger.map(|trigger| platform_usize(trigger, "trigger")).transpose()?,
+        }),
+    };
+    Ok((
+        command.key,
+        types::CellRollupSpec {
+            older_than_ms: command.older_than_ms,
+            bucket_ms: command.bucket_ms,
+            cap,
+            anchor,
+            coarser_tiers: command
+                .coarser_tiers
+                .into_iter()
+                .map(|tier| types::CellRollupTier { older_than_ms: tier.older_than_ms, bucket_ms: tier.bucket_ms })
+                .collect(),
+            truncate,
+        },
+    ))
 }
 
 /// THE FAMILY TAG, RUST SPELLING TO WIRE NUMBER.

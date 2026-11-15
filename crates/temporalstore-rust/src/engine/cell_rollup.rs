@@ -79,7 +79,8 @@
 //!   as the newest snapshot that wrote it. `trigger_over` leaves a group alone until it holds more
 //!   than `keep + trigger_over` members, then cuts it to `keep`.
 //!
-//! A request that names none of these is the single-tier request, byte for byte.
+//! A request that names none of these is the single-tier request, byte for byte. The wire
+//! request ([`RollupSpec`]) carries them as optional fields.
 //!
 //! # BOUNDS
 //!
@@ -101,7 +102,7 @@ use super::cell_set::{
     is_strictly_ascending, validate_cells_in_snapshot, within, within_nonzero, Cell, CellHeader, LaneReducer,
     MAX_CELLS_PER_SNAPSHOT,
 };
-use crate::types::CellScore;
+use crate::types::{CellRollupAnchor, CellScore};
 
 /// Snapshots below the cutoff one request may roll up.
 pub(crate) const MAX_ROLLUP_SNAPSHOTS: usize = 1024;
@@ -218,20 +219,20 @@ pub(crate) struct PlanSpec {
 }
 
 impl PlanSpec {
-    /// The single-tier request, with every new control at its default.
-    pub(crate) fn from_legacy(spec: &RollupSpec) -> PlanSpec {
-        PlanSpec {
-            anchor: Anchor::Request,
-            tiers: vec![TierSpec { older_than: spec.older_than_ms, bucket_ms: spec.bucket_ms }],
-            truncate: None,
-            cap: spec.cap.as_ref().map(|cap| CapPlanSpec {
-                group_by: cap.group_by.clone(),
+    /// The request as the command carries it, owned.
+    pub(crate) fn from_wire(spec: &RollupSpec) -> PlanSpec {
+        with_view(spec, |view| PlanSpec {
+            anchor: view.anchor,
+            tiers: view.tiers.to_vec(),
+            truncate: view.truncate,
+            cap: view.cap.map(|cap| CapPlanSpec {
+                group_by: cap.group_by.map(str::to_string),
                 score: cap.score.clone(),
                 keep: cap.keep,
-                protect_newest_ppm: 0,
-                trigger_over: 0,
+                protect_newest_ppm: cap.protect_newest_ppm,
+                trigger_over: cap.trigger_over,
             }),
-        }
+        })
     }
 }
 
@@ -272,22 +273,38 @@ impl PlanSpec {
     }
 }
 
-/// Runs `with` over the single-tier request viewed as a full one.
-fn with_legacy_view<R>(spec: &RollupSpec, with: impl FnOnce(&PlanView<'_>) -> R) -> R {
-    let tier = [TierSpec { older_than: spec.older_than_ms, bucket_ms: spec.bucket_ms }];
-    let view = PlanView {
-        anchor: Anchor::Request,
-        tiers: &tier,
-        truncate: None,
-        cap: spec.cap.as_ref().map(|cap| CapView {
-            group_by: cap.group_by.as_deref(),
-            score: &cap.score,
-            keep: cap.keep,
-            protect_newest_ppm: 0,
-            trigger_over: 0,
-        }),
-    };
-    with(&view)
+fn anchor_of(anchor: CellRollupAnchor) -> Anchor {
+    match anchor {
+        CellRollupAnchor::Request => Anchor::Request,
+        CellRollupAnchor::NewestMinusAge => Anchor::NewestMinusAge,
+    }
+}
+
+/// Runs `with` over the request as the command carries it. A request with no coarser tier is
+/// viewed off a one-element array on the stack, so the single-tier request allocates nothing for
+/// the extension.
+fn with_view<R>(spec: &RollupSpec, with: impl FnOnce(&PlanView<'_>) -> R) -> R {
+    let first = TierSpec { older_than: spec.older_than_ms, bucket_ms: spec.bucket_ms };
+    let anchor = anchor_of(spec.anchor);
+    let truncate = spec.truncate.map(|t| TruncateSpec { keep_last: t.keep_last, trigger: t.trigger });
+    let cap = spec.cap.as_ref().map(|cap| CapView {
+        group_by: cap.group_by.as_deref(),
+        score: &cap.score,
+        keep: cap.keep,
+        protect_newest_ppm: cap.protect_newest_ppm,
+        trigger_over: cap.trigger_over,
+    });
+    if spec.coarser_tiers.is_empty() {
+        let tiers = [first];
+        with(&PlanView { anchor, tiers: &tiers, truncate, cap })
+    } else {
+        let mut tiers = Vec::with_capacity(1 + spec.coarser_tiers.len());
+        tiers.push(first);
+        tiers.extend(
+            spec.coarser_tiers.iter().map(|tier| TierSpec { older_than: tier.older_than_ms, bucket_ms: tier.bucket_ms }),
+        );
+        with(&PlanView { anchor, tiers: &tiers, truncate, cap })
+    }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -296,7 +313,7 @@ fn with_legacy_view<R>(spec: &RollupSpec, with: impl FnOnce(&PlanView<'_>) -> R)
 
 /// The checks that need no header and no snapshot: a command runs this at admission.
 pub(crate) fn validate_spec(spec: &RollupSpec) -> Result<(), String> {
-    with_legacy_view(spec, validate_view)
+    with_view(spec, validate_view)
 }
 
 /// [`validate_spec`] for a full request. Everything that needs only the request is checked here;
@@ -544,10 +561,17 @@ fn apply_cap(cap: &Cap, cells: &mut Vec<Cell>, seen: &[u64], scratch: &mut CapSc
 /// Applies `cap` to one snapshot's cells on its own. Returns how many cells were removed.
 #[allow(dead_code)] // the command applies a cap through `rollup`; this is the one-snapshot form
 pub(crate) fn cap_cells(header: &CellHeader, cap: &CapSpec, cells: &mut Vec<Cell>) -> Result<u64, String> {
-    let spec = RollupSpec { older_than_ms: 0, bucket_ms: 1, cap: Some(cap.clone()) };
+    let spec = RollupSpec {
+        older_than_ms: 0,
+        bucket_ms: 1,
+        cap: Some(cap.clone()),
+        anchor: CellRollupAnchor::Request,
+        coarser_tiers: Vec::new(),
+        truncate: None,
+    };
     validate_spec(&spec)?;
     check_cells(header, cells)?;
-    with_legacy_view(&spec, |view| {
+    with_view(&spec, |view| {
         let cap = view.cap.as_ref().expect("the spec carries the cap");
         apply_cap(&compile_cap(header, cap)?, cells, &[], &mut CapScratch::default())
     })
@@ -676,7 +700,29 @@ fn finish(
 /// (checked for the ones below the cutoff; the others are returned as given). Nothing is partly
 /// done: an `Err` returns no snapshots.
 pub(crate) fn rollup(header: &CellHeader, snapshots: Vec<Snapshot>, spec: &RollupSpec) -> Result<RollupResult, String> {
-    with_legacy_view(spec, |view| rollup_view(header, snapshots, view, 0))
+    rollup_spec(header, snapshots, spec, 0)
+}
+
+/// [`rollup`] for the request as the command carries it, tiers and all. `newest_ms` is the newest
+/// stamp of the whole series; it matters only under `CellRollupAnchor::NewestMinusAge`.
+pub(crate) fn rollup_spec(
+    header: &CellHeader,
+    snapshots: Vec<Snapshot>,
+    spec: &RollupSpec,
+    newest_ms: u64,
+) -> Result<RollupResult, String> {
+    with_view(spec, |view| rollup_view(header, snapshots, view, newest_ms))
+}
+
+/// The first cutoff of the request (the stamp below which snapshots are rolled), resolved against
+/// `newest_ms`. The request must have passed [`validate_spec`].
+pub(crate) fn first_cutoff(spec: &RollupSpec, newest_ms: u64) -> u64 {
+    with_view(spec, |view| resolve(view, newest_ms).as_slice()[0].0)
+}
+
+/// The truncation the request names, if any.
+pub(crate) fn truncation_of(spec: &RollupSpec) -> Option<TruncateSpec> {
+    spec.truncate.map(|t| TruncateSpec { keep_last: t.keep_last, trigger: t.trigger })
 }
 
 /// [`rollup`] for a full request. `newest_ms` is the newest stamp of the whole series (not only of

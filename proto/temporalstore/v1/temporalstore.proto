@@ -1175,6 +1175,27 @@ message CellRollup {
   uint64 older_than_ms = 2;
   uint64 bucket_ms = 3;
   CellRollupCap cap = 4;
+  // Absent (the first value) is the original request, whose older_than_ms is a stamp.
+  CellRollupAnchor anchor = 5;
+  // Tiers coarser than the first pair, finest first.
+  repeated CellRollupTier coarser_tiers = 6;
+  CellRollupTruncate truncate = 7;
+}
+
+enum CellRollupAnchor {
+  CELL_ROLLUP_ANCHOR_REQUEST = 0;
+  CELL_ROLLUP_ANCHOR_NEWEST_MINUS_AGE = 1;
+}
+
+message CellRollupTier {
+  uint64 older_than_ms = 1;
+  uint64 bucket_ms = 2;
+}
+
+// Keep the newest keep_last snapshots, acting only over the trigger (absent: over keep_last).
+message CellRollupTruncate {
+  uint64 keep_last = 1;
+  optional uint64 trigger = 2;
 }
 
 // Keep the best `keep` cells of each group. Absent `group_by`: every cell is one group.
@@ -1182,6 +1203,10 @@ message CellRollupCap {
   optional string group_by = 1;
   CellRollupScore score = 2;
   uint64 keep = 3;
+  // Parts per million of keep reserved for the most recently seen members; 0 protects none.
+  uint32 protect_newest_ppm = 4;
+  // A group is cut only when it holds more than keep + trigger_over members; 0 cuts any over keep.
+  uint64 trigger_over = 5;
 }
 
 // What a cap orders cells by. Lanes are named, never numbered.
