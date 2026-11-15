@@ -3635,10 +3635,8 @@ pub(crate) fn execute_on_shard(
                 CommandResponse::Members { members } => members.len() as i64,
                 _ => 0,
             };
-            ExecuteOutcome {
-                response: CommandResponse::Integer { value },
-                mutated: mutated | listed.mutated,
-            }
+            mutated |= listed.mutated;
+            CommandResponse::Integer { value }
         }
         Command::SetIsMember { key, member } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
@@ -3684,10 +3682,8 @@ pub(crate) fn execute_on_shard(
                 }
                 _ => 0,
             };
-            ExecuteOutcome {
-                response: CommandResponse::Integer { value },
-                mutated: mutated | listed.mutated,
-            }
+            mutated |= listed.mutated;
+            CommandResponse::Integer { value }
         }
         Command::SetScan { key, after, limit } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
