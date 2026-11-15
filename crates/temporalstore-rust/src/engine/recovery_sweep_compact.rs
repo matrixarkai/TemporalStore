@@ -53,6 +53,17 @@ pub(crate) fn fail_next_compaction_barrier_for_test(fail: bool) {
     FAIL_NEXT_BARRIER.with(|cell| cell.set(fail));
 }
 
+#[cfg(test)]
+thread_local! {
+    static LAST_ROUND_DECISIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many blocks the last round on this thread asked `should_relocate` about.
+#[cfg(test)]
+pub(crate) fn last_compaction_round_decisions_for_test() -> usize {
+    LAST_ROUND_DECISIONS.with(|cell| cell.get())
+}
+
 /// `None` until a round has published since the last reset; then whether the guard was held.
 #[cfg(test)]
 pub(crate) fn compaction_flush_published_under_guard_for_test() -> Option<bool> {
@@ -1679,6 +1690,34 @@ fn expiry_scan_budget(limit: usize) -> usize {
             .iter()
             .map(|entry| entry.address.block_slab_id())
             .collect::<BTreeSet<u64>>();
+        // WHICH OBJECTS HAVE A BLOCK ON A SLAB THIS ROUND WANTS EMPTIED. The arms below used to
+        // visit every key of five models and let `should_relocate` decline each block, which is
+        // O(shard) work for a round whose drain set names a handful of slabs. The entries above are
+        // the same refs the arms would see (ownership validation refused the round otherwise), so
+        // the keys that own a block on a drain slab are read off them here, and the other keys are
+        // skipped. A key with ANY block on a drain slab is still visited whole, so the order and
+        // the budget charged to the blocks that do move are unchanged. The blocks of skipped keys
+        // are counted per slab so `blocks_left_off_drain_set` still reports them.
+        let mut drain_object_keys: Option<std::collections::HashSet<crate::engine::state::ModelKey>> = None;
+        let mut skipped_key_blocks_by_slab: BTreeMap<u64, usize> = BTreeMap::new();
+        if let Some(drain) = drain_block_slab_ids.as_ref() {
+            let skippable = |kind: StoredModelKind| matches!(
+                kind,
+                StoredModelKind::String | StoredModelKind::Hash | StoredModelKind::Set
+                    | StoredModelKind::Zset | StoredModelKind::List
+            );
+            let keys = entries
+                .iter()
+                .filter(|entry| skippable(entry.kind) && drain.contains(&entry.address.block_slab_id()))
+                .map(|entry| entry.object_key.clone())
+                .collect::<std::collections::HashSet<_>>();
+            for entry in entries.iter().filter(|entry| skippable(entry.kind)) {
+                if !keys.contains(&entry.object_key) {
+                    *skipped_key_blocks_by_slab.entry(entry.address.block_slab_id()).or_default() += 1;
+                }
+            }
+            drain_object_keys = Some(keys);
+        }
         drop(entries);
         // Start a round, or continue the one a budget cut short.
         //
@@ -1717,6 +1756,18 @@ fn expiry_scan_budget(limit: usize) -> usize {
             ),
         };
 
+        // The blocks of skipped keys, counted as `should_relocate` would have counted them: off the
+        // drain set, and not already on the slab this round fills.
+        rewrite_stats.skipped_off_drain_set = rewrite_stats.skipped_off_drain_set.saturating_add(
+            skipped_key_blocks_by_slab
+                .iter()
+                .filter(|(slab, _)| **slab != target_block_slab_id)
+                .map(|(_, count)| *count)
+                .sum::<usize>(),
+        );
+        let on_drain = |key: &str| {
+            drain_object_keys.as_ref().map_or(true, |keys| keys.contains(key))
+        };
         // Relocate every model's live blocks onto the freshly rolled slab. A mid-way failure
         // (append ENOSPC / an unreadable torn block) is caught below so we can durably commit the
         // consistent partial state instead of leaving the volatile index half-advanced but
@@ -1746,6 +1797,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             shard
                 .strings()
                 .iter()
+                .filter(|(key, _)| on_drain(key))
                 .map(|(key, slot)| (std::sync::Arc::clone(key), slot.address()))
                 .collect();
         compact_block_addresses(
@@ -1777,6 +1829,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // pairs a key with every address because its string arm walks a map of many objects; each of
         // these four arms is already standing on exactly one, so it says so once.
         for (key, mut addresses) in shard.bucket_index.hashes.element_values_mut() {
+            if !on_drain(key) {
+                continue;
+            }
             let routing_bucket = bucket_of(key);
             compact_container_blocks_batched(
                 &self.block_store,
@@ -1794,6 +1849,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         for (key, mut members) in shard.bucket_index.zsets.element_values_mut() {
+            if !on_drain(key) {
+                continue;
+            }
             let routing_bucket = bucket_of(key);
             compact_container_blocks_batched(
                 &self.block_store,
@@ -1811,6 +1869,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         for (key, mut elements) in shard.bucket_index.lists.element_values_mut() {
+            if !on_drain(key) {
+                continue;
+            }
             let routing_bucket = bucket_of(key);
             compact_container_blocks_batched(
                 &self.block_store,
@@ -1831,6 +1892,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         for (key, mut addresses) in shard.bucket_index.sets.element_values_mut() {
+            if !on_drain(key) {
+                continue;
+            }
             let routing_bucket = bucket_of(key);
             compact_container_blocks_batched(
                 &self.block_store,
@@ -2163,7 +2227,10 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // The PUBLISH, not just the encode, is what has to happen inside the region. See
         // `FLUSH_PUBLISHED_UNDER_GUARD`.
         #[cfg(test)]
-        note_compaction_flush_publish();
+        {
+            note_compaction_flush_publish();
+            LAST_ROUND_DECISIONS.with(|cell| cell.set(rewrite_stats.decisions));
+        }
         let index_bytes = match self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id) {
             Ok(bytes) => bytes,
             Err(publish) => {

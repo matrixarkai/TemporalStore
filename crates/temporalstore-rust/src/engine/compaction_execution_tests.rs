@@ -413,3 +413,56 @@ fn two_failed_compaction_rounds_keep_the_slabs_of_the_first() {
     }
     assert_pre_round_slabs_still_live(&engine, &before);
 }
+
+/// A drain round is bounded by its drain set: keys with no block on a drain slab are not visited.
+#[test]
+fn a_drain_round_asks_only_about_keys_that_hold_a_block_on_the_drain_slab() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path(), false);
+    let mut commands = Vec::new();
+    for i in 0..64 {
+        commands.push(Command::StringSet { key: format!("key-{i}"), value: vec![i as u8; 96] });
+        commands.push(Command::HashSet {
+            key: "catalog".into(), field: format!("id-{i}"), value: vec![i as u8; 64],
+        });
+        commands.push(Command::SetAdd { key: "order".into(), member: format!("id-{i}").into_bytes() });
+    }
+    let response = engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands });
+    assert!(response.status.ok, "{:?}", response.status);
+    // Everything above sits on the old slab. Roll, then write three keys: they are the only
+    // blocks on the new slab, which is the one the round is asked to drain.
+    let drain_slab = engine.block_store.roll_slab().unwrap().new_block_slab_id;
+    for i in 0..3 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: format!("late-{i}"), value: vec![9u8; 96] },
+        });
+        assert!(response.status.ok);
+    }
+    let report = engine
+        .compact_shard_blocks_relocating_inner(
+            1, u64::MAX, usize::MAX, Some(std::collections::BTreeSet::from([drain_slab])), true,
+        )
+        .unwrap()
+        .expect("detailed report");
+    assert_eq!(
+        last_compaction_round_decisions_for_test(),
+        3,
+        "only the three keys on the drain slab may be asked about",
+    );
+    assert_eq!(report.rewritten_block_refs, 3);
+    // 64 strings + 64 hash fields + 64 set members stay where they are, and are still reported.
+    assert_eq!(report.blocks_left_off_drain_set, 192);
+    for i in 0..64 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key: format!("key-{i}") },
+        });
+        assert!(matches!(response.response, CommandResponse::Bytes { value: Some(v) } if v == vec![i as u8; 96]));
+    }
+    for i in 0..3 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key: format!("late-{i}") },
+        });
+        assert!(matches!(response.response, CommandResponse::Bytes { value: Some(v) } if v == vec![9u8; 96]));
+    }
+}
