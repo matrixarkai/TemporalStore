@@ -2296,6 +2296,8 @@ impl DataNodeRuntime {
         removed
     }
 
+    /// Test-only: sweeps every loaded shard, unbounded. The loop's expire stage sweeps its own
+    /// shard through `sweep_expired_records_bounded`.
     pub fn sweep_expired_records(&self) -> usize {
         let reports = self.inner.engine.sweep_all_expired_records();
         let removed = reports
@@ -2312,6 +2314,8 @@ impl DataNodeRuntime {
         removed
     }
 
+    /// Test-only: a second driver that sweeps every loaded shard on its own timer. Nothing in the
+    /// server starts it; the storage manager's expire stage is the driver.
     pub fn start_expiry_sweep_scheduler(&self, interval: Duration) -> ExpirySweepScheduler {
         let runtime = self.clone();
         let stop = Arc::new(AtomicBool::new(false));

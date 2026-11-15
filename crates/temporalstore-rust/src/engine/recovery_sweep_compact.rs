@@ -1448,6 +1448,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             .sum()
     }
 
+    /// Test-only: sweeps every loaded shard, unbounded.
     pub fn sweep_all_expired_records(&self) -> Vec<ShardExpirySweepReport> {
         self.loaded_shard_ids()
             .into_iter()

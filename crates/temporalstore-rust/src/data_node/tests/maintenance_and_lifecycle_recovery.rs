@@ -12672,3 +12672,46 @@ fn the_loop_runs_no_stage_on_a_shard_that_is_still_replaying() {
         ran.executed_stages
     );
 }
+
+/// A shard that was parked mid-recovery and then finishes recovery has its due keys removed by its
+/// own next round.
+///
+/// The expire stage sweeps only the shard whose round it is, and a recovering shard's round is
+/// declined, so for as long as a shard is parked nothing sweeps it. This pins that the declined
+/// round strands nothing: the key written before the park is due after recovery, the declined round
+/// removes nothing, and the shard's own next round removes it.
+#[test]
+fn a_shard_that_finishes_recovery_has_its_due_keys_removed_by_its_own_next_round() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSetEx {
+            key: "due-after-recovery".to_string(),
+            value: vec![b'v'; 32],
+            ttl_ms: 200,
+        },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    let watermark = engine.test_publish_recovering_shard(1);
+    assert!(engine.shard_is_recovering(1), "the fixture must park the shard mid-recovery");
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let declined = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert!(declined.executed_stages.is_empty(), "{:?}", declined.executed_stages);
+    assert_eq!(declined.expired_records_removed, 0);
+
+    runtime.inner.engine.test_finish_recovery(1, watermark);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let own = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert_eq!(
+        own.expired_records_removed, 1,
+        "the shard's own round after recovery did not remove its due key"
+    );
+}
