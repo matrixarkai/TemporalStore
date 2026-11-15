@@ -353,6 +353,16 @@ jobs:
             engine::tests::a_retried_merge_append_answers_its_first_receipt::two_engines_given_the_same_requests_hold_the_same_bytes \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::two_tokens_interleaved_and_one_token_twice_apart_apply_once_each \
             engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_element_name \
+            engine::tests::a_string_increment_and_append_are_one_step::concurrent_increments_of_one_counter_lose_no_update \
+            engine::tests::a_string_increment_and_append_are_one_step::concurrent_appends_to_one_string_drop_no_bytes \
+            engine::tests::a_string_increment_and_append_are_one_step::the_largest_sum_is_accepted_and_one_past_it_is_refused_with_the_value_left_alone \
+            engine::tests::a_string_increment_and_append_are_one_step::a_value_that_is_not_an_integer_is_refused_and_a_missing_key_counts_as_zero \
+            engine::tests::a_string_increment_and_append_are_one_step::an_increment_and_an_append_keep_the_deadline_the_key_holds \
+            engine::tests::a_string_increment_and_append_are_one_step::a_key_past_its_deadline_starts_again_from_nothing \
+            engine::tests::a_string_increment_and_append_are_one_step::an_append_creates_the_key_and_answers_the_new_length \
+            engine::tests::a_string_increment_and_append_are_one_step::the_stepped_value_survives_a_restart_with_its_deadline \
+            shared_store::tests::a_string_increment_and_an_append_are_framed_as_protobuf_and_round_trip \
+            engine::tests::part4::what_each_command_recorded_describes_everything_it_changed \
             engine::tests::the_side_table_codec_resolves_shape_from_spelling::every_side_table_domain_round_trips_as_its_own_shape \
             engine::tests::the_side_table_codec_resolves_shape_from_spelling::the_seven_spellings_are_distinct_and_the_six_old_ones_are_unchanged \
             engine::tests::the_side_table_codec_resolves_shape_from_spelling::the_stored_image_carries_the_spellings_without_a_variant_tag \

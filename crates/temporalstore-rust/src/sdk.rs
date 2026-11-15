@@ -609,6 +609,14 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 keep_ttl: command.keep_ttl,
             }
         }
+        v1::command::Kind::StringIncrBy(command) => types::Command::StringIncrBy {
+            key: command.key,
+            increment: command.increment,
+        },
+        v1::command::Kind::StringAppend(command) => types::Command::StringAppend {
+            key: command.key,
+            value: command.value,
+        },
         v1::command::Kind::ContextResourceBlobBegin(command) => {
             types::Command::ContextResourceBlobBegin {
                 tenant_hash: command.tenant_hash,

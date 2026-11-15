@@ -5557,6 +5557,16 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             // this field existed were recorded with.
             keep_ttl: *keep_ttl,
         }),
+        Command::StringIncrBy { key, increment } => {
+            v1::command::Kind::StringIncrBy(v1::StringIncrBy {
+                key: key.clone(),
+                increment: *increment,
+            })
+        }
+        Command::StringAppend { key, value } => v1::command::Kind::StringAppend(v1::StringAppend {
+            key: key.clone(),
+            value: value.clone(),
+        }),
         Command::ContextResourceBlobBegin { tenant_hash } => {
             v1::command::Kind::ContextResourceBlobBegin(v1::ContextResourceBlobBegin {
                 tenant_hash: *tenant_hash,
@@ -15431,6 +15441,43 @@ fn the_covered_writes_in_the_eight_batch_are_framed_as_protobuf_and_round_trip()
             Some(&command),
             "{name} did not survive the round trip"
         );
+    }
+}
+
+/// THE STRING STEPS ARE FRAMED AS PROTOBUF AND ROUND TRIP, AT THEIR EDGES.
+///
+/// `increment` is a signed 64-bit number and `value` may be empty: the two shapes a lossy mapping
+/// would damage (a sign, a zero-length field read back as absent).
+#[test]
+fn a_string_increment_and_an_append_are_framed_as_protobuf_and_round_trip() {
+    let cases: Vec<(&str, Command)> = vec![
+        ("StringIncrBy (negative)", Command::StringIncrBy { key: "k".into(), increment: i64::MIN }),
+        ("StringIncrBy (large)", Command::StringIncrBy { key: "k".into(), increment: i64::MAX }),
+        ("StringAppend (bytes)", Command::StringAppend { key: "k".into(), value: vec![0, 255, 10] }),
+        ("StringAppend (empty)", Command::StringAppend { key: "k".into(), value: Vec::new() }),
+    ];
+    assert_eq!(cases.len(), 4, "four cases over the two commands");
+
+    for (name, command) in cases {
+        assert!(
+            crate::engine::is_write_command(&command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO, "{name}");
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(back.command.as_ref(), Some(&command), "{name} did not survive the round trip");
     }
 }
 

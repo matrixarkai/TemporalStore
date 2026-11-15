@@ -544,3 +544,5 @@ mod a_container_point_read_searches_without_building_its_key;
 mod the_undumped_byte_figure_survives_one_claimless_bucket;
 #[path = "tests/a_ranked_read_over_several_cell_keys.rs"]
 mod a_ranked_read_over_several_cell_keys;
+#[path = "tests/a_string_increment_and_append_are_one_step.rs"]
+mod a_string_increment_and_append_are_one_step;
