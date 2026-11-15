@@ -556,6 +556,7 @@ impl TemporalEngine {
             promote_scans: Arc::default(),
             replay_installs: Arc::default(),
             dump_failures: Arc::default(),
+            expiry_sweep_failures: Arc::default(),
             maintenance_mirror: Arc::default(),
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
             compaction_rounds: Arc::default(),
@@ -848,6 +849,12 @@ impl TemporalEngine {
     /// How many recorded outcomes recovery has installed (see `replay_installs`).
     pub(crate) fn replay_installs_for_test(&self) -> u64 {
         self.replay_installs
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Expiry sweeps that returned an error (see `expiry_sweep_failures`).
+    pub fn expiry_sweep_failures(&self) -> u64 {
+        self.expiry_sweep_failures
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 

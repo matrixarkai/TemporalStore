@@ -1074,6 +1074,26 @@ fn expiry_scan_budget(limit: usize) -> usize {
         &self,
         request: ShardExpirySweepRequest,
     ) -> Result<ShardExpirySweepReport, Status> {
+        let shard_id = request.shard_id;
+        let outcome = self.sweep_expired_records_with_request_uncounted(request);
+        if let Err(status) = &outcome {
+            // The runtime drops this error and moves to the next shard, so without a count a
+            // sweep that fails every tick is indistinguishable from one with nothing due.
+            self.expiry_sweep_failures
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::warn!(
+                shard_id,
+                error = %status.message,
+                "expiry sweep failed; due keys stay in place until a later sweep succeeds",
+            );
+        }
+        outcome
+    }
+
+    fn sweep_expired_records_with_request_uncounted(
+        &self,
+        request: ShardExpirySweepRequest,
+    ) -> Result<ShardExpirySweepReport, Status> {
         let mut shards = self.shards_write_marked();
         // Started AFTER the guard is acquired, so this is the HOLD and not the wait for it.
         let guard_held = std::time::Instant::now();

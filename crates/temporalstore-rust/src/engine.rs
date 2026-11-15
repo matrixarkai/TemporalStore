@@ -387,6 +387,12 @@ pub struct TemporalEngine {
     /// records it, so a persistent EIO read as a quiet shard whose log never shrank. Counted per
     /// failed dump, not per failed round.
     dump_failures: Arc<std::sync::atomic::AtomicU64>,
+    /// Expiry sweeps that returned an error instead of a report.
+    ///
+    /// The runtime consumes a failed sweep and moves to the next shard, so a sweep that fails
+    /// every tick (an append the log refused, say) left expired keys in place with nothing
+    /// anywhere saying a sweep had been attempted. Counted per failed sweep, not per round.
+    expiry_sweep_failures: Arc<std::sync::atomic::AtomicU64>,
     /// Where to mirror writes this engine performs OUTSIDE the request path.
     ///
     /// Request-path writes are mirrored a layer up, by the data node, which sees each command

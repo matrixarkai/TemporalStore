@@ -551,3 +551,5 @@ mod the_cell_model_allocations_are_counted_per_operation;
 mod a_string_increment_and_append_are_one_step;
 #[path = "tests/a_set_length_and_membership_read_the_member_map.rs"]
 mod a_set_length_and_membership_read_the_member_map;
+#[path = "tests/an_expiry_sweep_that_fails_is_counted.rs"]
+mod an_expiry_sweep_that_fails_is_counted;
