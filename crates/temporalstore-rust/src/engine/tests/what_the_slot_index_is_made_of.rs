@@ -650,6 +650,10 @@ struct Reading {
     json_len: usize,
     msgpack_len: usize,
     container_len: usize,
+    /// The shipped msgpack payload framed again at zstd-3, the level the codec-1 counterfactual is
+    /// taken at. The shipped container is written at a lower level, so the two container arms
+    /// differ by the level as well as by the format unless they are compared on this figure.
+    container_at_counterfactual_level_len: usize,
     /// Every block's written map key paired with the handle the live map files it under, joined on
     /// the renderer the encoder itself uses. Used to price a handle-keyed block index; NOT used for
     /// the reconstruction claim, which goes the other way, from the entry's written bytes.
@@ -745,6 +749,14 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
 
     let container = crate::engine::encode_index_bytes(shard);
     let msgpack = msgpack_payload_of(&container);
+    let frame_start = container
+        .windows(4)
+        .position(|window| window == [0x28, 0xb5, 0x2f, 0xfd])
+        .expect("the container must hold a zstd frame");
+    let container_at_counterfactual_level_len = frame_start
+        + zstd::stream::encode_all(msgpack.as_slice(), COUNTERFACTUAL_ZSTD_LEVEL)
+            .expect("the payload compresses")
+            .len();
     let json = serde_json::to_vec(shard).expect("the index must serialize as JSON");
     let value = serde_json::to_value(shard).expect("the index must serialize as a value");
 
@@ -758,6 +770,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
         json_len: json.len(),
         msgpack_len: msgpack.len(),
         container_len: container.len(),
+        container_at_counterfactual_level_len,
         handles_by_written_key,
     }
 }
@@ -1309,6 +1322,10 @@ fn report(reading: &Reading, walked: &Walked) {
 // THE COUNTERFACTUAL SURFACES
 // =================================================================================================
 
+/// The zstd level the codec-1 counterfactual is encoded at. The shipped container is written at a
+/// different, lower level, so any comparison between the two arms is made at THIS level.
+const COUNTERFACTUAL_ZSTD_LEVEL: i32 = 3;
+
 /// The container `TSIDX\x01` codec 1 writes: the magic, the codec id, and a zstd-3 frame over the
 /// struct's JSON.
 ///
@@ -1326,7 +1343,7 @@ fn report(reading: &Reading, walked: &Walked) {
 fn json_container_bytes(value: &serde_json::Value) -> usize {
     const MAGIC: &[u8] = b"TSIDX\x01";
     const CODEC_BYTE: usize = 1;
-    const ZSTD_LEVEL: i32 = 3;
+    const ZSTD_LEVEL: i32 = COUNTERFACTUAL_ZSTD_LEVEL;
     let json = serde_json::to_vec(value).expect("the doctored index serializes");
     let payload =
         zstd::stream::encode_all(json.as_slice(), ZSTD_LEVEL).expect("the payload compresses");
@@ -2155,8 +2172,13 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
         let baseline_stream = slot_index_entry_bytes_of(&reading.value);
         let baseline_container = json_container_bytes(&reading.value);
         let shipped_container = reading.container_len;
-        let apart = (baseline_container as f64 - shipped_container as f64).abs()
-            / shipped_container as f64;
+        let shipped_at_counterfactual_level = reading.container_at_counterfactual_level_len;
+        // THE ARMS ARE COMPARED AT ONE COMPRESSION LEVEL. The shipped container moved from zstd-3
+        // to zstd-1, which grew it by up to 18% with the payload unchanged, so a comparison against
+        // the zstd-3 counterfactual was measuring the level and calling it the format. The limit
+        // below is unchanged; what moved is the figure it is applied to.
+        let apart = (baseline_container as f64 - shipped_at_counterfactual_level as f64).abs()
+            / shipped_at_counterfactual_level as f64;
 
         println!();
         println!(
@@ -2168,7 +2190,8 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
             "  baseline: json_stream `slot_index` {baseline_stream} B = {:.2} B/object; whole \
              json_stream {} B; codec-1 container {baseline_container} B = {:.2} B/object; SHIPPED \
              msgpack container {shipped_container} B = {:.2} B/object -- the two container arms are \
-             {:.2}% apart.",
+             {:.2}% apart at zstd-3 (the shipped payload at zstd-3 is \
+             {shipped_at_counterfactual_level} B).",
             baseline_stream as f64 / reading.objects as f64,
             reading.json_len,
             baseline_container as f64 / reading.objects as f64,
