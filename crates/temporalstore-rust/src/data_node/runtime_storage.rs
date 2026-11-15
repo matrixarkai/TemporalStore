@@ -484,6 +484,14 @@ impl DataNodeRuntime {
         // must not inherit whatever ran before this round.
         let mut spans = LoopSpans::start();
         let (pressure, lifecycle_plan) = self.storage_manager_pressure_snapshot(shard_id, &options);
+        {
+            // The backlog the loop just read, kept where a scrape can see it.
+            let mut stats = self.inner.stats.lock().expect("runtime stats lock poisoned");
+            stats.storage_manager_loop_wal_bytes = pressure.wal_bytes;
+            stats.storage_manager_loop_undumped_wal_records = pressure.undumped_wal_records;
+            stats.storage_manager_loop_dirty_buckets = pressure.dirty_bucket_count as u64;
+            stats.storage_manager_loop_index_log_bytes = pressure.index_log_bytes;
+        }
         spans.close("pressure_snapshot", &["pressure_snapshot".to_string()]);
         let mut executed_stages = Vec::new();
         let mut skipped_stages = Vec::new();
@@ -648,6 +656,7 @@ impl DataNodeRuntime {
         // pressure -- it just has nothing to free -- so the record must not read as "no pressure".
         let wal_reclaim_reported = wal_reclaim_pressure || memo_hit == Some(true);
         if options.enable_wal_reclaim && wal_reclaim_pressure {
+            let dump_started = std::time::Instant::now();
             let response = self.apply_storage_lifecycle_with_report_details(StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
@@ -682,6 +691,16 @@ impl DataNodeRuntime {
                     .expect("runtime stats lock poisoned");
                 stats.dump_runs += 1;
                 stats.storage_manager_reclaim_wal_runs += 1;
+                let dump_us = dump_started.elapsed().as_micros() as u64;
+                stats.storage_manager_dump_buckets = stats
+                    .storage_manager_dump_buckets
+                    .saturating_add(manifest.bucket_ids.len() as u64);
+                stats.storage_manager_dump_logical_bytes = stats
+                    .storage_manager_dump_logical_bytes
+                    .saturating_add(manifest.logical_bytes);
+                stats.storage_manager_dump_us_total =
+                    stats.storage_manager_dump_us_total.saturating_add(dump_us);
+                stats.storage_manager_dump_us_max = stats.storage_manager_dump_us_max.max(dump_us);
             }
             let dumped = response.report.dump_manifest.is_some();
             lifecycle_report = Some(response.report);

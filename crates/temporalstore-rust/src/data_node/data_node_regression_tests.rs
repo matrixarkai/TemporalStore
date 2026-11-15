@@ -28,3 +28,5 @@ mod the_wal_reclaim_stage_waits_for_the_byte_gate;
 mod a_restart_after_loop_rounds_finds_every_value;
 #[path = "tests/a_reopen_after_rounds_with_deadlines_serves_every_key_and_list_element.rs"]
 mod a_reopen_after_rounds_with_deadlines_serves_every_key_and_list_element;
+#[path = "tests/the_loop_reports_its_backlog_and_its_dumps.rs"]
+mod the_loop_reports_its_backlog_and_its_dumps;
