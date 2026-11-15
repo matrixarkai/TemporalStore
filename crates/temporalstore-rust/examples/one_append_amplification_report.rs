@@ -750,8 +750,15 @@ entry does not move AT ALL,",
     // ---- is 29 B, and back to 64 hex characters is 59 -- trips it, as does re-adding either
     // ---- term retired from the sidecar.
     // Measured outcome envelope: 69.8 B; keep enough room for small varint changes.
+    //
+    // 75.9 B once a synchronous write keeps its value only in this record. The record then names
+    // the value's place in the log -- the log-resident slab id, which is the top of the 32-bit
+    // range and so a five-byte varint, and a ticket offset -- where it used to name a real block
+    // in a slab, a one- or two-byte id. About six bytes, bought against the block-segment write
+    // (156 B) and the per-write index-log delta (53 B) that the same change removes per set. The
+    // ceiling moves by that and no more; the five narrowings below are still not admitted back.
     assert!(
-        blob_env < if matches!(shape, Shape::Command) { 60.0 } else { 74.0 },
+        blob_env < if matches!(shape, Shape::Command) { 60.0 } else { 78.0 },
         "the per-append envelope is {blob_env:.1} B, over the ceiling for {shape:?}. Five named terms were \
          removed or narrowed to get it here -- a duplicate hex digest the read path never \
          consulted, the log's object key in every frame, the transcription of the frame's own \
