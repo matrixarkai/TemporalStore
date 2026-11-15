@@ -376,6 +376,10 @@ fn redis_info(section: &str, shard_id: ShardId, state: &RedisCommandState) -> St
 mod a_stored_name_is_read_as_bytes;
 
 #[cfg(test)]
+#[path = "redis/zset_range_remove_and_client_commands.rs"]
+mod zset_range_remove_and_client_commands;
+
+#[cfg(test)]
 mod tests {
     use std::io::BufReader;
 
@@ -1278,6 +1282,11 @@ mod tests {
             "APPEND" => vec!["APPEND", "advertised:append", "x"],
             "AUTH" => vec!["AUTH", ""],
             "BGSAVE" => vec!["BGSAVE"],
+            "CLIENT" => vec!["CLIENT", "GETNAME"],
+            "QUIT" => vec!["QUIT"],
+            "ZMSCORE" => vec!["ZMSCORE", "advertised:zset", "m"],
+            "ZREMRANGEBYRANK" => vec!["ZREMRANGEBYRANK", "advertised:zset", "0", "-1"],
+            "ZREMRANGEBYSCORE" => vec!["ZREMRANGEBYSCORE", "advertised:zset", "-inf", "+inf"],
             "COMMAND" => vec!["COMMAND", "COUNT"],
             "CONFIG" => vec!["CONFIG", "GET", "maxmemory"],
             "BUCKETPEEK" => vec!["BUCKETPEEK", "advertised:bucket", "1", "10", "1"],
