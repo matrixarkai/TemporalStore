@@ -68,6 +68,9 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ListPop { key, .. }
         | Command::ListRange { key, .. }
         | Command::ListLen { key }
+        | Command::ListSet { key, .. }
+        | Command::ListRemove { key, .. }
+        | Command::ListTrim { key, .. }
         | Command::ZSetAdd { key, .. }
         | Command::ZSetScore { key, .. }
         | Command::ZSetRemove { key, .. }

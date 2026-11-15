@@ -146,3 +146,64 @@ fn list_order_survives_restart_and_pops_stay_popped() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+fn run_i(engine: &TemporalEngine, command: Command) -> i64 {
+    match run(engine, command) {
+        CommandResponse::Integer { value } => value,
+        other => panic!("unexpected response: {other:?}"),
+    }
+}
+
+/// LSET, LREM and LTRIM write only blocks and tombstones the list already knows (an overwrite is a
+/// later block under the same element name; a removal is the pop tombstone), so a restart must
+/// give back exactly the post-mutation list -- overwritten values not reverting, removed and
+/// trimmed elements not resurrecting, and the list staying deleted once trimmed empty.
+#[test]
+fn list_mutators_survive_restart() {
+    let root = unique_root("mutators");
+    let _ = std::fs::remove_dir_all(&root);
+    let key = || "jobs".to_string();
+    {
+        let engine = new_engine(&root);
+        for member in ["c", "x", "d", "x", "e", "f"] {
+            push(&engine, member, false);
+        }
+        push(&engine, "b", true);
+        push(&engine, "a", true);
+        assert_eq!(vec!["a", "b", "c", "x", "d", "x", "e", "f"], range(&engine));
+        assert_eq!(1, run_i(&engine, Command::ListSet { key: key(), index: 0, member: b"A".to_vec() }));
+        assert_eq!(1, run_i(&engine, Command::ListSet { key: key(), index: -1, member: b"F".to_vec() }));
+        assert_eq!(0, run_i(&engine, Command::ListSet { key: key(), index: 8, member: b"no".to_vec() }));
+        assert_eq!(0, run_i(&engine, Command::ListSet { key: "missing".into(), index: 0, member: b"no".to_vec() }));
+        // one x from the tail goes, the head one stays
+        assert_eq!(1, run_i(&engine, Command::ListRemove { key: key(), count: -1, member: b"x".to_vec() }));
+        assert_eq!(vec!["A", "b", "c", "x", "d", "e", "F"], range(&engine));
+        assert_eq!(1, run_i(&engine, Command::ListTrim { key: key(), start: 0, stop: -2 }));
+        assert_eq!(vec!["A", "b", "c", "x", "d", "e"], range(&engine));
+    }
+    {
+        let engine = new_engine(&root);
+        assert_eq!(
+            vec!["A", "b", "c", "x", "d", "e"],
+            range(&engine),
+            "overwrites, removals and trims must replay"
+        );
+        assert_eq!(1, run_i(&engine, Command::ListRemove { key: key(), count: 0, member: b"x".to_vec() }));
+        assert_eq!(3, run_i(&engine, Command::ListTrim { key: key(), start: 1, stop: 2 }));
+        assert_eq!(vec!["b", "c"], range(&engine));
+    }
+    {
+        let engine = new_engine(&root);
+        assert_eq!(vec!["b", "c"], range(&engine), "second restart agrees");
+        assert_eq!(2, run_i(&engine, Command::ListTrim { key: key(), start: 5, stop: 9 }));
+        assert_eq!(0, run_i(&engine, Command::ListLen { key: key() }));
+    }
+    {
+        let engine = new_engine(&root);
+        assert_eq!(0, run_i(&engine, Command::ListLen { key: key() }), "a list trimmed empty stays gone");
+        assert!(range(&engine).is_empty());
+        push(&engine, "n", true);
+        assert_eq!(vec!["n"], range(&engine));
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

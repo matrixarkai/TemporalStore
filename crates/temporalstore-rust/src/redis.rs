@@ -573,6 +573,156 @@ mod tests {
         assert_eq!(run(&mut state, vec!["LPOP", "l"]), RespValue::Bulk(Some(b"z".to_vec())));
     }
 
+    /// LSET overwrites in place (negative index from the tail) and refuses an index outside the
+    /// list, or any index on a missing key, with `ERR index out of range`.
+    #[test]
+    fn lset_overwrites_in_place_and_refuses_out_of_range() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        let bulk = |text: &str| RespValue::Bulk(Some(text.as_bytes().to_vec()));
+        let ok = RespValue::SimpleString("OK".to_string());
+        let oor = RespValue::Error("ERR index out of range".to_string());
+        assert_eq!(run(&mut state, vec!["LSET", "nolist", "0", "x"]), oor, "missing key");
+        assert_eq!(run(&mut state, vec!["LLEN", "nolist"]), RespValue::Integer(0), "LSET must not create");
+        assert_eq!(run(&mut state, vec!["RPUSH", "l", "a", "b", "c"]), RespValue::Integer(3));
+        assert_eq!(run(&mut state, vec!["LSET", "l", "1", "B"]), ok);
+        assert_eq!(run(&mut state, vec!["LSET", "l", "-1", "C"]), ok);
+        assert_eq!(run(&mut state, vec!["LSET", "l", "0", "A"]), ok);
+        assert_eq!(
+            run(&mut state, vec!["LRANGE", "l", "0", "-1"]),
+            RespValue::Array(vec![bulk("A"), bulk("B"), bulk("C")])
+        );
+        assert_eq!(run(&mut state, vec!["LLEN", "l"]), RespValue::Integer(3), "overwrite keeps the length");
+        assert_eq!(run(&mut state, vec!["LSET", "l", "3", "x"]), oor);
+        assert_eq!(run(&mut state, vec!["LSET", "l", "-4", "x"]), oor);
+        assert!(matches!(run(&mut state, vec!["LSET", "l", "x", "x"]), RespValue::Error(_)));
+        // The list still accepts pushes at both ends after an overwrite.
+        assert_eq!(run(&mut state, vec!["LPUSH", "l", "z"]), RespValue::Integer(4));
+        assert_eq!(run(&mut state, vec!["LINDEX", "l", "1"]), bulk("A"));
+    }
+
+    /// LREM: positive count removes from the head, negative from the tail, zero removes all.
+    #[test]
+    fn lrem_removes_by_count_direction() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        let bulk = |text: &str| RespValue::Bulk(Some(text.as_bytes().to_vec()));
+        assert_eq!(run(&mut state, vec!["LREM", "nolist", "0", "x"]), RespValue::Integer(0));
+        for key in ["h", "t", "z"] {
+            assert_eq!(
+                run(&mut state, vec!["RPUSH", key, "a", "x", "b", "x", "c", "x"]),
+                RespValue::Integer(6)
+            );
+        }
+        assert_eq!(run(&mut state, vec!["LREM", "h", "2", "x"]), RespValue::Integer(2));
+        assert_eq!(run(&mut state, vec!["LRANGE", "h", "0", "-1"]), RespValue::Array(vec![bulk("a"), bulk("b"), bulk("c"), bulk("x")]));
+        assert_eq!(run(&mut state, vec!["LREM", "t", "-2", "x"]), RespValue::Integer(2));
+        assert_eq!(run(&mut state, vec!["LRANGE", "t", "0", "-1"]), RespValue::Array(vec![bulk("a"), bulk("x"), bulk("b"), bulk("c")]));
+        assert_eq!(run(&mut state, vec!["LREM", "z", "0", "x"]), RespValue::Integer(3));
+        assert_eq!(run(&mut state, vec!["LRANGE", "z", "0", "-1"]), RespValue::Array(vec![bulk("a"), bulk("b"), bulk("c")]));
+        assert_eq!(run(&mut state, vec!["LREM", "z", "0", "nomatch"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["LLEN", "z"]), RespValue::Integer(3));
+        // Removing every element deletes the list.
+        assert_eq!(run(&mut state, vec!["RPUSH", "e", "q", "q"]), RespValue::Integer(2));
+        assert_eq!(run(&mut state, vec!["LREM", "e", "0", "q"]), RespValue::Integer(2));
+        assert_eq!(run(&mut state, vec!["LLEN", "e"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["EXISTS", "e"]), RespValue::Integer(0));
+        assert!(matches!(run(&mut state, vec!["LREM", "z", "x", "q"]), RespValue::Error(_)));
+    }
+
+    /// LTRIM keeps the inclusive window (negative indexes from the tail); an empty window, or a
+    /// window past the end, deletes the list; a missing key answers OK.
+    #[test]
+    fn ltrim_keeps_the_window_and_empty_deletes_the_list() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        let bulk = |text: &str| RespValue::Bulk(Some(text.as_bytes().to_vec()));
+        let ok = RespValue::SimpleString("OK".to_string());
+        assert_eq!(run(&mut state, vec!["LTRIM", "nolist", "0", "1"]), ok, "missing key");
+        run(&mut state, vec!["RPUSH", "w", "a", "b", "c", "d", "e"]);
+        assert_eq!(run(&mut state, vec!["LTRIM", "w", "1", "3"]), ok);
+        assert_eq!(
+            run(&mut state, vec!["LRANGE", "w", "0", "-1"]),
+            RespValue::Array(vec![bulk("b"), bulk("c"), bulk("d")])
+        );
+        assert_eq!(run(&mut state, vec!["LTRIM", "w", "-2", "-1"]), ok);
+        assert_eq!(
+            run(&mut state, vec!["LRANGE", "w", "0", "-1"]),
+            RespValue::Array(vec![bulk("c"), bulk("d")])
+        );
+        // Pushes still work after a trim from the head.
+        assert_eq!(run(&mut state, vec!["LPUSH", "w", "y"]), RespValue::Integer(3));
+        assert_eq!(run(&mut state, vec!["LINDEX", "w", "0"]), bulk("y"));
+        // A window larger than the list is a no-op.
+        assert_eq!(run(&mut state, vec!["LTRIM", "w", "-100", "100"]), ok);
+        assert_eq!(run(&mut state, vec!["LLEN", "w"]), RespValue::Integer(3));
+        // start > stop, and a window wholly past the end, both empty the list and delete the key.
+        for (start, stop) in [("2", "1"), ("10", "20"), ("-100", "-50")] {
+            run(&mut state, vec!["RPUSH", "d", "a", "b", "c", "d", "e"]);
+            assert_eq!(run(&mut state, vec!["LTRIM", "d", start, stop]), ok);
+            assert_eq!(run(&mut state, vec!["LLEN", "d"]), RespValue::Integer(0), "{start}..{stop}");
+            assert_eq!(run(&mut state, vec!["EXISTS", "d"]), RespValue::Integer(0), "{start}..{stop}");
+        }
+        assert!(matches!(run(&mut state, vec!["LTRIM", "w", "a", "1"]), RespValue::Error(_)));
+    }
+
     /// LINDEX reads one element (negative from the tail, nil outside the list); LPUSHX and
     /// RPUSHX push only onto a list that already exists and answer 0, writing nothing, when it
     /// does not.
@@ -1378,6 +1528,9 @@ mod tests {
             "KEYS" => vec!["KEYS", "*"],
             "LINDEX" => vec!["LINDEX", "advertised:list", "0"],
             "LPUSHX" => vec!["LPUSHX", "advertised:list", "v"],
+            "LSET" => vec!["LSET", "advertised:list", "0", "v"],
+            "LREM" => vec!["LREM", "advertised:list", "0", "v"],
+            "LTRIM" => vec!["LTRIM", "advertised:list", "0", "-1"],
             "RPUSHX" => vec!["RPUSHX", "advertised:list", "v"],
             "LLEN" => vec!["LLEN", "advertised:list"],
             "LPOP" => vec!["LPOP", "advertised:list"],

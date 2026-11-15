@@ -161,6 +161,9 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::ListPop { key, .. }
         | Command::ListRange { key, .. }
         | Command::ListLen { key }
+        | Command::ListSet { key, .. }
+        | Command::ListRemove { key, .. }
+        | Command::ListTrim { key, .. }
         | Command::ZSetAdd { key, .. }
         | Command::ZSetScore { key, .. }
         | Command::ZSetRemove { key, .. }
@@ -412,6 +415,9 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::SetRemove { .. }
             | Command::ListPush { .. }
             | Command::ListPop { .. }
+            | Command::ListSet { .. }
+            | Command::ListRemove { .. }
+            | Command::ListTrim { .. }
             | Command::ZSetAdd { .. }
             | Command::ZSetRemove { .. }
             | Command::ZSetIncrBy { .. }
@@ -478,6 +484,9 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::SetRemove { .. }
             | Command::ListPush { .. }
             | Command::ListPop { .. }
+            | Command::ListSet { .. }
+            | Command::ListRemove { .. }
+            | Command::ListTrim { .. }
             | Command::ZSetAdd { .. }
             | Command::ZSetRemove { .. }
             | Command::ZSetIncrBy { .. }

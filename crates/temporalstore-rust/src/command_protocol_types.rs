@@ -1901,6 +1901,29 @@ pub enum Command {
     ListLen {
         key: String,
     },
+    /// Overwrite the element at `index` (negative counts from the tail). Answers 1, or 0 when the
+    /// index falls outside the list.
+    ListSet {
+        key: String,
+        index: i64,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+    },
+    /// Remove elements equal to `member`: from the head up to `count`, from the tail up to
+    /// `-count`, every match when zero. Answers how many were removed.
+    ListRemove {
+        key: String,
+        count: i64,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+    },
+    /// Keep only the inclusive window `start..=stop` (Redis index rules). Answers how many were
+    /// removed; an empty window removes the list.
+    ListTrim {
+        key: String,
+        start: i64,
+        stop: i64,
+    },
     SetMembers {
         key: String,
     },

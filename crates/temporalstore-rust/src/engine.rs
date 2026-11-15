@@ -4110,7 +4110,9 @@ fn command_removed_element_name(command: &Command) -> Option<(&'static str, Opti
             "zset",
             Some(crate::engine::execute_on_shard::zset_element_name(member)),
         )),
-        Command::ListPop { .. } => Some(("list", Some(String::new()))),
+        Command::ListPop { .. } | Command::ListRemove { .. } | Command::ListTrim { .. } => {
+            Some(("list", Some(String::new())))
+        }
         Command::SetRemove { member, .. } => Some((
             "set",
             Some(crate::engine::execute_on_shard::set_element_name(member)),

@@ -291,6 +291,9 @@ message Command {
     CellRollup cell_rollup = 69;
     StringIncrBy string_incr_by = 70;
     StringAppend string_append = 71;
+    ListSet list_set = 72;
+    ListRemove list_remove = 73;
+    ListTrim list_trim = 74;
   }
 }
 
@@ -933,6 +936,24 @@ message ListPush {
 message ListPop {
   string key = 1;
   bool left = 2;
+}
+
+message ListSet {
+  string key = 1;
+  int64 index = 2;
+  bytes member = 3;
+}
+
+message ListRemove {
+  string key = 1;
+  int64 count = 2;
+  bytes member = 3;
+}
+
+message ListTrim {
+  string key = 1;
+  int64 start = 2;
+  int64 stop = 3;
 }
 
 message SetRemove {

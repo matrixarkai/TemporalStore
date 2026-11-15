@@ -1175,6 +1175,50 @@ pub fn execute_redis_command_with_state(
             }
             RespValue::Integer(length)
         }
+        "LSET" if args.len() == 4 => match parse_i64_arg(&args[2], "index") {
+            Ok(index) => match execute(Command::ListSet {
+                key: name_arg(&args[1]),
+                index,
+                member: args[3].clone(),
+            }) {
+                Ok(CommandResponse::Integer { value: 1 }) => RespValue::SimpleString("OK".to_string()),
+                Ok(CommandResponse::Integer { .. }) => {
+                    RespValue::Error("ERR index out of range".to_string())
+                }
+                Ok(_) => RespValue::Error("ERR invalid lset response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            },
+            Err(err) => RespValue::Error(err),
+        },
+        "LREM" if args.len() == 4 => match parse_i64_arg(&args[2], "count") {
+            Ok(count) => match execute(Command::ListRemove {
+                key: name_arg(&args[1]),
+                count,
+                member: args[3].clone(),
+            }) {
+                Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+                Ok(_) => RespValue::Error("ERR invalid lrem response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            },
+            Err(err) => RespValue::Error(err),
+        },
+        "LTRIM" if args.len() == 4 => {
+            match (
+                parse_i64_arg(&args[2], "start"),
+                parse_i64_arg(&args[3], "stop"),
+            ) {
+                (Ok(start), Ok(stop)) => match execute(Command::ListTrim {
+                    key: name_arg(&args[1]),
+                    start,
+                    stop,
+                }) {
+                    Ok(CommandResponse::Integer { .. }) => RespValue::SimpleString("OK".to_string()),
+                    Ok(_) => RespValue::Error("ERR invalid ltrim response".to_string()),
+                    Err(err) => RespValue::Error(format!("ERR {err}")),
+                },
+                (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
+            }
+        }
         "LLEN" if args.len() == 2 => match execute(Command::ListLen {
             key: name_arg(&args[1]),
         }) {
