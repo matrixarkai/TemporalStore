@@ -250,6 +250,15 @@ pub struct TemporalEngine {
     index_scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
+    /// When a read served under the SHARED shard lock last touched each routing bucket.
+    ///
+    /// The ordinary read path stamps `ShardState::bucket_recency` after it executes, which needs
+    /// the shard WRITE lock; the read-only fast path holds only the shared lock and cannot. A read
+    /// that left no stamp would make a bucket read all day look idle to eviction, so the fast path
+    /// leaves it here instead and an eviction round folds it into each shard's `bucket_recency`
+    /// (`fold_fast_read_recency`) before it ranks buckets. Bounded by shards x buckets, the same
+    /// bound as the map it feeds. Not durable, like `bucket_recency`.
+    fast_read_recency: Arc<std::sync::Mutex<HashMap<(ShardId, u32), u64>>>,
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
     context_embedding_indexes: Arc<RwLock<crate::llm_context::EmbeddingIndexRegistry>>,
     /// Per-shard read and write rate limits. Empty and inert unless something sets a limit, or the
@@ -946,6 +955,46 @@ impl TemporalEngine {
             .get(&shard_id)
             .map(|config| !admission_limits(shard_id, false, config, Some("-")).is_empty())
             .unwrap_or(false)
+    }
+
+    /// Record that a read served under the shared shard lock touched `routing_bucket`.
+    ///
+    /// One short mutex hold and one map insert; see `fast_read_recency` for why the stamp cannot go
+    /// into the shard directly.
+    fn note_fast_read_recency(&self, shard_id: ShardId, routing_bucket: u32) {
+        let now = now_ms();
+        self.fast_read_recency
+            .lock()
+            .expect("fast read recency lock poisoned")
+            .insert((shard_id, routing_bucket), now);
+    }
+
+    /// Move the stamps the read fast path left into each shard's `bucket_recency`, keeping the
+    /// later of the two for a bucket both have touched.
+    ///
+    /// Called at the top of an eviction round, before anything ranks buckets by recency. Takes the
+    /// shard write lock only when a stamp is waiting, and eviction rounds are periodic, not on the
+    /// serving path.
+    pub(crate) fn fold_fast_read_recency(&self) {
+        let pending = {
+            let mut stamps = self
+                .fast_read_recency
+                .lock()
+                .expect("fast read recency lock poisoned");
+            if stamps.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *stamps)
+        };
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        for ((shard_id, routing_bucket), stamped_ms) in pending {
+            if let Some(shard) = shards.get_mut(&shard_id) {
+                let slot = shard.bucket_recency.entry(routing_bucket).or_insert(0);
+                if *slot < stamped_ms {
+                    *slot = stamped_ms;
+                }
+            }
+        }
     }
 
     fn execute_with_storage_override(
@@ -1874,6 +1923,10 @@ impl TemporalEngine {
                 address,
                 routing_bucket,
             } => {
+                // The ordinary read path stamps the bucket's recency; this one cannot reach the
+                // shard's map under the shared lock, so it leaves the stamp for eviction to fold.
+                // Stamped before the absent-key answer below, as the ordinary path does.
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
                 // THE SHARD HAS ALREADY SAID NO, SO NOTHING BELOW IT IS ASKED.
                 //
                 // `address` is `shard.string_address(key)` -- one map get against `shard.strings`,
@@ -1946,6 +1999,7 @@ impl TemporalEngine {
                 fields,
                 routing_bucket,
             } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
                 // THE FIELDS OF ONE HASH SIT IN FEW SLABS, so the page keys of a whole-hash read
                 // share their record key: building each from scratch spent three allocations a
                 // field, two of them spelling the same slab name again.
