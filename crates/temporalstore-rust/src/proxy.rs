@@ -918,6 +918,14 @@ pub struct ProxyCellRollupCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyCellRemoveCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub spec: crate::types::CellRemoveSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyCellRankQueryCommandRequest {
     pub namespace: String,
     pub table_name: String,

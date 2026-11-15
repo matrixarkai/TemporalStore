@@ -185,6 +185,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureReplace { key, .. }
         | Command::CellRollup { key, .. }
+        | Command::CellRemove { key, .. }
         | Command::FeatureDelete { key }
         | Command::SequenceAdd { key, .. }
         | Command::ControlStateIncrement { key, .. }
@@ -442,6 +443,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
             | Command::CellRollup { .. }
+            | Command::CellRemove { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
     )
@@ -503,6 +505,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
             | Command::CellRollup { .. }
+            | Command::CellRemove { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
             | Command::ControlStateIncrement { .. }
@@ -802,6 +805,27 @@ pub(super) fn validate_command_preconditions(
                 .map(|expires_at| *expires_at <= resolve_now_ms())
                 .unwrap_or(false);
             crate::engine::cell_rollup_apply::plan_cell_rollup(
+                cache,
+                block_store,
+                shard_id,
+                shard.features().get(&key[..]).filter(|_| !expired),
+                key,
+                crate::engine::hashing::block_routing_bucket(key, start_routing_bucket, end_routing_bucket),
+                spec,
+            )?;
+        }
+        // A removal is refused HERE, before the log, as a rollup is: the plan counts the snapshots
+        // inside the window, reads them and selects the cells, so a name the key does not declare,
+        // a window over the snapshot limit and a snapshot that is not a cell snapshot all write
+        // nothing. The plan is thrown away; execution plans again (see `cell_remove_apply`).
+        Command::CellRemove { key, spec } => {
+            let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+            let expired = shard
+                .expires_at_ms()
+                .get(key.as_str())
+                .map(|expires_at| *expires_at <= resolve_now_ms())
+                .unwrap_or(false);
+            crate::engine::cell_remove_apply::plan_cell_remove(
                 cache,
                 block_store,
                 shard_id,

@@ -124,20 +124,20 @@ impl<'a> SnapshotRead<'a> for FlatView<'a> {
 // ------------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Target {
+pub(crate) enum Target {
     Member,
     Label(usize),
     Lane(usize),
 }
 
-struct Predicate {
+pub(crate) struct Predicate {
     target: Target,
     op: FeatureFilterOp,
     value: u64,
 }
 
 impl Predicate {
-    fn holds(&self, cell: &CellRef<'_>) -> bool {
+    pub(crate) fn holds(&self, cell: &CellRef<'_>) -> bool {
         // Compared as i128 so a `u64` label or value and an `i64` lane meet without a wrap.
         let lhs = match self.target {
             Target::Member => match cell.member {
@@ -208,6 +208,17 @@ fn resolve(header: &CellHeader, name: &str) -> Result<Target, String> {
         )),
         _ => Err(format!("name `{name}` is ambiguous between a label, a lane and `member`")),
     }
+}
+
+/// The named predicates of a query resolved against `header`: a label, a lane or `member` each.
+/// The ranked read and a removal select cells by this one code.
+pub(crate) fn compile_predicates(header: &CellHeader, filters: &[FeatureFilter]) -> Result<Vec<Predicate>, String> {
+    filters
+        .iter()
+        .map(|FeatureFilter { field, op, value }| {
+            Ok(Predicate { target: resolve(header, field)?, op: op.clone(), value: *value })
+        })
+        .collect()
 }
 
 fn lane_named(header: &CellHeader, name: &str) -> Result<usize, String> {
@@ -315,10 +326,7 @@ impl Plan {
             Some(CompiledQuota::new(lanes, options.quota.others))
         };
 
-        let mut predicates = Vec::with_capacity(spec.filters.len());
-        for FeatureFilter { field, op, value } in &spec.filters {
-            predicates.push(Predicate { target: resolve(header, field)?, op: op.clone(), value: *value });
-        }
+        let predicates = compile_predicates(header, &spec.filters)?;
 
         let scorer = Scorer::compile(header, &spec.score)?;
 

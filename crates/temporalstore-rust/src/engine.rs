@@ -48,6 +48,10 @@ mod cell_fan_in;
 #[allow(dead_code)]
 mod cell_rollup;
 mod cell_rollup_apply;
+// Removing cells by time window, member set and predicate: a pure function over decoded snapshots,
+// and the engine side that reads the series and plans the replacement.
+mod cell_remove;
+mod cell_remove_apply;
 // Merged cell sets: the key, the per-key header and the packed snapshot. The merge-reduce write
 // policy of the feature append is its caller.
 mod cell_set;

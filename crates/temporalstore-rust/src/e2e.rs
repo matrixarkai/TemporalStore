@@ -431,6 +431,7 @@ fn is_write(command: &Command) -> bool {
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
             | Command::CellRollup { .. }
+            | Command::CellRemove { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
             | Command::ControlStateIncrement { .. }

@@ -179,8 +179,47 @@ Every translated spec is also checked by the same admission the commands run (`v
 request the translator accepts is one the engine accepts, and a bound is refused here at the same
 number it is refused there.
 
+## Removing cells
+
+`REMOVE` and `DELETE` are one command, `Command::CellRemove { key, spec }`, which takes cells out of the
+snapshots of one key by time window, member set and predicate, and answers what it removed. It is
+general over any key spec: the key is the stored key a table's entity, channel and kind name, and the
+names a predicate may use are read from the key's own header.
+
+| Wire | `CellRemoveSpec` |
+|---|---|
+| `REMOVE` `span` (microseconds) | `start_ms`, `end_ms`: the stamps inside it, start rounded up and end rounded down, both inclusive; no span is every snapshot |
+| `REMOVE` `key_filter.label` | `filters = [label = value]`, present only when the key filter is |
+| `REMOVE` `key_filter.kind`, `.channel` | name the key |
+| `REMOVE` `members`, `excluded_members` (additive) | `members.include`, `members.exclude` |
+| `DELETE` `selector.label`, `.members`, `.excluded_members` | the same predicate and member set over every snapshot |
+| `DELETE` `selector.channel`, `.kind` | name the key |
+
+A cell is removed when its snapshot is inside the window, its member passes the member set (`include`
+names the members to take, `exclude` the members to spare, a member in both is spared) and every
+predicate (`=`, `!=`, `>`, `>=`, `<`, `<=` over a label, a lane or `member`, at most 8, ANDed) holds on
+it. A request that restricts nothing is refused with a message that says it would empty the key; a
+`DELETE` never deletes the key itself (`FeatureDelete` does). A snapshot left with no cell is removed,
+so a removal can leave a key that holds no snapshot; it still reads as an empty answer and takes a
+write.
+
+The removal is planned at admission, before the log, by the same function that runs when the entry is
+applied: a refused request writes nothing, and a follower or a replay reaches the bytes the leader
+planned, since the plan depends on the request and the stored series only (no clock). The series is
+replaced in one step from the first snapshot that changes to the last; a snapshot in that range that
+lost nothing is written back as the bytes it had. A request that matches no cell writes nothing.
+
+Bounds, each refused one past the limit and accepted at it: 1024 snapshots inside the window (counted
+before any is read; narrow the window and remove in steps), 8 predicates, 1024 members a side, and a
+bytes member of at most 256 bytes.
+
+The receipt is `snapshots_before` and `snapshots_after` over the whole series, `cells_before` over the
+snapshots inside the window, and `cells_removed`. On the wire they are the additive fields 16 to 19 of
+`CellRemoveResponse` and `CellDeleteResponse`; the established fields are unchanged. The command's
+`CommandResponse` carries them as `snapshots_before`, `count` (the snapshots after), `cells_before` and
+`cells_removed` (field 16).
+
 ## Owned elsewhere
 
-Rolling old snapshots up in tiers is built by its own change and is not translated here; `RECENT`, `MATCH_LANE`
-(which answer the stored cells, one row each and not reduced per member), `NEWEST_ROWS`, `REMOVE` and
-`DELETE` have no command to map to yet.
+Rolling old snapshots up in tiers is built by its own change and is not translated here; `NEWEST_ROWS`
+has no command to map to yet.

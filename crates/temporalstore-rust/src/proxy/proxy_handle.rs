@@ -465,6 +465,22 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
+            ("POST", "/ProxyService/CellRemove") => {
+                match parse_json::<ProxyCellRemoveCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::CellRemove { key: req.key, spec: req.spec };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
             ("POST", "/ProxyService/ControlStateIncrement") => {
                 match parse_json::<ProxyControlStateIncrementCommandRequest>(&request.body) {
                     Ok(req) => {

@@ -4849,6 +4849,65 @@ pub(crate) fn execute_on_shard(
             };
             receipt
         }
+        Command::CellRemove { key, spec } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            // THE SAME PLANNER AS ADMISSION, over the same series, so a follower and a replay
+            // reach the leader's bytes. A plan that fails here passed validation on the leader:
+            // that is a divergence, not a bad request, so it writes nothing and receipts zeros.
+            let plan = crate::engine::cell_remove_apply::plan_cell_remove(
+                cache,
+                block_store,
+                shard_id,
+                shard.features().get(&key[..]),
+                &key,
+                routing_bucket,
+                &spec,
+            )
+            .ok();
+            match plan {
+                Some(plan) => {
+                    // The snapshots from the first change to the last are exactly `plan.replaced`;
+                    // the range holds nothing else.
+                    if let (true, Some(&first), Some(&last)) =
+                        (plan.changed, plan.replaced.first(), plan.replaced.last())
+                    {
+                        mutated = replace_feature_range(
+                            cache,
+                            block_store,
+                            shard_id,
+                            shard,
+                            &key,
+                            first,
+                            last,
+                            plan.points,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            async_storage,
+                            feature_max_size,
+                            trim_boundary_record,
+                            mutated,
+                        );
+                        // The numeric view of the series is rebuilt only when its length moves; a
+                        // removal can change the values and keep the length.
+                        control_rollup::feature_forget(shard, &key);
+                        let _ = cache.invalidate_record(shard_id, "feature", &key);
+                    }
+                    CommandResponse::CellRemoveReceipt {
+                        snapshots_before: plan.snapshots_before,
+                        snapshots_after: plan.snapshots_after,
+                        cells_before: plan.cells_before,
+                        cells_removed: plan.cells_removed,
+                    }
+                }
+                None => CommandResponse::CellRemoveReceipt {
+                    snapshots_before: 0,
+                    snapshots_after: 0,
+                    cells_before: 0,
+                    cells_removed: 0,
+                },
+            }
+        }
         Command::CellRankBatchQuery { queries } => {
             // Each read is the one-key read: an expired key is dropped and answers empty, a read
             // that cannot be served answers with its reason, and neither touches the others.
