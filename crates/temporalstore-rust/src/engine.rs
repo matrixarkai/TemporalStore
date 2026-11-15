@@ -1079,6 +1079,18 @@ impl TemporalEngine {
         if let Some(async_storage) = async_storage_override {
             config.async_storage = async_storage;
         }
+        // A synchronous string write stores its value once, in the record it acks on. From here
+        // on it takes the same storage placement an asynchronous write does (value in the log,
+        // no block-store copy, no per-write index delta) while `sync` below stays true, so the ack
+        // still waits for the WAL barrier. Not under replay or a replicated apply, whose
+        // placement is decided elsewhere.
+        let value_once = writes_string_block
+            && !config.async_storage
+            && !bulk_ingest_mode()
+            && !replaying_wal()
+            && !raft_applying()
+            && sync_value_once_enabled();
+        let defer_storage = config.async_storage || value_once;
         let table_admission_enabled = (if write_command {
             config.table_write_qps
         } else {
@@ -1255,7 +1267,7 @@ impl TemporalEngine {
             &self.cache,
             &self.block_store,
             config.feature_max_size,
-            config.async_storage,
+            defer_storage,
             config.control_rollup_enabled(),
             config.control_coalesce_persist_enabled(),
             config.control_state_max_size(),
@@ -1645,7 +1657,7 @@ impl TemporalEngine {
                     }
                 }
             }
-            if !config.async_storage && !bulk_ingest_mode() && !replaying_wal()
+            if !defer_storage && !bulk_ingest_mode() && !replaying_wal()
                 && shard.checkpoint_wal_sequence().is_some()
             {
                 // The append receipt above is the state boundary; a cached or
@@ -5866,6 +5878,55 @@ pub(super) fn wal_only_sync() -> bool {
 /// finds an explanation.
 pub(super) fn wal_single_barrier() -> bool {
     !wal_legacy_recovery()
+}
+
+/// Whether a synchronous string write keeps its value in its WAL record ALONE.
+///
+/// The record is already durable before the ack (the coalesced barrier), and it already carries
+/// the value. Writing the same bytes into a block segment as well costs a second write per set
+/// and nothing a recovery or a read uses: the block is served from the record through the
+/// WAL-resident registry until the storage manager's dump moves it into the block store, after
+/// which the log may be reclaimed. Default OFF; `TS_SYNC_VALUE_ONCE=1` turns it on.
+///
+/// Why off: every such write holds a log-resident registration, the lowest registration pins the
+/// log's retention floor, and the storage manager's loop materialises at most
+/// `max_dump_buckets_per_round` per pass. A write rate above that grows the registry and the log
+/// without bound (a 1,500 s side-by-side soak left the log at its 128 MiB gate while the two-copy
+/// placement's log shrank). Turn the default on only after a sustained test shows both bounded.
+///
+/// Only under the single-barrier recovery default: the legacy delta-fold recovery trusts the
+/// index log, and a value-once write records no per-write index delta.
+pub(super) fn sync_value_once_enabled() -> bool {
+    #[cfg(test)]
+    let default_on = VALUE_ONCE_IN_TEST.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let default_on = SYNC_VALUE_ONCE_DEFAULT_ON;
+    wal_single_barrier() && crate::env_flag::env_bool("TS_SYNC_VALUE_ONCE", default_on)
+}
+
+/// The shipped default of `TS_SYNC_VALUE_ONCE`. A test pins it; see the note on
+/// [`sync_value_once_enabled`] before changing it.
+pub(crate) const SYNC_VALUE_ONCE_DEFAULT_ON: bool = false;
+
+#[cfg(test)]
+thread_local! {
+    /// Test builds default the switch OFF on the thread, so the many tests written against the
+    /// two-copy placement (block files, slab counts, a reclaim floor that reaches the log head)
+    /// keep exercising it. A test of the single-copy placement turns it on for its own thread
+    /// with [`value_once_in_test`]; `TS_SYNC_VALUE_ONCE` still overrides either way.
+    static VALUE_ONCE_IN_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Turn the single-copy placement on or off for this thread until the guard drops.
+#[cfg(test)]
+pub(crate) fn value_once_in_test(on: bool) -> impl Drop {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            VALUE_ONCE_IN_TEST.with(|cell| cell.set(self.0));
+        }
+    }
+    Restore(VALUE_ONCE_IN_TEST.with(|cell| cell.replace(on)))
 }
 
 // CONCURRENT COMMIT: run the WAL durability barrier OUTSIDE the global `shards` write lock.

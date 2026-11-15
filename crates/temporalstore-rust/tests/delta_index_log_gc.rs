@@ -137,6 +137,10 @@ fn dir_listing(dir: &Path) -> Vec<String> {
 
 #[test]
 fn crash_before_any_dump_reconstructs_from_full_delta_log() {
+    // Asserts an artefact of the two-copy placement (a block segment on disk, a per-write index-log
+    // delta, an advancing index-log sequence). The single-copy placement has none of them by design,
+    // and has its own crash tests in `engine/tests/sync_value_once.rs`.
+    std::env::set_var("TS_SYNC_VALUE_ONCE", "0");
     // No dump ever happens: the base is absent, so the whole write history has to come back
     // from the log. On the default path that is the WAL replay, with the index-log deltas
     // written beside it and not read -- see the note at the top of this file.

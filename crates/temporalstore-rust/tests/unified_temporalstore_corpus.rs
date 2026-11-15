@@ -257,6 +257,10 @@ fn rust_client_executes_temporalstore_corpus() {
 // shared-corpus: storage_wal_index_gc_generation_retention storage_gc_dependency_retention_matrix
 #[test]
 fn rust_executes_storage_raft_gc_cases() {
+    // Asserts an artefact of the two-copy placement (a block segment on disk, a per-write index-log
+    // delta, an advancing index-log sequence). The single-copy placement has none of them by design,
+    // and has its own crash tests in `engine/tests/sync_value_once.rs`.
+    std::env::set_var("TS_SYNC_VALUE_ONCE", "0");
     verify_storage_wal_index_gc_generation_retention(92);
     verify_storage_gc_dependency_retention_matrix(92);
 }

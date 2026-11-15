@@ -3233,6 +3233,62 @@ impl LocalWriteAheadLogStore {
         Ok(raw.map(|record| record.bytes))
     }
 
+    /// Read the framed records at many stable log ids, resolving the segment layout ONCE.
+    ///
+    /// [`read_frame_at_log_id`](Self::read_frame_at_log_id) lists and stats the shard's segment
+    /// files on every call, which is the right cost for one record and the wrong one for a load
+    /// that re-registers every log-resident value: 100,000 values over a log of 1,200 segments is
+    /// 100,000 directory listings, measured at about 100 s. This lists once, orders the segments
+    /// by the offsets they hold, and finds each id's segment by binary search. Ids sorted
+    /// ascending reuse the open file. The answer for an id is the answer the single read gives
+    /// (`None` when it is reclaimed or ahead of the log), in the order of `log_ids`.
+    pub fn read_frames_at_log_ids(
+        &self,
+        shard_id: ShardId,
+        log_ids: &[u64],
+    ) -> Result<Vec<Option<Vec<u8>>>, WriteAheadLogError> {
+        let mut inner = self.lock_inner();
+        // (path, base offset, header length, bytes of records) of every non-empty piece, in order.
+        let mut spans: Vec<(PathBuf, u64, u64, u64)> = Vec::new();
+        for piece in wal_segment_pieces(&inner.root, shard_id) {
+            if !piece.path.exists() {
+                continue;
+            }
+            let (base, header_len) = read_wal_base(&piece.path)?;
+            let length = piece.path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            if length <= header_len {
+                continue;
+            }
+            spans.push((piece.path.clone(), base, header_len, length - header_len));
+        }
+        let mut open: Option<(usize, File)> = None;
+        let mut out = Vec::with_capacity(log_ids.len());
+        for &log_id in log_ids {
+            // The last span whose base is at or below the id, if the id falls inside it.
+            let after = spans.partition_point(|span| span.1 <= log_id);
+            let hit = after
+                .checked_sub(1)
+                .filter(|&index| log_id - spans[index].1 < spans[index].3);
+            let Some(index) = hit else {
+                out.push(None);
+                continue;
+            };
+            if open.as_ref().map(|(held, _)| *held) != Some(index) {
+                open = Some((index, File::open(&spans[index].0)?));
+            }
+            let (_, file) = open.as_mut().expect("opened above");
+            file.seek(SeekFrom::Start(spans[index].2 + (log_id - spans[index].1)))?;
+            let mut reader = BufReader::with_capacity(1024, &mut *file);
+            let raw = read_raw_record(&mut reader)?;
+            if let Some(record) = raw.as_ref() {
+                inner.stats.reads += 1;
+                inner.stats.bytes_read += record.physical_bytes;
+            }
+            out.push(raw.map(|record| record.bytes));
+        }
+        Ok(out)
+    }
+
     /// Select one carried block when the compressed record has a directory. Older encodings
     /// return the complete checked record from the same file handle for the existing decoder.
     pub(crate) fn read_carried_block_at_log_id(

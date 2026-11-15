@@ -30,6 +30,10 @@ fn root() -> PathBuf {
 
 #[test]
 fn manifest_install_materializes_index_under_bulk_mode() {
+    // Asserts an artefact of the two-copy placement (a block segment on disk, a per-write index-log
+    // delta, an advancing index-log sequence). The single-copy placement has none of them by design,
+    // and has its own crash tests in `engine/tests/sync_value_once.rs`.
+    std::env::set_var("TS_SYNC_VALUE_ONCE", "0");
     let root = root();
     let _ = std::fs::remove_dir_all(&root);
     let index_dir = root.join("indexes");
