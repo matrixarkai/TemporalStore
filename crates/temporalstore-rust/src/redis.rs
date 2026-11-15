@@ -376,6 +376,10 @@ fn redis_info(section: &str, shard_id: ShardId, state: &RedisCommandState) -> St
 mod a_stored_name_is_read_as_bytes;
 
 #[cfg(test)]
+#[path = "redis/zset_range_remove_and_client_commands.rs"]
+mod zset_range_remove_and_client_commands;
+
+#[cfg(test)]
 mod tests {
     use std::io::BufReader;
 
@@ -567,6 +571,54 @@ mod tests {
         // Interleaved pushes after a drain keep working -- the sequence space is not consumed.
         assert_eq!(run(&mut state, vec!["LPUSH", "l", "z"]), RespValue::Integer(1));
         assert_eq!(run(&mut state, vec!["LPOP", "l"]), RespValue::Bulk(Some(b"z".to_vec())));
+    }
+
+    /// LINDEX reads one element (negative from the tail, nil outside the list); LPUSHX and
+    /// RPUSHX push only onto a list that already exists and answer 0, writing nothing, when it
+    /// does not.
+    #[test]
+    fn lindex_and_the_pushx_commands_only_touch_existing_lists() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        let bulk = |s: &str| RespValue::Bulk(Some(s.as_bytes().to_vec()));
+
+        assert_eq!(run(&mut state, vec!["LPUSHX", "nl", "x"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["RPUSHX", "nl", "x"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["LLEN", "nl"]), RespValue::Integer(0), "PUSHX must not create the list");
+        assert_eq!(run(&mut state, vec!["LINDEX", "nl", "0"]), RespValue::Bulk(None));
+
+        assert_eq!(run(&mut state, vec!["RPUSH", "l", "b", "c"]), RespValue::Integer(2));
+        assert_eq!(run(&mut state, vec!["LPUSHX", "l", "a"]), RespValue::Integer(3));
+        assert_eq!(run(&mut state, vec!["RPUSHX", "l", "d"]), RespValue::Integer(4));
+        assert_eq!(run(&mut state, vec!["LINDEX", "l", "0"]), bulk("a"));
+        assert_eq!(run(&mut state, vec!["LINDEX", "l", "3"]), bulk("d"));
+        assert_eq!(run(&mut state, vec!["LINDEX", "l", "-1"]), bulk("d"));
+        assert_eq!(run(&mut state, vec!["LINDEX", "l", "-4"]), bulk("a"));
+        assert_eq!(run(&mut state, vec!["LINDEX", "l", "4"]), RespValue::Bulk(None));
+        assert_eq!(run(&mut state, vec!["LINDEX", "l", "-5"]), RespValue::Bulk(None));
+        assert!(
+            matches!(run(&mut state, vec!["LINDEX", "l", "x"]), RespValue::Error(_)),
+            "a non-integer index is an error"
+        );
     }
 
     /// Sorted sets behave like the native ones: ZADD answers only NEW members, a re-score
@@ -1278,6 +1330,11 @@ mod tests {
             "APPEND" => vec!["APPEND", "advertised:append", "x"],
             "AUTH" => vec!["AUTH", ""],
             "BGSAVE" => vec!["BGSAVE"],
+            "CLIENT" => vec!["CLIENT", "GETNAME"],
+            "QUIT" => vec!["QUIT"],
+            "ZMSCORE" => vec!["ZMSCORE", "advertised:zset", "m"],
+            "ZREMRANGEBYRANK" => vec!["ZREMRANGEBYRANK", "advertised:zset", "0", "-1"],
+            "ZREMRANGEBYSCORE" => vec!["ZREMRANGEBYSCORE", "advertised:zset", "-inf", "+inf"],
             "COMMAND" => vec!["COMMAND", "COUNT"],
             "CONFIG" => vec!["CONFIG", "GET", "maxmemory"],
             "BUCKETPEEK" => vec!["BUCKETPEEK", "advertised:bucket", "1", "10", "1"],
@@ -1319,6 +1376,9 @@ mod tests {
             "INCRBY" => vec!["INCRBY", "advertised:incrby", "1"],
             "INCRBYFLOAT" => vec!["INCRBYFLOAT", "advertised:float", "1.5"],
             "KEYS" => vec!["KEYS", "*"],
+            "LINDEX" => vec!["LINDEX", "advertised:list", "0"],
+            "LPUSHX" => vec!["LPUSHX", "advertised:list", "v"],
+            "RPUSHX" => vec!["RPUSHX", "advertised:list", "v"],
             "LLEN" => vec!["LLEN", "advertised:list"],
             "LPOP" => vec!["LPOP", "advertised:list"],
             "LPUSH" => vec!["LPUSH", "advertised:list", "v"],
