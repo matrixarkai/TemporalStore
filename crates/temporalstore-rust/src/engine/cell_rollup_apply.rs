@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! The engine side of a cell rollup: reads the snapshots a request names, hands them to the pure
-//! [`super::cell_rollup::rollup_spec`], and says what the series must hold afterwards.
+//! [`super::cell_rollup::rollup_flat_spec`], and says what the series must hold afterwards.
 //!
 //! # WHERE A VIOLATION IS REFUSED
 //!
@@ -42,10 +42,10 @@
 //! nothing.
 
 use super::cell_rollup::{
-    first_cutoff, rollup_spec, truncation_drop, truncation_of, validate_spec, RollupSpec, Snapshot,
+    first_cutoff, rollup_flat_spec, truncation_drop, truncation_of, validate_spec, FlatSnapshot, RollupSpec,
     MAX_ROLLUP_SNAPSHOTS,
 };
-use super::cell_set::{check_header, decode_snapshot, encode_value, split_value, Cell, CellHeader};
+use super::cell_set::{check_header, split_value, CellHeader, FlatCells};
 use super::*;
 use crate::engine::timestamped_series::TimestampedSeries;
 use crate::types::FeaturePoint;
@@ -111,7 +111,7 @@ pub(super) fn plan_cell_rollup(
 
     // Roll the snapshots below the cutoff.
     let mut stored: Vec<Vec<u8>> = Vec::with_capacity(below.len());
-    let mut rolled: Vec<Snapshot> = Vec::new();
+    let mut rolled: Vec<FlatSnapshot> = Vec::new();
     let (mut cells_before, mut cells_dropped) = (0u64, 0u64);
     let mut header_for_points: Option<CellHeader> = None;
     if !below.is_empty() {
@@ -134,7 +134,7 @@ pub(super) fn plan_cell_rollup(
         .ok_or_else(|| Status::error("data_loss", format!("{key}: the snapshot stored at {newest_ms} cannot be read")))?
         .map_err(|why| refuse(key, format!("the snapshot at {newest_ms} is not a cell snapshot: {why}")))?;
 
-        let mut snapshots: Vec<Snapshot> = Vec::with_capacity(below.len());
+        let mut snapshots: Vec<FlatSnapshot> = Vec::with_capacity(below.len());
         for &(timestamp_ms, address) in &below {
             let decoded = read_feature_value_with(
                 cache,
@@ -145,20 +145,20 @@ pub(super) fn plan_cell_rollup(
                 identity(),
                 routing,
                 &mut page_keys,
-                |bytes| -> Result<(Vec<Cell>, Vec<u8>), String> {
+                |bytes| -> Result<(FlatCells, Vec<u8>), String> {
                     let (own, packed) = split_value(bytes)?;
                     if own != header {
                         check_header(&own, &header)?;
                     }
-                    Ok((decode_snapshot(&header, packed)?, bytes.to_vec()))
+                    Ok((FlatCells::decode(&header, packed, 0)?, bytes.to_vec()))
                 },
             )
             .ok_or_else(|| Status::error("data_loss", format!("{key}: the snapshot stored at {timestamp_ms} cannot be read")))?
             .map_err(|why| refuse(key, format!("the snapshot at {timestamp_ms}: {why}")))?;
-            snapshots.push(Snapshot { timestamp_ms, cells: decoded.0 });
+            snapshots.push(FlatSnapshot { timestamp_ms, cells: decoded.0 });
             stored.push(decoded.1);
         }
-        let result = rollup_spec(&header, snapshots, spec, newest_ms).map_err(|why| refuse(key, why))?;
+        let result = rollup_flat_spec(&header, snapshots, spec, newest_ms).map_err(|why| refuse(key, why))?;
         cells_before = result.stats.cells_before;
         cells_dropped = result.stats.cells_dropped;
         rolled = result.snapshots;
@@ -178,7 +178,7 @@ pub(super) fn plan_cell_rollup(
     if let Some(header) = &header_for_points {
         for snapshot in &rolled[dropped_rolled..] {
             cells_after += snapshot.cells.len() as u64;
-            let value = encode_value(header, &snapshot.cells).map_err(|why| refuse(key, why))?;
+            let value = snapshot.cells.encode_value(header).map_err(|why| refuse(key, why))?;
             points.push(FeaturePoint { timestamp_ms: snapshot.timestamp_ms, value });
         }
     }

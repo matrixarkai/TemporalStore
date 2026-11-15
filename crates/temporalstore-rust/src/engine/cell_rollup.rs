@@ -99,8 +99,8 @@ use std::cmp::Ordering;
 
 use super::cell_rank::{validate_score, Key, Scorer};
 use super::cell_set::{
-    is_strictly_ascending, validate_cells_in_snapshot, within, within_nonzero, Cell, CellHeader, LaneReducer,
-    MAX_CELLS_PER_SNAPSHOT,
+    is_strictly_ascending, validate_cells_in_snapshot, within, within_nonzero, Cell, CellHeader, CellRef, FlatCells,
+    FoldStep, LaneReducer, MAX_CELLS_PER_SNAPSHOT,
 };
 use crate::types::{CellRollupAnchor, CellScore};
 
@@ -498,22 +498,63 @@ fn better_first(a: &Option<Key>, b: &Option<Key>) -> Ordering {
 /// to the smaller member), then the best of the rest by score until it holds `keep`. `seen` is
 /// empty exactly when nothing is protected. Returns how many cells were removed.
 fn apply_cap(cap: &Cap, cells: &mut Vec<Cell>, seen: &[u64], scratch: &mut CapScratch) -> Result<u64, String> {
-    let slack = cap.keep + cap.trigger_over;
-    if cap.group.is_none() && cells.len() <= slack {
+    let before = cells.len();
+    let chosen = choose_kept(
+        cap,
+        before,
+        |i| CellRef { member: cells[i].member.view(), labels: &cells[i].labels, lanes: &cells[i].lanes },
+        seen,
+        scratch,
+    )?;
+    if !chosen {
         return Ok(0);
     }
+    let mut at = 0;
+    cells.retain(|_| {
+        let kept = scratch.keep[at];
+        at += 1;
+        kept
+    });
+    Ok((before - cells.len()) as u64)
+}
+
+/// [`apply_cap`] over cells held flat.
+fn apply_cap_flat(cap: &Cap, cells: &mut FlatCells, seen: &[u64], scratch: &mut CapScratch) -> Result<u64, String> {
+    let before = cells.len();
+    if !choose_kept(cap, before, |i| cells.cell(i), seen, scratch)? {
+        return Ok(0);
+    }
+    cells.retain(&scratch.keep);
+    Ok((before - cells.len()) as u64)
+}
+
+/// Decides which of `count` cells (`cell_at(i)`, strictly ascending by member) a cap keeps,
+/// leaving the answer in `scratch.keep`. `false`: nothing is removed and `scratch.keep` is not
+/// set. The one place the choice is made, whatever form the cells are held in.
+fn choose_kept<'c>(
+    cap: &Cap,
+    count: usize,
+    cell_at: impl Fn(usize) -> CellRef<'c>,
+    seen: &[u64],
+    scratch: &mut CapScratch,
+) -> Result<bool, String> {
+    let slack = cap.keep + cap.trigger_over;
+    if cap.group.is_none() && count <= slack {
+        return Ok(false);
+    }
     scratch.order.clear();
-    scratch.order.reserve(cells.len());
-    for (i, cell) in cells.iter().enumerate() {
+    scratch.order.reserve(count);
+    for i in 0..count {
+        let cell = cell_at(i);
         let group = cap.group.map_or(0, |g| cell.labels[g]);
-        scratch.order.push((group, cap.scorer.score(cell.member.view(), 0, &cell.lanes)?, i));
+        scratch.order.push((group, cap.scorer.score(cell.member, 0, cell.lanes)?, i));
     }
     // The index is the last key and cells ascend by member: ties break by member, smaller first.
     scratch
         .order
         .sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| better_first(&a.1, &b.1)).then_with(|| a.2.cmp(&b.2)));
     scratch.keep.clear();
-    scratch.keep.resize(cells.len(), false);
+    scratch.keep.resize(count, false);
     let mut from = 0;
     while from < scratch.order.len() {
         let group = scratch.order[from].0;
@@ -548,14 +589,7 @@ fn apply_cap(cap: &Cap, cells: &mut Vec<Cell>, seen: &[u64], scratch: &mut CapSc
         }
         from = to;
     }
-    let before = cells.len();
-    let mut at = 0;
-    cells.retain(|_| {
-        let kept = scratch.keep[at];
-        at += 1;
-        kept
-    });
-    Ok((before - cells.len()) as u64)
+    Ok(true)
 }
 
 /// Applies `cap` to one snapshot's cells on its own. Returns how many cells were removed.
@@ -803,6 +837,140 @@ fn rollup_view(
     Ok(RollupResult { snapshots: out, stats })
 }
 
+// ------------------------------------------------------------------------------------------
+// The same rollup over cells held flat
+// ------------------------------------------------------------------------------------------
+
+/// One decoded snapshot in the flat form: its stamp and its cells, strictly ascending by member.
+#[derive(Debug)]
+pub(crate) struct FlatSnapshot {
+    pub(crate) timestamp_ms: u64,
+    pub(crate) cells: FlatCells,
+}
+
+#[derive(Debug)]
+pub(crate) struct FlatRollupResult {
+    /// Ascending by stamp, strictly.
+    pub(crate) snapshots: Vec<FlatSnapshot>,
+    pub(crate) stats: RollupStats,
+}
+
+/// [`rollup_spec`] over snapshots decoded flat: the answer is the same snapshots and the same
+/// counts, with a fixed number of allocations a snapshot and a bucket instead of two for every
+/// cell. Every cell must have been decoded under `header`.
+pub(crate) fn rollup_flat_spec(
+    header: &CellHeader,
+    snapshots: Vec<FlatSnapshot>,
+    spec: &RollupSpec,
+    newest_ms: u64,
+) -> Result<FlatRollupResult, String> {
+    with_view(spec, |view| rollup_flat_view(header, snapshots, view, newest_ms))
+}
+
+fn check_flat(cells: &FlatCells) -> Result<(), String> {
+    validate_cells_in_snapshot(cells.len())?;
+    if !cells.is_strictly_ascending() {
+        return Err("a snapshot is not strictly ascending by member".to_string());
+    }
+    Ok(())
+}
+
+fn finish_flat(
+    cap: &Option<Cap>,
+    scratch: &mut CapScratch,
+    mut bucket: FlatSnapshot,
+    seen: &Seen,
+    out: &mut Vec<FlatSnapshot>,
+    stats: &mut RollupStats,
+) -> Result<(), String> {
+    if let Some(cap) = cap {
+        stats.cells_dropped += apply_cap_flat(cap, &mut bucket.cells, &seen.acc, scratch)?;
+    }
+    out.push(bucket);
+    Ok(())
+}
+
+fn rollup_flat_view(
+    header: &CellHeader,
+    mut snapshots: Vec<FlatSnapshot>,
+    spec: &PlanView<'_>,
+    newest_ms: u64,
+) -> Result<FlatRollupResult, String> {
+    validate_view(spec)?;
+    let cap = spec.cap.as_ref().map(|cap| compile_cap(header, cap)).transpose()?;
+    if snapshots.windows(2).any(|pair| pair[0].timestamp_ms >= pair[1].timestamp_ms) {
+        return Err("snapshots are not in strictly ascending stamp order".to_string());
+    }
+    let resolved = resolve(spec, newest_ms);
+    let tiers = resolved.as_slice();
+    let below = snapshots.partition_point(|snapshot| snapshot.timestamp_ms < tiers[0].0);
+    within("snapshots below the cutoff", below, MAX_ROLLUP_SNAPSHOTS)?;
+
+    let mut stats = RollupStats { snapshots_before: snapshots.len() as u64, ..RollupStats::default() };
+    let rest = snapshots.split_off(below);
+    let mut out: Vec<FlatSnapshot> = Vec::with_capacity(below + rest.len());
+    let mut scratch = CapScratch::default();
+    let mut spare = FlatCells::empty(header, 0);
+    let mut seen = Seen { track: cap.as_ref().is_some_and(|cap| cap.protect > 0), ..Seen::default() };
+    let mut current: Option<FlatSnapshot> = None;
+
+    for snapshot in snapshots {
+        check_flat(&snapshot.cells)?;
+        stats.cells_before += snapshot.cells.len() as u64;
+        let width = bucket_width(tiers, snapshot.timestamp_ms).expect("a snapshot below the first cutoff has a tier");
+        let bucket_start = snapshot.timestamp_ms - snapshot.timestamp_ms % width;
+        match current.as_mut() {
+            Some(open) if open.timestamp_ms == bucket_start => {
+                let newer_ts = snapshot.timestamp_ms;
+                let track = seen.track;
+                let Seen { acc, tmp, .. } = &mut seen;
+                if track {
+                    tmp.clear();
+                    tmp.reserve(open.cells.len() + snapshot.cells.len());
+                }
+                let combined = open.cells.fold_aggregated(
+                    &mut spare,
+                    &snapshot.cells,
+                    |lane, older, newer| combine_aggregated(header.lanes[lane].reducer, older, newer),
+                    |step| {
+                        if track {
+                            tmp.push(match step {
+                                FoldStep::Old(at) => acc[at],
+                                FoldStep::New | FoldStep::Both => newer_ts,
+                            });
+                        }
+                    },
+                );
+                if track {
+                    std::mem::swap(acc, tmp);
+                }
+                stats.cells_combined += combined;
+                within("cells in a rolled snapshot", open.cells.len(), MAX_CELLS_PER_SNAPSHOT)?;
+            }
+            _ => {
+                if let Some(done) = current.take() {
+                    finish_flat(&cap, &mut scratch, done, &seen, &mut out, &mut stats)?;
+                }
+                if seen.track {
+                    seen.acc.clear();
+                    seen.acc.resize(snapshot.cells.len(), snapshot.timestamp_ms);
+                }
+                current = Some(FlatSnapshot { timestamp_ms: bucket_start, cells: snapshot.cells });
+            }
+        }
+    }
+    if let Some(done) = current.take() {
+        finish_flat(&cap, &mut scratch, done, &seen, &mut out, &mut stats)?;
+    }
+    for snapshot in rest {
+        stats.cells_before += snapshot.cells.len() as u64;
+        out.push(snapshot);
+    }
+    stats.snapshots_after = out.len() as u64;
+    stats.cells_after = out.iter().map(|snapshot| snapshot.cells.len() as u64).sum();
+    Ok(FlatRollupResult { snapshots: out, stats })
+}
+
 #[cfg(test)]
 #[path = "cell_rollup_tests.rs"]
 mod tests;
@@ -810,3 +978,7 @@ mod tests;
 #[cfg(test)]
 #[path = "cell_rollup_tier_tests.rs"]
 mod tier_tests;
+
+#[cfg(test)]
+#[path = "cell_rollup_flat_tests.rs"]
+mod flat_tests;
