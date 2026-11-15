@@ -1368,10 +1368,22 @@ impl DataNodeRuntime {
         // in this same round is therefore seen one round later, which is a delay of one period and
         // not a missed purge: the next round's plan lists it.
         let index_log_floor = StorageManagerCycleRequest::default().index_gc_index_log_bytes_threshold;
+        //
+        // NO DUMP TO MAKE has two forms: nothing dirty and nothing undumped, or a dirty shard that
+        // the byte gate holds back. The second is the busy shard under the gate, which used to pay
+        // three whole-shard plan builds a round to learn that the gate would decline. The decision
+        // is the one the plan itself makes (`dump_gate_delays`), read off the round's own counters.
+        // A log below the floor also rules out the forced dump, which needs at least the floor.
+        let index_dump_held_back = crate::engine::dump_gate_delays(
+            options.min_undumped_wal_records,
+            options.min_undumped_wal_bytes,
+            pressure.undumped_wal_records,
+            pressure.wal_bytes,
+        );
         let index_gc_has_no_work = options.enable_index_gc
             && index_log_floor != 0
-            && pressure.dirty_bucket_count == 0
-            && pressure.undumped_wal_records == 0
+            && ((pressure.dirty_bucket_count == 0 && pressure.undumped_wal_records == 0)
+                || index_dump_held_back)
             && !index_gc_pressure
             && lifecycle_plan.delayed_destroy_block_slab_ids.is_empty()
             && self

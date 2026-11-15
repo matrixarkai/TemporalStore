@@ -480,6 +480,39 @@ fn a_shard_with_nothing_for_the_index_stage_stops_paying_for_it_and_a_dirty_one_
     );
 }
 
+/// A DIRTY SHARD THE BYTE GATE HOLDS BACK STOPS PAYING FOR THE INDEX STAGE TOO.
+///
+/// With the shipped gate and a log under the collector's floor, the stage has no dump to make and
+/// no log to collect, so a round must not walk the shard to find that out. The shard is dirty, so
+/// the older "nothing dirty" shortcut does not apply; the gate decision is what lets the round skip.
+/// The stage must still count as having run.
+///
+/// Planted fault: reverting the stage's idle test to "nothing dirty and nothing undumped" makes the
+/// first assertion fail, because the dirty shard then walks on every round.
+#[test]
+fn a_dirty_shard_below_the_byte_gate_does_not_walk_for_the_index_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let options = StorageManagerOptions::default();
+    for round in 0..4 {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        assert!(
+            report.pressure.dirty_bucket_count > 0,
+            "round {round}: the fixture must keep the shard dirty under the shipped gate"
+        );
+        assert_eq!(
+            index_stage_walk(&report),
+            0,
+            "round {round}: a dirty shard below the gate and the floor walked for the index stage"
+        );
+        assert!(
+            report.executed_stages.iter().any(|stage| stage == "reclaim_index"),
+            "round {round}: the index stage left the stage list: {:?}",
+            report.executed_stages
+        );
+    }
+}
+
 
 
 /// The span a profiler collects over: ONE periodic round of a shard that has nothing to do, so the
