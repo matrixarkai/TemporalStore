@@ -50,6 +50,9 @@ fn handle_stream(
         });
         stream.write_all(&response.encode())?;
         stream.flush()?;
+        if state.closing {
+            break;
+        }
     }
     Ok(())
 }

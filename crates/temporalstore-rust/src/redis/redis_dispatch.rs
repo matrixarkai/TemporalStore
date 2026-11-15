@@ -825,18 +825,34 @@ pub fn execute_redis_command_with_state(
                 (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
             }
         }
-        "ZRANGEBYSCORE" | "ZREVRANGEBYSCORE" if args.len() == 4 || args.len() == 5 => {
+        "ZRANGEBYSCORE" | "ZREVRANGEBYSCORE" if args.len() >= 4 => {
             let rev = command == "ZREVRANGEBYSCORE";
-            let withscores = match args.get(4) {
-                None => false,
-                Some(flag) if name_arg(flag).eq_ignore_ascii_case("WITHSCORES") => true,
-                Some(other) => {
-                    return RespValue::Error(format!(
-                        "ERR syntax error near {}",
-                        name_arg(other)
-                    ))
+            let mut withscores = false;
+            // LIMIT offset count: a negative count means "to the end"; a negative offset
+            // selects nothing (Redis semantics).
+            let mut limit: Option<(i64, i64)> = None;
+            let mut idx = 4;
+            while idx < args.len() {
+                match name_arg(&args[idx]).to_ascii_uppercase().as_str() {
+                    "WITHSCORES" => {
+                        withscores = true;
+                        idx += 1;
+                    }
+                    "LIMIT" if idx + 2 < args.len() => {
+                        match (
+                            parse_i64_arg(&args[idx + 1], "offset"),
+                            parse_i64_arg(&args[idx + 2], "count"),
+                        ) {
+                            (Ok(offset), Ok(count)) => limit = Some((offset, count)),
+                            (Err(err), _) | (_, Err(err)) => return RespValue::Error(err),
+                        }
+                        idx += 3;
+                    }
+                    other => {
+                        return RespValue::Error(format!("ERR syntax error near {other}"))
+                    }
                 }
-            };
+            }
             // ZREVRANGEBYSCORE takes (max, min); the engine always takes (min, max).
             let (low_raw, high_raw) = if rev {
                 (&args[3], &args[2])
@@ -854,7 +870,10 @@ pub fn execute_redis_command_with_state(
                         rev,
                     }) {
                         Ok(CommandResponse::Members { members }) => {
-                            interleaved_members_response(members, withscores)
+                            interleaved_members_response(
+                                limit_member_pairs(members, limit),
+                                withscores,
+                            )
                         }
                         Ok(_) => {
                             RespValue::Error("ERR invalid zrangebyscore response".to_string())
@@ -865,6 +884,104 @@ pub fn execute_redis_command_with_state(
                 (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
             }
         }
+        "ZREMRANGEBYSCORE" if args.len() == 4 => {
+            match (parse_score_arg(&args[2]), parse_score_arg(&args[3])) {
+                (Ok((min, min_exclusive, _)), Ok((max, max_exclusive, _))) => {
+                    let key = name_arg(&args[1]);
+                    match execute(Command::ZSetRangeByScore {
+                        key: key.clone(),
+                        min,
+                        max,
+                        min_exclusive,
+                        max_exclusive,
+                        rev: false,
+                    }) {
+                        Ok(CommandResponse::Members { members }) => {
+                            remove_zset_members(&key, members, &mut execute)
+                        }
+                        Ok(_) => RespValue::Error(
+                            "ERR invalid zremrangebyscore response".to_string(),
+                        ),
+                        Err(err) => RespValue::Error(format!("ERR {err}")),
+                    }
+                }
+                (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
+            }
+        }
+        "ZREMRANGEBYRANK" if args.len() == 4 => {
+            match (
+                parse_i64_arg(&args[2], "start"),
+                parse_i64_arg(&args[3], "stop"),
+            ) {
+                (Ok(start), Ok(stop)) => {
+                    let key = name_arg(&args[1]);
+                    match execute(Command::ZSetRange {
+                        key: key.clone(),
+                        start,
+                        stop,
+                        rev: false,
+                    }) {
+                        Ok(CommandResponse::Members { members }) => {
+                            remove_zset_members(&key, members, &mut execute)
+                        }
+                        Ok(_) => RespValue::Error(
+                            "ERR invalid zremrangebyrank response".to_string(),
+                        ),
+                        Err(err) => RespValue::Error(format!("ERR {err}")),
+                    }
+                }
+                (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
+            }
+        }
+        "ZMSCORE" if args.len() >= 3 => {
+            let key = name_arg(&args[1]);
+            let mut scores = Vec::with_capacity(args.len() - 2);
+            for member in args.iter().skip(2) {
+                match execute(Command::ZSetScore {
+                    key: key.clone(),
+                    member: member.clone(),
+                }) {
+                    Ok(CommandResponse::Bytes { value }) => scores.push(RespValue::Bulk(value)),
+                    Ok(_) => return RespValue::Error("ERR invalid zmscore response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            RespValue::Array(scores)
+        }
+        "QUIT" => {
+            state.closing = true;
+            RespValue::SimpleString("OK".to_string())
+        }
+        "CLIENT" if args.len() >= 2 => match name_arg(&args[1]).to_ascii_uppercase().as_str() {
+            "SETNAME" if args.len() == 3 => {
+                if args[2].iter().any(|b| *b <= b' ' || *b > b'~') {
+                    RespValue::Error(
+                        "ERR Client names cannot contain spaces, newlines or special characters."
+                            .to_string(),
+                    )
+                } else {
+                    state.client_name = args[2].clone();
+                    RespValue::SimpleString("OK".to_string())
+                }
+            }
+            "GETNAME" if args.len() == 2 => {
+                if state.client_name.is_empty() {
+                    RespValue::Bulk(None)
+                } else {
+                    RespValue::Bulk(Some(state.client_name.clone()))
+                }
+            }
+            "ID" if args.len() == 2 => RespValue::Integer(state.client_id as i64),
+            "SETINFO" if args.len() == 4 => {
+                match name_arg(&args[2]).to_ascii_uppercase().as_str() {
+                    "LIB-NAME" | "LIB-VER" => RespValue::SimpleString("OK".to_string()),
+                    other => RespValue::Error(format!("ERR Unrecognized option '{other}'")),
+                }
+            }
+            _ => RespValue::Error(
+                "ERR unknown subcommand or wrong number of arguments for 'CLIENT'".to_string(),
+            ),
+        },
         "ZINCRBY" if args.len() == 4 => match parse_score_arg(&args[2]) {
             Ok((increment, false, _)) => match execute(Command::ZSetIncrBy {
                 key: name_arg(&args[1]),
@@ -1934,4 +2051,41 @@ fn interleaved_members_response(members: Vec<Vec<u8>>, withscores: bool) -> Resp
         .map(|value| RespValue::Bulk(Some(value)))
         .collect();
     RespValue::Array(values)
+}
+
+/// Apply a ZRANGEBYSCORE `LIMIT offset count` to interleaved [member, score, ...] pairs.
+fn limit_member_pairs(members: Vec<Vec<u8>>, limit: Option<(i64, i64)>) -> Vec<Vec<u8>> {
+    let Some((offset, count)) = limit else {
+        return members;
+    };
+    if offset < 0 {
+        return Vec::new();
+    }
+    let take = if count < 0 { usize::MAX } else { count as usize };
+    members
+        .chunks(2)
+        .skip(offset as usize)
+        .take(take)
+        .flat_map(|pair| pair.iter().cloned())
+        .collect()
+}
+
+/// Remove every member of an interleaved [member, score, ...] answer; replies the count removed.
+fn remove_zset_members(
+    key: &str,
+    members: Vec<Vec<u8>>,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let mut removed = 0;
+    for pair in members.chunks(2) {
+        match execute(Command::ZSetRemove {
+            key: key.to_string(),
+            member: pair[0].clone(),
+        }) {
+            Ok(CommandResponse::Integer { value }) => removed += value,
+            Ok(_) => return RespValue::Error("ERR invalid zrem response".to_string()),
+            Err(err) => return RespValue::Error(format!("ERR {err}")),
+        }
+    }
+    RespValue::Integer(removed)
 }
