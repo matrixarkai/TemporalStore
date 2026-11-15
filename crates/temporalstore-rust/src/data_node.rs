@@ -423,13 +423,11 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
     );
     metrics.insert(
         "storage_manager_evict_count".to_string(),
-        stats.storage_manager_reclaim_memory_runs,
+        stats.storage_manager_evict_runs,
     );
     metrics.insert(
         "storage_manager_expire_count".to_string(),
-        stats
-            .storage_manager_expire_runs
-            .saturating_add(stats.expiry_sweeps),
+        stats.storage_manager_expire_runs,
     );
     metrics.insert(
         "storage_manager_page_gc_count".to_string(),
