@@ -870,7 +870,7 @@ fn a_shards_round_expires_only_that_shards_keys() {
 #[test]
 fn the_expire_and_evict_counts_are_each_stages_own_runs() {
     let dir = tempfile::tempdir().unwrap();
-    let runtime = seeded_runtime(dir.path(), 10);
+    let runtime = seeded_runtime(dir.path(), 200);
     let options = StorageManagerOptions::default();
     for _ in 0..3 {
         let report = runtime.run_storage_manager_once(1, options.clone());
@@ -890,13 +890,16 @@ fn the_expire_and_evict_counts_are_each_stages_own_runs() {
         ..StorageManagerOptions::default()
     };
     let engine = runtime.engine();
-    let response = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringGet {
-            key: "loop-000000".to_string(),
-        },
-    });
-    assert!(response.status.ok);
+    // Warm the cache the way the sibling test does, or the one-byte bound has nothing to open on.
+    for index in 0..50 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("loop-{index:06}"),
+            },
+        });
+        assert!(response.status.ok);
+    }
     let report = runtime.run_storage_manager_once(1, reclaim_only);
     assert!(
         report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
