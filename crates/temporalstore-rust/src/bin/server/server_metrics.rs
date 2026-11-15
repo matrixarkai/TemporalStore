@@ -114,6 +114,12 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
         "temporalstore_storage_manager_expired_records_total {}\n",
         stats.expired_records_removed
     ));
+    out.push_str("# HELP temporalstore_storage_manager_expiry_overdue_keys Keys whose deadline has passed and that the expire stage has not removed yet.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_expiry_overdue_keys gauge\n");
+    out.push_str(&format!(
+        "temporalstore_storage_manager_expiry_overdue_keys {}\n",
+        runtime.engine().expiry_overdue_keys()
+    ));
     out.push_str("# HELP temporalstore_storage_manager_evict_runs_total Rounds in which the evict stage ran.\n");
     out.push_str("# TYPE temporalstore_storage_manager_evict_runs_total counter\n");
     out.push_str(&format!(
