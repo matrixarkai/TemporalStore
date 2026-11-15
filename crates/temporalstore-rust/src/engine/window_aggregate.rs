@@ -148,14 +148,18 @@ pub(crate) fn feature_stream(name: &str, values: impl Iterator<Item = Option<i64
 
 /// The counter-family query's reduction over `values`. `Avg` is not a counter verb, so it falls
 /// to the sum like every unknown name.
-pub(crate) fn counter_legacy(name: &str, values: &[i64]) -> i64 {
+///
+/// Takes the window as an ITERATOR, so a caller reducing a range of the stored series reduces it
+/// where it sits instead of collecting it into a vector first (8 bytes a point, allocated and
+/// dropped on every query). Each verb reads the window once.
+pub(crate) fn counter_legacy(name: &str, values: impl Iterator<Item = i64>) -> i64 {
     match AggName::parse(name) {
-        Some(AggName::Events) | Some(AggName::Len) => values.len() as i64,
-        Some(AggName::Min) => min_or_zero(values.iter().copied()),
-        Some(AggName::Max) => max_or_zero(values.iter().copied()),
-        Some(AggName::First) => first_or_zero(values.iter().copied()),
-        Some(AggName::Last) => last_or_zero(values.iter().copied()),
-        _ => sum_legacy(values.iter().copied()),
+        Some(AggName::Events) | Some(AggName::Len) => values.count() as i64,
+        Some(AggName::Min) => min_or_zero(values),
+        Some(AggName::Max) => max_or_zero(values),
+        Some(AggName::First) => first_or_zero(values),
+        Some(AggName::Last) => last_or_zero(values),
+        _ => sum_legacy(values),
     }
 }
 
@@ -773,7 +777,7 @@ mod tests {
                     "streaming feature `{name}` round {round} over {raw:?}"
                 );
                 assert_eq!(
-                    counter_legacy(name, &numbers),
+                    counter_legacy(name, numbers.iter().copied()),
                     oracle_counter(&numbers, name),
                     "counter `{name}` round {round} over {numbers:?}"
                 );
@@ -784,7 +788,7 @@ mod tests {
         // disagree on `count`, so a door that collapsed them would fail above.
         assert_eq!(compared, 400 * NAMES.len() * 2);
         assert_eq!(door_feature(&[b"4".to_vec(), b"x".to_vec(), b"5".to_vec()], "count"), 3);
-        assert_eq!(counter_legacy("count", &[4, 5]), 9);
+        assert_eq!(counter_legacy("count", [4i64, 5].into_iter()), 9);
     }
 
     #[test]

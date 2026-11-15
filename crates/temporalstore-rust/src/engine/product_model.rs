@@ -191,7 +191,10 @@ pub(super) fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> 
     super::window_aggregate::feature_legacy(aggregator, values.iter().map(parse_i64), values.len())
 }
 
-pub(super) fn aggregate_control_state_values(values: &[i64], aggregator: &str) -> i64 {
+pub(super) fn aggregate_control_state_values(
+    values: impl Iterator<Item = i64>,
+    aggregator: &str,
+) -> i64 {
     super::window_aggregate::counter_legacy(aggregator, values)
 }
 
@@ -229,6 +232,30 @@ pub(super) fn store_for_write<V>(
             map.insert(std::sync::Arc::from(key), value);
         }
     }
+}
+
+/// A counter series reduced over `[start_ms, end_ms]` by `aggregator`, where it sits in the stored
+/// series. A key with no series reduces the empty window, which is what an empty collected vector
+/// answered.
+pub(super) fn control_state_window_value(
+    shard: &ShardState,
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+    aggregator: &str,
+) -> i64 {
+    aggregate_control_state_values(
+        shard
+            .control_state()
+            .get(key)
+            .into_iter()
+            .flat_map(|series| {
+                series
+                    .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                    .map(|(_, value)| *value)
+            }),
+        aggregator,
+    )
 }
 
 pub(super) fn is_control_state_change_aggregator(aggregator: &str) -> bool {

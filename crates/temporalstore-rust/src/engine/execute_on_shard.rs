@@ -5176,18 +5176,8 @@ pub(crate) fn execute_on_shard(
                     value: control_rollup::windowed_sum(shard, &key, start_ms, end_ms),
                 }
             } else {
-                let values = shard
-                    .control_state()
-                    .get(&key[..])
-                    .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            .map(|(_, value)| *value)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
                 CommandResponse::Integer {
-                    value: aggregate_control_state_values(&values, &aggregator),
+                    value: control_state_window_value(shard, &key, start_ms, end_ms, &aggregator),
                 }
             }
         }
@@ -5270,10 +5260,14 @@ pub(crate) fn execute_on_shard(
                 *counter += amount;
                 *counter
             };
-            let values = series
-                .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                .map(|(_, value)| *value)
-                .collect::<Vec<_>>();
+            // Reduced where it sits. The window is read before `record_counter_result` trims the
+            // series, as the collected copy was, so the answer is the same.
+            let value = aggregate_control_state_values(
+                series
+                    .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                    .map(|(_, value)| *value),
+                &aggregator,
+            );
             record_counter_result(
                 cache,
                 block_store,
@@ -5290,9 +5284,7 @@ pub(crate) fn execute_on_shard(
                 control_rollup::record_increment(shard, &key, timestamp_ms, amount);
             }
             mutated = true;
-            CommandResponse::Integer {
-                value: aggregate_control_state_values(&values, &aggregator),
-            }
+            CommandResponse::Integer { value }
         }
         Command::ControlStateSetAndGetWithOptions {
             family,
@@ -5347,17 +5339,7 @@ pub(crate) fn execute_on_shard(
             let value = if is_control_state_change_aggregator(&aggregator) {
                 count_control_state_changes(shard, &key, start_ms, end_ms)
             } else {
-                let values = shard
-                    .control_state()
-                    .get(&key[..])
-                    .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            .map(|(_, value)| *value)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                aggregate_control_state_values(&values, &aggregator)
+                control_state_window_value(shard, &key, start_ms, end_ms, &aggregator)
             };
             match resulting {
                 Some(resulting) => {
@@ -5437,18 +5419,8 @@ pub(crate) fn execute_on_shard(
                     value: control_rollup::windowed_sum(shard, &key, start_ms, end_ms),
                 }
             } else {
-                let values = shard
-                    .control_state()
-                    .get(&key[..])
-                    .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            .map(|(_, value)| *value)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
                 CommandResponse::Integer {
-                    value: aggregate_control_state_values(&values, &aggregator),
+                    value: control_state_window_value(shard, &key, start_ms, end_ms, &aggregator),
                 }
             }
         }
