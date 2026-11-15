@@ -4199,15 +4199,30 @@ pub(crate) fn execute_on_shard(
                 if !live {
                     shard.forget_retry_ring(&key);
                 } else if appended {
-                    let _ = shard.record_retry_token(
-                        &key,
-                        token,
-                        crate::engine::cell_retry_ring::RetryReceipt {
-                            snapshots_written,
-                            cells_created,
-                            cells_merged,
-                        },
-                    );
+                    let filed = crate::engine::cell_retry_ring::RetryReceipt {
+                        snapshots_written,
+                        cells_created,
+                        cells_merged,
+                    };
+                    // THE ENTRY GOES INTO THE LOG RECORD TOO. The ring lives in the index image,
+                    // which is flushed now and then, so an append that reached only the log is
+                    // replayed from its outcomes and would lose the token a retry needs. The item
+                    // is the entry in the ring's own spelling and replay files it where the
+                    // write did (see the `cell_retry` arm of `apply_outcome_item_inner`). Staged
+                    // only when the ring took the token, so a request without one (or a replay,
+                    // which returned above) records exactly what it always recorded.
+                    if shard.record_retry_token(&key, token, filed).is_ok() {
+                        stage_meta_outcome(
+                            shard_id,
+                            "cell_retry",
+                            &key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            Some(crate::engine::cell_retry_ring::encode_entry(token, &filed)),
+                            None,
+                            false,
+                        );
+                    }
                 }
             }
             let _ = cache.invalidate_record(shard_id, "feature", &key);

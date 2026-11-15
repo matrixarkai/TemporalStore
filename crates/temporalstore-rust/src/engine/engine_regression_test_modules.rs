@@ -531,6 +531,8 @@ mod a_feature_append_merges_cells_by_lane_reducer;
 mod a_retried_merge_append_answers_its_first_receipt;
 #[path = "tests/a_logged_retry_token_is_installed_on_replay.rs"]
 mod a_logged_retry_token_is_installed_on_replay;
+#[path = "tests/a_tokened_append_is_recovered_with_its_token.rs"]
+mod a_tokened_append_is_recovered_with_its_token;
 #[path = "tests/a_ranked_cell_read_is_a_command.rs"]
 mod a_ranked_cell_read_is_a_command;
 #[path = "tests/a_cell_rollup_is_a_command.rs"]
