@@ -5711,9 +5711,11 @@ fn the_periodic_reclaim_quarantines_what_it_collects() {
 /// A slab the periodic loop quarantined is kept for 24 hours, not one.
 ///
 /// The loop passed a grace of 0, which the purge raises to the store's one-hour floor, so a
-/// quarantined slab was destroyed an hour after it was set aside. Both halves are pinned: two hours old and the shipped
-/// loop must still hold it; twenty-five hours old and the same loop must destroy it. The second
-/// half keeps the first from passing because nothing is ever purged.
+/// quarantined slab was destroyed an hour after it was set aside. The bound is pinned from both
+/// sides, just under and just over: at 23 hours old the shipped loop must still hold every
+/// slab, and at 25 hours (the second backdate is cumulative) it must destroy at least one. A
+/// probe at two hours alone would pass a grace of twelve; a probe at twenty-six would pass a
+/// grace of twenty-five.
 #[test]
 fn the_periodic_loop_holds_a_quarantined_slab_for_a_day() {
     const KEYSPACE: usize = 100;
@@ -5758,28 +5760,28 @@ fn the_periodic_loop_holds_a_quarantined_slab_for_a_day() {
     let backdated = runtime
         .engine()
         .block_store()
-        .backdate_delayed_destroy_stamps_for_test(2 * 60 * 60 * 1_000)
+        .backdate_delayed_destroy_stamps_for_test(23 * 60 * 60 * 1_000)
         .expect("backdating the quarantine stamps");
     assert!(backdated > 0, "nothing was backdated");
     runtime.run_storage_manager_once(1, options.clone());
     // A round may quarantine MORE slabs; what it must not do is destroy one of these.
-    let after_two_hours = quarantined(&runtime);
+    let after_23_hours = quarantined(&runtime);
     assert!(
-        before.is_subset(&after_two_hours),
-        "slabs two hours old were destroyed by the loop: the grace is shorter than 24 hours"
+        before.is_subset(&after_23_hours),
+        "slabs 23 hours old were destroyed by the loop: the grace is shorter than 24 hours"
     );
 
     let backdated = runtime
         .engine()
         .block_store()
-        .backdate_delayed_destroy_stamps_for_test(24 * 60 * 60 * 1_000)
+        .backdate_delayed_destroy_stamps_for_test(2 * 60 * 60 * 1_000)
         .expect("backdating the quarantine stamps");
     assert!(backdated > 0, "nothing was backdated");
     runtime.run_storage_manager_once(1, options.clone());
-    let after_a_day = quarantined(&runtime);
+    let after_25_hours = quarantined(&runtime);
     assert!(
-        before.iter().any(|id| !after_a_day.contains(id)),
-        "slabs over 24 hours old were not destroyed: the purge never fires"
+        before.iter().any(|id| !after_25_hours.contains(id)),
+        "slabs 25 hours old were not destroyed: the grace is longer than 24 hours or the purge never fires"
     );
 }
 
