@@ -331,3 +331,55 @@ fn a_rollup_through_the_engine_does_not_allocate_per_cell() {
         "the allocations of a rollup moved with the cell count ({few} at 50, {many} at 400): a per-cell allocation is back"
     );
 }
+
+/// Allocations of each step a merge-reduce plan takes, measured on the pure pieces the planner
+/// calls, for a typical shape (one dimension, one label, two lanes) and 64 cells. The planner runs
+/// twice per write (validation, then execution), so each line is paid twice. A table for choosing
+/// what to remove: the whole write is `the_cell_model_allocation_tables`.
+#[test]
+#[ignore = "measurement: run with --features alloc-probe --ignored"]
+fn the_merge_plan_allocations_by_step() {
+    use crate::engine::cell_set::{
+        check_header, decode_key, decode_request, merge_point, split_value, split_value_raw, Existing, FlatCells,
+    };
+    use std::rc::Rc;
+    let h = header();
+    let key = stored_key(1);
+    let cells64 = cells(64, 1);
+    let value = encode_value(&h, &cells64).unwrap();
+    let request = encode_value(&h, &cells(64, 2)).unwrap();
+    let (head_bytes, packed) = split_value_raw(&value).unwrap();
+    let head_bytes = head_bytes.to_vec();
+    let packed = packed.to_vec();
+    let newest = Rc::new(h.clone());
+    let mut rows: Vec<(&'static str, f64)> = Vec::new();
+    fn step(rows: &mut Vec<(&'static str, f64)>, name: &'static str, mut op: impl FnMut()) {
+        op();
+        let probe = Probe::start();
+        for _ in 0..20 {
+            op();
+        }
+        rows.push((name, probe.stop().allocs as f64 / 20.0));
+    }
+    step(&mut rows, "split_value_raw", || drop(split_value_raw(&value).unwrap()));
+    step(&mut rows, "CellHeader::decode", || drop(CellHeader::decode(&head_bytes).unwrap()));
+    step(&mut rows, "split_value (header decode)", || drop(split_value(&value).unwrap()));
+    step(&mut rows, "CellHeader::clone", || drop(h.clone()));
+    step(&mut rows, "CellHeader::encode", || drop(h.encode().unwrap()));
+    step(&mut rows, "check_header equal", || drop(check_header(&h, &h).unwrap()));
+    step(&mut rows, "decode_key", || drop(decode_key(&h.key, &key).unwrap()));
+    step(&mut rows, "FlatCells::decode stored", || drop(FlatCells::decode(&h, &packed, 64).unwrap()));
+    step(&mut rows, "decode_request (header + cells)", || drop(decode_request(&request).unwrap()));
+    step(&mut rows, "merge_point stored (whole)", || {
+        let existing = Existing::Stored { header: &h, snapshot: &packed };
+        drop(merge_point(Some(&newest), existing, &request).unwrap())
+    });
+    let merged = {
+        let existing = Existing::Stored { header: &h, snapshot: &packed };
+        merge_point(Some(&newest), existing, &request).unwrap().1
+    };
+    step(&mut rows, "FlatCells::encode_value", || drop(merged.encode_value(&h).unwrap()));
+    for (name, allocs) in rows {
+        eprintln!("PLANSTEP {name:<36} allocs={allocs:.1}");
+    }
+}
