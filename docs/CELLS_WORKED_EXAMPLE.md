@@ -76,6 +76,34 @@ same request gives the same bytes; after a snapshot at 1 300 arrives the same ag
 cutoffs (1 200 and 800) and the key settles at six snapshots. With a `truncate` of the newest 4,
 the seven become 800, 1 000, 1 100 and 1 200.
 
+## Rolling up in tiers
+
+One bucket width is a blunt tool for a long history: hourly buckets are too coarse for yesterday and
+too fine for last year. The rollup fold accepts an ordered list of **tiers**, finest first, each an
+`older_than` cutoff and a `bucket_ms`. A snapshot takes the bucket width of the coarsest tier whose
+cutoff is above its stamp. With two tiers, "older than a day, hourly" and "older than 30 days, daily",
+a snapshot from last week folds into its hour, one from last year folds into its day, and one from the
+last day is left alone.
+
+* **Order and widths.** A coarser tier reaches further back, and each width is a multiple of the width
+  before it, so the output stays ascending. A tier's cutoff is aligned down to a multiple of the finer
+  width, so a bucket never straddles a boundary and rolling the result again changes nothing.
+* **Catch-all.** A last tier whose width is `u64::MAX` folds everything older than its cutoff into ONE
+  snapshot stored at stamp 0.
+* **No clock.** An `older_than` can be an absolute stamp or an age resolved against the newest stamp
+  the key holds (saturating at 0), so a leader, a follower and a replay resolve the same cutoffs.
+* **Bounds.** At most 8 coarser tiers; at most 1 024 snapshots below the first cutoff in one request,
+  whatever the tiers.
+* **Extra controls.** A truncation (keep the newest N snapshots, acting only above a trigger) and cap
+  controls (`protect_newest_ppm` keeps that share of `keep` for the most recently seen members; a group
+  is cut only once it exceeds `keep + trigger_over`).
+
+A request that names none of these is the single-tier rollup byte for byte; the command takes the
+tiers, the age form, the truncation and the cap controls directly (the command is shown in the section
+above).
+`a_tiered_rollup_equals_an_independent_fold_with_a_bucket_per_tier`, in
+`crates/temporalstore-rust/src/engine/cell_rollup_tier_tests.rs`, is the runnable check.
+
 ## Retrying a merge append
 
 A merge-reduce append counts its `Sum` and `Count` lanes again when it is sent twice, so a client
@@ -108,6 +136,23 @@ store.
   merged again would read "merged". A request without a token is applied every time, as before.
 
 A replay still reaches the log as a small record that changes nothing when applied.
+
+```rust
+// First send: lands, and answers what it created and merged.
+let append = Command::FeatureAppendWithPolicy {
+    key: key.to_string(),
+    points: vec![FeaturePoint { timestamp_ms: 100, value: encode_value(&header(), &cells).unwrap() }],
+    policy: FeatureWritePolicy::MergeReduce,
+    retry_token: Some(7001),
+};
+// The answer was lost, so the client sends the very same command again: it answers the same
+// receipt with `replayed` set, and the lanes are not summed a second time.
+```
+
+`a_repeated_token_answers_the_first_receipt_and_writes_nothing` and
+`the_ring_holds_sixteen_through_the_engine_and_the_seventeenth_token_evicts_the_first`, in
+`crates/temporalstore-rust/src/engine/tests/a_retried_merge_append_answers_its_first_receipt.rs`, run
+both claims through the engine.
 
 
 ## Narrowing a ranked read: members, anchor, quota, decay
@@ -157,6 +202,21 @@ answer is 1, 2, 3, 6.
 300 is `[101, 400]`, three; 301 reaches the snapshot at 100. The same `Last` of 100 on the request
 clock, read long after the writes, is empty.
 
+`a_member_set_changes_the_answer_exactly_as_an_independent_fold_says` stores four snapshots of four
+members under the lanes `shown` (summed) and `peak` (maximum) and reads every combination of include
+and exclude set (256 reads) against a fold written in the test. Ranked by `shown` the members total
+m1 30, m2 60, m3 200 and m4 10. Include `{m1, m2}` with a predicate `peak > 4` keeps only the stored
+cells whose `peak` is above 4 before anything is reduced, so m2 reads 30 and m1 20, and the answer is
+m2 then m1.
+
+`a_decay_score_answers_its_hand_computed_value_live_and_after_a_restart` ranks the same four
+snapshots (stamped 100, 200, 300 and 400) by `Decay` of `shown` with a half-life of 100 ms. The age is
+measured from the newest snapshot in the window, 400, so the snapshot at 400 weighs 1, the one at 300
+weighs 1/2, at 200 1/4 and at 100 1/8. m3 stored 100 at 100 and 100 at 300 and scores 12.5 + 50 = 62.5;
+m2 stored 20, 30 and 10 (at 100, 200 and 400) and scores 2.5 + 7.5 + 10 = 20; m1 scores 8.75 and m4 4.
+The plain sum ranks 3, 2, 1, 4 as well here, but on `peak` (a maximum lane) the decay of the values each
+snapshot stored puts m2 first with 9.625, where the lane's own maximum puts m1 first.
+
 On the wire (JSON), a read that uses them looks like this; the three keys appear only when set:
 
 ```json
@@ -199,10 +259,21 @@ read over a bound (top-k, window, predicates) refuses the whole batch at admissi
 read's position, before any key is read. As with the fan-in read, the keys are read on the shard the
 request names.
 
+```rust
+// One user, one channel dimension: the best items over email, push and feed together.
+Command::CellFanInRankQuery { keys: vec![email_key, push_key, feed_key], spec }
+```
+
 `crates/temporalstore-rust/src/engine/tests/a_ranked_read_over_several_cell_keys.rs` is the runnable
 example: one user, a `channel` dimension in the key, three channels and six snapshots, ranked by a
 summed lane and by a maximum lane, checked equal to a single key that holds the same six snapshots,
 and then read again after a restart.
+
+## On the wire
+
+The messages that carry these reads and writes (add, restore, ranked read, merged read, batch, the
+member set, anchor, quota, decay mode and the retry token) are described in
+[Cells protocol](CELLS_PROTOCOL.md).
 
 ## Not included
 
