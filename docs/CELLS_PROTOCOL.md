@@ -91,7 +91,7 @@ in both is excluded. A member list that holds anything counts as present even wh
 left off; a flagged, empty include set is refused (a caller that lost its list would otherwise read
 nothing and not know it). An absent include set restricts nothing. Each side holds at most 1024
 entries as sent, duplicates included. Members are 64 bit ids; the sets are applied to a cell before
-that member's snapshots are reduced. The selector's `MEMBERS_ONLY` mode is still not translated.
+that member's snapshots are reduced.
 
 **Anchored windows.** `TRAILING_FROM_NEWEST` and `TRAILING_FROM_NEWEST_OF_KIND` are the trailing
 `span` ending at the newest snapshot the key holds, so a key whose writes stopped reads the same
@@ -112,6 +112,11 @@ reserved total (every lane count plus `others`) is within the top-k cap of 1000.
 > as documented so existing senders read the same; it is pinned by
 > `a_quota_whose_wire_counts_sum_to_500_reserves_1000_and_one_more_is_refused` and is for the owner of
 > the wire shape to decide, not something this layer changes silently.
+
+**Members only.** `MEMBERS_ONLY` answers exactly the members of `members` (at least one, at most
+1000) and ignores `limit`: the read asks for as many rows as the set holds, one row per member that
+holds a snapshot in the window, newest first (by the stamp of its newest snapshot, equal stamps by
+member, smaller first). The selector's label is still an equality predicate, as for every read.
 
 **Decayed lane.** `DECAYED_LANE` (a new enum value; the fields are the existing ones) ranks members by
 the lane at `sort_lane` (the first when absent), each stored value halved for every `decay`
@@ -176,5 +181,6 @@ number it is refused there.
 
 ## Owned elsewhere
 
-Rolling old snapshots up in tiers is built by its own change and is not translated here; `RECENT`,
-`MATCH_LANE`, `MEMBERS_ONLY`, `NEWEST_ROWS`, `REMOVE` and `DELETE` have no command to map to yet.
+Rolling old snapshots up in tiers is built by its own change and is not translated here; `RECENT`, `MATCH_LANE`
+(which answer the stored cells, one row each and not reduced per member), `NEWEST_ROWS`, `REMOVE` and
+`DELETE` have no command to map to yet.

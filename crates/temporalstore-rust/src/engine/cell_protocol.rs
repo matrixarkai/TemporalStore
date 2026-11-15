@@ -23,9 +23,10 @@
 //!
 //! # WHAT IS NOT TRANSLATED YET
 //!
-//! Rank modes and windows that the ranked read cannot express today (`RECENT`, `MATCH_LANE`,
-//! `MEMBERS_ONLY` and the newest-rows window) are refused with a message that says so. `REMOVE` and
-//! `DELETE` have no command to map to here.
+//! Rank modes and windows that the ranked read cannot express today (`RECENT`, `MATCH_LANE`, which
+//! answer stored cells one row each rather than members, and the newest-rows window) are refused
+//! with a message that says so. `REMOVE` and `DELETE` have no command to map to here.
+//! `MEMBERS_ONLY` reads exactly the include set, ordered by time.
 
 use super::cell_fan_in;
 use super::cell_rank;
@@ -663,6 +664,11 @@ fn score_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<Cel
             let at = if selector.has_sort_lane { selector.sort_lane } else { 0 };
             CellScore::Decay { lane: lane_name(profile, at, "sort lane")?, half_life_ms: half_life_of(selector)? }
         }
+        // A members-only read selects members rather than ranking them, so it comes back newest
+        // first: the stamp of each member's newest snapshot in the window, equal stamps by member.
+        Mode::MembersOnly => CellScore::Time,
+        // These two answer the stored cells newest first, one row per cell and NOT reduced per
+        // member, which the ranked read has no option for.
         other => {
             return Err(invalid(format!(
                 "rank mode {other:?} is not translated yet: it needs a read-side option that is not built"
@@ -700,11 +706,24 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::CellQuery) -
     let quota = quota_of(profile, selector)?;
     let members = member_filter_of(selector);
     let limit = selector.limit;
-    let top_k = usize::try_from(limit)
-        .ok()
-        .filter(|k| *k > 0)
-        .ok_or_else(|| invalid(format!("limit {limit} must be positive")))?;
-    within_nonzero("limit", top_k, MAX_TOP_K).map_err(invalid)?;
+    let top_k = if selector.mode() == wire::RankMode::MembersOnly {
+        // A members-only read answers exactly the members it names, so its limit is ignored: the
+        // read asks for as many as the include set holds.
+        match members.include.as_ref().filter(|set| !set.is_empty()) {
+            Some(set) => {
+                within_nonzero("members in a members-only read", set.len(), MAX_TOP_K).map_err(invalid)?;
+                set.len()
+            }
+            None => return Err(invalid("a members-only read needs the members to read")),
+        }
+    } else {
+        let top_k = usize::try_from(limit)
+            .ok()
+            .filter(|k| *k > 0)
+            .ok_or_else(|| invalid(format!("limit {limit} must be positive")))?;
+        within_nonzero("limit", top_k, MAX_TOP_K).map_err(invalid)?;
+        top_k
+    };
     let mut filters = Vec::new();
     match profile.labels.first() {
         Some(name) => filters.push(FeatureFilter {
