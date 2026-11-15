@@ -19,7 +19,7 @@ fn xorshift(state: &mut u64) -> u64 {
     *state
 }
 
-/// Five labels and six lanes: more than the four a small vector holds without growing, so a
+/// Four labels (the most a cell holds) and six lanes: more lanes than the four a small vector holds without growing, so a
 /// decode that grows its vectors and one that does not both come out the same here.
 fn wide_header() -> CellHeader {
     use LaneReducer::*;
@@ -30,7 +30,7 @@ fn wide_header() -> CellHeader {
             entity: EntityType::U64,
             dimensions: vec![DimSpec { name: "channel".to_string(), ty: DimType::U16, required: true }],
         },
-        labels: (0..5).map(|i| format!("g{i}")).collect(),
+        labels: (0..4).map(|i| format!("g{i}")).collect(),
         lanes: [("a", Sum), ("b", Max), ("c", Min), ("d", First), ("e", Last), ("f", Count)]
             .into_iter()
             .map(|(name, reducer)| LaneSpec { name: name.to_string(), reducer })
@@ -45,14 +45,14 @@ fn random_snapshots(state: &mut u64, count: usize) -> Vec<(u64, Vec<Cell>)> {
         let mut cells: Vec<Cell> = Vec::new();
         for m in 0..48u64 {
             if xorshift(state) % 3 != 0 {
-                let labels = (0..5).map(|_| xorshift(state) % 6).collect();
+                let labels = (0..4).map(|_| xorshift(state) % 6).collect();
                 let lanes = (0..6).map(|_| (xorshift(state) % 41) as i64 - 8).collect();
                 cells.push(Cell { member: Member::U64(m), labels, lanes });
             }
         }
         for tag in [&b"aa"[..], &b"zz"[..], &b"zzz"[..]] {
             if xorshift(state) % 2 == 0 {
-                let labels = (0..5).map(|_| xorshift(state) % 6).collect();
+                let labels = (0..4).map(|_| xorshift(state) % 6).collect();
                 let lanes = (0..6).map(|_| (xorshift(state) % 41) as i64 - 8).collect();
                 cells.push(Cell { member: Member::Bytes(tag.to_vec()), labels, lanes });
             }
@@ -186,8 +186,8 @@ fn a_fan_in_over_flat_snapshots_answers_what_a_fan_in_over_plain_snapshots_answe
 fn a_flat_snapshot_out_of_order_is_refused_as_a_plain_one_is() {
     let header = wide_header();
     let unordered = vec![
-        Cell { member: Member::U64(5), labels: vec![0; 5], lanes: vec![1; 6] },
-        Cell { member: Member::U64(2), labels: vec![0; 5], lanes: vec![1; 6] },
+        Cell { member: Member::U64(5), labels: vec![0; 4], lanes: vec![1; 6] },
+        Cell { member: Member::U64(2), labels: vec![0; 4], lanes: vec![1; 6] },
     ];
     let (plain, flat) = decoded_both(&header, &[(100, unordered)]);
     let spec = CellRankSpec::new(CellWindow::Between { start_ms: 0, end_ms: u64::MAX }, CellScore::Member, 5);
