@@ -884,8 +884,11 @@ fn the_expire_and_evict_counts_are_each_stages_own_runs() {
 
     // The evict count moves only on evict: a round with eviction off and the cache bound set runs
     // reclaim_memory and must leave it where it was.
+    // Eviction has two gates: `enable_evict` and the per-shard index bound, which opens the stage
+    // on its own. Both are off here, or the evict stage runs and its count legitimately moves.
     let reclaim_only = StorageManagerOptions {
         enable_evict: false,
+        index_resident_limit_bytes: 0,
         cache_memory_bytes_pressure: 1,
         ..StorageManagerOptions::default()
     };
