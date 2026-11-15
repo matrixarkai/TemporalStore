@@ -348,7 +348,7 @@ jobs:
             engine::tests::a_retried_merge_append_answers_its_first_receipt::a_token_survives_a_crash_and_a_storage_cycle_that_reclaimed_the_log \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::an_append_without_a_token_stores_what_it_always_stored \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::an_image_that_holds_rings_cannot_be_read_by_a_binary_that_does_not_know_them \
-            engine::tests::a_retried_merge_append_answers_its_first_receipt::replaying_the_log_files_the_tokens_and_answers_a_retry_as_the_live_engine_would \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_replayed_log_tail_reaches_the_live_series_bytes_and_leaves_the_flushed_ring_alone \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::the_ring_holds_sixteen_through_the_engine_and_the_seventeenth_token_evicts_the_first \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::the_token_rides_the_command_bytes_and_a_tokenless_command_is_unchanged_on_every_wire \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::two_engines_given_the_same_requests_hold_the_same_bytes \

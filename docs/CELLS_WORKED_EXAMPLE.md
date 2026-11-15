@@ -152,8 +152,14 @@ let append = Command::FeatureAppendWithPolicy {
 `a_repeated_token_answers_the_first_receipt_and_writes_nothing` and
 `the_ring_holds_sixteen_through_the_engine_and_the_seventeenth_token_evicts_the_first`, in
 `crates/temporalstore-rust/src/engine/tests/a_retried_merge_append_answers_its_first_receipt.rs`, run
-both claims through the engine, and `replaying_the_log_files_the_tokens_and_answers_a_retry_as_the_live_engine_would`
-restarts an engine whose only copy of three appends is its log and shows the replay rebuilding the ring.
+both claims through the engine, and `a_replayed_log_tail_reaches_the_live_series_bytes_and_leaves_the_flushed_ring_alone`
+restarts an engine whose last write lives only in its log: the replay reaches the live bytes and the ring
+that was flushed with the index still answers a retry as a replay.
+
+> **Known limit.** A tokened append written after the last flush of the index and lost to a crash is
+> recovered from the log as its recorded points, not by running the command again, so its token is not
+> filed: a retry of exactly that request after such a crash is applied a second time. A token whose append
+> was flushed with the index is not affected.
 
 **From a client and through the proxy.** The Rust client sends a token with
 `feature_merge_cells_with_token(key, points, token)` and gets back a `CellMergeSummary`
