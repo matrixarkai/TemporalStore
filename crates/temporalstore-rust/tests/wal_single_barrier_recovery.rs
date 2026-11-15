@@ -203,6 +203,10 @@ fn single_barrier_non_idempotent_counter_applies_exactly_once() {
 
 #[test]
 fn single_barrier_full_block_loss_no_dump_rebuilds_from_wal() {
+    // Asserts an artefact of the two-copy placement (a block segment on disk, a per-write index-log
+    // delta, an advancing index-log sequence). The single-copy placement has none of them by design,
+    // and has its own crash tests in `engine/tests/sync_value_once.rs`.
+    std::env::set_var("TS_SYNC_VALUE_ONCE", "0");
     // No dump: every data block is un-synced. Wipe all non-WAL state (blocks + served index + delta);
     // only the fsync'd WAL survives. Base-only replay from 0 rebuilds all 300 keys.
     let dir = tempfile::tempdir().unwrap();
@@ -283,6 +287,10 @@ fn deferred_indexlog_loss_never_drops_an_ack_without_a_dump() {
 
 #[test]
 fn wal_is_self_sufficient_when_all_non_wal_state_is_wiped() {
+    // Asserts an artefact of the two-copy placement (a block segment on disk, a per-write index-log
+    // delta, an advancing index-log sequence). The single-copy placement has none of them by design,
+    // and has its own crash tests in `engine/tests/sync_value_once.rs`.
+    std::env::set_var("TS_SYNC_VALUE_ONCE", "0");
     // Strongest stress (beyond what the mode actually defers): drop the blocks AND the served index
     // AND the delta log; only the fsync'd WAL remains. The WAL embeds the full command payload, so
     // replay rebuilds every acked write from scratch.
