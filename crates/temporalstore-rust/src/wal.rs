@@ -8994,6 +8994,8 @@ mod tests {
         ("ListRange", std::mem::size_of::<(String, i64, i64)>()),
         ("ListLen", std::mem::size_of::<(String)>()),
         ("SetMembers", std::mem::size_of::<(String)>()),
+        ("SetCard", std::mem::size_of::<(String)>()),
+        ("SetIsMember", std::mem::size_of::<(String, Vec<u8>)>()),
         ("SetRemove", std::mem::size_of::<(String, Vec<u8>)>()),
         ("FeatureAppend", std::mem::size_of::<(String, Vec<FeaturePoint>)>()),
         ("FeatureAppendWithPolicy", std::mem::size_of::<(String, Vec<FeaturePoint>, FeatureWritePolicy, Option<u64>)>()),

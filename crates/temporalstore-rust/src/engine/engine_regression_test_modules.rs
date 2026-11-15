@@ -546,3 +546,5 @@ mod the_undumped_byte_figure_survives_one_claimless_bucket;
 mod a_ranked_read_over_several_cell_keys;
 #[path = "tests/a_string_increment_and_append_are_one_step.rs"]
 mod a_string_increment_and_append_are_one_step;
+#[path = "tests/a_set_length_and_membership_read_the_member_map.rs"]
+mod a_set_length_and_membership_read_the_member_map;

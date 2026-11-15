@@ -1904,6 +1904,18 @@ pub enum Command {
     SetMembers {
         key: String,
     },
+    /// How many members the set holds, as an integer. The listing builds and clones every member
+    /// to be counted; this reads the length of the map the members already live in.
+    SetCard {
+        key: String,
+    },
+    /// Whether one member is in the set, as an integer 1 or 0. A lookup in the ordered member map,
+    /// not a scan of a listing.
+    SetIsMember {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+    },
     /// Return at most `limit` members in byte order, strictly after `after`.
     SetScan {
         key: String,
