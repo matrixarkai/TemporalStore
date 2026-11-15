@@ -113,24 +113,34 @@ mod probe {
                 key: "o".to_string(), member: member(j), left: true })),
         ];
         let mut checked = 0usize;
+        // Every case is measured before any failure is reported, so one run names every arm that
+        // regressed rather than the first.
+        let mut problems: Vec<String> = Vec::new();
         for (name, kind, ceiling, op) in &cases {
             let small = per_op(kind, SMALL, op.as_ref());
             let large = per_op(kind, LARGE, op.as_ref());
             println!("{name}: {small:.2} at {SMALL} elements, {large:.2} at {LARGE}");
             // One allocation of growth over 1,008 more elements is already a per-element term in
             // the making; the slack covers only measurement drift.
-            assert!(
-                large - small < 3.0,
-                "{name} cost {small:.2} allocations at {SMALL} elements and {large:.2} at {LARGE}: \
-                 it pays for the elements the container already had"
-            );
-            assert!(
-                small <= *ceiling && large <= *ceiling,
-                "{name} cost {small:.2} / {large:.2} allocations against a ceiling of {ceiling}"
-            );
-            assert!(small > 20.0, "{name} measured {small:.2}: the write did not run the path it prices");
+            if large - small >= 3.0 {
+                problems.push(format!(
+                    "{name} cost {small:.2} allocations at {SMALL} elements and {large:.2} at                      {LARGE}: it pays for the elements the container already had"
+                ));
+            }
+            if small > *ceiling || large > *ceiling {
+                problems.push(format!(
+                    "{name} cost {small:.2} / {large:.2} allocations against a ceiling of {ceiling}"
+                ));
+            }
+            if small <= 20.0 {
+                problems.push(format!(
+                    "{name} measured {small:.2}: the write did not run the path it prices"
+                ));
+            }
             checked += 1;
         }
+        assert!(problems.is_empty(), "{}", problems.join("
+"));
         assert_eq!(checked, 6);
     }
 }
