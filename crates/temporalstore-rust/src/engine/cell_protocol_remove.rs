@@ -23,7 +23,7 @@
 //! Every translated spec also passes the engine's own admission ([`cell_remove::validate_spec`]),
 //! so a request the translator accepts is one the command accepts.
 
-use super::cell_remove;
+use crate::engine::cell_remove;
 use super::cell_set::{within, EntityValue};
 use super::{invalid, key_of, entity_of, wire, CellStatusCode, Refusal, TableProfile, MAX_MEMBER_LIST};
 use crate::types::{
