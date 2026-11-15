@@ -69,6 +69,43 @@ impl TemporalStoreTable {
         }
     }
 
+    /// The same append, sent so that sending it again is safe: a key that already applied
+    /// `retry_token` answers the first application's counts with `replayed` set and writes
+    /// nothing, so a client that lost the answer can resend without summing a lane twice. A key
+    /// remembers its last 16 tokens; zero is a token like any other.
+    pub fn feature_merge_cells_with_token(
+        &self,
+        key: impl Into<String>,
+        points: Vec<FeaturePoint>,
+        retry_token: u64,
+    ) -> Result<crate::types::CellMergeSummary, ClientError> {
+        match self
+            .execute(Command::FeatureAppendWithPolicy {
+                key: key.into(),
+                points,
+                policy: FeatureWritePolicy::MergeReduce,
+                retry_token: Some(retry_token),
+            })?
+            .response
+        {
+            CommandResponse::CellMergeReceipt {
+                snapshots_written,
+                cells_created,
+                cells_merged,
+                replayed,
+            } => Ok(crate::types::CellMergeSummary {
+                snapshots_written,
+                cells_created,
+                cells_merged,
+                replayed,
+            }),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "feature_merge_cells_with_token",
+                response,
+            }),
+        }
+    }
+
     pub fn feature_query(
         &self,
         key: impl Into<String>,

@@ -152,7 +152,17 @@ let append = Command::FeatureAppendWithPolicy {
 `a_repeated_token_answers_the_first_receipt_and_writes_nothing` and
 `the_ring_holds_sixteen_through_the_engine_and_the_seventeenth_token_evicts_the_first`, in
 `crates/temporalstore-rust/src/engine/tests/a_retried_merge_append_answers_its_first_receipt.rs`, run
-both claims through the engine.
+both claims through the engine, and `replaying_the_log_files_the_tokens_and_answers_a_retry_as_the_live_engine_would`
+restarts an engine whose only copy of three appends is its log and shows the replay rebuilding the ring.
+
+**From a client and through the proxy.** The Rust client sends a token with
+`feature_merge_cells_with_token(key, points, token)` and gets back a `CellMergeSummary`
+(`snapshots_written`, `cells_created`, `cells_merged`, `replayed`); `feature_merge_cells` is the same
+append with no token. The proxy's `/ProxyService/FeatureAdd` takes `"policy":"merge_reduce"` and an
+optional `"retry_token"` (a number, zero included), and its answer carries `"replayed":true` on a
+replay, the field being left out otherwise. A `retry_token` with no policy is refused with a 400 rather
+than dropped, because the plain append has nowhere to put it. The Redis text protocol has no way to name a
+token, so a request through it is always the tokenless one.
 
 
 ## Narrowing a ranked read: members, anchor, quota, decay

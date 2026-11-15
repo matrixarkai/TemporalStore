@@ -494,6 +494,57 @@ fn a_replay_is_admitted_before_the_request_is_checked_against_the_key() {
 }
 
 #[test]
+fn replaying_the_log_files_the_tokens_and_answers_a_retry_as_the_live_engine_would() {
+    // Async storage defers the blocks and the index image: after a restart with nothing flushed,
+    // the LOG is the only thing that holds the three writes, and it holds them as commands that
+    // carry their tokens. Replaying them has to rebuild the ring as well as the series.
+    let dir = tempfile::tempdir().unwrap();
+    let restart_on = |cache: &str| {
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            dir.path().join(cache),
+            dir.path().join("blocks"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine
+    };
+    let live = restart_on("cache");
+    assert!(
+        live.set_config(crate::control::SetConfigRequest {
+            shard_id: 1,
+            config: crate::control::Config {
+                version: 2,
+                async_storage: true,
+                feature_max_size: 5_000,
+                ..Default::default()
+            },
+        })
+        .ok,
+        "the log has to be the only holder of the writes"
+    );
+    let key = key_for(12);
+    assert_eq!((1, 1, 0, false), receipt(&send(&live, &key, vec![adds(3)], Some(1))));
+    assert_eq!((1, 0, 1, false), receipt(&send(&live, &key, vec![adds(4)], Some(2))));
+    assert!(send(&live, &key, vec![adds(2)], None).status.ok);
+    let (series, ring, summed) = (raw_series(&live, &key), ring_bytes(&live, &key), lanes(&live, &key));
+    assert_eq!(vec![9, 3], summed, "DENOMINATOR: the three requests summed once each");
+    assert!(live.write_ahead_log_store().stats(1).writes >= 3, "the log did not hold the writes");
+    drop(live);
+
+    let replayed = restart_on("cache-b");
+    assert_eq!(series, raw_series(&replayed, &key), "the log replay reached other bytes");
+    assert_eq!(ring, ring_bytes(&replayed, &key), "the log replay did not rebuild the ring");
+    assert_eq!(Some(vec![1, 2]), ring_tokens(&replayed, &key));
+    // A re-merge would answer (1, 0, 1): the cell exists. Only the first application's stored
+    // receipt says "created", and only the replay path sets the flag.
+    assert_eq!((1, 1, 0, true), receipt(&send(&replayed, &key, vec![adds(3)], Some(1))));
+    assert_eq!((1, 0, 1, true), receipt(&send(&replayed, &key, vec![adds(4)], Some(2))));
+    assert_eq!(summed, lanes(&replayed, &key), "a retry after the replay was summed again");
+    assert_eq!(series, raw_series(&replayed, &key));
+}
+
+#[test]
 fn an_image_that_holds_rings_cannot_be_read_by_a_binary_that_does_not_know_them() {
     // The stamp is what refuses it: an older binary skips a side-table domain it does not declare,
     // so without a step it would load the image, drop every ring and write it back.

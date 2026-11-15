@@ -348,10 +348,13 @@ jobs:
             engine::tests::a_retried_merge_append_answers_its_first_receipt::a_token_survives_a_crash_and_a_storage_cycle_that_reclaimed_the_log \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::an_append_without_a_token_stores_what_it_always_stored \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::an_image_that_holds_rings_cannot_be_read_by_a_binary_that_does_not_know_them \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::replaying_the_log_files_the_tokens_and_answers_a_retry_as_the_live_engine_would \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::the_ring_holds_sixteen_through_the_engine_and_the_seventeenth_token_evicts_the_first \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::the_token_rides_the_command_bytes_and_a_tokenless_command_is_unchanged_on_every_wire \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::two_engines_given_the_same_requests_hold_the_same_bytes \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::two_tokens_interleaved_and_one_token_twice_apart_apply_once_each \
+            client::tests::part3::a_merge_append_sends_its_retry_token_and_reports_a_replayed_receipt \
+            proxy::tests::a_feature_add_request_carries_its_retry_token_into_the_command \
             engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_element_name \
             engine::tests::the_side_table_codec_resolves_shape_from_spelling::every_side_table_domain_round_trips_as_its_own_shape \
             engine::tests::the_side_table_codec_resolves_shape_from_spelling::the_seven_spellings_are_distinct_and_the_six_old_ones_are_unchanged \
