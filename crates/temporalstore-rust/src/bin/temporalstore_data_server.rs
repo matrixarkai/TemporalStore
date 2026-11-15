@@ -97,7 +97,13 @@ struct BlobReceipt {
 }
 
 fn main() {
+    // Before telemetry and before any thread that allocates: the cap only governs arenas created
+    // after it, and the server's resident memory otherwise drifts up with every write.
+    let arena_cap = temporalstore_rust::memory_trim::cap_malloc_arenas();
     temporalstore_rust::telemetry::init();
+    if let Some(arenas) = arena_cap {
+        tracing::info!(arena_max = arenas, "capped malloc arenas (TS_MALLOC_ARENA_MAX overrides; MALLOC_ARENA_MAX wins)");
+    }
     let addr = temporalstore_rust::env_flag::env_value("TS_SERVER_BIND_ADDR")
         .or_else(|| temporalstore_rust::env_flag::env_value("TS_SERVER_ADDR"))
         .unwrap_or_else(|| "127.0.0.1:17002".to_string());
