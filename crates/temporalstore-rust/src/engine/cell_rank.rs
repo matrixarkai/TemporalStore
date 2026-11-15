@@ -172,6 +172,8 @@ pub(crate) struct Plan {
     quota: Option<CompiledQuota>,
     predicates: Vec<Predicate>,
     scorer: Scorer,
+    /// The read answers stored cells, newest snapshot first ([`CellScore::Recent`]).
+    recent: bool,
     top_k: usize,
     lane_count: usize,
     label_count: usize,
@@ -247,7 +249,17 @@ pub(crate) fn validate_spec(spec: &CellRankSpec) -> Result<(), String> {
         _ => {}
     }
     validate_options(&spec.window, &RankOptions::of(spec))?;
+    check_recent(&spec.score, &spec.quota)?;
     validate_score(&spec.score)
+}
+
+/// A `Recent` read answers stored cells, and a quota chooses among reduced members: the two
+/// cannot be asked together.
+fn check_recent(score: &CellScore, quota: &crate::types::CellQuota) -> Result<(), String> {
+    if matches!(score, CellScore::Recent) && !quota.is_none() {
+        return Err("a recent read returns stored cells and takes no quota".to_string());
+    }
+    Ok(())
 }
 
 /// The checks on a score that need no header.
@@ -298,6 +310,9 @@ impl Scorer {
                 Scorer::Weighted(indexes, weights.clone())
             }
             CellScore::Decay { lane, half_life_ms } => Scorer::Decay(lane_named(header, lane)?, *half_life_ms),
+            CellScore::Recent => {
+                return Err("`recent` returns stored cells, not members, and is not a score a cap can use".to_string())
+            }
         })
     }
 }
@@ -313,6 +328,8 @@ impl Plan {
     pub(crate) fn compile_with(header: &CellHeader, spec: &CellRankSpec, options: &RankOptions) -> Result<Plan, String> {
         validate_spec(spec)?;
         validate_options(&spec.window, options)?;
+        check_recent(&spec.score, &options.quota)?;
+        let recent = matches!(spec.score, CellScore::Recent);
         let members = CompiledMembers::compile(&options.members)?;
         let quota = if options.quota.is_none() {
             None
@@ -328,7 +345,8 @@ impl Plan {
 
         let predicates = compile_predicates(header, &spec.filters)?;
 
-        let scorer = Scorer::compile(header, &spec.score)?;
+        // A recent read has no ordering value: its rows come newest first, which `run_recent` walks.
+        let scorer = if recent { Scorer::Time } else { Scorer::compile(header, &spec.score)? };
 
         let (mut labels_out, mut lanes_out) = (Vec::new(), Vec::new());
         if spec.project.is_empty() {
@@ -354,6 +372,7 @@ impl Plan {
             quota,
             predicates,
             scorer,
+            recent,
             top_k: spec.top_k,
             lane_count: header.lanes.len(),
             label_count: header.labels.len(),
@@ -620,6 +639,42 @@ impl Plan {
         Ok(())
     }
 
+    /// The rows of a [`CellScore::Recent`] read: the stored cells of `chosen` that pass the member
+    /// set and every predicate, the newest snapshot first, each snapshot's cells by member, until
+    /// `top_k` rows are held. No cell is reduced with another, so a member written in three
+    /// snapshots is three rows. Where two snapshots share a stamp the later one in `chosen` goes
+    /// first (it is the one a reduction would combine last). The walk stops at `top_k`, so the work
+    /// is bounded by the window and by the rows asked for.
+    fn run_recent<'a, V: SnapshotRead<'a>>(&self, chosen: &[V]) -> Result<RankedCells, String> {
+        let mut rows = Vec::with_capacity(self.top_k.min(chosen.iter().map(|s| s.cell_count()).sum::<usize>()));
+        'newest: for snapshot in chosen.iter().rev() {
+            let mut at = 0usize;
+            while self.settle(snapshot, &mut at)?.is_some() {
+                let cell = snapshot.cell(at);
+                rows.push(RankedCellRow {
+                    member: member_id(cell.member),
+                    score: snapshot.stamp() as f64,
+                    last_ms: snapshot.stamp(),
+                    labels: self.labels_out.iter().map(|&i| cell.labels[i]).collect(),
+                    lanes: self.lanes_out.iter().map(|&i| cell.lanes[i]).collect(),
+                });
+                if rows.len() == self.top_k {
+                    break 'newest;
+                }
+                at += 1;
+            }
+        }
+        Ok(RankedCells {
+            label_columns: self.label_names.clone(),
+            lane_columns: self.lane_names.clone(),
+            snapshots: chosen.len(),
+            keys: 0,
+            unscored: 0,
+            rows,
+            refused: String::new(),
+        })
+    }
+
     /// Runs the plan over `snapshots` (ascending by stamp; the window is applied here). `now_ms`
     /// is the instant a `Last` window ends at.
     pub(crate) fn run<'a, V: SnapshotRead<'a>>(&self, now_ms: u64, snapshots: &[V]) -> Result<RankedCells, String> {
@@ -635,6 +690,9 @@ impl Plan {
     /// is not applied again. A caller that merges snapshots of more than one series builds the
     /// slice itself; [`Plan::run`] hands it one series' window.
     pub(crate) fn run_ordered<'a, V: SnapshotRead<'a>>(&self, chosen: &[V]) -> Result<RankedCells, String> {
+        if self.recent {
+            return self.run_recent(chosen);
+        }
         // Everything sized by the snapshot count, the lane count or k is allocated here, once.
         let mut at = vec![0usize; chosen.len()];
         let mut queue: BinaryHeap<Reverse<(MemberRef<'a>, usize)>> = BinaryHeap::with_capacity(chosen.len());

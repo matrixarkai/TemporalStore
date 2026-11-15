@@ -636,3 +636,49 @@ fn a_query_that_uses_none_of_the_controls_is_encoded_and_answered_as_it_always_w
     assert_eq!(rank(&engine, &key, all.clone()), rank(&engine, &key, from_bytes));
     assert_eq!(members(&rank(&engine, &key, all)), vec![3, 2, 1, 4]);
 }
+
+#[test]
+fn a_recent_read_answers_the_stored_cells_newest_first_live_and_after_a_restart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let key = stored_key(21);
+    seed(&engine, &key);
+    // The ten cells `seed` stored, newest snapshot first, and the `shown` each stored: a ranked
+    // read reduces them to four members, so ten rows and a repeated member are this read's alone.
+    let want_members = vec![2, 4, 1, 3, 1, 2, 4, 1, 2, 3];
+    let want_stamps = vec![400, 400, 300, 300, 200, 200, 200, 100, 100, 100];
+    let want_shown = vec![10, 2, 10, 100, 10, 30, 8, 10, 20, 100];
+    let check = |engine: &TemporalEngine| {
+        let ranked = rank(engine, &key, spec(ALL, CellScore::Recent, 100));
+        assert!(ranked.refused.is_empty(), "{}", ranked.refused);
+        assert_eq!(members(&ranked), want_members);
+        assert_eq!(ranked.rows.iter().map(|r| r.last_ms).collect::<Vec<_>>(), want_stamps);
+        assert_eq!(ranked.rows.iter().map(|r| r.lanes[0]).collect::<Vec<_>>(), want_shown);
+        assert_eq!(ranked.snapshots, 4);
+        // A limit cuts the newest rows; a lane test keeps the cells that stored that value.
+        assert_eq!(members(&rank(engine, &key, spec(ALL, CellScore::Recent, 3))), vec![2, 4, 1]);
+        let mut matched = spec(ALL, CellScore::Recent, 100);
+        matched.filters = vec![FeatureFilter { field: "shown".into(), op: FeatureFilterOp::Equal, value: 100 }];
+        let matched = rank(engine, &key, matched);
+        assert_eq!((members(&matched), matched.rows.iter().map(|r| r.last_ms).collect::<Vec<_>>()), (vec![3, 3], vec![300, 100]));
+        ranked
+    };
+    let live = check(&engine);
+    drop(engine);
+    // A reload reads every block cold and answers the same rows.
+    assert_eq!(check(&engine_on(dir.path())), live);
+}
+
+#[test]
+fn a_recent_read_is_bounded_like_the_ranked_read_and_refuses_a_quota() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let key = stored_key(22);
+    seed(&engine, &key);
+    let refused = (false, "invalid_argument".to_string());
+    let outcome = |query: CellRankSpec| status_of(&engine, &key, query);
+    assert!(outcome(spec(ALL, CellScore::Recent, 1000)).0);
+    assert_eq!(outcome(spec(ALL, CellScore::Recent, 1001)), refused);
+    assert_eq!(outcome(spec(ALL, CellScore::Recent, 0)), refused);
+    assert_eq!(outcome(CellRankSpec { score: CellScore::Recent, ..quota(&[], 1, 8) }), refused);
+}

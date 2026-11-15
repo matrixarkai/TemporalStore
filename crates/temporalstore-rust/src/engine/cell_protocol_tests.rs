@@ -387,10 +387,6 @@ fn the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_an
 #[test]
 fn a_mode_or_window_that_is_not_built_yet_is_refused_and_says_so() {
     let profile = pair_profile();
-    for mode in [RankMode::Recent, RankMode::MatchLane] {
-        let err = translate_query(&profile, &query(trailing(), selector(mode))).unwrap_err();
-        assert!(err.message.contains("not translated yet"), "{mode:?}: {err:?}");
-    }
     let w = Window { kind: WindowKind::NewestRows as i32, span: 1, start_us: 0 };
     let err = translate_query(&profile, &query(w, selector(RankMode::FirstLane))).unwrap_err();
     assert!(err.message.contains("not translated yet"), "{err:?}");
@@ -882,4 +878,82 @@ fn a_selector_that_sets_them_off_is_translated_to_exactly_the_read_it_was_withou
     });
     assert_eq!(off.spec, plain.spec);
     assert_eq!(off.key, plain.key);
+}
+
+// ---------------------------------------------------------------- stored cells, newest first
+
+fn slot_is_five() -> FeatureFilter {
+    FeatureFilter { field: "slot".into(), op: FeatureFilterOp::Equal, value: 5 }
+}
+
+#[test]
+fn recent_is_the_stored_cell_read_with_the_selectors_label_and_limit() {
+    let recent = plan(selector(RankMode::Recent));
+    assert_eq!(recent.spec.score, CellScore::Recent);
+    assert_eq!(recent.spec.filters, vec![slot_is_five()]);
+    assert_eq!(recent.spec.top_k, 10);
+    // The limit is the read's: accepted at 1000, refused at 1001 and at 0.
+    let limited = |limit: i32| translate_query(&pair_profile(), &query(trailing(), CellSelector { limit, ..selector(RankMode::Recent) }));
+    assert_eq!(limited(1000).unwrap().spec.top_k, 1000);
+    assert!(limited(1001).unwrap_err().message.contains("over the limit"));
+    assert!(limited(0).is_err());
+    // A quota chooses among reduced members, so it is refused here with the engine's own words.
+    let quota = CellSelector { quota_lanes: vec![0], quota_counts: vec![1], ..selector(RankMode::Recent) };
+    assert!(refusal(quota).message.contains("takes no quota"));
+}
+
+#[test]
+fn match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_say() {
+    let matched = |lane: Option<i64>, value: Option<i64>| {
+        translate_query(
+            &pair_profile(),
+            &query(
+                trailing(),
+                CellSelector {
+                    has_match_lane: lane.is_some(),
+                    match_lane: lane.unwrap_or(0),
+                    has_match_value: value.is_some(),
+                    match_value: value.unwrap_or(0),
+                    ..selector(RankMode::MatchLane)
+                },
+            ),
+        )
+    };
+    let on = |lane: &str, value: u64| FeatureFilter { field: lane.into(), op: FeatureFilterOp::Equal, value };
+    let first = matched(Some(0), Some(42)).unwrap();
+    assert_eq!(first.spec.score, CellScore::Recent);
+    assert_eq!(first.spec.filters, vec![slot_is_five(), on("impressions", 42)]);
+    assert_eq!(matched(Some(1), Some(7)).unwrap().spec.filters, vec![slot_is_five(), on("clicks", 7)]);
+    // An absent lane is the first and an absent value is 0, as a sort lane is.
+    assert_eq!(matched(None, None).unwrap().spec.filters, vec![slot_is_five(), on("impressions", 0)]);
+    // The table has two lanes: a third is refused naming it, as is a negative one; so is a
+    // negative value, which a predicate cannot compare, and a lane too wide for the wire's i32.
+    assert!(matched(Some(2), Some(1)).unwrap_err().message.contains("match lane 2"));
+    assert!(matched(Some(-1), Some(1)).unwrap_err().message.contains("match lane -1"));
+    assert!(matched(Some(i64::MAX), Some(1)).unwrap_err().message.contains("match lane"));
+    assert!(matched(Some(0), Some(-1)).unwrap_err().message.contains("negative"));
+    // The match fields mean nothing to any other mode: its filters are the label alone.
+    let ignored = CellSelector { has_match_lane: true, match_lane: 1, has_match_value: true, match_value: 9, ..selector(RankMode::FirstLane) };
+    assert_eq!(plan(ignored).spec.filters, vec![slot_is_five()]);
+}
+
+#[test]
+fn a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_snapshot() {
+    let profile = pair_profile();
+    let q = query(trailing(), selector(RankMode::Recent));
+    let ranked = RankedCells {
+        snapshots: 2,
+        keys: 1,
+        rows: vec![
+            crate::types::RankedCellRow { member: CellMemberId::U64(7), score: 300.0, last_ms: 300, labels: vec![5], lanes: vec![1, 2] },
+            crate::types::RankedCellRow { member: CellMemberId::U64(7), score: 100.0, last_ms: 100, labels: vec![5], lanes: vec![3, 4] },
+        ],
+        ..Default::default()
+    };
+    let answer = answer_of(&profile, &q, &ranked);
+    assert_eq!(answer.entries.len(), 2);
+    assert_eq!((answer.entries[0].member, answer.entries[1].member), (7, 7));
+    assert_eq!(answer.entries[0].pair.as_ref().unwrap().timestamp_us, 300_000);
+    assert_eq!(answer.entries[1].pair.as_ref().unwrap().timestamp_us, 100_000);
+    assert_eq!((answer.first_us, answer.last_us), (100_000, 300_000));
 }
