@@ -27,6 +27,10 @@
 //! answer stored cells one row each rather than members, and the newest-rows window) are refused
 //! with a message that says so. `REMOVE` and `DELETE` have no command to map to here.
 //! `MEMBERS_ONLY` reads exactly the include set, ordered by time.
+//!
+//! The selector's `want_snapshot_info` and `limit_members` are accepted by the wire shape and
+//! honoured by no read, so a request that sets either is refused by name
+//! ([`refuse_unbuilt_options`]) and never answered as if the option were absent.
 
 use super::cell_fan_in;
 use super::cell_rank;
@@ -677,6 +681,30 @@ fn score_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<Cel
     })
 }
 
+/// The two selector options no read honours: a per-snapshot summary in the answer
+/// (`want_snapshot_info`) and a cap on the members one read may consider (`limit_members`).
+/// Neither is built, and dropping one silently would answer a question the caller did not ask, so
+/// a request that sets either is refused and the message names the field.
+///
+/// `want_snapshot_info` is unset when false whatever its presence flag says. `limit_members` is
+/// unset when it is 0 (with or without its flag): a flagged 0 limits nothing. A negative one is a
+/// limit, so it is refused like any other.
+fn refuse_unbuilt_options(selector: &wire::CellSelector) -> Result<(), Refusal> {
+    if selector.want_snapshot_info {
+        return Err(invalid(
+            "want_snapshot_info is not supported: an answer carries no per-snapshot summary, leave it unset",
+        ));
+    }
+    if selector.limit_members != 0 {
+        return Err(invalid(format!(
+            "limit_members {} is not supported: a read cannot cap the members it considers, \
+             use `limit` to cap the rows it returns",
+            selector.limit_members
+        )));
+    }
+    Ok(())
+}
+
 /// One wire query as the engine's ranked read.
 pub(crate) fn translate_query(profile: &TableProfile, query: &wire::CellQuery) -> Result<ReadPlan, Refusal> {
     bound("more entities", query.more_entities.len(), MAX_MORE_ENTITIES)?;
@@ -686,6 +714,7 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::CellQuery) -
     }
     let window = query.window.as_ref().ok_or_else(|| invalid("a query needs a window"))?;
     let selector = query.selector.as_ref().ok_or_else(|| invalid("a query needs a selector"))?;
+    refuse_unbuilt_options(selector)?;
     let entity = entity_of(profile, query.entity, &query.entity_text, &query.entity_bytes)?;
     let key = key_of(profile, entity, selector.channel, selector.kind)?;
     let mut more_keys = Vec::with_capacity(query.more_entities.len());
