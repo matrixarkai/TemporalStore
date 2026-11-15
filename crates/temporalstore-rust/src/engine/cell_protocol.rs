@@ -26,7 +26,7 @@
 //! Rank modes and windows that the ranked read cannot express today (`RECENT`, `MATCH_LANE`, which
 //! answer stored cells one row each rather than members, and the newest-rows window) are refused
 //! with a message that says so. `REMOVE` and `DELETE` are the one removal command
-([`Command::CellRemove`]); see [`remove`].
+//! ([`Command::CellRemove`]); see [`remove`].
 //! `MEMBERS_ONLY` reads exactly the include set, ordered by time.
 
 use super::cell_fan_in;
