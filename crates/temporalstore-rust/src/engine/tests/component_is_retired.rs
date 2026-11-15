@@ -101,6 +101,7 @@ type Row = (&'static str, &'static str, usize, Class, &'static str);
 /// zero is deleted rather than kept, because a roster that keeps its zeroes is a list nobody can
 /// tell is finished.
 const ROSTER: &[Row] = &[
+    ("crates/temporalstore-rust/examples/embedding_owner_profile.rs", "//", 1, Class::OtherSense, "ordinary English in the example header: a component profile is the profile of one part of a Linux deployment, not a container element name"),
     ("crates/temporalstore-rust/src/engine/engine_regression_test_modules.rs", "<strings>", 1, Class::OtherSense, "the #[path] of this guard own file, which is named for the word it counts down"),
     ("crates/temporalstore-rust/src/engine/engine_regression_test_modules.rs", "component_is_retired", 1, Class::OtherSense, "this guard, registered under the name of the word it counts down"),
     ("crates/temporalstore-rust/src/engine/tests/address_footprint.rs", "<strings>", 1, Class::OtherSense, "a literal field name the fixture writes; its byte length is part of what the assertions measure"),
