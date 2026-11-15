@@ -881,6 +881,33 @@ fn the_expire_and_evict_counts_are_each_stages_own_runs() {
     let metrics = data_node_storage_lifecycle_metrics(&runtime.stats());
     assert_eq!(metrics["storage_manager_expire_count"], 3);
     assert_eq!(metrics["storage_manager_evict_count"], 3);
+
+    // The evict count moves only on evict: a round with eviction off and the cache bound set runs
+    // reclaim_memory and must leave it where it was.
+    let reclaim_only = StorageManagerOptions {
+        enable_evict: false,
+        cache_memory_bytes_pressure: 1,
+        ..StorageManagerOptions::default()
+    };
+    let engine = runtime.engine();
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "loop-000000".to_string(),
+        },
+    });
+    assert!(response.status.ok);
+    let report = runtime.run_storage_manager_once(1, reclaim_only);
+    assert!(
+        report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
+        "the reclaim_memory arm did not run: {:?}",
+        report.executed_stages
+    );
+    let after = data_node_storage_lifecycle_metrics(&runtime.stats());
+    assert_eq!(
+        after["storage_manager_evict_count"], 3,
+        "a reclaim_memory round moved the evict count"
+    );
 }
 
 /// Measurement harness, not a gate: `--ignored --nocapture`, one test thread, `LOOP_KEYS=<n>`,
