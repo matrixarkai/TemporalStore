@@ -2329,6 +2329,9 @@ impl TemporalEngine {
         dump_before_evict: bool,
         delete_drop: bool,
     ) -> StorageEvictionReport {
+        // Reads served under the shared shard lock left their recency stamps aside; bring them into
+        // the shards before any bucket is ranked, or a bucket read all day would look idle.
+        self.fold_fast_read_recency();
         // THE SIGNAL, AND IT IS THIS SHARD'S. One term, `bucket_index_resident_bytes(shard_id)`,
         // and that is the whole input.
         //

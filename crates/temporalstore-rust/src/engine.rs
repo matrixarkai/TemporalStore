@@ -255,6 +255,15 @@ pub struct TemporalEngine {
     index_scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
+    /// When a read served under the SHARED shard lock last touched each routing bucket.
+    ///
+    /// The ordinary read path stamps `ShardState::bucket_recency` after it executes, which needs
+    /// the shard WRITE lock; the read-only fast path holds only the shared lock and cannot. A read
+    /// that left no stamp would make a bucket read all day look idle to eviction, so the fast path
+    /// leaves it here instead and an eviction round folds it into each shard's `bucket_recency`
+    /// (`fold_fast_read_recency`) before it ranks buckets. Bounded by shards x buckets, the same
+    /// bound as the map it feeds. Not durable, like `bucket_recency`.
+    fast_read_recency: Arc<std::sync::Mutex<HashMap<(ShardId, u32), u64>>>,
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
     context_embedding_indexes: Arc<RwLock<crate::llm_context::EmbeddingIndexRegistry>>,
     /// Per-shard read and write rate limits. Empty and inert unless something sets a limit, or the
@@ -934,6 +943,65 @@ impl TemporalEngine {
         }
     }
 
+    /// Whether any admission limit would meter a READ of this shard: shard, table or tenant scope.
+    ///
+    /// Asks `admission_limits`, the function the slow path enforces from, rather than listing the
+    /// knobs here. A list restated in this place misses the next scope someone adds -- it already
+    /// missed `tenant_read_qps` once -- and a read that took the fast path past a limit it should
+    /// have met is silent. A table name is supplied so the table scope is considered; a limit that
+    /// could not apply (no table or tenant name) still sends the read the slow way, which is the
+    /// safe direction to be wrong in.
+    ///
+    /// One shared config lock and a map get, on the path that exists to avoid the engine write lock.
+    fn read_admission_limited(&self, shard_id: ShardId) -> bool {
+        self.configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .map(|config| !admission_limits(shard_id, false, config, Some("-")).is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Record that a read served under the shared shard lock touched `routing_bucket`.
+    ///
+    /// One short mutex hold and one map insert; see `fast_read_recency` for why the stamp cannot go
+    /// into the shard directly.
+    fn note_fast_read_recency(&self, shard_id: ShardId, routing_bucket: u32) {
+        let now = now_ms();
+        self.fast_read_recency
+            .lock()
+            .expect("fast read recency lock poisoned")
+            .insert((shard_id, routing_bucket), now);
+    }
+
+    /// Move the stamps the read fast path left into each shard's `bucket_recency`, keeping the
+    /// later of the two for a bucket both have touched.
+    ///
+    /// Called at the top of an eviction round, before anything ranks buckets by recency. Takes the
+    /// shard write lock only when a stamp is waiting, and eviction rounds are periodic, not on the
+    /// serving path.
+    pub(crate) fn fold_fast_read_recency(&self) {
+        let pending = {
+            let mut stamps = self
+                .fast_read_recency
+                .lock()
+                .expect("fast read recency lock poisoned");
+            if stamps.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *stamps)
+        };
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        for ((shard_id, routing_bucket), stamped_ms) in pending {
+            if let Some(shard) = shards.get_mut(&shard_id) {
+                let slot = shard.bucket_recency.entry(routing_bucket).or_insert(0);
+                if *slot < stamped_ms {
+                    *slot = stamped_ms;
+                }
+            }
+        }
+    }
+
     fn execute_with_storage_override(
         &self,
         request: ExecuteRequest,
@@ -975,7 +1043,11 @@ impl TemporalEngine {
         if let Some(response) = self.execute_resource_blob_command(&request) {
             return response;
         }
-        if async_storage_override.is_some() {
+        // A plain read takes the fast path too, unless a read limit is configured for the shard:
+        // only the slow path below enforces `read_qps` and `table_read_qps`, so a read that left
+        // through here would escape them. A durable or replicated read (an override is present)
+        // has always skipped that check and still does.
+        if async_storage_override.is_some() || !self.read_admission_limited(request.shard_id) {
             if let Some(response) = self.execute_read_only_fast_path(&request) {
                 return response;
             }
@@ -1856,6 +1928,10 @@ impl TemporalEngine {
                 address,
                 routing_bucket,
             } => {
+                // The ordinary read path stamps the bucket's recency; this one cannot reach the
+                // shard's map under the shared lock, so it leaves the stamp for eviction to fold.
+                // Stamped before the absent-key answer below, as the ordinary path does.
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
                 // THE SHARD HAS ALREADY SAID NO, SO NOTHING BELOW IT IS ASKED.
                 //
                 // `address` is `shard.string_address(key)` -- one map get against `shard.strings`,
@@ -1928,6 +2004,7 @@ impl TemporalEngine {
                 fields,
                 routing_bucket,
             } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
                 // THE FIELDS OF ONE HASH SIT IN FEW SLABS, so the page keys of a whole-hash read
                 // share their record key: building each from scratch spent three allocations a
                 // field, two of them spelling the same slab name again.

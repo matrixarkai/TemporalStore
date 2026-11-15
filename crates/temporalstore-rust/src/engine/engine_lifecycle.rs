@@ -551,6 +551,7 @@ impl TemporalEngine {
             index_scratch: None,
             configs: Arc::default(),
             infos: Arc::default(),
+            fast_read_recency: Arc::default(),
             admissions: Arc::default(),
             context_embedding_indexes: Arc::default(),
             promote_scans: Arc::default(),

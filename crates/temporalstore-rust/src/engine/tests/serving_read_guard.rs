@@ -227,3 +227,94 @@ come from a single record",
 above was exercised against a concurrent writer",
     );
 }
+
+/// A PLAIN read -- `execute`, no storage override -- is served from the shared-lock fast path.
+///
+/// It used to leave through `shards.write()` like a write, because the fast path was reachable
+/// only when an override was supplied. Every `StringGet` then excluded every other reader and
+/// writer on the engine for the length of its work, so concurrent reads ran one at a time.
+///
+/// SUBJECT: one thread holds the shard-table READ guard, another runs a plain `StringGet`. The
+/// slow path needs the write lock, which a held read guard denies, so a read that took it cannot
+/// complete; the fast path needs only a read guard, so it does.
+///
+/// CONTROL, in the same process on the same fixture: with a `read_qps` limit configured the read
+/// must still take the slow path (that is where the limit is enforced), so against the same held
+/// guard it has to BLOCK. Without this arm the subject passes against an engine on which nothing
+/// ever blocks, which says nothing about the lock.
+#[test]
+fn a_plain_read_is_served_while_another_reader_holds_the_shard_table() {
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    fn engine_with_one_key(dir: &std::path::Path) -> Arc<TemporalEngine> {
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.join("cache"),
+            dir.join("blocks"),
+            dir.join("indexes"),
+        );
+        engine.load_shard(1);
+        let written = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert!(written.status.ok, "write: {:?}", written.status);
+        Arc::new(engine)
+    }
+
+    // Run one plain read on its own thread while THIS thread holds the shard-table read guard.
+    // Returns the response if it arrived within `wait`, and always lets the thread finish.
+    fn read_under_held_guard(engine: &Arc<TemporalEngine>, wait: Duration) -> Option<ExecuteResponse> {
+        let guard = engine.shards.read().expect("engine lock poisoned");
+        let (tx, rx) = mpsc::channel();
+        let reader = Arc::clone(engine);
+        let worker = std::thread::spawn(move || {
+            let response = reader.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "k".to_string(),
+                },
+            });
+            let _ = tx.send(response);
+        });
+        let arrived = rx.recv_timeout(wait).ok();
+        drop(guard);
+        worker.join().expect("reader thread panicked");
+        arrived
+    }
+
+    let free_dir = tempfile::tempdir().unwrap();
+    let free = engine_with_one_key(free_dir.path());
+    let served = read_under_held_guard(&free, Duration::from_secs(10)).expect(
+        "a plain read did not complete while another thread held the shard-table READ guard: it \
+is waiting for the engine write lock, so concurrent reads are serialised behind each other and \
+behind every write",
+    );
+    assert!(served.status.ok, "read: {:?}", served.status);
+    assert!(
+        matches!(&served.response, CommandResponse::Bytes { value: Some(v) } if v == b"v"),
+        "the fast path answered with the wrong value: {:?}",
+        served.response,
+    );
+
+    let limited_dir = tempfile::tempdir().unwrap();
+    let limited = engine_with_one_key(limited_dir.path());
+    limited.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            read_qps: Some(1_000_000),
+            ..Config::default()
+        },
+    });
+    assert!(
+        read_under_held_guard(&limited, Duration::from_millis(500)).is_none(),
+        "with read_qps configured the read must take the slow path, where the limit is enforced; \
+it completed against a held read guard, so it escaped the limit (or this test cannot tell the \
+two paths apart)",
+    );
+}
