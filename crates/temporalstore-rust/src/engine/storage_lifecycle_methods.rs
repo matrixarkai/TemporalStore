@@ -1193,6 +1193,11 @@ impl TemporalEngine {
                 request.block_gc_raft_install_floor_slab_id,
                 0,
             );
+            // A slab a retention owner names while it sits in quarantine is pulled back, not just
+            // kept: quarantine renamed it out of the store, so it is unreadable for as long as it
+            // stays. Adding the blocked slabs to the live set is what asks the store-level check to
+            // restore them, at any age.
+            live_block_slab_ids.extend(dependencies.blocked_block_slab_ids.iter().copied());
             // Live slabs are restored, never deleted, by the final store-level check.
             let allowed = dependencies.reclaimable_block_slab_ids.into_iter()
                 .chain(live_block_slab_ids.iter().copied()).collect::<BTreeSet<_>>();

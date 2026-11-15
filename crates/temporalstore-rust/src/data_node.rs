@@ -224,6 +224,12 @@ pub struct DataNodeRuntimeStats {
     /// Rounds that took longer than the loop interval, so the loop never idled.
     #[serde(default)]
     pub storage_manager_overrun_rounds: u64,
+    /// How many of the loop's retention-owner inputs (shared-store cursors, snapshot refs, a
+    /// checkpoint floor, an install floor) were non-empty on the last round. A gauge, not a
+    /// counter: 0 means the loop was told of no owner, so nothing but the live set and the retained
+    /// manifests holds a slab back on this server.
+    #[serde(default)]
+    pub storage_manager_retention_owners_configured: u64,
     /// Wall time spent inside rounds, and the longest single round, in microseconds.
     #[serde(default)]
     pub storage_manager_round_us_total: u64,
@@ -964,6 +970,22 @@ pub struct GcRequest {
     /// it. It is harder to defend on a loop that runs every thirty seconds.
     #[serde(default)]
     pub block_gc_invalidate_removed_slabs_only: bool,
+    /// Retention owners the dependency plan holds a slab for. The loop fills them from its
+    /// options; an operator reclaim leaves them empty, which asks nothing beyond the live set and
+    /// the retained manifests it has always honoured.
+    ///
+    /// Any owner present narrows the slabs offered for quarantine to the ones the dependency plan
+    /// calls reclaimable, so a slab one of them still names is never set aside. Quarantine renames
+    /// the slab out of the store, so holding the purge back is not enough: a reader of the pinned
+    /// slab would find it gone for the whole grace.
+    #[serde(default)]
+    pub block_gc_shared_store_cursors: Vec<crate::engine::reports::StorageBlockGcReplayCursor>,
+    #[serde(default)]
+    pub block_gc_raft_snapshot_refs: Vec<crate::engine::reports::BucketDumpRaftSnapshotRef>,
+    #[serde(default)]
+    pub block_gc_checkpoint_floor_slab_id: Option<u64>,
+    #[serde(default)]
+    pub block_gc_raft_install_floor_slab_id: Option<u64>,
     /// Slabs one round may destroy. 0 means NO BOUND.
     ///
     /// THREE BOUNDS THAT EXISTED ONLY ON THE OTHER PIPELINE. `StorageManagerCycleRequest` has
@@ -1323,6 +1345,19 @@ pub struct StorageManagerOptions {
     /// Garbage floor for the block-GC stage, in basis points. 0 collects every eligible slab.
     #[serde(default = "default_storage_manager_block_gc_min_slab_garbage_basis_points")]
     pub block_gc_min_slab_garbage_basis_points: u64,
+    /// Shared-store readers whose replay position still names block slabs. A slab at or above a
+    /// cursor's `retain_from_block_slab_id` is neither set aside nor destroyed by the loop. Empty
+    /// means no such reader, which is the behaviour before this field existed.
+    #[serde(default)]
+    pub block_gc_shared_store_cursors: Vec<crate::engine::reports::StorageBlockGcReplayCursor>,
+    /// A checkpoint image reads slabs from this id up; the loop neither sets them aside nor destroys
+    /// them. `None` means no checkpoint floor.
+    #[serde(default)]
+    pub block_gc_checkpoint_floor_slab_id: Option<u64>,
+    /// A Raft snapshot install reads slabs from this id up; the loop neither sets them aside nor
+    /// destroys them. `None` means no install in flight.
+    #[serde(default)]
+    pub block_gc_raft_install_floor_slab_id: Option<u64>,
 }
 
 /// Victims one evict stage may take in total, across repeated batches.
@@ -1403,6 +1438,16 @@ fn default_storage_manager_dirty_bucket_pressure() -> usize {
 
 fn default_storage_manager_min_undumped_wal_bytes() -> u64 {
     128 * 1024 * 1024
+}
+
+impl StorageManagerOptions {
+    /// How many of the retention-owner inputs are non-empty.
+    pub fn retention_owner_input_count(&self) -> usize {
+        usize::from(!self.block_gc_shared_store_cursors.is_empty())
+            + usize::from(!self.raft_snapshot_refs.is_empty())
+            + usize::from(self.block_gc_checkpoint_floor_slab_id.is_some())
+            + usize::from(self.block_gc_raft_install_floor_slab_id.is_some())
+    }
 }
 
 impl Default for StorageManagerOptions {
@@ -1510,6 +1555,9 @@ impl Default for StorageManagerOptions {
                 crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND,
             block_gc_min_slab_garbage_basis_points:
                 crate::engine::reports::DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
         }
     }
 }
@@ -2220,6 +2268,7 @@ struct MutableRuntimeStats {
     storage_manager_failed_rounds: u64,
     storage_manager_stage_skips: u64,
     storage_manager_overrun_rounds: u64,
+    storage_manager_retention_owners_configured: u64,
     storage_manager_round_us_total: u64,
     storage_manager_round_us_max: u64,
     storage_manager_stage_timing: std::collections::BTreeMap<String, StorageManagerStageTiming>,
