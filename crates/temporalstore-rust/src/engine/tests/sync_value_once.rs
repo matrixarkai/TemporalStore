@@ -392,6 +392,39 @@ fn the_retention_floor_input_names_the_oldest_log_resident_value() {
     );
 }
 
+/// The batched read a load uses to re-register log-resident values answers exactly what the single
+/// read answers, for every id, across several log segments, and says `None` for an id past the end.
+#[test]
+fn a_batched_log_read_answers_what_the_single_read_answers() {
+    let _on = value_once_in_test(true);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine.load_shard(SHARD);
+    // Enough records to roll the log over several segments (about 3,000 x 220 B).
+    for index in 0..3000 {
+        set(&engine, &format!("k{index:05}"), &value_for(index % 50));
+    }
+    let store = engine.write_ahead_log_store();
+    let records = store.scan(SHARD, 0, u64::MAX, u64::MAX).unwrap();
+    let mut ids: Vec<u64> = records.iter().map(|(log_id, _)| *log_id).collect();
+    assert!(ids.len() >= 3000);
+    let segments = std::fs::read_dir(dir.path().join("indexes").join("wals"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("shard-1.wal."))
+        .count();
+    assert!(segments >= 3, "the fixture must span several segments, spans {segments}");
+    ids.push(u64::MAX - 1);
+    let batched = store.read_frames_at_log_ids(SHARD, &ids).unwrap();
+    assert_eq!(batched.len(), ids.len());
+    for (id, frame) in ids.iter().zip(&batched) {
+        let single = store.read_frame_at_log_id(SHARD, *id).unwrap();
+        assert_eq!(frame, &single, "log id {id}: batched and single reads disagree");
+    }
+    assert!(batched.last().unwrap().is_none(), "an id past the log is None");
+    assert!(batched[..batched.len() - 1].iter().all(Option::is_some));
+}
+
 /// Reclaim attempted BEFORE the values are dumped must not free the records that hold them.
 /// Planted fault: dropping the registered-floor term in `apply_storage_wal_reclaim` lets the log
 /// go and the post-crash read below returns None.

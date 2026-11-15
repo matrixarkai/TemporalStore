@@ -559,14 +559,19 @@ pub(super) fn register_at(
 }
 
 /// Recover the identity of a block that has no live model-map element, such as a tombstone.
+///
+/// Takes the framed record already read from `log_id` (a load reads them in batches, resolving
+/// the segment layout once, rather than listing the log's segments for every value). `None` is an
+/// id the log no longer holds.
 pub(super) fn register_from_record(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     log_id: u64,
+    frame: Option<Vec<u8>>,
     placements: &[(u64, u64)],
     store: &LocalWriteAheadLogStore,
 ) -> bool {
-    let Ok(Some(bytes)) = store.read_frame_at_log_id(shard_id, log_id) else {
+    let Some(bytes) = frame else {
         return false;
     };
     let Ok(record) = decode_wal_line(&bytes) else {

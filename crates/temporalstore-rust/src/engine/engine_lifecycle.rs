@@ -2952,24 +2952,40 @@ impl TemporalEngine {
                 .push((*folded, placement.sequence));
         }
         drop(shards);
-        for (log_id, placements) in unresolved {
-            if !super::block_in_wal::register_from_record(
-                &self.block_store,
-                shard_id,
-                log_id,
-                &placements,
-                &self.wal_store,
-            ) {
-                // Fully materialized imports can carry optional placements from
-                // another log domain. Local placements still restore fallbacks
-                // for unreadable real slabs after a partial compaction.
-                if !require_wal {
-                    return Ok(());
+        // The records are read in batches, in log-id order: a batch lists the log's segments once
+        // and reuses the open file, where a read per value listed them every time (about 100 s for
+        // 100,000 values over a 300 MB log). A batch that fails as a whole is read value by value,
+        // so an unreadable record is reported exactly as it always was.
+        let unresolved: Vec<(u64, Vec<(u64, u64)>)> = unresolved.into_iter().collect();
+        for batch in unresolved.chunks(4096) {
+            let ids: Vec<u64> = batch.iter().map(|(log_id, _)| *log_id).collect();
+            let frames = match self.wal_store.read_frames_at_log_ids(shard_id, &ids) {
+                Ok(frames) => frames,
+                Err(_) => ids
+                    .iter()
+                    .map(|log_id| self.wal_store.read_frame_at_log_id(shard_id, *log_id).ok().flatten())
+                    .collect(),
+            };
+            for ((log_id, placements), frame) in batch.iter().zip(frames) {
+                if !super::block_in_wal::register_from_record(
+                    &self.block_store,
+                    shard_id,
+                    *log_id,
+                    frame,
+                    placements,
+                    &self.wal_store,
+                ) {
+                    // Fully materialized imports can carry optional placements from
+                    // another log domain. Local placements still restore fallbacks
+                    // for unreadable real slabs after a partial compaction.
+                    if !require_wal {
+                        return Ok(());
+                    }
+                    return Err(Status::error(
+                        "wal_resident_block_missing",
+                        format!("shard {shard_id} cannot recover WAL-backed block at log id {log_id}"),
+                    ));
                 }
-                return Err(Status::error(
-                    "wal_resident_block_missing",
-                    format!("shard {shard_id} cannot recover WAL-backed block at log id {log_id}"),
-                ));
             }
         }
         Ok(())
