@@ -153,6 +153,8 @@ mod hll;
 mod block_in_wal;
 pub(crate) use block_in_wal::clear_store_registrations;
 mod checkpoint_publication;
+mod retention_registry;
+pub use retention_registry::ReplayReaderLease;
 #[cfg(test)]
 mod replay_scratch;
 #[cfg(test)]
@@ -253,6 +255,7 @@ pub struct TemporalEngine {
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
     checkpoint_publications: Arc<checkpoint_publication::CheckpointPublications>,
+    retention_registry: Arc<retention_registry::RetentionRegistry>,
     // Set only when the engine minted its own index_dir (no caller-supplied one): the
     // engine owns that scratch directory, and the last clone's drop removes it.
     index_scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,

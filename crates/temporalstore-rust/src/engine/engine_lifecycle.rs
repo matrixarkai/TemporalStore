@@ -543,6 +543,7 @@ impl TemporalEngine {
         Self {
             shards: Arc::default(),
             checkpoint_publications: Arc::default(),
+            retention_registry: Arc::default(),
             cache,
             block_store,
             wal_store,
