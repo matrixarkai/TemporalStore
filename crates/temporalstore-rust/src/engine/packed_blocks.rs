@@ -695,41 +695,77 @@ pub(super) fn with_feature_point_value<R>(
     timestamp_ms: u64,
     with: impl FnOnce(&[u8]) -> R,
 ) -> Option<R> {
+    match feature_point_in_place(bytes, timestamp_ms, with) {
+        PointRead::Found(found) => Some(found),
+        PointRead::Absent | PointRead::Corrupt => None,
+    }
+}
+
+/// How reading one point out of a block's bytes ended.
+///
+/// `with_feature_point_value` folds the last two into `None`. A reader that must count a damaged
+/// block, and say nothing about a point a sound block simply does not hold, needs them apart.
+pub(super) enum PointRead<R> {
+    /// The point is there; this is what the caller made of its value.
+    Found(R),
+    /// The block is sound and holds no point at that instant.
+    Absent,
+    /// The block does not decode: torn, trailing bytes, or a forged count.
+    Corrupt,
+}
+
+/// [`with_feature_point_value`] with the two reasons for no answer kept apart.
+pub(super) fn feature_point_in_place<R>(
+    bytes: &[u8],
+    timestamp_ms: u64,
+    with: impl FnOnce(&[u8]) -> R,
+) -> PointRead<R> {
     let Some(payload) = bytes.strip_prefix(FEATURE_BLOCK_BINARY_MAGIC) else {
         // The JSON shape and the unframed legacy value keep the allocating reader: nothing writes
         // the first any more, and the second is the block's own bytes.
         return match decode_feature_block_strict(bytes) {
-            PackedFeatureBlockDecode::Packed(points) => points
-                .into_iter()
-                .find(|point| point.timestamp_ms == timestamp_ms)
-                .map(|point| with(&point.value)),
-            PackedFeatureBlockDecode::Legacy => Some(with(bytes)),
-            PackedFeatureBlockDecode::Corrupt(_) => None,
+            PackedFeatureBlockDecode::Packed(points) => {
+                match points.into_iter().find(|point| point.timestamp_ms == timestamp_ms) {
+                    Some(point) => PointRead::Found(with(&point.value)),
+                    None => PointRead::Absent,
+                }
+            }
+            PackedFeatureBlockDecode::Legacy => PointRead::Found(with(bytes)),
+            PackedFeatureBlockDecode::Corrupt(_) => PointRead::Corrupt,
         };
     };
-    let (count_bytes, mut rest) = split_at_checked(payload, 4)?;
+    let Some((count_bytes, mut rest)) = split_at_checked(payload, 4) else {
+        return PointRead::Corrupt;
+    };
     let count = u32::from_le_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]])
         as usize;
     if count.saturating_mul(FEATURE_POINT_HEADER_BYTES) > rest.len() {
-        return None;
+        return PointRead::Corrupt;
     }
     let mut found: Option<&[u8]> = None;
     for _ in 0..count {
-        let (header, tail) = split_at_checked(rest, FEATURE_POINT_HEADER_BYTES)?;
+        let Some((header, tail)) = split_at_checked(rest, FEATURE_POINT_HEADER_BYTES) else {
+            return PointRead::Corrupt;
+        };
         let point_timestamp = u64::from_le_bytes([
             header[0], header[1], header[2], header[3], header[4], header[5], header[6], header[7],
         ]);
         let length = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
-        let (value, tail) = split_at_checked(tail, length)?;
+        let Some((value, tail)) = split_at_checked(tail, length) else {
+            return PointRead::Corrupt;
+        };
         if found.is_none() && point_timestamp == timestamp_ms {
             found = Some(value);
         }
         rest = tail;
     }
     if !rest.is_empty() {
-        return None;
+        return PointRead::Corrupt;
     }
-    found.map(with)
+    match found {
+        Some(value) => PointRead::Found(with(value)),
+        None => PointRead::Absent,
+    }
 }
 
 /// The value of one feature point, read in place: the shared cache bytes are inspected, not copied,

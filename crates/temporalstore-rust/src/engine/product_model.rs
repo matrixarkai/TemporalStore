@@ -10,7 +10,7 @@
 //! the engine's execute path; this module is the read/aggregation side.
 
 use super::timestamped_series::TimestampedSeries as _;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::block_store::{ElementEntry, BlockStore};
 use crate::types::{
@@ -19,12 +19,13 @@ use crate::types::{
 };
 use matrixcache::MultiLayerCache;
 
-use super::packed_blocks::{
-    decode_feature_block_strict, read_feature_point_cached, CachedFeatureBlock,
-};
+use super::packed_blocks::{decode_feature_block_strict, feature_point_in_place, PointRead};
 use super::state::PackedFeatureBlockDecode;
 use super::hashing::BlockIdentity;
-use super::{decode_or_count_sequence_row, note_unreadable_sequence_row, parse_i64, read_block_bytes, ShardState};
+use super::{
+    decode_or_count_sequence_row, note_unreadable_sequence_row, parse_i64, read_block_bytes,
+    read_block_shared_keyed, PageKeys, ShardState,
+};
 pub(super) fn read_sequence_row(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -54,7 +55,34 @@ pub(super) fn read_sequence_row(
     }
 }
 
-pub(super) fn read_sequence_row_cached(
+/// The block a run of sequence rows is being read from, kept between rows.
+///
+/// A write of many rows at once files them in ONE block, so a range over them meets the same
+/// block row after row. The last block read is held, and an address equal to it is answered from
+/// the held bytes: no page key built, no cache lookup. Only a block that was READ is held; one that
+/// could not be read is asked for again, as before.
+pub(super) struct SequenceBlockReader {
+    keys: PageKeys,
+    last: Option<(ElementEntry, std::sync::Arc<[u8]>)>,
+}
+
+impl SequenceBlockReader {
+    pub(super) fn new() -> Self {
+        Self {
+            keys: PageKeys::new(),
+            last: None,
+        }
+    }
+}
+
+/// One sequence row, decoded where it sits in the cached block.
+///
+/// The block's shared bytes are walked in place and the row is decoded straight from the value's
+/// slice: no `Vec<FeaturePoint>`, no copy of the value, no per-block table. A damaged block is
+/// still COUNTED, once for each row asked of it, and a sound block that holds no point at that
+/// instant answers nothing and counts nothing -- the two cases `PointRead` keeps apart.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn read_sequence_row_in_place(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
@@ -62,22 +90,32 @@ pub(super) fn read_sequence_row_cached(
     address: &ElementEntry,
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
-    packed_block_cache: &mut HashMap<ElementEntry, Option<CachedFeatureBlock>>,
+    reader: &mut SequenceBlockReader,
 ) -> Option<SequenceFeatureRow> {
-    let point = read_feature_point_cached(
-        cache,
-        block_store,
-        shard_id,
-        timestamp_ms,
-        address,
-        identity,
-        packed_block_cache,
-        routing_bucket,
-    );
-    if point.is_none() && matches!(packed_block_cache.get(address), Some(None)) {
-        note_unreadable_sequence_row(timestamp_ms, "the block is corrupt");
+    let held = match &reader.last {
+        Some((held, bytes)) if held == address => Some(std::sync::Arc::clone(bytes)),
+        _ => None,
+    };
+    let bytes = match held {
+        Some(bytes) => bytes,
+        None => {
+            let cache_key = reader.keys.key(shard_id, address, routing_bucket);
+            let bytes =
+                read_block_shared_keyed(cache, block_store, shard_id, address, identity, cache_key)?;
+            reader.last = Some((address.clone(), std::sync::Arc::clone(&bytes)));
+            bytes
+        }
+    };
+    match feature_point_in_place(&bytes, timestamp_ms, |value| {
+        decode_or_count_sequence_row(timestamp_ms, value)
+    }) {
+        PointRead::Found(row) => row,
+        PointRead::Absent => None,
+        PointRead::Corrupt => {
+            note_unreadable_sequence_row(timestamp_ms, "the block is corrupt");
+            None
+        }
     }
-    point.and_then(|point| decode_or_count_sequence_row(timestamp_ms, &point.value))
 }
 
 pub(super) fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &FeatureFilter) -> bool {
@@ -119,7 +157,7 @@ pub(super) fn sequence_rows_in_range(
     let routing_bucket =
         crate::engine::hashing::block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     let identity = BlockIdentity::of(shard_id, "feature", key, None);
-    let mut packed_block_cache = HashMap::new();
+    let mut reader = SequenceBlockReader::new();
     shard
         .features()
         .get(key)
@@ -128,7 +166,7 @@ pub(super) fn sequence_rows_in_range(
                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .take(count)
                 .filter_map(|(timestamp_ms, address)| {
-                    read_sequence_row_cached(
+                    read_sequence_row_in_place(
                         cache,
                         block_store,
                         shard_id,
@@ -136,7 +174,7 @@ pub(super) fn sequence_rows_in_range(
                         address,
                         identity,
                         Some(routing_bucket),
-                        &mut packed_block_cache,
+                        &mut reader,
                     )
                 })
                 .filter(|row| {

@@ -140,6 +140,8 @@ mod a_hash_delete_files_nothing;
 mod a_sequence_write_states_the_rows_it_wrote;
 #[path = "tests/a_cached_feature_query_sees_a_sequence_add.rs"]
 mod a_cached_feature_query_sees_a_sequence_add;
+#[path = "tests/a_sequence_query_decodes_each_row_where_it_sits.rs"]
+mod a_sequence_query_decodes_each_row_where_it_sits;
 #[path = "tests/a_compaction_does_not_lose_a_dirty_objects_dump.rs"]
 mod a_compaction_does_not_lose_a_dirty_objects_dump;
 #[path = "tests/a_counter_increment_writes_its_series_when_due.rs"]
