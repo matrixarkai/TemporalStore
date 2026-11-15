@@ -115,10 +115,7 @@ impl RetryRing {
         let mut record = Vec::new();
         for (token, receipt) in &self.entries {
             record.clear();
-            encode_varint_field(&mut record, 1, *token);
-            encode_varint_field(&mut record, 2, receipt.snapshots_written);
-            encode_varint_field(&mut record, 3, receipt.cells_created);
-            encode_varint_field(&mut record, 4, receipt.cells_merged);
+            write_entry(&mut record, *token, receipt);
             encode_bytes_field(&mut out, 1, &record);
         }
         out
@@ -188,6 +185,34 @@ impl<'de> serde::Deserialize<'de> for RetryRing {
         }
         deserializer.deserialize_bytes(Visitor)
     }
+}
+
+/// One entry's four fields, as a ring stores each of its entries.
+fn write_entry(out: &mut Vec<u8>, token: u64, receipt: &RetryReceipt) {
+    encode_varint_field(out, 1, token);
+    encode_varint_field(out, 2, receipt.snapshots_written);
+    encode_varint_field(out, 3, receipt.cells_created);
+    encode_varint_field(out, 4, receipt.cells_merged);
+}
+
+/// One entry in the spelling a ring gives each of its entries, which is also how a log record
+/// carries the entry a write filed: the same four fields and no other spelling, so the log and
+/// the index image cannot disagree about what a token's receipt is.
+#[cfg_attr(not(test), allow(dead_code))] // the writer of a logged entry is the next change
+pub(crate) fn encode_entry(token: u64, receipt: &RetryReceipt) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12);
+    write_entry(&mut out, token, receipt);
+    out
+}
+
+/// The entry [`encode_entry`] wrote, refused if it is truncated, has bytes after its last field,
+/// or spells a number in any way but the shortest.
+pub(crate) fn decode_logged_entry(bytes: &[u8]) -> Result<(u64, RetryReceipt), String> {
+    let (token, receipt) = decode_entry(bytes)?;
+    if encode_entry(token, &receipt) != bytes {
+        return Err("retry entry is not in its canonical spelling".to_string());
+    }
+    Ok((token, receipt))
 }
 
 fn read_varint(bytes: &[u8], cursor: &mut usize) -> Result<u64, String> {
