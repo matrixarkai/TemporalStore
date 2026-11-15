@@ -294,6 +294,7 @@ message Command {
     ListSet list_set = 72;
     ListRemove list_remove = 73;
     ListTrim list_trim = 74;
+    CellRemove cell_remove = 75;
   }
 }
 
@@ -317,6 +318,9 @@ message CommandResponse {
   uint64 cells_before = 12;
   uint64 cells_after = 13;
   uint64 cells_dropped = 14;
+  // A removal reports what it did: `count` is the snapshots after, `snapshots_before` and
+  // `cells_before` as for a rollup, and this is the cells it took out.
+  uint64 cells_removed = 16;
 }
 
 message StringSet {
@@ -2135,4 +2139,46 @@ message ContextMemorySourceReceipt {
 message ContextMemoryIngestResponse {
   ContextExplicitIngestResponse acknowledgment = 1;
   repeated ContextMemorySourceReceipt sources = 2;
+}
+
+// Removes cells from the snapshots of `key`: a cell goes when its snapshot is stamped in
+// [start_ms, end_ms] (an absent bound is open), its member is in `include` (absent: any member)
+// and not in `exclude`, and every predicate in `filters` holds on it. A request that restricts
+// nothing is refused. A snapshot left with no cell is removed.
+message CellRemove {
+  string key = 1;
+  optional uint64 start_ms = 2;
+  optional uint64 end_ms = 3;
+  CellMemberSet include = 4;
+  repeated CellMember exclude = 5;
+  repeated CellPredicate filters = 6;
+}
+
+// A set of members whose presence, even when empty, is a statement (an empty include set is
+// refused, an absent one restricts nothing), which a repeated field alone cannot carry.
+message CellMemberSet {
+  repeated CellMember members = 1;
+}
+
+message CellMember {
+  oneof kind {
+    uint64 id = 1;
+    bytes bytes = 2;
+  }
+}
+
+// A test on a label, a lane or `member` of a cell: `field op value`.
+message CellPredicate {
+  string field = 1;
+  CellPredicateOp op = 2;
+  uint64 value = 3;
+}
+
+enum CellPredicateOp {
+  CELL_PREDICATE_OP_EQUAL = 0;
+  CELL_PREDICATE_OP_NOT_EQUAL = 1;
+  CELL_PREDICATE_OP_GREATER_THAN = 2;
+  CELL_PREDICATE_OP_GREATER_OR_EQUAL = 3;
+  CELL_PREDICATE_OP_LESS_THAN = 4;
+  CELL_PREDICATE_OP_LESS_OR_EQUAL = 5;
 }

@@ -305,6 +305,36 @@ impl TemporalStoreTable {
         }
     }
 
+    /// Removes cells from the snapshots under `key` by time window, member set and predicate, and
+    /// says what it removed. A request the key cannot serve is refused and nothing is written; a
+    /// request that matches no cell writes nothing and reports zero removed.
+    pub fn cell_remove(
+        &self,
+        key: impl Into<String>,
+        spec: crate::types::CellRemoveSpec,
+    ) -> Result<crate::types::CellRemoveSummary, ClientError> {
+        match self
+            .execute(Command::CellRemove { key: key.into(), spec })?
+            .response
+        {
+            CommandResponse::CellRemoveReceipt {
+                snapshots_before,
+                snapshots_after,
+                cells_before,
+                cells_removed,
+            } => Ok(crate::types::CellRemoveSummary {
+                snapshots_before,
+                snapshots_after,
+                cells_before,
+                cells_removed,
+            }),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "cell_remove",
+                response,
+            }),
+        }
+    }
+
     /// The ranked windowed read over the cell snapshots of several keys that share one spec: the
     /// answer one key holding all of their snapshots would give. The keys must live on one shard
     /// (the request is routed by the first); `RankedCells::keys` says how many held a snapshot in

@@ -25,7 +25,8 @@
 //!
 //! Rank modes and windows that the ranked read cannot express today (`RECENT`, `MATCH_LANE`, which
 //! answer stored cells one row each rather than members, and the newest-rows window) are refused
-//! with a message that says so. `REMOVE` and `DELETE` have no command to map to here.
+//! with a message that says so. `REMOVE` and `DELETE` are the one removal command
+//! ([`Command::CellRemove`]); see [`remove`].
 //! `MEMBERS_ONLY` reads exactly the include set, ordered by time.
 //!
 //! The selector's `want_snapshot_info` and `limit_members` are accepted by the wire shape and
@@ -898,6 +899,10 @@ pub(crate) fn answer_of(profile: &TableProfile, query: &wire::CellQuery, ranked:
         keys: ranked.keys as u64,
     }
 }
+
+// `REMOVE` and `DELETE`, as the one command that removes cells.
+#[path = "cell_protocol_remove.rs"]
+pub(crate) mod remove;
 
 #[cfg(test)]
 #[path = "cell_protocol_tests.rs"]

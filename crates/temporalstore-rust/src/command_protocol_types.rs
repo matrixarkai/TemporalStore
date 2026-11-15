@@ -443,6 +443,46 @@ pub struct CellMergeSummary {
     pub replayed: bool,
 }
 
+/// Which cells of one key a removal takes out. A cell goes when its snapshot is stamped inside the
+/// time window AND its member passes `members` AND every predicate in `filters` holds on it; a
+/// field left open restricts nothing. At least one of the three must restrict something, so a
+/// request that would empty the key is refused (delete the key to do that).
+///
+/// * `start_ms`, `end_ms`: the snapshots stamped in `[start_ms, end_ms]`, both inclusive; an absent
+///   end is open on that side, and `start_ms` after `end_ms` is refused.
+/// * `members`: the same set a ranked read takes. `include` names the members to remove
+///   (`Some([])` is refused) and `exclude` the members to spare; a member in both is spared. Each
+///   side holds at most 1024 entries as sent.
+/// * `filters`: at most 8 predicates over a label, a lane or `member`, ANDed, each tested on the
+///   cell as its snapshot stores it. A name the key does not declare is refused.
+///
+/// At most 1024 snapshots may fall inside the window; a request over that is refused before any
+/// snapshot is read, and is made in steps by narrowing the window.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CellRemoveSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "CellMemberFilter::is_open")]
+    pub members: CellMemberFilter,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<FeatureFilter>,
+}
+
+/// What a removal did, as the client reports it. Cell counts are over the snapshots inside the
+/// window; snapshots are counted over the whole series.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CellRemoveSummary {
+    pub snapshots_before: u64,
+    /// A snapshot left with no cell is removed from the series, so this can be lower.
+    pub snapshots_after: u64,
+    /// Cells in the snapshots inside the window, before the removal.
+    pub cells_before: u64,
+    /// Cells the removal took out.
+    pub cells_removed: u64,
+}
+
 /// What a rollup did, as the client reports it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct CellRollupSummary {
@@ -2048,6 +2088,14 @@ pub enum Command {
         keys: Vec<String>,
         spec: CellRankSpec,
     },
+    /// Removes cells from the snapshots of one key by time window, member set and predicate, and
+    /// answers what it removed. The series is replaced in one step, so a reader sees the snapshots
+    /// before the removal or after it and a replay reaches the same bytes; a request that matches
+    /// nothing writes nothing. A snapshot left with no cell is removed.
+    CellRemove {
+        key: String,
+        spec: CellRemoveSpec,
+    },
     /// N independent ranked reads in one request, each with its own key and spec, answered in
     /// request order, one [`RankedCells`] each (a key with nothing to rank answers empty, a read
     /// that cannot be served answers with `refused` set, and neither fails the others). The keys
@@ -3204,6 +3252,14 @@ pub enum CommandResponse {
         cells_before: u64,
         cells_after: u64,
         cells_dropped: u64,
+    },
+    /// What a removal did: the snapshots of the key before and after, the cells in the window
+    /// before, and the cells removed. A key the shard does not hold answers zeros.
+    CellRemoveReceipt {
+        snapshots_before: u64,
+        snapshots_after: u64,
+        cells_before: u64,
+        cells_removed: u64,
     },
     /// The answers of a batch of ranked cell reads, in request order.
     CellRankings {

@@ -638,6 +638,33 @@ jobs:
             engine::tests::a_ranked_read_over_several_cell_keys::the_cell_ceiling_holds_while_reading_and_the_limit_is_served \
             engine::tests::a_ranked_read_over_several_cell_keys::the_snapshot_ceiling_holds_while_reading_and_the_limit_is_served \
             engine::tests::a_worked_example_of_cells::a_worked_example_of_cells \
+            engine::cell_remove::tests::a_window_takes_every_cell_of_the_snapshots_inside_it_and_both_bounds_are_inclusive \
+            engine::cell_remove::tests::a_predicate_takes_the_cells_it_holds_on_and_keeps_the_rest_in_stored_order \
+            engine::cell_remove::tests::a_member_set_takes_the_members_it_names_and_spares_the_ones_it_excludes \
+            engine::cell_remove::tests::the_window_the_members_and_the_predicates_are_anded \
+            engine::cell_remove::tests::the_order_and_repetition_of_a_member_set_change_nothing \
+            engine::cell_remove::tests::a_removal_that_restricts_nothing_is_refused_and_each_way_of_restricting_is_accepted \
+            engine::cell_remove::tests::a_name_the_key_does_not_declare_an_empty_include_set_and_a_backwards_window_are_refused \
+            engine::cell_remove::tests::predicates_and_member_sets_are_accepted_at_the_limit_and_refused_one_past_it \
+            engine::cell_remove::tests::a_snapshot_that_keeps_every_cell_comes_back_with_the_cells_it_had \
+            engine::tests::a_cell_removal_is_a_command::a_removal_leaves_exactly_the_cells_an_independent_fold_keeps \
+            engine::tests::a_cell_removal_is_a_command::a_ranked_read_after_a_removal_answers_what_a_fold_over_the_kept_cells_says \
+            engine::tests::a_cell_removal_is_a_command::a_cold_reload_reads_the_removed_bytes_and_removing_again_changes_nothing \
+            engine::tests::a_cell_removal_is_a_command::replaying_the_log_reaches_the_bytes_the_live_engine_reached \
+            engine::tests::a_cell_removal_is_a_command::the_same_request_on_two_engines_leaves_the_same_bytes \
+            engine::tests::a_cell_removal_is_a_command::a_request_that_matches_nothing_writes_nothing_and_says_so \
+            engine::tests::a_cell_removal_is_a_command::removing_every_cell_leaves_an_empty_key_that_still_reads_and_still_takes_a_write \
+            engine::tests::a_cell_removal_is_a_command::a_request_the_key_cannot_serve_is_refused_and_writes_nothing \
+            engine::tests::a_cell_removal_is_a_command::each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it \
+            engine::tests::a_cell_removal_is_a_command::an_absent_key_and_an_expired_key_remove_nothing \
+            engine::tests::a_cell_removal_is_a_command::a_removal_is_a_write_the_log_can_carry_in_every_selector_spelling \
+            engine::cell_protocol::remove::tests::a_remove_names_its_key_its_span_in_whole_milliseconds_and_its_label_predicate \
+            engine::cell_protocol::remove::tests::a_span_that_holds_no_whole_millisecond_or_runs_backwards_or_is_negative_is_refused \
+            engine::cell_protocol::remove::tests::a_remove_that_restricts_nothing_is_refused_and_a_member_set_or_a_span_restricts \
+            engine::cell_protocol::remove::tests::member_lists_are_accepted_at_1024_and_refused_at_1025 \
+            engine::cell_protocol::remove::tests::a_delete_is_a_removal_by_label_and_member_over_every_snapshot_and_never_of_the_key \
+            engine::cell_protocol::remove::tests::the_responses_carry_the_receipt_on_the_additive_fields_and_the_established_ones_unchanged \
+            engine::cell_protocol::remove::tests::a_remove_request_round_trips_its_additive_fields_and_an_older_reader_skips_them \
             engine::window_aggregate::algorithm_tests::each_reducer_answers_the_value_only_that_reducer_produces \
             engine::window_aggregate::algorithm_tests::the_three_roundings_differ_on_a_fraction \
             engine::window_aggregate::algorithm_tests::an_empty_window_answers_what_the_notes_say \

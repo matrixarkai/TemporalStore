@@ -601,6 +601,10 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 retry_token: command.retry_token,
             }
         }
+        v1::command::Kind::CellRemove(command) => {
+            let (key, spec) = cell_remove_from_proto(command)?;
+            types::Command::CellRemove { key, spec }
+        }
         v1::command::Kind::CellRollup(command) => {
             let (key, spec) = cell_rollup_from_proto(command)?;
             types::Command::CellRollup { key, spec }
@@ -1358,6 +1362,100 @@ pub(crate) fn cell_rollup_from_proto(command: v1::CellRollup) -> Result<(String,
     ))
 }
 
+fn cell_member_to_proto(member: &types::CellMemberId) -> v1::CellMember {
+    use v1::cell_member::Kind;
+    v1::CellMember {
+        kind: Some(match member {
+            types::CellMemberId::U64(id) => Kind::Id(*id),
+            types::CellMemberId::Bytes(bytes) => Kind::Bytes(bytes.clone()),
+        }),
+    }
+}
+
+/// REFUSED, NOT DEFAULTED: a member with no kind is not member 0.
+fn cell_member_from_proto(member: v1::CellMember) -> Result<types::CellMemberId, TonicStatus> {
+    use v1::cell_member::Kind;
+    match member.kind {
+        Some(Kind::Id(id)) => Ok(types::CellMemberId::U64(id)),
+        Some(Kind::Bytes(bytes)) => Ok(types::CellMemberId::Bytes(bytes)),
+        None => Err(TonicStatus::invalid_argument("a cell member names neither an id nor bytes")),
+    }
+}
+
+fn cell_predicate_op_to_proto(op: &types::FeatureFilterOp) -> v1::CellPredicateOp {
+    match op {
+        types::FeatureFilterOp::Equal => v1::CellPredicateOp::Equal,
+        types::FeatureFilterOp::NotEqual => v1::CellPredicateOp::NotEqual,
+        types::FeatureFilterOp::GreaterThan => v1::CellPredicateOp::GreaterThan,
+        types::FeatureFilterOp::GreaterOrEqual => v1::CellPredicateOp::GreaterOrEqual,
+        types::FeatureFilterOp::LessThan => v1::CellPredicateOp::LessThan,
+        types::FeatureFilterOp::LessOrEqual => v1::CellPredicateOp::LessOrEqual,
+    }
+}
+
+pub(crate) fn cell_remove_to_proto(key: &str, spec: &types::CellRemoveSpec) -> v1::CellRemove {
+    v1::CellRemove {
+        key: key.to_string(),
+        start_ms: spec.start_ms,
+        end_ms: spec.end_ms,
+        include: spec
+            .members
+            .include
+            .as_ref()
+            .map(|set| v1::CellMemberSet { members: set.iter().map(cell_member_to_proto).collect() }),
+        exclude: spec.members.exclude.iter().map(cell_member_to_proto).collect(),
+        filters: spec
+            .filters
+            .iter()
+            .map(|filter| v1::CellPredicate {
+                field: filter.field.clone(),
+                op: cell_predicate_op_to_proto(&filter.op) as i32,
+                value: filter.value,
+            })
+            .collect(),
+    }
+}
+
+/// REFUSED, NOT DEFAULTED: an operator this build does not know is not equality, and a member of
+/// no kind is not member 0.
+pub(crate) fn cell_remove_from_proto(command: v1::CellRemove) -> Result<(String, types::CellRemoveSpec), TonicStatus> {
+    let include = command
+        .include
+        .map(|set| set.members.into_iter().map(cell_member_from_proto).collect::<Result<Vec<_>, _>>())
+        .transpose()?;
+    let exclude = command.exclude.into_iter().map(cell_member_from_proto).collect::<Result<Vec<_>, _>>()?;
+    let filters = command
+        .filters
+        .into_iter()
+        .map(|filter| {
+            let op = match v1::CellPredicateOp::try_from(filter.op) {
+                Ok(v1::CellPredicateOp::Equal) => types::FeatureFilterOp::Equal,
+                Ok(v1::CellPredicateOp::NotEqual) => types::FeatureFilterOp::NotEqual,
+                Ok(v1::CellPredicateOp::GreaterThan) => types::FeatureFilterOp::GreaterThan,
+                Ok(v1::CellPredicateOp::GreaterOrEqual) => types::FeatureFilterOp::GreaterOrEqual,
+                Ok(v1::CellPredicateOp::LessThan) => types::FeatureFilterOp::LessThan,
+                Ok(v1::CellPredicateOp::LessOrEqual) => types::FeatureFilterOp::LessOrEqual,
+                Err(_) => {
+                    return Err(TonicStatus::invalid_argument(format!(
+                        "cell predicate operator {} is not one this build can apply",
+                        filter.op
+                    )))
+                }
+            };
+            Ok(types::FeatureFilter { field: filter.field, op, value: filter.value })
+        })
+        .collect::<Result<Vec<_>, TonicStatus>>()?;
+    Ok((
+        command.key,
+        types::CellRemoveSpec {
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            members: types::CellMemberFilter { include, exclude },
+            filters,
+        },
+    ))
+}
+
 /// THE FAMILY TAG, RUST SPELLING TO WIRE NUMBER.
 ///
 /// Infallible in this direction on purpose: every Rust variant has a number, so an encoder cannot
@@ -1532,6 +1630,19 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             cells_before,
             cells_after,
             cells_dropped,
+            ..Default::default()
+        },
+        types::CommandResponse::CellRemoveReceipt {
+            snapshots_before,
+            snapshots_after,
+            cells_before,
+            cells_removed,
+        } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            count: snapshots_after,
+            snapshots_before,
+            cells_before,
+            cells_removed,
             ..Default::default()
         },
         types::CommandResponse::Members { members } => v1::CommandResponse {

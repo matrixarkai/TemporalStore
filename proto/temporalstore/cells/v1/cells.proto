@@ -263,6 +263,11 @@ message CellRemoveRequest {
   TimeSpan span = 2;
   bytes table = 3;
   KeyFilter key_filter = 4;
+  // Additive: the members to remove (the include set; with `has_members` or when non-empty) and
+  // the members to spare; a member in both is spared. 64 bit ids, at most 1024 a side.
+  repeated int64 members = 16;
+  bool has_members = 17;
+  repeated int64 excluded_members = 18;
 }
 
 message CellRemoveResponse {
@@ -270,6 +275,12 @@ message CellRemoveResponse {
   TimeSpan span = 2;
   string message = 3;
   bool has_message = 4;
+  // Additive receipt: snapshots the key held before and after, cells in the removed span before,
+  // and cells removed.
+  uint64 snapshots_before = 16;
+  uint64 snapshots_after = 17;
+  uint64 cells_before = 18;
+  uint64 cells_removed = 19;
 }
 
 message CellDeleteRequest {
@@ -281,6 +292,11 @@ message CellDeleteRequest {
 message CellDeleteResponse {
   CellStatusCode code = 1;
   string message = 2;
+  // Additive receipt, as for a removal.
+  uint64 snapshots_before = 16;
+  uint64 snapshots_after = 17;
+  uint64 cells_before = 18;
+  uint64 cells_removed = 19;
 }
 
 // The thin envelope of a call: which module and operation, and the encoded request.

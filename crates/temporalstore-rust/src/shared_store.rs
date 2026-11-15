@@ -5544,6 +5544,7 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             })
         }
         Command::CellRollup { key, spec } => v1::command::Kind::CellRollup(sdk::cell_rollup_to_proto(key, spec)),
+        Command::CellRemove { key, spec } => v1::command::Kind::CellRemove(sdk::cell_remove_to_proto(key, spec)),
         Command::SeenCheck {
             key,
             member,

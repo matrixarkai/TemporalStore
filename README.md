@@ -207,6 +207,7 @@ and rollup walk-throughs, with the numbers each step produces, are in
 | `CellFanInRankQuery` | The same read over up to 64 keys that share one spec. The cells of every key are merged before they are scored; the answer says how many keys held a snapshot in the window. Keys are read on one shard. |
 | `CellRankBatchQuery` | Up to 64 independent reads, each with its own key and spec, answered in request order. A read that cannot be served answers with its reason and fails no other. |
 | `CellRollup` | Folds every snapshot stamped strictly before `older_than_ms` into `bucket_ms` buckets (cells merge by member, oldest first) and optionally caps each group. Answers snapshots and cells before and after, and cells dropped. A rollup that would change nothing writes nothing. |
+| `CellRemove` | Removes cells from one key by time window (stamps, inclusive), member set (include and exclude) and predicates over a label, a lane or `member`, at most 8, ANDed. Answers snapshots before and after, cells in the window, and cells removed. A snapshot left with no cell is removed; a request that restricts nothing is refused and one that matches nothing writes nothing. |
 
 The shape of each request, copied from the tests:
 
