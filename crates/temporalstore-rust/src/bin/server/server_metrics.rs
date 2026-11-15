@@ -171,8 +171,55 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
         out.push_str(&value.to_string());
         out.push('\n');
     }
+    append_storage_manager_loop_metrics(out, &stats);
     if let Some(report) = runtime.last_storage_manager_cycle_report() {
         append_storage_manager_cycle_metrics(out, &report);
+    }
+}
+
+/// What the shipped loop reports each round, from the runtime's own counters. The on-demand cycle
+/// report below carries the same backlog signals, but a running server never runs one, so a scrape
+/// could not say how close the log was to the dump gate or what a dump cost.
+fn append_storage_manager_loop_metrics(out: &mut String, stats: &temporalstore_rust::DataNodeRuntimeStats) {
+    out.push_str("# HELP temporalstore_storage_manager_pressure_loop Backlog the periodic loop read on its last round, by signal.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_pressure_loop gauge\n");
+    for (signal, value) in [
+        ("wal_bytes", stats.storage_manager_loop_wal_bytes),
+        ("undumped_wal_records", stats.storage_manager_loop_undumped_wal_records),
+        ("dirty_slots", stats.storage_manager_loop_dirty_buckets),
+        ("index_log_bytes", stats.storage_manager_loop_index_log_bytes),
+    ] {
+        out.push_str(&format!(
+            "temporalstore_storage_manager_pressure_loop{{signal=\"{signal}\"}} {value}\n"
+        ));
+    }
+    for (name, help, kind, value) in [
+        (
+            "temporalstore_storage_manager_dump_buckets_total",
+            "Buckets covered by the loop's dumps.",
+            "counter",
+            stats.storage_manager_dump_buckets as f64,
+        ),
+        (
+            "temporalstore_storage_manager_dump_logical_bytes_total",
+            "Logical bytes of the buckets the loop's dumps covered.",
+            "counter",
+            stats.storage_manager_dump_logical_bytes as f64,
+        ),
+        (
+            "temporalstore_storage_manager_dump_seconds_total",
+            "Time inside the loop's dump call, summed over dumps.",
+            "counter",
+            stats.storage_manager_dump_us_total as f64 / 1e6,
+        ),
+        (
+            "temporalstore_storage_manager_dump_max_seconds",
+            "Longest single dump the loop took.",
+            "gauge",
+            stats.storage_manager_dump_us_max as f64 / 1e6,
+        ),
+    ] {
+        out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} {kind}\n{name} {value}\n"));
     }
 }
 

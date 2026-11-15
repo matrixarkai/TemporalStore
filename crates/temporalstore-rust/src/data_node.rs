@@ -234,6 +234,28 @@ pub struct DataNodeRuntimeStats {
     /// could not say which stage its round time went to.
     #[serde(default)]
     pub storage_manager_stage_timing: std::collections::BTreeMap<String, StorageManagerStageTiming>,
+    /// What the loop's dumps wrote, summed over rounds: the buckets they covered, the logical bytes
+    /// of those buckets, and the time inside the dump call (total and longest single dump, in
+    /// microseconds). The reclaim stage's time includes the dump; this is the dump alone.
+    #[serde(default)]
+    pub storage_manager_dump_buckets: u64,
+    #[serde(default)]
+    pub storage_manager_dump_logical_bytes: u64,
+    #[serde(default)]
+    pub storage_manager_dump_us_total: u64,
+    #[serde(default)]
+    pub storage_manager_dump_us_max: u64,
+    /// The loop's own backlog reading from the last round it ran: the log above the oldest
+    /// undumped write, the records since the last dump, the dirty buckets and the index log's size.
+    /// The on-demand cycle report carries the same signals and a running server never runs one.
+    #[serde(default)]
+    pub storage_manager_loop_wal_bytes: u64,
+    #[serde(default)]
+    pub storage_manager_loop_undumped_wal_records: u64,
+    #[serde(default)]
+    pub storage_manager_loop_dirty_buckets: u64,
+    #[serde(default)]
+    pub storage_manager_loop_index_log_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -2201,6 +2223,14 @@ struct MutableRuntimeStats {
     storage_manager_round_us_total: u64,
     storage_manager_round_us_max: u64,
     storage_manager_stage_timing: std::collections::BTreeMap<String, StorageManagerStageTiming>,
+    storage_manager_dump_buckets: u64,
+    storage_manager_dump_logical_bytes: u64,
+    storage_manager_dump_us_total: u64,
+    storage_manager_dump_us_max: u64,
+    storage_manager_loop_wal_bytes: u64,
+    storage_manager_loop_undumped_wal_records: u64,
+    storage_manager_loop_dirty_buckets: u64,
+    storage_manager_loop_index_log_bytes: u64,
 }
 
 #[derive(Debug)]

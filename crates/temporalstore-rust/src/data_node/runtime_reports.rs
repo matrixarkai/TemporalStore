@@ -89,6 +89,15 @@ impl DataNodeRuntime {
             storage_manager_round_us_max: stats.storage_manager_round_us_max,
             storage_manager_stage_timing: stats.storage_manager_stage_timing.clone(),
             expiry_sweep_failures: self.inner.engine.expiry_sweep_failures(),
+            storage_manager_dump_buckets: stats.storage_manager_dump_buckets,
+            storage_manager_dump_logical_bytes: stats.storage_manager_dump_logical_bytes,
+            storage_manager_dump_us_total: stats.storage_manager_dump_us_total,
+            storage_manager_dump_us_max: stats.storage_manager_dump_us_max,
+            storage_manager_loop_wal_bytes: stats.storage_manager_loop_wal_bytes,
+            storage_manager_loop_undumped_wal_records: stats
+                .storage_manager_loop_undumped_wal_records,
+            storage_manager_loop_dirty_buckets: stats.storage_manager_loop_dirty_buckets,
+            storage_manager_loop_index_log_bytes: stats.storage_manager_loop_index_log_bytes,
         }
     }
 
