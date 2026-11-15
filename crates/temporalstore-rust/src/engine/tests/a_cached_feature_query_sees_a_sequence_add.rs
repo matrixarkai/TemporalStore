@@ -91,11 +91,11 @@ fn a_cached_feature_query_sees_a_sequence_add_after_expiry() {
         Command::FeatureAppendWithTtl {
             key: "e".to_string(),
             points: vec![FeaturePoint { timestamp_ms: 10, value: b"1".to_vec() }],
-            ttl_ms: 1,
+            ttl_ms: 400,
         },
     );
     assert_eq!(vec![10], seen(&engine, "e"));
-    std::thread::sleep(std::time::Duration::from_millis(30));
+    std::thread::sleep(std::time::Duration::from_millis(600));
     assert!(seen(&engine, "e").is_empty(), "the expired series still answered");
     add(&engine, "e", 5_000);
     assert_eq!(vec![5_000], seen(&engine, "e"), "an add after expiry was not seen");
