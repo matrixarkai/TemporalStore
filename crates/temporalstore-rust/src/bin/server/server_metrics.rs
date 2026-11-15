@@ -181,7 +181,7 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
 /// report below carries the same backlog signals, but a running server never runs one, so a scrape
 /// could not say how close the log was to the dump gate or what a dump cost.
 fn append_storage_manager_loop_metrics(out: &mut String, stats: &temporalstore_rust::DataNodeRuntimeStats) {
-    out.push_str("# HELP temporalstore_storage_manager_pressure_loop Backlog the periodic loop read on its last round, by signal.\n");
+    out.push_str("# HELP temporalstore_storage_manager_pressure_loop Backlog the periodic loop read on its last round that ran, by signal. A round that does not run (a shard still replaying its log) leaves the value unchanged, and the loop covers every shard in turn, so this is the last shard it ran, not a sum.\n");
     out.push_str("# TYPE temporalstore_storage_manager_pressure_loop gauge\n");
     for (signal, value) in [
         ("wal_bytes", stats.storage_manager_loop_wal_bytes),
@@ -224,7 +224,7 @@ fn append_storage_manager_loop_metrics(out: &mut String, stats: &temporalstore_r
 }
 
 fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManagerCycleReport) {
-    out.push_str("# HELP temporalstore_storage_manager_pressure Last StorageManager pressure snapshot by shard and signal.\n");
+    out.push_str("# HELP temporalstore_storage_manager_pressure Pressure snapshot of the last on-demand storage cycle, by signal. The periodic loop reports its own in temporalstore_storage_manager_pressure_loop.\n");
     out.push_str("# TYPE temporalstore_storage_manager_pressure gauge\n");
     let pressure = &report.pressure_snapshot;
     for (signal, value) in [
