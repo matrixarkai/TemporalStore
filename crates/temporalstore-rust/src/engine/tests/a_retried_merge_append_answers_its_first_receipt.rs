@@ -494,6 +494,63 @@ fn a_replay_is_admitted_before_the_request_is_checked_against_the_key() {
 }
 
 #[test]
+fn a_replayed_log_tail_reaches_the_live_series_bytes_and_leaves_the_flushed_ring_alone() {
+    // Async storage defers the blocks: after a restart the LOG holds what the last flush of the
+    // index did not. Two tokened appends are flushed (their ring is in the image) and a third,
+    // untokened, lives only in the log, so the lane can only read 9 if the replay applied it.
+    let dir = tempfile::tempdir().unwrap();
+    let restart_on = |cache: &str| {
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            dir.path().join(cache),
+            dir.path().join("blocks"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine
+    };
+    let live = restart_on("cache");
+    assert!(
+        live.set_config(crate::control::SetConfigRequest {
+            shard_id: 1,
+            config: crate::control::Config {
+                version: 2,
+                async_storage: true,
+                feature_max_size: 5_000,
+                ..Default::default()
+            },
+        })
+        .ok,
+        "the log has to be what holds the last write"
+    );
+    let key = key_for(12);
+    assert_eq!((1, 1, 0, false), receipt(&send(&live, &key, vec![adds(3)], Some(1))));
+    assert_eq!((1, 0, 1, false), receipt(&send(&live, &key, vec![adds(4)], Some(2))));
+    live.flush_shard_index(1);
+    assert_eq!(vec![7, 2], lanes(&live, &key), "DENOMINATOR: what the flushed image holds");
+    assert!(send(&live, &key, vec![adds(2)], None).status.ok);
+    let (series, ring, summed) = (raw_series(&live, &key), ring_bytes(&live, &key), lanes(&live, &key));
+    assert_eq!(vec![9, 3], summed);
+    assert!(live.write_ahead_log_store().stats(1).writes >= 3, "the log did not hold the writes");
+    drop(live);
+
+    let replayed = restart_on("cache-b");
+    assert_eq!(summed, lanes(&replayed, &key), "the log tail was not replayed");
+    assert_eq!(series, raw_series(&replayed, &key), "the log replay reached other bytes");
+    // The ring is the flushed one, byte for byte: replaying an untokened record neither files nor
+    // drops a token. A re-merge would answer (1, 0, 1): the cell exists. Only the first
+    // application's stored receipt says "created", and only the replay path sets the flag.
+    assert_eq!(ring, ring_bytes(&replayed, &key), "the replay disturbed the ring");
+    assert_eq!((1, 1, 0, true), receipt(&send(&replayed, &key, vec![adds(3)], Some(1))));
+    assert_eq!((1, 0, 1, true), receipt(&send(&replayed, &key, vec![adds(4)], Some(2))));
+    assert_eq!(summed, lanes(&replayed, &key), "a retry after the replay was summed again");
+    assert_eq!(series, raw_series(&replayed, &key));
+    // NOT ASSERTED, AND NOT TRUE TODAY: a TOKENED append written after the last flush. Replay
+    // installs the outcome the record carries (the points) and does not run the command again, so
+    // the token is not filed and a retry after such a crash would be applied a second time.
+}
+
+#[test]
 fn an_image_that_holds_rings_cannot_be_read_by_a_binary_that_does_not_know_them() {
     // The stamp is what refuses it: an older binary skips a side-table domain it does not declare,
     // so without a step it would load the image, drop every ring and write it back.

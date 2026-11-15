@@ -348,10 +348,13 @@ jobs:
             engine::tests::a_retried_merge_append_answers_its_first_receipt::a_token_survives_a_crash_and_a_storage_cycle_that_reclaimed_the_log \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::an_append_without_a_token_stores_what_it_always_stored \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::an_image_that_holds_rings_cannot_be_read_by_a_binary_that_does_not_know_them \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_replayed_log_tail_reaches_the_live_series_bytes_and_leaves_the_flushed_ring_alone \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::the_ring_holds_sixteen_through_the_engine_and_the_seventeenth_token_evicts_the_first \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::the_token_rides_the_command_bytes_and_a_tokenless_command_is_unchanged_on_every_wire \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::two_engines_given_the_same_requests_hold_the_same_bytes \
             engine::tests::a_retried_merge_append_answers_its_first_receipt::two_tokens_interleaved_and_one_token_twice_apart_apply_once_each \
+            client::tests::part3::a_merge_append_sends_its_retry_token_and_reports_a_replayed_receipt \
+            proxy::tests::a_feature_add_request_carries_its_retry_token_into_the_command \
             engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_element_name \
             engine::tests::a_string_increment_and_append_are_one_step::concurrent_increments_of_one_counter_lose_no_update \
             engine::tests::a_string_increment_and_append_are_one_step::concurrent_appends_to_one_string_drop_no_bytes \

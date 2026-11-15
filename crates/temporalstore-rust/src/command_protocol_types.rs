@@ -432,6 +432,17 @@ pub struct CellRollupSpec {
     pub truncate: Option<CellTruncateSpec>,
 }
 
+/// What a merge-reduce append landed, as the client reports it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CellMergeSummary {
+    pub snapshots_written: u64,
+    pub cells_created: u64,
+    pub cells_merged: u64,
+    /// Set when the request carried a retry token the key still remembered: the counts are the
+    /// first application's and this request wrote nothing.
+    pub replayed: bool,
+}
+
 /// What a rollup did, as the client reports it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct CellRollupSummary {
