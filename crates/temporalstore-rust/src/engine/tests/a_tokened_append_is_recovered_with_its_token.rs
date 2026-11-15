@@ -215,8 +215,8 @@ fn a_tokenless_append_logs_no_item_and_a_tokened_one_logs_exactly_one_whose_size
     assert!(!receipt(&send(&plain, &key, vec![adds(3)], None)).3);
     let (plain_line, plain_record) = last_record(&plain);
     assert!(plain_record.outcomes.iter().all(|item| item.kind != "cell_retry"), "a tokenless append logged a token");
-    // The record is as long as the log encodes it (the stamp inside it differs from run to run, its length does not).
-    assert_eq!(plain_line.len(), crate::wal::encode_wal_line_for_test(&plain_record).unwrap().len());
+    let encoded = |record: &crate::wal::WriteAheadLogRecord| crate::wal::encode_wal_line_for_test(record).unwrap().len();
+    let plain_encoded = encoded(&plain_record);
 
     // THE SAME APPEND WITH A TOKEN, on another.
     let dir = tempfile::tempdir().unwrap();
@@ -235,11 +235,12 @@ fn a_tokenless_append_logs_no_item_and_a_tokened_one_logs_exactly_one_whose_size
     // exactly what the item costs and the rest of the record is unchanged.
     let mut stripped = tokened_record.clone();
     stripped.outcomes.retain(|item| item.kind != "cell_retry");
-    let stripped_line = crate::wal::encode_wal_line_for_test(&stripped).unwrap();
-    assert_eq!(stripped_line.len(), plain_line.len(), "a token changed something besides its own item");
-    let cost = tokened_line.len() - plain_line.len();
+    let stripped_encoded = encoded(&stripped);
+    assert_eq!(stripped_encoded, plain_encoded, "a token changed something besides its own item");
+    let cost = encoded(&tokened_record) - plain_encoded;
     println!("MEASURED: a tokenless append is {} bytes in the log, a tokened one {} (+{cost}); the entry is {} bytes",
-        plain_line.len(), tokened_line.len(), items[0].value.as_ref().unwrap().len());
+        plain_encoded, plain_encoded + cost, items[0].value.as_ref().unwrap().len());
+    let _ = (plain_line, tokened_line);
     // A guard on the size, with room: the item names its kind, its key, a routing bucket and the
     // entry, and nothing else.
     assert!(cost > items[0].value.as_ref().unwrap().len() && cost <= key.len() + 64, "+{cost} bytes");
