@@ -441,6 +441,36 @@ fn cells_per_request_and_per_snapshot_refuse_one_past_and_accept_the_limit() {
 }
 
 #[test]
+fn the_cells_of_all_points_of_one_command_are_bounded_together() {
+    // A point holds at most 1024 cells and a command at most 100,000 points; the command as a
+    // whole holds at most MAX_CELLS_PER_MERGE_COMMAND cells, however they are spread.
+    use crate::engine::cell_set::MAX_CELLS_PER_MERGE_COMMAND as LIMIT;
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let h = header(&[LaneReducer::Sum]);
+    let key = key_for(61);
+    assert_eq!(0, LIMIT % MAX_CELLS_PER_REQUEST, "the limit is a whole number of full points");
+    let full_points = LIMIT / MAX_CELLS_PER_REQUEST;
+    let full = || -> Vec<FeaturePoint> {
+        (0..full_points as u64).map(|at| point(&h, 10 + at, &distinct(0, MAX_CELLS_PER_REQUEST))).collect()
+    };
+
+    // One cell past the limit, in a last point of its own: refused, naming the limit, and nothing
+    // of the 256 full points before it is written.
+    let mut over = full();
+    over.push(point(&h, 10_000, &distinct(0, 1)));
+    refused(
+        &merge(&engine, &key, over),
+        &format!("cells per merge command {} is over the limit of {}", LIMIT + 1, LIMIT),
+    );
+    assert!(raw_series(&engine, &key).is_empty(), "a refused command wrote something");
+
+    // Exactly the limit is accepted, every cell of it created.
+    assert_eq!((full_points as u64, LIMIT as u64, 0), landed(&merge(&engine, &key, full())));
+    assert_eq!(full_points, raw_series(&engine, &key).len(), "DENOMINATOR: the accepted command wrote its snapshots");
+}
+
+#[test]
 fn the_feature_ceiling_holds_for_a_merge_reduce_append() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

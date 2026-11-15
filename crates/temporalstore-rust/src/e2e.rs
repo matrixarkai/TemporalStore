@@ -418,6 +418,8 @@ fn is_write(command: &Command) -> bool {
             | Command::CommonExpire { .. }
             | Command::StringSet { .. }
             | Command::StringSetEx { .. }
+            | Command::StringIncrBy { .. }
+            | Command::StringAppend { .. }
             | Command::StringDelete { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }

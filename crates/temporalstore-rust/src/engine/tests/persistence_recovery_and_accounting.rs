@@ -10772,6 +10772,30 @@ fn what_each_command_recorded_describes_everything_it_changed() {
             },
         ),
         (
+            "StringIncrBy-keeps-deadline",
+            vec![Command::StringSetEx {
+                key: "pc-incr".to_string(),
+                value: b"40".to_vec(),
+                ttl_ms: 600_000,
+            }],
+            Command::StringIncrBy {
+                key: "pc-incr".to_string(),
+                increment: 2,
+            },
+        ),
+        (
+            "StringAppend-keeps-deadline",
+            vec![Command::StringSetEx {
+                key: "pc-append".to_string(),
+                value: b"ab".to_vec(),
+                ttl_ms: 600_000,
+            }],
+            Command::StringAppend {
+                key: "pc-append".to_string(),
+                value: b"cd".to_vec(),
+            },
+        ),
+        (
             "HashSet",
             Vec::new(),
             Command::HashSet {

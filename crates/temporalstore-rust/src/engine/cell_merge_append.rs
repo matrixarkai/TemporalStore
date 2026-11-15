@@ -203,6 +203,15 @@ pub(super) fn plan_cell_merge(
         }
         created += counts.created as u64;
         folded += counts.merged as u64;
+        // Every cell of the point was either created or merged, so the two sum to what the
+        // command has carried so far. Refused here, before anything is written, and early enough
+        // that the points after the one that crossed the limit are not decoded.
+        cell_set::within(
+            "cells per merge command",
+            (created + folded) as usize,
+            cell_set::MAX_CELLS_PER_MERGE_COMMAND,
+        )
+        .map_err(|err| refuse(key, format!("point at {timestamp_ms}: {err}")))?;
         newest = Some(Rc::clone(&effective));
         merged.insert(timestamp_ms, (effective, cells));
     }

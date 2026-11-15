@@ -289,6 +289,8 @@ message Command {
     ZSetCountAdjust zset_count_adjust = 67;
     ZSetScan zset_scan = 68;
     CellRollup cell_rollup = 69;
+    StringIncrBy string_incr_by = 70;
+    StringAppend string_append = 71;
   }
 }
 
@@ -1269,6 +1271,22 @@ message StringSetConditional {
   StringSetCondition condition = 4;
   bool return_old = 5;
   bool keep_ttl = 6;
+}
+
+// Add a signed amount to a string that holds a base-10 integer, in one step under the shard's
+// lock. A missing key counts as zero. A value that is not an integer, or a sum that does not fit
+// in an int64, is refused and the stored value is left alone. The deadline the key already holds
+// is kept.
+message StringIncrBy {
+  string key = 1;
+  int64 increment = 2;
+}
+
+// Add bytes to the end of a string in one step under the shard's lock, creating it when missing.
+// The answer is the new length. The deadline the key already holds is kept.
+message StringAppend {
+  string key = 1;
+  bytes value = 2;
 }
 
 // ===========================================================================================

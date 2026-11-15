@@ -983,6 +983,8 @@ impl TemporalEngine {
             Command::StringSet { .. }
                 | Command::StringSetEx { .. }
                 | Command::StringSetConditional { .. }
+                | Command::StringIncrBy { .. }
+                | Command::StringAppend { .. }
         );
         let mut config = self
             .configs

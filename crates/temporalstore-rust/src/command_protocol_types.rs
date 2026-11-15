@@ -432,6 +432,17 @@ pub struct CellRollupSpec {
     pub truncate: Option<CellTruncateSpec>,
 }
 
+/// What a merge-reduce append landed, as the client reports it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CellMergeSummary {
+    pub snapshots_written: u64,
+    pub cells_created: u64,
+    pub cells_merged: u64,
+    /// Set when the request carried a retry token the key still remembered: the counts are the
+    /// first application's and this request wrote nothing.
+    pub replayed: bool,
+}
+
 /// What a rollup did, as the client reports it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct CellRollupSummary {
@@ -1681,6 +1692,21 @@ pub enum Command {
         /// hand, and says so where it does.
         #[serde(default)]
         keep_ttl: bool,
+    },
+    /// Add `increment` to the base-10 integer the string holds, as ONE step under the shard's
+    /// lock, and answer the new value. A missing key counts as zero. A stored value that is not
+    /// an integer, or a sum that does not fit an `i64`, is refused and nothing is written. The
+    /// deadline the key holds is kept.
+    StringIncrBy {
+        key: String,
+        increment: i64,
+    },
+    /// Add `value` to the end of the string as ONE step under the shard's lock, creating it when
+    /// it is missing, and answer the new length. The deadline the key holds is kept.
+    StringAppend {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        value: Vec<u8>,
     },
     StringGet {
         key: String,

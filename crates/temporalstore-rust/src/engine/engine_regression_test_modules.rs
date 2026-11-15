@@ -138,6 +138,8 @@ mod a_removal_states_no_block_rows;
 mod a_hash_delete_files_nothing;
 #[path = "tests/a_sequence_write_states_the_rows_it_wrote.rs"]
 mod a_sequence_write_states_the_rows_it_wrote;
+#[path = "tests/a_cached_feature_query_sees_a_sequence_add.rs"]
+mod a_cached_feature_query_sees_a_sequence_add;
 #[path = "tests/a_compaction_does_not_lose_a_dirty_objects_dump.rs"]
 mod a_compaction_does_not_lose_a_dirty_objects_dump;
 #[path = "tests/a_counter_increment_writes_its_series_when_due.rs"]
@@ -542,3 +544,5 @@ mod a_container_point_read_searches_without_building_its_key;
 mod the_undumped_byte_figure_survives_one_claimless_bucket;
 #[path = "tests/a_ranked_read_over_several_cell_keys.rs"]
 mod a_ranked_read_over_several_cell_keys;
+#[path = "tests/a_string_increment_and_append_are_one_step.rs"]
+mod a_string_increment_and_append_are_one_step;

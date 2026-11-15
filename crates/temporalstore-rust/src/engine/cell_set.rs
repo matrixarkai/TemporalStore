@@ -55,8 +55,14 @@ pub(crate) const MAX_LANES_PER_CELL: usize = 16;
 pub(crate) const MAX_MEMBER_BYTES: usize = 256;
 /// Bytes in a text dimension, a text entity, or the namespace.
 pub(crate) const MAX_TEXT_DIMENSION_BYTES: usize = 256;
-/// Cells in one write request.
+/// Cells in one point of a write request.
 pub(crate) const MAX_CELLS_PER_REQUEST: usize = 1024;
+/// Cells in all the points of one merge-reduce command together. A point is bounded by
+/// [`MAX_CELLS_PER_REQUEST`] and a command by the feature ceiling in points, so without this a
+/// single command could ask the shard to decode, merge and encode 1024 cells in each of 100,000
+/// points. The figure is the one a fan-in read stops at, so what one command may write is no more
+/// than what one read may gather.
+pub(crate) const MAX_CELLS_PER_MERGE_COMMAND: usize = 262_144;
 /// Cells in one stored snapshot.
 pub(crate) const MAX_CELLS_PER_SNAPSHOT: usize = 4096;
 /// Largest `k` a ranked read may ask for.
