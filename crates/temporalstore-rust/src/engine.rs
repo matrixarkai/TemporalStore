@@ -5809,7 +5809,13 @@ pub(super) fn wal_single_barrier() -> bool {
 /// the value. Writing the same bytes into a block segment as well costs a second write per set
 /// and nothing a recovery or a read uses: the block is served from the record through the
 /// WAL-resident registry until the storage manager's dump moves it into the block store, after
-/// which the log may be reclaimed. Default ON; `TS_SYNC_VALUE_ONCE=0` restores the second write.
+/// which the log may be reclaimed. Default OFF; `TS_SYNC_VALUE_ONCE=1` turns it on.
+///
+/// Why off: every such write holds a log-resident registration, the lowest registration pins the
+/// log's retention floor, and the storage manager's loop materialises at most
+/// `max_dump_buckets_per_round` per pass. A write rate above that grows the registry and the log
+/// without bound (a 1,500 s side-by-side soak left the log at its 128 MiB gate while the two-copy
+/// placement's log shrank). Turn the default on only after a sustained test shows both bounded.
 ///
 /// Only under the single-barrier recovery default: the legacy delta-fold recovery trusts the
 /// index log, and a value-once write records no per-write index delta.
@@ -5817,9 +5823,13 @@ pub(super) fn sync_value_once_enabled() -> bool {
     #[cfg(test)]
     let default_on = VALUE_ONCE_IN_TEST.with(std::cell::Cell::get);
     #[cfg(not(test))]
-    let default_on = true;
+    let default_on = SYNC_VALUE_ONCE_DEFAULT_ON;
     wal_single_barrier() && crate::env_flag::env_bool("TS_SYNC_VALUE_ONCE", default_on)
 }
+
+/// The shipped default of `TS_SYNC_VALUE_ONCE`. A test pins it; see the note on
+/// [`sync_value_once_enabled`] before changing it.
+pub(crate) const SYNC_VALUE_ONCE_DEFAULT_ON: bool = false;
 
 #[cfg(test)]
 thread_local! {

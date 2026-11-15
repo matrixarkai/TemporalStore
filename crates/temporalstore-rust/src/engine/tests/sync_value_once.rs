@@ -453,3 +453,15 @@ fn reclaim_before_the_dump_keeps_the_records_that_hold_the_values() {
         );
     }
 }
+
+/// The shipped default stays OFF until a sustained test (ten or more loop rounds with a write rate
+/// above `max_dump_buckets_per_round`) shows the log-resident registry and the log bounded. Flipping
+/// it must be a deliberate edit of this test, not a side effect.
+#[test]
+fn the_shipped_default_is_off_until_a_sustained_test_shows_the_log_bounded() {
+    assert!(
+        !crate::engine::SYNC_VALUE_ONCE_DEFAULT_ON,
+        "TS_SYNC_VALUE_ONCE must default off: the loop materialises at most max_dump_buckets_per_round \
+         log-resident blocks per round, so a faster write rate pins the log floor without bound"
+    );
+}

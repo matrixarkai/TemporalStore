@@ -32,3 +32,5 @@ mod a_reopen_after_rounds_with_deadlines_serves_every_key_and_list_element;
 mod the_loop_reports_its_backlog_and_its_dumps;
 #[path = "tests/a_sync_value_once_survives_the_loop.rs"]
 mod a_sync_value_once_survives_the_loop;
+#[path = "tests/a_sync_value_once_does_not_outgrow_the_materialise_cap.rs"]
+mod a_sync_value_once_does_not_outgrow_the_materialise_cap;
