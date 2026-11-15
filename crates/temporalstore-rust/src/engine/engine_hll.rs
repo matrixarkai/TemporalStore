@@ -169,11 +169,9 @@ pub(crate) fn record_change(shard: &mut ShardState, key: &str, bucket_ms: u64, v
     // this write belongs to is not filed yet at this point, so there is no handle to borrow --
     // `adopt_object_key_allocations` runs once the bucket index holds one and re-keys this map
     // onto it. Asking for the handle here is what went 0 for 40,040 the first time a sharing
-    // mechanism was wired before its source existed.
-    let bucket = shard
-        .control_state_changes
-        .entry(super::state::ModelKey::from(key))
-        .or_default()
+    // mechanism was wired before its source existed. A key that is ALREADY here is reached through
+    // a borrow: only a new one mints.
+    let bucket = super::product_model::slot_for_write(&mut shard.control_state_changes, key)
         .entry(bucket_ms)
         .or_default();
     match bucket {

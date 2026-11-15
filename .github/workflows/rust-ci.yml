@@ -1046,6 +1046,9 @@ jobs:
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::an_in_place_read_answers_what_the_decoder_answered \
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::a_sequence_query_answers_the_rows_that_were_added \
             engine::tests::a_timestamped_point_names_itself_once::the_staged_items_are_what_they_were \
+            engine::tests::a_write_into_a_live_series_borrows_its_key::a_slot_keeps_the_key_it_has_and_mints_the_key_it_lacks \
+            engine::tests::a_write_into_a_live_series_borrows_its_key::a_history_through_every_borrowing_arm_answers_what_an_oracle_answers \
+            engine::tests::a_write_into_a_live_series_borrows_its_key::no_arm_mints_a_key_before_it_looks_the_key_up \
             engine::tests::a_hash_get_all_shares_its_page_keys::a_whole_hash_read_answers_what_the_per_field_reads_answer \
             engine::tests::a_whole_container_read_shares_its_work::a_list_range_answers_the_pushes_it_was_given \
             engine::tests::a_whole_container_read_shares_its_work::a_list_element_name_spells_what_the_formatted_name_spells \

@@ -195,6 +195,42 @@ pub(super) fn aggregate_control_state_values(values: &[i64], aggregator: &str) -
     super::window_aggregate::counter_legacy(aggregator, values)
 }
 
+/// The entry of a `ModelKey`-keyed map for `key`, reached through a BORROW when it exists.
+///
+/// `entry(Arc::from(key))` mints the key's `Arc` BEFORE the lookup: `Arc::from(&str)` always
+/// mallocs and copies, and `entry()` takes its key by value, so every write into a series that
+/// already exists built a key, copied the text into it and dropped it again, on counter increments,
+/// seen checks, token-bucket takes, distinct adds and sequence appends alike. Only a key that is
+/// NOT in the map is minted, once per object instead of once per write; that costs one extra hash
+/// of the key on the miss.
+///
+/// ONE HOME FOR THE RULE, so the borrow cannot be right in one arm and forgotten in the next.
+pub(super) fn slot_for_write<'m, V: Default>(
+    map: &'m mut std::collections::HashMap<super::state::ModelKey, V>,
+    key: &str,
+) -> &'m mut V {
+    if !map.contains_key(key) {
+        map.insert(std::sync::Arc::from(key), V::default());
+    }
+    map.get_mut(key).expect("the slot was just found or inserted")
+}
+
+/// Replace the value stored under `key`, minting the key's `Arc` only when the map has no entry.
+/// The overwrite twin of [`slot_for_write`], for a slot whose whole value is rebuilt by the write
+/// (a token bucket's state, a selection's winner).
+pub(super) fn store_for_write<V>(
+    map: &mut std::collections::HashMap<super::state::ModelKey, V>,
+    key: &str,
+    value: V,
+) {
+    match map.get_mut(key) {
+        Some(slot) => *slot = value,
+        None => {
+            map.insert(std::sync::Arc::from(key), value);
+        }
+    }
+}
+
 pub(super) fn is_control_state_change_aggregator(aggregator: &str) -> bool {
     aggregator.eq_ignore_ascii_case("change")
 }
