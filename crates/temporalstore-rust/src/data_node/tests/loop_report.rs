@@ -319,6 +319,7 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
     // is a few kilobytes of log. The quiet rounds below then run under `options`, where nothing
     // is dirty and the memory alone decides.
     let settling = StorageManagerOptions {
+        min_undumped_wal_records: 1,
         min_undumped_wal_bytes: 1,
         ..options.clone()
     };
@@ -366,6 +367,7 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
 
     // Release the write with a one-byte gate until the shard is clean again, then QUIET AGAIN.
     let releasing = StorageManagerOptions {
+        min_undumped_wal_records: 1,
         min_undumped_wal_bytes: 1,
         ..options.clone()
     };
