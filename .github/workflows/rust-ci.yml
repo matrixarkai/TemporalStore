@@ -514,6 +514,7 @@ jobs:
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_request_that_disagrees_with_the_stored_header_is_refused_naming_the_field_and_writes_nothing \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_key_that_does_not_fit_its_spec_a_junk_value_a_plain_value_and_an_empty_request_are_refused \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::cells_per_request_and_per_snapshot_refuse_one_past_and_accept_the_limit \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_cells_of_all_points_of_one_command_are_bounded_together \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_feature_ceiling_holds_for_a_merge_reduce_append \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_trim_keeps_the_newest_snapshots_and_each_still_carries_its_header \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_key_past_its_deadline_merges_as_a_new_key \
