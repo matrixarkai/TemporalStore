@@ -83,7 +83,7 @@ WEIGHTED by the sum of the lanes at `weighted_lanes` times `weights` (indexes an
 negative, same length, pair tables only index 0 and 1); WILSON by the lower bound for lane 0
 successes of lane 1 trials at `wilson_z` (1.96 when absent). Results are ordered best first; equal
 scores order by member. MEMBERS_ONLY returns the listed members and ignores `limit`. RECENT and
-MATCH_LANE return stored cells newest first, not reduced per member.
+MATCH_LANE return stored cells newest first, not reduced per member (see **Stored cells** below).
 
 **Member set.** `members` (with `has_members`) is the include set and `excluded_members` the exclude
 set: a read uses only members in the first (when it is present) and never one in the second; a member
@@ -124,6 +124,16 @@ milliseconds of age measured from the newest snapshot of the window, and summed.
 half-life; it is made a whole number of milliseconds by `decay_rounding` (floor, ceiling or nearest).
 It must be finite, not negative, and, after rounding, between 1 ms and ten years. Every other mode
 still accepts `decay` and ignores it.
+
+**Stored cells.** `RECENT` and `MATCH_LANE` answer the cells as they were stored, one row per cell and
+none reduced, the newest snapshot first (cells of one snapshot by member, smaller first), so a member
+written in three snapshots is three rows, each with that snapshot's labels, lane values and stamp
+(`timestamp_us`). `limit` bounds the rows (1 to 1000, as for every read); the window, the label
+predicate and the member set apply to each cell. `MATCH_LANE` keeps the cells whose lane at
+`match_lane` (the first when absent) holds `match_value` (0 when absent); a lane the table does not
+declare, or a negative value, is refused. A quota is refused on these modes: it chooses among reduced
+members. Over `more_entities` the rows of all keys interleave by stamp, the later entity first when
+two snapshots share one. The command is the ranked read with the score `Recent`.
 
 **Several entities.** `more_entities` (at most 63, 64 bit ids, none repeated, none equal to `entity`)
 turns the query into one merged read over the keys of `entity` and each of them, same channel and kind:
@@ -181,6 +191,8 @@ at it.
 | newest-anchored window kinds | `spec.anchor = Newest` |
 | `quota_lanes`, `quota_counts` | `spec.quota` |
 | `DECAYED_LANE`, `decay`, `decay_rounding` | `CellScore::Decay { lane, half_life_ms }` |
+| `RECENT` | `CellScore::Recent` |
+| `MATCH_LANE`, `match_lane`, `match_value` | `CellScore::Recent` and the predicate `lane = match_value` |
 
 Every translated spec is also checked by the same admission the commands run (`validate_spec`), so a
 request the translator accepts is one the engine accepts, and a bound is refused here at the same

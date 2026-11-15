@@ -587,6 +587,10 @@ mod quota;
 #[path = "cell_rank_decay_tests.rs"]
 mod decay;
 
+// The stored-cell read.
+#[path = "cell_rank_recent_tests.rs"]
+mod recent;
+
 #[cfg(feature = "alloc-probe")]
 mod probe {
     use super::*;

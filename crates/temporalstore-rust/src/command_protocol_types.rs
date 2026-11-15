@@ -256,6 +256,14 @@ pub enum CellScore {
     /// values are the ones each snapshot stores (not the lane's reduction across snapshots). The
     /// score is a float, so a total past 2^53 is rounded and never wraps.
     Decay { lane: String, half_life_ms: u64 },
+    /// Not an ordering of members: the read answers STORED CELLS, one row per cell and none of
+    /// them reduced, the newest snapshot first (cells of one snapshot by member, smaller first,
+    /// and of two keys' snapshots sharing a stamp in a merged read, the later key first). A row's
+    /// `last_ms` is its snapshot's stamp, its `score` the same stamp as a float, and its labels and
+    /// lanes are the values that snapshot stores. `top_k` bounds the rows; `filters`, `members`
+    /// and `project` apply to each cell. A quota is refused (it chooses among reduced members) and
+    /// a rollup cap cannot use it.
+    Recent,
 }
 
 /// Which instant a `Last` window ends at.

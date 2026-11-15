@@ -610,6 +610,12 @@ jobs:
             engine::cell_rank::tests::decay::a_total_past_the_integer_range_neither_wraps_nor_goes_unranked \
             engine::cell_rank::tests::decay::a_member_whose_weights_have_all_vanished_is_ranked_at_zero_not_dropped \
             engine::cell_rank::tests::decay::a_decay_names_a_lane_and_has_no_value_for_a_single_folded_cell \
+            engine::cell_rank::tests::recent::a_recent_read_answers_every_stored_cell_once_newest_snapshot_first_and_reduces_none \
+            engine::cell_rank::tests::recent::rows_are_bounded_by_the_limit_and_the_walk_stops_in_the_middle_of_a_snapshot \
+            engine::cell_rank::tests::recent::the_window_the_predicates_the_member_set_and_the_projection_apply_to_each_cell \
+            engine::cell_rank::tests::recent::snapshots_sharing_a_stamp_come_back_with_the_later_one_in_the_slice_first \
+            engine::cell_rank::tests::recent::a_recent_read_refuses_a_quota_and_is_no_score_for_a_cap \
+            engine::cell_rank::tests::recent::a_cell_that_breaks_the_header_shape_or_the_member_order_is_refused_not_returned \
             engine::tests::a_ranked_cell_read_is_a_command::a_ranked_read_answers_from_what_was_stored_live_and_after_a_restart \
             engine::tests::a_ranked_cell_read_is_a_command::an_absent_key_and_an_expired_key_rank_nothing \
             engine::tests::a_ranked_cell_read_is_a_command::a_read_the_key_cannot_serve_is_refused_with_its_reason \
@@ -625,6 +631,8 @@ jobs:
             engine::tests::a_ranked_cell_read_is_a_command::a_quota_selects_exactly_as_a_fold_of_the_ranking_says \
             engine::tests::a_ranked_cell_read_is_a_command::a_quota_is_refused_at_admission_past_its_bounds_and_served_at_them \
             engine::tests::a_ranked_cell_read_is_a_command::a_query_that_uses_none_of_the_controls_is_encoded_and_answered_as_it_always_was \
+            engine::tests::a_ranked_cell_read_is_a_command::a_recent_read_answers_the_stored_cells_newest_first_live_and_after_a_restart \
+            engine::tests::a_ranked_cell_read_is_a_command::a_recent_read_is_bounded_like_the_ranked_read_and_refuses_a_quota \
             engine::tests::a_ranked_read_over_several_cell_keys::a_batch_honours_the_quota_each_read_carries \
             engine::tests::a_ranked_read_over_several_cell_keys::a_batch_is_refused_at_admission_for_its_size_and_for_any_read_a_single_read_would_be_refused_for \
             engine::tests::a_ranked_read_over_several_cell_keys::a_batch_of_reads_answers_each_as_the_single_read_would_in_request_order_and_one_failing_read_fails_no_other \
@@ -799,6 +807,9 @@ jobs:
             engine::cell_protocol::tests::each_translated_rank_mode_becomes_the_score_it_names \
             engine::cell_protocol::tests::the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_and_kind \
             engine::cell_protocol::tests::a_mode_or_window_that_is_not_built_yet_is_refused_and_says_so \
+            engine::cell_protocol::tests::recent_is_the_stored_cell_read_with_the_selectors_label_and_limit \
+            engine::cell_protocol::tests::match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_say \
+            engine::cell_protocol::tests::a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_snapshot \
             engine::cell_protocol::tests::a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time \
             engine::cell_protocol::tests::a_window_from_a_start_covers_whole_milliseconds_and_excludes_its_end \
             engine::cell_protocol::tests::an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time \

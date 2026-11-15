@@ -23,9 +23,10 @@
 //!
 //! # WHAT IS NOT TRANSLATED YET
 //!
-//! Rank modes and windows that the ranked read cannot express today (`RECENT`, `MATCH_LANE`, which
-//! answer stored cells one row each rather than members, and the newest-rows window) are refused
-//! with a message that says so. `REMOVE` and `DELETE` are the one removal command
+//! `RECENT` and `MATCH_LANE` answer stored cells, one row each and none reduced, newest first: both
+//! are the ranked read with [`CellScore::Recent`], and `MATCH_LANE` adds an equality predicate on
+//! the lane it names. The newest-rows window, which counts stored rows rather than snapshots, is
+//! refused with a message that says so. `REMOVE` and `DELETE` are the one removal command
 //! ([`Command::CellRemove`]); see [`remove`].
 //! `MEMBERS_ONLY` reads exactly the include set, ordered by time.
 //!
@@ -673,12 +674,8 @@ fn score_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<Cel
         // first: the stamp of each member's newest snapshot in the window, equal stamps by member.
         Mode::MembersOnly => CellScore::Time,
         // These two answer the stored cells newest first, one row per cell and NOT reduced per
-        // member, which the ranked read has no option for.
-        other => {
-            return Err(invalid(format!(
-                "rank mode {other:?} is not translated yet: it needs a read-side option that is not built"
-            )))
-        }
+        // member; `match_filter_of` adds the lane test that makes the second one a match.
+        Mode::Recent | Mode::MatchLane => CellScore::Recent,
     })
 }
 
@@ -704,6 +701,24 @@ fn refuse_unbuilt_options(selector: &wire::CellSelector) -> Result<(), Refusal> 
         )));
     }
     Ok(())
+}
+
+/// The lane test of a `MATCH_LANE` read: the stored cells whose lane at `match_lane` (the first
+/// when absent) holds `match_value` (0 when absent). A lane is a signed number and a predicate
+/// compares an unsigned one, so a negative `match_value` is refused rather than wrapped.
+fn match_filter_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<Option<FeatureFilter>, Refusal> {
+    if selector.mode() != wire::RankMode::MatchLane {
+        return Ok(None);
+    }
+    let at = if selector.has_match_lane { selector.match_lane } else { 0 };
+    let at = i32::try_from(at).map_err(|_| invalid(format!("match lane {at} is not a lane of this table")))?;
+    let value = if selector.has_match_value { selector.match_value } else { 0 };
+    let value = u64::try_from(value).map_err(|_| invalid(format!("match value {value} is negative")))?;
+    Ok(Some(FeatureFilter {
+        field: lane_name(profile, at, "match lane")?,
+        op: FeatureFilterOp::Equal,
+        value,
+    }))
 }
 
 /// One wire query as the engine's ranked read.
@@ -767,6 +782,7 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::CellQuery) -
         }
         None => {}
     }
+    filters.extend(match_filter_of(profile, selector)?);
     let spec = CellRankSpec { window, filters, score, top_k, project: Vec::new(), members, anchor, quota };
     // The engine's own admission: what is accepted here is accepted by the command.
     cell_rank::validate_spec(&spec).map_err(invalid)?;
