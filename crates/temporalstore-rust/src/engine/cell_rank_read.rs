@@ -31,13 +31,13 @@
 
 use super::cell_fan_in::{validate_chosen, validate_keys};
 use super::cell_rank::{FlatView, Plan, MAX_WINDOW_SNAPSHOTS};
-use super::cell_rank_options::last_bounds;
 use super::cell_set::{check_header, split_value, CellHeader, FlatCells};
 use super::object_record::ObjectSlot;
+use super::window::window_samples;
 use super::*;
 use crate::block_store::ElementEntry;
 use crate::engine::timestamped_series::TimestampedSeries as _;
-use crate::types::{CellRankSpec, CellWindow, RankedCells};
+use crate::types::{CellRankSpec, RankedCells};
 
 /// The snapshots a read decoded, oldest first, each in the flat form: a fixed handful of
 /// allocations per snapshot however many cells it holds.
@@ -77,30 +77,10 @@ fn newest_header(
     }
 }
 
-/// The snapshots the window names, newest first, bounded.
+/// The snapshots the window names, newest first, bounded. One more than the window bound is
+/// returned for a range of stamps, so a caller can tell a window at the bound from one over it.
 fn named_snapshots<'s>(series: &'s ObjectSlot, spec: &CellRankSpec, now_ms: u64) -> Vec<(u64, &'s ElementEntry)> {
-    let bounded = |from_ms: u64, to_ms: u64| -> Vec<(u64, &'s ElementEntry)> {
-        series
-            .range(crate::engine::timestamp_range_bounds(from_ms, to_ms))
-            .rev()
-            .take(MAX_WINDOW_SNAPSHOTS + 1)
-            .collect()
-    };
-    match &spec.window {
-        CellWindow::Between { start_ms, end_ms } => bounded(*start_ms, *end_ms),
-        // The window's ends come from the same function the pure read uses, so the two agree on what
-        // an anchor at the newest snapshot means (this key's own newest). A window that holds no
-        // stamp reads nothing.
-        CellWindow::Last { duration_ms } => {
-            let newest_ms = series.range(..).next_back().map(|(at, _)| at);
-            match last_bounds(spec.anchor, *duration_ms, now_ms, newest_ms) {
-                Some((from_ms, to_ms)) => bounded(from_ms, to_ms),
-                None => Vec::new(),
-            }
-        }
-        CellWindow::Since { start_ms } => bounded(*start_ms, u64::MAX),
-        CellWindow::LastN { n } => series.range(..).rev().take(*n).collect(),
-    }
+    window_samples(series, &spec.window, spec.anchor, now_ms, MAX_WINDOW_SNAPSHOTS + 1)
 }
 
 /// Reads and decodes `named` (newest first) under `header`, returning them oldest first.
