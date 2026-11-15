@@ -776,6 +776,9 @@ jobs:
             engine::cell_protocol::tests::a_restore_never_carries_a_token \
             engine::cell_protocol::tests::a_selector_that_asks_for_snapshot_info_or_a_member_limit_is_refused_naming_the_field \
             engine::cell_protocol::tests::a_selector_that_sets_them_off_is_translated_to_exactly_the_read_it_was_without_them \
+            engine::window::tests::a_range_stops_at_its_cap_newest_first_and_a_newest_n_is_not_capped_by_it \
+            engine::window::tests::a_window_is_resolved_against_the_clock_and_the_anchor_it_names \
+            engine::window::tests::every_window_kind_names_the_samples_the_walk_it_replaced_named \
             engine::tests::what_a_high_cardinality_distinct_holds::an_unbounded_distinct_holds_every_member_and_the_bound_holds_a_fixed_sketch \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::an_ordered_read_answers_by_score_whatever_the_window \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::a_score_update_reorders_an_ordered_read \
