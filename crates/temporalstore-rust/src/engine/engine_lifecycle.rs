@@ -2166,6 +2166,33 @@ impl TemporalEngine {
                     .insert(std::sync::Arc::from(&item.object_key[..]), (tokens, refilled_at));
                 true
             }
+            // A retry token a merge-reduce append filed in its key's ring, and the receipt it
+            // landed: state no block backs, which lives in the index image and so is older than
+            // the append when the append is only in the log. Installing it files the entry the
+            // write filed, so a retry of that request after a crash answers its first receipt.
+            //
+            // The series is installed by the items before this one in the record, so the same rule
+            // the write applies holds here: a key that holds no snapshot remembers nothing. A
+            // token the ring already holds (the image was flushed after this record) is left as
+            // it is, which is what makes the record replayable more than once. A value that is not
+            // one entry in its one spelling is refused, and a refused item fails the load.
+            "cell_retry" => {
+                let Some(Ok((token, receipt))) =
+                    item.value.as_deref().map(super::cell_retry_ring::decode_logged_entry)
+                else {
+                    return false;
+                };
+                let live = shard.features().get(&item.object_key[..]).is_some_and(|series| series.len() > 0);
+                if !live {
+                    shard.forget_retry_ring(&item.object_key);
+                    return true;
+                }
+                let held = shard.retry_ring(&item.object_key).map(|ring| ring.admit(token));
+                if matches!(held, Some(super::cell_retry_ring::Admission::Replay(_))) {
+                    return true;
+                }
+                shard.record_retry_token(&item.object_key, token, receipt).is_ok()
+            }
             "string" => {
                 let Some(address) = item.resolved_address() else {
                     return false;

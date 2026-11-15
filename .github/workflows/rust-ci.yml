@@ -761,6 +761,12 @@ jobs:
             engine::cell_retry_ring::tests::a_token_twice_in_one_stored_ring_is_refused \
             engine::cell_retry_ring::tests::a_value_that_is_not_the_canonical_spelling_is_refused \
             engine::cell_retry_ring::tests::a_truncated_or_corrupt_value_is_an_error_and_never_a_panic \
+            engine::cell_retry_ring::tests::a_logged_entry_is_the_four_fields_a_ring_stores_and_reads_back_only_in_that_spelling \
+            engine::tests::a_logged_retry_token_is_installed_on_replay::a_logged_token_is_filed_and_the_retry_after_it_answers_the_first_receipt \
+            engine::tests::a_logged_retry_token_is_installed_on_replay::installing_an_entry_twice_changes_nothing_and_the_ring_holds_sixteen \
+            engine::tests::a_logged_retry_token_is_installed_on_replay::a_key_that_holds_no_snapshot_remembers_no_token \
+            engine::tests::a_logged_retry_token_is_installed_on_replay::a_value_that_is_not_one_entry_in_its_spelling_is_refused_and_touches_nothing \
+            engine::tests::a_logged_retry_token_is_installed_on_replay::the_item_survives_the_protobuf_record_with_its_kind_and_value \
             engine::cell_protocol::tests::the_add_request_wire_bytes_follow_the_established_field_numbers \
             engine::cell_protocol::tests::an_unknown_field_is_skipped_and_the_rest_reads_the_same \
             engine::cell_protocol::tests::a_query_and_its_answer_round_trip_through_the_wire \

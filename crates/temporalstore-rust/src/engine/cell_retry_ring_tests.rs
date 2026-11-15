@@ -308,3 +308,36 @@ mod probe {
         assert!(churn >= 900, "CONTROL: the probe did not see the rebuilding ring ({churn})");
     }
 }
+
+#[test]
+fn a_logged_entry_is_the_four_fields_a_ring_stores_and_reads_back_only_in_that_spelling() {
+    // The log carries exactly the bytes the index image stores for the entry: a ring of one entry is
+    // the entry in a length-delimited field 1.
+    for token in [0u64, 1, 127, 128, 300, u64::MAX] {
+        let landed = RetryReceipt { snapshots_written: token, cells_created: 1, cells_merged: u64::MAX };
+        let mut ring = RetryRing::new();
+        ring.record(token, landed).unwrap();
+        let stored = ring.encode();
+        let entry = encode_entry(token, &landed);
+        assert_eq!(stored[0], (1 << 3) | 2);
+        assert_eq!(&stored[2..], &entry[..], "token {token}");
+        assert_eq!(usize::from(stored[1]), entry.len());
+        assert_eq!(decode_logged_entry(&entry), Ok((token, landed)));
+    }
+    // A small token and a small receipt cost a handful of bytes: 2 per field.
+    assert_eq!(encode_entry(7, &receipt(1)).len(), 8);
+    assert_eq!(encode_entry(7, &RetryReceipt { snapshots_written: 1, cells_created: 1, cells_merged: 1 }).len(), 8);
+
+    let good = encode_entry(42, &receipt(2));
+    assert!(decode_logged_entry(&good).is_ok());
+    assert!(decode_logged_entry(&[]).is_err());
+    assert!(decode_logged_entry(&good[..good.len() - 1]).is_err());
+    let mut trailing = good.clone();
+    trailing.push(0);
+    assert!(decode_logged_entry(&trailing).unwrap_err().contains("after its last field"));
+    // A padded varint reads to the same number and is refused for it.
+    let mut padded = vec![0x08, 0xAA, 0x00];
+    padded.extend_from_slice(&good[2..]);
+    assert_eq!(decode_entry(&padded).unwrap().0, 42);
+    assert!(decode_logged_entry(&padded).unwrap_err().contains("canonical"));
+}
