@@ -62,6 +62,8 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::HashDelete { key, .. }
         | Command::SetAdd { key, .. }
         | Command::SetMembers { key }
+        | Command::SetCard { key }
+        | Command::SetIsMember { key, .. }
         | Command::SetScan { key, .. }
         | Command::SetRemove { key, .. }
         | Command::ListPush { key, .. }

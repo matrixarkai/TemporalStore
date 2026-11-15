@@ -517,6 +517,15 @@ static GATED_LISTING_DECLINED: std::sync::atomic::AtomicU64 = std::sync::atomic:
 /// to tell "the fold served" from "something cheaper served", and without this the map path
 /// is indistinguishable from a cache hit -- both leave the fold counters at zero.
 static SET_LISTING_FROM_MAP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// How many `SetCard` / `SetIsMember` answers were read straight from the durable member map,
+/// without building a listing. A listing answer and a point answer are the same integer, so a
+/// test needs this to tell which one produced it.
+static SET_POINT_FROM_MAP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Point answers (`SetCard`, `SetIsMember`) read from the member map so far.
+pub fn set_point_answers_from_map() -> u64 {
+    SET_POINT_FROM_MAP.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// (derived, declined, from_map) for gated container listings. The third exists so a test can
 /// still tell WHICH mechanism answered once the durable map became the preferred one: a map
@@ -3580,6 +3589,101 @@ pub(crate) fn execute_on_shard(
                         .unwrap_or_default(),
                 }
             })
+        }
+        Command::SetCard { key } => {
+            if drop_if_expired(cache, shard_id, shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            // THE LENGTH OF THE MAP THE MEMBERS LIVE IN. The listing this replaces cloned every
+            // member into a vector (and into the cache) to take its length.
+            if shard.set_listing_from_map {
+                if let Some(members) = shard.bucket_index.sets.get(&key) {
+                    SET_POINT_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return ExecuteOutcome {
+                        response: CommandResponse::Integer {
+                            value: members.len() as i64,
+                        },
+                        mutated,
+                    };
+                }
+            }
+            // No resident entry, or the map is switched off for listings: the listing decides,
+            // so a key whose blocks say otherwise is counted from them exactly as it is listed.
+            let listed = execute_on_shard(
+                cache,
+                block_store,
+                feature_max_size,
+                async_storage,
+                control_rollup_enabled,
+                control_coalesce_persist,
+                control_state_max_size,
+                control_distinct_sketch,
+                trim_boundary_record,
+                set_listing_from_map,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                Command::SetMembers { key },
+            );
+            let value = match listed.response {
+                CommandResponse::Members { members } => members.len() as i64,
+                _ => 0,
+            };
+            mutated |= listed.mutated;
+            CommandResponse::Integer { value }
+        }
+        Command::SetIsMember { key, member } => {
+            if drop_if_expired(cache, shard_id, shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            // ONE LOOKUP IN THE ORDERED MAP, keyed by member bytes.
+            if shard.set_listing_from_map {
+                if let Some(members) = shard.bucket_index.sets.get(&key) {
+                    SET_POINT_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return ExecuteOutcome {
+                        response: CommandResponse::Integer {
+                            value: i64::from(members.contains_key(member.as_slice())),
+                        },
+                        mutated,
+                    };
+                }
+            }
+            let listed = execute_on_shard(
+                cache,
+                block_store,
+                feature_max_size,
+                async_storage,
+                control_rollup_enabled,
+                control_coalesce_persist,
+                control_state_max_size,
+                control_distinct_sketch,
+                trim_boundary_record,
+                set_listing_from_map,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                Command::SetMembers { key },
+            );
+            let value = match listed.response {
+                CommandResponse::Members { members } => {
+                    i64::from(members.iter().any(|listed| *listed == member))
+                }
+                _ => 0,
+            };
+            mutated |= listed.mutated;
+            CommandResponse::Integer { value }
         }
         Command::SetScan { key, after, limit } => {
             if drop_if_expired(cache, shard_id, shard, &key) {

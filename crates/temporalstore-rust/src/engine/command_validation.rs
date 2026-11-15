@@ -26,6 +26,8 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
         | Command::HashGetAll { key, .. }
         | Command::HashLen { key, .. }
         | Command::SetMembers { key, .. }
+        | Command::SetCard { key }
+        | Command::SetIsMember { key, .. }
         | Command::SetScan { key, .. }
         | Command::ZSetScan { key, .. }
         | Command::FeatureQuery { key, .. }
@@ -351,6 +353,8 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::HashGetAll { .. }
         | Command::HashLen { .. }
         | Command::SetMembers { .. }
+        | Command::SetCard { .. }
+        | Command::SetIsMember { .. }
         | Command::SetScan { .. }
         | Command::ZSetScan { .. }
         | Command::FeatureQuery { .. }

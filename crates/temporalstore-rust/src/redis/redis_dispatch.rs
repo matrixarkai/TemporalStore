@@ -1218,37 +1218,40 @@ pub fn execute_redis_command_with_state(
             Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
-        "SCARD" if args.len() == 2 => match execute(Command::SetMembers {
+        "SCARD" if args.len() == 2 => match execute(Command::SetCard {
             key: name_arg(&args[1]),
         }) {
-            Ok(CommandResponse::Members { members }) => RespValue::Integer(members.len() as i64),
-            Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
+            Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+            Ok(_) => RespValue::Error("ERR invalid scard response".to_string()),
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
-        "SISMEMBER" if args.len() == 3 => match execute(Command::SetMembers {
+        "SISMEMBER" if args.len() == 3 => match execute(Command::SetIsMember {
             key: name_arg(&args[1]),
+            member: args[2].clone(),
         }) {
-            Ok(CommandResponse::Members { members }) => {
-                RespValue::Integer(i64::from(members.iter().any(|member| member == &args[2])))
+            Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+            Ok(_) => RespValue::Error("ERR invalid sismember response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
+        "SMISMEMBER" if args.len() >= 3 => {
+            let key = name_arg(&args[1]);
+            let mut answers = Vec::with_capacity(args.len() - 2);
+            for member in args.iter().skip(2) {
+                match execute(Command::SetIsMember {
+                    key: key.clone(),
+                    member: member.clone(),
+                }) {
+                    Ok(CommandResponse::Integer { value }) => {
+                        answers.push(RespValue::Integer(value));
+                    }
+                    Ok(_) => {
+                        return RespValue::Error("ERR invalid sismember response".to_string());
+                    }
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
             }
-            Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
-            Err(err) => RespValue::Error(format!("ERR {err}")),
-        },
-        "SMISMEMBER" if args.len() >= 3 => match execute(Command::SetMembers {
-            key: name_arg(&args[1]),
-        }) {
-            Ok(CommandResponse::Members { members }) => {
-                let existing = members.into_iter().collect::<HashSet<_>>();
-                RespValue::Array(
-                    args.iter()
-                        .skip(2)
-                        .map(|member| RespValue::Integer(i64::from(existing.contains(member))))
-                        .collect(),
-                )
-            }
-            Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
-            Err(err) => RespValue::Error(format!("ERR {err}")),
-        },
+            RespValue::Array(answers)
+        }
         "SREM" if args.len() >= 3 => {
             let key = name_arg(&args[1]);
             let mut existing = match execute(Command::SetMembers { key: key.clone() }) {
