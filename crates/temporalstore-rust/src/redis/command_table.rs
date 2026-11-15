@@ -226,9 +226,24 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "LINDEX",
+            arity: 3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "LLEN",
             arity: 2,
             flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "LPUSHX",
+            arity: -3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "RPUSHX",
+            arity: -3,
+            flags: WRITE,
         },
         RedisCommandDescriptor {
             name: "LPOP",
