@@ -105,6 +105,21 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
             timing.max_us as f64 / 1e6
         ));
     }
+    // Cumulative counts a loop-only server never had: the stage timers above say how long expire
+    // and evict ran, not how much they did. Rate of the first against the rate of writes that
+    // carry a deadline says whether expiry keeps up.
+    out.push_str("# HELP temporalstore_storage_manager_expired_records_total Keys the expire stage has removed.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_expired_records_total counter\n");
+    out.push_str(&format!(
+        "temporalstore_storage_manager_expired_records_total {}\n",
+        stats.expired_records_removed
+    ));
+    out.push_str("# HELP temporalstore_storage_manager_evict_runs_total Rounds in which the evict stage ran.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_evict_runs_total counter\n");
+    out.push_str(&format!(
+        "temporalstore_storage_manager_evict_runs_total {}\n",
+        stats.storage_manager_evict_runs
+    ));
     out.push_str("# HELP temporalstore_data_node_runtime_queue_depth Current data node runtime queue depth.\n");
     out.push_str("# TYPE temporalstore_data_node_runtime_queue_depth gauge\n");
     out.push_str("temporalstore_data_node_runtime_queue_depth ");
