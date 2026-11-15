@@ -318,6 +318,21 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             member: command.member,
             left: command.left,
         },
+        v1::command::Kind::ListSet(command) => types::Command::ListSet {
+            key: command.key,
+            index: command.index,
+            member: command.member,
+        },
+        v1::command::Kind::ListRemove(command) => types::Command::ListRemove {
+            key: command.key,
+            count: command.count,
+            member: command.member,
+        },
+        v1::command::Kind::ListTrim(command) => types::Command::ListTrim {
+            key: command.key,
+            start: command.start,
+            stop: command.stop,
+        },
         v1::command::Kind::ListPop(command) => types::Command::ListPop {
             key: command.key,
             left: command.left,

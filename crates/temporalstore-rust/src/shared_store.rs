@@ -5152,6 +5152,21 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             member: member.clone(),
             left: *left,
         }),
+        Command::ListSet { key, index, member } => v1::command::Kind::ListSet(v1::ListSet {
+            key: key.clone(),
+            index: *index,
+            member: member.clone(),
+        }),
+        Command::ListRemove { key, count, member } => v1::command::Kind::ListRemove(v1::ListRemove {
+            key: key.clone(),
+            count: *count,
+            member: member.clone(),
+        }),
+        Command::ListTrim { key, start, stop } => v1::command::Kind::ListTrim(v1::ListTrim {
+            key: key.clone(),
+            start: *start,
+            stop: *stop,
+        }),
         Command::ListPop { key, left } => v1::command::Kind::ListPop(v1::ListPop {
             key: key.clone(),
             left: *left,
@@ -14070,6 +14085,9 @@ fn the_covered_writes_are_framed_as_protobuf_and_round_trip() {
         ("HashIncrBy", Command::HashIncrBy { key: "k".into(), field: "f".into(), increment: -7 }),
         ("ListPush", Command::ListPush { key: "k".into(), member: b"m".to_vec(), left: true }),
         ("ListPop", Command::ListPop { key: "k".into(), left: false }),
+        ("ListSet", Command::ListSet { key: "k".into(), index: -2, member: b"m".to_vec() }),
+        ("ListRemove", Command::ListRemove { key: "k".into(), count: -3, member: b"m".to_vec() }),
+        ("ListTrim", Command::ListTrim { key: "k".into(), start: 1, stop: -2 }),
         ("SetRemove", Command::SetRemove { key: "k".into(), member: b"m".to_vec() }),
         ("ZSetAdd", Command::ZSetAdd { key: "k".into(), member: b"m".to_vec(), score: 1.5 }),
         ("ZSetRemove", Command::ZSetRemove { key: "k".into(), member: b"m".to_vec() }),
@@ -14078,7 +14096,7 @@ fn the_covered_writes_are_framed_as_protobuf_and_round_trip() {
     ];
     // DENOMINATOR FIRST: nine is the number this batch covered, and a shorter list would make
     // every assertion below true of whatever happened to remain.
-    assert_eq!(cases.len(), 9, "this test covers the nine commands the batch mapped");
+    assert_eq!(cases.len(), 12, "nine commands the batch mapped, plus the three list mutators");
 
     for (name, command) in cases {
         // Every one of them must be a WRITE, or it would never reach this log at all and the

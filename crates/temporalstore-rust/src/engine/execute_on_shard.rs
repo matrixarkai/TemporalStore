@@ -3396,6 +3396,175 @@ pub(crate) fn execute_on_shard(
                 }
             }
         }
+        Command::ListSet { key, index, member } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            // AN OVERWRITE IS A PUSH THAT NAMES ITS SEQUENCE. The element keeps its biased sequence
+            // word, so a new block is appended under the SAME element name -- the shape `HashSet`
+            // uses to overwrite a field -- and the resident map's address for that sequence is
+            // replaced. Replay therefore needs no new record kind: the later block wins the fold.
+            let target = shard.bucket_index.lists.get(&key).and_then(|list| {
+                let length = list.len() as i64;
+                let resolved = if index < 0 { length + index } else { index };
+                if resolved < 0 || resolved >= length {
+                    None
+                } else {
+                    list.keys().nth(resolved as usize).copied()
+                }
+            });
+            match target {
+                None => CommandResponse::Integer { value: 0 },
+                Some(seq) => {
+                    let element_name = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+                    let object_id = stable_block_object_id(shard_id, "list", &key);
+                    let routing_bucket =
+                        block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+                    let block_ordinal = crate::engine::state::container_block_ordinal(
+                        shard,
+                        "list",
+                        &key,
+                        &element_name,
+                    );
+                    let block = crate::engine::container_blocks::single_element_block(
+                        "list",
+                        &element_name,
+                        &member,
+                    );
+                    if let Ok(address) = append_value_of_object(
+                        cache,
+                        block_store,
+                        shard_id,
+                        &block,
+                        Some(object_id),
+                        Some(element_name.as_str()),
+                        Some(routing_bucket),
+                        async_storage,
+                        block_ordinal,
+                    ) {
+                        upsert_bucket_index_block(
+                            shard,
+                            shard_id,
+                            "list",
+                            &key,
+                            Some(element_name.clone()),
+                            address.clone(),
+                            true,
+                        );
+                        super::recorded_map::install_element::<super::recorded_map::ListKind>(
+                            shard,
+                            shard_id,
+                            &key,
+                            Some(element_name.clone()),
+                            seq,
+                            address.clone(),
+                            true,
+                            address,
+                        );
+                        mutated = true;
+                        CommandResponse::Integer { value: 1 }
+                    } else {
+                        CommandResponse::Integer { value: 0 }
+                    }
+                }
+            }
+        }
+        Command::ListRemove { key, count, member } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let entries: Vec<(i64, _)> = shard
+                .bucket_index
+                .lists
+                .get(&key)
+                .map(|list| list.iter().map(|(seq, address)| (*seq, address.clone())).collect())
+                .unwrap_or_default();
+            let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let limit = if count == 0 { usize::MAX } else { count.unsigned_abs() as usize };
+            let matches = |seq: i64, address: &_| -> bool {
+                let element_name = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+                read_block_bytes(
+                    cache,
+                    block_store,
+                    shard_id,
+                    address,
+                    BlockIdentity::of(shard_id, "list", &key, Some(element_name.as_str())),
+                    Some(routing_bucket),
+                ) == Some(member.clone())
+            };
+            // Positive count scans from the head, negative from the tail, zero removes every match.
+            let mut doomed: Vec<i64> = Vec::new();
+            if count >= 0 {
+                for (seq, address) in entries.iter() {
+                    if doomed.len() >= limit {
+                        break;
+                    }
+                    if matches(*seq, address) {
+                        doomed.push(*seq);
+                    }
+                }
+            } else {
+                for (seq, address) in entries.iter().rev() {
+                    if doomed.len() >= limit {
+                        break;
+                    }
+                    if matches(*seq, address) {
+                        doomed.push(*seq);
+                    }
+                }
+            }
+            for seq in &doomed {
+                let element_name = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
+                mutated = true;
+                super::recorded_map::remove_element::<super::recorded_map::ListKind>(
+                    cache,
+                    block_store,
+                    shard,
+                    shard_id,
+                    &key,
+                    &element_name,
+                    *seq,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    async_storage,
+                );
+            }
+            CommandResponse::Integer { value: doomed.len() as i64 }
+        }
+        Command::ListTrim { key, start, stop } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let seqs: Vec<i64> = shard
+                .bucket_index
+                .lists
+                .get(&key)
+                .map(|list| list.keys().copied().collect())
+                .unwrap_or_default();
+            let length = seqs.len() as i64;
+            let resolve = |index: i64| if index < 0 { length + index } else { index };
+            let from = resolve(start).max(0);
+            let to = resolve(stop).min(length - 1);
+            // The window is the elements to KEEP; an empty window removes them all, and removing
+            // the last element is what deletes the list (`remove_element` lets the key go).
+            let mut removed = 0_i64;
+            for (position, seq) in seqs.iter().enumerate() {
+                let position = position as i64;
+                if from <= to && position >= from && position <= to {
+                    continue;
+                }
+                let element_name = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
+                mutated = true;
+                removed += 1;
+                super::recorded_map::remove_element::<super::recorded_map::ListKind>(
+                    cache,
+                    block_store,
+                    shard,
+                    shard_id,
+                    &key,
+                    &element_name,
+                    *seq,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    async_storage,
+                );
+            }
+            CommandResponse::Integer { value: removed }
+        }
         Command::ListRange { key, start, stop } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
