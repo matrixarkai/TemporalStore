@@ -329,7 +329,15 @@ jobs:
           # The gate's undumped-bytes figure is fed by every append path. These were red on main
           # while the unfiltered suite above reported without gating, so they are pinned by exact
           # name: a path that forgets a counter must fail here.
-          for t in             engine::tests::the_figure_after_a_dump_is_the_bytes_appended_since_it::the_figure_after_a_dump_is_the_bytes_appended_since_it             engine::tests::the_undumped_byte_figure_survives_one_claimless_bucket::one_bucket_without_a_claim_does_not_put_the_figure_back_on_the_zeroed_counter             engine::tests::part2::the_wal_byte_threshold_measures_undumped_bytes_not_the_whole_log             data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::a_capped_dump_does_not_rearm_the_byte_gate             data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::a_hot_bucket_dirtied_every_round_keeps_the_log_near_the_gate             data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::a_shard_opened_over_an_undumped_tail_runs_the_stage_in_its_first_round             data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::a_dirty_shard_below_the_byte_gate_does_not_run_the_wal_reclaim_stage \n            data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::the_dirty_bucket_trigger_still_runs_the_stage_when_an_operator_sets_it
+          for t in \
+            engine::tests::the_figure_after_a_dump_is_the_bytes_appended_since_it::the_figure_after_a_dump_is_the_bytes_appended_since_it \
+            engine::tests::the_undumped_byte_figure_survives_one_claimless_bucket::one_bucket_without_a_claim_does_not_put_the_figure_back_on_the_zeroed_counter \
+            engine::tests::part2::the_wal_byte_threshold_measures_undumped_bytes_not_the_whole_log \
+            data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::a_capped_dump_does_not_rearm_the_byte_gate \
+            data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::a_hot_bucket_dirtied_every_round_keeps_the_log_near_the_gate \
+            data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::a_shard_opened_over_an_undumped_tail_runs_the_stage_in_its_first_round \
+            data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::a_dirty_shard_below_the_byte_gate_does_not_run_the_wal_reclaim_stage \
+            data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::the_dirty_bucket_trigger_still_runs_the_stage_when_an_operator_sets_it
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/wal-byte-gate.log
             # `cargo test` exits 0 when a filter matches NOTHING, so assert the count too.
