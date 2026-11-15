@@ -1044,7 +1044,14 @@ fn a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound() {
     let writes = 20usize;
     let dir = tempfile::tempdir().unwrap();
     let runtime = seeded_runtime(dir.path(), keys);
-    let options = StorageManagerOptions::default();
+    // THE GATE IS CROSSED, because the control below is that the round dumped. Under the shipped
+    // byte gate a shard this small is left undumped and the stages skip their walks, so a round that
+    // listed nothing would fail the floor for the right reason and say nothing about the bound.
+    let options = StorageManagerOptions {
+        dirty_bucket_pressure: 1,
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
     for _ in 0..6 {
         runtime.run_storage_manager_once(1, options.clone());
     }
@@ -1078,4 +1085,52 @@ fn a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound() {
         checked += 1;
     }
     assert_eq!(checked, 3);
+}
+
+/// A DIRTY ROUND UNDER THE BYTE GATE LISTS FEWER THAN THE DUMP ARM'S FLOOR OF LIVE BLOCKS.
+///
+/// The other arm of `a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound`: the same
+/// fixture with the shipped gate, where the round has no dump to make and the stages skip their
+/// plan builds. A round that still listed the shard at the dump arm's floor (ten shard-sizes) is
+/// building plans to decide nothing.
+///
+/// Planted fault: reverting the index stage's idle test to "nothing dirty and nothing undumped"
+/// puts the round back at the dump arm's walk and fails the bound.
+#[test]
+fn a_dirty_round_under_the_byte_gate_lists_less_than_a_dumping_round_does() {
+    let keys = 300usize;
+    let writes = 20usize;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    let options = StorageManagerOptions::default();
+    for _ in 0..6 {
+        runtime.run_storage_manager_once(1, options.clone());
+    }
+    let engine = runtime.engine();
+    for round in 0..4usize {
+        for write in 0..writes {
+            let index = (round * writes + write) % keys;
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("loop-{index:06}"),
+                    value: vec![b'w'; 96],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let walked: u64 = report.stage_spans.iter().map(|s| s.walk.live_block_entries).sum();
+        eprintln!("gated dirty round {round}: walk_entries={walked} ({:.1} listings)", walked as f64 / keys as f64);
+        assert!(
+            report.pressure.dirty_bucket_count > 0,
+            "round {round}: the fixture must keep the shard dirty under the shipped gate"
+        );
+        assert!(
+            walked < keys as u64 * 10,
+            "round {round}: a dirty round the gate holds back listed {walked} entries, at or above \
+             the dumping round's floor of {}",
+            keys * 10
+        );
+    }
 }
