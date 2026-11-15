@@ -74,6 +74,24 @@ fn push_byte_mark(
     }
 }
 
+/// Count one appended record's bytes: the dump counter, the never-reset total, and the byte marks a
+/// figure relative to a sequence is read from. Every path that appends calls this, the buffered
+/// group-commit path and the unbuffered one alike; a path that counted only the dump counter left
+/// the total behind, so the figure read as zero while the log grew.
+fn note_appended_bytes(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+    sequence: u64,
+    size: u64,
+) {
+    let total = inner.appended_bytes_by_shard.entry(shard_id).or_default();
+    *total += size;
+    let total = *total;
+    let marks = inner.byte_marks_by_shard.entry(shard_id).or_default();
+    push_byte_mark(marks, sequence, total, BYTE_MARK_STRIDE, BYTE_MARK_CAP);
+    *inner.undumped_bytes_by_shard.entry(shard_id).or_default() += size;
+}
+
 /// Bytes of log above `sequence`, to the granularity of a piece: the same walk as
 /// `log_id_after_sequence`, measured to where the records end.
 fn log_bytes_above_sequence(
@@ -5251,7 +5269,7 @@ fn buffer_record_locked(
     inner.group_records += 1;
     // Counted when the record is buffered, as the unbuffered primitive counts it when written:
     // these are growth counters for the dump budget and nothing reads them mid-batch.
-    *inner.undumped_bytes_by_shard.entry(shard_id).or_default() += size as u64;
+    note_appended_bytes(inner, shard_id, record.sequence, size as u64);
     *inner.undumped_objects_by_shard.entry(shard_id).or_default() +=
         record.outcomes.len().max(1) as u64;
     recycle_encode_scratch(inner, bytes);
@@ -5618,19 +5636,9 @@ fn append_record_locked_on(
         *durable_sequence = (*durable_sequence).max(record.sequence);
     }
     let size = bytes.len() as u64;
-    {
-        let total = inner.appended_bytes_by_shard.entry(record.shard_id).or_default();
-        *total += size;
-        let total = *total;
-        let marks = inner.byte_marks_by_shard.entry(record.shard_id).or_default();
-        push_byte_mark(marks, record.sequence, total, BYTE_MARK_STRIDE, BYTE_MARK_CAP);
-    }
-    // Every append path funnels through here, so this is the one place the undumped growth has
-    // to be counted for all of them.
-    *inner
-        .undumped_bytes_by_shard
-        .entry(record.shard_id)
-        .or_default() += size;
+    // The unbuffered primitive's own accounting; the buffered group-commit path calls the same
+    // helper when it buffers a record.
+    note_appended_bytes(inner, record.shard_id, record.sequence, size);
     // The same funnel, in the quantity the writer's batching cannot move. A record built from
     // outcomes carries one per object it mutated (`append_batch_as_one_record` is the whole batch
     // in one record); a record that carries none is one command, so one mutation. `max(1)` is not
