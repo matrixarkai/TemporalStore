@@ -3,6 +3,7 @@
 
 //! DataNodeRuntime storage-manager scheduling/lifecycle methods, extracted from data_node.rs.
 
+use super::round_budget::{options_for_slot, HeavySlot, ShardRoundState};
 use super::*;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -1947,6 +1948,108 @@ impl DataNodeRuntime {
             stop,
             handle: Some(handle),
         }
+    }
+
+    /// The loop as short ticks. Every `tick` it does the cheap work for each loaded shard, and at
+    /// most one heavy stage per shard per tick, each heavy stage falling due once per `period`
+    /// and the five spread across the period (see `round_budget`). Where
+    /// `start_storage_manager_scheduler_for_all_shards` runs every stage to completion in one
+    /// round every interval, a request here can wait behind at most ONE stage, not all of them.
+    pub fn start_storage_manager_tick_scheduler_for_all_shards(
+        &self,
+        tick: Duration,
+        period: Duration,
+        options: StorageManagerOptions,
+    ) -> StorageLifecycleScheduler {
+        let runtime = self.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let scheduler_stop = Arc::clone(&stop);
+        let tick = tick.max(Duration::from_millis(1));
+        let handle = thread::spawn(move || {
+            let mut states: std::collections::HashMap<ShardId, ShardRoundState> =
+                std::collections::HashMap::new();
+            while !scheduler_stop.load(Ordering::Relaxed) {
+                let started = std::time::Instant::now();
+                let shard_ids = runtime.inner.engine.loaded_shard_ids();
+                states.retain(|shard_id, _| shard_ids.contains(shard_id));
+                for shard_id in shard_ids {
+                    if scheduler_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let state = states
+                        .entry(shard_id)
+                        .or_insert_with(|| ShardRoundState::new(started, period));
+                    runtime.run_storage_manager_tick(shard_id, &options, state, period);
+                }
+                // The next tick is one `tick` after this one STARTED, not after it ended, so a
+                // tick that did a stage does not push the cheap work of every other shard back.
+                if let Some(rest) = tick.checked_sub(started.elapsed()) {
+                    thread::sleep(rest);
+                }
+            }
+        });
+        StorageLifecycleScheduler {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    /// One tick for one shard: the cheap work, then the heavy slot that is due, if any. Returns
+    /// the slot's round report when one ran.
+    ///
+    /// A shard still replaying its log gets nothing. The cheap work builds no plan: it is the
+    /// slab pre-allocation, which is a lock and a comparison, and one bounded expiry sweep of this
+    /// shard.
+    pub(crate) fn run_storage_manager_tick(
+        &self,
+        shard_id: ShardId,
+        options: &StorageManagerOptions,
+        state: &mut ShardRoundState,
+        period: Duration,
+    ) -> Option<(HeavySlot, StorageManagerLoopReport)> {
+        if self.inner.engine.shard_is_recovering(shard_id) {
+            return None;
+        }
+        if options.enable_prepare {
+            if let Err(error) = self.inner.engine.block_store().prepare_next_slab() {
+                tracing::warn!(
+                    %error,
+                    "storage manager could not pre-allocate the next data slab; \
+                     the next append will roll inline"
+                );
+            }
+            self.inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_prepare_runs += 1;
+        }
+        if options.enable_expire {
+            let removed = self
+                .inner
+                .engine
+                .sweep_expired_records_with_request(crate::engine::reports::ShardExpirySweepRequest {
+                    shard_id,
+                    max_hot_buckets_per_round: options.max_expire_hot_buckets_per_round,
+                    max_cold_buckets_per_round: options.max_expire_cold_buckets_per_round,
+                    load_cold_buckets: true,
+                })
+                .map(|report| report.expired_records_removed)
+                .unwrap_or(0);
+            let mut stats = self.inner.stats.lock().expect("runtime stats lock poisoned");
+            stats.storage_manager_expire_runs += 1;
+            stats.expired_records_removed += removed as u64;
+        }
+        let slot = state.due_slot(std::time::Instant::now())?;
+        let started = std::time::Instant::now();
+        let report = self.run_storage_manager_once_with_report_details(
+            shard_id,
+            options_for_slot(options, slot),
+            false,
+        );
+        self.note_round_overrun(started.elapsed(), period);
+        state.finished(slot, std::time::Instant::now(), period);
+        Some((slot, report))
     }
 
     /// A round that outlasts the interval means the loop never idles: the next round starts the
