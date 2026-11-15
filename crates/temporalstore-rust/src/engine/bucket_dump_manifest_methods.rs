@@ -104,10 +104,25 @@ impl TemporalEngine {
         if !retirements.is_empty() {
             // Released bucket markers are memory-only. Their serialized model maps
             // still own frames even when the decoded bucket has no block entries.
-            retained_objects.extend(storage_bucket_internals::collect_model_live_block_entries(&dump_index_state)
-                .into_iter()
-                .filter(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()))
-                .map(|entry| stable_block_object_id(shard_id, entry.kind.as_str(), &entry.object_key)));
+            //
+            // Only the objects that still have a block inside the log matter here, so the walk
+            // asks for exactly those. It used to materialise every live block of the dump's model
+            // maps into owned entries -- the whole store, once more per dirty round -- and then
+            // throw all but the log-resident ones away. The filter runs before the walk's own
+            // per-block dedup, and blocks the dedup merges share a slab, offset and length and so
+            // share residency, so the set of objects found is the same.
+            storage_bucket_internals::visit_model_live_blocks(
+                &dump_index_state,
+                storage_bucket_internals::ModelWalkTally::WholeShardEntries,
+                |_, address| crate::wal_record::is_wal_resident(address.block_slab_id()),
+                |kind, object_key, _element_name, _address| {
+                    retained_objects.insert(stable_block_object_id(
+                        shard_id,
+                        kind.as_str(),
+                        object_key.as_str(),
+                    ));
+                },
+            );
             retirements = block_in_wal::unreferenced_registrations(
                 &self.block_store, shard_id, &self.wal_store, &retained_objects,
             );
@@ -407,6 +422,14 @@ impl TemporalEngine {
         self.persist_bucket_dump_manifest(&manifest)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         Ok(manifest)
+    }
+
+    /// Length in bytes of the index image embedded in the newest dump manifest of this shard,
+    /// 0 when none exists. A dump writes about this many bytes, whatever number of buckets it names.
+    pub fn latest_bucket_dump_image_bytes(&self, shard_id: ShardId) -> u64 {
+        latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id)
+            .map(|manifest| manifest.index_bytes.len() as u64)
+            .unwrap_or(0)
     }
 
     #[track_caller]

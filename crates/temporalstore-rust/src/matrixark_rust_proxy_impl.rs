@@ -5397,7 +5397,8 @@ fn execute_empty(engine: &RecordStore, command: Command) -> Result<(), String> {
         ));
     }
     match response.response {
-        CommandResponse::Empty => {
+        // A field delete answers the 0/1 count of fields it removed (#3050).
+        CommandResponse::Empty | CommandResponse::Integer { .. } => {
             if let Some((key, value)) = record_count_update {
                 update_record_count_cache(&key, &value);
             }
@@ -5513,7 +5514,12 @@ fn execute_empty_batch_runtime(
         if !item.status.ok {
             return Err(format!("{}: {}", item.status.code, item.status.message));
         }
-        if !matches!(item.response, CommandResponse::Empty) {
+        // A field delete answers the 0/1 count of fields it removed (#3050); every
+        // other write in the batch answers Empty.
+        if !matches!(
+            item.response,
+            CommandResponse::Empty | CommandResponse::Integer { .. }
+        ) {
             return Err(format!(
                 "unexpected response for batch write: {:?}",
                 item.response
