@@ -206,7 +206,7 @@ fn a_decay_names_a_lane_and_has_no_value_for_a_single_folded_cell() {
     }
     // A score over one folded cell (a rollup's capped group) has no snapshots to decay.
     let scorer = crate::engine::cell_rank::Scorer::compile(&header, &decay("shown", 10)).unwrap();
-    let error = scorer.score(&Member::U64(1), 0, &[1, 2, 3, 4]).err().unwrap();
+    let error = scorer.score(Member::U64(1).view(), 0, &[1, 2, 3, 4]).err().unwrap();
     assert!(error.contains("snapshots"), "{error}");
 }
 

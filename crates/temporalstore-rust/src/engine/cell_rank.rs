@@ -48,7 +48,9 @@ use std::collections::BinaryHeap;
 use super::cell_rank_options::{
     last_bounds, validate_options, Anchor, CompiledMembers, CompiledQuota, RankOptions,
 };
-use super::cell_set::{validate_top_k, within, Cell, CellHeader, LaneReducer, Member};
+use super::cell_set::{validate_top_k, within, Cell, CellHeader, CellRef, FlatCells, LaneReducer, MemberRef};
+#[cfg(test)]
+use super::cell_set::Member;
 use super::product_model::filter_op_holds;
 use super::window_aggregate::{ratio, weighted_sum, wilson_lower_bound, DecayedSumAcc, Reduced, Reducer};
 use crate::types::{
@@ -74,6 +76,49 @@ pub(crate) struct SnapshotView<'a> {
     pub(crate) cells: &'a [Cell],
 }
 
+/// One decoded snapshot held in the flat form: the same stamp and cells, with no allocation per cell.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FlatView<'a> {
+    pub(crate) timestamp_ms: u64,
+    pub(crate) cells: &'a FlatCells,
+}
+
+/// What the plan reads of a decoded snapshot: its stamp, and each cell in place. The plain
+/// `Vec<Cell>` form and the flat form both read through it, so the ranking is one piece of code
+/// and the two forms cannot disagree about an answer.
+pub(crate) trait SnapshotRead<'a>: Copy {
+    fn stamp(&self) -> u64;
+    fn cell_count(&self) -> usize;
+    /// Cell `i`, in place. `i` is below `cell_count()`.
+    fn cell(&self, i: usize) -> CellRef<'a>;
+}
+
+impl<'a> SnapshotRead<'a> for SnapshotView<'a> {
+    fn stamp(&self) -> u64 {
+        self.timestamp_ms
+    }
+    fn cell_count(&self) -> usize {
+        self.cells.len()
+    }
+    fn cell(&self, i: usize) -> CellRef<'a> {
+        let cell: &'a Cell = &self.cells[i];
+        CellRef { member: cell.member.view(), labels: &cell.labels, lanes: &cell.lanes }
+    }
+}
+
+impl<'a> SnapshotRead<'a> for FlatView<'a> {
+    fn stamp(&self) -> u64 {
+        self.timestamp_ms
+    }
+    fn cell_count(&self) -> usize {
+        self.cells.len()
+    }
+    fn cell(&self, i: usize) -> CellRef<'a> {
+        let cells: &'a FlatCells = self.cells;
+        cells.cell(i)
+    }
+}
+
 // ------------------------------------------------------------------------------------------
 // Compiling a query against a header
 // ------------------------------------------------------------------------------------------
@@ -92,13 +137,13 @@ struct Predicate {
 }
 
 impl Predicate {
-    fn holds(&self, cell: &Cell) -> bool {
+    fn holds(&self, cell: &CellRef<'_>) -> bool {
         // Compared as i128 so a `u64` label or value and an `i64` lane meet without a wrap.
         let lhs = match self.target {
-            Target::Member => match &cell.member {
-                Member::U64(v) => i128::from(*v),
+            Target::Member => match cell.member {
+                MemberRef::U64(v) => i128::from(v),
                 // A bytes member has no number to compare.
-                Member::Bytes(_) => return false,
+                MemberRef::Bytes(_) => return false,
             },
             Target::Label(i) => i128::from(cell.labels[i]),
             Target::Lane(i) => i128::from(cell.lanes[i]),
@@ -348,10 +393,10 @@ impl Plan {
     /// stamp of the window: the two things a decay score reads that a reduced lane does not hold.
     fn score(
         &self,
-        member: &Member,
+        member: MemberRef<'_>,
         last_ms: u64,
         lanes: &[i64],
-        points: &[(u64, &Cell)],
+        points: &[(u64, CellRef<'_>)],
         as_of_ms: u64,
     ) -> Result<Option<Key>, String> {
         match &self.scorer {
@@ -369,7 +414,7 @@ impl Plan {
 
 impl Scorer {
     /// The ordering value of one member's `lanes`. `None`: the score is undefined for it.
-    pub(crate) fn score(&self, member: &Member, last_ms: u64, lanes: &[i64]) -> Result<Option<Key>, String> {
+    pub(crate) fn score(&self, member: MemberRef<'_>, last_ms: u64, lanes: &[i64]) -> Result<Option<Key>, String> {
         Ok(match self {
             Scorer::Lane(i) => Some(Key::Int(i128::from(lanes[*i]))),
             Scorer::Ratio(n, d) => ratio(lanes[*n], lanes[*d]).map(Key::Float),
@@ -382,8 +427,8 @@ impl Scorer {
                 }
             }
             Scorer::Member => match member {
-                Member::U64(v) => Some(Key::Int(i128::from(*v))),
-                Member::Bytes(_) => {
+                MemberRef::U64(v) => Some(Key::Int(i128::from(v))),
+                MemberRef::Bytes(_) => {
                     return Err("the `member` score needs u64 members, and a bytes member was selected".to_string())
                 }
             },
@@ -410,14 +455,14 @@ impl Scorer {
 /// it in place.
 struct Entry<'a> {
     key: Key,
-    member: &'a Member,
+    member: MemberRef<'a>,
     slot: usize,
 }
 
 impl Ord for Entry<'_> {
     /// Greater means worse: lower key, then larger member.
     fn cmp(&self, other: &Self) -> Ordering {
-        other.key.cmp(&self.key).then_with(|| self.member.cmp(other.member))
+        other.key.cmp(&self.key).then_with(|| self.member.cmp(&other.member))
     }
 }
 impl PartialOrd for Entry<'_> {
@@ -463,7 +508,7 @@ impl<'a> TopK<'a> {
         self.lanes[slot * self.lane_count..(slot + 1) * self.lane_count].copy_from_slice(lanes);
     }
 
-    fn offer(&mut self, key: Key, member: &'a Member, last_ms: u64, labels: &[u64], lanes: &[i64]) {
+    fn offer(&mut self, key: Key, member: MemberRef<'a>, last_ms: u64, labels: &[u64], lanes: &[i64]) {
         if self.heap.len() < self.k {
             let slot = self.heap.len();
             self.write(slot, last_ms, labels, lanes);
@@ -481,10 +526,10 @@ impl<'a> TopK<'a> {
     }
 }
 
-fn member_id(member: &Member) -> CellMemberId {
+fn member_id(member: MemberRef<'_>) -> CellMemberId {
     match member {
-        Member::U64(v) => CellMemberId::U64(*v),
-        Member::Bytes(b) => CellMemberId::Bytes(b.clone()),
+        MemberRef::U64(v) => CellMemberId::U64(v),
+        MemberRef::Bytes(b) => CellMemberId::Bytes(b.to_vec()),
     }
 }
 
@@ -492,30 +537,26 @@ fn member_id(member: &Member) -> CellMemberId {
 // Running a plan
 // ------------------------------------------------------------------------------------------
 
-fn snapshots_between<'s, 'a>(
-    snapshots: &'s [SnapshotView<'a>],
-    from_ms: u64,
-    to_ms: u64,
-) -> &'s [SnapshotView<'a>] {
-    let first = snapshots.partition_point(|s| s.timestamp_ms < from_ms);
-    let end = snapshots.partition_point(|s| s.timestamp_ms <= to_ms);
+fn snapshots_between<'s, 'a, V: SnapshotRead<'a>>(snapshots: &'s [V], from_ms: u64, to_ms: u64) -> &'s [V] {
+    let first = snapshots.partition_point(|s| s.stamp() < from_ms);
+    let end = snapshots.partition_point(|s| s.stamp() <= to_ms);
     &snapshots[first..end.max(first)]
 }
 
 impl Plan {
     /// The snapshots the window covers, in ascending stamp order.
-    pub(crate) fn select_window<'s, 'a>(
+    pub(crate) fn select_window<'s, 'a, V: SnapshotRead<'a>>(
         &self,
         now_ms: u64,
-        snapshots: &'s [SnapshotView<'a>],
-    ) -> Result<&'s [SnapshotView<'a>], String> {
-        if snapshots.windows(2).any(|pair| pair[0].timestamp_ms >= pair[1].timestamp_ms) {
+        snapshots: &'s [V],
+    ) -> Result<&'s [V], String> {
+        if snapshots.windows(2).any(|pair| pair[0].stamp() >= pair[1].stamp()) {
             return Err("snapshots are not in strictly ascending stamp order".to_string());
         }
         let chosen = match &self.window {
             CellWindow::Between { start_ms, end_ms } => snapshots_between(snapshots, *start_ms, *end_ms),
             CellWindow::Last { duration_ms } => {
-                let newest = snapshots.last().map(|s| s.timestamp_ms);
+                let newest = snapshots.last().map(|s| s.stamp());
                 match last_bounds(self.anchor, *duration_ms, now_ms, newest) {
                     Some((from_ms, to_ms)) => snapshots_between(snapshots, from_ms, to_ms),
                     None => &snapshots[..0],
@@ -530,9 +571,9 @@ impl Plan {
 
     /// The first cell at or after `*at` that passes every predicate, as its member. Each cell is
     /// visited once, so this is also where the shape and the order of a snapshot are checked.
-    fn settle<'a>(&self, cells: &'a [Cell], at: &mut usize) -> Result<Option<&'a Member>, String> {
-        while *at < cells.len() {
-            let cell = &cells[*at];
+    fn settle<'a, V: SnapshotRead<'a>>(&self, snapshot: &V, at: &mut usize) -> Result<Option<MemberRef<'a>>, String> {
+        while *at < snapshot.cell_count() {
+            let cell = snapshot.cell(*at);
             if cell.lanes.len() != self.lane_count || cell.labels.len() != self.label_count {
                 return Err(format!(
                     "a cell has {} labels and {} lanes, the header declares {} and {}",
@@ -542,11 +583,11 @@ impl Plan {
                     self.lane_count
                 ));
             }
-            if *at > 0 && cells[*at - 1].member >= cell.member {
+            if *at > 0 && snapshot.cell(*at - 1).member >= cell.member {
                 return Err("a snapshot is not strictly ascending by member".to_string());
             }
-            if self.members.allows(&cell.member) && self.predicates.iter().all(|predicate| predicate.holds(cell)) {
-                return Ok(Some(&cell.member));
+            if self.members.allows(cell.member) && self.predicates.iter().all(|predicate| predicate.holds(&cell)) {
+                return Ok(Some(cell.member));
             }
             *at += 1;
         }
@@ -555,18 +596,17 @@ impl Plan {
 
     /// Moves cursor `i` past its current cell, recording that cell as an occurrence of the
     /// member being gathered, and re-queues the cursor at its next surviving cell.
-    fn consume<'a>(
+    fn consume<'a, V: SnapshotRead<'a>>(
         &self,
-        chosen: &[SnapshotView<'a>],
+        chosen: &[V],
         at: &mut [usize],
-        queue: &mut BinaryHeap<Reverse<(&'a Member, usize)>>,
-        occurrences: &mut Vec<(u64, &'a Cell)>,
+        queue: &mut BinaryHeap<Reverse<(MemberRef<'a>, usize)>>,
+        occurrences: &mut Vec<(u64, CellRef<'a>)>,
         i: usize,
     ) -> Result<(), String> {
-        let cells: &'a [Cell] = chosen[i].cells;
-        occurrences.push((chosen[i].timestamp_ms, &cells[at[i]]));
+        occurrences.push((chosen[i].stamp(), chosen[i].cell(at[i])));
         at[i] += 1;
-        if let Some(next) = self.settle(cells, &mut at[i])? {
+        if let Some(next) = self.settle(&chosen[i], &mut at[i])? {
             queue.push(Reverse((next, i)));
         }
         Ok(())
@@ -574,7 +614,7 @@ impl Plan {
 
     /// Runs the plan over `snapshots` (ascending by stamp; the window is applied here). `now_ms`
     /// is the instant a `Last` window ends at.
-    pub(crate) fn run<'a>(&self, now_ms: u64, snapshots: &[SnapshotView<'a>]) -> Result<RankedCells, String> {
+    pub(crate) fn run<'a, V: SnapshotRead<'a>>(&self, now_ms: u64, snapshots: &[V]) -> Result<RankedCells, String> {
         let chosen = self.select_window(now_ms, snapshots)?;
         let mut ranked = self.run_ordered(chosen)?;
         ranked.keys = usize::from(!chosen.is_empty());
@@ -586,18 +626,18 @@ impl Plan {
     /// slice is combined first (`First` and `Last` lanes resolve a tie by that order). The window
     /// is not applied again. A caller that merges snapshots of more than one series builds the
     /// slice itself; [`Plan::run`] hands it one series' window.
-    pub(crate) fn run_ordered<'a>(&self, chosen: &[SnapshotView<'a>]) -> Result<RankedCells, String> {
+    pub(crate) fn run_ordered<'a, V: SnapshotRead<'a>>(&self, chosen: &[V]) -> Result<RankedCells, String> {
         // Everything sized by the snapshot count, the lane count or k is allocated here, once.
         let mut at = vec![0usize; chosen.len()];
-        let mut queue: BinaryHeap<Reverse<(&'a Member, usize)>> = BinaryHeap::with_capacity(chosen.len());
-        let mut occurrences: Vec<(u64, &'a Cell)> = Vec::with_capacity(chosen.len());
+        let mut queue: BinaryHeap<Reverse<(MemberRef<'a>, usize)>> = BinaryHeap::with_capacity(chosen.len());
+        let mut occurrences: Vec<(u64, CellRef<'a>)> = Vec::with_capacity(chosen.len());
         let mut reduced = vec![0i64; self.lane_count];
         let mut top = TopK::new(self.top_k, self.lane_count, self.label_count);
         let mut unscored = 0u64;
-        let as_of_ms = chosen.last().map_or(0, |snapshot| snapshot.timestamp_ms);
+        let as_of_ms = chosen.last().map_or(0, |snapshot| snapshot.stamp());
 
         for (i, snapshot) in chosen.iter().enumerate() {
-            if let Some(member) = self.settle(snapshot.cells, &mut at[i])? {
+            if let Some(member) = self.settle(snapshot, &mut at[i])? {
                 queue.push(Reverse((member, i)));
             }
         }
@@ -659,3 +699,7 @@ impl Plan {
 #[cfg(test)]
 #[path = "cell_rank_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cell_rank_flat_tests.rs"]
+mod flat_tests;

@@ -54,7 +54,7 @@
 //! named once, and the counts plus `others` are bounded by [`MAX_QUOTA`]. A quota with no lane and
 //! `others == 0` is no quota.
 
-use super::cell_set::{within, Member, MAX_MEMBER_BYTES, MAX_TOP_K};
+use super::cell_set::{within, Member, MemberRef, MAX_MEMBER_BYTES, MAX_TOP_K};
 // The request-side types are the public ones: a spec carries them as they are.
 pub(crate) use crate::types::{
     CellAnchor as Anchor, CellLaneQuota as LaneQuota, CellMemberFilter as MemberFilter, CellQuota as Quota,
@@ -126,13 +126,14 @@ impl CompiledMembers {
     }
 
     /// Whether `member` may be read.
-    pub(crate) fn allows(&self, member: &Member) -> bool {
+    pub(crate) fn allows(&self, member: MemberRef<'_>) -> bool {
+        let holds = |side: &[Member]| side.binary_search_by(|held| held.view().cmp(&member)).is_ok();
         if let Some(include) = &self.include {
-            if include.binary_search(member).is_err() {
+            if !holds(include) {
                 return false;
             }
         }
-        self.exclude.is_empty() || self.exclude.binary_search(member).is_err()
+        self.exclude.is_empty() || !holds(&self.exclude)
     }
 
     /// Whether the filter restricts anything.

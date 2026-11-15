@@ -30,16 +30,18 @@
 //! key, or a key with no snapshots, is an empty answer with `refused` empty: nothing to rank.
 
 use super::cell_fan_in::{validate_chosen, validate_keys};
-use super::cell_rank::{Plan, SnapshotView, MAX_WINDOW_SNAPSHOTS};
+use super::cell_rank::{FlatView, Plan, MAX_WINDOW_SNAPSHOTS};
 use super::cell_rank_options::last_bounds;
-use super::cell_set::{check_header, decode_snapshot, split_value, Cell, CellHeader};
+use super::cell_set::{check_header, split_value, CellHeader, FlatCells};
 use super::object_record::ObjectSlot;
 use super::*;
 use crate::block_store::ElementEntry;
 use crate::engine::timestamped_series::TimestampedSeries as _;
 use crate::types::{CellRankSpec, CellWindow, RankedCells};
 
-type Decoded = Vec<(u64, Vec<Cell>)>;
+/// The snapshots a read decoded, oldest first, each in the flat form: a fixed handful of
+/// allocations per snapshot however many cells it holds.
+type Decoded = Vec<(u64, FlatCells)>;
 
 fn refused(why: impl Into<String>) -> RankedCells {
     RankedCells { refused: why.into(), ..RankedCells::default() }
@@ -124,12 +126,12 @@ fn decode_named(
             BlockIdentity::of(shard_id, "feature", key, None),
             routing_bucket,
             page_keys,
-            |bytes| -> Result<Vec<Cell>, String> {
+            |bytes| -> Result<FlatCells, String> {
                 let (own, packed) = split_value(bytes)?;
                 if own != *header {
                     check_header(&own, header)?;
                 }
-                decode_snapshot(header, packed)
+                FlatCells::decode(header, packed, 0)
             },
         );
         match decoded {
@@ -141,10 +143,10 @@ fn decode_named(
     Ok(snapshots)
 }
 
-fn views(snapshots: &Decoded) -> Vec<SnapshotView<'_>> {
+fn views(snapshots: &Decoded) -> Vec<FlatView<'_>> {
     snapshots
         .iter()
-        .map(|(timestamp_ms, cells)| SnapshotView { timestamp_ms: *timestamp_ms, cells })
+        .map(|(timestamp_ms, cells)| FlatView { timestamp_ms: *timestamp_ms, cells })
         .collect()
 }
 
@@ -279,7 +281,7 @@ pub(super) fn serve_many(
         }
     }
 
-    let owned: Vec<Vec<SnapshotView<'_>>> = decoded.iter().map(views).collect();
-    let slices: Vec<&[SnapshotView<'_>]> = owned.iter().map(Vec::as_slice).collect();
+    let owned: Vec<Vec<FlatView<'_>>> = decoded.iter().map(views).collect();
+    let slices: Vec<&[FlatView<'_>]> = owned.iter().map(Vec::as_slice).collect();
     plan.run_fan_in(now_ms, &slices).unwrap_or_else(refused)
 }

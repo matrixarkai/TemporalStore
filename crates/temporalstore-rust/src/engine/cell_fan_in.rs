@@ -48,7 +48,9 @@
 //! SIZED BY THE NUMBER OF CELLS OR MEMBERS. The module is pure: it reads decoded snapshots and a
 //! clock value and touches no engine state.
 
-use super::cell_rank::{Plan, SnapshotView};
+use super::cell_rank::{Plan, SnapshotRead};
+#[cfg(test)]
+use super::cell_rank::SnapshotView;
 use super::cell_set::{within, within_nonzero};
 use crate::types::RankedCells;
 
@@ -97,10 +99,10 @@ pub(crate) fn validate_chosen(snapshots: usize, cells: usize) -> Result<(), Stri
 impl Plan {
     /// Runs the plan over the snapshots of every key in `keys`, each key's slice ascending by
     /// stamp. `now_ms` is the instant a `Last` window ends at.
-    pub(crate) fn run_fan_in<'a>(
+    pub(crate) fn run_fan_in<'a, V: SnapshotRead<'a>>(
         &self,
         now_ms: u64,
-        keys: &[&[SnapshotView<'a>]],
+        keys: &[&[V]],
     ) -> Result<RankedCells, String> {
         validate_key_count(keys.len())?;
 
@@ -111,18 +113,18 @@ impl Plan {
             let chosen = self.select_window(now_ms, key).map_err(|why| format!("key {position}: {why}"))?;
             keys_read += usize::from(!chosen.is_empty());
             snapshots += chosen.len();
-            cells += chosen.iter().map(|snapshot| snapshot.cells.len()).sum::<usize>();
+            cells += chosen.iter().map(|snapshot| snapshot.cell_count()).sum::<usize>();
             // Refused as soon as it is over, so a request of many large keys stops early.
             validate_chosen(snapshots, cells)?;
         }
 
         // The allocation sized by the snapshot count. The views are appended in key position order
         // and the sort is STABLE, so a tie between keys at one stamp stays in position order.
-        let mut ordered: Vec<SnapshotView<'a>> = Vec::with_capacity(snapshots);
+        let mut ordered: Vec<V> = Vec::with_capacity(snapshots);
         for key in keys {
             ordered.extend_from_slice(self.select_window(now_ms, key)?);
         }
-        ordered.sort_by_key(|snapshot| snapshot.timestamp_ms);
+        ordered.sort_by_key(|snapshot| snapshot.stamp());
         let mut ranked = self.run_ordered(&ordered)?;
         ranked.keys = keys_read;
         Ok(ranked)

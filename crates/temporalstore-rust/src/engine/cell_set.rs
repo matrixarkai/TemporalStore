@@ -733,6 +733,32 @@ pub(crate) struct Cell {
     pub(crate) lanes: Vec<i64>,
 }
 
+/// A [`Member`] borrowed from wherever a snapshot holds it. It orders exactly as `Member` does
+/// (every `u64` before every bytes member, bytes lexically): the derive reads the variants in the
+/// same order and compares a slice as it compares a `Vec`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum MemberRef<'a> {
+    U64(u64),
+    Bytes(&'a [u8]),
+}
+
+impl Member {
+    pub(crate) fn view(&self) -> MemberRef<'_> {
+        match self {
+            Member::U64(v) => MemberRef::U64(*v),
+            Member::Bytes(b) => MemberRef::Bytes(b),
+        }
+    }
+}
+
+/// One cell read in place: its member, its labels and its lanes, wherever the snapshot keeps them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CellRef<'a> {
+    pub(crate) member: MemberRef<'a>,
+    pub(crate) labels: &'a [u64],
+    pub(crate) lanes: &'a [i64],
+}
+
 fn zigzag(value: i64) -> u64 {
     ((value << 1) ^ (value >> 63)) as u64
 }
@@ -1310,6 +1336,15 @@ impl FlatCells {
 
     fn lanes_of(&self, i: usize) -> &[i64] {
         &self.lanes[i * self.lanes_per_cell..(i + 1) * self.lanes_per_cell]
+    }
+
+    /// Cell `i` read in place, as the ranked read reads it. Panics for `i >= len()`.
+    pub(crate) fn cell(&self, i: usize) -> CellRef<'_> {
+        let member = match self.members[i] {
+            FlatMember::U64(v) => MemberRef::U64(v),
+            FlatMember::Bytes { start, len } => MemberRef::Bytes(&self.arena[start..start + len]),
+        };
+        CellRef { member, labels: self.labels_of(i), lanes: self.lanes_of(i) }
     }
 
     /// The bytes of cell `i`'s record, where `previous` is the `u64` member before it (the

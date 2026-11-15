@@ -1080,6 +1080,11 @@ jobs:
           # snapshots in a bucket and over 50 and over 4,000 members, because the cells are moved
           # and the fold buffers are sized once. It carries a control: the table of cloned cells an
           # obvious implementation builds must grow with both, or the probe cannot see them.
+          # a_ranked_read_through_the_engine_does_not_allocate_per_cell and
+          # a_fan_in_read_through_the_engine_does_not_allocate_per_cell pin that a read of stored
+          # snapshots allocates the same number of times at 50 and at 800 cells a snapshot, because a
+          # snapshot is decoded into a few vectors and not two per cell. Each carries a control: the
+          # bytes allocated must grow with the cell count, or the probe cannot see it.
           # a_fan_in_allocates_the_same_over_a_hundred_members_and_over_two_thousand pins that a ranked
           # read over several keys allocates the same number of times over 100 and over 2,000 members
           # (three keys of eight snapshots), because only the snapshot count sizes anything. It carries
@@ -1098,6 +1103,8 @@ jobs:
             engine::tests::a_whole_container_read_shares_its_work::probe::a_whole_hash_read_does_not_copy_the_frame_for_each_field \
             engine::tests::a_container_point_read_searches_without_building_its_key::probe::a_block_lookup_allocates_only_its_answer \
             engine::tests::a_container_point_read_searches_without_building_its_key::probe::a_whole_hash_read_spends_no_allocation_on_a_name_it_does_not_return \
+            engine::tests::the_cell_model_allocations_are_counted_per_operation::a_ranked_read_through_the_engine_does_not_allocate_per_cell \
+            engine::tests::the_cell_model_allocations_are_counted_per_operation::a_fan_in_read_through_the_engine_does_not_allocate_per_cell \
             engine::window_aggregate::probe::the_reducers_do_not_allocate_per_point \
             engine::cell_set::tests::probe::a_cell_set_key_costs_one_allocation_whatever_its_size \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_does_not_allocate_more_for_a_longer_key \

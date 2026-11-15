@@ -506,7 +506,7 @@ fn apply_cap(cap: &Cap, cells: &mut Vec<Cell>, seen: &[u64], scratch: &mut CapSc
     scratch.order.reserve(cells.len());
     for (i, cell) in cells.iter().enumerate() {
         let group = cap.group.map_or(0, |g| cell.labels[g]);
-        scratch.order.push((group, cap.scorer.score(&cell.member, 0, &cell.lanes)?, i));
+        scratch.order.push((group, cap.scorer.score(cell.member.view(), 0, &cell.lanes)?, i));
     }
     // The index is the last key and cells ascend by member: ties break by member, smaller first.
     scratch
