@@ -2025,10 +2025,12 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
     // The step is charged to one term, `objects/subtree`, and deliberately not decomposed: this
     // walk is a decomposition of the BLOCK index, and the object rows are a different structure
     // with their own arms. `one_record_per_object` is where their bytes are accounted.
-    // 242.51 -> 218.51 B/OBJECT AT 8,000 OBJECTS, MEASURED ON MAIN: exactly 24.00 B/object less than
-    // the figure this clause was last set to. The clause had been masked since the container maps
-    // joined the core index, because the walk above panicked before reaching it, so the drop was
-    // never attributed to a change here. The figure is the measured division, not a prediction.
+    // 242.51 -> 218.51 B/OBJECT AT 8,000 OBJECTS: exactly 24.00 B/object less, and the cause is
+    // #3073, which wrote an object's row by position. The row was a keyed map
+    // `{"r":{"a":..,"n":..,"f":..,"m":..,"u":..}}` and is now `[[..,..,..,..,..]]`: 26 bytes of
+    // wrapper and field names are gone and 2 brackets are added, a net 24 per object. The figure is
+    // the measured division. The clause went unseen because the walk above panicked on the
+    // unnamed container maps before it reached this line.
     let published = 218.51f64;
     assert!(
         (division - published).abs() / published < 0.005,
