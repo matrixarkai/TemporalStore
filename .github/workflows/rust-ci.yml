@@ -845,6 +845,26 @@ jobs:
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
+      # A restart after maintenance rounds has to serve everything it acknowledged. With async
+      # storage a block's only copy can sit inside a log record until a dump and a move make it
+      # durable elsewhere, so every path that trims the log must have set the retention floor
+      # first. These three drive the periodic loop (draining and at its default cap) and the
+      # on-demand cycle over a durable engine, restart it, and read every key back. They are in
+      # the lib suite, which reports without gating, so they are named here.
+      - name: A restart after maintenance rounds serves every acknowledged write
+        run: |
+          set -o pipefail
+          for t in             data_node::tests::a_reopen_after_rounds_with_deadlines_serves_every_key_and_list_element::a_reopen_after_loop_rounds_with_deadlines_serves_every_key_and_list_element             data_node::tests::a_reopen_after_rounds_with_deadlines_serves_every_key_and_list_element::a_reopen_after_default_cap_loop_rounds_with_deadlines_serves_every_key_and_list_element             data_node::tests::a_reopen_after_rounds_with_deadlines_serves_every_key_and_list_element::a_reopen_after_cycle_rounds_with_deadlines_serves_every_key_and_list_element ; do
+            echo "--- $t ---"
+            cargo test --release -p temporalstore-rust --lib "$t"               -- --exact --test-threads=1 2>&1 | tee /tmp/reopen-gate.log
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/reopen-gate.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/reopen-gate.log               || { echo "::error::$t did not pass"; exit 1; }
+          done
+
       # The published write and space ratios are only falsifiable at a consumer if the identities
       # tying each ratio to its published terms actually run. They are NOT covered by the suite
       # step above, which carries continue-on-error AND has been observed timing out at its limit,
