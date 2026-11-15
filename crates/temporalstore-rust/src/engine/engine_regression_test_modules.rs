@@ -553,3 +553,5 @@ mod a_string_increment_and_append_are_one_step;
 mod a_set_length_and_membership_read_the_member_map;
 #[path = "tests/an_expiry_sweep_that_fails_is_counted.rs"]
 mod an_expiry_sweep_that_fails_is_counted;
+#[path = "tests/the_figure_after_a_dump_is_the_bytes_appended_since_it.rs"]
+mod the_figure_after_a_dump_is_the_bytes_appended_since_it;
