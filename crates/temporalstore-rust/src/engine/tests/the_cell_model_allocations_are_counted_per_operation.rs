@@ -311,3 +311,23 @@ fn a_fan_in_read_through_the_engine_does_not_allocate_per_cell() {
         "the allocations of a read moved with the cell count ({few} at 50, {many} at 800): a per-cell allocation is back"
     );
 }
+
+/// A rollup decodes every snapshot it rolls up, folds them bucket by bucket and writes the rolled
+/// snapshots back, so what it allocates follows the SNAPSHOTS and buckets and not the cells in
+/// them. The plain form spent two allocations on every stored cell at the decode alone. 100
+/// snapshots roll into ten buckets here, at 50 and at 400 cells a snapshot (a per-cell allocation
+/// would add 70,000). The CONTROL is the same two rollups in bytes, which must grow with the cell
+/// count: a count that is flat because the probe cannot see the cell count is not a pass.
+#[test]
+#[ignore = "measurement: run with --features alloc-probe --ignored"]
+fn a_rollup_through_the_engine_does_not_allocate_per_cell() {
+    let (few, few_bytes) = rollup_once(100, 50);
+    let (many, many_bytes) = rollup_once(100, 400);
+    eprintln!("ROLLUP_FLAT 50 cells: {few} allocs {few_bytes} B; 400 cells: {many} allocs {many_bytes} B");
+    assert!(few > 300.0, "the probe is blind: {few} allocations for a rollup of 100 snapshots");
+    assert!(many_bytes > few_bytes * 4.0, "the probe cannot see the cell count: {few_bytes} -> {many_bytes}");
+    assert!(
+        (many - few).abs() < 100.0,
+        "the allocations of a rollup moved with the cell count ({few} at 50, {many} at 400): a per-cell allocation is back"
+    );
+}

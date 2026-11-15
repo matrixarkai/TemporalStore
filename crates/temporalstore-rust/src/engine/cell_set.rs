@@ -751,6 +751,17 @@ impl Member {
     }
 }
 
+/// Where a cell of a fold's result came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FoldStep {
+    /// The older cells' cell at this position, alone.
+    Old(usize),
+    /// A newer cell, alone.
+    New,
+    /// The older and the newer cell of one member, combined.
+    Both,
+}
+
 /// One cell read in place: its member, its labels and its lanes, wherever the snapshot keeps them.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CellRef<'a> {
@@ -1238,7 +1249,7 @@ impl FlatCells {
         self.lanes_per_cell = lanes_per_cell;
     }
 
-    fn is_strictly_ascending(&self) -> bool {
+    pub(crate) fn is_strictly_ascending(&self) -> bool {
         self.members
             .windows(2)
             .all(|pair| cmp_members(&pair[0], &self.arena, &pair[1], &self.arena).is_lt())
@@ -1336,6 +1347,113 @@ impl FlatCells {
 
     fn lanes_of(&self, i: usize) -> &[i64] {
         &self.lanes[i * self.lanes_per_cell..(i + 1) * self.lanes_per_cell]
+    }
+
+    /// Appends cell `i` of `src`, which holds the same number of labels and lanes a cell.
+    fn push_from(&mut self, src: &FlatCells, i: usize) {
+        debug_assert_eq!((self.labels_per_cell, self.lanes_per_cell), (src.labels_per_cell, src.lanes_per_cell));
+        let member = match src.members[i] {
+            FlatMember::U64(v) => FlatMember::U64(v),
+            FlatMember::Bytes { start, len } => {
+                let here = self.arena.len();
+                self.arena.extend_from_slice(&src.arena[start..start + len]);
+                FlatMember::Bytes { start: here, len }
+            }
+        };
+        self.members.push(member);
+        self.labels.extend_from_slice(src.labels_of(i));
+        self.lanes.extend_from_slice(src.lanes_of(i));
+    }
+
+    /// Folds `newer`, the cells of LATER snapshots, into these cells, which hold the earlier ones
+    /// (both ascending by member): a member in both has each lane combined by `combine(lane,
+    /// older, newer)` and takes the newer labels; any other member is kept as it is. `scratch` is
+    /// the buffer the result is built in: it ends up in `self` and `self`'s old buffers stay in
+    /// `scratch`, so a run of folds reuses two sets of buffers. `step` is told where each cell of
+    /// the result came from, in result order. Returns how many members were in both.
+    pub(crate) fn fold_aggregated(
+        &mut self,
+        scratch: &mut FlatCells,
+        newer: &FlatCells,
+        combine: impl Fn(usize, i64, i64) -> i64,
+        mut step: impl FnMut(FoldStep),
+    ) -> u64 {
+        use std::cmp::Ordering;
+        debug_assert_eq!((self.labels_per_cell, self.lanes_per_cell), (newer.labels_per_cell, newer.lanes_per_cell));
+        let (nl, nn) = (self.labels_per_cell, self.lanes_per_cell);
+        scratch.clear();
+        scratch.labels_per_cell = nl;
+        scratch.lanes_per_cell = nn;
+        scratch.members.reserve(self.members.len() + newer.members.len());
+        scratch.labels.reserve((self.members.len() + newer.members.len()) * nl);
+        scratch.lanes.reserve((self.members.len() + newer.members.len()) * nn);
+        scratch.arena.reserve(self.arena.len() + newer.arena.len());
+        let (mut old, mut new, mut combined) = (0usize, 0usize, 0u64);
+        while old < self.members.len() || new < newer.members.len() {
+            let order = if old >= self.members.len() {
+                Ordering::Greater
+            } else if new >= newer.members.len() {
+                Ordering::Less
+            } else {
+                cmp_members(&self.members[old], &self.arena, &newer.members[new], &newer.arena)
+            };
+            match order {
+                Ordering::Less => {
+                    scratch.push_from(self, old);
+                    step(FoldStep::Old(old));
+                    old += 1;
+                }
+                Ordering::Greater => {
+                    scratch.push_from(newer, new);
+                    step(FoldStep::New);
+                    new += 1;
+                }
+                Ordering::Equal => {
+                    scratch.push_from(self, old);
+                    let at = scratch.members.len() - 1;
+                    let newer_lanes = newer.lanes_of(new);
+                    for (lane, slot) in scratch.lanes[at * nn..(at + 1) * nn].iter_mut().enumerate() {
+                        *slot = combine(lane, *slot, newer_lanes[lane]);
+                    }
+                    scratch.labels[at * nl..(at + 1) * nl].copy_from_slice(newer.labels_of(new));
+                    step(FoldStep::Both);
+                    old += 1;
+                    new += 1;
+                    combined += 1;
+                }
+            }
+        }
+        std::mem::swap(self, scratch);
+        combined
+    }
+
+    /// No cells, the buffers kept.
+    fn clear(&mut self) {
+        self.members.clear();
+        self.arena.clear();
+        self.labels.clear();
+        self.lanes.clear();
+    }
+
+    /// Keeps the cells whose entry of `keep` is set, in order, in place.
+    pub(crate) fn retain(&mut self, keep: &[bool]) {
+        debug_assert_eq!(keep.len(), self.members.len());
+        let (nl, nn) = (self.labels_per_cell, self.lanes_per_cell);
+        let mut written = 0usize;
+        for read in 0..self.members.len() {
+            if !keep[read] {
+                continue;
+            }
+            if written != read {
+                self.members[written] = self.members[read];
+                self.labels.copy_within(read * nl..(read + 1) * nl, written * nl);
+                self.lanes.copy_within(read * nn..(read + 1) * nn, written * nn);
+            }
+            written += 1;
+        }
+        self.members.truncate(written);
+        self.labels.truncate(written * nl);
+        self.lanes.truncate(written * nn);
     }
 
     /// Cell `i` read in place, as the ranked read reads it. Panics for `i >= len()`.
