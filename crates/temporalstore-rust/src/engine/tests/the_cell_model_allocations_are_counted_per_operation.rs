@@ -251,3 +251,63 @@ fn the_cell_model_allocation_tables() {
         );
     }
 }
+
+/// Reads of one key of 16 snapshots at `cell_count` cells each, through the engine: the
+/// allocations and bytes of one read.
+fn rank_at(cell_count: usize) -> (f64, f64) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    let key = stored_key(1);
+    seed(&engine, &key, 16, cell_count);
+    per_op(5, || {
+        assert_eq!(10, ranked_read(&engine, &key).len());
+    })
+}
+
+/// A ranked read through the engine decodes every snapshot it reads, so what it allocates follows
+/// the SNAPSHOTS it reads and not the cells in them. Decoding a cell into a `Cell` cost two
+/// allocations (its labels and its lanes) for every stored cell, on every read. The flat form holds a snapshot's cells in
+/// a few vectors, so the two cell counts allocate the same number of times.
+///
+/// The CONTROL is the same two reads in bytes, which must grow with the cell count: a count that
+/// is flat because the probe cannot see the cell count is not a pass. The first two asserts keep
+/// the probe from being blind; the third is the flatness.
+#[test]
+#[ignore = "measurement: run with --features alloc-probe --ignored"]
+fn a_ranked_read_through_the_engine_does_not_allocate_per_cell() {
+    let (few, few_bytes) = rank_at(50);
+    let (many, many_bytes) = rank_at(800);
+    eprintln!("RANK_FLAT 50 cells: {few} allocs {few_bytes} B; 800 cells: {many} allocs {many_bytes} B");
+    assert!(few > 16.0, "the probe is blind: {few} allocations for a read of 16 snapshots");
+    assert!(many_bytes > few_bytes * 4.0, "the probe cannot see the cell count: {few_bytes} -> {many_bytes}");
+    assert!(
+        (many - few).abs() < 4.0,
+        "the allocations of a read moved with the cell count ({few} at 50, {many} at 800): a per-cell allocation is back"
+    );
+}
+
+/// The same for a read over several keys: 8 keys of 4 snapshots, at 50 and at 800 cells.
+#[test]
+#[ignore = "measurement: run with --features alloc-probe --ignored"]
+fn a_fan_in_read_through_the_engine_does_not_allocate_per_cell() {
+    let at = |cell_count: usize| -> (f64, f64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_on(dir.path());
+        let names: Vec<String> = (0..8u64).map(|e| stored_key(e + 1)).collect();
+        for name in &names {
+            seed(&engine, name, 4, cell_count);
+        }
+        per_op(5, || {
+            assert_eq!(10, fan_in_read(&engine, &names).len());
+        })
+    };
+    let (few, few_bytes) = at(50);
+    let (many, many_bytes) = at(800);
+    eprintln!("FAN_IN_FLAT 50 cells: {few} allocs {few_bytes} B; 800 cells: {many} allocs {many_bytes} B");
+    assert!(few > 32.0, "the probe is blind: {few} allocations for a read of 32 snapshots");
+    assert!(many_bytes > few_bytes * 4.0, "the probe cannot see the cell count: {few_bytes} -> {many_bytes}");
+    assert!(
+        (many - few).abs() < 4.0,
+        "the allocations of a read moved with the cell count ({few} at 50, {many} at 800): a per-cell allocation is back"
+    );
+}
