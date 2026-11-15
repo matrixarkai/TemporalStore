@@ -39,15 +39,16 @@ header written with the first write of a key family still guards every later wri
 | LaneList | timestamp_us, values | 1, 2 | int64, repeated int64 |
 | CellQuery | entity, window, selector, echo, table, has_echo, entity_text, entity_bytes, more_entities | 1, 2, 3, 4, 5, 6, 16, 17, 20 | int64, message, message, bool, bytes, bool, string, bytes, repeated int64 |
 | CellBatchQuery | queries | 1 | repeated message |
-| CellAnswer | entity, first_us, last_us, entries, snapshot_info, echoed_selector, echoed_window, code, message, snapshots, unscored | 1, 3, 4, 6, 7, 8, 9, 16, 17, 18, 19 | (2 and 5 unused) |
+| CellAnswer | entity, first_us, last_us, entries, snapshot_info, echoed_selector, echoed_window, code, message, snapshots, unscored, keys | 1, 3, 4, 6, 7, 8, 9, 16, 17, 18, 19, 20 | (2 and 5 unused) |
 | CellBatchAnswer | answers, code, message | 1, 2, 3 | |
-| CellSelector | see the proto | 1..30, 40 | presence flags are separate bools |
+| CellSelector | see the proto (`members` 18, `quota_lanes` 14, `quota_counts` 15, `decay` 10, `decay_rounding` 11, `excluded_members` 40) | 1..30, 40 | presence flags are separate bools |
 | Window | kind, span, start_us | 1, 2, 3 | enum, int64, int64 |
 
 Enum values: operations ADD 0, BATCH_QUERY 1, REMOVE 2, RESTORE 3, DELETE 4. Status codes OK 0,
 ERROR 1, STORAGE_ERROR 2, OUT_OF_MEMORY 3, NO_DATA 4, QUOTA_EXHAUSTED 5, REQUEST_ILLEGAL 6,
 NO_SUCH_TABLE 7, INVALID_ARGUMENT 8, DUPLICATE_REFUSED 9. Rank modes FIRST_LANE 0, SECOND_LANE 1,
-RATIO 2, MEMBER 3, RECENT 4, NAMED_LANE 5, MATCH_LANE 6, WEIGHTED 7, MEMBERS_ONLY 8, WILSON 9.
+RATIO 2, MEMBER 3, RECENT 4, NAMED_LANE 5, MATCH_LANE 6, WEIGHTED 7, MEMBERS_ONLY 8, WILSON 9,
+DECAYED_LANE 10 (new).
 Window kinds TRAILING_FROM_NOW 0, TRAILING_FROM_NEWEST 1, NEWEST_ROWS 2, FROM_START 3,
 TRAILING_FROM_NEWEST_OF_KIND 4 (the same as 1). Rounding FLOOR 0, CEIL 1, ROUND 2.
 
@@ -84,6 +85,51 @@ successes of lane 1 trials at `wilson_z` (1.96 when absent). Results are ordered
 scores order by member. MEMBERS_ONLY returns the listed members and ignores `limit`. RECENT and
 MATCH_LANE return stored cells newest first, not reduced per member.
 
+**Member set.** `members` (with `has_members`) is the include set and `excluded_members` the exclude
+set: a read uses only members in the first (when it is present) and never one in the second; a member
+in both is excluded. A member list that holds anything counts as present even when `has_members` is
+left off; a flagged, empty include set is refused (a caller that lost its list would otherwise read
+nothing and not know it). An absent include set restricts nothing. Each side holds at most 1024
+entries as sent, duplicates included. Members are 64 bit ids; the sets are applied to a cell before
+that member's snapshots are reduced. The selector's `MEMBERS_ONLY` mode is still not translated.
+
+**Anchored windows.** `TRAILING_FROM_NEWEST` and `TRAILING_FROM_NEWEST_OF_KIND` are the trailing
+`span` ending at the newest snapshot the key holds, so a key whose writes stopped reads the same
+whenever it is read. The window is `[newest + 1 - span, newest]` in milliseconds: a span of S ms covers
+exactly S stamps (`TRAILING_FROM_NOW` is one stamp wider). `NEWEST_ROWS` counts stored rows, not
+snapshots, and is not translated.
+
+**Quota.** `quota_lanes[i]` is a lane position (named through the profile) and `quota_counts[i]` how
+many members in the answer must have a non-zero value in it; the answer never holds more than `limit`
+rows, and a quota only chooses which of the top `limit` ranked members stay. `quota_counts[0]` is
+also the count of members that fit no still-unmet lane (`others`). One count and no lane asks for
+`others` alone. Counts are not negative, a lane is named once, there are at most 16 lanes, and the
+reserved total (every lane count plus `others`) is within the top-k cap of 1000.
+
+> **Known double count.** Because the first count is read both as `others` and as the first lane's
+> count, a valid request whose counts add up to 500 reserves 1000 members, and one that adds up to 501
+> is refused for reserving 1002. The first lane's count must also be at least 1. The mapping is kept
+> as documented so existing senders read the same; it is pinned by
+> `a_quota_whose_wire_counts_sum_to_500_reserves_1000_and_one_more_is_refused` and is for the owner of
+> the wire shape to decide, not something this layer changes silently.
+
+**Decayed lane.** `DECAYED_LANE` (a new enum value; the fields are the existing ones) ranks members by
+the lane at `sort_lane` (the first when absent), each stored value halved for every `decay`
+milliseconds of age measured from the newest snapshot of the window, and summed. `decay` is the
+half-life; it is made a whole number of milliseconds by `decay_rounding` (floor, ceiling or nearest).
+It must be finite, not negative, and, after rounding, between 1 ms and ten years. Every other mode
+still accepts `decay` and ignores it.
+
+**Several entities.** `more_entities` (at most 63, 64 bit ids, none repeated, none equal to `entity`)
+turns the query into one merged read over the keys of `entity` and each of them, same channel and kind:
+the answer one key holding all of their snapshots would give, not a merge of per-key top lists. The
+window applies to each key. `CellAnswer.keys` says how many of the keys held a snapshot in the window.
+The keys must live on one shard. A table whose entity is not a 64 bit id refuses it.
+
+**Batch.** The queries become one batch command of independent reads, at most 64, answered in request
+order, one answer each. A query with `more_entities` has no place in a batch and is refused, naming its
+position; so is any query that would be refused alone.
+
 **Answers.** A read of an absent key is an empty answer with status OK. A pair table answers `pair`,
 a list table `list`; `timestamp_us` is the newest snapshot holding the member.
 
@@ -101,29 +147,34 @@ under a no-merge profile DUPLICATE_REFUSED, an exhausted quota QUOTA_EXHAUSTED, 
 * Every count is bounded; the narrower server bounded none of them.
 * A timestamp outside the profile's accepted range is refused, as before; a negative channel or
   kind is refused instead of wrapping into 16 bits.
-* `decay` and `decay_rounding` are accepted with no effect: no behaviour is defined for them. A decaying
-  score is a separate, named rank mode.
+* `decay` and `decay_rounding` have an effect only in the new `DECAYED_LANE` mode, where they give the
+  half-life; in every other mode they are accepted and ignored.
 
 ## Bounds
 
 Observations per request, entries per request (existing 1024 cells), queries per batch (64),
-members in a member list (1024 each side), quota entries (sum within the top-k cap of 1000), weighted
-lanes (8), lanes (16), table name bytes (64), top-k (1000), more entities (63). Each is refused one
-past the limit and accepted at it.
+members in a member list (1024 each side), quota lanes (16) and quota total (within the top-k cap of
+1000), weighted lanes (8), lanes (16), table name bytes (64), top-k (1000), more entities (63, so 64
+keys in a merged read), half-life (1 ms to ten years). Each is refused one past the limit and accepted
+at it.
 
-## Read-side options now in the engine
+## Translated reads, summarised
 
-The ranked read has three optional controls (`RankOptions`): a member set (`MemberFilter` with `include`
-and `exclude`, each at most 1024 entries, an empty include set refused, exclusion wins), an anchor
-(`Newest` ends a trailing window at the newest stored snapshot), and a quota (`Quota`: per lane a
-name and a count, plus `others`, the count of cells that satisfy no still-unmet lane). They are not
-fields of `CellRankSpec` yet, so the translator still refuses the modes that need them. When they are,
-the mapping is: `members` with its presence flag to `include`, `excluded_members` to `exclude`,
-the trailing-from-newest window kinds to `Anchor::Newest`, and `quota_lanes[i]` (a lane position,
-named through the profile) with `quota_counts[i]` to a lane quota, with `quota_counts[0]` as `others`.
-The bounds already match: 1024 members per side, 16 quota lanes, a quota total within the top-k cap.
+| Wire | Command |
+|---|---|
+| one query | `CellRankQuery { key, spec }` |
+| query with `more_entities` | `CellFanInRankQuery { keys, spec }` |
+| batch of queries | `CellRankBatchQuery { queries }` |
+| `members` / `excluded_members` | `spec.members.include` / `spec.members.exclude` |
+| newest-anchored window kinds | `spec.anchor = Newest` |
+| `quota_lanes`, `quota_counts` | `spec.quota` |
+| `DECAYED_LANE`, `decay`, `decay_rounding` | `CellScore::Decay { lane, half_life_ms }` |
+
+Every translated spec is also checked by the same admission the commands run (`validate_spec`), so a
+request the translator accepts is one the engine accepts, and a bound is refused here at the same
+number it is refused there.
 
 ## Owned elsewhere
 
-Idempotent retry (a per-key ring of recent tokens), read filters, anchors, quota and decay, the
-fan-in read and rollup are built by their own changes; this layer maps to them.
+Rolling old snapshots up in tiers is built by its own change and is not translated here; `RECENT`,
+`MATCH_LANE`, `MEMBERS_ONLY`, `NEWEST_ROWS`, `REMOVE` and `DELETE` have no command to map to yet.

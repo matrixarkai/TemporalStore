@@ -127,6 +127,10 @@ enum RankMode {
   RANK_MODE_WEIGHTED = 7;
   RANK_MODE_MEMBERS_ONLY = 8;
   RANK_MODE_WILSON = 9;
+  // Additive: the lane at `sort_lane` (the first when absent), each value halved for every
+  // `decay` milliseconds of age (a half-life), summed. `decay` is made a whole number of
+  // milliseconds by `decay_rounding`.
+  RANK_MODE_DECAYED_LANE = 10;
 }
 
 enum Rounding {
@@ -166,20 +170,25 @@ message CellSelector {
   bool has_weighted_lanes = 28;
   bool has_weights = 29;
   bool has_want_snapshot_info = 30;
-  // Additive: members to leave out.
+  // `members` (with `has_members`) is the include set: only these members are read; a present,
+  // empty include set is refused. `quota_lanes[i]` is a lane position and `quota_counts[i]` how
+  // many members must have a non-zero value in it; `quota_counts[0]` is also the count of members
+  // that fit no lane (see docs/CELLS_PROTOCOL.md, Quota).
+  // Additive: members to leave out; wins over `members`.
   repeated int64 excluded_members = 40;
 }
 
 enum WindowKind {
   // The trailing span ending at the instant the read runs.
   WINDOW_KIND_TRAILING_FROM_NOW = 0;
-  // The trailing span ending at the newest stored snapshot of the key.
+  // The trailing span ending at the newest stored snapshot of the key (the newest snapshot is
+  // inside it; a span of S ms covers exactly S stamps).
   WINDOW_KIND_TRAILING_FROM_NEWEST = 1;
   // The newest `span` stored rows (timestamp, member pairs).
   WINDOW_KIND_NEWEST_ROWS = 2;
   // [start, start + span).
   WINDOW_KIND_FROM_START = 3;
-  // As TRAILING_FROM_NEWEST; the original code treats the two identically.
+  // As TRAILING_FROM_NEWEST: both end the window at the newest stored snapshot of the key.
   WINDOW_KIND_TRAILING_FROM_NEWEST_OF_KIND = 4;
 }
 
@@ -196,7 +205,8 @@ message CellQuery {
   bool echo = 4;
   bytes table = 5;
   bool has_echo = 6;
-  // Additive: more entities whose keys are read together with `entity`; bounded.
+  // Additive: more entities whose keys are read together with `entity`, as one merged read;
+  // at most 63, none repeated, 64 bit ids only.
   repeated int64 more_entities = 20;
   string entity_text = 16;
   bytes entity_bytes = 17;
@@ -226,6 +236,9 @@ message CellAnswer {
   string message = 17;
   uint64 snapshots = 18;
   uint64 unscored = 19;
+  // Keys that held a snapshot in the window: 1 for a one-key read that had some, and for a read
+  // over `more_entities` how many of the keys did.
+  uint64 keys = 20;
 }
 
 message CellBatchAnswer {
