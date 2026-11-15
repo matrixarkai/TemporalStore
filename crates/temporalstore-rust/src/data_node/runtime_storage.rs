@@ -1368,12 +1368,11 @@ impl DataNodeRuntime {
                 .inner
                 .engine
                 .latest_bucket_dump_image_bytes(shard_id);
-            let index_log_over_floor = self
-                .inner
-                .engine
-                .index_log_store()
-                .log_len_bytes(shard_id)
-                >= index_log_floor.max(last_image_bytes);
+            let index_log_over_floor = index_log_forces_dump(
+                self.inner.engine.index_log_store().log_len_bytes(shard_id),
+                index_log_floor,
+                last_image_bytes,
+            );
             let (dump_min_records, dump_min_bytes) = if index_log_over_floor {
                 (0, 0)
             } else {
@@ -2310,6 +2309,51 @@ impl DataNodeRuntime {
     }
 }
 
+/// Whether the index stage must dump now, whatever the byte gate says: the index log has grown to
+/// the larger of the collector's floor and the last dump's image.
+///
+/// The invariant is that a dump costs about one image of bytes, so waiting until the log is as long
+/// as the image keeps the bytes written per index-log byte at or below one. A fixed floor alone
+/// would force a dump per floor's worth of log however large the image had grown, which makes bytes
+/// written per operation grow with the key count. Below the floor the collector declines anyway, so
+/// the floor is the lower bound and the image the scaling term.
+fn index_log_forces_dump(index_log_bytes: u64, floor: u64, last_image_bytes: u64) -> bool {
+    index_log_bytes >= floor.max(last_image_bytes)
+}
+
+#[cfg(test)]
+mod index_log_forces_dump_guards {
+    use super::index_log_forces_dump;
+
+    const FLOOR: u64 = 1 << 20;
+
+    /// A log between the floor and a larger image must not force a dump; one at the image must.
+    ///
+    /// Planted fault: comparing against the floor alone (`index_log_bytes >= floor`) makes the
+    /// first assertion fail, because the log is past the floor and the image is not yet matched.
+    #[test]
+    fn a_log_shorter_than_the_last_image_does_not_force_a_dump() {
+        let image = 8 * FLOOR;
+        assert!(
+            !index_log_forces_dump(2 * FLOOR, FLOOR, image),
+            "a log past the floor but shorter than the image forced a dump"
+        );
+        assert!(!index_log_forces_dump(image - 1, FLOOR, image));
+        assert!(index_log_forces_dump(image, FLOOR, image));
+    }
+
+    /// With no image (or a small one) the floor decides, so a log below it never forces a dump.
+    ///
+    /// Planted fault: comparing against the image alone makes a zero image force a dump on an
+    /// empty log, and this fails on the first assertion.
+    #[test]
+    fn the_floor_bounds_the_decision_from_below() {
+        assert!(!index_log_forces_dump(0, FLOOR, 0));
+        assert!(!index_log_forces_dump(FLOOR - 1, FLOOR, 0));
+        assert!(index_log_forces_dump(FLOOR, FLOOR, 0));
+        assert!(!index_log_forces_dump(FLOOR - 1, FLOOR, FLOOR / 2));
+    }
+}
 
 #[cfg(test)]
 #[path = "maintenance_report_tests.rs"]
