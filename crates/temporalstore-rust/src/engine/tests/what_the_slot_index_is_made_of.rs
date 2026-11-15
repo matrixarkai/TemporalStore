@@ -341,6 +341,9 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     ("objects/field_name", Scale::PerShard, Nature::Envelope, ""),
     ("objects/field_tail", Scale::PerShard, Nature::Envelope, ""),
     ("objects/subtree", Scale::PerShard, Nature::Payload, ""),
+    ("container_maps/field_name", Scale::PerShard, Nature::Envelope, ""),
+    ("container_maps/field_tail", Scale::PerShard, Nature::Envelope, ""),
+    ("container_maps/subtree", Scale::PerShard, Nature::Payload, ""),
     ("bucket_map/field_tail", Scale::PerShard, Nature::Envelope, ""),
     ("bucket_map/open_brace", Scale::PerShard, Nature::Envelope, ""),
     // ---- per-bucket: the map entry, the node envelope and the node's own eleven fields ----
@@ -879,6 +882,9 @@ fn node_field_label(name: &str) -> &'static str {
     }
 }
 
+/// The four container maps the core index writes beside `objects`.
+const CONTAINER_MAPS: [&str; 4] = ["hashes", "sets", "zsets", "lists"];
+
 /// An address slot that is not one of the five the wire declares is a PANIC naming it.
 fn address_field_label(name: &str) -> &'static str {
     match name {
@@ -933,19 +939,35 @@ fn walk(reading: &Reading) -> Walked {
     let core = slot_index.as_object().expect("the core index writes an object");
     for name in core.keys() {
         assert!(
-            name == "bucket_map" || name == "objects",
+            name == "bucket_map"
+                || name == "objects"
+                || CONTAINER_MAPS.contains(&name.as_str()),
             "[CLAUSE no-unclassified] the core index writes the key `{name}`, which this \
              decomposition does not name"
         );
     }
+    let container_maps_present: Vec<&str> =
+        CONTAINER_MAPS.iter().copied().filter(|name| core.contains_key(*name)).collect();
     assert_eq!(
         core.len(),
-        2,
+        2 + container_maps_present.len(),
         "[CLAUSE no-unclassified] the core index writes {} key(s); this walk charges the \
-         punctuation of exactly two -- `bucket_map` and `objects`, the latter since \
-         `SHARD_INDEX_FORMAT_VERSION` 30 moved the consolidated object map in from the top level",
-        core.len()
+         punctuation of `bucket_map`, `objects` and the container maps it finds ({:?})",
+        core.len(),
+        container_maps_present
     );
+    // THE FOUR CONTAINER MAPS, EACH CHARGED WHOLE. A store of string objects writes them empty,
+    // so they cost a fixed handful of bytes per shard; a store of containers charges their rows
+    // to `container_maps/subtree` and is not decomposed further here.
+    // ONE CHARGE PER TERM: a per-shard term is one instance, so the four maps are summed first.
+    let names_len: usize = container_maps_present.iter().map(|n| klen(n) + 1).sum();
+    let subtrees_len: usize = container_maps_present
+        .iter()
+        .map(|n| jlen(core.get(*n).expect("present")))
+        .sum();
+    tally.add("container_maps/field_name", names_len, names_len);
+    tally.add("container_maps/field_tail", container_maps_present.len(), 0);
+    tally.add("container_maps/subtree", subtrees_len, 0);
     // THE OBJECT ROWS, AS ONE SUBTREE. See the term table on why this is charged whole.
     let objects = core
         .get("objects")
