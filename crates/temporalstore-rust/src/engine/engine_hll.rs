@@ -208,11 +208,23 @@ pub(crate) fn count_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms
         .range(bounds)
         .any(|(_, bucket)| matches!(bucket, DistinctBucket::Sketch(_)));
     if !any_sketch {
-        let mut unique = BTreeSet::new();
-        for (_, bucket) in series.range(bounds) {
-            if let DistinctBucket::Exact(values) = bucket {
-                unique.extend(values.iter().cloned());
-            }
+        // THE UNION HOLDS BORROWS. Cloning every member of every bucket into a fresh set to
+        // count them allocated one `Vec` per member per read; the members are already in the
+        // buckets and are only compared. One bucket in the window is its own length and builds
+        // nothing, which is the common read.
+        let mut sets = series.range(bounds).filter_map(|(_, bucket)| match bucket {
+            DistinctBucket::Exact(values) => Some(values),
+            DistinctBucket::Sketch(_) => None,
+        });
+        let Some(first) = sets.next() else {
+            return 0;
+        };
+        let Some(second) = sets.next() else {
+            return first.len() as i64;
+        };
+        let mut unique: BTreeSet<&[u8]> = BTreeSet::new();
+        for values in [first, second].into_iter().chain(sets) {
+            unique.extend(values.iter().map(Vec::as_slice));
         }
         return unique.len() as i64;
     }
