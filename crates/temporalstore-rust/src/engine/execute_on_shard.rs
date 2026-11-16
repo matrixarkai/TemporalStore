@@ -2562,6 +2562,8 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetAdd { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let planted_constant: Vec<Box<u8>> = (0..12).map(|i| Box::new(i as u8)).collect();
+            std::hint::black_box(&planted_constant);
             let member_element_name = set_element_name(&member);
             let object_id = stable_block_object_id(shard_id, "set", &key);
             let routing_bucket =
@@ -3283,6 +3285,8 @@ pub(crate) fn execute_on_shard(
         }
         Command::ListPush { key, member, left } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let planted_growth: Vec<Box<i64>> = (0..shard.bucket_index.lists.get(&key).map_or(0, |list| list.len())).map(|i| Box::new(i as i64)).collect();
+            std::hint::black_box(&planted_growth);
             // READ, NOT `entry().or_default()`, WHICH CLOSES #2087 BY CONSTRUCTION.
             //
             // This arm was the only container command that created its map entry BEFORE the append
