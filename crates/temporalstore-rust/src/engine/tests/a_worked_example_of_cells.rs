@@ -17,13 +17,13 @@
 //!   1. the key: an entity and two dimensions become ONE stored feature key;
 //!   2. the write: cells merged lane by lane under a declared verb (`Sum`), across writes that
 //!      share a timestamp, with a receipt of what landed;
-//!   3. the windowed read: only the snapshots of the last minute count;
+//!   3. the windowed read: only the samples of the last minute count;
 //!   4. two scores that order the same members differently: the plain click rate, and the Wilson
 //!      lower bound, which does not trust a rate it has seen once;
-//!   5. a selection by label, cut before the member's snapshots are reduced together;
+//!   5. a selection by label, cut before the member's samples are reduced together;
 //!   6. a name the key did not declare is refused.
 //!
-//! WHAT IS NOT HERE: rollup and shrink of old snapshots, and a time-to-live per group. A key has
+//! WHAT IS NOT HERE: rollup and shrink of old samples, and a time-to-live per group. A key has
 //! one time-to-live, as every feature key does.
 //!
 //! rust-internal: measures this crate's own request paths, no product behaviour
@@ -81,7 +81,7 @@ fn cell(member: u64, impressions: i64, clicks: i64) -> Cell {
 }
 
 /// One merge-reduce write of `cells` at `timestamp_ms`. Answers what landed:
-/// (snapshots written, cells created, cells merged into a member already there).
+/// (samples written, cells created, cells merged into a member already there).
 fn write(engine: &TemporalEngine, key: &str, timestamp_ms: u64, cells: &[Cell]) -> (u64, u64, u64) {
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -169,13 +169,13 @@ fn a_worked_example_of_cells() {
     .unwrap();
 
     // ---- 2. THE WRITES ------------------------------------------------------------------------
-    // An old snapshot, ten minutes ago: item 1 was shown 1 000 times and never clicked. The last
+    // An old sample, ten minutes ago: item 1 was shown 1 000 times and never clicked. The last
     // minute's window below will not see it.
     let ten_minutes_ago = now - 600_000;
     assert_eq!(write(&engine, &key, ten_minutes_ago, &[cell(1, 1000, 0)]), (1, 1, 0));
 
-    // A snapshot from half a minute ago holds two cells: item 1 shown once and clicked once, and
-    // item 2 shown 60 times and clicked 50. One snapshot written, two cells created, none merged.
+    // A sample from half a minute ago holds two cells: item 1 shown once and clicked once, and
+    // item 2 shown 60 times and clicked 50. One sample written, two cells created, none merged.
     let half_a_minute_ago = now - 30_000;
     assert_eq!(
         write(&engine, &key, half_a_minute_ago, &[cell(1, 1, 1), cell(2, 60, 50)]),
@@ -183,19 +183,19 @@ fn a_worked_example_of_cells() {
     );
     // A second write to the SAME timestamp merges into it, lane by lane, under `Sum`: item 2 was
     // shown 40 more times and clicked 30 more. Nothing is created and one cell is merged, so the
-    // snapshot at that timestamp now holds item 2 at 100 impressions and 80 clicks.
+    // sample at that timestamp now holds item 2 at 100 impressions and 80 clicks.
     assert_eq!(write(&engine, &key, half_a_minute_ago, &[cell(2, 40, 30)]), (1, 0, 1));
 
-    // A later snapshot, twenty seconds ago, introduces item 3: shown 10 times, clicked 9.
+    // A later sample, twenty seconds ago, introduces item 3: shown 10 times, clicked 9.
     let twenty_seconds_ago = now - 20_000;
     assert_eq!(write(&engine, &key, twenty_seconds_ago, &[cell(3, 10, 9)]), (1, 1, 0));
 
     // ---- 3. THE RANKED READ, BY CLICK RATE ----------------------------------------------------
-    // window Last{60 s} -> reduce per item across the snapshots the window holds -> score the
-    // click rate -> the best first. The ten-minute-old snapshot is outside the window, so item 1
+    // window Last{60 s} -> reduce per item across the samples the window holds -> score the
+    // click rate -> the best first. The ten-minute-old sample is outside the window, so item 1
     // is 1 click in 1 impression, not 1 click in 1 001.
     let by_rate = rank(&engine, &key, Vec::new(), click_rate());
-    assert_eq!(by_rate.snapshots, 2, "the window holds the half-minute and the twenty-second snapshots");
+    assert_eq!(by_rate.snapshots, 2, "the window holds the half-minute and the twenty-second samples");
     assert_eq!(members(&by_rate), vec![1, 3, 2]);
     let rates: Vec<f64> = by_rate.rows.iter().map(|row| row.score).collect();
     for (got, want) in rates.iter().zip([1.0, 0.9, 0.8]) {
@@ -221,7 +221,7 @@ fn a_worked_example_of_cells() {
 
     // ---- 5. A SELECTION BY LABEL --------------------------------------------------------------
     // Only the placements below slot 3: items 1 and 2 (item 3 sits in slot 3). The selection cuts
-    // each cell as its snapshot stores it, before an item's snapshots are reduced together.
+    // each cell as its sample stores it, before an item's samples are reduced together.
     let first_two_slots =
         || vec![FeatureFilter { field: "slot".to_string(), op: FeatureFilterOp::LessThan, value: 3 }];
     assert_eq!(members(&rank(&engine, &key, first_two_slots(), click_rate())), vec![1, 2]);

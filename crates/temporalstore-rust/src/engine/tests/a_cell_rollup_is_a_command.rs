@@ -3,10 +3,10 @@
 
 //! A CELL ROLLUP AS A COMMAND, THROUGH THE ENGINE.
 //!
-//! The fold and the cap are tested as pure functions in `cell_rollup`; these tests are about what
+//! The fold and the cap are tested as pure functions in `window_reduce_rollup`; these tests are about what
 //! only the engine path can get wrong: that the series after a rollup is the series the pure
 //! function describes, that a ranked read over the rolled buckets answers what it answered over
-//! the snapshots they replaced, that a restart (cold, and by replaying the log) reads the same
+//! the samples they replaced, that a restart (cold, and by replaying the log) reads the same
 //! bytes, that two engines given the same request end with the same bytes, that a request the key
 //! cannot serve writes nothing, and that an absent or expired key rolls nothing up.
 //!
@@ -122,7 +122,7 @@ fn series(engine: &TemporalEngine, key: &str) -> Vec<FeaturePoint> {
 fn decoded(engine: &TemporalEngine, key: &str) -> Vec<(u64, Vec<Cell>)> {
     series(engine, key)
         .into_iter()
-        .map(|p| (p.timestamp_ms, decode_value(&p.value).expect("a stored value is a cell snapshot").1))
+        .map(|p| (p.timestamp_ms, decode_value(&p.value).expect("a stored value is a cell sample").1))
         .collect()
 }
 
@@ -138,7 +138,7 @@ fn rollup_response(engine: &TemporalEngine, key: &str, spec: CellRollupSpec) -> 
     exec(engine, Command::CellRollup { key: key.to_string(), spec })
 }
 
-/// (snapshots before, snapshots after, cells before, cells after, cells dropped)
+/// (samples before, samples after, cells before, cells after, cells dropped)
 fn receipt(response: &ExecuteResponse) -> [u64; 5] {
     assert!(response.status.ok, "{:?}", response.status);
     match &response.response {
@@ -189,7 +189,7 @@ fn answers(ranked: &RankedCells) -> Vec<(CellMemberId, u64, Vec<u64>, Vec<i64>)>
         .collect()
 }
 
-/// Twelve snapshots, at 100, 200 ... 1200. Item `m` (1 to 6) is present at snapshot `i` unless
+/// Twelve samples, at 100, 200 ... 1200. Item `m` (1 to 6) is present at sample `i` unless
 /// `(m + i)` is a multiple of 3, so members come and go; every lane value is a function of
 /// `(m, i)` and the label is where the item was placed that time, `(m + i) % 3`.
 fn seed(engine: &TemporalEngine, key: &str) -> Vec<(u64, Vec<Cell>)> {
@@ -258,7 +258,7 @@ fn a_ranking_over_the_rolled_buckets_answers_what_it_answered_over_the_snapshots
         let stored: BTreeSet<u64> = cells.iter().map(|c| match c.member { Member::U64(m) => m, _ => unreachable!() }).collect();
         assert_eq!(&stored, members);
     }
-    // The snapshots at or after the cutoff are the bytes that were written.
+    // The samples at or after the cutoff are the bytes that were written.
     assert_eq!(&rolled_series[3..], &seeded[9..]);
 
     for (score, before) in scores.iter().zip(&before) {
@@ -379,7 +379,7 @@ fn each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it() {
     let key = stored_key(11);
     let one = |ts: u64| point(ts, &[cell(1, 0, [1, 1, 1, 1])]);
 
-    // 1024 snapshots below the cutoff are rolled; 1025 are refused, naming the limit.
+    // 1024 samples below the cutoff are rolled; 1025 are refused, naming the limit.
     append(&engine, &key, (1..=1025u64).map(one).collect());
     let over = rollup_response(&engine, &key, roll(1026, 1_000_000, None));
     assert_eq!((over.status.ok, over.status.code.as_str()), (false, "invalid_argument"), "{:?}", over.status);
@@ -448,7 +448,7 @@ fn a_rollup_is_a_write_the_log_can_carry_in_every_score_spelling() {
 }
 
 /// THE WORKED EXAMPLE. One user (the ENTITY), one channel (a DIMENSION), a label `slot` and the
-/// lanes `impressions`, `clicks` and `peak`. Minute snapshots are rolled up per hour once they are
+/// lanes `impressions`, `clicks` and `peak`. Minute samples are rolled up per hour once they are
 /// older than the cutoff, and each rolled hour keeps the best item of each slot by click rate.
 ///
 ///   minute 1  (60 000)   item 1: 10 shown, 1 click, peak 4     item 3: 100 shown, 1 click, peak 3
@@ -543,7 +543,7 @@ fn fresh(user: u64) -> (tempfile::TempDir, TemporalEngine, String) {
 /// The seeded series is 100, 200 ... 1200. Tier 0: below 1100, buckets of 200. Tier 1: below 700,
 /// buckets of 400; 700 is aligned down to 600, a multiple of tier 0's 200. So, by hand:
 ///   100, 200, 300 -> 0     400, 500 -> 400     600, 700 -> 600     800, 900 -> 800     1000 -> 1000
-/// and 1100 and 1200 are at or after the cutoff and stay: seven snapshots.
+/// and 1100 and 1200 are at or after the cutoff and stay: seven samples.
 const TIER_STAMPS: [u64; 7] = [0, 400, 600, 800, 1000, 1100, 1200];
 
 #[test]
@@ -565,7 +565,7 @@ fn a_tiered_request_coarsens_old_history_in_one_command_and_ranks_the_same() {
     let kept: u64 = decoded(&engine, &key).iter().filter(|(ts, _)| *ts < 1100).map(|(_, cells)| cells.len() as u64).sum();
     assert_eq!(landed, [12, 7, below, kept, 0]);
     assert!(kept < below, "DENOMINATOR: members repeat inside a bucket, so cells were folded");
-    // The snapshots at or after the cutoff are the bytes that were written.
+    // The samples at or after the cutoff are the bytes that were written.
     assert_eq!(&decoded(&engine, &key)[5..], &seeded[10..]);
     for (score, before) in scores.iter().zip(&before) {
         let after = rank(&engine, &key, score.clone());
@@ -576,7 +576,7 @@ fn a_tiered_request_coarsens_old_history_in_one_command_and_ranks_the_same() {
 
 #[test]
 fn an_age_resolves_against_the_newest_stored_snapshot_and_follows_it() {
-    // Ages 100 and 500 against the newest snapshot, 1200, are the cutoffs 1100 and 700: the same
+    // Ages 100 and 500 against the newest sample, 1200, are the cutoffs 1100 and 700: the same
     // request as above, so the same bytes.
     let (_d1, by_stamp, key) = fresh(21);
     seed(&by_stamp, &key);
@@ -589,7 +589,7 @@ fn an_age_resolves_against_the_newest_stored_snapshot_and_follows_it() {
     assert_eq!(series(&by_age, &key2), series(&by_stamp, &key));
     assert_eq!(stamps(&by_age, &key2), TIER_STAMPS.to_vec());
 
-    // The same ages after a newer snapshot arrives are other cutoffs: 1300 - 100 = 1200 and
+    // The same ages after a newer sample arrives are other cutoffs: 1300 - 100 = 1200 and
     // 1300 - 500 = 800. 0, 400, 600 are below 800 (buckets of 400): 600 joins 400. 800, 1000, 1100
     // are below 1200 (buckets of 200): 1100 joins 1000. 1200 and 1300 stay.
     append(&by_age, &key2, vec![point(1300, &[cell(1, 0, [1, 1, 1, 1])])]);
@@ -615,17 +615,17 @@ fn a_truncation_acts_over_its_trigger_and_keeps_the_newest_snapshots() {
         let landed = receipt(&rollup_response(&engine, &key, spec));
         (landed, stamps(&engine, &key))
     };
-    // After the rollup there are seven snapshots. Keep 4, no trigger: the three oldest rolled
-    // snapshots (0, 400, 600) go.
+    // After the rollup there are seven samples. Keep 4, no trigger: the three oldest rolled
+    // samples (0, 400, 600) go.
     assert_eq!(run(with_truncate(4, None)).1, vec![800, 1000, 1100, 1200]);
     assert_eq!(run(with_truncate(4, None)).0[..2], [12, 4]);
-    // Keep 1: every rolled snapshot goes, and then the oldest untouched ones by stamp.
+    // Keep 1: every rolled sample goes, and then the oldest untouched ones by stamp.
     assert_eq!(run(with_truncate(1, None)).1, vec![1200]);
     // A trigger AT the count (7) leaves the series as the rollup made it; one below it acts.
     assert_eq!(run(with_truncate(4, Some(7))).1, TIER_STAMPS.to_vec());
     assert_eq!(run(with_truncate(4, Some(6))).1, vec![800, 1000, 1100, 1200]);
 
-    // A truncation alone: nothing below the cutoff, twelve snapshots, keep the newest five.
+    // A truncation alone: nothing below the cutoff, twelve samples, keep the newest five.
     let mut only = tiered(0, 1, &[], CellRollupAnchor::Request);
     only.truncate = Some(CellTruncateSpec { keep_last: 5, trigger: None });
     let (_dir, engine, key) = fresh(23);

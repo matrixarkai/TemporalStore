@@ -107,7 +107,7 @@ A request that names none of these is the single-tier rollup byte for byte; the 
 tiers, the age form, the truncation and the cap controls directly (the command is shown in the section
 above).
 `a_tiered_rollup_equals_an_independent_fold_with_a_bucket_per_tier`, in
-`crates/temporalstore-rust/src/engine/cell_rollup_tier_tests.rs`, is the runnable check.
+`crates/temporalstore-rust/src/engine/window_reduce_rollup_tier_tests.rs`, is the runnable check.
 
 ## Retrying a merge append
 

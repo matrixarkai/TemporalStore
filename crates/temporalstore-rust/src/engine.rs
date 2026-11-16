@@ -35,31 +35,31 @@ mod cell_merge_append;
 mod cell_retry_ring;
 mod window;
 mod window_aggregate;
-mod cell_rank;
-mod cell_rank_options;
-mod cell_rank_read;
+mod window_reduce_rank;
+mod window_reduce_rank_options;
+mod window_reduce_rank_read;
 // The ranked read over several keys that share one spec: a pure function over decoded snapshots.
 // Its command is a separate change, so nothing calls it yet.
 #[allow(dead_code)]
-mod cell_fan_in;
+mod window_reduce_fan_in;
 // Rolling old snapshots up into coarser buckets and capping a label group: a pure function over
 // decoded snapshots, and the engine side that reads the series and plans the replacement.
 // The tiers, the anchor, the truncation and the cap controls are a pure function until the command
 // carries them, so nothing outside the tests calls them yet.
 #[allow(dead_code)]
-mod cell_rollup;
-mod cell_rollup_apply;
+mod window_reduce_rollup;
+mod window_reduce_rollup_apply;
 // Removing cells by time window, member set and predicate: a pure function over decoded snapshots,
 // and the engine side that reads the series and plans the replacement.
-mod cell_remove;
-mod cell_remove_apply;
+mod window_reduce_remove;
+mod window_reduce_remove_apply;
 // Merged cell sets: the key, the per-key header and the packed snapshot. The merge-reduce write
 // policy of the feature append is its caller.
 mod cell_set;
 // The cell protocol as a pure translator between wire messages and commands; its wiring into a
 // route is a separate change, so nothing calls it yet.
 #[allow(dead_code)]
-mod cell_protocol;
+mod window_reduce_protocol;
 // Step one of three: the container lands with nothing using it, so the design can be reviewed
 // without a call-site conversion riding on it. The allow is the honest consequence and comes off
 // in the step that converts a map to it.

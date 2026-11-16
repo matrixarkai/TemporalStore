@@ -16,16 +16,16 @@
 //! A query becomes one ranked read ([`Command::CellRankQuery`]); a query that names `more_entities`
 //! becomes one merged read over all of their keys ([`Command::CellFanInRankQuery`]); a batch of
 //! queries becomes [`Command::CellRankBatchQuery`]. The selector's member set, the window kinds
-//! anchored on the newest snapshot, the quota and the decayed-lane mode map onto the options the
+//! anchored on the newest sample, the quota and the decayed-lane mode map onto the options the
 //! ranked read carries in its spec. Every translated spec is also passed through the engine's own
-//! admission check ([`super::cell_rank::validate_spec`]), so a request the translator accepts is one
+//! admission check ([`super::window_reduce_rank::validate_spec`]), so a request the translator accepts is one
 //! the command accepts.
 //!
 //! # WHAT IS NOT TRANSLATED YET
 //!
 //! `RECENT` and `MATCH_LANE` answer stored cells, one row each and none reduced, newest first: both
 //! are the ranked read with [`CellScore::Recent`], and `MATCH_LANE` adds an equality predicate on
-//! the lane it names. The newest-rows window, which counts stored rows rather than snapshots, is
+//! the lane it names. The newest-rows window, which counts stored rows rather than samples, is
 //! refused with a message that says so. `REMOVE` and `DELETE` are the one removal command
 //! ([`Command::CellRemove`]); see [`remove`].
 //! `MEMBERS_ONLY` reads exactly the include set, ordered by time.
@@ -34,9 +34,9 @@
 //! honoured by no read, so a request that sets either is refused by name
 //! ([`refuse_unbuilt_options`]) and never answered as if the option were absent.
 
-use super::cell_fan_in;
-use super::cell_rank;
-use super::cell_rank_options::MAX_QUOTA_LANES;
+use super::window_reduce_fan_in;
+use super::window_reduce_rank;
+use super::window_reduce_rank_options::MAX_QUOTA_LANES;
 use super::cell_set::{
     self, within, within_nonzero, Cell, CellHeader, CellKey, DimSpec, DimType, DimValue, EntityType,
     EntityValue, KeySpec, LaneSpec, Member, HEADER_VERSION, MAX_CELLS_PER_REQUEST, MAX_KEY_DIMENSIONS,
@@ -111,7 +111,7 @@ pub(crate) struct TableProfile {
     pub(crate) label_rule: LabelRule,
     pub(crate) lanes: Vec<LaneSpec>,
     pub(crate) shape: Shape,
-    /// A second cell for a member already in the snapshot is refused, not merged.
+    /// A second cell for a member already in the sample is refused, not merged.
     pub(crate) refuse_duplicates: bool,
     /// Oldest and newest accepted timestamp, as distances from now, in microseconds.
     pub(crate) max_past_us: i64,
@@ -544,7 +544,7 @@ fn window_of(window: &wire::Window) -> Result<CellWindow, Refusal> {
             }
             let start = window.start_us;
             let end = start.saturating_add(window.span);
-            // Snapshots stamped t ms hold t * 1000 microseconds: [start, end) in whole ms.
+            // Samples stamped t ms hold t * 1000 microseconds: [start, end) in whole ms.
             let first = start.div_euclid(1000) + i64::from(start.rem_euclid(1000) != 0);
             let after = end.div_euclid(1000) + i64::from(end.rem_euclid(1000) != 0);
             if first < 0 || after <= first {
@@ -558,7 +558,7 @@ fn window_of(window: &wire::Window) -> Result<CellWindow, Refusal> {
     }
 }
 
-/// Which instant a trailing window ends at: the newest stored snapshot for the two newest-anchored
+/// Which instant a trailing window ends at: the newest stored sample for the two newest-anchored
 /// kinds, the request clock for the rest.
 fn anchor_of(window: &wire::Window) -> CellAnchor {
     match window.kind() {
@@ -671,7 +671,7 @@ fn score_of(profile: &TableProfile, selector: &wire::WindowReduceSelector) -> Re
             CellScore::Decay { lane: lane_name(profile, at, "sort lane")?, half_life_ms: half_life_of(selector)? }
         }
         // A members-only read selects members rather than ranking them, so it comes back newest
-        // first: the stamp of each member's newest snapshot in the window, equal stamps by member.
+        // first: the stamp of each member's newest sample in the window, equal stamps by member.
         Mode::MembersOnly => CellScore::Time,
         // These two answer the stored cells newest first, one row per cell and NOT reduced per
         // member; `match_filter_of` adds the lane test that makes the second one a match.
@@ -679,7 +679,7 @@ fn score_of(profile: &TableProfile, selector: &wire::WindowReduceSelector) -> Re
     })
 }
 
-/// The two selector options no read honours: a per-snapshot summary in the answer
+/// The two selector options no read honours: a per-sample summary in the answer
 /// (`want_sample_info`) and a cap on the members one read may consider (`limit_members`).
 /// Neither is built, and dropping one silently would answer a question the caller did not ask, so
 /// a request that sets either is refused and the message names the field.
@@ -743,7 +743,7 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::WindowReduce
     if !more_keys.is_empty() {
         // How many keys, and none twice: the merged read counts a key as often as it is named.
         let named: Vec<String> = std::iter::once(key.clone()).chain(more_keys.iter().cloned()).collect();
-        cell_fan_in::validate_keys(&named).map_err(invalid)?;
+        window_reduce_fan_in::validate_keys(&named).map_err(invalid)?;
     }
     let anchor = anchor_of(window);
     let window = window_of(window)?;
@@ -785,7 +785,7 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::WindowReduce
     filters.extend(match_filter_of(profile, selector)?);
     let spec = CellRankSpec { window, filters, score, top_k, project: Vec::new(), members, anchor, quota };
     // The engine's own admission: what is accepted here is accepted by the command.
-    cell_rank::validate_spec(&spec).map_err(invalid)?;
+    window_reduce_rank::validate_spec(&spec).map_err(invalid)?;
     Ok(ReadPlan { key, more_keys, spec })
 }
 
@@ -821,7 +821,7 @@ pub(crate) fn batch_command(plans: Vec<ReadPlan>) -> Result<Command, Refusal> {
         }
         queries.push(CellRankBatchItem { key: plan.key, spec: plan.spec });
     }
-    cell_fan_in::validate_batch(&queries).map_err(invalid)?;
+    window_reduce_fan_in::validate_batch(&queries).map_err(invalid)?;
     Ok(Command::CellRankBatchQuery { queries })
 }
 
@@ -917,13 +917,13 @@ pub(crate) fn answer_of(profile: &TableProfile, query: &wire::WindowReduceQuery,
 }
 
 // `REMOVE` and `DELETE`, as the one command that removes cells.
-#[path = "cell_protocol_remove.rs"]
+#[path = "window_reduce_protocol_remove.rs"]
 pub(crate) mod remove;
 
 #[cfg(test)]
-#[path = "cell_protocol_tests.rs"]
+#[path = "window_reduce_protocol_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "cell_protocol_wire_tests.rs"]
+#[path = "window_reduce_protocol_wire_tests.rs"]
 mod wire_tests;

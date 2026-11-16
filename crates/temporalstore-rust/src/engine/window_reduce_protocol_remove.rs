@@ -8,22 +8,22 @@
 //! # REMOVE
 //!
 //! The entity, and the `kind` and `channel` of the key filter, name the key; the span names the
-//! snapshots (an absent span is every snapshot); the key filter's label, when the filter is
+//! samples (an absent span is every sample); the key filter's label, when the filter is
 //! present, is an equality predicate on the table's label, exactly as the selector label is for a
 //! read; `members` and `excluded_members` are the member set. A span in microseconds covers the
-//! snapshots whose stamp, in whole milliseconds, lies inside it: the start rounds up and the end
+//! samples whose stamp, in whole milliseconds, lies inside it: the start rounds up and the end
 //! rounds down, both inclusive, and a span that holds no whole millisecond is refused.
 //!
 //! # DELETE
 //!
 //! The selector names the key (`kind`, `channel`), the label predicate and the member set, over
-//! every snapshot. It maps to the same command and never to the deletion of the key: a delete that
+//! every sample. It maps to the same command and never to the deletion of the key: a delete that
 //! names no label and no member would empty the key and is refused, the way a removal is.
 //!
-//! Every translated spec also passes the engine's own admission ([`cell_remove::validate_spec`]),
+//! Every translated spec also passes the engine's own admission ([`window_reduce_remove::validate_spec`]),
 //! so a request the translator accepts is one the command accepts.
 
-use crate::engine::cell_remove;
+use crate::engine::window_reduce_remove;
 use super::cell_set::{within, EntityValue};
 use super::{invalid, key_of, entity_of, wire, WindowReduceStatusCode, Refusal, TableProfile, MAX_MEMBER_LIST};
 use crate::types::{
@@ -69,7 +69,7 @@ fn span_ms(span: &wire::TimeSpan) -> Result<(u64, u64), Refusal> {
 }
 
 fn command_of(key: String, spec: CellRemoveSpec) -> Result<Command, Refusal> {
-    cell_remove::validate_spec(&spec).map_err(invalid)?;
+    window_reduce_remove::validate_spec(&spec).map_err(invalid)?;
     Ok(Command::CellRemove { key, spec })
 }
 
@@ -173,5 +173,5 @@ pub(crate) fn refused_delete_response(refusal: &Refusal) -> wire::WindowReduceDe
 }
 
 #[cfg(test)]
-#[path = "cell_protocol_remove_tests.rs"]
+#[path = "window_reduce_protocol_remove_tests.rs"]
 mod tests;

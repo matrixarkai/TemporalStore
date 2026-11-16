@@ -80,7 +80,7 @@ fn send(engine: &TemporalEngine, key: &str, points: Vec<FeaturePoint>, token: Op
     })
 }
 
-/// (snapshots written, cells created, cells merged, replayed)
+/// (samples written, cells created, cells merged, replayed)
 fn receipt(response: &ExecuteResponse) -> (u64, u64, u64, bool) {
     assert!(response.status.ok, "the request was refused: {:?}", response.status);
     match &response.response {
@@ -103,7 +103,7 @@ fn lanes(engine: &TemporalEngine, key: &str) -> Vec<i64> {
         CommandResponse::FeaturePoints { points } => points,
         other => panic!("expected FeaturePoints, got {other:?}"),
     };
-    cell_set::decode_value(&points[0].value).expect("a cell snapshot").1[0].lanes.clone()
+    cell_set::decode_value(&points[0].value).expect("a cell sample").1[0].lanes.clone()
 }
 
 fn ring_tokens(engine: &TemporalEngine, key: &str) -> Option<Vec<u64>> {

@@ -20,11 +20,11 @@
 //! The `n` of a newest-`n` window is not capped here: a request is bounded at admission, before a
 //! read, and that bound belongs to the request.
 //!
-//! The boundaries of a `Last` window are computed by `cell_rank_options::last_bounds`, the function
+//! The boundaries of a `Last` window are computed by `window_reduce_rank_options::last_bounds`, the function
 //! the pure ranked read already uses, so a read over decoded samples and a read over a stored series
 //! agree on what an anchor at the newest instant means.
 
-use super::cell_rank_options::last_bounds;
+use super::window_reduce_rank_options::last_bounds;
 use super::timestamped_series::TimestampedSeries;
 use crate::block_store::ElementEntry;
 use crate::types::{CellAnchor, CellWindow};

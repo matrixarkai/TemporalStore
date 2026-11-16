@@ -3,11 +3,11 @@
 
 //! THE RANKED CELL READ AS A COMMAND, THROUGH THE ENGINE.
 //!
-//! The pure ranking is tested in `cell_rank`; these tests are about what only the engine path can
-//! get wrong: that the snapshots it reads are the snapshots that were stored (live, and after a
+//! The pure ranking is tested in `window_reduce_rank`; these tests are about what only the engine path can
+//! get wrong: that the samples it reads are the samples that were stored (live, and after a
 //! restart that reads every block cold), that an absent or expired key ranks nothing, that a read
 //! the key cannot serve is refused with its reason and a read that breaks a bound is refused at
-//! admission, and that a header that gained a lane after older snapshots were written still reads
+//! admission, and that a header that gained a lane after older samples were written still reads
 //! them.
 //!
 //! rust-internal: measures this crate's own request paths, no product behaviour
@@ -82,7 +82,7 @@ fn put(engine: &TemporalEngine, key: &str, header: &CellHeader, timestamp_ms: u6
     assert!(response.status.ok, "{:?}", response.status);
 }
 
-/// Four snapshots under [shown (Sum), peak (Max)]. Reduced over all four:
+/// Four samples under [shown (Sum), peak (Max)]. Reduced over all four:
 ///   m1 shown 30 peak 9    m2 shown 60 peak 8    m3 shown 200 peak 6    m4 shown 10 peak 2
 fn seed(engine: &TemporalEngine, key: &str) {
     let h = two_lanes();
@@ -134,14 +134,14 @@ fn a_ranked_read_answers_from_what_was_stored_live_and_after_a_restart() {
     let windowed = spec(CellWindow::Between { start_ms: 200, end_ms: 300 }, lane("shown"), 10);
 
     let live = rank(&engine, &key, by_sum.clone());
-    // Sum over every snapshot: 200 60 30 10.
+    // Sum over every sample: 200 60 30 10.
     assert_eq!(members(&live), vec![3, 2, 1, 4]);
     assert_eq!(live.rows.iter().map(|r| r.score as i64).collect::<Vec<_>>(), vec![200, 60, 30, 10]);
     assert_eq!(live.snapshots, 4);
     assert!(live.refused.is_empty());
     // Max, not sum: a sum of the peaks would put m1 and m2 level at 18.
     assert_eq!(members(&rank(&engine, &key, by_max.clone())), vec![1, 2, 3, 4]);
-    // The window: snapshots 200 and 300 only. m1 20, m2 30, m3 100, m4 8.
+    // The window: samples 200 and 300 only. m1 20, m2 30, m3 100, m4 8.
     let window = rank(&engine, &key, windowed.clone());
     assert_eq!(members(&window), vec![3, 2, 1, 4]);
     assert_eq!(window.rows.iter().map(|r| r.score as i64).collect::<Vec<_>>(), vec![100, 30, 20, 8]);
@@ -213,7 +213,7 @@ fn a_bound_is_refused_at_admission_and_accepted_at_exactly_the_limit() {
     let status_of = |query: CellRankSpec| {
         exec(&engine, Command::CellRankQuery { key: key.clone(), spec: query }).status
     };
-    // top-k: 1000 is served, 1001 and 0 are refused before any snapshot is read.
+    // top-k: 1000 is served, 1001 and 0 are refused before any sample is read.
     assert!(status_of(spec(ALL, lane("shown"), 1000)).ok);
     let over = status_of(spec(ALL, lane("shown"), 1001));
     assert_eq!((over.ok, over.code.as_str()), (false, "invalid_argument"), "{over:?}");
@@ -253,12 +253,12 @@ fn a_window_over_the_bound_is_refused_after_a_bounded_read_and_one_at_the_bound_
     for ts in 1..=513u64 {
         put(&engine, &key, &h, ts, &[cell(1, 0, vec![1])]);
     }
-    // 512 snapshots: the newest 512, summing to 512.
+    // 512 samples: the newest 512, summing to 512.
     let at = rank(&engine, &key, spec(CellWindow::Between { start_ms: 2, end_ms: u64::MAX }, lane("shown"), 1));
     assert_eq!((at.snapshots, at.rows[0].score as u64), (512, 512));
     // 513: refused, with rows left empty.
     let over = rank(&engine, &key, spec(ALL, lane("shown"), 1));
-    assert!(over.refused.contains("snapshots in the window"), "{}", over.refused);
+    assert!(over.refused.contains("samples in the window"), "{}", over.refused);
     assert!(over.rows.is_empty());
     // The newest 512 by count is served.
     assert_eq!(rank(&engine, &key, spec(CellWindow::LastN { n: 512 }, lane("shown"), 1)).rows[0].score as u64, 512);
@@ -275,7 +275,7 @@ fn a_lane_added_later_reads_as_zero_in_the_snapshots_written_before_it() {
     put(&engine, &key, &after, 200, &[cell(1, 0, vec![10, 4])]);
 
     let ranked = rank(&engine, &key, spec(ALL, lane("clicked"), 5));
-    // Only the later snapshot carries `clicked`: m1 4; m2 has none and reads 0.
+    // Only the later sample carries `clicked`: m1 4; m2 has none and reads 0.
     assert_eq!(members(&ranked), vec![1, 2]);
     assert_eq!(ranked.rows.iter().map(|r| r.lanes.clone()).collect::<Vec<_>>(), vec![vec![20, 4], vec![20, 0]]);
     assert_eq!(members(&rank(&engine, &key, spec(ALL, lane("shown"), 5))), vec![1, 2]);
@@ -298,8 +298,8 @@ fn a_decay_score_answers_its_hand_computed_value_live_and_after_a_restart() {
     let key = stored_key(8);
     seed(&engine, &key);
 
-    // Half-life 100, as of the newest snapshot of the window (400). Weights: 400 -> 1, 300 -> 1/2,
-    // 200 -> 1/4, 100 -> 1/8. The `shown` values the snapshots store:
+    // Half-life 100, as of the newest sample of the window (400). Weights: 400 -> 1, 300 -> 1/2,
+    // 200 -> 1/4, 100 -> 1/8. The `shown` values the samples store:
     //   m1 10@100 10@200 10@300 = 8.75      m2 20@100 30@200 10@400 = 20
     //   m3 100@100 100@300      = 62.5      m4 8@200 2@400          = 4
     let all = rank(&engine, &key, spec(ALL, decay("shown", 100), 10));
@@ -307,7 +307,7 @@ fn a_decay_score_answers_its_hand_computed_value_live_and_after_a_restart() {
     // The window 100..=300 is as of 300: m3 100/4 + 100, m2 20/4 + 30/2, m1 10/4 + 10/2 + 10, m4 8/2.
     let early = rank(&engine, &key, spec(CellWindow::Between { start_ms: 100, end_ms: 300 }, decay("shown", 100), 10));
     assert_eq!((members(&early), scores(&early)), (vec![3, 2, 1, 4], vec![125.0, 20.0, 17.5, 4.0]));
-    // `peak` is a Max lane; the decay reads what each snapshot stored: m2 7/8 + 3/4 + 8 = 9.625 leads
+    // `peak` is a Max lane; the decay reads what each sample stored: m2 7/8 + 3/4 + 8 = 9.625 leads
     // where the lane's own Max puts m1 (9) first.
     let peaks = rank(&engine, &key, spec(ALL, decay("peak", 100), 10));
     assert_eq!((members(&peaks), peaks.rows[0].score), (vec![2, 1, 3, 4], 9.625));
@@ -329,7 +329,7 @@ fn a_half_life_is_refused_at_admission_past_its_limits_and_served_at_them() {
     let status_of = |half_life_ms: u64| {
         exec(&engine, Command::CellRankQuery { key: key.clone(), spec: spec(ALL, decay("shown", half_life_ms), 5) }).status
     };
-    let longest = crate::engine::cell_rank::MAX_HALF_LIFE_MS;
+    let longest = crate::engine::window_reduce_rank::MAX_HALF_LIFE_MS;
     assert_eq!(longest, 315_360_000_000);
     assert!(status_of(1).ok);
     assert!(status_of(longest).ok);
@@ -442,7 +442,7 @@ fn the_member_set_is_bounded_at_admission_and_accepted_at_exactly_the_limit() {
     let plain = || spec(ALL, lane("shown"), 10);
     let outcome = |query: CellRankSpec| status_of(&engine, &key, query);
     let refused = (false, "invalid_argument".to_string());
-    // 1024 a side is served; 1025 is refused before any snapshot is read.
+    // 1024 a side is served; 1025 is refused before any sample is read.
     assert!(outcome(with_members(Some(many(1024)), vec![], plain())).0);
     assert_eq!(outcome(with_members(Some(many(1025)), vec![], plain())), refused);
     assert!(outcome(with_members(None, many(1024), plain())).0);
@@ -458,12 +458,12 @@ fn an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     let key = stored_key(13);
-    seed(&engine, &key); // snapshots at 100 200 300 400
+    seed(&engine, &key); // samples at 100 200 300 400
     let anchored = |duration_ms: u64| CellRankSpec {
         anchor: CellAnchor::Newest,
         ..spec(CellWindow::Last { duration_ms }, lane("shown"), 10)
     };
-    // [301, 400]: the snapshot at 400 alone: m2 10, m4 2.
+    // [301, 400]: the sample at 400 alone: m2 10, m4 2.
     let one = rank(&engine, &key, anchored(100));
     assert_eq!((members(&one), scores(&one), one.snapshots), (vec![2, 4], vec![10.0, 2.0], 1));
     // [101, 400]: 200, 300 and 400. m1 20, m2 30 + 10, m3 100, m4 8 + 2.
@@ -485,7 +485,7 @@ fn an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says() {
             status_of(&engine, &key, CellRankSpec { anchor: CellAnchor::Newest, ..spec(window, lane("shown"), 10) });
         assert_eq!(status, (false, "invalid_argument".to_string()));
     }
-    // A key with no snapshot is an empty answer.
+    // A key with no sample is an empty answer.
     let absent = rank(&engine, &stored_key(99), anchored(100));
     assert_eq!((absent.rows.len(), absent.refused.as_str()), (0, ""));
 
@@ -494,7 +494,7 @@ fn an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says() {
     assert_eq!(rank(&reloaded, &key, anchored(100)), one);
 }
 
-/// One snapshot of eight members ranked by `shown` 80 .. 10; `clicked` is non-zero for m3, m6, m8.
+/// One sample of eight members ranked by `shown` 80 .. 10; `clicked` is non-zero for m3, m6, m8.
 fn ladder_key(engine: &TemporalEngine, key: &str) {
     let h = header(&[("shown", LaneReducer::Sum), ("clicked", LaneReducer::Sum)]);
     let rows: [(u64, i64, i64); 8] =
@@ -643,7 +643,7 @@ fn a_recent_read_answers_the_stored_cells_newest_first_live_and_after_a_restart(
     let engine = engine_on(dir.path());
     let key = stored_key(21);
     seed(&engine, &key);
-    // The ten cells `seed` stored, newest snapshot first, and the `shown` each stored: a ranked
+    // The ten cells `seed` stored, newest sample first, and the `shown` each stored: a ranked
     // read reduces them to four members, so ten rows and a repeated member are this read's alone.
     let want_members = vec![2, 4, 1, 3, 1, 2, 4, 1, 2, 3];
     let want_stamps = vec![400, 400, 300, 300, 200, 200, 200, 100, 100, 100];

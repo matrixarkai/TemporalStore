@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! The engine side of a cell removal: reads the snapshots inside the request's window, hands them
-//! to the pure [`super::cell_remove::remove_cells`], and says what the series must hold afterwards.
+//! The engine side of a cell removal: reads the samples inside the request's window, hands them
+//! to the pure [`super::window_reduce_remove::remove_cells`], and says what the series must hold afterwards.
 //!
 //! # WHERE A VIOLATION IS REFUSED
 //!
@@ -15,29 +15,29 @@
 //!
 //! # WHAT IS READ
 //!
-//! Only the snapshots stamped inside the window, and the newest snapshot of the key for its header
-//! (a snapshot written under an older header is read under the newest one; one whose header is not
+//! Only the samples stamped inside the window, and the newest sample of the key for its header
+//! (a sample written under an older header is read under the newest one; one whose header is not
 //! a prefix of it is refused). The number inside the window is counted from the address map and
-//! refused over [`MAX_REMOVE_SNAPSHOTS`] BEFORE a block is read. A name the key does not declare is
-//! refused once the header is read; a window that holds no snapshot is answered without one.
+//! refused over [`MAX_REMOVE_SAMPLES`] BEFORE a block is read. A name the key does not declare is
+//! refused once the header is read; a window that holds no sample is answered without one.
 //!
 //! # WHAT IS WRITTEN
 //!
-//! One replacement of the stamp range from the first snapshot that changes to the last. Inside
-//! that range a snapshot that lost cells is rewritten under the newest header, one that lost all
+//! One replacement of the stamp range from the first sample that changes to the last. Inside
+//! that range a sample that lost cells is rewritten under the newest header, one that lost all
 //! of them is left out, and one that lost none is put back as the very bytes it had, so the replace
-//! never changes a snapshot the request did not touch. Outside that range nothing is read for
+//! never changes a sample the request did not touch. Outside that range nothing is read for
 //! writing and nothing is written. A request that matches no cell reports zero removed and writes
 //! nothing.
 //!
 //! # WHAT THE RECEIPT COUNTS
 //!
-//! Snapshots over the whole series, before and after (a snapshot left with no cell is gone, so the
-//! count can fall). Cells over the snapshots inside the window: how many there were and how many
+//! Samples over the whole series, before and after (a sample left with no cell is gone, so the
+//! count can fall). Cells over the samples inside the window: how many there were and how many
 //! the request took out.
 
-use super::cell_remove::{remove_cells, validate_spec, Selection, MAX_REMOVE_SNAPSHOTS};
-use super::cell_set::{check_header, decode_snapshot, encode_value, split_value, Cell, CellHeader};
+use super::window_reduce_remove::{remove_cells, validate_spec, Selection, MAX_REMOVE_SAMPLES};
+use super::cell_set::{check_header, decode_sample, encode_value, split_value, Cell, CellHeader};
 use super::*;
 use crate::engine::timestamped_series::TimestampedSeries;
 use crate::types::{CellRemoveSpec, FeaturePoint};
@@ -45,11 +45,11 @@ use crate::types::{CellRemoveSpec, FeaturePoint};
 /// What a removal does to a series.
 #[derive(Debug, PartialEq)]
 pub(super) struct CellRemovePlan {
-    /// The stamps of the snapshots the replacement covers, ascending, from the first that changes
-    /// to the last: every stored snapshot in that range.
+    /// The stamps of the samples the replacement covers, ascending, from the first that changes
+    /// to the last: every stored sample in that range.
     pub(super) replaced: Vec<u64>,
     /// What replaces them: the untouched ones as they were stored, the changed ones without the
-    /// removed cells, ascending. A snapshot left with no cell is not among them.
+    /// removed cells, ascending. A sample left with no cell is not among them.
     pub(super) points: Vec<FeaturePoint>,
     /// Whether the series changes.
     pub(super) changed: bool,
@@ -65,7 +65,7 @@ fn refuse(key: &str, message: impl std::fmt::Display) -> Status {
 
 /// Plans `spec` over `series`. `series` is `None` for a key that does not exist (or whose deadline
 /// has passed).
-pub(super) fn plan_cell_remove(
+pub(super) fn plan_window_reduce_remove(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
@@ -94,14 +94,14 @@ pub(super) fn plan_cell_remove(
     if inside.is_empty() {
         return Ok(nothing(total, 0));
     }
-    super::cell_set::within("snapshots inside the window", inside.len(), MAX_REMOVE_SNAPSHOTS)
+    super::cell_set::within("samples inside the window", inside.len(), MAX_REMOVE_SAMPLES)
         .map_err(|why| refuse(key, format!("{why}: narrow the window and remove in steps")))?;
 
     let mut page_keys = PageKeys::new();
     let identity = || BlockIdentity::of(shard_id, "feature", key, None);
     let routing = Some(routing_bucket);
 
-    // The header every snapshot is read under: the newest snapshot's.
+    // The header every sample is read under: the newest sample's.
     let header: CellHeader = read_feature_value_with(
         cache,
         block_store,
@@ -113,8 +113,8 @@ pub(super) fn plan_cell_remove(
         &mut page_keys,
         |bytes| split_value(bytes).map(|(header, _)| header),
     )
-    .ok_or_else(|| Status::error("data_loss", format!("{key}: the snapshot stored at {newest_ms} cannot be read")))?
-    .map_err(|why| refuse(key, format!("the snapshot at {newest_ms} is not a cell snapshot: {why}")))?;
+    .ok_or_else(|| Status::error("data_loss", format!("{key}: the sample stored at {newest_ms} cannot be read")))?
+    .map_err(|why| refuse(key, format!("the sample at {newest_ms} is not a cell sample: {why}")))?;
     let selection = Selection::compile(&header, spec).map_err(|why| refuse(key, why))?;
 
     let mut stored: Vec<Vec<u8>> = Vec::with_capacity(inside.len());
@@ -134,11 +134,11 @@ pub(super) fn plan_cell_remove(
                 if own != header {
                     check_header(&own, &header)?;
                 }
-                Ok((decode_snapshot(&header, packed)?, bytes.to_vec()))
+                Ok((decode_sample(&header, packed)?, bytes.to_vec()))
             },
         )
-        .ok_or_else(|| Status::error("data_loss", format!("{key}: the snapshot stored at {timestamp_ms} cannot be read")))?
-        .map_err(|why| refuse(key, format!("the snapshot at {timestamp_ms}: {why}")))?;
+        .ok_or_else(|| Status::error("data_loss", format!("{key}: the sample stored at {timestamp_ms} cannot be read")))?
+        .map_err(|why| refuse(key, format!("the sample at {timestamp_ms}: {why}")))?;
         decoded.push((timestamp_ms, cells));
         stored.push(bytes);
     }

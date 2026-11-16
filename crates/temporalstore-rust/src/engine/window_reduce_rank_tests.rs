@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Tests of the ranked cell read (`cell_rank`). Every expected number below is worked out by hand
+//! Tests of the ranked cell read (`window_reduce_rank`). Every expected number below is worked out by hand
 //! in a comment beside it, so the assertions are the arithmetic and not a copy of the code.
 
 use super::*;
@@ -10,7 +10,7 @@ use crate::engine::cell_set::{
     HEADER_VERSION, MAX_TOP_K,
 };
 
-type Snapshots = Vec<(u64, Vec<Cell>)>;
+type Samples = Vec<(u64, Vec<Cell>)>;
 
 /// One label (`slot`) and four lanes. The reducers differ on purpose: a read that reduced every
 /// lane the same way could not produce the numbers asserted below.
@@ -44,11 +44,11 @@ fn bytes_cell(slot: u64, lanes: [i64; 4]) -> Cell {
     Cell { member: Member::Bytes(b"zz".to_vec()), labels: vec![slot], lanes: lanes.to_vec() }
 }
 
-/// lanes are [shown, clicked, peak, seen]. Reduced over all four snapshots (Sum, Sum, Max, Last):
+/// lanes are [shown, clicked, peak, seen]. Reduced over all four samples (Sum, Sum, Max, Last):
 ///   m1  shown  30 clicked  4 peak 9 seen 300 slot 2     m2  shown  60 clicked 30 peak 8 seen 400 slot 2
 ///   m3  shown 200 clicked 90 peak 6 seen 300 slot 1     m4  shown  10 clicked  8 peak 2 seen 400 slot 2
 ///   zz  shown   5 clicked  0 peak 1 seen 300 slot 4
-fn data() -> Snapshots {
+fn data() -> Samples {
     vec![
         (100, vec![cell(1, 1, [10, 1, 5, 100]), cell(2, 2, [20, 10, 7, 100]), cell(3, 1, [100, 50, 2, 100])]),
         (200, vec![cell(1, 1, [10, 2, 9, 200]), cell(2, 3, [30, 15, 3, 200]), cell(4, 2, [8, 8, 1, 200])]),
@@ -57,8 +57,8 @@ fn data() -> Snapshots {
     ]
 }
 
-fn views(snaps: &Snapshots) -> Vec<SnapshotView<'_>> {
-    snaps.iter().map(|(timestamp_ms, cells)| SnapshotView { timestamp_ms: *timestamp_ms, cells }).collect()
+fn views(snaps: &Samples) -> Vec<SampleView<'_>> {
+    snaps.iter().map(|(timestamp_ms, cells)| SampleView { timestamp_ms: *timestamp_ms, cells }).collect()
 }
 
 const ALL: CellWindow = CellWindow::Between { start_ms: 0, end_ms: u64::MAX };
@@ -75,7 +75,7 @@ fn filter(field: &str, op: FeatureFilterOp, value: u64) -> FeatureFilter {
     FeatureFilter { field: field.to_string(), op, value }
 }
 
-fn run_on(spec: &CellRankSpec, snaps: &Snapshots, now_ms: u64) -> Result<RankedCells, String> {
+fn run_on(spec: &CellRankSpec, snaps: &Samples, now_ms: u64) -> Result<RankedCells, String> {
     Plan::compile(&header(), spec)?.run(now_ms, &views(snaps))
 }
 
@@ -156,7 +156,7 @@ fn a_wilson_bound_is_the_hand_computed_number_and_rewards_volume() {
     // decides), Wilson puts the one with more evidence first. 80 of 100 by hand:
     //   centre = .8 + 3.8416 / 200 = .819208; margin = 1.96 * sqrt(.0016 + 3.8416 / 40000) = 1.96 * .041183 = .080719
     //   lower  = (.819208 - .080719) / 1.038416 = .71118
-    let snaps: Snapshots = vec![(100, vec![cell(1, 0, [10, 8, 0, 0]), cell(2, 0, [100, 80, 0, 0])])];
+    let snaps: Samples = vec![(100, vec![cell(1, 0, [10, 8, 0, 0]), cell(2, 0, [100, 80, 0, 0])])];
     let wilson = CellScore::Wilson { successes: "clicked".to_string(), trials: "shown".to_string(), z: 1.96 };
     let ratio_score = CellScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() };
     let by_ratio = run_on(&spec(ALL, ratio_score, 5), &snaps, 100).unwrap();
@@ -170,7 +170,7 @@ fn a_wilson_bound_is_the_hand_computed_number_and_rewards_volume() {
 #[test]
 fn an_undefined_score_is_counted_and_not_ranked() {
     // m1 has shown = 0: the ratio's denominator. m2 has clicked > shown: no Wilson bound.
-    let snaps: Snapshots =
+    let snaps: Samples =
         vec![(100, vec![cell(1, 0, [0, 5, 0, 0]), cell(2, 0, [4, 9, 0, 0]), cell(3, 0, [10, 5, 0, 0])])];
     let ratio_score = CellScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() };
     let ranked = run_on(&spec(ALL, ratio_score, 5), &snaps, 100).unwrap();
@@ -186,14 +186,14 @@ fn each_window_kind_selects_the_snapshots_it_names() {
         let ranked = run(&spec(window, lane("shown"), 5));
         (order(&ranked), scores(&ranked), ranked.snapshots)
     };
-    // Both ends are inclusive: snapshots 200 and 300.
+    // Both ends are inclusive: samples 200 and 300.
     assert_eq!(
         shown(CellWindow::Between { start_ms: 200, end_ms: 300 }),
         (vec![3, 2, 1, 4, 99], vec![100, 30, 20, 8, 5], 2)
     );
     assert_eq!(shown(CellWindow::Between { start_ms: 100, end_ms: 100 }), (vec![3, 2, 1], vec![100, 20, 10], 1));
     assert_eq!(shown(CellWindow::Between { start_ms: 101, end_ms: 199 }), (vec![], vec![], 0));
-    // now = 400: the last 150 ms is [250, 400], so the snapshots at 300 and 400.
+    // now = 400: the last 150 ms is [250, 400], so the samples at 300 and 400.
     assert_eq!(shown(CellWindow::Last { duration_ms: 150 }), (vec![3, 1, 2, 99, 4], vec![100, 10, 10, 5, 2], 2));
     // A duration of 0 is the instant itself.
     assert_eq!(shown(CellWindow::Last { duration_ms: 0 }), (vec![2, 4], vec![10, 2], 1));
@@ -201,7 +201,7 @@ fn each_window_kind_selects_the_snapshots_it_names() {
     assert_eq!(shown(CellWindow::Since { start_ms: 401 }), (vec![], vec![], 0));
     assert_eq!(shown(CellWindow::LastN { n: 1 }), (vec![2, 4], vec![10, 2], 1));
     assert_eq!(shown(CellWindow::LastN { n: 3 }), (vec![3, 2, 1, 4, 99], vec![100, 40, 20, 10, 5], 3));
-    // More snapshots asked for than exist is the whole key.
+    // More samples asked for than exist is the whole key.
     assert_eq!(shown(CellWindow::LastN { n: 50 }).2, 4);
     // A `Last` window ends at the clock it is given: at 200 it covers [50, 200].
     let early = run_on(&spec(CellWindow::Last { duration_ms: 150 }, lane("shown"), 5), &data(), 200).unwrap();
@@ -240,7 +240,7 @@ fn a_row_carries_its_reduced_lanes_its_newest_labels_and_its_newest_stamp() {
     assert_eq!(row.lanes, vec![200, 90, 6, 300]);
     assert_eq!(row.labels, vec![1]);
     assert_eq!(row.last_ms, 300);
-    // m1's slot is the newest snapshot's (2 at stamp 300), not the first (1).
+    // m1's slot is the newest sample's (2 at stamp 300), not the first (1).
     let m1 = run(&spec(ALL, lane("shown"), 5))
         .rows
         .into_iter()
@@ -364,13 +364,13 @@ fn the_member_score_refuses_a_bytes_member_rather_than_ranking_it_somewhere() {
 #[test]
 fn nothing_to_rank_is_an_empty_answer_not_an_error() {
     let query = spec(ALL, lane("shown"), 5);
-    // A key with no snapshots.
-    let none: Snapshots = Vec::new();
+    // A key with no samples.
+    let none: Samples = Vec::new();
     let ranked = run_on(&query, &none, 400).unwrap();
     assert_eq!((ranked.rows.len(), ranked.snapshots, ranked.unscored), (0, 0, 0));
     assert_eq!(ranked.lane_columns.len(), 4, "the columns are still reported");
-    // Snapshots holding no cells.
-    let hollow: Snapshots = vec![(1, Vec::new()), (2, Vec::new())];
+    // Samples holding no cells.
+    let hollow: Samples = vec![(1, Vec::new()), (2, Vec::new())];
     let ranked = run_on(&query, &hollow, 400).unwrap();
     assert_eq!((ranked.rows.len(), ranked.snapshots), (0, 2));
     // A selection that keeps nothing.
@@ -382,13 +382,13 @@ fn nothing_to_rank_is_an_empty_answer_not_an_error() {
 #[test]
 fn snapshots_that_cannot_be_merged_are_refused_not_guessed() {
     let query = spec(ALL, lane("shown"), 5);
-    let unsorted: Snapshots = vec![(1, vec![cell(2, 0, [1, 0, 0, 0]), cell(1, 0, [1, 0, 0, 0])])];
+    let unsorted: Samples = vec![(1, vec![cell(2, 0, [1, 0, 0, 0]), cell(1, 0, [1, 0, 0, 0])])];
     assert!(run_on(&query, &unsorted, 9).unwrap_err().contains("ascending by member"));
-    let repeated: Snapshots = vec![(1, vec![cell(1, 0, [1, 0, 0, 0]), cell(1, 0, [1, 0, 0, 0])])];
+    let repeated: Samples = vec![(1, vec![cell(1, 0, [1, 0, 0, 0]), cell(1, 0, [1, 0, 0, 0])])];
     assert!(run_on(&query, &repeated, 9).is_err());
-    let backwards: Snapshots = vec![(2, vec![cell(1, 0, [1, 0, 0, 0])]), (1, vec![cell(1, 0, [1, 0, 0, 0])])];
+    let backwards: Samples = vec![(2, vec![cell(1, 0, [1, 0, 0, 0])]), (1, vec![cell(1, 0, [1, 0, 0, 0])])];
     assert!(run_on(&query, &backwards, 9).unwrap_err().contains("ascending stamp"));
-    let narrow: Snapshots = vec![(1, vec![Cell { member: Member::U64(1), labels: vec![0], lanes: vec![1] }])];
+    let narrow: Samples = vec![(1, vec![Cell { member: Member::U64(1), labels: vec![0], lanes: vec![1] }])];
     assert!(run_on(&query, &narrow, 9).unwrap_err().contains("header declares"));
 }
 
@@ -397,7 +397,7 @@ fn a_reloaded_snapshot_ranks_as_the_snapshot_it_was_stored_from() {
     let header = header();
     let live = data();
     // Stored and read back through the value codec, as a restart reads them.
-    let reloaded: Snapshots = live
+    let reloaded: Samples = live
         .iter()
         .map(|(ts, cells)| {
             let (stored_header, decoded) = decode_value(&encode_value(&header, cells).unwrap()).unwrap();
@@ -460,7 +460,7 @@ fn lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit() {
 
     // At the limit the sum is really over all eight lanes: eight lanes of 1, weighted 1..=8, is 36.
     let cells = vec![Cell { member: Member::U64(1), labels: vec![0], lanes: vec![1; MAX_WEIGHTED_LANES + 1] }];
-    let snaps: Snapshots = vec![(1, cells)];
+    let snaps: Samples = vec![(1, cells)];
     let score = CellScore::Weighted {
         lanes: (0..MAX_WEIGHTED_LANES).map(|i| format!("l{i}")).collect(),
         weights: (1..=MAX_WEIGHTED_LANES).map(|w| w as f64).collect(),
@@ -469,26 +469,26 @@ fn lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit() {
     assert_eq!(plan.run(1, &views(&snaps)).unwrap().rows[0].score, 36.0);
 }
 
-fn one_cell_per_stamp(count: usize) -> Snapshots {
+fn one_cell_per_stamp(count: usize) -> Samples {
     (1..=count as u64).map(|ts| (ts, vec![cell(1, 0, [1, 0, 0, 0])])).collect()
 }
 
 #[test]
 fn snapshots_in_a_window_are_bounded_at_exactly_the_limit() {
     let query = spec(ALL, lane("shown"), 1);
-    // At the limit: all MAX snapshots merge and the member's sum is MAX.
-    let at = run_on(&query, &one_cell_per_stamp(MAX_WINDOW_SNAPSHOTS), 0).unwrap();
-    assert_eq!((at.snapshots, at.rows[0].score as usize), (MAX_WINDOW_SNAPSHOTS, MAX_WINDOW_SNAPSHOTS));
-    let error = run_on(&query, &one_cell_per_stamp(MAX_WINDOW_SNAPSHOTS + 1), 0).unwrap_err();
-    assert!(error.contains("snapshots in the window"), "{error}");
+    // At the limit: all MAX samples merge and the member's sum is MAX.
+    let at = run_on(&query, &one_cell_per_stamp(MAX_WINDOW_SAMPLES), 0).unwrap();
+    assert_eq!((at.snapshots, at.rows[0].score as usize), (MAX_WINDOW_SAMPLES, MAX_WINDOW_SAMPLES));
+    let error = run_on(&query, &one_cell_per_stamp(MAX_WINDOW_SAMPLES + 1), 0).unwrap_err();
+    assert!(error.contains("samples in the window"), "{error}");
     // The count is the WINDOW's, not the key's: a narrower window over the same key is fine.
     let narrow = spec(CellWindow::LastN { n: 10 }, lane("shown"), 1);
-    assert_eq!(run_on(&narrow, &one_cell_per_stamp(MAX_WINDOW_SNAPSHOTS + 1), 0).unwrap().snapshots, 10);
+    assert_eq!(run_on(&narrow, &one_cell_per_stamp(MAX_WINDOW_SAMPLES + 1), 0).unwrap().snapshots, 10);
     // LastN is bounded when the plan is compiled.
     let last_n = |n| spec(CellWindow::LastN { n }, lane("shown"), 1);
-    assert!(Plan::compile(&header(), &last_n(MAX_WINDOW_SNAPSHOTS)).is_ok());
-    assert!(Plan::compile(&header(), &last_n(MAX_WINDOW_SNAPSHOTS + 1)).is_err());
-    assert_eq!(MAX_WINDOW_SNAPSHOTS, 512);
+    assert!(Plan::compile(&header(), &last_n(MAX_WINDOW_SAMPLES)).is_ok());
+    assert!(Plan::compile(&header(), &last_n(MAX_WINDOW_SAMPLES + 1)).is_err());
+    assert_eq!(MAX_WINDOW_SAMPLES, 512);
 }
 
 // ---- the same answer as an obvious implementation ------------------------------------------------
@@ -510,7 +510,7 @@ fn the_merge_answers_what_a_per_member_table_answers() {
     let mut compared = 0usize;
     for _ in 0..60 {
         let count = 1 + rng.next() % 12;
-        let snapshots: Snapshots = (1..=count)
+        let snapshots: Samples = (1..=count)
             .map(|i| {
                 let mut cells = Vec::new();
                 for member in 0..40u64 {
@@ -523,7 +523,7 @@ fn the_merge_answers_what_a_per_member_table_answers() {
                 (i * 10, cells)
             })
             .collect();
-        // The oracle: a table per member, in snapshot order, with the `slot != 3` predicate applied.
+        // The oracle: a table per member, in sample order, with the `slot != 3` predicate applied.
         let mut table: std::collections::BTreeMap<u64, ([i64; 4], u64)> = Default::default();
         for (ts, cells) in &snapshots {
             for c in cells.iter().filter(|c| c.labels[0] != 3) {
@@ -575,20 +575,20 @@ fn the_merge_answers_what_a_per_member_table_answers() {
     assert!(compared > 1000, "the comparison covered {compared} rows, too few to mean anything");
 }
 
-// The member set and the newest-snapshot anchor.
-#[path = "cell_rank_options_tests.rs"]
+// The member set and the newest-sample anchor.
+#[path = "window_reduce_rank_options_tests.rs"]
 mod options;
 
 // The quota.
-#[path = "cell_rank_quota_tests.rs"]
+#[path = "window_reduce_rank_quota_tests.rs"]
 mod quota;
 
 // The decay score.
-#[path = "cell_rank_decay_tests.rs"]
+#[path = "window_reduce_rank_decay_tests.rs"]
 mod decay;
 
 // The stored-cell read.
-#[path = "cell_rank_recent_tests.rs"]
+#[path = "window_reduce_rank_recent_tests.rs"]
 mod recent;
 
 #[cfg(feature = "alloc-probe")]
@@ -605,8 +605,8 @@ mod probe {
         h
     }
 
-    /// `snapshots` snapshots of `members` cells each, every member in every snapshot.
-    fn dataset(members: u64, snapshots: u64) -> Snapshots {
+    /// `snapshots` samples of `members` cells each, every member in every sample.
+    fn dataset(members: u64, snapshots: u64) -> Samples {
         (1..=snapshots)
             .map(|ts| {
                 let cells = (0..members)

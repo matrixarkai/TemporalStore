@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::engine::cell_set::{
-    decode_snapshot, encode_snapshot, DimSpec, DimType, EntityType, KeySpec, LaneSpec, Member, HEADER_VERSION,
+    decode_sample, encode_sample, DimSpec, DimType, EntityType, KeySpec, LaneSpec, Member, HEADER_VERSION,
 };
 use std::collections::BTreeMap;
 
@@ -46,8 +46,8 @@ fn cell(member: u64, slot: u64, lanes: [i64; 6]) -> Cell {
     Cell { member: Member::U64(member), labels: vec![slot], lanes: lanes.to_vec() }
 }
 
-fn snap(timestamp_ms: u64, cells: Vec<Cell>) -> Snapshot {
-    Snapshot { timestamp_ms, cells }
+fn snap(timestamp_ms: u64, cells: Vec<Cell>) -> Sample {
+    Sample { timestamp_ms, cells }
 }
 
 fn spec(older_than_ms: u64, bucket_ms: u64) -> RollupSpec {
@@ -62,10 +62,10 @@ fn cap(group_by: Option<&str>, score: CellScore, keep: usize) -> CapSpec {
     CapSpec { group_by: group_by.map(str::to_string), score, keep, protect_newest_ppm: 0, trigger_over: 0 }
 }
 
-fn bytes_of(snapshots: &[Snapshot]) -> Vec<(u64, Vec<u8>)> {
+fn bytes_of(snapshots: &[Sample]) -> Vec<(u64, Vec<u8>)> {
     snapshots
         .iter()
-        .map(|s| (s.timestamp_ms, encode_snapshot(&header(), &s.cells).unwrap()))
+        .map(|s| (s.timestamp_ms, encode_sample(&header(), &s.cells).unwrap()))
         .collect()
 }
 
@@ -82,9 +82,9 @@ impl Lcg {
     }
 }
 
-/// Snapshots at irregular stamps over members 0..60, each member present about half the time.
+/// Samples at irregular stamps over members 0..60, each member present about half the time.
 /// Lane values are small (|v| < 1000) so no sum can approach a limit.
-fn series(seed: u64, count: usize) -> Vec<Snapshot> {
+fn series(seed: u64, count: usize) -> Vec<Sample> {
     let mut rng = Lcg(seed);
     let mut ts = 5;
     let mut out = Vec::with_capacity(count);
@@ -108,7 +108,7 @@ fn series(seed: u64, count: usize) -> Vec<Snapshot> {
 
 /// What a rollup must produce, written without the module's fold: the occurrences of each member
 /// of each bucket are gathered in stamp order and each lane is computed from its own list.
-fn independent_fold(snaps: &[Snapshot], cutoff: u64, bucket: u64) -> Vec<Snapshot> {
+fn independent_fold(snaps: &[Sample], cutoff: u64, bucket: u64) -> Vec<Sample> {
     let mut buckets: BTreeMap<u64, BTreeMap<u64, Vec<(Vec<u64>, Vec<i64>)>>> = BTreeMap::new();
     let mut untouched = Vec::new();
     for s in snaps {
@@ -122,7 +122,7 @@ fn independent_fold(snaps: &[Snapshot], cutoff: u64, bucket: u64) -> Vec<Snapsho
             buckets.entry(start).or_default().entry(m).or_default().push((c.labels.clone(), c.lanes.clone()));
         }
     }
-    let mut out: Vec<Snapshot> = buckets
+    let mut out: Vec<Sample> = buckets
         .into_iter()
         .map(|(start, members)| {
             let cells = members
@@ -139,7 +139,7 @@ fn independent_fold(snaps: &[Snapshot], cutoff: u64, bucket: u64) -> Vec<Snapsho
                     Cell { member: Member::U64(m), labels: seen.last().unwrap().0.clone(), lanes }
                 })
                 .collect();
-            Snapshot { timestamp_ms: start, cells }
+            Sample { timestamp_ms: start, cells }
         })
         .collect();
     out.extend(untouched);
@@ -176,7 +176,7 @@ fn a_rollup_equals_an_independent_fold_for_every_bucket_size_and_cutoff() {
 // Combining
 // ------------------------------------------------------------------------------------------
 
-/// Three snapshots of one bucket, one member:
+/// Three samples of one bucket, one member:
 ///   shown   10, 20, 30  Sum   -> 60          events 3, 4, 5  Count -> 12 (counts add)
 ///   peak     5,  9,  2  Max   -> 9           low    5, 9, 2  Min   -> 2
 ///   opened  11, 22, 33  First -> 11          seen   1, 2, 3  Last  -> 3
@@ -197,7 +197,7 @@ fn each_lane_combines_oldest_first_and_a_count_is_the_sum_of_counts_not_the_numb
     let write_time = [3i64, 4, 5].iter().skip(1).fold(3, |existing, incoming| LaneReducer::Count.combine(existing, *incoming));
     assert_eq!(write_time, 5, "folding as writes counts events, not the counts carried");
     assert_ne!(write_time, 12);
-    // And a member present in one snapshot only keeps its stored count: it is not reset to 1.
+    // And a member present in one sample only keeps its stored count: it is not reset to 1.
     let alone = rollup(&header(), vec![snap(10, vec![cell(2, 0, [1, 7, 1, 1, 1, 1])])], &spec(100, 100)).unwrap();
     assert_eq!(alone.snapshots[0].cells[0].lanes[COUNT], 7);
 }
@@ -228,7 +228,7 @@ fn sums_and_counts_saturate_and_never_wrap() {
     assert_eq!(combine_aggregated(LaneReducer::Sum, i64::MAX - 1, 1), i64::MAX, "exactly at the limit is exact");
     assert_eq!(combine_aggregated(LaneReducer::Sum, i64::MIN, -1), i64::MIN);
     assert_eq!(combine_aggregated(LaneReducer::Count, i64::MAX, 5), i64::MAX);
-    // Through the whole function: two snapshots whose sums add past the limit.
+    // Through the whole function: two samples whose sums add past the limit.
     let snaps = vec![
         snap(1, vec![cell(1, 0, [i64::MAX, i64::MAX, 0, 0, 0, 0])]),
         snap(2, vec![cell(1, 0, [10, 10, 0, 0, 0, 0])]),
@@ -310,9 +310,9 @@ fn a_decoded_replay_reaches_the_bytes_the_first_run_reached() {
     };
     let leader = rollup(&header(), snaps, &request).unwrap();
     // A follower or a replay starts from the stored bytes, not from the leader's values.
-    let replayed: Vec<Snapshot> = stored
+    let replayed: Vec<Sample> = stored
         .iter()
-        .map(|(ts, bytes)| snap(*ts, decode_snapshot(&header(), bytes).unwrap()))
+        .map(|(ts, bytes)| snap(*ts, decode_sample(&header(), bytes).unwrap()))
         .collect();
     let follower = rollup(&header(), replayed, &request).unwrap();
     assert_eq!(bytes_of(&leader.snapshots), bytes_of(&follower.snapshots));
@@ -401,7 +401,7 @@ fn a_cell_whose_score_is_undefined_ranks_after_every_scored_cell() {
 #[test]
 fn the_cap_runs_on_the_folded_bucket_not_on_the_snapshots_that_make_it() {
     // m1 shows 1 then 100; m2 shows 50 then 0. Folded: m1 = 101, m2 = 50, so keep 1 keeps m1.
-    // Capping each snapshot first would have kept m2 in the first and m1 in the second.
+    // Capping each sample first would have kept m2 in the first and m1 in the second.
     let snaps = vec![
         snap(1, vec![cell(1, 0, [1, 1, 0, 0, 0, 0]), cell(2, 0, [50, 1, 0, 0, 0, 0])]),
         snap(2, vec![cell(1, 0, [100, 1, 0, 0, 0, 0]), cell(2, 0, [0, 1, 0, 0, 0, 0])]),
@@ -456,23 +456,23 @@ fn keep_is_bounded_at_one_below_and_the_snapshot_limit_above() {
 #[test]
 fn snapshots_below_the_cutoff_are_bounded_at_exactly_the_limit() {
     let many = |n: usize| (0..n as u64).map(|i| snap(i + 1, Vec::new())).collect::<Vec<_>>();
-    let at = rollup(&header(), many(MAX_ROLLUP_SNAPSHOTS), &spec(u64::MAX, 1_000_000)).unwrap();
+    let at = rollup(&header(), many(MAX_ROLLUP_SAMPLES), &spec(u64::MAX, 1_000_000)).unwrap();
     assert_eq!(at.snapshots.len(), 1, "all of them land in one bucket");
-    let err = rollup(&header(), many(MAX_ROLLUP_SNAPSHOTS + 1), &spec(u64::MAX, 1_000_000)).unwrap_err();
-    assert!(err.contains("over the limit") && err.contains(&MAX_ROLLUP_SNAPSHOTS.to_string()), "{err}");
-    // The bound counts the snapshots BELOW the cutoff: one more, past the cutoff, is not touched.
-    let mut past = many(MAX_ROLLUP_SNAPSHOTS);
-    past.push(snap(MAX_ROLLUP_SNAPSHOTS as u64 + 1, Vec::new()));
-    assert!(rollup(&header(), past, &spec(MAX_ROLLUP_SNAPSHOTS as u64 + 1, 1_000_000)).is_ok());
+    let err = rollup(&header(), many(MAX_ROLLUP_SAMPLES + 1), &spec(u64::MAX, 1_000_000)).unwrap_err();
+    assert!(err.contains("over the limit") && err.contains(&MAX_ROLLUP_SAMPLES.to_string()), "{err}");
+    // The bound counts the samples BELOW the cutoff: one more, past the cutoff, is not touched.
+    let mut past = many(MAX_ROLLUP_SAMPLES);
+    past.push(snap(MAX_ROLLUP_SAMPLES as u64 + 1, Vec::new()));
+    assert!(rollup(&header(), past, &spec(MAX_ROLLUP_SAMPLES as u64 + 1, 1_000_000)).is_ok());
 }
 
 #[test]
 fn a_bucket_over_the_snapshot_cell_limit_is_refused_and_one_at_the_limit_is_folded() {
     let range = |from: u64, to: u64| (from..to).map(|m| cell(m, 0, [1, 1, 1, 1, 1, 1])).collect::<Vec<_>>();
-    let half = MAX_CELLS_PER_SNAPSHOT as u64 / 2;
-    let full = MAX_CELLS_PER_SNAPSHOT as u64;
+    let half = MAX_CELLS_PER_SAMPLE as u64 / 2;
+    let full = MAX_CELLS_PER_SAMPLE as u64;
     let at = rollup(&header(), vec![snap(1, range(0, half)), snap(2, range(half, full))], &spec(10, 10)).unwrap();
-    assert_eq!(at.snapshots[0].cells.len(), MAX_CELLS_PER_SNAPSHOT);
+    assert_eq!(at.snapshots[0].cells.len(), MAX_CELLS_PER_SAMPLE);
     let err = rollup(&header(), vec![snap(1, range(0, half)), snap(2, range(half, full + 1))], &spec(10, 10)).unwrap_err();
     assert!(err.contains("over the limit"), "{err}");
 }
@@ -501,7 +501,7 @@ fn a_request_the_key_cannot_serve_is_refused_naming_what_was_wrong() {
     assert!(rollup(&header(), unordered, &spec(10, 10)).unwrap_err().contains("strictly ascending by member"));
     let short = vec![snap(1, vec![Cell { member: Member::U64(1), labels: vec![0], lanes: vec![1] }])];
     assert!(rollup(&header(), short, &spec(10, 10)).unwrap_err().contains("1 lanes"));
-    // A snapshot past the cutoff is returned as given: it is not inspected.
+    // A sample past the cutoff is returned as given: it is not inspected.
     let later = vec![snap(50, vec![cell(2, 0, [1; 6]), cell(1, 0, [1; 6])])];
     assert!(rollup(&header(), later, &spec(10, 10)).is_ok());
 }
@@ -523,8 +523,8 @@ mod probe {
     use super::*;
     use crate::alloc_probe::Probe;
 
-    /// `snapshots` snapshots of `members` cells, every member in every snapshot, all in one bucket.
-    fn dataset(members: u64, snapshots: u64) -> Vec<Snapshot> {
+    /// `snapshots` samples of `members` cells, every member in every sample, all in one bucket.
+    fn dataset(members: u64, snapshots: u64) -> Vec<Sample> {
         (1..=snapshots)
             .map(|ts| {
                 let cells = (0..members)
@@ -566,23 +566,23 @@ mod probe {
         spent
     }
 
-    /// The allocations of a rollup do not move with the number of snapshots in a bucket or with
+    /// The allocations of a rollup do not move with the number of samples in a bucket or with
     /// the number of members. THE CONTROL: the table an obvious implementation builds allocates in
-    /// proportion to the members and to the snapshots, so the probe can see both dimensions.
+    /// proportion to the members and to the samples, so the probe can see both dimensions.
     #[test]
     #[ignore = "measurement: run with --features alloc-probe --ignored"]
     fn a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many() {
         for capped in [false, true] {
             let base = allocations_of_a_rollup(50, 4, capped);
-            let more_snapshots = allocations_of_a_rollup(50, 64, capped);
+            let more_samples = allocations_of_a_rollup(50, 64, capped);
             let more_members = allocations_of_a_rollup(4000, 4, capped);
             let both = allocations_of_a_rollup(4000, 64, capped);
-            println!("capped {capped}: 50x4 {base}, 50x64 {more_snapshots}, 4000x4 {more_members}, 4000x64 {both}");
+            println!("capped {capped}: 50x4 {base}, 50x64 {more_samples}, 4000x4 {more_members}, 4000x64 {both}");
             assert!(base > 0, "the probe saw no allocation at all, so it is not installed");
             // Measured: 3 uncapped (the result vector, the fold buffer, the rest split) and 5
             // capped (the two cap buffers as well).
             assert!(base <= if capped { 6 } else { 4 }, "a rollup spent {base} allocations (capped {capped})");
-            assert_eq!(base, more_snapshots, "allocations moved with the snapshots in a bucket (capped {capped})");
+            assert_eq!(base, more_samples, "allocations moved with the samples in a bucket (capped {capped})");
             assert_eq!(base, more_members, "allocations moved with the members (capped {capped})");
             assert_eq!(base, both, "capped {capped}");
         }
@@ -591,6 +591,6 @@ mod probe {
         let deep = allocations_of_a_cloning_table(50, 64);
         println!("table: 50x4 {small}, 4000x4 {wide}, 50x64 {deep}");
         assert!(wide > small + 5000, "CONTROL: the table did not grow with the members ({small} -> {wide})");
-        assert!(deep > small, "CONTROL: the table did not grow with the snapshots ({small} -> {deep})");
+        assert!(deep > small, "CONTROL: the table did not grow with the samples ({small} -> {deep})");
     }
 }

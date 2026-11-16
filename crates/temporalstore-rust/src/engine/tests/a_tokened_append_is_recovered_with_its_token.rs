@@ -99,7 +99,7 @@ fn send(engine: &TemporalEngine, key: &str, points: Vec<FeaturePoint>, token: Op
     })
 }
 
-/// (snapshots written, cells created, cells merged, replayed)
+/// (samples written, cells created, cells merged, replayed)
 fn receipt(response: &ExecuteResponse) -> (u64, u64, u64, bool) {
     assert!(response.status.ok, "the request was refused: {:?}", response.status);
     match &response.response {
@@ -125,7 +125,7 @@ fn raw_series(engine: &TemporalEngine, key: &str) -> Vec<FeaturePoint> {
 
 /// The two lanes of member 7 at timestamp 100.
 fn lanes(engine: &TemporalEngine, key: &str) -> Vec<i64> {
-    cell_set::decode_value(&raw_series(engine, key)[0].value).expect("a cell snapshot").1[0].lanes.clone()
+    cell_set::decode_value(&raw_series(engine, key)[0].value).expect("a cell sample").1[0].lanes.clone()
 }
 
 fn ring_bytes(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {

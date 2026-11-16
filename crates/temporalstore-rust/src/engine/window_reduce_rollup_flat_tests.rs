@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! A rollup over snapshots held flat rolls up exactly what the same rollup over `Vec<Cell>`
-//! snapshots rolls up: the same snapshots, to the byte once encoded, and the same counts. The
+//! A rollup over samples held flat rolls up exactly what the same rollup over `Vec<Cell>`
+//! samples rolls up: the same samples, to the byte once encoded, and the same counts. The
 //! plain form is the statement of the semantics; the flat form is what the engine runs, so the
 //! two are compared on random data under every control a rollup has.
 
 use super::*;
 use crate::engine::cell_set::{
-    decode_snapshot, encode_value, split_value, DimSpec, DimType, EntityType, KeySpec, LaneSpec, Member,
+    decode_sample, encode_value, split_value, DimSpec, DimType, EntityType, KeySpec, LaneSpec, Member,
     HEADER_VERSION,
 };
 use crate::types::{CellCapSpec, CellRollupSpec, CellRollupTier, CellScore};
@@ -39,9 +39,9 @@ fn wide_header() -> CellHeader {
     }
 }
 
-/// `count` snapshots stamped 100, 200, ...; members 0..48 as numbers plus three bytes members,
-/// each snapshot holding a random subset.
-fn random_snapshots(state: &mut u64, count: usize) -> Vec<(u64, Vec<Cell>)> {
+/// `count` samples stamped 100, 200, ...; members 0..48 as numbers plus three bytes members,
+/// each sample holding a random subset.
+fn random_samples(state: &mut u64, count: usize) -> Vec<(u64, Vec<Cell>)> {
     let mut out = Vec::new();
     for at in 0..count {
         let mut cells: Vec<Cell> = Vec::new();
@@ -111,7 +111,7 @@ fn a_rollup_over_flat_snapshots_rolls_up_what_a_rollup_over_plain_snapshots_roll
     let mut state = 0x2545_f491_4f6c_dd1du64;
     let (mut combined, mut dropped, mut compared_cells) = (0u64, 0u64, 0u64);
     for count in [1usize, 3, 12, 24] {
-        let snaps = random_snapshots(&mut state, count);
+        let snaps = random_samples(&mut state, count);
         for spec in specs() {
             let mut plain = Vec::new();
             let mut flat = Vec::new();
@@ -119,20 +119,20 @@ fn a_rollup_over_flat_snapshots_rolls_up_what_a_rollup_over_plain_snapshots_roll
                 let value = encode_value(&header, cells).unwrap();
                 let (own, packed) = split_value(&value).unwrap();
                 assert_eq!(own, header);
-                plain.push(Snapshot { timestamp_ms: *stamp, cells: decode_snapshot(&header, packed).unwrap() });
-                flat.push(FlatSnapshot { timestamp_ms: *stamp, cells: FlatCells::decode(&header, packed, 0).unwrap() });
+                plain.push(Sample { timestamp_ms: *stamp, cells: decode_sample(&header, packed).unwrap() });
+                flat.push(FlatSample { timestamp_ms: *stamp, cells: FlatCells::decode(&header, packed, 0).unwrap() });
             }
             let newest = snaps.last().map_or(0, |(stamp, _)| *stamp);
             let want = rollup_spec(&header, plain, &spec, newest).unwrap();
             let got = rollup_flat_spec(&header, flat, &spec, newest).unwrap();
-            assert_eq!(want.stats, got.stats, "{count} snapshots, spec {spec:?}");
-            assert_eq!(want.snapshots.len(), got.snapshots.len(), "{count} snapshots, spec {spec:?}");
+            assert_eq!(want.stats, got.stats, "{count} samples, spec {spec:?}");
+            assert_eq!(want.snapshots.len(), got.snapshots.len(), "{count} samples, spec {spec:?}");
             for (w, g) in want.snapshots.iter().zip(&got.snapshots) {
-                assert_eq!(w.timestamp_ms, g.timestamp_ms, "{count} snapshots, spec {spec:?}");
+                assert_eq!(w.timestamp_ms, g.timestamp_ms, "{count} samples, spec {spec:?}");
                 assert_eq!(
                     encode_value(&header, &w.cells).unwrap(),
                     g.cells.encode_value(&header).unwrap(),
-                    "{count} snapshots, stamp {}, spec {spec:?}",
+                    "{count} samples, stamp {}, spec {spec:?}",
                     w.timestamp_ms
                 );
                 compared_cells += w.cells.len() as u64;
@@ -156,8 +156,8 @@ fn a_flat_snapshot_out_of_order_is_refused_as_a_plain_one_is() {
     ];
     let value = encode_value(&header, &unordered).unwrap();
     let (_, packed) = split_value(&value).unwrap();
-    let plain = vec![Snapshot { timestamp_ms: 100, cells: decode_snapshot(&header, packed).unwrap() }];
-    let flat = vec![FlatSnapshot { timestamp_ms: 100, cells: FlatCells::decode(&header, packed, 0).unwrap() }];
+    let plain = vec![Sample { timestamp_ms: 100, cells: decode_sample(&header, packed).unwrap() }];
+    let flat = vec![FlatSample { timestamp_ms: 100, cells: FlatCells::decode(&header, packed, 0).unwrap() }];
     let spec = spec(1_000, 100, None);
     let want = rollup_spec(&header, plain, &spec, 100).unwrap_err();
     let got = rollup_flat_spec(&header, flat, &spec, 100).unwrap_err();

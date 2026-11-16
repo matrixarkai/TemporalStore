@@ -397,7 +397,7 @@ fn a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time() {
     let profile = pair_profile();
     let plan = |s: WindowReduceSelector| translate_query(&profile, &query(trailing(), s));
     // The limit of the request is ignored, even a limit of zero: the read asks for as many rows as
-    // the set holds, and orders them by the stamp of each member's newest snapshot.
+    // the set holds, and orders them by the stamp of each member's newest sample.
     let only = |members: Vec<i64>| WindowReduceSelector {
         has_members: true,
         members,
@@ -717,7 +717,7 @@ fn a_decayed_lane_takes_its_half_life_from_decay_made_whole_by_its_rounding() {
 
 #[test]
 fn a_half_life_is_accepted_at_one_and_at_ten_years_and_refused_outside_them() {
-    use crate::engine::cell_rank::MAX_HALF_LIFE_MS;
+    use crate::engine::window_reduce_rank::MAX_HALF_LIFE_MS;
     let read = |decay: f64| translate_query(&pair_profile(), &query(trailing(), WindowReduceSelector { decay, ..selector(RankMode::DecayedLane) }));
     assert!(read(1.0).is_ok());
     assert!(read(MAX_HALF_LIFE_MS as f64).is_ok());

@@ -3,9 +3,9 @@
 
 //! A CELL REMOVAL AS A COMMAND, THROUGH THE ENGINE.
 //!
-//! The selection is tested as a pure function in `cell_remove`; these tests are about what only the
+//! The selection is tested as a pure function in `window_reduce_remove`; these tests are about what only the
 //! engine path can get wrong: that the series after a removal is the series an independent fold of
-//! the stored cells describes, that a snapshot the request did not touch keeps the very bytes it
+//! the stored cells describes, that a sample the request did not touch keeps the very bytes it
 //! had, that a restart (cold, and by replaying the log) reads the same bytes, that a request the
 //! key cannot serve writes nothing, that every bound is exact, and that the log can carry the
 //! command in every spelling of its selector.
@@ -109,7 +109,7 @@ fn series(engine: &TemporalEngine, key: &str) -> Vec<FeaturePoint> {
 fn decoded(engine: &TemporalEngine, key: &str) -> Vec<(u64, Vec<Cell>)> {
     series(engine, key)
         .into_iter()
-        .map(|p| (p.timestamp_ms, decode_value(&p.value).expect("a stored value is a cell snapshot").1))
+        .map(|p| (p.timestamp_ms, decode_value(&p.value).expect("a stored value is a cell sample").1))
         .collect()
 }
 
@@ -117,7 +117,7 @@ fn remove(engine: &TemporalEngine, key: &str, spec: CellRemoveSpec) -> ExecuteRe
     exec(engine, Command::CellRemove { key: key.to_string(), spec })
 }
 
-/// (snapshots before, snapshots after, cells before, cells removed)
+/// (samples before, samples after, cells before, cells removed)
 fn receipt(response: &ExecuteResponse) -> [u64; 4] {
     assert!(response.status.ok, "{:?}", response.status);
     match &response.response {
@@ -128,7 +128,7 @@ fn receipt(response: &ExecuteResponse) -> [u64; 4] {
     }
 }
 
-/// Twelve snapshots, at 100, 200 ... 1200. Item `m` (1 to 6) is present at snapshot `i` unless
+/// Twelve samples, at 100, 200 ... 1200. Item `m` (1 to 6) is present at sample `i` unless
 /// `(m + i)` is a multiple of 3, and its label is where it was placed that time, `(m + i) % 3`
 /// (so 1 or 2), and every lane value is a function of `(m, i)`.
 fn seed(engine: &TemporalEngine, key: &str) -> Vec<(u64, Vec<Cell>)> {
@@ -166,8 +166,8 @@ fn member_of(cell: &Cell) -> u64 {
     }
 }
 
-/// What an independent fold keeps: the snapshots with the cells `removed` does not name, an empty
-/// snapshot dropped.
+/// What an independent fold keeps: the samples with the cells `removed` does not name, an empty
+/// sample dropped.
 fn kept(stored: &[(u64, Vec<Cell>)], removed: impl Fn(u64, &Cell) -> bool) -> Vec<(u64, Vec<Cell>)> {
     stored
         .iter()
@@ -187,7 +187,7 @@ fn a_removal_leaves_exactly_the_cells_an_independent_fold_keeps() {
             slot_one,
         ),
         (
-            "a time window, which empties five snapshots",
+            "a time window, which empties five samples",
             CellRemoveSpec { start_ms: Some(300), end_ms: Some(700), ..Default::default() },
             Box::new(|stamp, _| (300..=700).contains(&stamp)),
         ),
@@ -238,23 +238,23 @@ fn a_removal_leaves_exactly_the_cells_an_independent_fold_keeps() {
         let removed: usize = stored.iter().map(|(s, cells)| cells.iter().filter(|c| gone(*s, c)).count()).sum();
         let expected = kept(&stored, &gone);
         assert!(removed > 0, "{name}: DENOMINATOR: the request must remove something");
-        assert!(expected.len() < stored.len() || name != "a time window, which empties five snapshots");
+        assert!(expected.len() < stored.len() || name != "a time window, which empties five samples");
 
         let landed = receipt(&remove(&engine, &key, spec));
         assert_eq!(landed, [12, expected.len() as u64, cells_before as u64, removed as u64], "{name}");
         assert_eq!(decoded(&engine, &key), expected, "{name}: the series is not what the fold keeps");
         emptied_somewhere |= expected.len() < 12;
 
-        // A snapshot that lost nothing keeps the very bytes it had.
+        // A sample that lost nothing keeps the very bytes it had.
         let after = series(&engine, &key);
         for point in &before {
             let untouched = stored.iter().find(|(s, _)| *s == point.timestamp_ms).map_or(false, |(s, cells)| cells.iter().all(|c| !gone(*s, c)));
             if untouched {
-                assert!(after.contains(point), "{name}: the snapshot at {} was rewritten though nothing in it went", point.timestamp_ms);
+                assert!(after.contains(point), "{name}: the sample at {} was rewritten though nothing in it went", point.timestamp_ms);
             }
         }
     }
-    assert!(emptied_somewhere, "DENOMINATOR: one request emptied snapshots, so the count after was exercised");
+    assert!(emptied_somewhere, "DENOMINATOR: one request emptied samples, so the count after was exercised");
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn a_ranked_read_after_a_removal_answers_what_a_fold_over_the_kept_cells_says() 
         .map(|r| (match &r.member { CellMemberId::U64(v) => *v, _ => unreachable!() }, r.score as i64))
         .collect();
     assert_eq!(got, want);
-    assert_eq!(ranked.snapshots, 12, "no snapshot of the seed held only slot 1");
+    assert_eq!(ranked.snapshots, 12, "no sample of the seed held only slot 1");
 }
 
 #[test]
@@ -383,14 +383,14 @@ fn a_request_that_matches_nothing_writes_nothing_and_says_so() {
     seed(&engine, &key);
     let stored = series(&engine, &key);
 
-    // A label no cell carries: every snapshot is read, none changes.
+    // A label no cell carries: every sample is read, none changes.
     let none = receipt(&remove(&engine, &key, CellRemoveSpec { filters: vec![on("slot", FeatureFilterOp::Equal, 9)], ..Default::default() }));
     assert_eq!(none[..2], [12, 12]);
     assert_eq!(none[3], 0);
     assert!(none[2] > 0, "CONTROL: the cells were read, so the zero is a finding and not an absence");
     assert_eq!(series(&engine, &key), stored);
 
-    // A window past the newest snapshot holds nothing and reads nothing.
+    // A window past the newest sample holds nothing and reads nothing.
     let past = receipt(&remove(&engine, &key, CellRemoveSpec { start_ms: Some(5000), ..Default::default() }));
     assert_eq!(past, [12, 12, 0, 0]);
     assert_eq!(series(&engine, &key), stored);
@@ -463,7 +463,7 @@ fn each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it() {
     let one = |ts: u64| point(ts, &[cell(1, 0, [1, 1, 1, 1]), cell(2, 0, [1, 1, 1, 1])]);
     append(&engine, &key, (1..=1025u64).map(one).collect());
 
-    // 1025 snapshots inside the window are refused, naming the limit, before any is read.
+    // 1025 samples inside the window are refused, naming the limit, before any is read.
     let over = remove(&engine, &key, CellRemoveSpec { start_ms: Some(1), end_ms: Some(1025), ..Default::default() });
     assert_eq!((over.status.ok, over.status.code.as_str()), (false, "invalid_argument"), "{:?}", over.status);
     assert!(over.status.message.contains("1024") && over.status.message.contains("narrow the window"), "{}", over.status.message);

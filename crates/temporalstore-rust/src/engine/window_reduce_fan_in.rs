@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! The ranked read over cell snapshots of SEVERAL keys that share one spec, as a pure function of
-//! decoded snapshots.
+//! The ranked read over cell samples of SEVERAL keys that share one spec, as a pure function of
+//! decoded samples.
 //!
 //! # WHAT IT ANSWERS
 //!
@@ -12,19 +12,19 @@
 //! caller. The caller's merge cannot be exact: the top `k` of each key's answer does not contain
 //! every member that is in the top `k` of the union (a member that is second in each of two keys
 //! can lead their sum). This read merges BEFORE it scores, so the answer is the one a single key
-//! holding every key's snapshots would give.
+//! holding every key's samples would give.
 //!
 //! ```text
-//! per key: window -> snapshots
-//! all keys: order snapshots by (stamp, key position) -> the single-key read over that order
+//! per key: window -> samples
+//! all keys: order samples by (stamp, key position) -> the single-key read over that order
 //! ```
 //!
 //! # SEMANTICS, EXACTLY
 //!
 //! * The window applies to EACH key, with the same meaning it has for one key. `LastN { n }` is
-//!   the newest `n` snapshots of each key, not of the union.
-//!   A `Last` window that is anchored on the newest snapshot anchors on each key's own newest one.
-//! * The snapshots of all keys are ordered by stamp, and a tie between keys is broken by the
+//!   the newest `n` samples of each key, not of the union.
+//!   A `Last` window that is anchored on the newest sample anchors on each key's own newest one.
+//! * The samples of all keys are ordered by stamp, and a tie between keys is broken by the
 //!   key's position in the request. That order is the order cells combine in, so `Sum`, `Max`
 //!   and `Min` lanes are independent of the key order, while a `First` lane takes the earliest
 //!   stamp's value (the lowest key position at a tied stamp) and a `Last` lane the latest (the
@@ -36,32 +36,32 @@
 //!
 //! # BOUNDS
 //!
-//! [`MAX_FAN_IN_KEYS`] keys, [`MAX_FAN_IN_SNAPSHOTS`] chosen snapshots and [`MAX_FAN_IN_CELLS`]
-//! cells in those snapshots, per request. Each is checked BEFORE any cell is visited and a request
+//! [`MAX_FAN_IN_KEYS`] keys, [`MAX_FAN_IN_SAMPLES`] chosen samples and [`MAX_FAN_IN_CELLS`]
+//! cells in those samples, per request. Each is checked BEFORE any cell is visited and a request
 //! over one is refused whole, never truncated: an answer computed from a prefix of the keys would
 //! look complete.
 //!
 //! # COST
 //!
-//! The allocations are one vector of snapshot views sized by the snapshot count, plus what the
-//! single-key read allocates (sized by the snapshot count, the lane count and `k`). NOTHING IS
-//! SIZED BY THE NUMBER OF CELLS OR MEMBERS. The module is pure: it reads decoded snapshots and a
+//! The allocations are one vector of sample views sized by the sample count, plus what the
+//! single-key read allocates (sized by the sample count, the lane count and `k`). NOTHING IS
+//! SIZED BY THE NUMBER OF CELLS OR MEMBERS. The module is pure: it reads decoded samples and a
 //! clock value and touches no engine state.
 
-use super::cell_rank::{Plan, SnapshotRead};
+use super::window_reduce_rank::{Plan, SampleRead};
 #[cfg(test)]
-use super::cell_rank::SnapshotView;
+use super::window_reduce_rank::SampleView;
 use super::cell_set::{within, within_nonzero};
 use crate::types::RankedCells;
 
 /// Keys one fan-in read may merge.
 pub(crate) const MAX_FAN_IN_KEYS: usize = 64;
-/// Snapshots, summed over the keys, one fan-in read may merge.
-pub(crate) const MAX_FAN_IN_SNAPSHOTS: usize = 1024;
-/// Cells, summed over the chosen snapshots, one fan-in read may visit.
+/// Samples, summed over the keys, one fan-in read may merge.
+pub(crate) const MAX_FAN_IN_SAMPLES: usize = 1024;
+/// Cells, summed over the chosen samples, one fan-in read may visit.
 pub(crate) const MAX_FAN_IN_CELLS: usize = 262_144;
 
-/// The checks that need no snapshot: how many keys.
+/// The checks that need no sample: how many keys.
 pub(crate) fn validate_key_count(keys: usize) -> Result<(), String> {
     within_nonzero("keys in a fan-in read", keys, MAX_FAN_IN_KEYS)
 }
@@ -85,21 +85,21 @@ pub(crate) const MAX_BATCH_READS: usize = 64;
 pub(crate) fn validate_batch(queries: &[crate::types::CellRankBatchItem]) -> Result<(), String> {
     within_nonzero("reads in a batch", queries.len(), MAX_BATCH_READS)?;
     for (position, query) in queries.iter().enumerate() {
-        super::cell_rank::validate_spec(&query.spec).map_err(|why| format!("read {position}: {why}"))?;
+        super::window_reduce_rank::validate_spec(&query.spec).map_err(|why| format!("read {position}: {why}"))?;
     }
     Ok(())
 }
 
 /// The checks on what the window chose, summed over the keys.
 pub(crate) fn validate_chosen(snapshots: usize, cells: usize) -> Result<(), String> {
-    within("snapshots in a fan-in read", snapshots, MAX_FAN_IN_SNAPSHOTS)?;
+    within("samples in a fan-in read", snapshots, MAX_FAN_IN_SAMPLES)?;
     within("cells in a fan-in read", cells, MAX_FAN_IN_CELLS)
 }
 
 impl Plan {
-    /// Runs the plan over the snapshots of every key in `keys`, each key's slice ascending by
+    /// Runs the plan over the samples of every key in `keys`, each key's slice ascending by
     /// stamp. `now_ms` is the instant a `Last` window ends at.
-    pub(crate) fn run_fan_in<'a, V: SnapshotRead<'a>>(
+    pub(crate) fn run_fan_in<'a, V: SampleRead<'a>>(
         &self,
         now_ms: u64,
         keys: &[&[V]],
@@ -118,7 +118,7 @@ impl Plan {
             validate_chosen(snapshots, cells)?;
         }
 
-        // The allocation sized by the snapshot count. The views are appended in key position order
+        // The allocation sized by the sample count. The views are appended in key position order
         // and the sort is STABLE, so a tie between keys at one stamp stays in position order.
         let mut ordered: Vec<V> = Vec::with_capacity(snapshots);
         for key in keys {
@@ -132,5 +132,5 @@ impl Plan {
 }
 
 #[cfg(test)]
-#[path = "cell_fan_in_tests.rs"]
+#[path = "window_reduce_fan_in_tests.rs"]
 mod tests;

@@ -9,7 +9,7 @@
 //!
 //! [`MemberFilter`] restricts a read to the members the caller names. `include` is a set the member
 //! must belong to; `exclude` is a set it must not. Both are ANDed with the named predicates and
-//! applied to a cell before that member's snapshots are reduced together.
+//! applied to a cell before that member's samples are reduced together.
 //!
 //! * `include: None` places no restriction. `include: Some([])` is REFUSED: a restriction to no
 //!   member is almost always a caller that lost its list, and answering it with an empty read hides
@@ -24,7 +24,7 @@
 //! # ANCHOR
 //!
 //! A `Last { duration_ms }` window normally ends at the clock the request carries. With
-//! [`Anchor::Newest`] it ends at the newest snapshot the key holds, so a key whose writes stopped
+//! [`Anchor::Newest`] it ends at the newest sample the key holds, so a key whose writes stopped
 //! (replayed, lagged, paused) reads the same whenever it is read, and no clock enters the read.
 //!
 //! The newest stamp `n` is an INCLUSIVE end; the start is `(n + 1) - duration_ms`, floored at zero.
@@ -32,7 +32,7 @@
 //! `duration_ms` stamps, and a duration of `0` holds nothing. (A `Last` window on the request clock
 //! is `[now - duration_ms, now]`, one stamp wider, and a duration of `0` is the instant itself.)
 //! Only a `Last` window has a clock to replace: an anchor on any other window is refused rather
-//! than ignored. A key with no snapshot has no newest stamp and yields an empty window.
+//! than ignored. A key with no sample has no newest stamp and yields an empty window.
 
 //! # QUOTA
 //!
@@ -204,14 +204,14 @@ pub(crate) fn validate_options(window: &CellWindow, options: &RankOptions) -> Re
     CompiledMembers::compile(&options.members)?;
     validate_quota(&options.quota)?;
     if options.anchor == Anchor::Newest && !matches!(window, CellWindow::Last { .. }) {
-        return Err("an anchor at the newest snapshot applies to a `last` window only".to_string());
+        return Err("an anchor at the newest sample applies to a `last` window only".to_string());
     }
     Ok(())
 }
 
 /// The inclusive stamp range a `Last` window covers, or `None` when it holds no stamp.
 ///
-/// `newest_ms` is the newest stamp the key holds (`None`: no snapshot). With [`Anchor::Request`]
+/// `newest_ms` is the newest stamp the key holds (`None`: no sample). With [`Anchor::Request`]
 /// it is not read.
 pub(crate) fn last_bounds(
     anchor: Anchor,

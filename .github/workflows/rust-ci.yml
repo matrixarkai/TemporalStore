@@ -556,73 +556,73 @@ jobs:
             engine::window_aggregate::tests::the_shared_doors_answer_what_the_bodies_they_replaced_answered \
             engine::window_aggregate::tests::a_name_is_known_or_refused_and_the_table_is_case_insensitive \
             engine::window_aggregate::tests::edge_answers_are_the_documented_ones \
-            engine::cell_fan_in::tests::one_key_answers_what_the_single_key_read_answers \
-            engine::cell_fan_in::tests::keys_with_distinct_stamps_answer_what_one_key_holding_all_their_snapshots_answers \
-            engine::cell_fan_in::tests::a_fan_in_answers_what_an_independent_fold_answers \
-            engine::cell_fan_in::tests::the_union_ranks_a_member_that_no_single_key_ranks_first \
-            engine::cell_fan_in::tests::a_key_named_twice_is_refused_naming_both_positions_and_the_limit_is_accepted \
-            engine::cell_fan_in::tests::a_tie_between_keys_at_one_stamp_resolves_by_key_position_and_sum_max_min_ignore_it \
-            engine::cell_fan_in::tests::the_same_request_twice_agrees_and_the_key_order_changes_nothing_when_stamps_are_distinct \
-            engine::cell_fan_in::tests::the_window_applies_to_each_key_and_the_answer_counts_what_it_chose \
-            engine::cell_fan_in::tests::nothing_to_rank_is_an_empty_answer_and_a_malformed_key_is_refused_naming_its_position \
-            engine::cell_fan_in::tests::keys_in_a_fan_in_are_bounded_at_exactly_the_limit \
-            engine::cell_fan_in::tests::snapshots_in_a_fan_in_are_bounded_at_exactly_the_limit \
-            engine::cell_fan_in::tests::cells_in_a_fan_in_are_bounded_at_exactly_the_limit \
-            engine::cell_fan_in::tests::the_size_checks_accept_the_limit_and_refuse_one_past_it_by_themselves \
-            engine::cell_fan_in::tests::the_keys_count_is_a_wire_field_that_an_answer_without_it_reads_as_zero \
-            engine::cell_rank::tests::each_score_orders_by_the_value_only_it_produces \
-            engine::cell_rank::tests::a_wilson_bound_is_the_hand_computed_number_and_rewards_volume \
-            engine::cell_rank::tests::an_undefined_score_is_counted_and_not_ranked \
-            engine::cell_rank::tests::each_window_kind_selects_the_snapshots_it_names \
-            engine::cell_rank::tests::a_window_that_cannot_hold_a_snapshot_is_refused \
-            engine::cell_rank::tests::ties_break_by_member_and_a_smaller_k_is_a_prefix_of_a_larger_one \
-            engine::cell_rank::tests::a_row_carries_its_reduced_lanes_its_newest_labels_and_its_newest_stamp \
-            engine::cell_rank::tests::a_projection_returns_the_named_columns_only \
-            engine::cell_rank::tests::every_filter_operator_selects_what_it_names \
-            engine::cell_rank::tests::a_predicate_cuts_before_the_reduction_not_after_it \
-            engine::cell_rank::tests::a_name_the_key_does_not_declare_is_refused_before_anything_is_read \
-            engine::cell_rank::tests::the_member_score_refuses_a_bytes_member_rather_than_ranking_it_somewhere \
-            engine::cell_rank::tests::nothing_to_rank_is_an_empty_answer_not_an_error \
-            engine::cell_rank::tests::snapshots_that_cannot_be_merged_are_refused_not_guessed \
-            engine::cell_rank::tests::a_reloaded_snapshot_ranks_as_the_snapshot_it_was_stored_from \
-            engine::cell_rank::tests::top_k_is_bounded_at_exactly_the_limit \
-            engine::cell_rank::tests::predicates_per_query_are_bounded_at_exactly_the_limit \
-            engine::cell_rank::tests::lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit \
-            engine::cell_rank::tests::snapshots_in_a_window_are_bounded_at_exactly_the_limit \
-            engine::cell_rank::tests::the_merge_answers_what_a_per_member_table_answers \
-            engine::cell_rank::tests::quota::a_quota_keeps_the_best_members_that_fit_a_short_lane_and_stops_when_every_lane_is_full \
-            engine::cell_rank::tests::quota::members_that_fit_no_short_lane_are_kept_up_to_the_others_count_and_the_walk_ends_with_the_lanes \
-            engine::cell_rank::tests::quota::a_quota_never_looks_past_the_top_k_and_never_returns_more_than_it \
-            engine::cell_rank::tests::quota::a_quota_only_drops_members_and_leaves_every_surviving_row_as_the_plain_read_has_it \
-            engine::cell_rank::tests::quota::a_quota_answers_what_a_literal_scan_of_the_ranking_answers \
-            engine::cell_rank::tests::quota::a_quota_is_bounded_at_exactly_its_limits \
-            engine::cell_rank::flat_tests::a_read_over_flat_snapshots_answers_what_a_read_over_plain_snapshots_answers \
-            engine::cell_rank::flat_tests::a_fan_in_over_flat_snapshots_answers_what_a_fan_in_over_plain_snapshots_answers \
-            engine::cell_rank::flat_tests::a_flat_snapshot_out_of_order_is_refused_as_a_plain_one_is \
-            engine::cell_rank::tests::options::an_include_and_an_exclude_set_keep_exactly_the_members_they_name \
-            engine::cell_rank::tests::options::the_member_set_is_anded_with_the_predicates_and_cuts_before_the_reduction \
-            engine::cell_rank::tests::options::the_order_and_repetition_of_a_set_do_not_change_the_answer \
-            engine::cell_rank::tests::options::an_include_set_that_names_nothing_is_refused_and_an_empty_exclude_set_is_not \
-            engine::cell_rank::tests::options::a_member_set_read_equals_the_same_read_over_cells_filtered_by_an_independent_fold \
-            engine::cell_rank::tests::options::a_set_holds_at_most_the_limit_as_sent_and_a_bytes_member_at_most_its_own_limit \
-            engine::cell_rank::tests::options::an_anchored_last_window_ends_at_the_newest_snapshot_whatever_the_clock_says \
-            engine::cell_rank::tests::options::the_anchored_window_spans_exactly_its_duration_and_a_duration_of_zero_holds_nothing \
-            engine::cell_rank::tests::options::an_anchor_on_any_window_but_last_is_refused_and_a_request_anchor_is_accepted_on_all \
-            engine::cell_rank::tests::options::a_read_that_uses_no_option_answers_what_compile_has_always_answered \
-            engine::cell_rank::tests::decay::recency_outweighs_volume_exactly_when_the_half_life_says_it_does \
-            engine::cell_rank::tests::decay::a_decayed_sum_is_the_hand_computed_total_as_of_the_newest_snapshot_of_the_window \
-            engine::cell_rank::tests::decay::a_decay_reads_the_values_the_snapshots_store_and_not_the_lanes_reduction \
-            engine::cell_rank::tests::decay::a_decay_equals_an_independent_fold_exactly_on_whole_half_lives_and_closely_otherwise \
-            engine::cell_rank::tests::decay::a_half_life_is_bounded_at_exactly_its_limits \
-            engine::cell_rank::tests::decay::a_total_past_the_integer_range_neither_wraps_nor_goes_unranked \
-            engine::cell_rank::tests::decay::a_member_whose_weights_have_all_vanished_is_ranked_at_zero_not_dropped \
-            engine::cell_rank::tests::decay::a_decay_names_a_lane_and_has_no_value_for_a_single_folded_cell \
-            engine::cell_rank::tests::recent::a_recent_read_answers_every_stored_cell_once_newest_snapshot_first_and_reduces_none \
-            engine::cell_rank::tests::recent::rows_are_bounded_by_the_limit_and_the_walk_stops_in_the_middle_of_a_snapshot \
-            engine::cell_rank::tests::recent::the_window_the_predicates_the_member_set_and_the_projection_apply_to_each_cell \
-            engine::cell_rank::tests::recent::snapshots_sharing_a_stamp_come_back_with_the_later_one_in_the_slice_first \
-            engine::cell_rank::tests::recent::a_recent_read_refuses_a_quota_and_is_no_score_for_a_cap \
-            engine::cell_rank::tests::recent::a_cell_that_breaks_the_header_shape_or_the_member_order_is_refused_not_returned \
+            engine::window_reduce_fan_in::tests::one_key_answers_what_the_single_key_read_answers \
+            engine::window_reduce_fan_in::tests::keys_with_distinct_stamps_answer_what_one_key_holding_all_their_snapshots_answers \
+            engine::window_reduce_fan_in::tests::a_fan_in_answers_what_an_independent_fold_answers \
+            engine::window_reduce_fan_in::tests::the_union_ranks_a_member_that_no_single_key_ranks_first \
+            engine::window_reduce_fan_in::tests::a_key_named_twice_is_refused_naming_both_positions_and_the_limit_is_accepted \
+            engine::window_reduce_fan_in::tests::a_tie_between_keys_at_one_stamp_resolves_by_key_position_and_sum_max_min_ignore_it \
+            engine::window_reduce_fan_in::tests::the_same_request_twice_agrees_and_the_key_order_changes_nothing_when_stamps_are_distinct \
+            engine::window_reduce_fan_in::tests::the_window_applies_to_each_key_and_the_answer_counts_what_it_chose \
+            engine::window_reduce_fan_in::tests::nothing_to_rank_is_an_empty_answer_and_a_malformed_key_is_refused_naming_its_position \
+            engine::window_reduce_fan_in::tests::keys_in_a_fan_in_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_fan_in::tests::snapshots_in_a_fan_in_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_fan_in::tests::cells_in_a_fan_in_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_fan_in::tests::the_size_checks_accept_the_limit_and_refuse_one_past_it_by_themselves \
+            engine::window_reduce_fan_in::tests::the_keys_count_is_a_wire_field_that_an_answer_without_it_reads_as_zero \
+            engine::window_reduce_rank::tests::each_score_orders_by_the_value_only_it_produces \
+            engine::window_reduce_rank::tests::a_wilson_bound_is_the_hand_computed_number_and_rewards_volume \
+            engine::window_reduce_rank::tests::an_undefined_score_is_counted_and_not_ranked \
+            engine::window_reduce_rank::tests::each_window_kind_selects_the_snapshots_it_names \
+            engine::window_reduce_rank::tests::a_window_that_cannot_hold_a_snapshot_is_refused \
+            engine::window_reduce_rank::tests::ties_break_by_member_and_a_smaller_k_is_a_prefix_of_a_larger_one \
+            engine::window_reduce_rank::tests::a_row_carries_its_reduced_lanes_its_newest_labels_and_its_newest_stamp \
+            engine::window_reduce_rank::tests::a_projection_returns_the_named_columns_only \
+            engine::window_reduce_rank::tests::every_filter_operator_selects_what_it_names \
+            engine::window_reduce_rank::tests::a_predicate_cuts_before_the_reduction_not_after_it \
+            engine::window_reduce_rank::tests::a_name_the_key_does_not_declare_is_refused_before_anything_is_read \
+            engine::window_reduce_rank::tests::the_member_score_refuses_a_bytes_member_rather_than_ranking_it_somewhere \
+            engine::window_reduce_rank::tests::nothing_to_rank_is_an_empty_answer_not_an_error \
+            engine::window_reduce_rank::tests::snapshots_that_cannot_be_merged_are_refused_not_guessed \
+            engine::window_reduce_rank::tests::a_reloaded_snapshot_ranks_as_the_snapshot_it_was_stored_from \
+            engine::window_reduce_rank::tests::top_k_is_bounded_at_exactly_the_limit \
+            engine::window_reduce_rank::tests::predicates_per_query_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_rank::tests::lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_rank::tests::snapshots_in_a_window_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_rank::tests::the_merge_answers_what_a_per_member_table_answers \
+            engine::window_reduce_rank::tests::quota::a_quota_keeps_the_best_members_that_fit_a_short_lane_and_stops_when_every_lane_is_full \
+            engine::window_reduce_rank::tests::quota::members_that_fit_no_short_lane_are_kept_up_to_the_others_count_and_the_walk_ends_with_the_lanes \
+            engine::window_reduce_rank::tests::quota::a_quota_never_looks_past_the_top_k_and_never_returns_more_than_it \
+            engine::window_reduce_rank::tests::quota::a_quota_only_drops_members_and_leaves_every_surviving_row_as_the_plain_read_has_it \
+            engine::window_reduce_rank::tests::quota::a_quota_answers_what_a_literal_scan_of_the_ranking_answers \
+            engine::window_reduce_rank::tests::quota::a_quota_is_bounded_at_exactly_its_limits \
+            engine::window_reduce_rank::flat_tests::a_read_over_flat_snapshots_answers_what_a_read_over_plain_snapshots_answers \
+            engine::window_reduce_rank::flat_tests::a_fan_in_over_flat_snapshots_answers_what_a_fan_in_over_plain_snapshots_answers \
+            engine::window_reduce_rank::flat_tests::a_flat_snapshot_out_of_order_is_refused_as_a_plain_one_is \
+            engine::window_reduce_rank::tests::options::an_include_and_an_exclude_set_keep_exactly_the_members_they_name \
+            engine::window_reduce_rank::tests::options::the_member_set_is_anded_with_the_predicates_and_cuts_before_the_reduction \
+            engine::window_reduce_rank::tests::options::the_order_and_repetition_of_a_set_do_not_change_the_answer \
+            engine::window_reduce_rank::tests::options::an_include_set_that_names_nothing_is_refused_and_an_empty_exclude_set_is_not \
+            engine::window_reduce_rank::tests::options::a_member_set_read_equals_the_same_read_over_cells_filtered_by_an_independent_fold \
+            engine::window_reduce_rank::tests::options::a_set_holds_at_most_the_limit_as_sent_and_a_bytes_member_at_most_its_own_limit \
+            engine::window_reduce_rank::tests::options::an_anchored_last_window_ends_at_the_newest_snapshot_whatever_the_clock_says \
+            engine::window_reduce_rank::tests::options::the_anchored_window_spans_exactly_its_duration_and_a_duration_of_zero_holds_nothing \
+            engine::window_reduce_rank::tests::options::an_anchor_on_any_window_but_last_is_refused_and_a_request_anchor_is_accepted_on_all \
+            engine::window_reduce_rank::tests::options::a_read_that_uses_no_option_answers_what_compile_has_always_answered \
+            engine::window_reduce_rank::tests::decay::recency_outweighs_volume_exactly_when_the_half_life_says_it_does \
+            engine::window_reduce_rank::tests::decay::a_decayed_sum_is_the_hand_computed_total_as_of_the_newest_snapshot_of_the_window \
+            engine::window_reduce_rank::tests::decay::a_decay_reads_the_values_the_snapshots_store_and_not_the_lanes_reduction \
+            engine::window_reduce_rank::tests::decay::a_decay_equals_an_independent_fold_exactly_on_whole_half_lives_and_closely_otherwise \
+            engine::window_reduce_rank::tests::decay::a_half_life_is_bounded_at_exactly_its_limits \
+            engine::window_reduce_rank::tests::decay::a_total_past_the_integer_range_neither_wraps_nor_goes_unranked \
+            engine::window_reduce_rank::tests::decay::a_member_whose_weights_have_all_vanished_is_ranked_at_zero_not_dropped \
+            engine::window_reduce_rank::tests::decay::a_decay_names_a_lane_and_has_no_value_for_a_single_folded_cell \
+            engine::window_reduce_rank::tests::recent::a_recent_read_answers_every_stored_cell_once_newest_snapshot_first_and_reduces_none \
+            engine::window_reduce_rank::tests::recent::rows_are_bounded_by_the_limit_and_the_walk_stops_in_the_middle_of_a_snapshot \
+            engine::window_reduce_rank::tests::recent::the_window_the_predicates_the_member_set_and_the_projection_apply_to_each_cell \
+            engine::window_reduce_rank::tests::recent::snapshots_sharing_a_stamp_come_back_with_the_later_one_in_the_slice_first \
+            engine::window_reduce_rank::tests::recent::a_recent_read_refuses_a_quota_and_is_no_score_for_a_cap \
+            engine::window_reduce_rank::tests::recent::a_cell_that_breaks_the_header_shape_or_the_member_order_is_refused_not_returned \
             engine::tests::a_ranked_cell_read_is_a_command::a_ranked_read_answers_from_what_was_stored_live_and_after_a_restart \
             engine::tests::a_ranked_cell_read_is_a_command::an_absent_key_and_an_expired_key_rank_nothing \
             engine::tests::a_ranked_cell_read_is_a_command::a_read_the_key_cannot_serve_is_refused_with_its_reason \
@@ -653,15 +653,15 @@ jobs:
             engine::tests::a_ranked_read_over_several_cell_keys::the_cell_ceiling_holds_while_reading_and_the_limit_is_served \
             engine::tests::a_ranked_read_over_several_cell_keys::the_snapshot_ceiling_holds_while_reading_and_the_limit_is_served \
             engine::tests::a_worked_example_of_cells::a_worked_example_of_cells \
-            engine::cell_remove::tests::a_window_takes_every_cell_of_the_snapshots_inside_it_and_both_bounds_are_inclusive \
-            engine::cell_remove::tests::a_predicate_takes_the_cells_it_holds_on_and_keeps_the_rest_in_stored_order \
-            engine::cell_remove::tests::a_member_set_takes_the_members_it_names_and_spares_the_ones_it_excludes \
-            engine::cell_remove::tests::the_window_the_members_and_the_predicates_are_anded \
-            engine::cell_remove::tests::the_order_and_repetition_of_a_member_set_change_nothing \
-            engine::cell_remove::tests::a_removal_that_restricts_nothing_is_refused_and_each_way_of_restricting_is_accepted \
-            engine::cell_remove::tests::a_name_the_key_does_not_declare_an_empty_include_set_and_a_backwards_window_are_refused \
-            engine::cell_remove::tests::predicates_and_member_sets_are_accepted_at_the_limit_and_refused_one_past_it \
-            engine::cell_remove::tests::a_snapshot_that_keeps_every_cell_comes_back_with_the_cells_it_had \
+            engine::window_reduce_remove::tests::a_window_takes_every_cell_of_the_snapshots_inside_it_and_both_bounds_are_inclusive \
+            engine::window_reduce_remove::tests::a_predicate_takes_the_cells_it_holds_on_and_keeps_the_rest_in_stored_order \
+            engine::window_reduce_remove::tests::a_member_set_takes_the_members_it_names_and_spares_the_ones_it_excludes \
+            engine::window_reduce_remove::tests::the_window_the_members_and_the_predicates_are_anded \
+            engine::window_reduce_remove::tests::the_order_and_repetition_of_a_member_set_change_nothing \
+            engine::window_reduce_remove::tests::a_removal_that_restricts_nothing_is_refused_and_each_way_of_restricting_is_accepted \
+            engine::window_reduce_remove::tests::a_name_the_key_does_not_declare_an_empty_include_set_and_a_backwards_window_are_refused \
+            engine::window_reduce_remove::tests::predicates_and_member_sets_are_accepted_at_the_limit_and_refused_one_past_it \
+            engine::window_reduce_remove::tests::a_snapshot_that_keeps_every_cell_comes_back_with_the_cells_it_had \
             engine::tests::a_cell_removal_is_a_command::a_removal_leaves_exactly_the_cells_an_independent_fold_keeps \
             engine::tests::a_cell_removal_is_a_command::a_ranked_read_after_a_removal_answers_what_a_fold_over_the_kept_cells_says \
             engine::tests::a_cell_removal_is_a_command::a_cold_reload_reads_the_removed_bytes_and_removing_again_changes_nothing \
@@ -673,13 +673,13 @@ jobs:
             engine::tests::a_cell_removal_is_a_command::each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it \
             engine::tests::a_cell_removal_is_a_command::an_absent_key_and_an_expired_key_remove_nothing \
             engine::tests::a_cell_removal_is_a_command::a_removal_is_a_write_the_log_can_carry_in_every_selector_spelling \
-            engine::cell_protocol::remove::tests::a_remove_names_its_key_its_span_in_whole_milliseconds_and_its_label_predicate \
-            engine::cell_protocol::remove::tests::a_span_that_holds_no_whole_millisecond_or_runs_backwards_or_is_negative_is_refused \
-            engine::cell_protocol::remove::tests::a_remove_that_restricts_nothing_is_refused_and_a_member_set_or_a_span_restricts \
-            engine::cell_protocol::remove::tests::member_lists_are_accepted_at_1024_and_refused_at_1025 \
-            engine::cell_protocol::remove::tests::a_delete_is_a_removal_by_label_and_member_over_every_snapshot_and_never_of_the_key \
-            engine::cell_protocol::remove::tests::the_responses_carry_the_receipt_on_the_additive_fields_and_the_established_ones_unchanged \
-            engine::cell_protocol::remove::tests::a_remove_request_round_trips_its_additive_fields_and_an_older_reader_skips_them \
+            engine::window_reduce_protocol::remove::tests::a_remove_names_its_key_its_span_in_whole_milliseconds_and_its_label_predicate \
+            engine::window_reduce_protocol::remove::tests::a_span_that_holds_no_whole_millisecond_or_runs_backwards_or_is_negative_is_refused \
+            engine::window_reduce_protocol::remove::tests::a_remove_that_restricts_nothing_is_refused_and_a_member_set_or_a_span_restricts \
+            engine::window_reduce_protocol::remove::tests::member_lists_are_accepted_at_1024_and_refused_at_1025 \
+            engine::window_reduce_protocol::remove::tests::a_delete_is_a_removal_by_label_and_member_over_every_snapshot_and_never_of_the_key \
+            engine::window_reduce_protocol::remove::tests::the_responses_carry_the_receipt_on_the_additive_fields_and_the_established_ones_unchanged \
+            engine::window_reduce_protocol::remove::tests::a_remove_request_round_trips_its_additive_fields_and_an_older_reader_skips_them \
             engine::window_aggregate::algorithm_tests::each_reducer_answers_the_value_only_that_reducer_produces \
             engine::window_aggregate::algorithm_tests::the_three_roundings_differ_on_a_fraction \
             engine::window_aggregate::algorithm_tests::an_empty_window_answers_what_the_notes_say \
@@ -713,42 +713,42 @@ jobs:
             engine::cell_set::tests::merging_applies_each_lane_reducer_per_member_and_replaces_labels \
             engine::cell_set::tests::sorted_u64_members_are_stored_as_distances_and_cost_one_byte_each \
             engine::cell_set::tests::the_version_gate_accepts_at_exactly_the_first_additive_version_and_refuses_below \
-            engine::cell_rollup::tests::a_rollup_equals_an_independent_fold_for_every_bucket_size_and_cutoff \
-            engine::cell_rollup::tests::each_lane_combines_oldest_first_and_a_count_is_the_sum_of_counts_not_the_number_of_snapshots \
-            engine::cell_rollup::tests::members_that_meet_merge_and_members_that_do_not_pass_through_in_order \
-            engine::cell_rollup::tests::sums_and_counts_saturate_and_never_wrap \
-            engine::cell_rollup::tests::rolling_a_rolled_result_again_changes_no_byte_and_the_same_request_twice_agrees \
-            engine::cell_rollup::tests::a_snapshot_exactly_at_the_cutoff_is_not_rolled_and_one_below_it_is \
-            engine::cell_rollup::tests::a_late_snapshot_in_an_already_rolled_bucket_folds_in_as_the_newest_contribution \
-            engine::cell_rollup::tests::a_decoded_replay_reaches_the_bytes_the_first_run_reached \
-            engine::cell_rollup::tests::nothing_to_roll_returns_the_snapshots_unchanged \
-            engine::cell_rollup::tests::a_cap_keeps_the_best_of_each_group_breaks_ties_by_member_and_reports_the_drops \
-            engine::cell_rollup::tests::a_cell_whose_score_is_undefined_ranks_after_every_scored_cell \
-            engine::cell_rollup::flat_tests::a_rollup_over_flat_snapshots_rolls_up_what_a_rollup_over_plain_snapshots_rolls_up \
-            engine::cell_rollup::flat_tests::a_flat_snapshot_out_of_order_is_refused_as_a_plain_one_is \
-            engine::cell_rollup::tests::the_cap_runs_on_the_folded_bucket_not_on_the_snapshots_that_make_it \
-            engine::cell_rollup::tests::a_snapshot_the_cap_does_not_reach_keeps_every_cell \
-            engine::cell_rollup::tests::a_bucket_width_is_bounded_below_at_exactly_one \
-            engine::cell_rollup::tests::keep_is_bounded_at_one_below_and_the_snapshot_limit_above \
-            engine::cell_rollup::tests::snapshots_below_the_cutoff_are_bounded_at_exactly_the_limit \
-            engine::cell_rollup::tests::a_bucket_over_the_snapshot_cell_limit_is_refused_and_one_at_the_limit_is_folded \
-            engine::cell_rollup::tests::a_request_the_key_cannot_serve_is_refused_naming_what_was_wrong \
-            engine::cell_rollup::tests::a_bytes_member_cannot_be_scored_by_member_and_is_otherwise_rolled_like_any_other \
-            engine::cell_rollup::tier_tests::a_tiered_rollup_equals_an_independent_fold_with_a_bucket_per_tier \
-            engine::cell_rollup::tier_tests::a_snapshot_takes_the_coarsest_tier_whose_cutoff_is_above_it_and_each_cutoff_is_strict \
-            engine::cell_rollup::tier_tests::a_cutoff_that_is_not_a_multiple_of_the_finer_width_is_aligned_down_to_it \
-            engine::cell_rollup::tier_tests::the_catch_all_tier_holds_everything_older_in_one_snapshot_at_stamp_zero \
-            engine::cell_rollup::tier_tests::an_age_resolves_against_the_newest_stamp_and_a_request_cutoff_ignores_it \
-            engine::cell_rollup::tier_tests::a_tiered_capped_result_rolled_again_changes_no_byte \
-            engine::cell_rollup::tier_tests::a_request_that_names_every_new_control_at_its_default_is_the_single_tier_request \
-            engine::cell_rollup::tier_tests::a_truncation_acts_only_over_its_trigger_and_then_keeps_the_newest_n \
-            engine::cell_rollup::tier_tests::truncating_a_rolled_series_keeps_the_newest_snapshots_of_what_the_rollup_left \
-            engine::cell_rollup::tier_tests::a_protected_share_of_the_newest_members_survives_whatever_its_score \
-            engine::cell_rollup::tier_tests::a_member_is_as_new_as_the_newest_snapshot_that_wrote_it \
-            engine::cell_rollup::tier_tests::a_group_is_cut_only_when_it_is_over_its_keep_plus_the_trigger_and_then_down_to_keep \
-            engine::cell_rollup::tier_tests::the_tier_count_the_order_and_the_widths_are_bounded_at_exactly_the_limit \
-            engine::cell_rollup::tier_tests::truncation_and_cap_controls_are_bounded_at_exactly_the_limit \
-            engine::cell_rollup::tier_tests::snapshots_below_the_first_cutoff_are_bounded_at_exactly_the_limit_whatever_the_tiers \
+            engine::window_reduce_rollup::tests::a_rollup_equals_an_independent_fold_for_every_bucket_size_and_cutoff \
+            engine::window_reduce_rollup::tests::each_lane_combines_oldest_first_and_a_count_is_the_sum_of_counts_not_the_number_of_snapshots \
+            engine::window_reduce_rollup::tests::members_that_meet_merge_and_members_that_do_not_pass_through_in_order \
+            engine::window_reduce_rollup::tests::sums_and_counts_saturate_and_never_wrap \
+            engine::window_reduce_rollup::tests::rolling_a_rolled_result_again_changes_no_byte_and_the_same_request_twice_agrees \
+            engine::window_reduce_rollup::tests::a_snapshot_exactly_at_the_cutoff_is_not_rolled_and_one_below_it_is \
+            engine::window_reduce_rollup::tests::a_late_snapshot_in_an_already_rolled_bucket_folds_in_as_the_newest_contribution \
+            engine::window_reduce_rollup::tests::a_decoded_replay_reaches_the_bytes_the_first_run_reached \
+            engine::window_reduce_rollup::tests::nothing_to_roll_returns_the_snapshots_unchanged \
+            engine::window_reduce_rollup::tests::a_cap_keeps_the_best_of_each_group_breaks_ties_by_member_and_reports_the_drops \
+            engine::window_reduce_rollup::tests::a_cell_whose_score_is_undefined_ranks_after_every_scored_cell \
+            engine::window_reduce_rollup::flat_tests::a_rollup_over_flat_snapshots_rolls_up_what_a_rollup_over_plain_snapshots_rolls_up \
+            engine::window_reduce_rollup::flat_tests::a_flat_snapshot_out_of_order_is_refused_as_a_plain_one_is \
+            engine::window_reduce_rollup::tests::the_cap_runs_on_the_folded_bucket_not_on_the_snapshots_that_make_it \
+            engine::window_reduce_rollup::tests::a_snapshot_the_cap_does_not_reach_keeps_every_cell \
+            engine::window_reduce_rollup::tests::a_bucket_width_is_bounded_below_at_exactly_one \
+            engine::window_reduce_rollup::tests::keep_is_bounded_at_one_below_and_the_snapshot_limit_above \
+            engine::window_reduce_rollup::tests::snapshots_below_the_cutoff_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_rollup::tests::a_bucket_over_the_snapshot_cell_limit_is_refused_and_one_at_the_limit_is_folded \
+            engine::window_reduce_rollup::tests::a_request_the_key_cannot_serve_is_refused_naming_what_was_wrong \
+            engine::window_reduce_rollup::tests::a_bytes_member_cannot_be_scored_by_member_and_is_otherwise_rolled_like_any_other \
+            engine::window_reduce_rollup::tier_tests::a_tiered_rollup_equals_an_independent_fold_with_a_bucket_per_tier \
+            engine::window_reduce_rollup::tier_tests::a_snapshot_takes_the_coarsest_tier_whose_cutoff_is_above_it_and_each_cutoff_is_strict \
+            engine::window_reduce_rollup::tier_tests::a_cutoff_that_is_not_a_multiple_of_the_finer_width_is_aligned_down_to_it \
+            engine::window_reduce_rollup::tier_tests::the_catch_all_tier_holds_everything_older_in_one_snapshot_at_stamp_zero \
+            engine::window_reduce_rollup::tier_tests::an_age_resolves_against_the_newest_stamp_and_a_request_cutoff_ignores_it \
+            engine::window_reduce_rollup::tier_tests::a_tiered_capped_result_rolled_again_changes_no_byte \
+            engine::window_reduce_rollup::tier_tests::a_request_that_names_every_new_control_at_its_default_is_the_single_tier_request \
+            engine::window_reduce_rollup::tier_tests::a_truncation_acts_only_over_its_trigger_and_then_keeps_the_newest_n \
+            engine::window_reduce_rollup::tier_tests::truncating_a_rolled_series_keeps_the_newest_snapshots_of_what_the_rollup_left \
+            engine::window_reduce_rollup::tier_tests::a_protected_share_of_the_newest_members_survives_whatever_its_score \
+            engine::window_reduce_rollup::tier_tests::a_member_is_as_new_as_the_newest_snapshot_that_wrote_it \
+            engine::window_reduce_rollup::tier_tests::a_group_is_cut_only_when_it_is_over_its_keep_plus_the_trigger_and_then_down_to_keep \
+            engine::window_reduce_rollup::tier_tests::the_tier_count_the_order_and_the_widths_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_rollup::tier_tests::truncation_and_cap_controls_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_rollup::tier_tests::snapshots_below_the_first_cutoff_are_bounded_at_exactly_the_limit_whatever_the_tiers \
             engine::tests::a_cell_rollup_is_a_command::a_ranking_over_the_rolled_buckets_answers_what_it_answered_over_the_snapshots_they_replaced \
             engine::tests::a_cell_rollup_is_a_command::a_cold_reload_reads_the_rolled_bytes_and_rolling_again_changes_nothing \
             engine::tests::a_cell_rollup_is_a_command::replaying_the_log_reaches_the_bytes_the_live_engine_reached \
@@ -788,55 +788,55 @@ jobs:
             engine::tests::a_tokened_append_is_recovered_with_its_token::a_synchronous_engine_recovers_the_token_of_an_append_after_its_last_flush_the_same_way \
             engine::tests::a_tokened_append_is_recovered_with_its_token::a_key_deleted_after_its_token_was_filed_is_not_given_the_ring_back_by_replay \
             engine::tests::a_tokened_append_is_recovered_with_its_token::a_tokenless_append_logs_no_item_and_a_tokened_one_logs_exactly_one_whose_size_is_measured \
-            engine::cell_protocol::tests::the_add_request_wire_bytes_follow_the_established_field_numbers \
-            engine::cell_protocol::tests::an_unknown_field_is_skipped_and_the_rest_reads_the_same \
-            engine::cell_protocol::tests::a_query_and_its_answer_round_trip_through_the_wire \
-            engine::cell_protocol::tests::a_wide_lane_value_keeps_its_low_32_bits_for_a_narrow_reader \
-            engine::cell_protocol::tests::an_add_becomes_one_merge_reduce_append_per_key_that_decodes_back_to_its_cells \
-            engine::cell_protocol::tests::a_shorthand_pair_fills_the_pair_and_a_list_shorter_than_the_lanes_is_padded_with_zeros \
-            engine::cell_protocol::tests::a_request_with_a_wrong_shape_an_unknown_table_or_a_duplicate_is_refused_with_its_own_code \
-            engine::cell_protocol::tests::an_unreadable_channel_or_label_is_refused_not_wrapped \
-            engine::cell_protocol::tests::cells_per_request_are_accepted_at_the_limit_and_refused_one_past_it \
-            engine::cell_protocol::tests::queries_per_batch_are_accepted_at_the_limit_and_refused_one_past_it \
-            engine::cell_protocol::tests::a_batch_names_the_position_of_the_query_that_refused_it \
-            engine::cell_protocol::tests::the_table_name_is_accepted_at_64_bytes_and_refused_at_65 \
-            engine::cell_protocol::tests::the_limit_of_a_read_is_accepted_at_1000_and_refused_at_1001 \
-            engine::cell_protocol::tests::weighted_lanes_are_accepted_at_8_and_refused_at_9 \
-            engine::cell_protocol::tests::member_lists_and_extra_entities_are_accepted_at_the_limit_and_refused_one_past_it \
-            engine::cell_protocol::tests::a_member_set_round_trips_the_wire_and_becomes_the_include_and_exclude_filter \
-            engine::cell_protocol::tests::a_flagged_empty_include_set_is_refused_and_an_unflagged_one_restricts_nothing \
-            engine::cell_protocol::tests::a_window_anchored_on_the_newest_snapshot_becomes_the_newest_anchor_and_the_clock_one_does_not \
-            engine::cell_protocol::tests::a_quota_names_lanes_by_position_and_its_first_count_is_also_the_others_count \
-            engine::cell_protocol::tests::a_quota_whose_wire_counts_sum_to_500_reserves_1000_and_one_more_is_refused \
-            engine::cell_protocol::tests::a_quota_is_accepted_at_16_lanes_and_refused_at_17_and_a_malformed_one_is_refused \
-            engine::cell_protocol::tests::a_decayed_lane_takes_its_half_life_from_decay_made_whole_by_its_rounding \
-            engine::cell_protocol::tests::a_half_life_is_accepted_at_one_and_at_ten_years_and_refused_outside_them \
-            engine::cell_protocol::tests::more_entities_become_one_merged_read_over_every_key_in_request_order \
-            engine::cell_protocol::tests::a_merged_read_refuses_a_key_named_twice_and_an_entity_that_is_not_an_id \
-            engine::cell_protocol::tests::a_merged_answer_reports_how_many_keys_held_a_snapshot \
-            engine::cell_protocol::tests::a_batch_becomes_one_batch_command_that_the_engine_admits_and_a_merged_read_has_no_place_in_it \
-            engine::cell_protocol::tests::a_batch_answer_holds_one_answer_per_query_in_order_each_with_its_own_status \
-            engine::cell_protocol::tests::the_accepted_timestamp_range_is_open_at_both_ends \
-            engine::cell_protocol::tests::each_translated_rank_mode_becomes_the_score_it_names \
-            engine::cell_protocol::tests::the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_and_kind \
-            engine::cell_protocol::tests::a_mode_or_window_that_is_not_built_yet_is_refused_and_says_so \
-            engine::cell_protocol::tests::recent_is_the_stored_cell_read_with_the_selectors_label_and_limit \
-            engine::cell_protocol::tests::match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_say \
-            engine::cell_protocol::tests::a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_snapshot \
-            engine::cell_protocol::tests::a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time \
-            engine::cell_protocol::tests::a_window_from_a_start_covers_whole_milliseconds_and_excludes_its_end \
-            engine::cell_protocol::tests::an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time \
-            engine::cell_protocol::tests::the_skip_existing_flag_is_carried_and_refused_with_a_message_that_says_what_to_use \
-            engine::cell_protocol::tests::a_retry_token_on_the_wire_rides_on_every_key_of_the_append_and_a_zero_token_is_none \
-            engine::cell_protocol::tests::the_token_and_the_replayed_flag_have_the_established_field_numbers \
-            engine::cell_protocol::tests::a_replayed_receipt_is_reported_with_the_counts_of_the_first_application \
-            engine::cell_protocol::tests::a_restore_never_carries_a_token \
-            engine::cell_protocol::tests::a_selector_that_asks_for_snapshot_info_or_a_member_limit_is_refused_naming_the_field \
-            engine::cell_protocol::tests::a_selector_that_sets_them_off_is_translated_to_exactly_the_read_it_was_without_them \
-            engine::cell_protocol::wire_tests::the_golden_bytes_of_every_message_decode_and_re_encode_identically \
-            engine::cell_protocol::wire_tests::every_golden_value_sets_every_field_its_message_has_so_no_field_escapes_the_comparison \
-            engine::cell_protocol::wire_tests::the_field_numbers_wire_types_labels_enum_values_and_reserved_numbers_are_those_the_proto_had_before \
-            engine::cell_protocol::wire_tests::the_proto_names_no_snapshot_for_this_unit_and_the_stored_key_tag_is_still_cells \
+            engine::window_reduce_protocol::tests::the_add_request_wire_bytes_follow_the_established_field_numbers \
+            engine::window_reduce_protocol::tests::an_unknown_field_is_skipped_and_the_rest_reads_the_same \
+            engine::window_reduce_protocol::tests::a_query_and_its_answer_round_trip_through_the_wire \
+            engine::window_reduce_protocol::tests::a_wide_lane_value_keeps_its_low_32_bits_for_a_narrow_reader \
+            engine::window_reduce_protocol::tests::an_add_becomes_one_merge_reduce_append_per_key_that_decodes_back_to_its_cells \
+            engine::window_reduce_protocol::tests::a_shorthand_pair_fills_the_pair_and_a_list_shorter_than_the_lanes_is_padded_with_zeros \
+            engine::window_reduce_protocol::tests::a_request_with_a_wrong_shape_an_unknown_table_or_a_duplicate_is_refused_with_its_own_code \
+            engine::window_reduce_protocol::tests::an_unreadable_channel_or_label_is_refused_not_wrapped \
+            engine::window_reduce_protocol::tests::cells_per_request_are_accepted_at_the_limit_and_refused_one_past_it \
+            engine::window_reduce_protocol::tests::queries_per_batch_are_accepted_at_the_limit_and_refused_one_past_it \
+            engine::window_reduce_protocol::tests::a_batch_names_the_position_of_the_query_that_refused_it \
+            engine::window_reduce_protocol::tests::the_table_name_is_accepted_at_64_bytes_and_refused_at_65 \
+            engine::window_reduce_protocol::tests::the_limit_of_a_read_is_accepted_at_1000_and_refused_at_1001 \
+            engine::window_reduce_protocol::tests::weighted_lanes_are_accepted_at_8_and_refused_at_9 \
+            engine::window_reduce_protocol::tests::member_lists_and_extra_entities_are_accepted_at_the_limit_and_refused_one_past_it \
+            engine::window_reduce_protocol::tests::a_member_set_round_trips_the_wire_and_becomes_the_include_and_exclude_filter \
+            engine::window_reduce_protocol::tests::a_flagged_empty_include_set_is_refused_and_an_unflagged_one_restricts_nothing \
+            engine::window_reduce_protocol::tests::a_window_anchored_on_the_newest_snapshot_becomes_the_newest_anchor_and_the_clock_one_does_not \
+            engine::window_reduce_protocol::tests::a_quota_names_lanes_by_position_and_its_first_count_is_also_the_others_count \
+            engine::window_reduce_protocol::tests::a_quota_whose_wire_counts_sum_to_500_reserves_1000_and_one_more_is_refused \
+            engine::window_reduce_protocol::tests::a_quota_is_accepted_at_16_lanes_and_refused_at_17_and_a_malformed_one_is_refused \
+            engine::window_reduce_protocol::tests::a_decayed_lane_takes_its_half_life_from_decay_made_whole_by_its_rounding \
+            engine::window_reduce_protocol::tests::a_half_life_is_accepted_at_one_and_at_ten_years_and_refused_outside_them \
+            engine::window_reduce_protocol::tests::more_entities_become_one_merged_read_over_every_key_in_request_order \
+            engine::window_reduce_protocol::tests::a_merged_read_refuses_a_key_named_twice_and_an_entity_that_is_not_an_id \
+            engine::window_reduce_protocol::tests::a_merged_answer_reports_how_many_keys_held_a_snapshot \
+            engine::window_reduce_protocol::tests::a_batch_becomes_one_batch_command_that_the_engine_admits_and_a_merged_read_has_no_place_in_it \
+            engine::window_reduce_protocol::tests::a_batch_answer_holds_one_answer_per_query_in_order_each_with_its_own_status \
+            engine::window_reduce_protocol::tests::the_accepted_timestamp_range_is_open_at_both_ends \
+            engine::window_reduce_protocol::tests::each_translated_rank_mode_becomes_the_score_it_names \
+            engine::window_reduce_protocol::tests::the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_and_kind \
+            engine::window_reduce_protocol::tests::a_mode_or_window_that_is_not_built_yet_is_refused_and_says_so \
+            engine::window_reduce_protocol::tests::recent_is_the_stored_cell_read_with_the_selectors_label_and_limit \
+            engine::window_reduce_protocol::tests::match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_say \
+            engine::window_reduce_protocol::tests::a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_snapshot \
+            engine::window_reduce_protocol::tests::a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time \
+            engine::window_reduce_protocol::tests::a_window_from_a_start_covers_whole_milliseconds_and_excludes_its_end \
+            engine::window_reduce_protocol::tests::an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time \
+            engine::window_reduce_protocol::tests::the_skip_existing_flag_is_carried_and_refused_with_a_message_that_says_what_to_use \
+            engine::window_reduce_protocol::tests::a_retry_token_on_the_wire_rides_on_every_key_of_the_append_and_a_zero_token_is_none \
+            engine::window_reduce_protocol::tests::the_token_and_the_replayed_flag_have_the_established_field_numbers \
+            engine::window_reduce_protocol::tests::a_replayed_receipt_is_reported_with_the_counts_of_the_first_application \
+            engine::window_reduce_protocol::tests::a_restore_never_carries_a_token \
+            engine::window_reduce_protocol::tests::a_selector_that_asks_for_snapshot_info_or_a_member_limit_is_refused_naming_the_field \
+            engine::window_reduce_protocol::tests::a_selector_that_sets_them_off_is_translated_to_exactly_the_read_it_was_without_them \
+            engine::window_reduce_protocol::wire_tests::the_golden_bytes_of_every_message_decode_and_re_encode_identically \
+            engine::window_reduce_protocol::wire_tests::every_golden_value_sets_every_field_its_message_has_so_no_field_escapes_the_comparison \
+            engine::window_reduce_protocol::wire_tests::the_field_numbers_wire_types_labels_enum_values_and_reserved_numbers_are_those_the_proto_had_before \
+            engine::window_reduce_protocol::wire_tests::the_proto_names_no_snapshot_for_this_unit_and_the_stored_key_tag_is_still_cells \
             engine::window::tests::a_range_stops_at_its_cap_newest_first_and_a_newest_n_is_not_capped_by_it \
             engine::window::tests::a_window_is_resolved_against_the_clock_and_the_anchor_it_names \
             engine::window::tests::every_window_kind_names_the_samples_the_walk_it_replaced_named \
@@ -1332,13 +1332,13 @@ jobs:
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_does_not_allocate_more_for_a_longer_key \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_write_does_not_allocate_per_cell \
             engine::cell_set::tests::probe::a_merge_request_costs_the_same_allocations_at_any_cell_count \
-            engine::cell_fan_in::tests::probe::a_fan_in_allocates_the_same_over_a_hundred_members_and_over_two_thousand \
-            engine::cell_rank::tests::probe::a_ranked_read_allocates_the_same_over_a_hundred_members_and_over_twenty_thousand \
-            engine::cell_rank::tests::options::probe::a_member_set_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
-            engine::cell_rank::tests::decay::probe::a_decay_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
-            engine::cell_rollup::tests::probe::a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many \
+            engine::window_reduce_fan_in::tests::probe::a_fan_in_allocates_the_same_over_a_hundred_members_and_over_two_thousand \
+            engine::window_reduce_rank::tests::probe::a_ranked_read_allocates_the_same_over_a_hundred_members_and_over_twenty_thousand \
+            engine::window_reduce_rank::tests::options::probe::a_member_set_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
+            engine::window_reduce_rank::tests::decay::probe::a_decay_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
+            engine::window_reduce_rollup::tests::probe::a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many \
             engine::cell_retry_ring::tests::probe::a_retry_ring_allocates_once_when_started_and_never_again \
-            engine::cell_rollup::tier_tests::probe::a_tiered_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many \
+            engine::window_reduce_rollup::tier_tests::probe::a_tiered_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many \
             engine::cell_set::tests::probe::a_cell_costs_the_same_allocations_at_any_member_size ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \

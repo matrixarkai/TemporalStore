@@ -94,7 +94,7 @@ fn send(engine: &TemporalEngine, key: &str, points: Vec<FeaturePoint>, token: Op
     })
 }
 
-/// (snapshots written, cells created, cells merged, replayed)
+/// (samples written, cells created, cells merged, replayed)
 fn receipt(response: &ExecuteResponse) -> (u64, u64, u64, bool) {
     assert!(response.status.ok, "the request was refused: {:?}", response.status);
     match &response.response {
@@ -128,7 +128,7 @@ fn lanes(engine: &TemporalEngine, key: &str) -> Vec<i64> {
     raw_series(engine, key)
         .into_iter()
         .find(|p| p.timestamp_ms == 100)
-        .map(|p| cell_set::decode_value(&p.value).expect("a stored value is a cell snapshot").1)
+        .map(|p| cell_set::decode_value(&p.value).expect("a stored value is a cell sample").1)
         .and_then(|cells| cells.into_iter().find(|c| c.member == Member::U64(7)))
         .map(|c| c.lanes)
         .unwrap_or_else(|| panic!("member 7 is not stored at 100"))
@@ -157,7 +157,7 @@ fn a_repeated_token_answers_the_first_receipt_and_writes_nothing() {
     // The retry: the first receipt, as a replay. A merge that ran again would say created 0,
     // merged 1, and the lane would read 10.
     assert_eq!((1, 1, 0, true), receipt(&send(&engine, &key, vec![adds(5)], Some(9))));
-    assert_eq!(stored, raw_series(&engine, &key), "a replay changed the stored snapshot");
+    assert_eq!(stored, raw_series(&engine, &key), "a replay changed the stored sample");
     assert_eq!(vec![5, 1], lanes(&engine, &key));
     assert_eq!(Some(vec![9]), ring_tokens(&engine, &key), "a replay filed the token again");
 
@@ -393,7 +393,7 @@ fn an_append_without_a_token_stores_what_it_always_stored() {
     for (token, hits) in [(1u64, 3i64), (2, 4), (3, 5)] {
         send(&tokened, &key, vec![adds(hits)], Some(token));
     }
-    // A token changes no byte of any stored snapshot.
+    // A token changes no byte of any stored sample.
     assert_eq!(raw_series(&plain, &key), raw_series(&tokened, &key));
 
     // The tokenless shard's image names no ring table and the tokened one does: the table costs a

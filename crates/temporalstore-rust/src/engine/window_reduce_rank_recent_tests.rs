@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! Tests of the stored-cell read (`CellScore::Recent`): one row per stored cell, none reduced, the
-//! newest snapshot first. The data is `data()` of the parent module; its eleven cells, newest
+//! newest sample first. The data is `data()` of the parent module; its eleven cells, newest
 //! first, are
 //!
 //! ```text
@@ -36,7 +36,7 @@ fn a_recent_read_answers_every_stored_cell_once_newest_snapshot_first_and_reduce
     assert_eq!(ranked.unscored, 0);
     // The stored values, not the window's reduction: m1 appears at 100, 200 and 300 with the
     // `shown` it stored each time (10 + 10 + 10 reduces to 30 in a ranked read), and its label is
-    // the one that snapshot carried.
+    // the one that sample carried.
     let m1: Vec<(u64, u64, Vec<i64>)> = ranked
         .rows
         .iter()
@@ -51,7 +51,7 @@ fn a_recent_read_answers_every_stored_cell_once_newest_snapshot_first_and_reduce
             (100, 1, vec![10, 1, 5, 100]),
         ]
     );
-    // Each row's score is its snapshot's stamp.
+    // Each row's score is its sample's stamp.
     assert_eq!(scores(&ranked), NEWEST_FIRST_STAMPS.map(|s| s as i64));
     assert_eq!(ranked.label_columns, vec!["slot".to_string()]);
     assert_eq!(ranked.lane_columns, vec!["shown", "clicked", "peak", "seen"]);
@@ -65,7 +65,7 @@ fn rows_are_bounded_by_the_limit_and_the_walk_stops_in_the_middle_of_a_snapshot(
     assert_eq!(order(&run(&recent(ALL, 10))), NEWEST_FIRST_MEMBERS[..10].to_vec());
     assert_eq!(order(&run(&recent(ALL, 11))), NEWEST_FIRST_MEMBERS.to_vec());
     assert_eq!(order(&run(&recent(ALL, 12))), NEWEST_FIRST_MEMBERS.to_vec());
-    // A limit of 1 is the newest cell: m2 of snapshot 400.
+    // A limit of 1 is the newest cell: m2 of sample 400.
     let one = run(&recent(ALL, 1));
     assert_eq!((order(&one), stamps(&one)), (vec![2], vec![400]));
     // The limit is the ranked read's own: accepted at the top-k cap, refused one past it and at 0.
@@ -76,7 +76,7 @@ fn rows_are_bounded_by_the_limit_and_the_walk_stops_in_the_middle_of_a_snapshot(
 
 #[test]
 fn the_window_the_predicates_the_member_set_and_the_projection_apply_to_each_cell() {
-    // A window of 150 to 350 holds snapshots 200 and 300.
+    // A window of 150 to 350 holds samples 200 and 300.
     let windowed = run(&recent(CellWindow::Between { start_ms: 150, end_ms: 350 }, 100));
     assert_eq!(order(&windowed), vec![1, 3, 99, 1, 2, 4]);
     assert_eq!(windowed.snapshots, 2);
@@ -114,13 +114,13 @@ fn the_window_the_predicates_the_member_set_and_the_projection_apply_to_each_cel
 
 #[test]
 fn snapshots_sharing_a_stamp_come_back_with_the_later_one_in_the_slice_first() {
-    // Snapshots of two keys at one stamp, as a merged read hands them over, earlier key first.
+    // Samples of two keys at one stamp, as a merged read hands them over, earlier key first.
     let first = vec![cell(1, 1, [1, 0, 0, 0]), cell(5, 1, [2, 0, 0, 0])];
     let second = vec![cell(2, 1, [3, 0, 0, 0])];
     let slice = [
-        SnapshotView { timestamp_ms: 50, cells: &first },
-        SnapshotView { timestamp_ms: 100, cells: &first },
-        SnapshotView { timestamp_ms: 100, cells: &second },
+        SampleView { timestamp_ms: 50, cells: &first },
+        SampleView { timestamp_ms: 100, cells: &first },
+        SampleView { timestamp_ms: 100, cells: &second },
     ];
     let plan = Plan::compile(&header(), &recent(ALL, 100)).unwrap();
     let ranked = plan.run_ordered(&slice).unwrap();

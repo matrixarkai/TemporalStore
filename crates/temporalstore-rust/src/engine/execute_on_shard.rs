@@ -4842,7 +4842,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             CommandResponse::CellRanking {
-                ranked: cell_rank_read::serve(
+                ranked: window_reduce_rank_read::serve(
                     cache,
                     block_store,
                     shard_id,
@@ -4861,7 +4861,7 @@ pub(crate) fn execute_on_shard(
             // THE SAME PLANNER AS ADMISSION, over the same series, so a follower and a replay
             // reach the leader's bytes. A plan that fails here passed validation on the leader:
             // that is a divergence, not a bad request, so it writes nothing and receipts zeros.
-            let plan = crate::engine::cell_rollup_apply::plan_cell_rollup(
+            let plan = crate::engine::window_reduce_rollup_apply::plan_window_reduce_rollup(
                 cache,
                 block_store,
                 shard_id,
@@ -4923,7 +4923,7 @@ pub(crate) fn execute_on_shard(
             // THE SAME PLANNER AS ADMISSION, over the same series, so a follower and a replay
             // reach the leader's bytes. A plan that fails here passed validation on the leader:
             // that is a divergence, not a bad request, so it writes nothing and receipts zeros.
-            let plan = crate::engine::cell_remove_apply::plan_cell_remove(
+            let plan = crate::engine::window_reduce_remove_apply::plan_window_reduce_remove(
                 cache,
                 block_store,
                 shard_id,
@@ -4987,7 +4987,7 @@ pub(crate) fn execute_on_shard(
                     rankings.push(crate::types::RankedCells::default());
                     continue;
                 }
-                rankings.push(cell_rank_read::serve(
+                rankings.push(window_reduce_rank_read::serve(
                     cache,
                     block_store,
                     shard_id,
@@ -5011,7 +5011,7 @@ pub(crate) fn execute_on_shard(
                 }
             }
             CommandResponse::CellRanking {
-                ranked: cell_rank_read::serve_many(
+                ranked: window_reduce_rank_read::serve_many(
                     cache,
                     block_store,
                     shard_id,
