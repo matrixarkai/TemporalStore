@@ -1320,14 +1320,10 @@ pub fn execute_redis_command_with_state(
                 },
                 None => None,
             };
-            let members = match sorted_set_members(&key, &mut execute) {
+            let selected = match first_set_members(&key, count.unwrap_or(1), &mut execute) {
                 Ok(members) => members,
                 Err(err) => return RespValue::Error(err),
             };
-            let selected = members
-                .into_iter()
-                .take(count.unwrap_or(1))
-                .collect::<Vec<_>>();
             for member in &selected {
                 if let Err(err) = execute(Command::SetRemove {
                     key: key.clone(),
@@ -1354,23 +1350,29 @@ pub fn execute_redis_command_with_state(
                 },
                 None => None,
             };
-            match sorted_set_members(&name_arg(&args[1]), &mut execute) {
+            // ONLY AS MANY MEMBERS AS THE ANSWER CAN NAME, in byte order. A negative count
+            // repeats members, but never needs more distinct ones than it asks for, and cycling
+            // the first `take` of them gives what cycling the whole set gave: index < take.
+            let wanted = match count {
+                Some(count) if count >= 0 => count as usize,
+                Some(count) => count.checked_neg().map(|n| n as usize).unwrap_or(0),
+                None => 1,
+            };
+            match first_set_members(&name_arg(&args[1]), wanted, &mut execute) {
                 Ok(members) => match count {
                     Some(count) if count >= 0 => RespValue::Array(
                         members
                             .into_iter()
-                            .take(count as usize)
                             .map(|member| RespValue::Bulk(Some(member)))
                             .collect(),
                     ),
-                    Some(count) => {
+                    Some(_) => {
                         // Negative count = |count| members WITH repetition. computes
                         // n = -count; for i64::MIN that overflows to a negative n so the
                         // fill loop runs zero times. unsigned_abs() would instead yield
                         // 2^63 here and attempt an unbounded allocation (hang / OOM DoS).
-                        let take = count.checked_neg().map(|n| n as usize).unwrap_or(0);
                         let mut out = Vec::new();
-                        for index in 0..take {
+                        for index in 0..wanted {
                             if members.is_empty() {
                                 break;
                             }

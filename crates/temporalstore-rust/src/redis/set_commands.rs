@@ -46,6 +46,39 @@ pub(crate) fn set_has_member(
     }
 }
 
+/// The first `wanted` members of the set in byte order, read a page at a time from the member
+/// map. A set smaller than `wanted` answers all of it. Nothing is read past the members asked for,
+/// where listing the set and taking a prefix read every one.
+pub(crate) fn first_set_members(
+    key: &str,
+    wanted: usize,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> Result<Vec<Vec<u8>>, String> {
+    // The scan command refuses a page over this many members.
+    const PAGE: usize = 10_000;
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    while out.len() < wanted {
+        let limit = (wanted - out.len()).min(PAGE);
+        let after = out.last().cloned().unwrap_or_default();
+        match execute(Command::SetScan {
+            key: key.to_string(),
+            after,
+            limit,
+        }) {
+            Ok(CommandResponse::Members { members }) => {
+                let short = members.len() < limit;
+                out.extend(members);
+                if short {
+                    break;
+                }
+            }
+            Ok(_) => return Err("ERR invalid sscan response".to_string()),
+            Err(err) => return Err(format!("ERR {err}")),
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) fn set_algebra_response(
     keys: &[Vec<u8>],
     op: SetAlgebraOp,
