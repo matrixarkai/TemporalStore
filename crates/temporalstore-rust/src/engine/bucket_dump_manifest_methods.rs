@@ -244,6 +244,7 @@ impl TemporalEngine {
             source_manifest_ids: Vec::new(),
             source_manifest_coverage: Vec::new(),
             parent_manifest_id,
+            base_manifest_id: None,
             load_version_handoff: None,
             created_unix_ms,
             bucket_ids: bucket_summaries
@@ -769,13 +770,15 @@ impl TemporalEngine {
                 "slot dump manifest is missing dump generation id",
             ));
         }
-        if manifest.index_bytes.is_empty() {
+        let image = installable_image(manifest)
+            .map_err(|err| Status::error("slot_dump_delta_unreadable", err.to_string()))?;
+        if image.is_empty() {
             return Err(Status::error(
                 "slot_dump_partial_manifest",
                 "slot dump manifest is missing index bytes",
             ));
         }
-        let actual_index_sha256 = sha256_hex_bytes(&manifest.index_bytes);
+        let actual_index_sha256 = sha256_hex_bytes(image);
         if manifest.index_sha256 != actual_index_sha256 {
             return Err(Status::error(
                 "slot_dump_index_checksum_mismatch",
@@ -800,7 +803,7 @@ impl TemporalEngine {
                 format!("slot dump references missing block segments: {missing:?}"),
             ));
         }
-        let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
+        let mut restored = crate::engine::decode_index_bytes(image)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
         // THE STAMP, ON THIS DOOR TOO, AND IT IS THE DECODE'S. Every install calls this function
         // first (`install_bucket_dump_manifest` line 1 of its body), and `decode_index_bytes` refuses
@@ -1074,8 +1077,15 @@ impl TemporalEngine {
         let mut unreadable_block_ref_count = 0usize;
         let mut unreadable_block_bytes = 0u64;
         let mut restored_index = None;
-        if !manifest.index_bytes.is_empty() && missing_block_slab_ids.is_empty() {
-            if let Ok(restored) = crate::engine::decode_index_bytes(&manifest.index_bytes) {
+        let preflight_image: &[u8] = match installable_image(manifest) {
+            Ok(image) => image,
+            Err(err) => {
+                blockers.push(format!("delta_manifest_unreadable:{err}"));
+                &[]
+            }
+        };
+        if !preflight_image.is_empty() && missing_block_slab_ids.is_empty() {
+            if let Ok(restored) = crate::engine::decode_index_bytes(preflight_image) {
                 let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
                 let mut probed_block_refs = 0usize;
                 for entry in collect_live_block_entries(&restored) {
@@ -1584,8 +1594,11 @@ impl TemporalEngine {
                 ),
             ));
         }
-        let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
-            .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        let mut restored = crate::engine::decode_index_bytes(
+            installable_image(manifest)
+                .map_err(|err| Status::error("slot_dump_delta_unreadable", err.to_string()))?,
+        )
+        .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
         // Rebuild the unserialized model maps from the durable bucket index BEFORE rebuilding
         // ownership. `rebuild_bucket_block_ownership` clears the bucket map and repopulates it
         // from the model maps, so running it against a state whose `hashes` map never survived

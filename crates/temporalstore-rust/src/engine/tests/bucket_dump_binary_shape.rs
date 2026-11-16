@@ -52,6 +52,7 @@ fn a_manifest_with_every_field_set() -> BucketDumpManifest {
         ],
         // Named and EMPTY: not the same as no parent, and the codec has to keep them apart.
         parent_manifest_id: Some(String::new()),
+        base_manifest_id: Some(String::new()),
         load_version_handoff: Some(BucketDumpLoadVersionHandoff {
             previous_load_version: 11,
             next_load_version: 12,

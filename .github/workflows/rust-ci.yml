@@ -446,6 +446,12 @@ jobs:
             engine::tests::bucket_dump_binary_shape::a_manifest_is_listed_a_json_one_is_not_and_a_changed_field_is_not_trusted \
             engine::tests::bucket_dump_binary_shape::an_install_marker_is_protobuf_only \
             engine::tests::bucket_dump_binary_shape::no_json_path_is_left_for_a_manifest_or_a_marker \
+            engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::a_whole_manifest_gives_its_image_and_a_delta_is_refused \
+            engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::the_reader_doors_refuse_a_delta \
+            engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::retention_keeps_the_base_of_the_delta_it_keeps \
+            engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::a_delta_whose_base_is_gone_keeps_every_manifest \
+            engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::no_reader_takes_a_manifests_image_around_the_resolver \
+            engine::bucket_dump_chain::tests::a_missing_link_is_an_error_and_never_a_shorter_chain \
             raft::wal_proto::tests::every_command_the_raft_wal_carries_is_protobuf \
             shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \

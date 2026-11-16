@@ -1151,7 +1151,10 @@ impl TemporalEngine {
                     // This path is the reason the stamp needed covering at all: it is reached by
                     // an ORDINARY restart, not by anyone calling an install endpoint, so an old
                     // store with an old dump manifest on disk met no gate whatsoever.
-                    match crate::engine::decode_index_bytes(&manifest.index_bytes) {
+                    match installable_image(&manifest)
+                        .map_err(|err| err.to_string())
+                        .and_then(crate::engine::decode_index_bytes)
+                    {
                         Ok(mut restored) => {
                             // RE-DERIVE THE UNSERIALIZED MODEL MAPS BEFORE REBUILDING OWNERSHIP,
                             // for the reason `install_bucket_dump_manifest` states at its own call
