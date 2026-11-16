@@ -13,9 +13,9 @@
 //!
 //! # WHAT IS TRANSLATED
 //!
-//! A query becomes one ranked read ([`Command::CellRankQuery`]); a query that names `more_entities`
-//! becomes one merged read over all of their keys ([`Command::CellFanInRankQuery`]); a batch of
-//! queries becomes [`Command::CellRankBatchQuery`]. The selector's member set, the window kinds
+//! A query becomes one ranked read ([`Command::WindowReduceRank`]); a query that names `more_entities`
+//! becomes one merged read over all of their keys ([`Command::WindowReduceFanInRank`]); a batch of
+//! queries becomes [`Command::WindowReduceRankBatch`]. The selector's member set, the window kinds
 //! anchored on the newest sample, the quota and the decayed-lane mode map onto the options the
 //! ranked read carries in its spec. Every translated spec is also passed through the engine's own
 //! admission check ([`super::window_reduce_rank::validate_spec`]), so a request the translator accepts is one
@@ -24,10 +24,10 @@
 //! # WHAT IS NOT TRANSLATED YET
 //!
 //! `RECENT` and `MATCH_LANE` answer stored cells, one row each and none reduced, newest first: both
-//! are the ranked read with [`CellScore::Recent`], and `MATCH_LANE` adds an equality predicate on
+//! are the ranked read with [`WindowReduceScore::Recent`], and `MATCH_LANE` adds an equality predicate on
 //! the lane it names. The newest-rows window, which counts stored rows rather than samples, is
 //! refused with a message that says so. `REMOVE` and `DELETE` are the one removal command
-//! ([`Command::CellRemove`]); see [`remove`].
+//! ([`Command::WindowReduceRemove`]); see [`remove`].
 //! `MEMBERS_ONLY` reads exactly the include set, ordered by time.
 //!
 //! The selector's `want_sample_info` and `limit_members` are accepted by the wire shape and
@@ -43,8 +43,8 @@ use super::cell_set::{
     MAX_LANES_PER_CELL, MAX_NAME_BYTES, MAX_TOP_K,
 };
 use crate::types::{
-    CellAnchor, CellLaneQuota, CellMemberFilter, CellMemberId, CellQuota, CellRankBatchItem, CellRankSpec,
-    CellScore, CellWindow, Command, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy,
+    WindowReduceAnchor, WindowReduceLaneQuota, CellMemberFilter, CellMemberId, WindowReduceQuota, WindowReduceRankBatchItem, WindowReduceRankSpec,
+    WindowReduceScore, WindowReduceWindow, Command, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy,
     RankedCells,
 };
 
@@ -502,19 +502,19 @@ pub(crate) struct ReadPlan {
     pub(crate) key: String,
     /// The keys of `more_entities`, in request order. Non-empty makes the read a merged one.
     pub(crate) more_keys: Vec<String>,
-    pub(crate) spec: CellRankSpec,
+    pub(crate) spec: WindowReduceRankSpec,
 }
 
 impl ReadPlan {
     /// The command that runs this read: a one-key ranked read, or one merged read over every key.
     pub(crate) fn command(self) -> Command {
         if self.more_keys.is_empty() {
-            return Command::CellRankQuery { key: self.key, spec: self.spec };
+            return Command::WindowReduceRank { key: self.key, spec: self.spec };
         }
         let mut keys = Vec::with_capacity(1 + self.more_keys.len());
         keys.push(self.key);
         keys.extend(self.more_keys);
-        Command::CellFanInRankQuery { keys, spec: self.spec }
+        Command::WindowReduceFanInRank { keys, spec: self.spec }
     }
 }
 
@@ -526,7 +526,7 @@ fn lane_name(profile: &TableProfile, at: i32, what: &str) -> Result<String, Refu
         .ok_or_else(|| invalid(format!("{what} {at} is not a lane of this table")))
 }
 
-fn window_of(window: &wire::Window) -> Result<CellWindow, Refusal> {
+fn window_of(window: &wire::Window) -> Result<WindowReduceWindow, Refusal> {
     if window.span < 0 {
         return Err(invalid(format!("window span {} is negative", window.span)));
     }
@@ -536,7 +536,7 @@ fn window_of(window: &wire::Window) -> Result<CellWindow, Refusal> {
         wire::WindowKind::TrailingFromNow
         | wire::WindowKind::TrailingFromNewest
         | wire::WindowKind::TrailingFromNewestOfKind => {
-            Ok(CellWindow::Last { duration_ms: (window.span / 1000) as u64 })
+            Ok(WindowReduceWindow::Last { duration_ms: (window.span / 1000) as u64 })
         }
         wire::WindowKind::FromStart => {
             if window.span == 0 {
@@ -550,7 +550,7 @@ fn window_of(window: &wire::Window) -> Result<CellWindow, Refusal> {
             if first < 0 || after <= first {
                 return Err(invalid("window holds no whole millisecond"));
             }
-            Ok(CellWindow::Between { start_ms: first as u64, end_ms: (after - 1) as u64 })
+            Ok(WindowReduceWindow::Between { start_ms: first as u64, end_ms: (after - 1) as u64 })
         }
         other => Err(invalid(format!(
             "window kind {other:?} is not translated yet: it needs a read-side option that is not built"
@@ -560,10 +560,10 @@ fn window_of(window: &wire::Window) -> Result<CellWindow, Refusal> {
 
 /// Which instant a trailing window ends at: the newest stored sample for the two newest-anchored
 /// kinds, the request clock for the rest.
-fn anchor_of(window: &wire::Window) -> CellAnchor {
+fn anchor_of(window: &wire::Window) -> WindowReduceAnchor {
     match window.kind() {
-        wire::WindowKind::TrailingFromNewest | wire::WindowKind::TrailingFromNewestOfKind => CellAnchor::Newest,
-        _ => CellAnchor::Request,
+        wire::WindowKind::TrailingFromNewest | wire::WindowKind::TrailingFromNewestOfKind => WindowReduceAnchor::Newest,
+        _ => WindowReduceAnchor::Request,
     }
 }
 
@@ -601,10 +601,10 @@ fn member_filter_of(selector: &wire::WindowReduceSelector) -> CellMemberFilter {
 /// `quota_counts[0]` as the count of members that fit no lane. The first count therefore appears
 /// TWICE in what the quota reserves (see docs/WINDOW_REDUCE_PROTOCOL.md, Quota). A request that names only
 /// the count of members that fit no lane sends one count and no lane.
-fn quota_of(profile: &TableProfile, selector: &wire::WindowReduceSelector) -> Result<CellQuota, Refusal> {
+fn quota_of(profile: &TableProfile, selector: &wire::WindowReduceSelector) -> Result<WindowReduceQuota, Refusal> {
     let (lanes, counts) = (&selector.quota_lanes, &selector.quota_counts);
     if lanes.is_empty() && counts.is_empty() {
-        return Ok(CellQuota::default());
+        return Ok(WindowReduceQuota::default());
     }
     bound("lanes in a quota", lanes.len(), MAX_QUOTA_LANES)?;
     if counts.len() != lanes.len() && !(lanes.is_empty() && counts.len() == 1) {
@@ -620,28 +620,28 @@ fn quota_of(profile: &TableProfile, selector: &wire::WindowReduceSelector) -> Re
     let others = count_of(&counts[0])?;
     let mut entries = Vec::with_capacity(lanes.len());
     for (lane, count) in lanes.iter().zip(counts) {
-        entries.push(CellLaneQuota { lane: lane_name(profile, *lane, "quota lane")?, count: count_of(count)? });
+        entries.push(WindowReduceLaneQuota { lane: lane_name(profile, *lane, "quota lane")?, count: count_of(count)? });
     }
-    Ok(CellQuota { lanes: entries, others })
+    Ok(WindowReduceQuota { lanes: entries, others })
 }
 
-fn score_of(profile: &TableProfile, selector: &wire::WindowReduceSelector) -> Result<CellScore, Refusal> {
+fn score_of(profile: &TableProfile, selector: &wire::WindowReduceSelector) -> Result<WindowReduceScore, Refusal> {
     use wire::RankMode as Mode;
     Ok(match selector.mode() {
-        Mode::FirstLane => CellScore::Lane { lane: lane_name(profile, 0, "lane")? },
-        Mode::SecondLane => CellScore::Lane { lane: lane_name(profile, 1, "lane")? },
-        Mode::Ratio => CellScore::Ratio {
+        Mode::FirstLane => WindowReduceScore::Lane { lane: lane_name(profile, 0, "lane")? },
+        Mode::SecondLane => WindowReduceScore::Lane { lane: lane_name(profile, 1, "lane")? },
+        Mode::Ratio => WindowReduceScore::Ratio {
             numerator: lane_name(profile, 0, "lane")?,
             denominator: lane_name(profile, 1, "lane")?,
         },
-        Mode::Member => CellScore::Member,
+        Mode::Member => WindowReduceScore::Member,
         Mode::NamedLane => {
             let at = if selector.has_sort_lane { selector.sort_lane } else { 0 };
-            CellScore::Lane { lane: lane_name(profile, at, "sort lane")? }
+            WindowReduceScore::Lane { lane: lane_name(profile, at, "sort lane")? }
         }
         Mode::Wilson => {
             let z = if selector.has_wilson_z && selector.wilson_z > 0.0 { selector.wilson_z } else { DEFAULT_WILSON_Z };
-            CellScore::Wilson {
+            WindowReduceScore::Wilson {
                 successes: lane_name(profile, 0, "lane")?,
                 trials: lane_name(profile, 1, "lane")?,
                 z,
@@ -664,18 +664,18 @@ fn score_of(profile: &TableProfile, selector: &wire::WindowReduceSelector) -> Re
                 .iter()
                 .map(|at| lane_name(profile, *at, "weighted lane"))
                 .collect::<Result<Vec<_>, _>>()?;
-            CellScore::Weighted { lanes, weights: selector.weights.iter().map(|w| f64::from(*w)).collect() }
+            WindowReduceScore::Weighted { lanes, weights: selector.weights.iter().map(|w| f64::from(*w)).collect() }
         }
         Mode::DecayedLane => {
             let at = if selector.has_sort_lane { selector.sort_lane } else { 0 };
-            CellScore::Decay { lane: lane_name(profile, at, "sort lane")?, half_life_ms: half_life_of(selector)? }
+            WindowReduceScore::Decay { lane: lane_name(profile, at, "sort lane")?, half_life_ms: half_life_of(selector)? }
         }
         // A members-only read selects members rather than ranking them, so it comes back newest
         // first: the stamp of each member's newest sample in the window, equal stamps by member.
-        Mode::MembersOnly => CellScore::Time,
+        Mode::MembersOnly => WindowReduceScore::Time,
         // These two answer the stored cells newest first, one row per cell and NOT reduced per
         // member; `match_filter_of` adds the lane test that makes the second one a match.
-        Mode::Recent | Mode::MatchLane => CellScore::Recent,
+        Mode::Recent | Mode::MatchLane => WindowReduceScore::Recent,
     })
 }
 
@@ -783,7 +783,7 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::WindowReduce
         None => {}
     }
     filters.extend(match_filter_of(profile, selector)?);
-    let spec = CellRankSpec { window, filters, score, top_k, project: Vec::new(), members, anchor, quota };
+    let spec = WindowReduceRankSpec { window, filters, score, top_k, project: Vec::new(), members, anchor, quota };
     // The engine's own admission: what is accepted here is accepted by the command.
     window_reduce_rank::validate_spec(&spec).map_err(invalid)?;
     Ok(ReadPlan { key, more_keys, spec })
@@ -819,10 +819,10 @@ pub(crate) fn batch_command(plans: Vec<ReadPlan>) -> Result<Command, Refusal> {
                 "query {at}: a read over several entities cannot ride in a batch, send it on its own"
             )));
         }
-        queries.push(CellRankBatchItem { key: plan.key, spec: plan.spec });
+        queries.push(WindowReduceRankBatchItem { key: plan.key, spec: plan.spec });
     }
     window_reduce_fan_in::validate_batch(&queries).map_err(invalid)?;
-    Ok(Command::CellRankBatchQuery { queries })
+    Ok(Command::WindowReduceRankBatch { queries })
 }
 
 /// The answers of a batch, in request order, one per query, each with its own status.
@@ -910,7 +910,7 @@ pub(crate) fn answer_of(profile: &TableProfile, query: &wire::WindowReduceQuery,
         echoed_window: echoed.then(|| query.window.clone()).flatten(),
         code: WindowReduceStatusCode::Ok as i32,
         message: String::new(),
-        samples: ranked.snapshots as u64,
+        samples: ranked.samples as u64,
         unscored: ranked.unscored,
         keys: ranked.keys as u64,
     }

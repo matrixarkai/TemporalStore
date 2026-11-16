@@ -22,7 +22,7 @@ use crate::engine::cell_set::{
     encode_key, encode_value, Cell, CellHeader, CellKey, DimSpec, DimType, DimValue, EntityType,
     EntityValue, KeySpec, LaneReducer, LaneSpec, Member, HEADER_VERSION,
 };
-use crate::types::{CellMemberId, CellRankSpec, CellScore, CellWindow, RankedCells};
+use crate::types::{CellMemberId, WindowReduceRankSpec, WindowReduceScore, WindowReduceWindow, RankedCells};
 
 fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
@@ -85,34 +85,34 @@ fn put(engine: &TemporalEngine, key: &str, header: &CellHeader, timestamp_ms: u6
     assert!(response.status.ok, "{:?}", response.status);
 }
 
-fn spec(window: CellWindow, score: CellScore, top_k: usize) -> CellRankSpec {
-    CellRankSpec::new(window, score, top_k)
+fn spec(window: WindowReduceWindow, score: WindowReduceScore, top_k: usize) -> WindowReduceRankSpec {
+    WindowReduceRankSpec::new(window, score, top_k)
 }
 
-const ALL: CellWindow = CellWindow::Between { start_ms: 0, end_ms: u64::MAX };
+const ALL: WindowReduceWindow = WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX };
 
-fn lane(name: &str) -> CellScore {
-    CellScore::Lane { lane: name.to_string() }
+fn lane(name: &str) -> WindowReduceScore {
+    WindowReduceScore::Lane { lane: name.to_string() }
 }
 
-fn fan_in_status(engine: &TemporalEngine, keys: &[String], query: CellRankSpec) -> ExecuteResponse {
-    exec(engine, Command::CellFanInRankQuery { keys: keys.to_vec(), spec: query })
+fn fan_in_status(engine: &TemporalEngine, keys: &[String], query: WindowReduceRankSpec) -> ExecuteResponse {
+    exec(engine, Command::WindowReduceFanInRank { keys: keys.to_vec(), spec: query })
 }
 
-fn fan_in(engine: &TemporalEngine, keys: &[String], query: CellRankSpec) -> RankedCells {
+fn fan_in(engine: &TemporalEngine, keys: &[String], query: WindowReduceRankSpec) -> RankedCells {
     let response = fan_in_status(engine, keys, query);
     assert!(response.status.ok, "{:?}", response.status);
     match response.response {
-        CommandResponse::CellRanking { ranked } => ranked,
+        CommandResponse::WindowReduceRanking { ranked } => ranked,
         other => panic!("not a ranking: {other:?}"),
     }
 }
 
-fn rank(engine: &TemporalEngine, key: &str, query: CellRankSpec) -> RankedCells {
-    let response = exec(engine, Command::CellRankQuery { key: key.to_string(), spec: query });
+fn rank(engine: &TemporalEngine, key: &str, query: WindowReduceRankSpec) -> RankedCells {
+    let response = exec(engine, Command::WindowReduceRank { key: key.to_string(), spec: query });
     assert!(response.status.ok, "{:?}", response.status);
     match response.response {
-        CommandResponse::CellRanking { ranked } => ranked,
+        CommandResponse::WindowReduceRanking { ranked } => ranked,
         other => panic!("not a ranking: {other:?}"),
     }
 }
@@ -147,9 +147,9 @@ fn seed(engine: &TemporalEngine) -> (Vec<String>, String) {
     ];
     let single = stored_key(99, 1);
     let mut keys = Vec::new();
-    for (channel, snapshots) in &channels {
+    for (channel, samples) in &channels {
         let key = stored_key(7, *channel);
-        for (ts, cells) in snapshots {
+        for (ts, cells) in samples {
             put(engine, &key, &h, *ts, cells);
             put(engine, &single, &h, *ts, cells);
         }
@@ -171,7 +171,7 @@ fn a_worked_example_of_a_ranked_read_across_the_channels_of_one_user() {
     let by_shown = fan_in(&engine, &keys, spec(ALL, lane("shown"), 10));
     assert_eq!(members(&by_shown), vec![3, 2, 1, 4]);
     assert_eq!(scores(&by_shown), vec![80, 45, 21, 5]);
-    assert_eq!((by_shown.snapshots, by_shown.keys), (6, 3));
+    assert_eq!((by_shown.samples, by_shown.keys), (6, 3));
     // Max, not sum: the peak is the declared verb of that lane, so item 1's 9 leads.
     assert_eq!(members(&fan_in(&engine, &keys, spec(ALL, lane("peak"), 10))), vec![1, 2, 3, 4]);
     // A row carries the merged lanes and the label of the newest cell: item 1's newest cell is in
@@ -189,8 +189,8 @@ fn a_worked_example_of_a_ranked_read_across_the_channels_of_one_user() {
 
     // ---- THE WINDOW APPLIES TO EACH KEY --------------------------------------------------------
     // The newest sample of each channel: 400, 500 and 600. Item 3 30, item 4 5, item 1 1.
-    let newest = fan_in(&engine, &keys, spec(CellWindow::LastN { n: 1 }, lane("shown"), 10));
-    assert_eq!((members(&newest), scores(&newest), newest.snapshots), (vec![3, 4, 1], vec![30, 5, 1], 3));
+    let newest = fan_in(&engine, &keys, spec(WindowReduceWindow::LastN { n: 1 }, lane("shown"), 10));
+    assert_eq!((members(&newest), scores(&newest), newest.samples), (vec![3, 4, 1], vec![30, 5, 1], 3));
 
     drop(engine);
     // A reload reads every block cold, and answers the same.
@@ -211,7 +211,7 @@ fn a_key_the_shard_does_not_hold_or_that_expired_contributes_nothing_and_is_not_
     let named = vec![keys[0].clone(), absent.clone(), keys[1].clone()];
     let partial = fan_in(&engine, &named, spec(ALL, lane("shown"), 10));
     assert_eq!((members(&partial), scores(&partial)), (vec![3, 1, 2, 4], vec![70, 20, 20, 5]));
-    assert_eq!((partial.keys, partial.snapshots, partial.refused.as_str()), (2, 4, ""));
+    assert_eq!((partial.keys, partial.samples, partial.refused.as_str()), (2, 4, ""));
 
     // Every key absent: nothing to rank, not a refusal.
     let none = fan_in(&engine, &[absent.clone(), stored_key(7, 41)], spec(ALL, lane("shown"), 10));
@@ -250,7 +250,7 @@ fn a_request_that_breaks_a_bound_is_refused_at_admission_and_the_limit_is_accept
     // What a one-key read is refused for is refused here too.
     assert!(!fan_in_status(&engine, &keys, spec(ALL, lane("shown"), 1001)).status.ok);
     assert!(fan_in_status(&engine, &keys, spec(ALL, lane("shown"), 1000)).status.ok);
-    assert!(!fan_in_status(&engine, &keys, spec(CellWindow::LastN { n: 513 }, lane("shown"), 5)).status.ok);
+    assert!(!fan_in_status(&engine, &keys, spec(WindowReduceWindow::LastN { n: 513 }, lane("shown"), 5)).status.ok);
     // A name the keys do not declare is a served refusal naming it.
     let unknown = fan_in(&engine, &keys, spec(ALL, lane("views"), 5));
     assert!(unknown.refused.contains("views") && unknown.rows.is_empty(), "{}", unknown.refused);
@@ -288,8 +288,8 @@ fn keys_whose_headers_differ_only_by_an_added_lane_read_under_the_wider_and_any_
     );
 }
 
-fn put_many(engine: &TemporalEngine, key: &str, header: &CellHeader, snapshots: u64, cells: &[Cell]) {
-    let points = (1..=snapshots)
+fn put_many(engine: &TemporalEngine, key: &str, header: &CellHeader, samples: u64, cells: &[Cell]) {
+    let points = (1..=samples)
         .map(|timestamp_ms| FeaturePoint { timestamp_ms, value: encode_value(header, cells).unwrap() })
         .collect();
     let response = exec(engine, Command::FeatureAppend { key: key.to_string(), points });
@@ -309,14 +309,14 @@ fn the_snapshot_ceiling_holds_while_reading_and_the_limit_is_served() {
 
     // Two keys of 512 (each at the per-key window bound) is 1024: served, every sample summed.
     let at = fan_in(&engine, &[a.clone(), b.clone()], spec(ALL, lane("shown"), 1));
-    assert_eq!((at.snapshots, scores(&at), at.keys), (1024, vec![1024], 2));
+    assert_eq!((at.samples, scores(&at), at.keys), (1024, vec![1024], 2));
     // A third key's one sample is 1025: refused whole, with no rows.
     let over = fan_in(&engine, &[a.clone(), b.clone(), c.clone()], spec(ALL, lane("shown"), 1));
     assert!(over.refused.contains("samples in a fan-in read"), "{}", over.refused);
     assert!(over.rows.is_empty());
     // The ceiling is on what the window names: the newest 100 of each key passes.
-    let narrow = fan_in(&engine, &[a, b, c], spec(CellWindow::LastN { n: 100 }, lane("shown"), 1));
-    assert_eq!((narrow.snapshots, scores(&narrow)), (201, vec![201]));
+    let narrow = fan_in(&engine, &[a, b, c], spec(WindowReduceWindow::LastN { n: 100 }, lane("shown"), 1));
+    assert_eq!((narrow.samples, scores(&narrow)), (201, vec![201]));
 }
 
 #[test]
@@ -331,25 +331,25 @@ fn the_cell_ceiling_holds_while_reading_and_the_limit_is_served() {
     put(&engine, &b, &h, 1, &[cell(0, 0, vec![1])]);
 
     let at = fan_in(&engine, &[a.clone()], spec(ALL, lane("shown"), 1));
-    assert_eq!((at.snapshots, scores(&at)), (64, vec![64]), "member 0 is in every sample");
+    assert_eq!((at.samples, scores(&at)), (64, vec![64]), "member 0 is in every sample");
     // One cell more, from a second key, is refused whole.
     let over = fan_in(&engine, &[a, b], spec(ALL, lane("shown"), 1));
     assert!(over.refused.contains("cells in a fan-in read"), "{}", over.refused);
     assert!(over.rows.is_empty());
 }
 
-fn batch(engine: &TemporalEngine, queries: Vec<(String, CellRankSpec)>) -> ExecuteResponse {
+fn batch(engine: &TemporalEngine, queries: Vec<(String, WindowReduceRankSpec)>) -> ExecuteResponse {
     let queries = queries
         .into_iter()
-        .map(|(key, spec)| crate::types::CellRankBatchItem { key, spec })
+        .map(|(key, spec)| crate::types::WindowReduceRankBatchItem { key, spec })
         .collect();
-    exec(engine, Command::CellRankBatchQuery { queries })
+    exec(engine, Command::WindowReduceRankBatch { queries })
 }
 
 fn rankings(response: ExecuteResponse) -> Vec<RankedCells> {
     assert!(response.status.ok, "{:?}", response.status);
     match response.response {
-        CommandResponse::CellRankings { rankings } => rankings,
+        CommandResponse::WindowReduceRankings { rankings } => rankings,
         other => panic!("not a batch of rankings: {other:?}"),
     }
 }
@@ -368,16 +368,16 @@ fn a_batch_of_reads_answers_each_as_the_single_read_would_in_request_order_and_o
         (keys[1].clone(), spec(ALL, lane("peak"), 10)),
         (absent.clone(), spec(ALL, lane("shown"), 10)),
         (keys[2].clone(), spec(ALL, lane("views"), 10)),
-        (keys[0].clone(), spec(CellWindow::LastN { n: 1 }, lane("shown"), 10)),
+        (keys[0].clone(), spec(WindowReduceWindow::LastN { n: 1 }, lane("shown"), 10)),
     ];
     let answers = rankings(batch(&engine, queries.clone()));
     assert_eq!(answers.len(), 5);
     // Each answer is exactly what the one-key read gives for that key and spec (a refused read is
     // served by the same path, so it compares too).
     for ((key, query), answer) in queries.iter().zip(&answers) {
-        let single = exec(&engine, Command::CellRankQuery { key: key.clone(), spec: query.clone() });
+        let single = exec(&engine, Command::WindowReduceRank { key: key.clone(), spec: query.clone() });
         match single.response {
-            CommandResponse::CellRanking { ranked } => assert_eq!(&ranked, answer),
+            CommandResponse::WindowReduceRanking { ranked } => assert_eq!(&ranked, answer),
             other => panic!("not a ranking: {other:?}"),
         }
     }
@@ -387,7 +387,7 @@ fn a_batch_of_reads_answers_each_as_the_single_read_would_in_request_order_and_o
     assert_eq!((members(&answers[1]), scores(&answers[1])), (vec![1, 3, 4], vec![9, 3, 1]));
     assert!(answers[2].rows.is_empty() && answers[2].refused.is_empty(), "an absent key answers empty");
     assert!(answers[3].refused.contains("views") && answers[3].rows.is_empty());
-    assert_eq!((members(&answers[4]), answers[4].snapshots), (vec![3], 1));
+    assert_eq!((members(&answers[4]), answers[4].samples), (vec![3], 1));
 }
 
 #[test]
@@ -412,7 +412,7 @@ fn a_batch_is_refused_at_admission_for_its_size_and_for_any_read_a_single_read_w
     let status = batch(&engine, mixed).status;
     assert!(!status.ok && status.message.starts_with("read 1: "), "{status:?}");
     // Window and predicate bounds are the single read's too.
-    let over_window = vec![(keys[0].clone(), spec(CellWindow::LastN { n: 513 }, lane("shown"), 5))];
+    let over_window = vec![(keys[0].clone(), spec(WindowReduceWindow::LastN { n: 513 }, lane("shown"), 5))];
     assert!(!batch(&engine, over_window).status.ok);
 }
 
@@ -468,7 +468,7 @@ fn a_fan_in_honours_the_member_filter_the_spec_carries() {
 
 #[test]
 fn a_batch_honours_the_quota_each_read_carries() {
-    use crate::types::{CellQuota, CellLaneQuota};
+    use crate::types::{WindowReduceQuota, WindowReduceLaneQuota};
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     let (keys, _) = seed(&engine);
@@ -477,7 +477,7 @@ fn a_batch_honours_the_quota_each_read_carries() {
     // of one member with a non-zero `peak` and nothing else keeps the best-ranked such member and
     // stops: item 3.
     let mut quota = spec(ALL, lane("shown"), 3);
-    quota.quota = CellQuota { lanes: vec![CellLaneQuota { lane: "peak".to_string(), count: 1 }], others: 0 };
+    quota.quota = WindowReduceQuota { lanes: vec![WindowReduceLaneQuota { lane: "peak".to_string(), count: 1 }], others: 0 };
     let plain = spec(ALL, lane("shown"), 3);
     let answers = rankings(batch(
         &engine,
@@ -495,9 +495,9 @@ fn a_batch_honours_the_quota_each_read_carries() {
 
 #[test]
 fn a_fan_in_read_is_a_read() {
-    let command = Command::CellFanInRankQuery { keys: vec!["k".to_string()], spec: spec(ALL, lane("shown"), 1) };
+    let command = Command::WindowReduceFanInRank { keys: vec!["k".to_string()], spec: spec(ALL, lane("shown"), 1) };
     assert!(!crate::engine::is_write_command(&command));
-    let batch = Command::CellRankBatchQuery { queries: Vec::new() };
+    let batch = Command::WindowReduceRankBatch { queries: Vec::new() };
     assert!(!crate::engine::is_write_command(&batch));
     assert!(crate::engine::command_object_keys(&batch).into_iter().next().is_none());
     // It writes no object, so no object key is held for it.

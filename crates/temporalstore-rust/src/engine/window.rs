@@ -3,7 +3,7 @@
 
 //! The one resolver of a window over a series of samples.
 //!
-//! A series holds one sample per instant. A read names the samples it wants with a [`CellWindow`]:
+//! A series holds one sample per instant. A read names the samples it wants with a [`WindowReduceWindow`]:
 //! an inclusive range of instants, the last stretch of time before a clock reading, everything from
 //! an instant on, or the newest `n`. [`resolve_window`] applies the clock and the anchor and says
 //! what that asks of the series ([`WindowSpec`]); [`window_samples`] walks the series once and
@@ -27,7 +27,7 @@
 use super::window_reduce_rank_options::last_bounds;
 use super::timestamped_series::TimestampedSeries;
 use crate::block_store::ElementEntry;
-use crate::types::{CellAnchor, CellWindow};
+use crate::types::{WindowReduceAnchor, WindowReduceWindow};
 
 /// What a window asks of a series, once the clock and the anchor are applied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,25 +44,25 @@ pub(crate) enum WindowSpec {
 /// anchored at the newest sample, and answers the newest instant the series holds (`None`: it holds
 /// no sample).
 pub(crate) fn resolve_window(
-    window: &CellWindow,
-    anchor: CellAnchor,
+    window: &WindowReduceWindow,
+    anchor: WindowReduceAnchor,
     now_ms: u64,
     newest_ms: impl FnOnce() -> Option<u64>,
 ) -> WindowSpec {
     match window {
-        CellWindow::Between { start_ms, end_ms } => WindowSpec::Stamps { from_ms: *start_ms, to_ms: *end_ms },
-        CellWindow::Last { duration_ms } => {
+        WindowReduceWindow::Between { start_ms, end_ms } => WindowSpec::Stamps { from_ms: *start_ms, to_ms: *end_ms },
+        WindowReduceWindow::Last { duration_ms } => {
             let newest = match anchor {
-                CellAnchor::Request => None,
-                CellAnchor::Newest => newest_ms(),
+                WindowReduceAnchor::Request => None,
+                WindowReduceAnchor::Newest => newest_ms(),
             };
             match last_bounds(anchor, *duration_ms, now_ms, newest) {
                 Some((from_ms, to_ms)) => WindowSpec::Stamps { from_ms, to_ms },
                 None => WindowSpec::Nothing,
             }
         }
-        CellWindow::Since { start_ms } => WindowSpec::Stamps { from_ms: *start_ms, to_ms: u64::MAX },
-        CellWindow::LastN { n } => WindowSpec::Newest { n: *n },
+        WindowReduceWindow::Since { start_ms } => WindowSpec::Stamps { from_ms: *start_ms, to_ms: u64::MAX },
+        WindowReduceWindow::LastN { n } => WindowSpec::Newest { n: *n },
     }
 }
 
@@ -87,8 +87,8 @@ pub(crate) fn samples_of<'s, S: TimestampedSeries>(
 /// [`resolve_window`] then [`samples_of`]: the samples `window` names in `series`, newest first.
 pub(crate) fn window_samples<'s, S: TimestampedSeries>(
     series: &'s S,
-    window: &CellWindow,
-    anchor: CellAnchor,
+    window: &WindowReduceWindow,
+    anchor: WindowReduceAnchor,
     now_ms: u64,
     cap: usize,
 ) -> Vec<(u64, &'s ElementEntry)> {
@@ -112,8 +112,8 @@ mod tests {
     /// a plain ordered map, each kind spelled out on its own.
     fn the_walk_this_replaced(
         series: &BTreeMap<u64, ElementEntry>,
-        window: &CellWindow,
-        anchor: CellAnchor,
+        window: &WindowReduceWindow,
+        anchor: WindowReduceAnchor,
         now_ms: u64,
         cap: usize,
     ) -> Vec<u64> {
@@ -124,10 +124,10 @@ mod tests {
             series.range(from_ms..=to_ms).rev().take(cap).map(|(at, _)| *at).collect()
         };
         match window {
-            CellWindow::Between { start_ms, end_ms } => bounded(*start_ms, *end_ms),
-            CellWindow::Last { duration_ms } => match anchor {
-                CellAnchor::Request => bounded(now_ms.saturating_sub(*duration_ms), now_ms),
-                CellAnchor::Newest => match series.keys().next_back() {
+            WindowReduceWindow::Between { start_ms, end_ms } => bounded(*start_ms, *end_ms),
+            WindowReduceWindow::Last { duration_ms } => match anchor {
+                WindowReduceAnchor::Request => bounded(now_ms.saturating_sub(*duration_ms), now_ms),
+                WindowReduceAnchor::Newest => match series.keys().next_back() {
                     Some(&newest) if *duration_ms > 0 => {
                         let start = (u128::from(newest) + 1).saturating_sub(u128::from(*duration_ms)) as u64;
                         bounded(start, newest)
@@ -135,8 +135,8 @@ mod tests {
                     _ => Vec::new(),
                 },
             },
-            CellWindow::Since { start_ms } => bounded(*start_ms, u64::MAX),
-            CellWindow::LastN { n } => series.keys().rev().take(*n).copied().collect(),
+            WindowReduceWindow::Since { start_ms } => bounded(*start_ms, u64::MAX),
+            WindowReduceWindow::LastN { n } => series.keys().rev().take(*n).copied().collect(),
         }
     }
 
@@ -165,15 +165,15 @@ mod tests {
                 let now_ms = xorshift(&mut state) % 230;
                 let duration_ms = xorshift(&mut state) % 60;
                 let windows = [
-                    CellWindow::Between { start_ms: a, end_ms: b },
-                    CellWindow::Last { duration_ms },
-                    CellWindow::Since { start_ms: a },
-                    CellWindow::LastN { n },
-                    CellWindow::Between { start_ms: 0, end_ms: u64::MAX },
-                    CellWindow::Last { duration_ms: u64::MAX },
+                    WindowReduceWindow::Between { start_ms: a, end_ms: b },
+                    WindowReduceWindow::Last { duration_ms },
+                    WindowReduceWindow::Since { start_ms: a },
+                    WindowReduceWindow::LastN { n },
+                    WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX },
+                    WindowReduceWindow::Last { duration_ms: u64::MAX },
                 ];
                 for window in &windows {
-                    for anchor in [CellAnchor::Request, CellAnchor::Newest] {
+                    for anchor in [WindowReduceAnchor::Request, WindowReduceAnchor::Newest] {
                         let expected = the_walk_this_replaced(&series, window, anchor, now_ms, cap);
                         let got = stamps_of(window_samples(&series, window, anchor, now_ms, cap));
                         assert_eq!(got, expected, "round {round}: {window:?} {anchor:?} now {now_ms} cap {cap}");
@@ -190,35 +190,35 @@ mod tests {
     fn a_window_is_resolved_against_the_clock_and_the_anchor_it_names() {
         let never = || -> Option<u64> { panic!("only an anchor at the newest sample asks for it") };
         assert_eq!(
-            resolve_window(&CellWindow::Last { duration_ms: 40 }, CellAnchor::Request, 100, never),
+            resolve_window(&WindowReduceWindow::Last { duration_ms: 40 }, WindowReduceAnchor::Request, 100, never),
             WindowSpec::Stamps { from_ms: 60, to_ms: 100 }
         );
         assert_eq!(
-            resolve_window(&CellWindow::Last { duration_ms: 500 }, CellAnchor::Request, 100, never),
+            resolve_window(&WindowReduceWindow::Last { duration_ms: 500 }, WindowReduceAnchor::Request, 100, never),
             WindowSpec::Stamps { from_ms: 0, to_ms: 100 }
         );
         assert_eq!(
-            resolve_window(&CellWindow::Last { duration_ms: 40 }, CellAnchor::Newest, 100, || Some(70)),
+            resolve_window(&WindowReduceWindow::Last { duration_ms: 40 }, WindowReduceAnchor::Newest, 100, || Some(70)),
             WindowSpec::Stamps { from_ms: 31, to_ms: 70 }
         );
         assert_eq!(
-            resolve_window(&CellWindow::Last { duration_ms: 40 }, CellAnchor::Newest, 100, || None),
+            resolve_window(&WindowReduceWindow::Last { duration_ms: 40 }, WindowReduceAnchor::Newest, 100, || None),
             WindowSpec::Nothing
         );
         assert_eq!(
-            resolve_window(&CellWindow::Last { duration_ms: 0 }, CellAnchor::Newest, 100, || Some(70)),
+            resolve_window(&WindowReduceWindow::Last { duration_ms: 0 }, WindowReduceAnchor::Newest, 100, || Some(70)),
             WindowSpec::Nothing
         );
         assert_eq!(
-            resolve_window(&CellWindow::Since { start_ms: 9 }, CellAnchor::Request, 100, never),
+            resolve_window(&WindowReduceWindow::Since { start_ms: 9 }, WindowReduceAnchor::Request, 100, never),
             WindowSpec::Stamps { from_ms: 9, to_ms: u64::MAX }
         );
         assert_eq!(
-            resolve_window(&CellWindow::LastN { n: 3 }, CellAnchor::Request, 100, never),
+            resolve_window(&WindowReduceWindow::LastN { n: 3 }, WindowReduceAnchor::Request, 100, never),
             WindowSpec::Newest { n: 3 }
         );
         assert_eq!(
-            resolve_window(&CellWindow::Between { start_ms: 5, end_ms: 6 }, CellAnchor::Request, 100, never),
+            resolve_window(&WindowReduceWindow::Between { start_ms: 5, end_ms: 6 }, WindowReduceAnchor::Request, 100, never),
             WindowSpec::Stamps { from_ms: 5, to_ms: 6 }
         );
     }
@@ -226,20 +226,20 @@ mod tests {
     #[test]
     fn a_range_stops_at_its_cap_newest_first_and_a_newest_n_is_not_capped_by_it() {
         let series = series_of(&[10, 20, 30, 40, 50]);
-        let all = CellWindow::Between { start_ms: 0, end_ms: u64::MAX };
-        assert_eq!(stamps_of(window_samples(&series, &all, CellAnchor::Request, 0, 3)), vec![50, 40, 30]);
+        let all = WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX };
+        assert_eq!(stamps_of(window_samples(&series, &all, WindowReduceAnchor::Request, 0, 3)), vec![50, 40, 30]);
         // Exactly the cap holds all of them, and one more than the series holds is not padded.
-        assert_eq!(stamps_of(window_samples(&series, &all, CellAnchor::Request, 0, 5)), vec![50, 40, 30, 20, 10]);
-        assert_eq!(stamps_of(window_samples(&series, &all, CellAnchor::Request, 0, 6)), vec![50, 40, 30, 20, 10]);
-        let newest = CellWindow::LastN { n: 4 };
-        assert_eq!(stamps_of(window_samples(&series, &newest, CellAnchor::Request, 0, 1)), vec![50, 40, 30, 20]);
+        assert_eq!(stamps_of(window_samples(&series, &all, WindowReduceAnchor::Request, 0, 5)), vec![50, 40, 30, 20, 10]);
+        assert_eq!(stamps_of(window_samples(&series, &all, WindowReduceAnchor::Request, 0, 6)), vec![50, 40, 30, 20, 10]);
+        let newest = WindowReduceWindow::LastN { n: 4 };
+        assert_eq!(stamps_of(window_samples(&series, &newest, WindowReduceAnchor::Request, 0, 1)), vec![50, 40, 30, 20]);
         // Reversed ends name nothing and do not panic.
-        let reversed = CellWindow::Between { start_ms: 40, end_ms: 10 };
-        assert!(window_samples(&series, &reversed, CellAnchor::Request, 0, 9).is_empty());
+        let reversed = WindowReduceWindow::Between { start_ms: 40, end_ms: 10 };
+        assert!(window_samples(&series, &reversed, WindowReduceAnchor::Request, 0, 9).is_empty());
         // An empty series answers nothing for every kind.
         let empty = series_of(&[]);
-        for window in [all, newest, CellWindow::Last { duration_ms: 5 }, CellWindow::Since { start_ms: 0 }] {
-            for anchor in [CellAnchor::Request, CellAnchor::Newest] {
+        for window in [all, newest, WindowReduceWindow::Last { duration_ms: 5 }, WindowReduceWindow::Since { start_ms: 0 }] {
+            for anchor in [WindowReduceAnchor::Request, WindowReduceAnchor::Newest] {
                 assert!(window_samples(&empty, &window, anchor, 7, 9).is_empty());
             }
         }

@@ -65,12 +65,12 @@ fn proxy_client_exposes_the_merge_reduce_append_and_its_receipt() {
     );
     let landed: crate::CellMergeReceipt = serde_json::from_value(serde_json::json!({
         "kind": "cell_merge_receipt",
-        "snapshots_written": 2,
+        "samples_written": 2,
         "cells_created": 3,
         "cells_merged": 1
     }))
     .unwrap();
-    assert_eq!((2, 3, 1), (landed.snapshots_written, landed.cells_created, landed.cells_merged));
+    assert_eq!((2, 3, 1), (landed.samples_written, landed.cells_created, landed.cells_merged));
 }
 
 #[cfg(feature = "proxy")]

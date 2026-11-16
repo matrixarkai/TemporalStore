@@ -103,8 +103,8 @@ fn send(engine: &TemporalEngine, key: &str, points: Vec<FeaturePoint>, token: Op
 fn receipt(response: &ExecuteResponse) -> (u64, u64, u64, bool) {
     assert!(response.status.ok, "the request was refused: {:?}", response.status);
     match &response.response {
-        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged, replayed } => {
-            (*snapshots_written, *cells_created, *cells_merged, *replayed)
+        CommandResponse::CellMergeReceipt { samples_written, cells_created, cells_merged, replayed } => {
+            (*samples_written, *cells_created, *cells_merged, *replayed)
         }
         other => panic!("a merge-reduce append answers a receipt, got {other:?}"),
     }
@@ -228,7 +228,7 @@ fn a_tokenless_append_logs_no_item_and_a_tokened_one_logs_exactly_one_whose_size
     assert_eq!(items[0].object_key, key);
     assert_eq!(
         decode_logged_entry(items[0].value.as_deref().unwrap()),
-        Ok((7001, RetryReceipt { snapshots_written: 1, cells_created: 1, cells_merged: 0 }))
+        Ok((7001, RetryReceipt { samples_written: 1, cells_created: 1, cells_merged: 0 }))
     );
 
     // Without that item the tokened record is as long as the tokenless record: the token costs

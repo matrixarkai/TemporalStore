@@ -84,8 +84,8 @@ fn send(engine: &TemporalEngine, key: &str, points: Vec<FeaturePoint>, token: Op
 fn receipt(response: &ExecuteResponse) -> (u64, u64, u64, bool) {
     assert!(response.status.ok, "the request was refused: {:?}", response.status);
     match &response.response {
-        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged, replayed } => {
-            (*snapshots_written, *cells_created, *cells_merged, *replayed)
+        CommandResponse::CellMergeReceipt { samples_written, cells_created, cells_merged, replayed } => {
+            (*samples_written, *cells_created, *cells_merged, *replayed)
         }
         other => panic!("a merge-reduce append answers a receipt, got {other:?}"),
     }
@@ -117,7 +117,7 @@ fn ring_bytes(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
 }
 
 fn landed(n: u64) -> RetryReceipt {
-    RetryReceipt { snapshots_written: 1, cells_created: n, cells_merged: n + 1 }
+    RetryReceipt { samples_written: 1, cells_created: n, cells_merged: n + 1 }
 }
 
 /// The item a write that filed `token` would log.

@@ -35,7 +35,7 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
         | Command::FeatureAggQuery { key, .. }
         | Command::FeatureProtoAggQuery { key, .. }
         | Command::SequenceQuery { key, .. }
-        | Command::CellRankQuery { key, .. } => Some(key.as_str()),
+        | Command::WindowReduceRank { key, .. } => Some(key.as_str()),
         _ => None,
     }
 }
@@ -185,8 +185,8 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::FeatureAppendWithTtl { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureReplace { key, .. }
-        | Command::CellRollup { key, .. }
-        | Command::CellRemove { key, .. }
+        | Command::WindowReduceRollup { key, .. }
+        | Command::WindowReduceRemove { key, .. }
         | Command::FeatureDelete { key }
         | Command::SequenceAdd { key, .. }
         | Command::ControlStateIncrement { key, .. }
@@ -348,8 +348,8 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
             ..
         } => CommandObjectKeys::one(context_compression_key(*tenant_hash, *node_hash)),
         Command::SequenceBatchQuery { .. }
-        | Command::CellFanInRankQuery { .. }
-        | Command::CellRankBatchQuery { .. }
+        | Command::WindowReduceFanInRank { .. }
+        | Command::WindowReduceRankBatch { .. }
         | Command::CommonTtl { .. }
         | Command::CommonExists { .. }
         | Command::StringGet { .. }
@@ -368,7 +368,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::FeatureAggQuery { .. }
         | Command::FeatureProtoAggQuery { .. }
         | Command::SequenceQuery { .. }
-        | Command::CellRankQuery { .. }
+        | Command::WindowReduceRank { .. }
         | Command::ControlStateCount { .. }
         | Command::ControlStateQuery { .. }
         | Command::ControlStateDetail { .. }
@@ -444,8 +444,8 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::FeatureAppendWithTtl { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
-            | Command::CellRollup { .. }
-            | Command::CellRemove { .. }
+            | Command::WindowReduceRollup { .. }
+            | Command::WindowReduceRemove { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
     )
@@ -506,8 +506,8 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::FeatureAppendWithTtl { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
-            | Command::CellRollup { .. }
-            | Command::CellRemove { .. }
+            | Command::WindowReduceRollup { .. }
+            | Command::WindowReduceRemove { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
             | Command::ControlStateIncrement { .. }
@@ -669,10 +669,10 @@ pub(super) fn validate_command_preconditions(
                 "timestamp_nanos must be between 0 and 999999999",
             ));
         }
-        // A ranked cell read is refused at admission for everything that needs no snapshot: the
+        // A ranked cell read is refused at admission for everything that needs no sample: the
         // bounds, the window, the score parameters. Names are checked against the key's header when
         // the read runs.
-        Command::CellRankQuery { spec, .. } => {
+        Command::WindowReduceRank { spec, .. } => {
             if let Err(why) = super::window_reduce_rank::validate_spec(spec) {
                 return Err(Status::error("invalid_argument", why));
             }
@@ -680,14 +680,14 @@ pub(super) fn validate_command_preconditions(
         // A batch is refused at admission for how many reads it carries and for any one read a
         // single-key read would be refused for (its member set, anchor and quota included): the
         // whole request, before any key is read.
-        Command::CellRankBatchQuery { queries } => {
+        Command::WindowReduceRankBatch { queries } => {
             if let Err(why) = super::window_reduce_fan_in::validate_batch(queries) {
                 return Err(Status::error("invalid_argument", why));
             }
         }
-        // A fan-in read is refused at admission for what needs no snapshot too: how many keys,
+        // A fan-in read is refused at admission for what needs no sample too: how many keys,
         // a key named twice (it would count twice), and everything a one-key read is refused for.
-        Command::CellFanInRankQuery { keys, spec } => {
+        Command::WindowReduceFanInRank { keys, spec } => {
             if let Err(why) = super::window_reduce_fan_in::validate_keys(keys) {
                 return Err(Status::error("invalid_argument", why));
             }
@@ -795,10 +795,10 @@ pub(super) fn validate_command_preconditions(
             }
         }
         // A rollup is refused HERE, before the log, like a merge-reduce append: the plan reads the
-        // snapshots below the cutoff and runs the pure rollup, so a name the key does not declare,
-        // a bucket over the snapshot limit and a snapshot that is not a cell snapshot all write
+        // samples below the cutoff and runs the pure rollup, so a name the key does not declare,
+        // a bucket over the sample limit and a sample that is not a cell sample all write
         // nothing. The plan is thrown away; execution plans again (see `window_reduce_rollup_apply`).
-        Command::CellRollup { key, spec } => {
+        Command::WindowReduceRollup { key, spec } => {
             let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
             // A key past its deadline reads as absent, as it does everywhere else.
             let expired = shard
@@ -816,11 +816,11 @@ pub(super) fn validate_command_preconditions(
                 spec,
             )?;
         }
-        // A removal is refused HERE, before the log, as a rollup is: the plan counts the snapshots
+        // A removal is refused HERE, before the log, as a rollup is: the plan counts the samples
         // inside the window, reads them and selects the cells, so a name the key does not declare,
-        // a window over the snapshot limit and a snapshot that is not a cell snapshot all write
+        // a window over the sample limit and a sample that is not a cell sample all write
         // nothing. The plan is thrown away; execution plans again (see `window_reduce_remove_apply`).
-        Command::CellRemove { key, spec } => {
+        Command::WindowReduceRemove { key, spec } => {
             let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
             let expired = shard
                 .expires_at_ms()

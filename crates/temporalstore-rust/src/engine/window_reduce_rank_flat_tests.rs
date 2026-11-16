@@ -10,7 +10,7 @@ use super::*;
 use crate::engine::cell_set::{
     decode_sample, encode_value, split_value, DimSpec, DimType, EntityType, KeySpec, LaneSpec, HEADER_VERSION,
 };
-use crate::types::{CellLaneQuota, CellMemberFilter, CellQuota};
+use crate::types::{WindowReduceLaneQuota, CellMemberFilter, WindowReduceQuota};
 
 fn xorshift(state: &mut u64) -> u64 {
     *state ^= *state << 13;
@@ -75,25 +75,25 @@ fn decoded_both(header: &CellHeader, snaps: &[(u64, Vec<Cell>)]) -> (Vec<(u64, V
     (plain, flat)
 }
 
-fn specs() -> Vec<CellRankSpec> {
-    let all = CellWindow::Between { start_ms: 0, end_ms: u64::MAX };
-    let lane = |name: &str| CellScore::Lane { lane: name.to_string() };
+fn specs() -> Vec<WindowReduceRankSpec> {
+    let all = WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX };
+    let lane = |name: &str| WindowReduceScore::Lane { lane: name.to_string() };
     let mut out = vec![
-        CellRankSpec::new(all.clone(), lane("a"), 8),
-        CellRankSpec::new(all.clone(), lane("b"), 100),
-        CellRankSpec::new(all.clone(), CellScore::Member, 5),
-        CellRankSpec::new(all.clone(), CellScore::Time, 5),
-        CellRankSpec::new(all.clone(), CellScore::Ratio { numerator: "a".to_string(), denominator: "c".to_string() }, 7),
-        CellRankSpec::new(
+        WindowReduceRankSpec::new(all.clone(), lane("a"), 8),
+        WindowReduceRankSpec::new(all.clone(), lane("b"), 100),
+        WindowReduceRankSpec::new(all.clone(), WindowReduceScore::Member, 5),
+        WindowReduceRankSpec::new(all.clone(), WindowReduceScore::Time, 5),
+        WindowReduceRankSpec::new(all.clone(), WindowReduceScore::Ratio { numerator: "a".to_string(), denominator: "c".to_string() }, 7),
+        WindowReduceRankSpec::new(
             all.clone(),
-            CellScore::Weighted { lanes: vec!["a".to_string(), "e".to_string()], weights: vec![1.5, -0.25] },
+            WindowReduceScore::Weighted { lanes: vec!["a".to_string(), "e".to_string()], weights: vec![1.5, -0.25] },
             9,
         ),
-        CellRankSpec::new(all.clone(), CellScore::Decay { lane: "a".to_string(), half_life_ms: 250 }, 6),
-        CellRankSpec::new(CellWindow::LastN { n: 3 }, lane("f"), 10),
-        CellRankSpec::new(CellWindow::Between { start_ms: 200, end_ms: 500 }, lane("d"), 10),
+        WindowReduceRankSpec::new(all.clone(), WindowReduceScore::Decay { lane: "a".to_string(), half_life_ms: 250 }, 6),
+        WindowReduceRankSpec::new(WindowReduceWindow::LastN { n: 3 }, lane("f"), 10),
+        WindowReduceRankSpec::new(WindowReduceWindow::Between { start_ms: 200, end_ms: 500 }, lane("d"), 10),
     ];
-    let mut filtered = CellRankSpec::new(all.clone(), lane("a"), 10);
+    let mut filtered = WindowReduceRankSpec::new(all.clone(), lane("a"), 10);
     filtered.filters = vec![
         FeatureFilter { field: "g2".to_string(), op: FeatureFilterOp::GreaterOrEqual, value: 2 },
         FeatureFilter { field: "b".to_string(), op: FeatureFilterOp::LessThan, value: 20 },
@@ -101,7 +101,7 @@ fn specs() -> Vec<CellRankSpec> {
     ];
     filtered.project = vec!["g3".to_string(), "e".to_string(), "a".to_string()];
     out.push(filtered);
-    let mut members = CellRankSpec::new(all.clone(), lane("a"), 20);
+    let mut members = WindowReduceRankSpec::new(all.clone(), lane("a"), 20);
     members.members = CellMemberFilter {
         include: Some(vec![
             CellMemberId::U64(3),
@@ -113,13 +113,13 @@ fn specs() -> Vec<CellRankSpec> {
         exclude: vec![CellMemberId::U64(11)],
     };
     out.push(members);
-    let mut open_exclude = CellRankSpec::new(all.clone(), lane("c"), 12);
+    let mut open_exclude = WindowReduceRankSpec::new(all.clone(), lane("c"), 12);
     open_exclude.members =
         CellMemberFilter { include: None, exclude: vec![CellMemberId::Bytes(b"zzz".to_vec()), CellMemberId::U64(0)] };
     out.push(open_exclude);
-    let mut quota = CellRankSpec::new(all, lane("a"), 12);
-    quota.quota = CellQuota {
-        lanes: vec![CellLaneQuota { lane: "b".to_string(), count: 2 }],
+    let mut quota = WindowReduceRankSpec::new(all, lane("a"), 12);
+    quota.quota = WindowReduceQuota {
+        lanes: vec![WindowReduceLaneQuota { lane: "b".to_string(), count: 2 }],
         others: 3,
     };
     out.push(quota);
@@ -201,7 +201,7 @@ fn a_flat_snapshot_out_of_order_is_refused_as_a_plain_one_is() {
         Cell { member: Member::U64(2), labels: vec![0; 4], lanes: vec![1; 6] },
     ];
     let (plain, flat) = decoded_both(&header, &[(100, unordered)]);
-    let spec = CellRankSpec::new(CellWindow::Between { start_ms: 0, end_ms: u64::MAX }, CellScore::Member, 5);
+    let spec = WindowReduceRankSpec::new(WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX }, WindowReduceScore::Member, 5);
     let plan = Plan::compile(&header, &spec).unwrap();
     let plain_views = [SampleView { timestamp_ms: plain[0].0, cells: &plain[0].1 }];
     let flat_views = [FlatView { timestamp_ms: flat[0].0, cells: &flat[0].1 }];

@@ -61,25 +61,25 @@ fn views(snaps: &Samples) -> Vec<SampleView<'_>> {
     snaps.iter().map(|(timestamp_ms, cells)| SampleView { timestamp_ms: *timestamp_ms, cells }).collect()
 }
 
-const ALL: CellWindow = CellWindow::Between { start_ms: 0, end_ms: u64::MAX };
+const ALL: WindowReduceWindow = WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX };
 
-fn spec(window: CellWindow, score: CellScore, top_k: usize) -> CellRankSpec {
-    CellRankSpec { window, filters: Vec::new(), score, top_k, project: Vec::new(), members: Default::default(), anchor: Default::default(), quota: Default::default() }
+fn spec(window: WindowReduceWindow, score: WindowReduceScore, top_k: usize) -> WindowReduceRankSpec {
+    WindowReduceRankSpec { window, filters: Vec::new(), score, top_k, project: Vec::new(), members: Default::default(), anchor: Default::default(), quota: Default::default() }
 }
 
-fn lane(name: &str) -> CellScore {
-    CellScore::Lane { lane: name.to_string() }
+fn lane(name: &str) -> WindowReduceScore {
+    WindowReduceScore::Lane { lane: name.to_string() }
 }
 
 fn filter(field: &str, op: FeatureFilterOp, value: u64) -> FeatureFilter {
     FeatureFilter { field: field.to_string(), op, value }
 }
 
-fn run_on(spec: &CellRankSpec, snaps: &Samples, now_ms: u64) -> Result<RankedCells, String> {
+fn run_on(spec: &WindowReduceRankSpec, snaps: &Samples, now_ms: u64) -> Result<RankedCells, String> {
     Plan::compile(&header(), spec)?.run(now_ms, &views(snaps))
 }
 
-fn run(spec: &CellRankSpec) -> RankedCells {
+fn run(spec: &WindowReduceRankSpec) -> RankedCells {
     run_on(spec, &data(), 400).expect("the query is valid")
 }
 
@@ -100,14 +100,14 @@ fn scores(ranked: &RankedCells) -> Vec<i64> {
 
 #[test]
 fn each_score_orders_by_the_value_only_it_produces() {
-    let wilson = CellScore::Wilson { successes: "clicked".to_string(), trials: "shown".to_string(), z: 1.96 };
-    let weighted = CellScore::Weighted {
+    let wilson = WindowReduceScore::Wilson { successes: "clicked".to_string(), trials: "shown".to_string(), z: 1.96 };
+    let weighted = WindowReduceScore::Weighted {
         lanes: vec!["shown".to_string(), "peak".to_string()],
         weights: vec![1.0, 50.0],
     };
-    let ratio_score = CellScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() };
+    let ratio_score = WindowReduceScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() };
     // (name, score, expected member order, expected first score)
-    let table: Vec<(&str, CellScore, Vec<u64>, f64)> = vec![
+    let table: Vec<(&str, WindowReduceScore, Vec<u64>, f64)> = vec![
         // Sum: 200 60 30 10 5.
         ("lane sum", lane("shown"), vec![3, 2, 1, 4, 99], 200.0),
         // Max: a sum would give m1 and m2 18 each and m3 8.
@@ -129,16 +129,16 @@ fn each_score_orders_by_the_value_only_it_produces() {
             "{name}: first score {} is not {first_score}",
             ranked.rows[0].score
         );
-        assert_eq!(ranked.snapshots, 4, "{name}");
+        assert_eq!(ranked.samples, 4, "{name}");
         assert_eq!(ranked.unscored, 0, "{name}");
     }
 
     // The member score and the time score read different things again.
-    let mut by_member = spec(ALL, CellScore::Member, 5);
+    let mut by_member = spec(ALL, WindowReduceScore::Member, 5);
     by_member.filters = vec![filter("member", FeatureFilterOp::LessOrEqual, 4)];
     assert_eq!(order(&run(&by_member)), vec![4, 3, 2, 1]);
     // Newest stamp inside 100..=300: m1 m3 zz at 300, then m2 m4 at 200.
-    let by_time = run(&spec(CellWindow::Between { start_ms: 100, end_ms: 300 }, CellScore::Time, 5));
+    let by_time = run(&spec(WindowReduceWindow::Between { start_ms: 100, end_ms: 300 }, WindowReduceScore::Time, 5));
     assert_eq!(order(&by_time), vec![1, 3, 99, 2, 4]);
     assert_eq!(by_time.rows.iter().map(|r| r.last_ms).collect::<Vec<_>>(), vec![300, 300, 300, 200, 200]);
 }
@@ -157,8 +157,8 @@ fn a_wilson_bound_is_the_hand_computed_number_and_rewards_volume() {
     //   centre = .8 + 3.8416 / 200 = .819208; margin = 1.96 * sqrt(.0016 + 3.8416 / 40000) = 1.96 * .041183 = .080719
     //   lower  = (.819208 - .080719) / 1.038416 = .71118
     let snaps: Samples = vec![(100, vec![cell(1, 0, [10, 8, 0, 0]), cell(2, 0, [100, 80, 0, 0])])];
-    let wilson = CellScore::Wilson { successes: "clicked".to_string(), trials: "shown".to_string(), z: 1.96 };
-    let ratio_score = CellScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() };
+    let wilson = WindowReduceScore::Wilson { successes: "clicked".to_string(), trials: "shown".to_string(), z: 1.96 };
+    let ratio_score = WindowReduceScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() };
     let by_ratio = run_on(&spec(ALL, ratio_score, 5), &snaps, 100).unwrap();
     let by_wilson = run_on(&spec(ALL, wilson, 5), &snaps, 100).unwrap();
     assert_eq!(order(&by_ratio), vec![1, 2], "equal ratios tie and the smaller member leads");
@@ -172,10 +172,10 @@ fn an_undefined_score_is_counted_and_not_ranked() {
     // m1 has shown = 0: the ratio's denominator. m2 has clicked > shown: no Wilson bound.
     let snaps: Samples =
         vec![(100, vec![cell(1, 0, [0, 5, 0, 0]), cell(2, 0, [4, 9, 0, 0]), cell(3, 0, [10, 5, 0, 0])])];
-    let ratio_score = CellScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() };
+    let ratio_score = WindowReduceScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() };
     let ranked = run_on(&spec(ALL, ratio_score, 5), &snaps, 100).unwrap();
     assert_eq!((order(&ranked), ranked.unscored), (vec![2, 3], 1));
-    let wilson = CellScore::Wilson { successes: "clicked".to_string(), trials: "shown".to_string(), z: 1.96 };
+    let wilson = WindowReduceScore::Wilson { successes: "clicked".to_string(), trials: "shown".to_string(), z: 1.96 };
     let ranked = run_on(&spec(ALL, wilson, 5), &snaps, 100).unwrap();
     assert_eq!((order(&ranked), ranked.unscored), (vec![3], 2));
 }
@@ -184,35 +184,35 @@ fn an_undefined_score_is_counted_and_not_ranked() {
 fn each_window_kind_selects_the_snapshots_it_names() {
     let shown = |window| {
         let ranked = run(&spec(window, lane("shown"), 5));
-        (order(&ranked), scores(&ranked), ranked.snapshots)
+        (order(&ranked), scores(&ranked), ranked.samples)
     };
     // Both ends are inclusive: samples 200 and 300.
     assert_eq!(
-        shown(CellWindow::Between { start_ms: 200, end_ms: 300 }),
+        shown(WindowReduceWindow::Between { start_ms: 200, end_ms: 300 }),
         (vec![3, 2, 1, 4, 99], vec![100, 30, 20, 8, 5], 2)
     );
-    assert_eq!(shown(CellWindow::Between { start_ms: 100, end_ms: 100 }), (vec![3, 2, 1], vec![100, 20, 10], 1));
-    assert_eq!(shown(CellWindow::Between { start_ms: 101, end_ms: 199 }), (vec![], vec![], 0));
+    assert_eq!(shown(WindowReduceWindow::Between { start_ms: 100, end_ms: 100 }), (vec![3, 2, 1], vec![100, 20, 10], 1));
+    assert_eq!(shown(WindowReduceWindow::Between { start_ms: 101, end_ms: 199 }), (vec![], vec![], 0));
     // now = 400: the last 150 ms is [250, 400], so the samples at 300 and 400.
-    assert_eq!(shown(CellWindow::Last { duration_ms: 150 }), (vec![3, 1, 2, 99, 4], vec![100, 10, 10, 5, 2], 2));
+    assert_eq!(shown(WindowReduceWindow::Last { duration_ms: 150 }), (vec![3, 1, 2, 99, 4], vec![100, 10, 10, 5, 2], 2));
     // A duration of 0 is the instant itself.
-    assert_eq!(shown(CellWindow::Last { duration_ms: 0 }), (vec![2, 4], vec![10, 2], 1));
-    assert_eq!(shown(CellWindow::Since { start_ms: 300 }), (vec![3, 1, 2, 99, 4], vec![100, 10, 10, 5, 2], 2));
-    assert_eq!(shown(CellWindow::Since { start_ms: 401 }), (vec![], vec![], 0));
-    assert_eq!(shown(CellWindow::LastN { n: 1 }), (vec![2, 4], vec![10, 2], 1));
-    assert_eq!(shown(CellWindow::LastN { n: 3 }), (vec![3, 2, 1, 4, 99], vec![100, 40, 20, 10, 5], 3));
+    assert_eq!(shown(WindowReduceWindow::Last { duration_ms: 0 }), (vec![2, 4], vec![10, 2], 1));
+    assert_eq!(shown(WindowReduceWindow::Since { start_ms: 300 }), (vec![3, 1, 2, 99, 4], vec![100, 10, 10, 5, 2], 2));
+    assert_eq!(shown(WindowReduceWindow::Since { start_ms: 401 }), (vec![], vec![], 0));
+    assert_eq!(shown(WindowReduceWindow::LastN { n: 1 }), (vec![2, 4], vec![10, 2], 1));
+    assert_eq!(shown(WindowReduceWindow::LastN { n: 3 }), (vec![3, 2, 1, 4, 99], vec![100, 40, 20, 10, 5], 3));
     // More samples asked for than exist is the whole key.
-    assert_eq!(shown(CellWindow::LastN { n: 50 }).2, 4);
+    assert_eq!(shown(WindowReduceWindow::LastN { n: 50 }).2, 4);
     // A `Last` window ends at the clock it is given: at 200 it covers [50, 200].
-    let early = run_on(&spec(CellWindow::Last { duration_ms: 150 }, lane("shown"), 5), &data(), 200).unwrap();
-    assert_eq!((early.snapshots, order(&early), scores(&early)), (2, vec![3, 2, 1, 4], vec![100, 50, 20, 8]));
+    let early = run_on(&spec(WindowReduceWindow::Last { duration_ms: 150 }, lane("shown"), 5), &data(), 200).unwrap();
+    assert_eq!((early.samples, order(&early), scores(&early)), (2, vec![3, 2, 1, 4], vec![100, 50, 20, 8]));
 }
 
 #[test]
 fn a_window_that_cannot_hold_a_snapshot_is_refused() {
-    let backwards = spec(CellWindow::Between { start_ms: 5, end_ms: 4 }, lane("shown"), 1);
+    let backwards = spec(WindowReduceWindow::Between { start_ms: 5, end_ms: 4 }, lane("shown"), 1);
     assert!(Plan::compile(&header(), &backwards).err().unwrap().contains("after it ends"));
-    let none = spec(CellWindow::LastN { n: 0 }, lane("shown"), 1);
+    let none = spec(WindowReduceWindow::LastN { n: 0 }, lane("shown"), 1);
     assert!(Plan::compile(&header(), &none).err().unwrap().contains("empty"));
 }
 
@@ -326,12 +326,12 @@ fn a_name_the_key_does_not_declare_is_refused_before_anything_is_read() {
         ("label as a lane", spec(ALL, lane("slot"), 1), "slot"),
         (
             "ratio denominator",
-            spec(ALL, CellScore::Ratio { numerator: "shown".to_string(), denominator: "nope".to_string() }, 1),
+            spec(ALL, WindowReduceScore::Ratio { numerator: "shown".to_string(), denominator: "nope".to_string() }, 1),
             "nope",
         ),
         (
             "weighted lane",
-            spec(ALL, CellScore::Weighted { lanes: vec!["nope".to_string()], weights: vec![1.0] }, 1),
+            spec(ALL, WindowReduceScore::Weighted { lanes: vec!["nope".to_string()], weights: vec![1.0] }, 1),
             "nope",
         ),
         ("projection", bad_projection, "slott"),
@@ -346,18 +346,18 @@ fn a_name_the_key_does_not_declare_is_refused_before_anything_is_read() {
     assert!(Plan::compile(&both, &spec(ALL, lane("shown"), 1)).err().unwrap().contains("ambiguous"));
     // Score parameters are checked too.
     for z in [f64::NAN, -1.0, f64::INFINITY] {
-        let wilson = CellScore::Wilson { successes: "clicked".to_string(), trials: "shown".to_string(), z };
+        let wilson = WindowReduceScore::Wilson { successes: "clicked".to_string(), trials: "shown".to_string(), z };
         assert!(Plan::compile(&header, &spec(ALL, wilson, 1)).is_err(), "z = {z}");
     }
-    let nan = CellScore::Weighted { lanes: vec!["shown".to_string()], weights: vec![f64::NAN] };
+    let nan = WindowReduceScore::Weighted { lanes: vec!["shown".to_string()], weights: vec![f64::NAN] };
     assert!(Plan::compile(&header, &spec(ALL, nan, 1)).is_err());
-    let short = CellScore::Weighted { lanes: vec!["shown".to_string(), "peak".to_string()], weights: vec![1.0] };
+    let short = WindowReduceScore::Weighted { lanes: vec!["shown".to_string(), "peak".to_string()], weights: vec![1.0] };
     assert!(Plan::compile(&header, &spec(ALL, short, 1)).err().unwrap().contains("weights"));
 }
 
 #[test]
 fn the_member_score_refuses_a_bytes_member_rather_than_ranking_it_somewhere() {
-    let error = run_on(&spec(ALL, CellScore::Member, 5), &data(), 400).unwrap_err();
+    let error = run_on(&spec(ALL, WindowReduceScore::Member, 5), &data(), 400).unwrap_err();
     assert!(error.contains("u64 members"), "{error}");
 }
 
@@ -367,12 +367,12 @@ fn nothing_to_rank_is_an_empty_answer_not_an_error() {
     // A key with no samples.
     let none: Samples = Vec::new();
     let ranked = run_on(&query, &none, 400).unwrap();
-    assert_eq!((ranked.rows.len(), ranked.snapshots, ranked.unscored), (0, 0, 0));
+    assert_eq!((ranked.rows.len(), ranked.samples, ranked.unscored), (0, 0, 0));
     assert_eq!(ranked.lane_columns.len(), 4, "the columns are still reported");
     // Samples holding no cells.
     let hollow: Samples = vec![(1, Vec::new()), (2, Vec::new())];
     let ranked = run_on(&query, &hollow, 400).unwrap();
-    assert_eq!((ranked.rows.len(), ranked.snapshots), (0, 2));
+    assert_eq!((ranked.rows.len(), ranked.samples), (0, 2));
     // A selection that keeps nothing.
     let mut nothing = spec(ALL, lane("shown"), 5);
     nothing.filters = vec![filter("shown", FeatureFilterOp::GreaterThan, 1_000_000)];
@@ -408,7 +408,7 @@ fn a_reloaded_snapshot_ranks_as_the_snapshot_it_was_stored_from() {
     assert_eq!(reloaded, live);
     let query = spec(
         ALL,
-        CellScore::Weighted { lanes: vec!["shown".to_string(), "peak".to_string()], weights: vec![1.0, 50.0] },
+        WindowReduceScore::Weighted { lanes: vec!["shown".to_string(), "peak".to_string()], weights: vec![1.0, 50.0] },
         5,
     );
     assert_eq!(run_on(&query, &reloaded, 400).unwrap(), run_on(&query, &live, 400).unwrap());
@@ -448,7 +448,7 @@ fn predicates_per_query_are_bounded_at_exactly_the_limit() {
 #[test]
 fn lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit() {
     let header = many_lane_header(MAX_WEIGHTED_LANES + 1);
-    let weighted = |n: usize| CellScore::Weighted {
+    let weighted = |n: usize| WindowReduceScore::Weighted {
         lanes: (0..n).map(|i| format!("l{i}")).collect(),
         weights: vec![1.0; n],
     };
@@ -461,7 +461,7 @@ fn lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit() {
     // At the limit the sum is really over all eight lanes: eight lanes of 1, weighted 1..=8, is 36.
     let cells = vec![Cell { member: Member::U64(1), labels: vec![0], lanes: vec![1; MAX_WEIGHTED_LANES + 1] }];
     let snaps: Samples = vec![(1, cells)];
-    let score = CellScore::Weighted {
+    let score = WindowReduceScore::Weighted {
         lanes: (0..MAX_WEIGHTED_LANES).map(|i| format!("l{i}")).collect(),
         weights: (1..=MAX_WEIGHTED_LANES).map(|w| w as f64).collect(),
     };
@@ -478,14 +478,14 @@ fn snapshots_in_a_window_are_bounded_at_exactly_the_limit() {
     let query = spec(ALL, lane("shown"), 1);
     // At the limit: all MAX samples merge and the member's sum is MAX.
     let at = run_on(&query, &one_cell_per_stamp(MAX_WINDOW_SAMPLES), 0).unwrap();
-    assert_eq!((at.snapshots, at.rows[0].score as usize), (MAX_WINDOW_SAMPLES, MAX_WINDOW_SAMPLES));
+    assert_eq!((at.samples, at.rows[0].score as usize), (MAX_WINDOW_SAMPLES, MAX_WINDOW_SAMPLES));
     let error = run_on(&query, &one_cell_per_stamp(MAX_WINDOW_SAMPLES + 1), 0).unwrap_err();
     assert!(error.contains("samples in the window"), "{error}");
     // The count is the WINDOW's, not the key's: a narrower window over the same key is fine.
-    let narrow = spec(CellWindow::LastN { n: 10 }, lane("shown"), 1);
-    assert_eq!(run_on(&narrow, &one_cell_per_stamp(MAX_WINDOW_SAMPLES + 1), 0).unwrap().snapshots, 10);
+    let narrow = spec(WindowReduceWindow::LastN { n: 10 }, lane("shown"), 1);
+    assert_eq!(run_on(&narrow, &one_cell_per_stamp(MAX_WINDOW_SAMPLES + 1), 0).unwrap().samples, 10);
     // LastN is bounded when the plan is compiled.
-    let last_n = |n| spec(CellWindow::LastN { n }, lane("shown"), 1);
+    let last_n = |n| spec(WindowReduceWindow::LastN { n }, lane("shown"), 1);
     assert!(Plan::compile(&header(), &last_n(MAX_WINDOW_SAMPLES)).is_ok());
     assert!(Plan::compile(&header(), &last_n(MAX_WINDOW_SAMPLES + 1)).is_err());
     assert_eq!(MAX_WINDOW_SAMPLES, 512);
@@ -510,7 +510,7 @@ fn the_merge_answers_what_a_per_member_table_answers() {
     let mut compared = 0usize;
     for _ in 0..60 {
         let count = 1 + rng.next() % 12;
-        let snapshots: Samples = (1..=count)
+        let samples: Samples = (1..=count)
             .map(|i| {
                 let mut cells = Vec::new();
                 for member in 0..40u64 {
@@ -525,7 +525,7 @@ fn the_merge_answers_what_a_per_member_table_answers() {
             .collect();
         // The oracle: a table per member, in sample order, with the `slot != 3` predicate applied.
         let mut table: std::collections::BTreeMap<u64, ([i64; 4], u64)> = Default::default();
-        for (ts, cells) in &snapshots {
+        for (ts, cells) in &samples {
             for c in cells.iter().filter(|c| c.labels[0] != 3) {
                 let Member::U64(m) = c.member else { unreachable!() };
                 let entry = table.entry(m).or_insert(([0, 0, i64::MIN, 0], 0));
@@ -536,17 +536,17 @@ fn the_merge_answers_what_a_per_member_table_answers() {
                 entry.1 = *ts;
             }
         }
-        let cases: Vec<(CellScore, Oracle)> = vec![
+        let cases: Vec<(WindowReduceScore, Oracle)> = vec![
             (lane("shown"), Box::new(|(l, _)| Some(l[0] as f64))),
             (lane("peak"), Box::new(|(l, _)| Some(l[2] as f64))),
             (lane("seen"), Box::new(|(l, _)| Some(l[3] as f64))),
-            (CellScore::Time, Box::new(|(_, ts)| Some(*ts as f64))),
+            (WindowReduceScore::Time, Box::new(|(_, ts)| Some(*ts as f64))),
             (
-                CellScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() },
+                WindowReduceScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() },
                 Box::new(|(l, _)| (l[0] != 0).then(|| l[1] as f64 / l[0] as f64)),
             ),
             (
-                CellScore::Weighted { lanes: vec!["shown".to_string(), "seen".to_string()], weights: vec![0.5, 2.0] },
+                WindowReduceScore::Weighted { lanes: vec!["shown".to_string(), "seen".to_string()], weights: vec![0.5, 2.0] },
                 Box::new(|(l, _)| Some(l[0] as f64 * 0.5 + l[3] as f64 * 2.0)),
             ),
         ];
@@ -554,7 +554,7 @@ fn the_merge_answers_what_a_per_member_table_answers() {
             for k in [3usize, 1000] {
                 let mut query = spec(ALL, score.clone(), k);
                 query.filters = vec![filter("slot", FeatureFilterOp::NotEqual, 3)];
-                let got = run_on(&query, &snapshots, 0).unwrap();
+                let got = run_on(&query, &samples, 0).unwrap();
                 let mut want: Vec<(u64, f64)> =
                     table.iter().filter_map(|(m, v)| oracle(v).map(|s| (*m, s))).collect();
                 want.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -605,9 +605,9 @@ mod probe {
         h
     }
 
-    /// `snapshots` samples of `members` cells each, every member in every sample.
-    fn dataset(members: u64, snapshots: u64) -> Samples {
-        (1..=snapshots)
+    /// `samples` samples of `members` cells each, every member in every sample.
+    fn dataset(members: u64, samples: u64) -> Samples {
+        (1..=samples)
             .map(|ts| {
                 let cells = (0..members)
                     .map(|m| Cell {
@@ -621,11 +621,11 @@ mod probe {
             .collect()
     }
 
-    fn query(top_k: usize) -> CellRankSpec {
-        CellRankSpec {
-            window: CellWindow::LastN { n: 8 },
+    fn query(top_k: usize) -> WindowReduceRankSpec {
+        WindowReduceRankSpec {
+            window: WindowReduceWindow::LastN { n: 8 },
             filters: vec![filter("b", FeatureFilterOp::GreaterThan, 0)],
-            score: CellScore::Ratio { numerator: "a".to_string(), denominator: "b".to_string() },
+            score: WindowReduceScore::Ratio { numerator: "a".to_string(), denominator: "b".to_string() },
             top_k,
             project: Vec::new(),
             members: Default::default(),

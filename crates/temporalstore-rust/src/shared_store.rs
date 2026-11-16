@@ -5543,8 +5543,8 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                 retry_token: *retry_token,
             })
         }
-        Command::CellRollup { key, spec } => v1::command::Kind::CellRollup(sdk::cell_rollup_to_proto(key, spec)),
-        Command::CellRemove { key, spec } => v1::command::Kind::CellRemove(sdk::cell_remove_to_proto(key, spec)),
+        Command::WindowReduceRollup { key, spec } => v1::command::Kind::WindowReduceRollup(sdk::window_reduce_rollup_to_proto(key, spec)),
+        Command::WindowReduceRemove { key, spec } => v1::command::Kind::WindowReduceRemove(sdk::window_reduce_remove_to_proto(key, spec)),
         Command::SeenCheck {
             key,
             member,

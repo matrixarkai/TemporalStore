@@ -82,7 +82,7 @@ pub(crate) fn validate_keys(keys: &[String]) -> Result<(), String> {
 pub(crate) const MAX_BATCH_READS: usize = 64;
 
 /// The checks on a batch of independent reads: how many, and each read's own spec.
-pub(crate) fn validate_batch(queries: &[crate::types::CellRankBatchItem]) -> Result<(), String> {
+pub(crate) fn validate_batch(queries: &[crate::types::WindowReduceRankBatchItem]) -> Result<(), String> {
     within_nonzero("reads in a batch", queries.len(), MAX_BATCH_READS)?;
     for (position, query) in queries.iter().enumerate() {
         super::window_reduce_rank::validate_spec(&query.spec).map_err(|why| format!("read {position}: {why}"))?;
@@ -91,8 +91,8 @@ pub(crate) fn validate_batch(queries: &[crate::types::CellRankBatchItem]) -> Res
 }
 
 /// The checks on what the window chose, summed over the keys.
-pub(crate) fn validate_chosen(snapshots: usize, cells: usize) -> Result<(), String> {
-    within("samples in a fan-in read", snapshots, MAX_FAN_IN_SAMPLES)?;
+pub(crate) fn validate_chosen(samples: usize, cells: usize) -> Result<(), String> {
+    within("samples in a fan-in read", samples, MAX_FAN_IN_SAMPLES)?;
     within("cells in a fan-in read", cells, MAX_FAN_IN_CELLS)
 }
 
@@ -108,23 +108,23 @@ impl Plan {
 
         // Every key's window first: a window over one key's bound is refused here, and the sums
         // that follow are of what was chosen, not of what the keys hold.
-        let (mut snapshots, mut cells, mut keys_read) = (0usize, 0usize, 0usize);
+        let (mut samples, mut cells, mut keys_read) = (0usize, 0usize, 0usize);
         for (position, key) in keys.iter().enumerate() {
             let chosen = self.select_window(now_ms, key).map_err(|why| format!("key {position}: {why}"))?;
             keys_read += usize::from(!chosen.is_empty());
-            snapshots += chosen.len();
-            cells += chosen.iter().map(|snapshot| snapshot.cell_count()).sum::<usize>();
+            samples += chosen.len();
+            cells += chosen.iter().map(|sample| sample.cell_count()).sum::<usize>();
             // Refused as soon as it is over, so a request of many large keys stops early.
-            validate_chosen(snapshots, cells)?;
+            validate_chosen(samples, cells)?;
         }
 
         // The allocation sized by the sample count. The views are appended in key position order
         // and the sort is STABLE, so a tie between keys at one stamp stays in position order.
-        let mut ordered: Vec<V> = Vec::with_capacity(snapshots);
+        let mut ordered: Vec<V> = Vec::with_capacity(samples);
         for key in keys {
             ordered.extend_from_slice(self.select_window(now_ms, key)?);
         }
-        ordered.sort_by_key(|snapshot| snapshot.stamp());
+        ordered.sort_by_key(|sample| sample.stamp());
         let mut ranked = self.run_ordered(&ordered)?;
         ranked.keys = keys_read;
         Ok(ranked)

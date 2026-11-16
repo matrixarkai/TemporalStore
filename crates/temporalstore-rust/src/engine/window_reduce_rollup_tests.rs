@@ -54,16 +54,16 @@ fn spec(older_than_ms: u64, bucket_ms: u64) -> RollupSpec {
     RollupSpec { older_than_ms, bucket_ms, cap: None, anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None }
 }
 
-fn lane_score(name: &str) -> CellScore {
-    CellScore::Lane { lane: name.to_string() }
+fn lane_score(name: &str) -> WindowReduceScore {
+    WindowReduceScore::Lane { lane: name.to_string() }
 }
 
-fn cap(group_by: Option<&str>, score: CellScore, keep: usize) -> CapSpec {
+fn cap(group_by: Option<&str>, score: WindowReduceScore, keep: usize) -> CapSpec {
     CapSpec { group_by: group_by.map(str::to_string), score, keep, protect_newest_ppm: 0, trigger_over: 0 }
 }
 
-fn bytes_of(snapshots: &[Sample]) -> Vec<(u64, Vec<u8>)> {
-    snapshots
+fn bytes_of(samples: &[Sample]) -> Vec<(u64, Vec<u8>)> {
+    samples
         .iter()
         .map(|s| (s.timestamp_ms, encode_sample(&header(), &s.cells).unwrap()))
         .collect()
@@ -156,16 +156,16 @@ fn a_rollup_equals_an_independent_fold_for_every_bucket_size_and_cutoff() {
         for &cutoff in &[0u64, 1, last_ts / 3, last_ts / 2, last_ts, last_ts + 1, u64::MAX] {
             let want = independent_fold(&snaps, cutoff, bucket);
             let got = rollup(&header(), snaps.clone(), &spec(cutoff, bucket)).unwrap();
-            assert_eq!(got.snapshots, want, "bucket {bucket} cutoff {cutoff}");
+            assert_eq!(got.samples, want, "bucket {bucket} cutoff {cutoff}");
             let s = got.stats;
-            assert_eq!(s.snapshots_before, snaps.len() as u64);
-            assert_eq!(s.snapshots_after, want.len() as u64);
+            assert_eq!(s.samples_before, snaps.len() as u64);
+            assert_eq!(s.samples_after, want.len() as u64);
             assert_eq!(s.cells_before, snaps.iter().map(|x| x.cells.len() as u64).sum::<u64>());
             assert_eq!(s.cells_after, want.iter().map(|x| x.cells.len() as u64).sum::<u64>());
             assert_eq!(s.cells_dropped, 0);
             assert_eq!(s.cells_before, s.cells_after + s.cells_combined + s.cells_dropped);
             compared_cells += want.iter().map(|x| x.cells.len()).sum::<usize>();
-            buckets_with_several += (s.snapshots_after < s.snapshots_before) as usize;
+            buckets_with_several += (s.samples_after < s.samples_before) as usize;
         }
     }
     assert!(compared_cells > 20_000, "only {compared_cells} cells were compared");
@@ -188,10 +188,10 @@ fn each_lane_combines_oldest_first_and_a_count_is_the_sum_of_counts_not_the_numb
         snap(30, vec![cell(1, 6, [30, 5, 2, 2, 33, 3])]),
     ];
     let got = rollup(&header(), snaps, &spec(100, 100)).unwrap();
-    assert_eq!(got.snapshots.len(), 1);
-    assert_eq!(got.snapshots[0].timestamp_ms, 0, "a bucket is stored at its start");
+    assert_eq!(got.samples.len(), 1);
+    assert_eq!(got.samples[0].timestamp_ms, 0, "a bucket is stored at its start");
     // Labels are the newest cell's.
-    assert_eq!(got.snapshots[0].cells, vec![cell(1, 6, [60, 12, 9, 2, 11, 3])]);
+    assert_eq!(got.samples[0].cells, vec![cell(1, 6, [60, 12, 9, 2, 11, 3])]);
 
     // THE DIFFERENCE: the write-time merge of the same three values counts merge events.
     let write_time = [3i64, 4, 5].iter().skip(1).fold(3, |existing, incoming| LaneReducer::Count.combine(existing, *incoming));
@@ -199,7 +199,7 @@ fn each_lane_combines_oldest_first_and_a_count_is_the_sum_of_counts_not_the_numb
     assert_ne!(write_time, 12);
     // And a member present in one sample only keeps its stored count: it is not reset to 1.
     let alone = rollup(&header(), vec![snap(10, vec![cell(2, 0, [1, 7, 1, 1, 1, 1])])], &spec(100, 100)).unwrap();
-    assert_eq!(alone.snapshots[0].cells[0].lanes[COUNT], 7);
+    assert_eq!(alone.samples[0].cells[0].lanes[COUNT], 7);
 }
 
 #[test]
@@ -210,7 +210,7 @@ fn members_that_meet_merge_and_members_that_do_not_pass_through_in_order() {
     ];
     let got = rollup(&header(), snaps, &spec(10, 10)).unwrap();
     assert_eq!(
-        got.snapshots[0].cells,
+        got.samples[0].cells,
         vec![
             cell(1, 0, [1, 1, 1, 1, 1, 1]),
             cell(2, 0, [2, 1, 2, 2, 2, 2]),
@@ -234,8 +234,8 @@ fn sums_and_counts_saturate_and_never_wrap() {
         snap(2, vec![cell(1, 0, [10, 10, 0, 0, 0, 0])]),
     ];
     let got = rollup(&header(), snaps, &spec(10, 10)).unwrap();
-    assert_eq!(got.snapshots[0].cells[0].lanes[SUM], i64::MAX);
-    assert_eq!(got.snapshots[0].cells[0].lanes[COUNT], i64::MAX);
+    assert_eq!(got.samples[0].cells[0].lanes[SUM], i64::MAX);
+    assert_eq!(got.samples[0].cells[0].lanes[COUNT], i64::MAX);
     // The other four reducers have no overflow to guard.
     assert_eq!(combine_aggregated(LaneReducer::Max, i64::MIN, i64::MAX), i64::MAX);
     assert_eq!(combine_aggregated(LaneReducer::Min, i64::MIN, i64::MAX), i64::MIN);
@@ -258,13 +258,13 @@ fn rolling_a_rolled_result_again_changes_no_byte_and_the_same_request_twice_agre
     };
     let once = rollup(&header(), snaps.clone(), &request).unwrap();
     let twice_from_scratch = rollup(&header(), snaps, &request).unwrap();
-    assert_eq!(bytes_of(&once.snapshots), bytes_of(&twice_from_scratch.snapshots));
+    assert_eq!(bytes_of(&once.samples), bytes_of(&twice_from_scratch.samples));
 
-    let again = rollup(&header(), once.snapshots.clone(), &request).unwrap();
-    assert_eq!(bytes_of(&again.snapshots), bytes_of(&once.snapshots), "a rolled bucket rolled again is a no-op");
+    let again = rollup(&header(), once.samples.clone(), &request).unwrap();
+    assert_eq!(bytes_of(&again.samples), bytes_of(&once.samples), "a rolled bucket rolled again is a no-op");
     assert_eq!(again.stats.cells_combined, 0);
     assert_eq!(again.stats.cells_dropped, 0);
-    assert_eq!(again.stats.snapshots_before, again.stats.snapshots_after);
+    assert_eq!(again.stats.samples_before, again.stats.samples_after);
     assert!(once.stats.cells_dropped > 0 && once.stats.cells_combined > 0, "the first run did something to be idempotent about");
 }
 
@@ -278,24 +278,24 @@ fn a_snapshot_exactly_at_the_cutoff_is_not_rolled_and_one_below_it_is() {
         snap(101, vec![cell(1, 0, [3, 1, 3, 3, 3, 3])]),
     ];
     let got = rollup(&header(), snaps, &spec(100, 50)).unwrap();
-    let stamps: Vec<u64> = got.snapshots.iter().map(|s| s.timestamp_ms).collect();
+    let stamps: Vec<u64> = got.samples.iter().map(|s| s.timestamp_ms).collect();
     assert_eq!(stamps, vec![50, 100, 101]);
-    assert_eq!(got.snapshots[1].cells[0].lanes[SUM], 2);
+    assert_eq!(got.samples[1].cells[0].lanes[SUM], 2);
     // One past: a cutoff of 101 rolls 100 too, into bucket 100, beside the untouched 101.
     let snaps = vec![snap(99, vec![]), snap(100, vec![cell(1, 0, [2, 1, 2, 2, 2, 2])]), snap(101, vec![])];
     let got = rollup(&header(), snaps, &spec(101, 50)).unwrap();
-    assert_eq!(got.snapshots.iter().map(|s| s.timestamp_ms).collect::<Vec<_>>(), vec![50, 100, 101]);
-    assert_eq!(got.snapshots[1].cells.len(), 1);
+    assert_eq!(got.samples.iter().map(|s| s.timestamp_ms).collect::<Vec<_>>(), vec![50, 100, 101]);
+    assert_eq!(got.samples[1].cells.len(), 1);
 }
 
 #[test]
 fn a_late_snapshot_in_an_already_rolled_bucket_folds_in_as_the_newest_contribution() {
     let first = rollup(&header(), vec![snap(10, vec![cell(1, 0, [1, 1, 1, 1, 1, 5])])], &spec(100, 100)).unwrap();
-    assert_eq!(first.snapshots[0].timestamp_ms, 0);
-    let mut later = first.snapshots;
+    assert_eq!(first.samples[0].timestamp_ms, 0);
+    let mut later = first.samples;
     later.push(snap(30, vec![cell(1, 0, [1, 1, 1, 1, 9, 9])]));
     let got = rollup(&header(), later, &spec(200, 100)).unwrap();
-    let lanes = &got.snapshots[0].cells[0].lanes;
+    let lanes = &got.samples[0].cells[0].lanes;
     assert_eq!((lanes[SUM], lanes[COUNT], lanes[FIRST], lanes[LAST]), (2, 2, 1, 9));
 }
 
@@ -306,7 +306,7 @@ fn a_decoded_replay_reaches_the_bytes_the_first_run_reached() {
     let request = RollupSpec {
         older_than_ms: u64::MAX,
         bucket_ms: 400,
-        cap: Some(cap(None, CellScore::Ratio { numerator: "shown".to_string(), denominator: "events".to_string() }, 20)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None,
+        cap: Some(cap(None, WindowReduceScore::Ratio { numerator: "shown".to_string(), denominator: "events".to_string() }, 20)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None,
     };
     let leader = rollup(&header(), snaps, &request).unwrap();
     // A follower or a replay starts from the stored bytes, not from the leader's values.
@@ -315,21 +315,21 @@ fn a_decoded_replay_reaches_the_bytes_the_first_run_reached() {
         .map(|(ts, bytes)| snap(*ts, decode_sample(&header(), bytes).unwrap()))
         .collect();
     let follower = rollup(&header(), replayed, &request).unwrap();
-    assert_eq!(bytes_of(&leader.snapshots), bytes_of(&follower.snapshots));
+    assert_eq!(bytes_of(&leader.samples), bytes_of(&follower.samples));
     assert_eq!(leader.stats, follower.stats);
 }
 
 #[test]
 fn nothing_to_roll_returns_the_snapshots_unchanged() {
     let empty = rollup(&header(), Vec::new(), &spec(100, 10)).unwrap();
-    assert!(empty.snapshots.is_empty());
+    assert!(empty.samples.is_empty());
     assert_eq!(empty.stats, RollupStats::default());
 
     let snaps = vec![snap(500, vec![cell(1, 0, [1, 1, 1, 1, 1, 1])]), snap(700, vec![])];
     let got = rollup(&header(), snaps.clone(), &spec(500, 10)).unwrap();
-    assert_eq!(got.snapshots, snaps, "cutoff at the oldest stamp rolls nothing");
-    assert_eq!(got.stats.snapshots_before, 2);
-    assert_eq!(got.stats.snapshots_after, 2);
+    assert_eq!(got.samples, snaps, "cutoff at the oldest stamp rolls nothing");
+    assert_eq!(got.stats.samples_before, 2);
+    assert_eq!(got.stats.samples_after, 2);
 }
 
 // ------------------------------------------------------------------------------------------
@@ -393,7 +393,7 @@ fn a_cell_whose_score_is_undefined_ranks_after_every_scored_cell() {
         cell(2, 0, [100, 0, 0, 0, 0, 0]),
         cell(3, 0, [1, 1, 0, 0, 0, 0]),
     ];
-    let ratio = CellScore::Ratio { numerator: "shown".to_string(), denominator: "events".to_string() };
+    let ratio = WindowReduceScore::Ratio { numerator: "shown".to_string(), denominator: "events".to_string() };
     assert_eq!(cap_cells(&header(), &cap(None, ratio, 2), &mut cells).unwrap(), 1);
     assert_eq!(members(&cells), vec![1, 3]);
 }
@@ -408,8 +408,8 @@ fn the_cap_runs_on_the_folded_bucket_not_on_the_snapshots_that_make_it() {
     ];
     let request = RollupSpec { older_than_ms: 10, bucket_ms: 10, cap: Some(cap(None, lane_score("shown"), 1)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None };
     let got = rollup(&header(), snaps, &request).unwrap();
-    assert_eq!(got.snapshots.len(), 1);
-    assert_eq!(got.snapshots[0].cells, vec![cell(1, 0, [101, 2, 0, 0, 0, 0])]);
+    assert_eq!(got.samples.len(), 1);
+    assert_eq!(got.samples[0].cells, vec![cell(1, 0, [101, 2, 0, 0, 0, 0])]);
     assert_eq!(got.stats.cells_dropped, 1);
     assert_eq!(got.stats.cells_combined, 2);
     assert_eq!(got.stats.cells_before, 4);
@@ -421,8 +421,8 @@ fn a_snapshot_the_cap_does_not_reach_keeps_every_cell() {
     let snaps = vec![snap(5, group_data()), snap(500, group_data())];
     let request = RollupSpec { older_than_ms: 100, bucket_ms: 100, cap: Some(cap(Some("slot"), lane_score("shown"), 1)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None };
     let got = rollup(&header(), snaps, &request).unwrap();
-    assert_eq!(members(&got.snapshots[0].cells), vec![2, 5, 6]);
-    assert_eq!(got.snapshots[1].cells, group_data(), "at the cutoff and after it: untouched, uncapped");
+    assert_eq!(members(&got.samples[0].cells), vec![2, 5, 6]);
+    assert_eq!(got.samples[1].cells, group_data(), "at the cutoff and after it: untouched, uncapped");
     assert_eq!(got.stats.cells_dropped, 5);
 }
 
@@ -457,7 +457,7 @@ fn keep_is_bounded_at_one_below_and_the_snapshot_limit_above() {
 fn snapshots_below_the_cutoff_are_bounded_at_exactly_the_limit() {
     let many = |n: usize| (0..n as u64).map(|i| snap(i + 1, Vec::new())).collect::<Vec<_>>();
     let at = rollup(&header(), many(MAX_ROLLUP_SAMPLES), &spec(u64::MAX, 1_000_000)).unwrap();
-    assert_eq!(at.snapshots.len(), 1, "all of them land in one bucket");
+    assert_eq!(at.samples.len(), 1, "all of them land in one bucket");
     let err = rollup(&header(), many(MAX_ROLLUP_SAMPLES + 1), &spec(u64::MAX, 1_000_000)).unwrap_err();
     assert!(err.contains("over the limit") && err.contains(&MAX_ROLLUP_SAMPLES.to_string()), "{err}");
     // The bound counts the samples BELOW the cutoff: one more, past the cutoff, is not touched.
@@ -472,7 +472,7 @@ fn a_bucket_over_the_snapshot_cell_limit_is_refused_and_one_at_the_limit_is_fold
     let half = MAX_CELLS_PER_SAMPLE as u64 / 2;
     let full = MAX_CELLS_PER_SAMPLE as u64;
     let at = rollup(&header(), vec![snap(1, range(0, half)), snap(2, range(half, full))], &spec(10, 10)).unwrap();
-    assert_eq!(at.snapshots[0].cells.len(), MAX_CELLS_PER_SAMPLE);
+    assert_eq!(at.samples[0].cells.len(), MAX_CELLS_PER_SAMPLE);
     let err = rollup(&header(), vec![snap(1, range(0, half)), snap(2, range(half, full + 1))], &spec(10, 10)).unwrap_err();
     assert!(err.contains("over the limit"), "{err}");
 }
@@ -488,9 +488,9 @@ fn a_request_the_key_cannot_serve_is_refused_naming_what_was_wrong() {
     assert!(err.contains("unknown name `nope`"), "{err}");
     let err = rollup(&header(), good.clone(), &with(cap(None, lane_score("slot"), 1))).unwrap_err();
     assert!(err.contains("not a lane"), "a label is not a lane: {err}");
-    let err = rollup(&header(), good.clone(), &with(cap(None, CellScore::Time, 1))).unwrap_err();
+    let err = rollup(&header(), good.clone(), &with(cap(None, WindowReduceScore::Time, 1))).unwrap_err();
     assert!(err.contains("time"), "{err}");
-    let wilson = CellScore::Wilson { successes: "shown".to_string(), trials: "events".to_string(), z: f64::NAN };
+    let wilson = WindowReduceScore::Wilson { successes: "shown".to_string(), trials: "events".to_string(), z: f64::NAN };
     assert!(rollup(&header(), good.clone(), &with(cap(None, wilson, 1))).is_err());
 
     let two = vec![snap(2, Vec::new()), snap(1, Vec::new())];
@@ -511,9 +511,9 @@ fn a_bytes_member_cannot_be_scored_by_member_and_is_otherwise_rolled_like_any_ot
     let bytes = |label: &[u8], lanes: [i64; 6]| Cell { member: Member::Bytes(label.to_vec()), labels: vec![0], lanes: lanes.to_vec() };
     let snaps = vec![snap(1, vec![cell(1, 0, [1; 6]), bytes(b"zz", [2; 6])]), snap(2, vec![bytes(b"zz", [3; 6])])];
     let got = rollup(&header(), snaps.clone(), &spec(10, 10)).unwrap();
-    assert_eq!(got.snapshots[0].cells.len(), 2);
-    assert_eq!(got.snapshots[0].cells[1].lanes[SUM], 5);
-    let request = RollupSpec { older_than_ms: 10, bucket_ms: 10, cap: Some(cap(None, CellScore::Member, 1)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None };
+    assert_eq!(got.samples[0].cells.len(), 2);
+    assert_eq!(got.samples[0].cells[1].lanes[SUM], 5);
+    let request = RollupSpec { older_than_ms: 10, bucket_ms: 10, cap: Some(cap(None, WindowReduceScore::Member, 1)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None };
     let err = rollup(&header(), snaps, &request).unwrap_err();
     assert!(err.contains("u64 members"), "{err}");
 }
@@ -523,9 +523,9 @@ mod probe {
     use super::*;
     use crate::alloc_probe::Probe;
 
-    /// `snapshots` samples of `members` cells, every member in every sample, all in one bucket.
-    fn dataset(members: u64, snapshots: u64) -> Vec<Sample> {
-        (1..=snapshots)
+    /// `samples` samples of `members` cells, every member in every sample, all in one bucket.
+    fn dataset(members: u64, samples: u64) -> Vec<Sample> {
+        (1..=samples)
             .map(|ts| {
                 let cells = (0..members)
                     .map(|m| cell(m, m % 7, [(m * 31 + ts) as i64 % 1000, 1, 3, 4, 5, ts as i64]))
@@ -535,8 +535,8 @@ mod probe {
             .collect()
     }
 
-    fn allocations_of_a_rollup(members: u64, snapshots: u64, capped: bool) -> u64 {
-        let snaps = dataset(members, snapshots);
+    fn allocations_of_a_rollup(members: u64, samples: u64, capped: bool) -> u64 {
+        let snaps = dataset(members, samples);
         let request = RollupSpec {
             older_than_ms: u64::MAX,
             bucket_ms: 1 << 40,
@@ -546,14 +546,14 @@ mod probe {
         let probe = Probe::start();
         let got = rollup(&header, snaps, &request).unwrap();
         let spent = probe.stop().allocs;
-        assert_eq!(got.snapshots.len(), 1);
-        assert_eq!(got.snapshots[0].cells.len(), if capped { 35.min(members as usize) } else { members as usize });
+        assert_eq!(got.samples.len(), 1);
+        assert_eq!(got.samples[0].cells.len(), if capped { 35.min(members as usize) } else { members as usize });
         spent
     }
 
     /// What an obvious implementation does: clone every cell into a table keyed by member.
-    fn allocations_of_a_cloning_table(members: u64, snapshots: u64) -> u64 {
-        let snaps = dataset(members, snapshots);
+    fn allocations_of_a_cloning_table(members: u64, samples: u64) -> u64 {
+        let snaps = dataset(members, samples);
         let probe = Probe::start();
         let mut table: BTreeMap<Member, Vec<Cell>> = BTreeMap::new();
         for s in &snaps {

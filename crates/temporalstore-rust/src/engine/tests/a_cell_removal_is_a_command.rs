@@ -19,7 +19,7 @@ use crate::engine::cell_set::{
     EntityType, EntityValue, KeySpec, LaneReducer, LaneSpec, Member, HEADER_VERSION,
 };
 use crate::types::{
-    CellMemberFilter, CellMemberId, CellRankSpec, CellRemoveSpec, CellScore, CellWindow, FeatureFilter,
+    CellMemberFilter, CellMemberId, WindowReduceRankSpec, WindowReduceRemoveSpec, WindowReduceScore, WindowReduceWindow, FeatureFilter,
     FeatureFilterOp, RankedCells,
 };
 use std::collections::BTreeSet;
@@ -113,16 +113,16 @@ fn decoded(engine: &TemporalEngine, key: &str) -> Vec<(u64, Vec<Cell>)> {
         .collect()
 }
 
-fn remove(engine: &TemporalEngine, key: &str, spec: CellRemoveSpec) -> ExecuteResponse {
-    exec(engine, Command::CellRemove { key: key.to_string(), spec })
+fn remove(engine: &TemporalEngine, key: &str, spec: WindowReduceRemoveSpec) -> ExecuteResponse {
+    exec(engine, Command::WindowReduceRemove { key: key.to_string(), spec })
 }
 
 /// (samples before, samples after, cells before, cells removed)
 fn receipt(response: &ExecuteResponse) -> [u64; 4] {
     assert!(response.status.ok, "{:?}", response.status);
     match &response.response {
-        CommandResponse::CellRemoveReceipt { snapshots_before, snapshots_after, cells_before, cells_removed } => {
-            [*snapshots_before, *snapshots_after, *cells_before, *cells_removed]
+        CommandResponse::WindowReduceRemoveReceipt { samples_before, samples_after, cells_before, cells_removed } => {
+            [*samples_before, *samples_after, *cells_before, *cells_removed]
         }
         other => panic!("a removal answers a receipt, got {other:?}"),
     }
@@ -132,7 +132,7 @@ fn receipt(response: &ExecuteResponse) -> [u64; 4] {
 /// `(m + i)` is a multiple of 3, and its label is where it was placed that time, `(m + i) % 3`
 /// (so 1 or 2), and every lane value is a function of `(m, i)`.
 fn seed(engine: &TemporalEngine, key: &str) -> Vec<(u64, Vec<Cell>)> {
-    let snapshots: Vec<(u64, Vec<Cell>)> = (1..=12u64)
+    let samples: Vec<(u64, Vec<Cell>)> = (1..=12u64)
         .map(|i| {
             let cells = (1..=6u64)
                 .filter(|m| (m + i) % 3 != 0)
@@ -147,8 +147,8 @@ fn seed(engine: &TemporalEngine, key: &str) -> Vec<(u64, Vec<Cell>)> {
             (i * 100, cells)
         })
         .collect();
-    append(engine, key, snapshots.iter().map(|(ts, cells)| point(*ts, cells)).collect());
-    snapshots
+    append(engine, key, samples.iter().map(|(ts, cells)| point(*ts, cells)).collect());
+    samples
 }
 
 fn on(field: &str, op: FeatureFilterOp, value: u64) -> FeatureFilter {
@@ -180,20 +180,20 @@ fn kept(stored: &[(u64, Vec<Cell>)], removed: impl Fn(u64, &Cell) -> bool) -> Ve
 fn a_removal_leaves_exactly_the_cells_an_independent_fold_keeps() {
     type Gone = Box<dyn Fn(u64, &Cell) -> bool>;
     let slot_one: Gone = Box::new(|_, c| c.labels[0] == 1);
-    let table: Vec<(&str, CellRemoveSpec, Gone)> = vec![
+    let table: Vec<(&str, WindowReduceRemoveSpec, Gone)> = vec![
         (
             "a label",
-            CellRemoveSpec { filters: vec![on("slot", FeatureFilterOp::Equal, 1)], ..Default::default() },
+            WindowReduceRemoveSpec { filters: vec![on("slot", FeatureFilterOp::Equal, 1)], ..Default::default() },
             slot_one,
         ),
         (
             "a time window, which empties five samples",
-            CellRemoveSpec { start_ms: Some(300), end_ms: Some(700), ..Default::default() },
+            WindowReduceRemoveSpec { start_ms: Some(300), end_ms: Some(700), ..Default::default() },
             Box::new(|stamp, _| (300..=700).contains(&stamp)),
         ),
         (
             "a member set",
-            CellRemoveSpec {
+            WindowReduceRemoveSpec {
                 members: CellMemberFilter { include: Some(vec![id(2), id(5)]), exclude: vec![] },
                 ..Default::default()
             },
@@ -201,22 +201,22 @@ fn a_removal_leaves_exactly_the_cells_an_independent_fold_keeps() {
         ),
         (
             "every member but one",
-            CellRemoveSpec { members: CellMemberFilter { include: None, exclude: vec![id(1)] }, ..Default::default() },
+            WindowReduceRemoveSpec { members: CellMemberFilter { include: None, exclude: vec![id(1)] }, ..Default::default() },
             Box::new(|_, c| member_of(c) != 1),
         ),
         (
             "a lane test",
-            CellRemoveSpec { filters: vec![on("clicks", FeatureFilterOp::GreaterOrEqual, 3)], ..Default::default() },
+            WindowReduceRemoveSpec { filters: vec![on("clicks", FeatureFilterOp::GreaterOrEqual, 3)], ..Default::default() },
             Box::new(|_, c| c.lanes[1] >= 3),
         ),
         (
             "the member itself",
-            CellRemoveSpec { filters: vec![on("member", FeatureFilterOp::GreaterThan, 3)], ..Default::default() },
+            WindowReduceRemoveSpec { filters: vec![on("member", FeatureFilterOp::GreaterThan, 3)], ..Default::default() },
             Box::new(|_, c| member_of(c) > 3),
         ),
         (
             "window, members and a label together",
-            CellRemoveSpec {
+            WindowReduceRemoveSpec {
                 start_ms: Some(200),
                 end_ms: Some(900),
                 members: CellMemberFilter { include: Some(vec![id(1), id(3), id(4), id(6)]), exclude: vec![id(4)] },
@@ -264,7 +264,7 @@ fn a_ranked_read_after_a_removal_answers_what_a_fold_over_the_kept_cells_says() 
     let key = stored_key(2);
     let stored = seed(&engine, &key);
     let gone = |_: u64, c: &Cell| c.labels[0] == 1;
-    receipt(&remove(&engine, &key, CellRemoveSpec { filters: vec![on("slot", FeatureFilterOp::Equal, 1)], ..Default::default() }));
+    receipt(&remove(&engine, &key, WindowReduceRemoveSpec { filters: vec![on("slot", FeatureFilterOp::Equal, 1)], ..Default::default() }));
 
     // Impressions are a sum per member over the cells that remain.
     let mut sums: std::collections::BTreeMap<u64, i64> = Default::default();
@@ -277,17 +277,17 @@ fn a_ranked_read_after_a_removal_answers_what_a_fold_over_the_kept_cells_says() 
     want.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     let response = exec(
         &engine,
-        Command::CellRankQuery {
+        Command::WindowReduceRank {
             key: key.clone(),
-            spec: CellRankSpec::new(
-                CellWindow::Between { start_ms: 0, end_ms: u64::MAX },
-                CellScore::Lane { lane: "impressions".to_string() },
+            spec: WindowReduceRankSpec::new(
+                WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX },
+                WindowReduceScore::Lane { lane: "impressions".to_string() },
                 100,
             ),
         },
     );
     let ranked: RankedCells = match response.response {
-        CommandResponse::CellRanking { ranked } => ranked,
+        CommandResponse::WindowReduceRanking { ranked } => ranked,
         other => panic!("{other:?}"),
     };
     assert!(ranked.refused.is_empty(), "{}", ranked.refused);
@@ -297,7 +297,7 @@ fn a_ranked_read_after_a_removal_answers_what_a_fold_over_the_kept_cells_says() 
         .map(|r| (match &r.member { CellMemberId::U64(v) => *v, _ => unreachable!() }, r.score as i64))
         .collect();
     assert_eq!(got, want);
-    assert_eq!(ranked.snapshots, 12, "no sample of the seed held only slot 1");
+    assert_eq!(ranked.samples, 12, "no sample of the seed held only slot 1");
 }
 
 #[test]
@@ -306,7 +306,7 @@ fn a_cold_reload_reads_the_removed_bytes_and_removing_again_changes_nothing() {
     let engine = engine_on(dir.path(), Some(roomy()));
     let key = stored_key(3);
     seed(&engine, &key);
-    let request = CellRemoveSpec {
+    let request = WindowReduceRemoveSpec {
         start_ms: Some(200),
         end_ms: Some(1000),
         filters: vec![on("slot", FeatureFilterOp::Equal, 2)],
@@ -336,7 +336,7 @@ fn replaying_the_log_reaches_the_bytes_the_live_engine_reached() {
     let landed = receipt(&remove(
         &engine,
         &key,
-        CellRemoveSpec {
+        WindowReduceRemoveSpec {
             start_ms: Some(300),
             end_ms: Some(800),
             members: CellMemberFilter { include: Some(vec![id(1), id(2), id(3)]), exclude: vec![] },
@@ -356,7 +356,7 @@ fn replaying_the_log_reaches_the_bytes_the_live_engine_reached() {
 
 #[test]
 fn the_same_request_on_two_engines_leaves_the_same_bytes() {
-    let request = CellRemoveSpec {
+    let request = WindowReduceRemoveSpec {
         start_ms: Some(100),
         end_ms: Some(1100),
         filters: vec![on("impressions", FeatureFilterOp::LessThan, 50)],
@@ -384,14 +384,14 @@ fn a_request_that_matches_nothing_writes_nothing_and_says_so() {
     let stored = series(&engine, &key);
 
     // A label no cell carries: every sample is read, none changes.
-    let none = receipt(&remove(&engine, &key, CellRemoveSpec { filters: vec![on("slot", FeatureFilterOp::Equal, 9)], ..Default::default() }));
+    let none = receipt(&remove(&engine, &key, WindowReduceRemoveSpec { filters: vec![on("slot", FeatureFilterOp::Equal, 9)], ..Default::default() }));
     assert_eq!(none[..2], [12, 12]);
     assert_eq!(none[3], 0);
     assert!(none[2] > 0, "CONTROL: the cells were read, so the zero is a finding and not an absence");
     assert_eq!(series(&engine, &key), stored);
 
     // A window past the newest sample holds nothing and reads nothing.
-    let past = receipt(&remove(&engine, &key, CellRemoveSpec { start_ms: Some(5000), ..Default::default() }));
+    let past = receipt(&remove(&engine, &key, WindowReduceRemoveSpec { start_ms: Some(5000), ..Default::default() }));
     assert_eq!(past, [12, 12, 0, 0]);
     assert_eq!(series(&engine, &key), stored);
 }
@@ -403,23 +403,23 @@ fn removing_every_cell_leaves_an_empty_key_that_still_reads_and_still_takes_a_wr
     let key = stored_key(6);
     let stored = seed(&engine, &key);
     let total: usize = stored.iter().map(|(_, c)| c.len()).sum();
-    let landed = receipt(&remove(&engine, &key, CellRemoveSpec { start_ms: Some(0), ..Default::default() }));
+    let landed = receipt(&remove(&engine, &key, WindowReduceRemoveSpec { start_ms: Some(0), ..Default::default() }));
     assert_eq!(landed, [12, 0, total as u64, total as u64]);
     assert!(series(&engine, &key).is_empty());
 
     let ranked = match exec(
         &engine,
-        Command::CellRankQuery {
+        Command::WindowReduceRank {
             key: key.clone(),
-            spec: CellRankSpec::new(CellWindow::Between { start_ms: 0, end_ms: u64::MAX }, CellScore::Member, 10),
+            spec: WindowReduceRankSpec::new(WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX }, WindowReduceScore::Member, 10),
         },
     )
     .response
     {
-        CommandResponse::CellRanking { ranked } => ranked,
+        CommandResponse::WindowReduceRanking { ranked } => ranked,
         other => panic!("{other:?}"),
     };
-    assert!(ranked.refused.is_empty() && ranked.rows.is_empty() && ranked.snapshots == 0, "{ranked:?}");
+    assert!(ranked.refused.is_empty() && ranked.rows.is_empty() && ranked.samples == 0, "{ranked:?}");
 
     append(&engine, &key, vec![point(50, &[cell(1, 1, [1, 1, 1, 1])])]);
     assert_eq!(decoded(&engine, &key).len(), 1);
@@ -434,24 +434,24 @@ fn a_request_the_key_cannot_serve_is_refused_and_writes_nothing() {
     let stored = series(&engine, &key);
     let writes = engine.write_ahead_log_store().stats(1).writes;
 
-    let refused = |spec: CellRemoveSpec, needle: &str| {
+    let refused = |spec: WindowReduceRemoveSpec, needle: &str| {
         let response = remove(&engine, &key, spec);
         assert_eq!((response.status.ok, response.status.code.as_str()), (false, "invalid_argument"), "{:?}", response.status);
         assert!(response.status.message.contains(needle), "{:?} does not name `{needle}`", response.status.message);
         assert_eq!(series(&engine, &key), stored, "a refused removal changed the series");
         assert_eq!(engine.write_ahead_log_store().stats(1).writes, writes, "a refused removal reached the log");
     };
-    refused(CellRemoveSpec::default(), "would empty the key");
-    refused(CellRemoveSpec { filters: vec![on("views", FeatureFilterOp::Equal, 1)], ..Default::default() }, "views");
+    refused(WindowReduceRemoveSpec::default(), "would empty the key");
+    refused(WindowReduceRemoveSpec { filters: vec![on("views", FeatureFilterOp::Equal, 1)], ..Default::default() }, "views");
     refused(
-        CellRemoveSpec { members: CellMemberFilter { include: Some(vec![]), exclude: vec![] }, ..Default::default() },
+        WindowReduceRemoveSpec { members: CellMemberFilter { include: Some(vec![]), exclude: vec![] }, ..Default::default() },
         "names no member",
     );
-    refused(CellRemoveSpec { start_ms: Some(9), end_ms: Some(8), ..Default::default() }, "after it ends");
+    refused(WindowReduceRemoveSpec { start_ms: Some(9), end_ms: Some(8), ..Default::default() }, "after it ends");
 
     // A feature key that holds something other than cells.
     append(&engine, "plain", vec![FeaturePoint { timestamp_ms: 1, value: b"12".to_vec() }]);
-    let response = remove(&engine, "plain", CellRemoveSpec { start_ms: Some(0), ..Default::default() });
+    let response = remove(&engine, "plain", WindowReduceRemoveSpec { start_ms: Some(0), ..Default::default() });
     assert!(!response.status.ok && response.status.code == "invalid_argument", "{:?}", response.status);
 }
 
@@ -464,17 +464,17 @@ fn each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it() {
     append(&engine, &key, (1..=1025u64).map(one).collect());
 
     // 1025 samples inside the window are refused, naming the limit, before any is read.
-    let over = remove(&engine, &key, CellRemoveSpec { start_ms: Some(1), end_ms: Some(1025), ..Default::default() });
+    let over = remove(&engine, &key, WindowReduceRemoveSpec { start_ms: Some(1), end_ms: Some(1025), ..Default::default() });
     assert_eq!((over.status.ok, over.status.code.as_str()), (false, "invalid_argument"), "{:?}", over.status);
     assert!(over.status.message.contains("1024") && over.status.message.contains("narrow the window"), "{}", over.status.message);
     assert_eq!(series(&engine, &key).len(), 1025, "the refusal wrote nothing");
     // 1024 are removed, and the one outside the window stays.
-    let at = receipt(&remove(&engine, &key, CellRemoveSpec { start_ms: Some(1), end_ms: Some(1024), ..Default::default() }));
+    let at = receipt(&remove(&engine, &key, WindowReduceRemoveSpec { start_ms: Some(1), end_ms: Some(1024), ..Default::default() }));
     assert_eq!(at, [1025, 1, 2048, 2048]);
     assert_eq!(decoded(&engine, &key).iter().map(|(s, _)| *s).collect::<Vec<_>>(), vec![1025]);
 
     // 8 predicates are accepted and 9 refused; a member set holds 1024 a side and not 1025.
-    let predicates = |n: usize| CellRemoveSpec {
+    let predicates = |n: usize| WindowReduceRemoveSpec {
         filters: (0..n).map(|i| on("slot", FeatureFilterOp::NotEqual, i as u64 + 5)).collect(),
         ..Default::default()
     };
@@ -482,7 +482,7 @@ fn each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it() {
     assert!(remove(&engine, &key, predicates(9)).status.message.contains("predicates per removal"));
     let side = |n: u64| (0..n).map(id).collect::<Vec<_>>();
     for include in [true, false] {
-        let set = |n: u64| CellRemoveSpec {
+        let set = |n: u64| WindowReduceRemoveSpec {
             members: CellMemberFilter { include: include.then(|| side(n)), exclude: if include { vec![] } else { side(n) } },
             ..Default::default()
         };
@@ -496,7 +496,7 @@ fn an_absent_key_and_an_expired_key_remove_nothing() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path(), Some(roomy()));
     let key = stored_key(9);
-    let any = || CellRemoveSpec { start_ms: Some(0), ..Default::default() };
+    let any = || WindowReduceRemoveSpec { start_ms: Some(0), ..Default::default() };
     assert_eq!(receipt(&remove(&engine, &key, any())), [0; 4]);
     assert!(series(&engine, &key).is_empty(), "removing from an absent key created a series");
 
@@ -522,13 +522,13 @@ fn a_removal_is_a_write_the_log_can_carry_in_every_selector_spelling() {
         FeatureFilterOp::LessOrEqual,
     ];
     let mut specs = vec![
-        CellRemoveSpec { start_ms: Some(0), ..Default::default() },
-        CellRemoveSpec { end_ms: Some(7), ..Default::default() },
-        CellRemoveSpec { start_ms: Some(1), end_ms: Some(2), ..Default::default() },
+        WindowReduceRemoveSpec { start_ms: Some(0), ..Default::default() },
+        WindowReduceRemoveSpec { end_ms: Some(7), ..Default::default() },
+        WindowReduceRemoveSpec { start_ms: Some(1), end_ms: Some(2), ..Default::default() },
         // An empty include set and an absent one are different statements and keep their difference.
-        CellRemoveSpec { members: CellMemberFilter { include: Some(vec![]), exclude: vec![] }, ..Default::default() },
-        CellRemoveSpec { members: CellMemberFilter { include: None, exclude: vec![id(4)] }, ..Default::default() },
-        CellRemoveSpec {
+        WindowReduceRemoveSpec { members: CellMemberFilter { include: Some(vec![]), exclude: vec![] }, ..Default::default() },
+        WindowReduceRemoveSpec { members: CellMemberFilter { include: None, exclude: vec![id(4)] }, ..Default::default() },
+        WindowReduceRemoveSpec {
             members: CellMemberFilter {
                 include: Some(vec![id(1), CellMemberId::Bytes(vec![0, 255, 7])]),
                 exclude: vec![CellMemberId::Bytes(vec![])],
@@ -536,10 +536,10 @@ fn a_removal_is_a_write_the_log_can_carry_in_every_selector_spelling() {
             ..Default::default()
         },
     ];
-    specs.extend(ops.iter().map(|op| CellRemoveSpec { filters: vec![on("clicks", op.clone(), 9)], ..Default::default() }));
+    specs.extend(ops.iter().map(|op| WindowReduceRemoveSpec { filters: vec![on("clicks", op.clone(), 9)], ..Default::default() }));
     let mut seen_bytes = BTreeSet::new();
     for spec in &specs {
-        let command = Command::CellRemove { key: "k".to_string(), spec: spec.clone() };
+        let command = Command::WindowReduceRemove { key: "k".to_string(), spec: spec.clone() };
         assert!(crate::engine::is_write_command(&command));
         let bytes = command_protobuf_bytes(&command).expect("a removal has a protobuf encoding");
         assert!(serde_json::from_slice::<serde_json::Value>(&bytes).is_err(), "the bytes are JSON");
@@ -548,11 +548,11 @@ fn a_removal_is_a_write_the_log_can_carry_in_every_selector_spelling() {
     }
     assert_eq!(seen_bytes.len(), specs.len(), "every spelling has its own bytes");
     // The wire form of the answer carries every count.
-    let answer = crate::sdk::types_command_response_to_sdk(CommandResponse::CellRemoveReceipt {
-        snapshots_before: 5,
-        snapshots_after: 4,
+    let answer = crate::sdk::types_command_response_to_sdk(CommandResponse::WindowReduceRemoveReceipt {
+        samples_before: 5,
+        samples_after: 4,
         cells_before: 30,
         cells_removed: 7,
     });
-    assert_eq!((answer.snapshots_before, answer.count, answer.cells_before, answer.cells_removed), (5, 4, 30, 7));
+    assert_eq!((answer.samples_before, answer.count, answer.cells_before, answer.cells_removed), (5, 4, 30, 7));
 }

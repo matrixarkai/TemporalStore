@@ -57,9 +57,9 @@
 use super::cell_set::{within, Member, MemberRef, MAX_MEMBER_BYTES, MAX_TOP_K};
 // The request-side types are the public ones: a spec carries them as they are.
 pub(crate) use crate::types::{
-    CellAnchor as Anchor, CellLaneQuota as LaneQuota, CellMemberFilter as MemberFilter, CellQuota as Quota,
+    WindowReduceAnchor as Anchor, WindowReduceLaneQuota as LaneQuota, CellMemberFilter as MemberFilter, WindowReduceQuota as Quota,
 };
-use crate::types::{CellMemberId, CellRankSpec, CellWindow};
+use crate::types::{CellMemberId, WindowReduceRankSpec, WindowReduceWindow};
 
 /// Lanes one quota may name, and the sum of its counts plus its `others`.
 pub(crate) const MAX_QUOTA_LANES: usize = 16;
@@ -80,7 +80,7 @@ pub(crate) struct RankOptions {
 
 impl RankOptions {
     /// The controls a spec carries.
-    pub(crate) fn of(spec: &CellRankSpec) -> RankOptions {
+    pub(crate) fn of(spec: &WindowReduceRankSpec) -> RankOptions {
         RankOptions { members: spec.members.clone(), anchor: spec.anchor, quota: spec.quota.clone() }
     }
 }
@@ -200,10 +200,10 @@ impl CompiledQuota {
 }
 
 /// The checks on the options that need no header. A command runs this at admission.
-pub(crate) fn validate_options(window: &CellWindow, options: &RankOptions) -> Result<(), String> {
+pub(crate) fn validate_options(window: &WindowReduceWindow, options: &RankOptions) -> Result<(), String> {
     CompiledMembers::compile(&options.members)?;
     validate_quota(&options.quota)?;
-    if options.anchor == Anchor::Newest && !matches!(window, CellWindow::Last { .. }) {
+    if options.anchor == Anchor::Newest && !matches!(window, WindowReduceWindow::Last { .. }) {
         return Err("an anchor at the newest sample applies to a `last` window only".to_string());
     }
     Ok(())

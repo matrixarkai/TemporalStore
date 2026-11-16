@@ -8,7 +8,7 @@
 //! landed, and the same token again answers that receipt, marked as a replay, and writes nothing.
 //!
 //! WHAT EACH GUARD CAN ONLY PASS ON THE NEW PATH.
-//!   * the retry answers `(1 snapshot, 1 cell created, 0 merged)` with `replayed` set. A merge that
+//!   * the retry answers `(1 sample, 1 cell created, 0 merged)` with `replayed` set. A merge that
 //!     ran again would say `(1, 0, 1)`: the cell exists by then. Only the stored first receipt says
 //!     "created", and only the replay path sets the flag.
 //!   * the stored series is byte-identical before and after the retry, and the `Sum` lane holds the
@@ -98,8 +98,8 @@ fn send(engine: &TemporalEngine, key: &str, points: Vec<FeaturePoint>, token: Op
 fn receipt(response: &ExecuteResponse) -> (u64, u64, u64, bool) {
     assert!(response.status.ok, "the request was refused: {:?}", response.status);
     match &response.response {
-        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged, replayed } => {
-            (*snapshots_written, *cells_created, *cells_merged, *replayed)
+        CommandResponse::CellMergeReceipt { samples_written, cells_created, cells_merged, replayed } => {
+            (*samples_written, *cells_created, *cells_merged, *replayed)
         }
         other => panic!("a merge-reduce append answers a receipt, got {other:?}"),
     }
@@ -459,7 +459,7 @@ fn the_token_rides_the_command_bytes_and_a_tokenless_command_is_unchanged_on_eve
     assert!(!serde_json::to_string(&tokenless).unwrap().contains("retry_token"));
     assert!(serde_json::to_string(&tokened(300)).unwrap().contains("\"retry_token\":300"));
     let receipt_of = |replayed: bool| CommandResponse::CellMergeReceipt {
-        snapshots_written: 1,
+        samples_written: 1,
         cells_created: 2,
         cells_merged: 3,
         replayed,

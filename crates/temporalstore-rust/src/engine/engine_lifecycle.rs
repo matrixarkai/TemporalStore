@@ -2180,6 +2180,7 @@ impl TemporalEngine {
             // token the ring already holds (the image was flushed after this record) is left as
             // it is, which is what makes the record replayable more than once. A value that is not
             // one entry in its one spelling is refused, and a refused item fails the load.
+            // The item kind text is stored in the log, so it keeps its original spelling: it is a storage tag, not a name.
             "cell_retry" => {
                 let Some(Ok((token, receipt))) =
                     item.value.as_deref().map(super::cell_retry_ring::decode_logged_entry)

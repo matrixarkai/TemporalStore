@@ -35,7 +35,7 @@ use crate::engine::cell_set::{
     EntityValue, KeySpec, LaneReducer, LaneSpec, Member, HEADER_VERSION,
 };
 use crate::types::{
-    CellMemberId, CellRankSpec, CellScore, CellWindow, FeatureFilter, FeatureFilterOp, RankedCells,
+    CellMemberId, WindowReduceRankSpec, WindowReduceScore, WindowReduceWindow, FeatureFilter, FeatureFilterOp, RankedCells,
 };
 
 fn engine_on(dir: &std::path::Path) -> TemporalEngine {
@@ -94,21 +94,21 @@ fn write(engine: &TemporalEngine, key: &str, timestamp_ms: u64, cells: &[Cell]) 
     });
     assert!(response.status.ok, "{:?}", response.status);
     match response.response {
-        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged, .. } => {
-            (snapshots_written, cells_created, cells_merged)
+        CommandResponse::CellMergeReceipt { samples_written, cells_created, cells_merged, .. } => {
+            (samples_written, cells_created, cells_merged)
         }
         other => panic!("a merge-reduce append answers a receipt, got {other:?}"),
     }
 }
 
 /// The ranked read: the last minute, optionally cut by a predicate, ordered by `score`.
-fn rank(engine: &TemporalEngine, key: &str, filters: Vec<FeatureFilter>, score: CellScore) -> RankedCells {
+fn rank(engine: &TemporalEngine, key: &str, filters: Vec<FeatureFilter>, score: WindowReduceScore) -> RankedCells {
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::CellRankQuery {
+        command: Command::WindowReduceRank {
             key: key.to_string(),
-            spec: CellRankSpec {
-                window: CellWindow::Last { duration_ms: 60_000 },
+            spec: WindowReduceRankSpec {
+                window: WindowReduceWindow::Last { duration_ms: 60_000 },
                 filters,
                 score,
                 top_k: 10,
@@ -121,7 +121,7 @@ fn rank(engine: &TemporalEngine, key: &str, filters: Vec<FeatureFilter>, score: 
     });
     assert!(response.status.ok, "{:?}", response.status);
     match response.response {
-        CommandResponse::CellRanking { ranked } => {
+        CommandResponse::WindowReduceRanking { ranked } => {
             assert!(ranked.refused.is_empty(), "refused: {}", ranked.refused);
             ranked
         }
@@ -140,12 +140,12 @@ fn members(ranked: &RankedCells) -> Vec<u64> {
         .collect()
 }
 
-fn click_rate() -> CellScore {
-    CellScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() }
+fn click_rate() -> WindowReduceScore {
+    WindowReduceScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() }
 }
 
-fn wilson_bound() -> CellScore {
-    CellScore::Wilson { successes: "clicks".to_string(), trials: "impressions".to_string(), z: 1.96 }
+fn wilson_bound() -> WindowReduceScore {
+    WindowReduceScore::Wilson { successes: "clicks".to_string(), trials: "impressions".to_string(), z: 1.96 }
 }
 
 #[test]
@@ -195,7 +195,7 @@ fn a_worked_example_of_cells() {
     // click rate -> the best first. The ten-minute-old sample is outside the window, so item 1
     // is 1 click in 1 impression, not 1 click in 1 001.
     let by_rate = rank(&engine, &key, Vec::new(), click_rate());
-    assert_eq!(by_rate.snapshots, 2, "the window holds the half-minute and the twenty-second samples");
+    assert_eq!(by_rate.samples, 2, "the window holds the half-minute and the twenty-second samples");
     assert_eq!(members(&by_rate), vec![1, 3, 2]);
     let rates: Vec<f64> = by_rate.rows.iter().map(|row| row.score).collect();
     for (got, want) in rates.iter().zip([1.0, 0.9, 0.8]) {
@@ -230,12 +230,12 @@ fn a_worked_example_of_cells() {
     // ---- 6. A NAME THE KEY DID NOT DECLARE IS REFUSED, NOT GUESSED ----------------------------
     let refused = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::CellRankQuery {
+        command: Command::WindowReduceRank {
             key: key.clone(),
-            spec: CellRankSpec {
-                window: CellWindow::Last { duration_ms: 60_000 },
+            spec: WindowReduceRankSpec {
+                window: WindowReduceWindow::Last { duration_ms: 60_000 },
                 filters: Vec::new(),
-                score: CellScore::Lane { lane: "views".to_string() },
+                score: WindowReduceScore::Lane { lane: "views".to_string() },
                 top_k: 10,
                 project: Vec::new(),
                 members: Default::default(),
@@ -245,7 +245,7 @@ fn a_worked_example_of_cells() {
         },
     });
     match refused.response {
-        CommandResponse::CellRanking { ranked } => {
+        CommandResponse::WindowReduceRanking { ranked } => {
             assert!(ranked.refused.contains("views"), "{}", ranked.refused);
             assert!(ranked.rows.is_empty());
         }

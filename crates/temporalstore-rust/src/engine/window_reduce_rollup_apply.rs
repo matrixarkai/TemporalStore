@@ -35,7 +35,7 @@
 //! Samples are counted over the whole series. Cells are counted over the samples the request
 //! touched, the ones below the first cutoff, and after a truncation only the cells of the rolled
 //! samples that remain; the others are not read. `cells_dropped` is the cap's. A truncation
-//! shows in `snapshots_after`.
+//! shows in `samples_after`.
 //!
 //! A request that would change nothing (every rolled sample already at its bucket start and
 //! encoding to the bytes it has, and nothing to truncate) reports `changed == false` and writes
@@ -52,7 +52,7 @@ use crate::types::FeaturePoint;
 
 /// What a rollup request does to a series.
 #[derive(Debug, PartialEq)]
-pub(super) struct CellRollupPlan {
+pub(super) struct WindowReduceRollupPlan {
     /// Stamps of the stored samples the request replaces or removes, ascending, in one run of
     /// the series: those below the first cutoff, then the oldest untouched ones a truncation
     /// removes.
@@ -62,8 +62,8 @@ pub(super) struct CellRollupPlan {
     pub(super) points: Vec<FeaturePoint>,
     /// Whether the series changes.
     pub(super) changed: bool,
-    pub(super) snapshots_before: u64,
-    pub(super) snapshots_after: u64,
+    pub(super) samples_before: u64,
+    pub(super) samples_after: u64,
     pub(super) cells_before: u64,
     pub(super) cells_after: u64,
     pub(super) cells_dropped: u64,
@@ -83,14 +83,14 @@ pub(super) fn plan_window_reduce_rollup(
     key: &str,
     routing_bucket: u32,
     spec: &RollupSpec,
-) -> Result<CellRollupPlan, Status> {
+) -> Result<WindowReduceRollupPlan, Status> {
     validate_spec(spec).map_err(|why| refuse(key, why))?;
-    let empty = |snapshots: u64| CellRollupPlan {
+    let empty = |samples: u64| WindowReduceRollupPlan {
         replaced: Vec::new(),
         points: Vec::new(),
         changed: false,
-        snapshots_before: snapshots,
-        snapshots_after: snapshots,
+        samples_before: samples,
+        samples_after: samples,
         cells_before: 0,
         cells_after: 0,
         cells_dropped: 0,
@@ -134,7 +134,7 @@ pub(super) fn plan_window_reduce_rollup(
         .ok_or_else(|| Status::error("data_loss", format!("{key}: the sample stored at {newest_ms} cannot be read")))?
         .map_err(|why| refuse(key, format!("the sample at {newest_ms} is not a cell sample: {why}")))?;
 
-        let mut snapshots: Vec<FlatSample> = Vec::with_capacity(below.len());
+        let mut samples: Vec<FlatSample> = Vec::with_capacity(below.len());
         for &(timestamp_ms, address) in &below {
             let decoded = read_feature_value_with(
                 cache,
@@ -155,13 +155,13 @@ pub(super) fn plan_window_reduce_rollup(
             )
             .ok_or_else(|| Status::error("data_loss", format!("{key}: the sample stored at {timestamp_ms} cannot be read")))?
             .map_err(|why| refuse(key, format!("the sample at {timestamp_ms}: {why}")))?;
-            snapshots.push(FlatSample { timestamp_ms, cells: decoded.0 });
+            samples.push(FlatSample { timestamp_ms, cells: decoded.0 });
             stored.push(decoded.1);
         }
-        let result = rollup_flat_spec(&header, snapshots, spec, newest_ms).map_err(|why| refuse(key, why))?;
+        let result = rollup_flat_spec(&header, samples, spec, newest_ms).map_err(|why| refuse(key, why))?;
         cells_before = result.stats.cells_before;
         cells_dropped = result.stats.cells_dropped;
-        rolled = result.snapshots;
+        rolled = result.samples;
         header_for_points = Some(header);
     }
 
@@ -176,10 +176,10 @@ pub(super) fn plan_window_reduce_rollup(
     let mut cells_after = 0u64;
     let mut points = Vec::with_capacity(rolled.len() - dropped_rolled);
     if let Some(header) = &header_for_points {
-        for snapshot in &rolled[dropped_rolled..] {
-            cells_after += snapshot.cells.len() as u64;
-            let value = snapshot.cells.encode_value(header).map_err(|why| refuse(key, why))?;
-            points.push(FeaturePoint { timestamp_ms: snapshot.timestamp_ms, value });
+        for sample in &rolled[dropped_rolled..] {
+            cells_after += sample.cells.len() as u64;
+            let value = sample.cells.encode_value(header).map_err(|why| refuse(key, why))?;
+            points.push(FeaturePoint { timestamp_ms: sample.timestamp_ms, value });
         }
     }
     let changed = drop > 0
@@ -191,12 +191,12 @@ pub(super) fn plan_window_reduce_rollup(
 
     let mut replaced: Vec<u64> = below.iter().map(|(timestamp_ms, _)| *timestamp_ms).collect();
     replaced.extend(removed_untouched);
-    Ok(CellRollupPlan {
+    Ok(WindowReduceRollupPlan {
         replaced,
         points,
         changed,
-        snapshots_before: total,
-        snapshots_after: standing - drop,
+        samples_before: total,
+        samples_after: standing - drop,
         cells_before,
         cells_after,
         cells_dropped,

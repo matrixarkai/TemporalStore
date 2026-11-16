@@ -303,7 +303,7 @@ fn weighted_lanes_are_accepted_at_8_and_refused_at_9() {
         ..selector(RankMode::Weighted)
     };
     let plan = translate_query(&profile, &query(trailing(), weighted(MAX_WEIGHTED))).unwrap();
-    assert!(matches!(plan.spec.score, CellScore::Weighted { ref lanes, .. } if lanes.len() == 8));
+    assert!(matches!(plan.spec.score, WindowReduceScore::Weighted { ref lanes, .. } if lanes.len() == 8));
     assert!(translate_query(&profile, &query(trailing(), weighted(MAX_WEIGHTED + 1))).unwrap_err().message.contains("over the limit"));
 }
 
@@ -351,21 +351,21 @@ fn the_accepted_timestamp_range_is_open_at_both_ends() {
 fn each_translated_rank_mode_becomes_the_score_it_names() {
     let profile = pair_profile();
     let score = |s: WindowReduceSelector| translate_query(&profile, &query(trailing(), s)).unwrap().spec.score;
-    assert_eq!(score(selector(RankMode::FirstLane)), CellScore::Lane { lane: "impressions".into() });
-    assert_eq!(score(selector(RankMode::SecondLane)), CellScore::Lane { lane: "clicks".into() });
-    assert_eq!(score(selector(RankMode::Member)), CellScore::Member);
+    assert_eq!(score(selector(RankMode::FirstLane)), WindowReduceScore::Lane { lane: "impressions".into() });
+    assert_eq!(score(selector(RankMode::SecondLane)), WindowReduceScore::Lane { lane: "clicks".into() });
+    assert_eq!(score(selector(RankMode::Member)), WindowReduceScore::Member);
     assert_eq!(
         score(selector(RankMode::Ratio)),
-        CellScore::Ratio { numerator: "impressions".into(), denominator: "clicks".into() }
+        WindowReduceScore::Ratio { numerator: "impressions".into(), denominator: "clicks".into() }
     );
     assert_eq!(
         score(selector(RankMode::Wilson)),
-        CellScore::Wilson { successes: "impressions".into(), trials: "clicks".into(), z: DEFAULT_WILSON_Z }
+        WindowReduceScore::Wilson { successes: "impressions".into(), trials: "clicks".into(), z: DEFAULT_WILSON_Z }
     );
     let z = WindowReduceSelector { has_wilson_z: true, wilson_z: 2.5, ..selector(RankMode::Wilson) };
-    assert!(matches!(score(z), CellScore::Wilson { z, .. } if z == 2.5));
+    assert!(matches!(score(z), WindowReduceScore::Wilson { z, .. } if z == 2.5));
     let named = WindowReduceSelector { has_sort_lane: true, sort_lane: 1, ..selector(RankMode::NamedLane) };
-    assert_eq!(score(named), CellScore::Lane { lane: "clicks".into() });
+    assert_eq!(score(named), WindowReduceScore::Lane { lane: "clicks".into() });
     let off = WindowReduceSelector { has_sort_lane: true, sort_lane: 2, ..selector(RankMode::NamedLane) };
     assert!(translate_query(&profile, &query(trailing(), off)).is_err());
 }
@@ -407,7 +407,7 @@ fn a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time() {
     };
     let planned = plan(only(vec![3, 4, 5])).unwrap();
     assert_eq!(3, planned.spec.top_k, "the limit of the request was used");
-    assert_eq!(CellScore::Time, planned.spec.score);
+    assert_eq!(WindowReduceScore::Time, planned.spec.score);
     assert_eq!(
         Some(vec![CellMemberId::U64(3), CellMemberId::U64(4), CellMemberId::U64(5)]),
         planned.spec.members.include
@@ -432,14 +432,14 @@ fn a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time() {
 #[test]
 fn a_window_from_a_start_covers_whole_milliseconds_and_excludes_its_end() {
     let w = |start_us, span| Window { kind: WindowKind::FromStart as i32, span, start_us };
-    assert_eq!(window_of(&w(1_000, 3_000)).unwrap(), CellWindow::Between { start_ms: 1, end_ms: 3 });
-    assert_eq!(window_of(&w(1_001, 3_000)).unwrap(), CellWindow::Between { start_ms: 2, end_ms: 4 });
-    assert_eq!(window_of(&w(0, 1_000)).unwrap(), CellWindow::Between { start_ms: 0, end_ms: 0 });
+    assert_eq!(window_of(&w(1_000, 3_000)).unwrap(), WindowReduceWindow::Between { start_ms: 1, end_ms: 3 });
+    assert_eq!(window_of(&w(1_001, 3_000)).unwrap(), WindowReduceWindow::Between { start_ms: 2, end_ms: 4 });
+    assert_eq!(window_of(&w(0, 1_000)).unwrap(), WindowReduceWindow::Between { start_ms: 0, end_ms: 0 });
     assert!(window_of(&w(5, 0)).is_err());
     assert!(window_of(&w(5, -1)).is_err());
     assert_eq!(
         window_of(&Window { kind: WindowKind::TrailingFromNow as i32, span: 61_999, start_us: 0 }).unwrap(),
-        CellWindow::Last { duration_ms: 61 }
+        WindowReduceWindow::Last { duration_ms: 61 }
     );
 }
 
@@ -449,7 +449,7 @@ fn an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time() {
     let ranked = RankedCells {
         label_columns: vec!["slot".into()],
         lane_columns: vec!["impressions".into(), "clicks".into()],
-        snapshots: 2,
+        samples: 2,
         keys: 1,
         unscored: 1,
         rows: vec![crate::types::RankedCellRow {
@@ -583,7 +583,7 @@ fn a_member_set_round_trips_the_wire_and_becomes_the_include_and_exclude_filter(
             exclude: vec![CellMemberId::U64(9), CellMemberId::U64(u64::MAX)],
         }
     );
-    assert_eq!(planned.clone().command(), Command::CellRankQuery { key: planned.key, spec: planned.spec });
+    assert_eq!(planned.clone().command(), Command::WindowReduceRank { key: planned.key, spec: planned.spec });
     // An exclusion alone leaves the include set absent: nothing is restricted but those members.
     let only_exclude = plan(WindowReduceSelector { excluded_members: vec![4], ..selector(RankMode::FirstLane) });
     assert_eq!(only_exclude.spec.members.include, None);
@@ -613,15 +613,15 @@ fn a_window_anchored_on_the_newest_snapshot_becomes_the_newest_anchor_and_the_cl
     };
     for kind in [WindowKind::TrailingFromNewest, WindowKind::TrailingFromNewestOfKind] {
         let planned = read(kind).unwrap();
-        assert_eq!(planned.spec.window, CellWindow::Last { duration_ms: 5_000 }, "{kind:?}");
-        assert_eq!(planned.spec.anchor, CellAnchor::Newest, "{kind:?}");
+        assert_eq!(planned.spec.window, WindowReduceWindow::Last { duration_ms: 5_000 }, "{kind:?}");
+        assert_eq!(planned.spec.anchor, WindowReduceAnchor::Newest, "{kind:?}");
     }
     let clock = read(WindowKind::TrailingFromNow).unwrap();
-    assert_eq!((clock.spec.window, clock.spec.anchor), (CellWindow::Last { duration_ms: 5_000 }, CellAnchor::Request));
+    assert_eq!((clock.spec.window, clock.spec.anchor), (WindowReduceWindow::Last { duration_ms: 5_000 }, WindowReduceAnchor::Request));
     // A window from a start has no clock to replace: it stays on the request anchor.
     let from = Window { kind: WindowKind::FromStart as i32, span: 2_000, start_us: 1_000 };
     let from = translate_query(&profile, &query(from, selector(RankMode::FirstLane))).unwrap();
-    assert_eq!(from.spec.anchor, CellAnchor::Request);
+    assert_eq!(from.spec.anchor, WindowReduceAnchor::Request);
     let negative = Window { kind: WindowKind::TrailingFromNewest as i32, span: -1, start_us: 0 };
     assert!(translate_query(&profile, &query(negative, selector(RankMode::FirstLane))).is_err());
 }
@@ -634,17 +634,17 @@ fn a_quota_names_lanes_by_position_and_its_first_count_is_also_the_others_count(
     let quota = plan(back).spec.quota;
     assert_eq!(
         quota,
-        CellQuota {
+        WindowReduceQuota {
             lanes: vec![
-                CellLaneQuota { lane: "clicks".into(), count: 2 },
-                CellLaneQuota { lane: "impressions".into(), count: 3 },
+                WindowReduceLaneQuota { lane: "clicks".into(), count: 2 },
+                WindowReduceLaneQuota { lane: "impressions".into(), count: 3 },
             ],
             others: 2,
         }
     );
     // One count and no lane asks for members that fit no lane, and nothing else.
     let others_only = plan(WindowReduceSelector { quota_counts: vec![4], ..selector(RankMode::FirstLane) }).spec.quota;
-    assert_eq!(others_only, CellQuota { lanes: Vec::new(), others: 4 });
+    assert_eq!(others_only, WindowReduceQuota { lanes: Vec::new(), others: 4 });
     assert!(plan(selector(RankMode::FirstLane)).spec.quota.is_none());
 }
 
@@ -697,7 +697,7 @@ fn a_decayed_lane_takes_its_half_life_from_decay_made_whole_by_its_rounding() {
         ..selector(RankMode::DecayedLane)
     };
     let half_life = |s: WindowReduceSelector| match plan(s).spec.score {
-        CellScore::Decay { lane, half_life_ms } => {
+        WindowReduceScore::Decay { lane, half_life_ms } => {
             assert_eq!(lane, "clicks");
             half_life_ms
         }
@@ -709,7 +709,7 @@ fn a_decayed_lane_takes_its_half_life_from_decay_made_whole_by_its_rounding() {
     assert_eq!(half_life(decayed(1500.4, Rounding::Round)), 1500);
     // The lane defaults to the first, and the field numbers are the established ones.
     let first = plan(WindowReduceSelector { decay: 7.0, ..selector(RankMode::DecayedLane) });
-    assert_eq!(first.spec.score, CellScore::Decay { lane: "impressions".into(), half_life_ms: 7 });
+    assert_eq!(first.spec.score, WindowReduceScore::Decay { lane: "impressions".into(), half_life_ms: 7 });
     assert_eq!(WindowReduceSelector { decay: 1.0, ..Default::default() }.encode_to_vec(), vec![0x51, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f]);
     // The mode is a new enum value; the other modes still ignore `decay`.
     assert_eq!(plan(WindowReduceSelector { decay: 99.0, ..selector(RankMode::FirstLane) }).spec.score, plan(selector(RankMode::FirstLane)).spec.score);
@@ -743,7 +743,7 @@ fn more_entities_become_one_merged_read_over_every_key_in_request_order() {
     };
     let planned = translate_query(&profile, &q).unwrap();
     match planned.clone().command() {
-        Command::CellFanInRankQuery { keys, spec } => {
+        Command::WindowReduceFanInRank { keys, spec } => {
             assert_eq!(keys, vec![key_of_entity(7), key_of_entity(8), key_of_entity(9)]);
             assert_eq!(spec, planned.spec);
         }
@@ -751,7 +751,7 @@ fn more_entities_become_one_merged_read_over_every_key_in_request_order() {
     }
     // A read of one key stays a one-key read, not a merged read of a single key.
     let single = translate_query(&profile, &query(trailing(), selector(RankMode::FirstLane))).unwrap();
-    assert!(matches!(single.command(), Command::CellRankQuery { .. }));
+    assert!(matches!(single.command(), Command::WindowReduceRank { .. }));
 }
 
 #[test]
@@ -773,7 +773,7 @@ fn a_merged_read_refuses_a_key_named_twice_and_an_entity_that_is_not_an_id() {
 
 #[test]
 fn a_merged_answer_reports_how_many_keys_held_a_snapshot() {
-    let ranked = RankedCells { snapshots: 4, keys: 3, ..Default::default() };
+    let ranked = RankedCells { samples: 4, keys: 3, ..Default::default() };
     let a = answer_of(&pair_profile(), &query(trailing(), selector(RankMode::FirstLane)), &ranked);
     assert_eq!((a.samples, a.keys), (4, 3));
     // Field 20, varint: tag 0xa0 0x01.
@@ -789,9 +789,9 @@ fn a_batch_becomes_one_batch_command_that_the_engine_admits_and_a_merged_read_ha
     let batch = WindowReduceBatchQuery { queries: vec![first, second] };
     let batch = WindowReduceBatchQuery::decode(batch.encode_to_vec().as_slice()).unwrap();
     let plans = translate_batch(&profiles, &batch).unwrap();
-    let expected: Vec<CellRankBatchItem> =
-        plans.iter().cloned().map(|p| CellRankBatchItem { key: p.key, spec: p.spec }).collect();
-    assert_eq!(batch_command(plans).unwrap(), Command::CellRankBatchQuery { queries: expected.clone() });
+    let expected: Vec<WindowReduceRankBatchItem> =
+        plans.iter().cloned().map(|p| WindowReduceRankBatchItem { key: p.key, spec: p.spec }).collect();
+    assert_eq!(batch_command(plans).unwrap(), Command::WindowReduceRankBatch { queries: expected.clone() });
     assert_eq!(expected[1].spec.members.exclude, vec![CellMemberId::U64(3)]);
     let mut merged = batch.queries[0].clone();
     merged.more_entities = vec![8];
@@ -809,7 +809,7 @@ fn a_batch_answer_holds_one_answer_per_query_in_order_each_with_its_own_status()
     other.entity = 8;
     let batch = WindowReduceBatchQuery { queries: vec![query(trailing(), selector(RankMode::FirstLane)), other] };
     let rankings = vec![
-        RankedCells { snapshots: 2, keys: 1, ..Default::default() },
+        RankedCells { samples: 2, keys: 1, ..Default::default() },
         RankedCells { refused: "why".into(), ..Default::default() },
     ];
     let answer = batch_answer(&profiles, &batch, &rankings);
@@ -889,7 +889,7 @@ fn slot_is_five() -> FeatureFilter {
 #[test]
 fn recent_is_the_stored_cell_read_with_the_selectors_label_and_limit() {
     let recent = plan(selector(RankMode::Recent));
-    assert_eq!(recent.spec.score, CellScore::Recent);
+    assert_eq!(recent.spec.score, WindowReduceScore::Recent);
     assert_eq!(recent.spec.filters, vec![slot_is_five()]);
     assert_eq!(recent.spec.top_k, 10);
     // The limit is the read's: accepted at 1000, refused at 1001 and at 0.
@@ -921,7 +921,7 @@ fn match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_s
     };
     let on = |lane: &str, value: u64| FeatureFilter { field: lane.into(), op: FeatureFilterOp::Equal, value };
     let first = matched(Some(0), Some(42)).unwrap();
-    assert_eq!(first.spec.score, CellScore::Recent);
+    assert_eq!(first.spec.score, WindowReduceScore::Recent);
     assert_eq!(first.spec.filters, vec![slot_is_five(), on("impressions", 42)]);
     assert_eq!(matched(Some(1), Some(7)).unwrap().spec.filters, vec![slot_is_five(), on("clicks", 7)]);
     // An absent lane is the first and an absent value is 0, as a sort lane is.
@@ -942,7 +942,7 @@ fn a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_snapshot() {
     let profile = pair_profile();
     let q = query(trailing(), selector(RankMode::Recent));
     let ranked = RankedCells {
-        snapshots: 2,
+        samples: 2,
         keys: 1,
         rows: vec![
             crate::types::RankedCellRow { member: CellMemberId::U64(7), score: 300.0, last_ms: 300, labels: vec![5], lanes: vec![1, 2] },

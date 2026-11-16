@@ -1382,7 +1382,7 @@ mod packed_hash_entry_tests {
 
 /// Replaces every point of `key`'s series stamped in `[start_ms, end_ms]` with `points`, trims
 /// to the feature ceiling and restates the bucket index with the live blocks. Returns whether
-/// anything changed, OR-ed with `mutated`. `FeatureReplace` and `CellRollup` replace a range the
+/// anything changed, OR-ed with `mutated`. `FeatureReplace` and `WindowReduceRollup` replace a range the
 /// same way.
 #[allow(clippy::too_many_arguments)]
 fn replace_feature_range(
@@ -4089,7 +4089,7 @@ pub(crate) fn execute_on_shard(
                 ) {
                     return ExecuteOutcome {
                         response: CommandResponse::CellMergeReceipt {
-                            snapshots_written: first.snapshots_written,
+                            samples_written: first.samples_written,
                             cells_created: first.cells_created,
                             cells_merged: first.cells_merged,
                             replayed: true,
@@ -4101,7 +4101,7 @@ pub(crate) fn execute_on_shard(
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // MERGE-REDUCE: the request's cells are merged into what is stored BEFORE the series
-            // is borrowed for writing, and what is appended below is the merged snapshot at each
+            // is borrowed for writing, and what is appended below is the merged sample at each
             // timestamp -- an ordinary upsert of it. See `cell_merge_append` for where a violation
             // is refused (validation) and why this plan cannot fail here for a validated command.
             let mut merge_receipt = None;
@@ -4127,7 +4127,7 @@ pub(crate) fn execute_on_shard(
                     Err(_) => {
                         return ExecuteOutcome {
                             response: CommandResponse::CellMergeReceipt {
-                                snapshots_written: 0,
+                                samples_written: 0,
                                 cells_created: 0,
                                 cells_merged: 0,
                                 replayed: false,
@@ -4175,7 +4175,7 @@ pub(crate) fn execute_on_shard(
                     FeatureWritePolicy::InsertIfAbsent => !exists,
                     FeatureWritePolicy::ReplaceExisting => exists,
                     FeatureWritePolicy::Block => false,
-                    // The point is already the merged snapshot: an upsert of it.
+                    // The point is already the merged sample: an upsert of it.
                     FeatureWritePolicy::MergeReduce => true,
                 };
                 if should_write {
@@ -4236,7 +4236,7 @@ pub(crate) fn execute_on_shard(
             // and the series borrows the whole of it until here. It is filed only when this command
             // wrote, and only while the key still holds a series: an append that the trim emptied
             // leaves no key for a ring to belong to, so the ring goes with it.
-            if let (Some(token), Some((snapshots_written, cells_created, cells_merged))) =
+            if let (Some(token), Some((samples_written, cells_created, cells_merged))) =
                 (retry_token, merge_receipt)
             {
                 let live = shard.features().get(&key[..]).is_some_and(|series| series.len() > 0);
@@ -4244,7 +4244,7 @@ pub(crate) fn execute_on_shard(
                     shard.forget_retry_ring(&key);
                 } else if appended {
                     let filed = crate::engine::cell_retry_ring::RetryReceipt {
-                        snapshots_written,
+                        samples_written,
                         cells_created,
                         cells_merged,
                     };
@@ -4258,6 +4258,7 @@ pub(crate) fn execute_on_shard(
                     if shard.record_retry_token(&key, token, filed).is_ok() {
                         stage_meta_outcome(
                             shard_id,
+                            // The item kind text is stored in the log, so it keeps its original spelling: it is a storage tag, not a name.
                             "cell_retry",
                             &key,
                             start_routing_bucket,
@@ -4272,16 +4273,16 @@ pub(crate) fn execute_on_shard(
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             match merge_receipt {
                 // A plan that was never appended reports nothing landed.
-                Some((snapshots_written, cells_created, cells_merged)) if mutated => {
+                Some((samples_written, cells_created, cells_merged)) if mutated => {
                     CommandResponse::CellMergeReceipt {
-                        snapshots_written,
+                        samples_written,
                         cells_created,
                         cells_merged,
                         replayed: false,
                     }
                 }
                 Some(_) => CommandResponse::CellMergeReceipt {
-                    snapshots_written: 0,
+                    samples_written: 0,
                     cells_created: 0,
                     cells_merged: 0,
                     replayed: false,
@@ -4830,18 +4831,18 @@ pub(crate) fn execute_on_shard(
                 .collect();
             CommandResponse::SequenceRowGroups { groups }
         }
-        Command::CellRankQuery { key, spec } => {
+        Command::WindowReduceRank { key, spec } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "feature", &key);
                 return ExecuteOutcome {
-                    response: CommandResponse::CellRanking {
+                    response: CommandResponse::WindowReduceRanking {
                         ranked: crate::types::RankedCells::default(),
                     },
                     mutated,
                 };
             }
-            CommandResponse::CellRanking {
+            CommandResponse::WindowReduceRanking {
                 ranked: window_reduce_rank_read::serve(
                     cache,
                     block_store,
@@ -4855,7 +4856,7 @@ pub(crate) fn execute_on_shard(
                 ),
             }
         }
-        Command::CellRollup { key, spec } => {
+        Command::WindowReduceRollup { key, spec } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // THE SAME PLANNER AS ADMISSION, over the same series, so a follower and a replay
@@ -4873,7 +4874,7 @@ pub(crate) fn execute_on_shard(
             .ok();
             let receipt = match plan {
                 Some(plan) => {
-                    // The stored snapshots below the cutoff are exactly `plan.replaced`; the
+                    // The stored samples below the cutoff are exactly `plan.replaced`; the
                     // range from the first to the last of them holds nothing else.
                     if let (true, Some(&first), Some(&last)) =
                         (plan.changed, plan.replaced.first(), plan.replaced.last())
@@ -4899,17 +4900,17 @@ pub(crate) fn execute_on_shard(
                         control_rollup::feature_forget(shard, &key);
                         let _ = cache.invalidate_record(shard_id, "feature", &key);
                     }
-                    CommandResponse::CellRollupReceipt {
-                        snapshots_before: plan.snapshots_before,
-                        snapshots_after: plan.snapshots_after,
+                    CommandResponse::WindowReduceRollupReceipt {
+                        samples_before: plan.samples_before,
+                        samples_after: plan.samples_after,
                         cells_before: plan.cells_before,
                         cells_after: plan.cells_after,
                         cells_dropped: plan.cells_dropped,
                     }
                 }
-                None => CommandResponse::CellRollupReceipt {
-                    snapshots_before: 0,
-                    snapshots_after: 0,
+                None => CommandResponse::WindowReduceRollupReceipt {
+                    samples_before: 0,
+                    samples_after: 0,
                     cells_before: 0,
                     cells_after: 0,
                     cells_dropped: 0,
@@ -4917,7 +4918,7 @@ pub(crate) fn execute_on_shard(
             };
             receipt
         }
-        Command::CellRemove { key, spec } => {
+        Command::WindowReduceRemove { key, spec } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // THE SAME PLANNER AS ADMISSION, over the same series, so a follower and a replay
@@ -4935,7 +4936,7 @@ pub(crate) fn execute_on_shard(
             .ok();
             match plan {
                 Some(plan) => {
-                    // The snapshots from the first change to the last are exactly `plan.replaced`;
+                    // The samples from the first change to the last are exactly `plan.replaced`;
                     // the range holds nothing else.
                     if let (true, Some(&first), Some(&last)) =
                         (plan.changed, plan.replaced.first(), plan.replaced.last())
@@ -4961,26 +4962,26 @@ pub(crate) fn execute_on_shard(
                         control_rollup::feature_forget(shard, &key);
                         let _ = cache.invalidate_record(shard_id, "feature", &key);
                     }
-                    CommandResponse::CellRemoveReceipt {
-                        snapshots_before: plan.snapshots_before,
-                        snapshots_after: plan.snapshots_after,
+                    CommandResponse::WindowReduceRemoveReceipt {
+                        samples_before: plan.samples_before,
+                        samples_after: plan.samples_after,
                         cells_before: plan.cells_before,
                         cells_removed: plan.cells_removed,
                     }
                 }
-                None => CommandResponse::CellRemoveReceipt {
-                    snapshots_before: 0,
-                    snapshots_after: 0,
+                None => CommandResponse::WindowReduceRemoveReceipt {
+                    samples_before: 0,
+                    samples_after: 0,
                     cells_before: 0,
                     cells_removed: 0,
                 },
             }
         }
-        Command::CellRankBatchQuery { queries } => {
+        Command::WindowReduceRankBatch { queries } => {
             // Each read is the one-key read: an expired key is dropped and answers empty, a read
             // that cannot be served answers with its reason, and neither touches the others.
             let mut rankings = Vec::with_capacity(queries.len());
-            for crate::types::CellRankBatchItem { key, spec } in queries {
+            for crate::types::WindowReduceRankBatchItem { key, spec } in queries {
                 if drop_if_expired(cache, shard_id, shard, &key) {
                     mutated = true;
                     let _ = cache.invalidate_record(shard_id, "feature", &key);
@@ -4999,18 +5000,18 @@ pub(crate) fn execute_on_shard(
                     resolve_now_ms(),
                 ));
             }
-            CommandResponse::CellRankings { rankings }
+            CommandResponse::WindowReduceRankings { rankings }
         }
-        Command::CellFanInRankQuery { keys, spec } => {
+        Command::WindowReduceFanInRank { keys, spec } => {
             // An expired key is dropped exactly as a one-key read drops it, and then holds
-            // nothing: it contributes no snapshot and is not counted as read.
+            // nothing: it contributes no sample and is not counted as read.
             for key in &keys {
                 if drop_if_expired(cache, shard_id, shard, key) {
                     mutated = true;
                     let _ = cache.invalidate_record(shard_id, "feature", key);
                 }
             }
-            CommandResponse::CellRanking {
+            CommandResponse::WindowReduceRanking {
                 ranked: window_reduce_rank_read::serve_many(
                     cache,
                     block_store,

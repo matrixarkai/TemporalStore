@@ -18,7 +18,7 @@ use crate::engine::cell_set::{
     encode_key, encode_value, Cell, CellHeader, CellKey, DimSpec, DimType, DimValue, EntityType, EntityValue,
     KeySpec, LaneReducer, LaneSpec, Member, HEADER_VERSION,
 };
-use crate::types::{CellCapSpec, CellRankSpec, CellRollupSpec, CellScore, CellWindow, FeatureWritePolicy};
+use crate::types::{WindowReduceCapSpec, WindowReduceRankSpec, WindowReduceRollupSpec, WindowReduceScore, WindowReduceWindow, FeatureWritePolicy};
 
 pub(super) fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
@@ -73,10 +73,10 @@ pub(super) fn cells(count: usize, salt: u64) -> Vec<Cell> {
         .collect()
 }
 
-/// `snapshots` samples of `cell_count` cells each under `key`, stamped 100, 200, ...
-pub(super) fn seed(engine: &TemporalEngine, key: &str, snapshots: usize, cell_count: usize) {
+/// `samples` samples of `cell_count` cells each under `key`, stamped 100, 200, ...
+pub(super) fn seed(engine: &TemporalEngine, key: &str, samples: usize, cell_count: usize) {
     let h = header();
-    for i in 0..snapshots {
+    for i in 0..samples {
         let value = encode_value(&h, &cells(cell_count, i as u64 + 1)).unwrap();
         let response = exec(
             engine,
@@ -89,10 +89,10 @@ pub(super) fn seed(engine: &TemporalEngine, key: &str, snapshots: usize, cell_co
     }
 }
 
-pub(super) fn spec() -> CellRankSpec {
-    CellRankSpec::new(
-        CellWindow::Between { start_ms: 0, end_ms: u64::MAX },
-        CellScore::Lane { lane: "shown".to_string() },
+pub(super) fn spec() -> WindowReduceRankSpec {
+    WindowReduceRankSpec::new(
+        WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX },
+        WindowReduceScore::Lane { lane: "shown".to_string() },
         10,
     )
 }
@@ -109,8 +109,8 @@ pub(super) fn per_op(reps: usize, mut op: impl FnMut()) -> (f64, f64) {
 }
 
 pub(super) fn ranked_read(engine: &TemporalEngine, key: &str) -> Vec<crate::types::RankedCellRow> {
-    match exec(engine, Command::CellRankQuery { key: key.to_string(), spec: spec() }).response {
-        CommandResponse::CellRanking { ranked } => {
+    match exec(engine, Command::WindowReduceRank { key: key.to_string(), spec: spec() }).response {
+        CommandResponse::WindowReduceRanking { ranked } => {
             assert!(ranked.refused.is_empty(), "{:?}", ranked);
             ranked.rows
         }
@@ -119,8 +119,8 @@ pub(super) fn ranked_read(engine: &TemporalEngine, key: &str) -> Vec<crate::type
 }
 
 pub(super) fn fan_in_read(engine: &TemporalEngine, keys: &[String]) -> Vec<crate::types::RankedCellRow> {
-    match exec(engine, Command::CellFanInRankQuery { keys: keys.to_vec(), spec: spec() }).response {
-        CommandResponse::CellRanking { ranked } => {
+    match exec(engine, Command::WindowReduceFanInRank { keys: keys.to_vec(), spec: spec() }).response {
+        CommandResponse::WindowReduceRanking { ranked } => {
             assert!(ranked.refused.is_empty(), "{:?}", ranked);
             ranked.rows
         }
@@ -128,23 +128,23 @@ pub(super) fn fan_in_read(engine: &TemporalEngine, keys: &[String]) -> Vec<crate
     }
 }
 
-/// (allocations, bytes) of one rollup of `snapshots` samples of `cell_count` cells into ten buckets.
-pub(super) fn rollup_once(snapshots: usize, cell_count: usize) -> (f64, f64) {
+/// (allocations, bytes) of one rollup of `samples` samples of `cell_count` cells into ten buckets.
+pub(super) fn rollup_once(samples: usize, cell_count: usize) -> (f64, f64) {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     let key = stored_key(1);
-    seed(&engine, &key, snapshots, cell_count);
-    let span = 100 * (snapshots as u64 + 1);
-    let spec = CellRollupSpec {
+    seed(&engine, &key, samples, cell_count);
+    let span = 100 * (samples as u64 + 1);
+    let spec = WindowReduceRollupSpec {
         older_than_ms: span,
         bucket_ms: span / 10,
-        cap: None::<CellCapSpec>,
+        cap: None::<WindowReduceCapSpec>,
         anchor: Default::default(),
         coarser_tiers: Vec::new(),
         truncate: None,
     };
     let probe = Probe::start();
-    let response = exec(&engine, Command::CellRollup { key, spec });
+    let response = exec(&engine, Command::WindowReduceRollup { key, spec });
     let counts = probe.stop();
     assert!(response.status.ok, "{:?}", response.status);
     (counts.allocs as f64, counts.alloc_bytes as f64)
@@ -188,45 +188,45 @@ fn the_cell_model_allocation_tables() {
         let (a, b) = merge_once(cell_count);
         eprintln!("CELLTABLE merge cells={cell_count} allocs={a:.1} bytes={b:.0}");
     }
-    for (snapshots, cell_count) in [(1usize, 200usize), (16, 200), (256, 200), (16, 50), (16, 800)] {
+    for (samples, cell_count) in [(1usize, 200usize), (16, 200), (256, 200), (16, 50), (16, 800)] {
         let dir = tempfile::tempdir().unwrap();
         let engine = engine_on(dir.path());
         let key = stored_key(1);
-        seed(&engine, &key, snapshots, cell_count);
+        seed(&engine, &key, samples, cell_count);
         let (a, b) = per_op(5, || {
             assert_eq!(10, ranked_read(&engine, &key).len());
         });
         eprintln!(
-            "CELLTABLE rank samples={snapshots} cells={cell_count} allocs={a:.1} bytes={b:.0} allocs_per_cell_read={:.3}",
-            a / (snapshots * cell_count) as f64
+            "CELLTABLE rank samples={samples} cells={cell_count} allocs={a:.1} bytes={b:.0} allocs_per_cell_read={:.3}",
+            a / (samples * cell_count) as f64
         );
     }
-    for (keys, snapshots, cell_count) in [(8usize, 4usize, 200usize), (8, 16, 200), (8, 16, 50), (2, 16, 200)] {
+    for (keys, samples, cell_count) in [(8usize, 4usize, 200usize), (8, 16, 200), (8, 16, 50), (2, 16, 200)] {
         let dir = tempfile::tempdir().unwrap();
         let engine = engine_on(dir.path());
         let names: Vec<String> = (0..keys as u64).map(|e| stored_key(e + 1)).collect();
         for name in &names {
-            seed(&engine, name, snapshots, cell_count);
+            seed(&engine, name, samples, cell_count);
         }
         let (a, b) = per_op(5, || {
             assert_eq!(10, fan_in_read(&engine, &names).len());
         });
         eprintln!(
-            "CELLTABLE fan_in keys={keys} snapshots_per_key={snapshots} cells={cell_count} allocs={a:.1} bytes={b:.0} allocs_per_cell_read={:.3}",
-            a / (keys * snapshots * cell_count) as f64
+            "CELLTABLE fan_in keys={keys} snapshots_per_key={samples} cells={cell_count} allocs={a:.1} bytes={b:.0} allocs_per_cell_read={:.3}",
+            a / (keys * samples * cell_count) as f64
         );
     }
-    for (snapshots, cell_count) in [(100usize, 50usize), (1000, 50), (1000, 200)] {
-        let (a, b) = rollup_once(snapshots, cell_count);
+    for (samples, cell_count) in [(100usize, 50usize), (1000, 50), (1000, 200)] {
+        let (a, b) = rollup_once(samples, cell_count);
         eprintln!(
-            "CELLTABLE rollup samples={snapshots} cells={cell_count} allocs={a:.0} bytes={b:.0} allocs_per_cell={:.3}",
-            a / (snapshots * cell_count) as f64
+            "CELLTABLE rollup samples={samples} cells={cell_count} allocs={a:.0} bytes={b:.0} allocs_per_cell={:.3}",
+            a / (samples * cell_count) as f64
         );
     }
     {
         use crate::engine::cell_retry_ring::{RetryReceipt, RetryRing};
         let mut ring = RetryRing::new();
-        let receipt = RetryReceipt { snapshots_written: 1, cells_created: 2, cells_merged: 3 };
+        let receipt = RetryReceipt { samples_written: 1, cells_created: 2, cells_merged: 3 };
         for token in 0..16u64 {
             ring.record(token, receipt).unwrap();
         }
@@ -371,11 +371,11 @@ fn the_merge_plan_allocations_by_step() {
     step(&mut rows, "FlatCells::decode stored", || drop(FlatCells::decode(&h, &packed, 64).unwrap()));
     step(&mut rows, "decode_request (header + cells)", || drop(decode_request(&request).unwrap()));
     step(&mut rows, "merge_point stored (whole)", || {
-        let existing = Existing::Stored { header: &h, snapshot: &packed };
+        let existing = Existing::Stored { header: &h, sample: &packed };
         drop(merge_point(Some(&newest), existing, &request).unwrap())
     });
     let merged = {
-        let existing = Existing::Stored { header: &h, snapshot: &packed };
+        let existing = Existing::Stored { header: &h, sample: &packed };
         merge_point(Some(&newest), existing, &request).unwrap().1
     };
     step(&mut rows, "FlatCells::encode_value", || drop(merged.encode_value(&h).unwrap()));

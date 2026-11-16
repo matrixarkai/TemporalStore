@@ -781,7 +781,7 @@ fn a_merge_append_sends_its_retry_token_and_reports_a_replayed_receipt() {
                     &ExecuteResponse {
                         status: Status::ok(),
                         response: CommandResponse::CellMergeReceipt {
-                            snapshots_written: 1,
+                            samples_written: 1,
                             cells_created: 2,
                             cells_merged: 3,
                             replayed: seen.len() > 1,
@@ -808,7 +808,7 @@ fn a_merge_append_sends_its_retry_token_and_reports_a_replayed_receipt() {
         .unwrap();
     assert_eq!(
         crate::types::CellMergeSummary {
-            snapshots_written: 1,
+            samples_written: 1,
             cells_created: 2,
             cells_merged: 3,
             replayed: false,
@@ -819,7 +819,7 @@ fn a_merge_append_sends_its_retry_token_and_reports_a_replayed_receipt() {
         .feature_merge_cells_with_token("k", vec![point.clone()], 0)
         .unwrap();
     assert!(again.replayed, "the replayed flag was dropped on the way back");
-    assert_eq!((1, 2, 3), (again.snapshots_written, again.cells_created, again.cells_merged));
+    assert_eq!((1, 2, 3), (again.samples_written, again.cells_created, again.cells_merged));
     // CONTROL: the tokenless method puts no token on the command.
     table.feature_merge_cells("k", vec![point.clone()]).unwrap();
 
