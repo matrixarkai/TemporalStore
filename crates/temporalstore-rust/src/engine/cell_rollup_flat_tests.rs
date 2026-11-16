@@ -20,7 +20,7 @@ fn xorshift(state: &mut u64) -> u64 {
     *state
 }
 
-/// Five labels and six lanes, every reducer once: more than a small vector holds, so a path that
+/// Four labels (the most a cell holds) and six lanes, every reducer once: more lanes than a small vector holds, so a path that
 /// grows its vectors and one that does not come out the same.
 fn wide_header() -> CellHeader {
     use LaneReducer::*;
@@ -31,7 +31,7 @@ fn wide_header() -> CellHeader {
             entity: EntityType::U64,
             dimensions: vec![DimSpec { name: "channel".to_string(), ty: DimType::U16, required: true }],
         },
-        labels: (0..5).map(|i| format!("g{i}")).collect(),
+        labels: (0..4).map(|i| format!("g{i}")).collect(),
         lanes: [("a", Sum), ("b", Max), ("c", Min), ("d", First), ("e", Last), ("f", Count)]
             .into_iter()
             .map(|(name, reducer)| LaneSpec { name: name.to_string(), reducer })
@@ -47,7 +47,7 @@ fn random_snapshots(state: &mut u64, count: usize) -> Vec<(u64, Vec<Cell>)> {
         let mut cells: Vec<Cell> = Vec::new();
         let mut cell = |state: &mut u64, member: Member| Cell {
             member,
-            labels: (0..5).map(|_| xorshift(state) % 4).collect(),
+            labels: (0..4).map(|_| xorshift(state) % 4).collect(),
             lanes: (0..6).map(|_| (xorshift(state) % 41) as i64 - 8).collect(),
         };
         for m in 0..48u64 {
@@ -151,8 +151,8 @@ fn a_rollup_over_flat_snapshots_rolls_up_what_a_rollup_over_plain_snapshots_roll
 fn a_flat_snapshot_out_of_order_is_refused_as_a_plain_one_is() {
     let header = wide_header();
     let unordered = vec![
-        Cell { member: Member::U64(5), labels: vec![0; 5], lanes: vec![1; 6] },
-        Cell { member: Member::U64(2), labels: vec![0; 5], lanes: vec![1; 6] },
+        Cell { member: Member::U64(5), labels: vec![0; 4], lanes: vec![1; 6] },
+        Cell { member: Member::U64(2), labels: vec![0; 4], lanes: vec![1; 6] },
     ];
     let value = encode_value(&header, &unordered).unwrap();
     let (_, packed) = split_value(&value).unwrap();
