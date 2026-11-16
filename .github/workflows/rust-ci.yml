@@ -1158,6 +1158,11 @@ jobs:
           # that resolves no named element. The guard varies the FIELD COUNT and carries a control:
           # a read of the whole hash must grow with it, or the probe cannot see that dimension.
           #
+          # a_container_add_does_not_pay_for_the_elements_it_already_has pins that a set add, a zset add
+          # and a list push allocate the same number of times into a container of 16 elements and one
+          # of 1,024 (about 68, 61 and 58), with a ceiling per operation. It carries a control: a
+          # read of the whole set must grow with its members, or the probe cannot see that dimension.
+          #
           # a_write_does_not_pay_for_the_objects_it_did_not_touch pins that the walk which builds a
           # write's index-log rows names the blocks of the objects the write touched and not the
           # blocks of the whole shard. The whole-shard inversion costs 19 KB at 20 objects and 1.2 MB
@@ -1192,6 +1197,7 @@ jobs:
           # with the snapshots in a bucket or the members. Its control is the same cloning table.
           for t in \
             engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key \
+            engine::tests::a_container_add_does_not_pay_for_the_elements_it_already_has::probe::a_container_add_does_not_pay_for_the_elements_it_already_has \
             engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has \
             engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::probe::a_write_does_not_pay_for_the_objects_it_did_not_touch \
             engine::tests::a_feature_sum_reads_each_point_in_place::probe::a_feature_sum_does_not_allocate_per_point \

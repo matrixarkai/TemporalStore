@@ -579,3 +579,5 @@ mod a_counter_window_read_reduces_where_it_sits;
 mod a_set_door_asks_one_member_not_the_set;
 #[path = "tests/a_set_pop_and_random_member_read_the_first_members.rs"]
 mod a_set_pop_and_random_member_read_the_first_members;
+#[path = "tests/a_container_add_does_not_pay_for_the_elements_it_already_has.rs"]
+mod a_container_add_does_not_pay_for_the_elements_it_already_has;
