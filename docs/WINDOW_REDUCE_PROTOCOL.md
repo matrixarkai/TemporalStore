@@ -7,9 +7,10 @@ every name is ours, and the behaviour is a generalisation: anything the narrower
 this one says the same way.
 
 Naming: the model is the Window Reducer (WindowReduce). The unit it stores at one timestamp of a key, all the
-cells of that key at that timestamp, is a **sample**. The message and field names on the wire are the new ones
-(`WindowReduce*`, `samples_written`, `sample_info`, and so on); the command names in this page are renamed to
-WindowReduce names later. Neither rename changes a field number, a wire type or a stored byte.
+cells of that key at that timestamp, is a **sample**. The command, message and field names in this page are the
+WindowReduce names (`WindowReduceRank`, `WindowReduceAnswer`, `samples_written`, `sample_info`, and so on). The
+rename changed no field number, no wire type and no stored byte; the stored key tag `cells` and the retry item
+kind `cell_retry` keep their original spelling because they are written to disk.
 
 ## Conventions
 
@@ -189,15 +190,15 @@ at it.
 
 | Wire | Command |
 |---|---|
-| one query | `CellRankQuery { key, spec }` |
-| query with `more_entities` | `CellFanInRankQuery { keys, spec }` |
-| batch of queries | `CellRankBatchQuery { queries }` |
+| one query | `WindowReduceRank { key, spec }` |
+| query with `more_entities` | `WindowReduceFanInRank { keys, spec }` |
+| batch of queries | `WindowReduceRankBatch { queries }` |
 | `members` / `excluded_members` | `spec.members.include` / `spec.members.exclude` |
 | newest-anchored window kinds | `spec.anchor = Newest` |
 | `quota_lanes`, `quota_counts` | `spec.quota` |
-| `DECAYED_LANE`, `decay`, `decay_rounding` | `CellScore::Decay { lane, half_life_ms }` |
-| `RECENT` | `CellScore::Recent` |
-| `MATCH_LANE`, `match_lane`, `match_value` | `CellScore::Recent` and the predicate `lane = match_value` |
+| `DECAYED_LANE`, `decay`, `decay_rounding` | `WindowReduceScore::Decay { lane, half_life_ms }` |
+| `RECENT` | `WindowReduceScore::Recent` |
+| `MATCH_LANE`, `match_lane`, `match_value` | `WindowReduceScore::Recent` and the predicate `lane = match_value` |
 
 Every translated spec is also checked by the same admission the commands run (`validate_spec`), so a
 request the translator accepts is one the engine accepts, and a bound is refused here at the same
@@ -205,12 +206,12 @@ number it is refused there.
 
 ## Removing cells
 
-`REMOVE` and `DELETE` are one command, `Command::CellRemove { key, spec }`, which takes cells out of the
+`REMOVE` and `DELETE` are one command, `Command::WindowReduceRemove { key, spec }`, which takes cells out of the
 samples of one key by time window, member set and predicate, and answers what it removed. It is
 general over any key spec: the key is the stored key a table's entity, channel and kind name, and the
 names a predicate may use are read from the key's own header.
 
-| Wire | `CellRemoveSpec` |
+| Wire | `WindowReduceRemoveSpec` |
 |---|---|
 | `REMOVE` `span` (microseconds) | `start_ms`, `end_ms`: the stamps inside it, start rounded up and end rounded down, both inclusive; no span is every sample |
 | `REMOVE` `key_filter.label` | `filters = [label = value]`, present only when the key filter is |
@@ -240,7 +241,7 @@ bytes member of at most 256 bytes.
 The receipt is `samples_before` and `samples_after` over the whole series, `cells_before` over the
 samples inside the window, and `cells_removed`. On the wire they are the additive fields 16 to 19 of
 `WindowReduceRemoveResponse` and `WindowReduceDeleteResponse`; the established fields are unchanged. The command's
-`CommandResponse` carries them as `snapshots_before`, `count` (the samples after), `cells_before` and
+`CommandResponse` carries them as `samples_before`, `count` (the samples after), `cells_before` and
 `cells_removed` (field 16).
 
 ## Owned elsewhere
