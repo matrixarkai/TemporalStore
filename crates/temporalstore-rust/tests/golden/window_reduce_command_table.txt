@@ -1,0 +1,149 @@
+# (message, field number, wire type, label) of the messages the window reducer rename touches in
+# temporalstore.proto, with their enum value numbers and reserved numbers, as the proto stated them before the
+# rename. Names here are the old ones.
+message CellRollup
+field CellRollup 1 2 single
+field CellRollup 2 0 single
+field CellRollup 3 0 single
+field CellRollup 4 2 single
+field CellRollup 5 0 single
+field CellRollup 6 2 repeated
+field CellRollup 7 2 single
+message CellRollupTier
+field CellRollupTier 1 0 single
+field CellRollupTier 2 0 single
+message CellRollupTruncate
+field CellRollupTruncate 1 0 single
+field CellRollupTruncate 2 0 single
+message CellRollupCap
+field CellRollupCap 1 2 single
+field CellRollupCap 2 2 single
+field CellRollupCap 3 0 single
+field CellRollupCap 4 0 single
+field CellRollupCap 5 0 single
+message CellRollupScore
+field CellRollupScore 1 2 single
+field CellRollupScore 2 2 single
+field CellRollupScore 3 2 single
+field CellRollupScore 4 0 single
+field CellRollupScore 5 0 single
+field CellRollupScore 6 2 single
+message CellRollupRatio
+field CellRollupRatio 1 2 single
+field CellRollupRatio 2 2 single
+message CellRollupWilson
+field CellRollupWilson 1 2 single
+field CellRollupWilson 2 2 single
+field CellRollupWilson 3 1 single
+message CellRollupWeighted
+field CellRollupWeighted 1 2 repeated
+field CellRollupWeighted 2 1 repeated
+message CellRemove
+field CellRemove 1 2 single
+field CellRemove 2 0 single
+field CellRemove 3 0 single
+field CellRemove 4 2 single
+field CellRemove 5 2 repeated
+field CellRemove 6 2 repeated
+message CellMemberSet
+field CellMemberSet 1 2 repeated
+message CellMember
+field CellMember 1 0 single
+field CellMember 2 2 single
+message CellPredicate
+field CellPredicate 1 2 single
+field CellPredicate 2 0 single
+field CellPredicate 3 0 single
+message Command
+field Command 1 2 single
+field Command 2 2 single
+field Command 3 2 single
+field Command 4 2 single
+field Command 5 2 single
+field Command 6 2 single
+field Command 7 2 single
+field Command 8 2 single
+field Command 9 2 single
+field Command 10 2 single
+field Command 11 2 single
+field Command 12 2 single
+field Command 13 2 single
+field Command 16 2 single
+field Command 17 2 single
+field Command 18 2 single
+field Command 19 2 single
+field Command 20 2 single
+field Command 21 2 single
+field Command 22 2 single
+field Command 23 2 single
+field Command 24 2 single
+field Command 25 2 single
+field Command 26 2 single
+field Command 27 2 single
+field Command 28 2 single
+field Command 29 2 single
+field Command 30 2 single
+field Command 31 2 single
+field Command 32 2 single
+field Command 33 2 single
+field Command 34 2 single
+field Command 35 2 single
+field Command 36 2 single
+field Command 37 2 single
+field Command 38 2 single
+field Command 39 2 single
+field Command 40 2 single
+field Command 41 2 single
+field Command 42 2 single
+field Command 43 2 single
+field Command 44 2 single
+field Command 45 2 single
+field Command 46 2 single
+field Command 47 2 single
+field Command 48 2 single
+field Command 49 2 single
+field Command 50 2 single
+field Command 51 2 single
+field Command 52 2 single
+field Command 53 2 single
+field Command 54 2 single
+field Command 55 2 single
+field Command 56 2 single
+field Command 57 2 single
+field Command 58 2 single
+field Command 59 2 single
+field Command 60 2 single
+field Command 61 2 single
+field Command 62 2 single
+field Command 63 2 single
+field Command 64 2 single
+field Command 65 2 single
+field Command 66 2 single
+field Command 67 2 single
+field Command 68 2 single
+field Command 69 2 single
+field Command 70 2 single
+field Command 71 2 single
+field Command 72 2 single
+field Command 73 2 single
+field Command 74 2 single
+field Command 75 2 single
+message CommandResponse
+field CommandResponse 1 2 single
+field CommandResponse 2 2 single
+field CommandResponse 3 2 repeated
+field CommandResponse 4 2 repeated
+field CommandResponse 5 2 repeated
+field CommandResponse 6 2 repeated
+field CommandResponse 7 0 single
+field CommandResponse 8 0 single
+field CommandResponse 9 0 single
+field CommandResponse 10 0 single
+field CommandResponse 15 0 single
+field CommandResponse 11 0 single
+field CommandResponse 12 0 single
+field CommandResponse 13 0 single
+field CommandResponse 14 0 single
+field CommandResponse 16 0 single
+enum CellRollupAnchor 0 1
+enum CellPredicateOp 0 1 2 3 4 5
