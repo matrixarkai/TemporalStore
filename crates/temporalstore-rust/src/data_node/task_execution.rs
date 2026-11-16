@@ -326,15 +326,53 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
                     request.block_gc_min_slab_garbage_basis_points,
                 ),
             };
-            let gc_result = inner
-                .engine
-                .block_store()
-                .gc_slabs_before_with_live_refs_policy(
-                    retain_from_block_slab_id,
-                    live_block_slab_ids,
-                    gc_policy,
-                    request.block_gc_delayed_destroy,
-                );
+            // THE SAME DEPENDENCY PLAN THE CYCLE CONSULTS, not a second reading of the owners.
+            // With none set it is skipped (it walks the shard), and the live set above is the
+            // whole answer, as it always was.
+            let names_retention_owner = !request.block_gc_shared_store_cursors.is_empty()
+                || !request.block_gc_raft_snapshot_refs.is_empty()
+                || request.block_gc_checkpoint_floor_slab_id.is_some()
+                || request.block_gc_raft_install_floor_slab_id.is_some();
+            let reclaimable_block_slab_ids = if names_retention_owner {
+                inner
+                    .engine
+                    .block_store()
+                    .gc_utility_candidates(
+                        retain_from_block_slab_id,
+                        live_block_slab_ids.iter().copied(),
+                    )
+                    .map(|candidates| {
+                        inner
+                            .engine
+                            .storage_block_gc_dependency_plan(
+                                request.shard_id,
+                                candidates.iter().map(|candidate| candidate.block_slab_id),
+                                request.block_gc_shared_store_cursors.clone(),
+                                request.block_gc_raft_snapshot_refs.clone(),
+                                request.block_gc_checkpoint_floor_slab_id,
+                                request.block_gc_raft_install_floor_slab_id,
+                                0,
+                            )
+                            .reclaimable_block_slab_ids
+                            .into_iter()
+                            .collect::<std::collections::BTreeSet<_>>()
+                    })
+                    .map(Some)
+            } else {
+                Ok(None)
+            };
+            let gc_result = reclaimable_block_slab_ids.and_then(|allowed| {
+                inner
+                    .engine
+                    .block_store()
+                    .gc_slabs_before_with_live_refs_policy_limited(
+                        retain_from_block_slab_id,
+                        live_block_slab_ids,
+                        gc_policy,
+                        request.block_gc_delayed_destroy,
+                        allowed,
+                    )
+            });
             match gc_result {
                 Ok(report) => {
                     if request.block_gc_invalidate_removed_slabs_only {

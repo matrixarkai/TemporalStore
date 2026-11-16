@@ -1235,6 +1235,10 @@ fn gc_does_not_clear_the_dirty_scheduling_tracker() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2248,6 +2252,10 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2348,6 +2356,10 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2524,6 +2536,10 @@ fn runtime_honors_inflight_cancellation_before_gc_side_effects() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
         }),
     };
     runtime
@@ -2640,6 +2656,10 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -5783,6 +5803,251 @@ fn the_periodic_loop_holds_a_quarantined_slab_for_a_day() {
         before.iter().any(|id| !after_25_hours.contains(id)),
         "slabs 25 hours old were not destroyed: the grace is longer than 24 hours or the purge never fires"
     );
+}
+
+/// Loop options naming one retention owner at floor 0, so it pins every slab. "none" names nobody.
+fn retention_owner_options(owner: &str) -> StorageManagerOptions {
+    match owner {
+        "cursor" => StorageManagerOptions {
+            block_gc_shared_store_cursors: vec![crate::engine::reports::StorageBlockGcReplayCursor {
+                cursor_id: "reader-1".to_string(),
+                shard_id: 1,
+                retain_from_block_slab_id: 0,
+                reason: String::new(),
+            }],
+            ..StorageManagerOptions::default()
+        },
+        "checkpoint" => StorageManagerOptions {
+            block_gc_checkpoint_floor_slab_id: Some(0),
+            ..StorageManagerOptions::default()
+        },
+        "raft" => StorageManagerOptions {
+            block_gc_raft_install_floor_slab_id: Some(0),
+            ..StorageManagerOptions::default()
+        },
+        _ => StorageManagerOptions::default(),
+    }
+}
+
+/// The periodic loop never destroys a quarantined slab that a retention owner still names.
+///
+/// The loop's options carried follower cursors and snapshot refs but nothing for a shared-store
+/// reader, a checkpoint floor or a Raft install floor, and the loop passed none at every purge
+/// site, so those owners could not protect a slab on the path a server runs. Each arm below
+/// backdates every quarantined slab past the grace (so age cannot be what holds it) and runs the
+/// shipped loop: with an owner set no slab may be destroyed (it stays quarantined or is restored);
+/// with none set at least one must be, which keeps the arms from passing because nothing is ever
+/// purged.
+#[test]
+fn the_periodic_loop_keeps_a_slab_a_retention_owner_names() {
+    fn quarantined(runtime: &DataNodeRuntime) -> std::collections::BTreeSet<u64> {
+        runtime
+            .engine()
+            .block_store()
+            .delayed_destroy_slab_ids()
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    }
+    let run_arm = |owner: &str| {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let mut written = 0usize;
+        for _ in 0..6 {
+            let engine = runtime.engine();
+            for index in 0..400usize {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("owner-{:06}", (written + index) % 100),
+                        value: vec![b'v'; 96],
+                    },
+                });
+            }
+            written += 400;
+            runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        }
+        let before = quarantined(&runtime);
+        assert!(!before.is_empty(), "arm {owner}: nothing was quarantined");
+        let backdated = runtime
+            .engine()
+            .block_store()
+            .backdate_delayed_destroy_stamps_for_test(26 * 60 * 60 * 1_000)
+            .expect("backdating the quarantine stamps");
+        assert!(backdated > 0, "arm {owner}: nothing was backdated");
+        let options = retention_owner_options(owner);
+        runtime.run_storage_manager_once(1, options);
+        // A slab an owner names is restored to the store, not left in quarantine, so what must
+        // survive is the union: still set aside, or back among the live slabs.
+        let mut kept = quarantined(&runtime);
+        kept.extend(runtime.engine().block_store().slab_ids().unwrap_or_default());
+        (before, kept)
+    };
+    for owner in ["cursor", "checkpoint", "raft"] {
+        let (before, after) = run_arm(owner);
+        assert!(
+            before.is_subset(&after),
+            "arm {owner}: the loop destroyed a slab a retention owner names"
+        );
+    }
+    let (before, after) = run_arm("none");
+    assert!(
+        before.iter().any(|id| !after.contains(id)),
+        "control arm: with no owner the loop destroyed nothing, so the arms above prove nothing"
+    );
+}
+
+/// The periodic loop does not even set aside a slab that a retention owner names.
+///
+/// Quarantine renames the slab file out of the store, so a reader that still needs the slab finds
+/// it gone for the whole grace even though nothing has been destroyed. The owner is set from the
+/// first round here, so the slabs it pins go stale with the owner already in place; the control arm
+/// runs the same writes with no owner and must quarantine something, which keeps the arms from
+/// passing because no slab ever goes stale.
+#[test]
+fn the_periodic_loop_does_not_quarantine_a_slab_a_retention_owner_names() {
+    let run_arm = |owner: &str| {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let mut written = 0usize;
+        for _ in 0..6 {
+            let engine = runtime.engine();
+            for index in 0..400usize {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("owner-{:06}", (written + index) % 100),
+                        value: vec![b'v'; 96],
+                    },
+                });
+            }
+            written += 400;
+            runtime.run_storage_manager_once(1, retention_owner_options(owner));
+        }
+        runtime
+            .engine()
+            .block_store()
+            .delayed_destroy_slab_ids()
+            .unwrap_or_default()
+    };
+    for owner in ["cursor", "checkpoint", "raft"] {
+        let quarantined = run_arm(owner);
+        assert!(
+            quarantined.is_empty(),
+            "arm {owner}: the loop quarantined slabs {quarantined:?} that a retention owner names"
+        );
+    }
+    assert!(
+        !run_arm("none").is_empty(),
+        "control arm: with no owner nothing was quarantined, so the arms above prove nothing"
+    );
+}
+
+/// A slab set aside before any owner existed is pulled back when an owner comes to name it.
+///
+/// Quarantine renames the slab out of the store, so a reader the owner stands for cannot read it
+/// until it is restored, and the purge that would restore it must not wait for the grace. The
+/// slabs are quarantined by rounds that name no owner; the next round names one, and none of them
+/// may still be quarantined. The control round names nobody and must leave them where they were,
+/// which keeps the first half from passing because the purge restores everything.
+#[test]
+fn the_periodic_loop_restores_a_quarantined_slab_an_owner_comes_to_name() {
+    let run_arm = |owner: &str| {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let mut written = 0usize;
+        for _ in 0..6 {
+            let engine = runtime.engine();
+            for index in 0..400usize {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("late-{:06}", (written + index) % 100),
+                        value: vec![b'v'; 96],
+                    },
+                });
+            }
+            written += 400;
+            runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        }
+        let quarantined = |runtime: &DataNodeRuntime| {
+            runtime
+                .engine()
+                .block_store()
+                .delayed_destroy_slab_ids()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<u64>>()
+        };
+        let before = quarantined(&runtime);
+        assert!(!before.is_empty(), "arm {owner}: nothing was quarantined");
+        runtime.run_storage_manager_once(1, retention_owner_options(owner));
+        (before, quarantined(&runtime))
+    };
+    for owner in ["cursor", "checkpoint", "raft"] {
+        let (before, after) = run_arm(owner);
+        assert!(
+            before.is_disjoint(&after),
+            "arm {owner}: slabs {:?} stayed quarantined after an owner named them",
+            before.intersection(&after).collect::<Vec<_>>()
+        );
+    }
+    let (before, after) = run_arm("none");
+    assert!(
+        before.is_subset(&after),
+        "control arm: with no owner the round moved quarantined slabs, so the arms above prove nothing"
+    );
+}
+
+/// The count of retention-owner inputs the loop was given is published, so a server that was told
+/// of none is distinguishable from one that was.
+#[test]
+fn the_loop_publishes_how_many_retention_owner_inputs_it_was_given() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert_eq!(runtime.stats().storage_manager_retention_owners_configured, 0);
+    runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            block_gc_checkpoint_floor_slab_id: Some(0),
+            block_gc_raft_install_floor_slab_id: Some(0),
+            ..retention_owner_options("cursor")
+        },
+    );
+    assert_eq!(runtime.stats().storage_manager_retention_owners_configured, 3);
 }
 
 /// The maintenance round runs its stages in the intended order.
@@ -9712,6 +9977,10 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
         },
         RequestController { timeout_ms: 5000 },
     );
@@ -11768,6 +12037,10 @@ fn reclaim_is_refused_while_the_shard_is_recovering() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
         },
         RequestController { timeout_ms: 5_000 },
     );

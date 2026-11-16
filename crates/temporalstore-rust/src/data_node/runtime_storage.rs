@@ -340,10 +340,10 @@ impl DataNodeRuntime {
                 prune_bucket_dump_manifests: options.enable_index_gc,
                 roll_forward_bucket_dump_installs: options.enable_index_gc,
                 follower_replay_cursors: options.follower_replay_cursors.clone(),
-                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
                 block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                block_gc_checkpoint_floor_slab_id: None,
-                block_gc_raft_install_floor_slab_id: None,
+                block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
+                block_gc_raft_install_floor_slab_id: options.block_gc_raft_install_floor_slab_id,
                 // The grace the apply holds, so the plan's purgeable figure is not an upper bound
                 // the purge never reaches.
                 block_gc_delayed_destroy_grace_ms:
@@ -583,6 +583,12 @@ impl DataNodeRuntime {
         let cache_pressure = pressure.cache_memory_bytes
             >= options.cache_memory_bytes_pressure.max(1)
             || pressure.cache_disk_bytes >= options.cache_disk_bytes_pressure.max(1);
+        self.inner
+            .stats
+            .lock()
+            .expect("runtime stats lock poisoned")
+            .storage_manager_retention_owners_configured =
+            options.retention_owner_input_count() as u64;
         let stale_block_pressure = pressure.stale_block_slab_count
             >= options.stale_block_slab_pressure.max(1)
             || pressure.reclaim_candidate_count >= options.stale_block_slab_pressure.max(1)
@@ -672,10 +678,10 @@ impl DataNodeRuntime {
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
                 follower_replay_cursors: options.follower_replay_cursors.clone(),
-                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
                 block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                block_gc_checkpoint_floor_slab_id: None,
-                block_gc_raft_install_floor_slab_id: None,
+                block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
+                block_gc_raft_install_floor_slab_id: options.block_gc_raft_install_floor_slab_id,
                 block_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
@@ -1239,6 +1245,10 @@ impl DataNodeRuntime {
                     // shard's cache outright -- memory, pmem and disk tiers alike -- however few
                     // slabs it went on to reclaim. Invalidate what was reclaimed instead.
                     block_gc_invalidate_removed_slabs_only: true,
+                    block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
+                    block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
+                    block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
+                    block_gc_raft_install_floor_slab_id: options.block_gc_raft_install_floor_slab_id,
                     // THE THREE BOUNDS THIS STAGE RAN WITHOUT. They existed on the cycle request
                     // and reached `BlockStoreGcPolicy` from there; this request had no field for
                     // them, so the stage called the policy-free reclaim entries and destroyed
@@ -1422,10 +1432,10 @@ impl DataNodeRuntime {
                 // dump -- loses the thing it would have restored from, and unlike a reclaimed log
                 // record nothing regenerates it.
                 follower_replay_cursors: options.follower_replay_cursors.clone(),
-                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
                 block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                block_gc_checkpoint_floor_slab_id: None,
-                block_gc_raft_install_floor_slab_id: None,
+                block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
+                block_gc_raft_install_floor_slab_id: options.block_gc_raft_install_floor_slab_id,
                 // A DAY, NOT THE STORE'S ONE-HOUR FLOOR. This was 0, which the purge raises to
                 // `DELAYED_DESTROY_MIN_AGE_MS` (one hour), so a quarantined slab was destroyed an
                 // hour after it was set aside. The cycle request already defaulted to this

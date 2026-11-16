@@ -85,6 +85,8 @@ impl DataNodeRuntime {
             storage_manager_failed_rounds: stats.storage_manager_failed_rounds,
             storage_manager_stage_skips: stats.storage_manager_stage_skips,
             storage_manager_overrun_rounds: stats.storage_manager_overrun_rounds,
+            storage_manager_retention_owners_configured: stats
+                .storage_manager_retention_owners_configured,
             storage_manager_round_us_total: stats.storage_manager_round_us_total,
             storage_manager_round_us_max: stats.storage_manager_round_us_max,
             storage_manager_stage_timing: stats.storage_manager_stage_timing.clone(),
