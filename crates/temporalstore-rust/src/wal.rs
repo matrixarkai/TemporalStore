@@ -120,6 +120,7 @@ fn log_bytes_above_sequence(
     Ok(end.saturating_sub(start))
 }
 
+pub use crate::wal_outcome_kind::OutcomeKind;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -545,7 +546,7 @@ mod every_result_can_be_found_again_tests {
     /// A result that names an address and states nothing about itself.
     fn names_only_an_address(object_id: u64, element_name: &str) -> WalOutcomeItem {
         WalOutcomeItem {
-            kind: "page".to_string(),
+            kind: "page".into(),
             object_key: format!("object/{object_id}"),
             element_name: Some(element_name.to_string()),
             object_id,
@@ -738,7 +739,7 @@ mod outcome_address_serde {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WalOutcomeItem {
     #[serde(rename = "k")]
-    pub kind: String,
+    pub kind: OutcomeKind,
     #[serde(rename = "o")]
     pub object_key: String,
     /// WHICH ELEMENT OF THAT OBJECT, FOR EVERY KEYED KIND THAT HAS NO BLOCK TO ASK.
@@ -6698,7 +6699,7 @@ mod tests {
     fn eight_records_against_one_record_holding_eight() {
         fn item(index: usize) -> WalOutcomeItem {
             WalOutcomeItem {
-                kind: "string".to_string(),
+                kind: "string".into(),
                 object_key: format!("ingest-00042/{index}"),
                 element_name: None,
                 object_id: 1000 + index as u64,
@@ -7977,7 +7978,7 @@ mod tests {
                     }),
                     staged_blocks: Vec::new(),
                     outcomes: vec![WalOutcomeItem {
-                        kind: "string".to_string(),
+                        kind: "string".into(),
                         object_key: KEY.to_string(),
                         element_name: None,
                         object_id: crate::engine::hashing::stable_block_object_id(
@@ -9805,7 +9806,7 @@ mod tests {
                 let path = write_ahead_log_path(dir.path(), 1);
                 let outcomes = (0..items)
                     .map(|index| WalOutcomeItem {
-                        kind: "string".to_string(),
+                        kind: "string".into(),
                         object_key: format!("batch-key-{index:09}"),
                         element_name: None,
                         object_id: index as u64,

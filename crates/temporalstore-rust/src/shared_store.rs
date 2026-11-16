@@ -6112,7 +6112,7 @@ mod tests {
             command: None,
             staged_blocks: Vec::new(),
             outcomes: vec![crate::wal::WalOutcomeItem {
-                kind: "string".to_string(),
+                kind: "string".into(),
                 object_key: key.to_string(),
                 element_name: None,
                 object_id: crate::engine::hashing::stable_block_object_id(1, "string", key),

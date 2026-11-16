@@ -6926,7 +6926,7 @@ fn mark_bucket_index_block_deleted_recording(
     // already `Option<BlockAddress>` and already `None` here, so this spends no format.
     if stage {
         block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-            kind: model_id.to_string(),
+            kind: model_id.into(),
             object_key: key.to_string(),
             element_name: element_name.map(str::to_string),
             object_id: stable_block_object_id(shard_id, model_id, key),

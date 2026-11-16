@@ -91,6 +91,7 @@ mod wal_scale;
 /// What one log RECORD costs to build and to decode -- tests only.
 mod record_cost;
 mod wal_proto;
+mod wal_outcome_kind;
 pub mod record_framing;
 pub mod index_log_record;
 pub mod index_log_wire;
