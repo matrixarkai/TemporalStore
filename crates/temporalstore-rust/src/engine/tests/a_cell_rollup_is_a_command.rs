@@ -10,7 +10,7 @@
 //! bytes, that two engines given the same request end with the same bytes, that a request the key
 //! cannot serve writes nothing, and that an absent or expired key rolls nothing up.
 //!
-//! `a_worked_example_of_a_rollup` is also the example in `docs/CELLS_WORKED_EXAMPLE.md`.
+//! `a_worked_example_of_a_rollup` is also the example in `docs/WINDOW_REDUCE_WORKED_EXAMPLE.md`.
 //!
 //! rust-internal: measures this crate's own request paths, no product behaviour
 

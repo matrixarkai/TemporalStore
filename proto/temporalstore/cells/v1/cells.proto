@@ -6,7 +6,7 @@ package temporalstore.cells.v1;
 // snapshots. Field numbers and wire types are fixed so existing clients of this message shape are
 // understood; every name here is ours. Numbers below 16 in a message are the established ones,
 // numbers from 16 up are additive and unknown to older clients (which skip them).
-// See docs/CELLS_PROTOCOL.md for the semantics of every field.
+// See docs/WINDOW_REDUCE_PROTOCOL.md for the semantics of every field.
 
 enum CellOperation {
   CELL_OPERATION_ADD = 0;
@@ -173,7 +173,7 @@ message CellSelector {
   // `members` (with `has_members`) is the include set: only these members are read; a present,
   // empty include set is refused. `quota_lanes[i]` is a lane position and `quota_counts[i]` how
   // many members must have a non-zero value in it; `quota_counts[0]` is also the count of members
-  // that fit no lane (see docs/CELLS_PROTOCOL.md, Quota).
+  // that fit no lane (see docs/WINDOW_REDUCE_PROTOCOL.md, Quota).
   // Additive: members to leave out; wins over `members`.
   repeated int64 excluded_members = 40;
 }
