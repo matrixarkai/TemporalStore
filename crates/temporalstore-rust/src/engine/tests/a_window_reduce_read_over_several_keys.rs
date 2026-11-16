@@ -179,7 +179,7 @@ fn a_worked_example_of_a_ranked_read_across_the_channels_of_one_user() {
     let item_1 = by_shown.rows.iter().find(|row| row.member == CellMemberId::U64(1)).unwrap();
     assert_eq!((item_1.lanes.clone(), item_1.labels.clone(), item_1.last_ms), (vec![21, 9], vec![3], 600));
 
-    // ---- THE ANSWER IS THE ONE A SINGLE KEY HOLDING EVERY SNAPSHOT GIVES -----------------------
+    // ---- THE ANSWER IS THE ONE A SINGLE KEY HOLDING EVERY SAMPLE GIVES -----------------------
     // User 99 has one key with the same six samples. Only the count of keys differs.
     let one_key = rank(&engine, &single, spec(ALL, lane("shown"), 10));
     assert_eq!(one_key.keys, 1);
@@ -297,7 +297,7 @@ fn put_many(engine: &TemporalEngine, key: &str, header: &CellHeader, samples: u6
 }
 
 #[test]
-fn the_snapshot_ceiling_holds_while_reading_and_the_limit_is_served() {
+fn the_sample_ceiling_holds_while_reading_and_the_limit_is_served() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     let h = header(&[("shown", LaneReducer::Sum)]);

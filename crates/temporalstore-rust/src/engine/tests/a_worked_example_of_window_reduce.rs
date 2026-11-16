@@ -149,7 +149,7 @@ fn wilson_bound() -> WindowReduceScore {
 }
 
 #[test]
-fn a_worked_example_of_cells() {
+fn a_worked_example_of_window_reduce() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     let now = crate::engine::resolve_now_ms();

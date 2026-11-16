@@ -85,7 +85,7 @@ fn shape(outcomes: &[Outcome]) -> Vec<(u64, Vec<u64>, usize)> {
 }
 
 #[test]
-fn a_window_takes_every_cell_of_the_snapshots_inside_it_and_both_bounds_are_inclusive() {
+fn a_window_takes_every_cell_of_the_samples_inside_it_and_both_bounds_are_inclusive() {
     let both = WindowReduceRemoveSpec { start_ms: Some(200), end_ms: Some(300), ..spec() };
     // 100 and 400 are outside the window and are not reported at all.
     assert_eq!(shape(&run(&both)), vec![(200, vec![], 3), (300, vec![], 3)]);
@@ -249,7 +249,7 @@ fn predicates_and_member_sets_are_accepted_at_the_limit_and_refused_one_past_it(
 }
 
 #[test]
-fn a_snapshot_that_keeps_every_cell_comes_back_with_the_cells_it_had() {
+fn a_sample_that_keeps_every_cell_comes_back_with_the_cells_it_had() {
     let none = WindowReduceRemoveSpec { filters: vec![on("slot", FeatureFilterOp::Equal, 9)], ..spec() };
     let outcomes = run(&none);
     assert!(outcomes.iter().all(|o| o.removed == 0));

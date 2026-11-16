@@ -106,7 +106,7 @@ fn specs() -> Vec<WindowReduceRollupSpec> {
 }
 
 #[test]
-fn a_rollup_over_flat_snapshots_rolls_up_what_a_rollup_over_plain_snapshots_rolls_up() {
+fn a_rollup_over_flat_samples_rolls_up_what_a_rollup_over_plain_samples_rolls_up() {
     let header = wide_header();
     let mut state = 0x2545_f491_4f6c_dd1du64;
     let (mut combined, mut dropped, mut compared_cells) = (0u64, 0u64, 0u64);
@@ -148,7 +148,7 @@ fn a_rollup_over_flat_snapshots_rolls_up_what_a_rollup_over_plain_snapshots_roll
 }
 
 #[test]
-fn a_flat_snapshot_out_of_order_is_refused_as_a_plain_one_is() {
+fn a_flat_sample_out_of_order_is_refused_as_a_plain_one_is() {
     let header = wide_header();
     let unordered = vec![
         Cell { member: Member::U64(5), labels: vec![0; 4], lanes: vec![1; 6] },

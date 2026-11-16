@@ -1767,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn a_header_round_trips_and_a_snapshot_round_trips_with_values_only_this_path_makes() {
+    fn a_header_round_trips_and_a_sample_round_trips_with_values_only_this_path_makes() {
         let h = header();
         assert_eq!(CellHeader::decode(&h.encode().unwrap()).unwrap(), h);
         let cells = vec![
@@ -1787,7 +1787,7 @@ mod tests {
     }
 
     #[test]
-    fn an_old_snapshot_reads_a_new_trailing_lane_and_label_as_zero() {
+    fn an_old_sample_reads_a_new_trailing_lane_and_label_as_zero() {
         let old = header();
         let cells = vec![Cell { member: Member::U64(5), labels: vec![9], lanes: vec![4, 6] }];
         let bytes = encode_sample(&old, &cells).unwrap();
@@ -1957,7 +1957,7 @@ mod tests {
     }
 
     #[test]
-    fn a_decoded_snapshot_is_held_to_the_same_bounds() {
+    fn a_decoded_sample_is_held_to_the_same_bounds() {
         let h = CellHeader { labels: vec![], lanes: vec![LaneSpec { name: "n".into(), reducer: LaneReducer::Sum }], ..header() };
         let record = |m: u64| {
             let mut r = Vec::new();
@@ -1974,7 +1974,7 @@ mod tests {
     }
 
     #[test]
-    fn a_merge_that_would_overflow_the_snapshot_changes_nothing() {
+    fn a_merge_that_would_overflow_the_sample_changes_nothing() {
         let h = CellHeader { labels: vec![], lanes: vec![LaneSpec { name: "n".into(), reducer: LaneReducer::Sum }], ..header() };
         let mut sample: Vec<Cell> = (0..MAX_CELLS_PER_SAMPLE as u64).map(|m| Cell { member: Member::U64(m), labels: vec![], lanes: vec![1] }).collect();
         let before = sample.clone();
@@ -2032,7 +2032,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_with_another_header_is_refused_and_one_that_adds_a_lane_upgrades_the_stored_snapshot() {
+    fn a_request_with_another_header_is_refused_and_one_that_adds_a_lane_upgrades_the_stored_sample() {
         let h = one_lane_header();
         let (stored, _, _) = merge_request(None, None, &request(&h, &[(1, 10)])).unwrap();
         let mut renamed = h.clone();

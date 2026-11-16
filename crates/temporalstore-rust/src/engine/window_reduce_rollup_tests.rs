@@ -181,7 +181,7 @@ fn a_rollup_equals_an_independent_fold_for_every_bucket_size_and_cutoff() {
 ///   peak     5,  9,  2  Max   -> 9           low    5, 9, 2  Min   -> 2
 ///   opened  11, 22, 33  First -> 11          seen   1, 2, 3  Last  -> 3
 #[test]
-fn each_lane_combines_oldest_first_and_a_count_is_the_sum_of_counts_not_the_number_of_snapshots() {
+fn each_lane_combines_oldest_first_and_a_count_is_the_sum_of_counts_not_the_number_of_samples() {
     let snaps = vec![
         snap(10, vec![cell(1, 4, [10, 3, 5, 5, 11, 1])]),
         snap(20, vec![cell(1, 5, [20, 4, 9, 9, 22, 2])]),
@@ -269,7 +269,7 @@ fn rolling_a_rolled_result_again_changes_no_byte_and_the_same_request_twice_agre
 }
 
 #[test]
-fn a_snapshot_exactly_at_the_cutoff_is_not_rolled_and_one_below_it_is() {
+fn a_sample_exactly_at_the_cutoff_is_not_rolled_and_one_below_it_is() {
     // Bucket 50, cutoff 100. 99 is below: it moves to its bucket start, 50. 100 is AT the cutoff:
     // it stays at 100, and 101 stays at 101 (it is not merged into it).
     let snaps = vec![
@@ -289,7 +289,7 @@ fn a_snapshot_exactly_at_the_cutoff_is_not_rolled_and_one_below_it_is() {
 }
 
 #[test]
-fn a_late_snapshot_in_an_already_rolled_bucket_folds_in_as_the_newest_contribution() {
+fn a_late_sample_in_an_already_rolled_bucket_folds_in_as_the_newest_contribution() {
     let first = rollup(&header(), vec![snap(10, vec![cell(1, 0, [1, 1, 1, 1, 1, 5])])], &spec(100, 100)).unwrap();
     assert_eq!(first.samples[0].timestamp_ms, 0);
     let mut later = first.samples;
@@ -320,7 +320,7 @@ fn a_decoded_replay_reaches_the_bytes_the_first_run_reached() {
 }
 
 #[test]
-fn nothing_to_roll_returns_the_snapshots_unchanged() {
+fn nothing_to_roll_returns_the_samples_unchanged() {
     let empty = rollup(&header(), Vec::new(), &spec(100, 10)).unwrap();
     assert!(empty.samples.is_empty());
     assert_eq!(empty.stats, RollupStats::default());
@@ -399,7 +399,7 @@ fn a_cell_whose_score_is_undefined_ranks_after_every_scored_cell() {
 }
 
 #[test]
-fn the_cap_runs_on_the_folded_bucket_not_on_the_snapshots_that_make_it() {
+fn the_cap_runs_on_the_folded_bucket_not_on_the_samples_that_make_it() {
     // m1 shows 1 then 100; m2 shows 50 then 0. Folded: m1 = 101, m2 = 50, so keep 1 keeps m1.
     // Capping each sample first would have kept m2 in the first and m1 in the second.
     let snaps = vec![
@@ -417,7 +417,7 @@ fn the_cap_runs_on_the_folded_bucket_not_on_the_snapshots_that_make_it() {
 }
 
 #[test]
-fn a_snapshot_the_cap_does_not_reach_keeps_every_cell() {
+fn a_sample_the_cap_does_not_reach_keeps_every_cell() {
     let snaps = vec![snap(5, group_data()), snap(500, group_data())];
     let request = RollupSpec { older_than_ms: 100, bucket_ms: 100, cap: Some(cap(Some("slot"), lane_score("shown"), 1)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None };
     let got = rollup(&header(), snaps, &request).unwrap();
@@ -443,7 +443,7 @@ fn a_bucket_width_is_bounded_below_at_exactly_one() {
 }
 
 #[test]
-fn keep_is_bounded_at_one_below_and_the_snapshot_limit_above() {
+fn keep_is_bounded_at_one_below_and_the_sample_limit_above() {
     let with_keep = |keep: usize| RollupSpec { older_than_ms: 10, bucket_ms: 10, cap: Some(cap(None, lane_score("shown"), keep)), anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None };
     assert!(run_ok(&with_keep(1)));
     assert!(run_ok(&with_keep(MAX_KEEP)));
@@ -454,7 +454,7 @@ fn keep_is_bounded_at_one_below_and_the_snapshot_limit_above() {
 }
 
 #[test]
-fn snapshots_below_the_cutoff_are_bounded_at_exactly_the_limit() {
+fn samples_below_the_cutoff_are_bounded_at_exactly_the_limit() {
     let many = |n: usize| (0..n as u64).map(|i| snap(i + 1, Vec::new())).collect::<Vec<_>>();
     let at = rollup(&header(), many(MAX_ROLLUP_SAMPLES), &spec(u64::MAX, 1_000_000)).unwrap();
     assert_eq!(at.samples.len(), 1, "all of them land in one bucket");
@@ -467,7 +467,7 @@ fn snapshots_below_the_cutoff_are_bounded_at_exactly_the_limit() {
 }
 
 #[test]
-fn a_bucket_over_the_snapshot_cell_limit_is_refused_and_one_at_the_limit_is_folded() {
+fn a_bucket_over_the_sample_cell_limit_is_refused_and_one_at_the_limit_is_folded() {
     let range = |from: u64, to: u64| (from..to).map(|m| cell(m, 0, [1, 1, 1, 1, 1, 1])).collect::<Vec<_>>();
     let half = MAX_CELLS_PER_SAMPLE as u64 / 2;
     let full = MAX_CELLS_PER_SAMPLE as u64;
@@ -571,7 +571,7 @@ mod probe {
     /// proportion to the members and to the samples, so the probe can see both dimensions.
     #[test]
     #[ignore = "measurement: run with --features alloc-probe --ignored"]
-    fn a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many() {
+    fn a_rollup_allocates_the_same_over_few_samples_and_many_and_few_members_and_many() {
         for capped in [false, true] {
             let base = allocations_of_a_rollup(50, 4, capped);
             let more_samples = allocations_of_a_rollup(50, 64, capped);

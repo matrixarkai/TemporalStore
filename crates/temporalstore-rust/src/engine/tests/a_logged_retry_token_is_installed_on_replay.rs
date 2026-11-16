@@ -190,7 +190,7 @@ fn installing_an_entry_twice_changes_nothing_and_the_ring_holds_sixteen() {
 }
 
 #[test]
-fn a_key_that_holds_no_snapshot_remembers_no_token() {
+fn a_key_that_holds_no_sample_remembers_no_token() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     let key = key_for(3);

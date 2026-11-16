@@ -139,7 +139,7 @@ fn one_key_answers_what_the_single_key_read_answers() {
 }
 
 #[test]
-fn keys_with_distinct_stamps_answer_what_one_key_holding_all_their_snapshots_answers() {
+fn keys_with_distinct_stamps_answer_what_one_key_holding_all_their_samples_answers() {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let mut compared = 0usize;
     for _ in 0..40 {
@@ -372,7 +372,7 @@ fn keys_in_a_fan_in_are_bounded_at_exactly_the_limit() {
 }
 
 #[test]
-fn snapshots_in_a_fan_in_are_bounded_at_exactly_the_limit() {
+fn samples_in_a_fan_in_are_bounded_at_exactly_the_limit() {
     let query = spec(ALL, lane("shown"), 1);
     // Two keys of 512 (each at the per-key window bound) is 1024: accepted, and all of it is summed.
     let at = fan_in(&query, &one_member_keys(2, 512, 1), 0).unwrap();

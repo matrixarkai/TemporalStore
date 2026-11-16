@@ -535,16 +535,16 @@ mod a_retried_merge_append_answers_its_first_receipt;
 mod a_logged_retry_token_is_installed_on_replay;
 #[path = "tests/a_tokened_append_is_recovered_with_its_token.rs"]
 mod a_tokened_append_is_recovered_with_its_token;
-#[path = "tests/a_ranked_cell_read_is_a_command.rs"]
-mod a_ranked_cell_read_is_a_command;
-#[path = "tests/a_cell_rollup_is_a_command.rs"]
-mod a_cell_rollup_is_a_command;
-#[path = "tests/a_cell_removal_is_a_command.rs"]
-mod a_cell_removal_is_a_command;
+#[path = "tests/a_window_reduce_ranked_read_is_a_command.rs"]
+mod a_window_reduce_ranked_read_is_a_command;
+#[path = "tests/a_window_reduce_rollup_is_a_command.rs"]
+mod a_window_reduce_rollup_is_a_command;
+#[path = "tests/a_window_reduce_removal_is_a_command.rs"]
+mod a_window_reduce_removal_is_a_command;
 #[path = "tests/a_whole_container_read_shares_its_work.rs"]
 mod a_whole_container_read_shares_its_work;
-#[path = "tests/a_worked_example_of_cells.rs"]
-mod a_worked_example_of_cells;
+#[path = "tests/a_worked_example_of_window_reduce.rs"]
+mod a_worked_example_of_window_reduce;
 #[path = "tests/a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key.rs"]
 mod a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key;
 
@@ -552,11 +552,11 @@ mod a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key;
 mod a_container_point_read_searches_without_building_its_key;
 #[path = "tests/the_undumped_byte_figure_survives_one_claimless_bucket.rs"]
 mod the_undumped_byte_figure_survives_one_claimless_bucket;
-#[path = "tests/a_ranked_read_over_several_cell_keys.rs"]
-mod a_ranked_read_over_several_cell_keys;
+#[path = "tests/a_window_reduce_read_over_several_keys.rs"]
+mod a_window_reduce_read_over_several_keys;
 #[cfg(feature = "alloc-probe")]
-#[path = "tests/the_cell_model_allocations_are_counted_per_operation.rs"]
-mod the_cell_model_allocations_are_counted_per_operation;
+#[path = "tests/the_window_reduce_allocations_are_counted_per_operation.rs"]
+mod the_window_reduce_allocations_are_counted_per_operation;
 #[path = "tests/a_string_increment_and_append_are_one_step.rs"]
 mod a_string_increment_and_append_are_one_step;
 #[path = "tests/a_set_length_and_membership_read_the_member_map.rs"]

@@ -27,7 +27,7 @@ const NEWEST_FIRST_MEMBERS: [u64; 11] = [2, 4, 1, 3, 99, 1, 2, 4, 1, 2, 3];
 const NEWEST_FIRST_STAMPS: [u64; 11] = [400, 400, 300, 300, 300, 200, 200, 200, 100, 100, 100];
 
 #[test]
-fn a_recent_read_answers_every_stored_cell_once_newest_snapshot_first_and_reduces_none() {
+fn a_recent_read_answers_every_stored_cell_once_newest_sample_first_and_reduces_none() {
     let ranked = run(&recent(ALL, 100));
     assert_eq!(order(&ranked), NEWEST_FIRST_MEMBERS);
     assert_eq!(stamps(&ranked), NEWEST_FIRST_STAMPS);
@@ -60,7 +60,7 @@ fn a_recent_read_answers_every_stored_cell_once_newest_snapshot_first_and_reduce
 }
 
 #[test]
-fn rows_are_bounded_by_the_limit_and_the_walk_stops_in_the_middle_of_a_snapshot() {
+fn rows_are_bounded_by_the_limit_and_the_walk_stops_in_the_middle_of_a_sample() {
     // One row short of every cell, exactly every cell, and one past it.
     assert_eq!(order(&run(&recent(ALL, 10))), NEWEST_FIRST_MEMBERS[..10].to_vec());
     assert_eq!(order(&run(&recent(ALL, 11))), NEWEST_FIRST_MEMBERS.to_vec());
@@ -113,7 +113,7 @@ fn the_window_the_predicates_the_member_set_and_the_projection_apply_to_each_cel
 }
 
 #[test]
-fn snapshots_sharing_a_stamp_come_back_with_the_later_one_in_the_slice_first() {
+fn samples_sharing_a_stamp_come_back_with_the_later_one_in_the_slice_first() {
     // Samples of two keys at one stamp, as a merged read hands them over, earlier key first.
     let first = vec![cell(1, 1, [1, 0, 0, 0]), cell(5, 1, [2, 0, 0, 0])];
     let second = vec![cell(2, 1, [3, 0, 0, 0])];

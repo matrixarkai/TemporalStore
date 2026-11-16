@@ -134,7 +134,7 @@ fn member_lists_are_accepted_at_1024_and_refused_at_1025() {
 }
 
 #[test]
-fn a_delete_is_a_removal_by_label_and_member_over_every_snapshot_and_never_of_the_key() {
+fn a_delete_is_a_removal_by_label_and_member_over_every_sample_and_never_of_the_key() {
     let table = profile(&["slot"]);
     let delete = |selector: WindowReduceSelector| WindowReduceDeleteRequest {
         entity: 7,

@@ -181,7 +181,7 @@ fn an_undefined_score_is_counted_and_not_ranked() {
 }
 
 #[test]
-fn each_window_kind_selects_the_snapshots_it_names() {
+fn each_window_kind_selects_the_samples_it_names() {
     let shown = |window| {
         let ranked = run(&spec(window, lane("shown"), 5));
         (order(&ranked), scores(&ranked), ranked.samples)
@@ -209,7 +209,7 @@ fn each_window_kind_selects_the_snapshots_it_names() {
 }
 
 #[test]
-fn a_window_that_cannot_hold_a_snapshot_is_refused() {
+fn a_window_that_cannot_hold_a_sample_is_refused() {
     let backwards = spec(WindowReduceWindow::Between { start_ms: 5, end_ms: 4 }, lane("shown"), 1);
     assert!(Plan::compile(&header(), &backwards).err().unwrap().contains("after it ends"));
     let none = spec(WindowReduceWindow::LastN { n: 0 }, lane("shown"), 1);
@@ -380,7 +380,7 @@ fn nothing_to_rank_is_an_empty_answer_not_an_error() {
 }
 
 #[test]
-fn snapshots_that_cannot_be_merged_are_refused_not_guessed() {
+fn samples_that_cannot_be_merged_are_refused_not_guessed() {
     let query = spec(ALL, lane("shown"), 5);
     let unsorted: Samples = vec![(1, vec![cell(2, 0, [1, 0, 0, 0]), cell(1, 0, [1, 0, 0, 0])])];
     assert!(run_on(&query, &unsorted, 9).unwrap_err().contains("ascending by member"));
@@ -393,7 +393,7 @@ fn snapshots_that_cannot_be_merged_are_refused_not_guessed() {
 }
 
 #[test]
-fn a_reloaded_snapshot_ranks_as_the_snapshot_it_was_stored_from() {
+fn a_reloaded_sample_ranks_as_the_sample_it_was_stored_from() {
     let header = header();
     let live = data();
     // Stored and read back through the value codec, as a restart reads them.
@@ -474,7 +474,7 @@ fn one_cell_per_stamp(count: usize) -> Samples {
 }
 
 #[test]
-fn snapshots_in_a_window_are_bounded_at_exactly_the_limit() {
+fn samples_in_a_window_are_bounded_at_exactly_the_limit() {
     let query = spec(ALL, lane("shown"), 1);
     // At the limit: all MAX samples merge and the member's sum is MAX.
     let at = run_on(&query, &one_cell_per_stamp(MAX_WINDOW_SAMPLES), 0).unwrap();

@@ -35,7 +35,7 @@ fn recency_outweighs_volume_exactly_when_the_half_life_says_it_does() {
 }
 
 #[test]
-fn a_decayed_sum_is_the_hand_computed_total_as_of_the_newest_snapshot_of_the_window() {
+fn a_decayed_sum_is_the_hand_computed_total_as_of_the_newest_sample_of_the_window() {
     // Half-life 100, newest 400: weights 400 -> 1, 300 -> 1/2, 200 -> 1/4, 100 -> 1/8. The `shown`
     // values each member's samples store:
     //   m1  10@100 10@200 10@300         10 * (1/8 + 1/4 + 1/2)     = 8.75
@@ -61,7 +61,7 @@ fn a_decayed_sum_is_the_hand_computed_total_as_of_the_newest_snapshot_of_the_win
 }
 
 #[test]
-fn a_decay_reads_the_values_the_snapshots_store_and_not_the_lanes_reduction() {
+fn a_decay_reads_the_values_the_samples_store_and_not_the_lanes_reduction() {
     // `peak` is a Max lane, whose reduction over the window is m1 9, m2 8, m3 6, m4 2, zz 1. Decayed
     // from what each sample stored (half-life 100, newest 400):
     //   m1  5@100 9@200 4@300     5/8 + 9/4 + 4/2        = 4.875
