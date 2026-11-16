@@ -213,7 +213,7 @@ fn seed(engine: &TemporalEngine, key: &str) -> Vec<(u64, Vec<Cell>)> {
 }
 
 #[test]
-fn a_ranking_over_the_rolled_buckets_answers_what_it_answered_over_the_snapshots_they_replaced() {
+fn a_ranking_over_the_rolled_buckets_answers_what_it_answered_over_the_samples_they_replaced() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path(), None);
     let key = stored_key(7);
@@ -575,7 +575,7 @@ fn a_tiered_request_coarsens_old_history_in_one_command_and_ranks_the_same() {
 }
 
 #[test]
-fn an_age_resolves_against_the_newest_stored_snapshot_and_follows_it() {
+fn an_age_resolves_against_the_newest_stored_sample_and_follows_it() {
     // Ages 100 and 500 against the newest sample, 1200, are the cutoffs 1100 and 700: the same
     // request as above, so the same bytes.
     let (_d1, by_stamp, key) = fresh(21);
@@ -603,7 +603,7 @@ fn an_age_resolves_against_the_newest_stored_snapshot_and_follows_it() {
 }
 
 #[test]
-fn a_truncation_acts_over_its_trigger_and_keeps_the_newest_snapshots() {
+fn a_truncation_acts_over_its_trigger_and_keeps_the_newest_samples() {
     let with_truncate = |keep_last: usize, trigger: Option<usize>| {
         let mut spec = tiered(1100, 200, &[(700, 400)], WindowReduceRollupAnchor::Request);
         spec.truncate = Some(WindowReduceTruncateSpec { keep_last, trigger });

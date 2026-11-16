@@ -127,7 +127,7 @@ fn specs() -> Vec<WindowReduceRankSpec> {
 }
 
 #[test]
-fn a_read_over_flat_snapshots_answers_what_a_read_over_plain_snapshots_answers() {
+fn a_read_over_flat_samples_answers_what_a_read_over_plain_samples_answers() {
     let header = wide_header();
     let mut state = 0x9e37_79b9_7f4a_7c15u64;
     let mut compared = 0;
@@ -163,7 +163,7 @@ fn a_read_over_flat_snapshots_answers_what_a_read_over_plain_snapshots_answers()
 }
 
 #[test]
-fn a_fan_in_over_flat_snapshots_answers_what_a_fan_in_over_plain_snapshots_answers() {
+fn a_fan_in_over_flat_samples_answers_what_a_fan_in_over_plain_samples_answers() {
     let header = wide_header();
     let mut state = 0x1234_5678_9abc_def1u64;
     let keys: Vec<Vec<(u64, Vec<Cell>)>> = (0..4).map(|_| random_samples(&mut state, 5)).collect();
@@ -194,7 +194,7 @@ fn a_fan_in_over_flat_snapshots_answers_what_a_fan_in_over_plain_snapshots_answe
 }
 
 #[test]
-fn a_flat_snapshot_out_of_order_is_refused_as_a_plain_one_is() {
+fn a_flat_sample_out_of_order_is_refused_as_a_plain_one_is() {
     let header = wide_header();
     let unordered = vec![
         Cell { member: Member::U64(5), labels: vec![0; 4], lanes: vec![1; 6] },

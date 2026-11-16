@@ -7,7 +7,7 @@
 //! Each table sweeps ONE dimension at a time (samples, cells per sample, keys) so a cost that
 //! scales with a count shows as a slope. Counts are allocation BLOCKS first, bytes second. Run:
 //!
-//!   cargo test --features alloc-probe --lib the_cell_model_allocation_tables -- --ignored --nocapture --test-threads=1
+//!   cargo test --features alloc-probe --lib the_window_reduce_allocation_tables -- --ignored --nocapture --test-threads=1
 //!
 //! rust-internal: measures this crate's own request paths, no product behaviour
 
@@ -183,7 +183,7 @@ fn merge_once(cell_count: usize) -> (f64, f64) {
 
 #[test]
 #[ignore = "measurement: run with --features alloc-probe --ignored"]
-fn the_cell_model_allocation_tables() {
+fn the_window_reduce_allocation_tables() {
     for cell_count in [1usize, 64, 1024] {
         let (a, b) = merge_once(cell_count);
         eprintln!("CELLTABLE merge cells={cell_count} allocs={a:.1} bytes={b:.0}");
@@ -212,7 +212,7 @@ fn the_cell_model_allocation_tables() {
             assert_eq!(10, fan_in_read(&engine, &names).len());
         });
         eprintln!(
-            "CELLTABLE fan_in keys={keys} snapshots_per_key={samples} cells={cell_count} allocs={a:.1} bytes={b:.0} allocs_per_cell_read={:.3}",
+            "CELLTABLE fan_in keys={keys} samples_per_key={samples} cells={cell_count} allocs={a:.1} bytes={b:.0} allocs_per_cell_read={:.3}",
             a / (keys * samples * cell_count) as f64
         );
     }
@@ -265,7 +265,7 @@ fn rank_at(cell_count: usize) -> (f64, f64) {
 }
 
 /// A ranked read through the engine decodes every sample it reads, so what it allocates follows
-/// the SNAPSHOTS it reads and not the cells in them. Decoding a cell into a `Cell` cost two
+/// the SAMPLES it reads and not the cells in them. Decoding a cell into a `Cell` cost two
 /// allocations (its labels and its lanes) for every stored cell, on every read. The flat form holds a sample's cells in
 /// a few vectors, so the two cell counts allocate the same number of times.
 ///
@@ -313,7 +313,7 @@ fn a_fan_in_read_through_the_engine_does_not_allocate_per_cell() {
 }
 
 /// A rollup decodes every sample it rolls up, folds them bucket by bucket and writes the rolled
-/// samples back, so what it allocates follows the SNAPSHOTS and buckets and not the cells in
+/// samples back, so what it allocates follows the SAMPLES and buckets and not the cells in
 /// them. The plain form spent two allocations on every stored cell at the decode alone. 100
 /// samples roll into ten buckets here, at 50 and at 400 cells a sample (a per-cell allocation
 /// would add 70,000). The CONTROL is the same two rollups in bytes, which must grow with the cell
@@ -335,7 +335,7 @@ fn a_rollup_through_the_engine_does_not_allocate_per_cell() {
 /// Allocations of each step a merge-reduce plan takes, measured on the pure pieces the planner
 /// calls, for a typical shape (one dimension, one label, two lanes) and 64 cells. The planner runs
 /// twice per write (validation, then execution), so each line is paid twice. A table for choosing
-/// what to remove: the whole write is `the_cell_model_allocation_tables`.
+/// what to remove: the whole write is `the_window_reduce_allocation_tables`.
 #[test]
 #[ignore = "measurement: run with --features alloc-probe --ignored"]
 fn the_merge_plan_allocations_by_step() {

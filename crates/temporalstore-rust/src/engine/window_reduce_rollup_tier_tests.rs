@@ -220,7 +220,7 @@ fn a_tiered_rollup_equals_an_independent_fold_with_a_bucket_per_tier() {
 // ------------------------------------------------------------------------------------------
 
 #[test]
-fn a_snapshot_takes_the_coarsest_tier_whose_cutoff_is_above_it_and_each_cutoff_is_strict() {
+fn a_sample_takes_the_coarsest_tier_whose_cutoff_is_above_it_and_each_cutoff_is_strict() {
     // Tiers: below 1000 buckets of 100; below 500 buckets of 500.
     //   499 is below both: the coarser tier, start 0.   500 is AT the second cutoff: tier 0, start 500.
     //   999 is below only the first cutoff: start 900.   1000 is AT the first cutoff: not rolled.
@@ -264,7 +264,7 @@ fn a_cutoff_that_is_not_a_multiple_of_the_finer_width_is_aligned_down_to_it() {
 }
 
 #[test]
-fn the_catch_all_tier_holds_everything_older_in_one_snapshot_at_stamp_zero() {
+fn the_catch_all_tier_holds_everything_older_in_one_sample_at_stamp_zero() {
     // Below 1000 buckets of 100; below 400 everything in one sample. 5, 150 and 399 are below
     // 400 and fold into stamp 0; 400 and 450 are tier 0 and fold into 400; 1200 is not rolled.
     let spec = plan(Anchor::Request, &[(1000, 100), (400, CATCH_ALL_BUCKET_MS)]);
@@ -384,7 +384,7 @@ fn a_truncation_acts_only_over_its_trigger_and_then_keeps_the_newest_n() {
 }
 
 #[test]
-fn truncating_a_rolled_series_keeps_the_newest_snapshots_of_what_the_rollup_left() {
+fn truncating_a_rolled_series_keeps_the_newest_samples_of_what_the_rollup_left() {
     let snaps = series(11, 120);
     let newest = snaps.last().unwrap().timestamp_ms;
     let spec = plan(Anchor::Request, &[(newest / 2, 400)]);
@@ -442,7 +442,7 @@ fn a_protected_share_of_the_newest_members_survives_whatever_its_score() {
 }
 
 #[test]
-fn a_member_is_as_new_as_the_newest_snapshot_that_wrote_it() {
+fn a_member_is_as_new_as_the_newest_sample_that_wrote_it() {
     // m3 is written at 10 and again at 20, so it is as new as m5 and m6; m1 and m2 only at 10.
     // Protecting two of keep 3 (666 666 ppm of 3 is 1.99, rounded down to 1) keeps one: the newest
     // of the three at stamp 20 is the smallest member, m3.
@@ -550,7 +550,7 @@ fn truncation_and_cap_controls_are_bounded_at_exactly_the_limit() {
 }
 
 #[test]
-fn snapshots_below_the_first_cutoff_are_bounded_at_exactly_the_limit_whatever_the_tiers() {
+fn samples_below_the_first_cutoff_are_bounded_at_exactly_the_limit_whatever_the_tiers() {
     let many = |n: usize| (0..n as u64).map(|i| snap(i + 1, Vec::new())).collect::<Vec<_>>();
     let spec = plan(Anchor::Request, &[(u64::MAX, 1_000_000), (u64::MAX - 1, 4_000_000)]);
     assert!(rollup_tiered(&header(), many(MAX_ROLLUP_SAMPLES), &spec, 0).is_ok());
@@ -610,7 +610,7 @@ mod probe {
     /// cells grows with both.
     #[test]
     #[ignore = "measurement: run with --features alloc-probe --ignored"]
-    fn a_tiered_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many() {
+    fn a_tiered_rollup_allocates_the_same_over_few_samples_and_many_and_few_members_and_many() {
         for protect in [false, true] {
             let base = allocations(50, 4, protect);
             let more_samples = allocations(50, 64, protect);

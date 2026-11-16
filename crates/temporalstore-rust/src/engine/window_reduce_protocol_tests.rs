@@ -605,7 +605,7 @@ fn a_flagged_empty_include_set_is_refused_and_an_unflagged_one_restricts_nothing
 }
 
 #[test]
-fn a_window_anchored_on_the_newest_snapshot_becomes_the_newest_anchor_and_the_clock_one_does_not() {
+fn a_window_anchored_on_the_newest_sample_becomes_the_newest_anchor_and_the_clock_one_does_not() {
     let profile = pair_profile();
     let read = |kind: WindowKind| {
         let w = Window { kind: kind as i32, span: 5_000_000, start_us: 0 };
@@ -772,7 +772,7 @@ fn a_merged_read_refuses_a_key_named_twice_and_an_entity_that_is_not_an_id() {
 }
 
 #[test]
-fn a_merged_answer_reports_how_many_keys_held_a_snapshot() {
+fn a_merged_answer_reports_how_many_keys_held_a_sample() {
     let ranked = RankedCells { samples: 4, keys: 3, ..Default::default() };
     let a = answer_of(&pair_profile(), &query(trailing(), selector(RankMode::FirstLane)), &ranked);
     assert_eq!((a.samples, a.keys), (4, 3));
@@ -827,7 +827,7 @@ fn a_batch_answer_holds_one_answer_per_query_in_order_each_with_its_own_status()
 // ---------------------------------------------------------------- options no read honours
 
 #[test]
-fn a_selector_that_asks_for_snapshot_info_or_a_member_limit_is_refused_naming_the_field() {
+fn a_selector_that_asks_for_sample_info_or_a_member_limit_is_refused_naming_the_field() {
     // The unset request is translated: the refusals below are the option, not the selector.
     assert!(translate_query(&pair_profile(), &query(trailing(), selector(RankMode::FirstLane))).is_ok());
 
@@ -938,7 +938,7 @@ fn match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_s
 }
 
 #[test]
-fn a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_snapshot() {
+fn a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_sample() {
     let profile = pair_profile();
     let q = query(trailing(), selector(RankMode::Recent));
     let ranked = RankedCells {

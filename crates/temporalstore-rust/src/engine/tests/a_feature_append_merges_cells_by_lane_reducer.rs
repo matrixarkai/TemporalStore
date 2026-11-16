@@ -289,7 +289,7 @@ fn the_receipt_says_what_landed() {
 }
 
 #[test]
-fn a_merged_snapshot_survives_a_cold_reload_and_keeps_merging() {
+fn a_merged_sample_survives_a_cold_reload_and_keeps_merging() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path(), None);
     let h = header(&SIX);
@@ -404,7 +404,7 @@ fn distinct(from: u64, count: usize) -> Vec<Cell> {
 }
 
 #[test]
-fn cells_per_request_and_per_snapshot_refuse_one_past_and_accept_the_limit() {
+fn cells_per_request_and_per_sample_refuse_one_past_and_accept_the_limit() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let h = header(&[LaneReducer::Sum]);
@@ -489,7 +489,7 @@ fn the_feature_ceiling_holds_for_a_merge_reduce_append() {
 }
 
 #[test]
-fn the_trim_keeps_the_newest_snapshots_and_each_still_carries_its_header() {
+fn the_trim_keeps_the_newest_samples_and_each_still_carries_its_header() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path(), Some(3));
     let h = header(&[LaneReducer::Sum]);

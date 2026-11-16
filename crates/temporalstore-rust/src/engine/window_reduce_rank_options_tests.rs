@@ -265,7 +265,7 @@ fn count_in(duration_ms: u64, anchor: Anchor, snaps: &Samples, now_ms: u64) -> u
 }
 
 #[test]
-fn an_anchored_last_window_ends_at_the_newest_snapshot_whatever_the_clock_says() {
+fn an_anchored_last_window_ends_at_the_newest_sample_whatever_the_clock_says() {
     let last = |duration_ms| spec(WindowReduceWindow::Last { duration_ms }, lane("shown"), 10);
     let result = |duration_ms, options: &RankOptions, now_ms| {
         let ranked = run_with(&last(duration_ms), options, &data(), now_ms).unwrap();

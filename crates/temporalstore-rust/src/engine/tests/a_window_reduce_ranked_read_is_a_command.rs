@@ -265,7 +265,7 @@ fn a_window_over_the_bound_is_refused_after_a_bounded_read_and_one_at_the_bound_
 }
 
 #[test]
-fn a_lane_added_later_reads_as_zero_in_the_snapshots_written_before_it() {
+fn a_lane_added_later_reads_as_zero_in_the_samples_written_before_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     let key = stored_key(5);
@@ -454,7 +454,7 @@ fn the_member_set_is_bounded_at_admission_and_accepted_at_exactly_the_limit() {
 }
 
 #[test]
-fn an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says() {
+fn an_anchored_window_reads_the_newest_sample_whatever_the_clock_says() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     let key = stored_key(13);

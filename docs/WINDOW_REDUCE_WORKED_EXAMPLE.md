@@ -50,7 +50,7 @@ request the key cannot serve is refused before anything is written.
 
 ## A worked example
 
-`crates/temporalstore-rust/src/engine/tests/a_worked_example_of_cells.rs` is a runnable test that
+`crates/temporalstore-rust/src/engine/tests/a_worked_example_of_window_reduce.rs` is a runnable test that
 doubles as this page's example. One user, two dimensions (`channel`, `kind`), a label (`slot`) and
 two lanes (`impressions`, `clicks`, both summed): it writes four samples, merges two writes at
 one timestamp, then ranks the last minute by click rate and by the Wilson lower bound. Item 1,
@@ -60,7 +60,7 @@ clicks in 100 impressions, leads by the bound.
 ## A worked example of a rollup
 
 `a_worked_example_of_a_rollup`, in
-`crates/temporalstore-rust/src/engine/tests/a_cell_rollup_is_a_command.rs`, follows one user
+`crates/temporalstore-rust/src/engine/tests/a_window_reduce_rollup_is_a_command.rs`, follows one user
 (entity 42) on one channel. Three minute samples hold items 1, 2 and 3 with the lanes
 `impressions` and `clicks` (summed) and `peak` (max), and a fourth sample comes an hour later.
 Rolled per hour with the cutoff at the hour, the three minutes become one sample at the start of
@@ -72,8 +72,8 @@ item 2 (0.5) stays and item 1 (0.05) goes; item 3 is alone in its slot.
 ### Tiers, an age and a truncation
 
 `a_tiered_request_coarsens_old_history_in_one_command_and_ranks_the_same`,
-`an_age_resolves_against_the_newest_stored_snapshot_and_follows_it` and
-`a_truncation_acts_over_its_trigger_and_keeps_the_newest_snapshots`, in the same test file, work one
+`an_age_resolves_against_the_newest_stored_sample_and_follows_it` and
+`a_truncation_acts_over_its_trigger_and_keeps_the_newest_samples`, in the same test file, work one
 twelve-sample key (stamps 100 to 1 200). Below 1 100 the buckets are 200 wide, below 700 they are
 400 wide (700 is aligned down to 600, a multiple of 200), so the twelve become seven, at 0, 400,
 600, 800, 1 000, 1 100 and 1 200. Asked as ages (100 and 500) against the newest stamp, 1 200, the
@@ -212,14 +212,14 @@ spec that lacks them reads as one that has them at rest.
 ### An example
 
 `a_quota_selects_exactly_as_a_fold_of_the_ranking_says`, in
-`crates/temporalstore-rust/src/engine/tests/a_ranked_cell_read_is_a_command.rs`, stores one sample
+`crates/temporalstore-rust/src/engine/tests/a_window_reduce_ranked_read_is_a_command.rs`, stores one sample
 of eight members with the lanes `shown` and `clicked`. Ranked by `shown` they come 1 to 8, and only
 members 3, 6 and 8 have a click. The plain top four are 1, 2, 3, 4. With a quota of two members with
 a click and `top_k` 8, the answer is members 3 and 6; with `top_k` 5 it is member 3 alone, because
 the quota never reaches past the top-k; with `others` 2 added, members 1 and 2 come first, so the
 answer is 1, 2, 3, 6.
 
-`an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says` stores four samples at
+`an_anchored_window_reads_the_newest_sample_whatever_the_clock_says` stores four samples at
 100, 200, 300 and 400 and ranks by `shown`: an anchored `Last` of 100 is `[301, 400]`, one sample;
 300 is `[101, 400]`, three; 301 reaches the sample at 100. The same `Last` of 100 on the request
 clock, read long after the writes, is empty.
@@ -286,7 +286,7 @@ request names.
 Command::CellFanInRankQuery { keys: vec![email_key, push_key, feed_key], spec }
 ```
 
-`crates/temporalstore-rust/src/engine/tests/a_ranked_read_over_several_cell_keys.rs` is the runnable
+`crates/temporalstore-rust/src/engine/tests/a_window_reduce_read_over_several_keys.rs` is the runnable
 example: one user, a `channel` dimension in the key, three channels and six samples, ranked by a
 summed lane and by a maximum lane, checked equal to a single key that holds the same six samples,
 and then read again after a restart.
