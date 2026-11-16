@@ -2874,10 +2874,7 @@ pub(crate) fn execute_on_shard(
                 Some(now),
                 false,
             );
-            let seen = shard
-                .seen
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default();
+            let seen = slot_for_write(&mut shard.seen, &key);
             // Bounded sweep from the time-ordered front: enough to keep pace with any
             // sustained rate, never enough to stall a hot call on a huge backlog.
             for _ in 0..128 {
@@ -2991,7 +2988,7 @@ pub(crate) fn execute_on_shard(
                 None,
                 false,
             );
-            shard.buckets.insert(std::sync::Arc::from(&key[..]), next);
+            store_for_write(&mut shard.buckets, &key, next);
             mutated = true;
             CommandResponse::Members {
                 members: bucket_answer(allowed, remaining, retry_after_ms),
@@ -4607,10 +4604,7 @@ pub(crate) fn execute_on_shard(
                 "feature",
                 &key,
             );
-            let series = shard
-                .features_mut()
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default();
+            let series = slot_for_write(shard.features_mut(), &key);
             // PROTOBUF ONLY: the same wire form `FeatureAppend` rows hold, so both read paths decode
             // it. There is no JSON encode path here; see `sequence_row_value`.
             let points = rows
@@ -4963,10 +4957,7 @@ pub(crate) fn execute_on_shard(
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let resulting = {
-                let counter = shard
-                    .control_state_mut()
-                    .entry(std::sync::Arc::from(&key[..]))
-                    .or_default()
+                let counter = slot_for_write(shard.control_state_mut(), &key)
                     .entry(timestamp_ms)
                     .or_default();
                 *counter += amount;
@@ -5005,10 +4996,7 @@ pub(crate) fn execute_on_shard(
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
             let resulting = {
-                let counter = shard
-                    .control_state_mut()
-                    .entry(std::sync::Arc::from(&key[..]))
-                    .or_default()
+                let counter = slot_for_write(shard.control_state_mut(), &key)
                     .entry(bucket_ms)
                     .or_default();
                 *counter += amount;
@@ -5204,10 +5192,7 @@ pub(crate) fn execute_on_shard(
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let key = control_state_family_key(family, &key);
             let resulting = {
-                let counter = shard
-                    .control_state_mut()
-                    .entry(std::sync::Arc::from(&key[..]))
-                    .or_default()
+                let counter = slot_for_write(shard.control_state_mut(), &key)
                     .entry(timestamp_ms)
                     .or_default();
                 *counter += amount;
@@ -5242,10 +5227,7 @@ pub(crate) fn execute_on_shard(
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let key = control_state_family_key(family, &key);
-            let series = shard
-                .control_state_mut()
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default();
+            let series = slot_for_write(shard.control_state_mut(), &key);
             let resulting = {
                 let counter = series.entry(timestamp_ms).or_default();
                 *counter += amount;
@@ -5315,10 +5297,7 @@ pub(crate) fn execute_on_shard(
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
-            let series = shard
-                .control_state_mut()
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default();
+            let series = slot_for_write(shard.control_state_mut(), &key);
             // A duplicate adds nothing and so has no result to state; it keeps writing the block,
             // which is what makes the record one a replay installs.
             let resulting = if is_duplicate {
@@ -5477,8 +5456,9 @@ pub(crate) fn execute_on_shard(
                     None,
                     Some(value.clone()),
                 );
-                shard.control_state_selection.insert(
-                    std::sync::Arc::from(&key[..]),
+                store_for_write(
+                    &mut shard.control_state_selection,
+                    &key,
                     ControlStateSelectionValue {
                         occur_time_ms,
                         value,
