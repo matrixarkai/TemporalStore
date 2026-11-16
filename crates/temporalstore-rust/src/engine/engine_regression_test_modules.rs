@@ -583,3 +583,5 @@ mod a_set_pop_and_random_member_read_the_first_members;
 mod a_container_add_does_not_pay_for_the_elements_it_already_has;
 #[path = "tests/a_series_at_its_cap_trims_without_a_victim_list.rs"]
 mod a_series_at_its_cap_trims_without_a_victim_list;
+#[path = "tests/a_string_set_does_not_copy_the_value_it_replaces.rs"]
+mod a_string_set_does_not_copy_the_value_it_replaces;
