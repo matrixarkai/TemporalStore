@@ -759,6 +759,75 @@ fn the_cache_bound_stage_drops_the_cache_and_dumps_nothing() {
     );
 }
 
+/// The runtime's expired-key count is what the loop's expire stage removed, summed over rounds.
+///
+/// The metrics endpoint publishes `expired_records_removed` from the runtime stats, so this is the
+/// number an operator reads to tell whether expiry keeps up. Three keys with a one-millisecond
+/// deadline are made due and one round runs: the count must read exactly three, and a second round
+/// with nothing due must leave it at three.
+#[test]
+fn the_runtime_counts_the_keys_the_expire_stage_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 10);
+    let engine = runtime.engine();
+    for index in 0..3 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: format!("due-{index}"),
+                value: vec![b'v'; 16],
+                ttl_ms: 1,
+            },
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(runtime.stats().expired_records_removed, 0);
+    let first = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert_eq!(first.expired_records_removed, 3);
+    assert_eq!(runtime.stats().expired_records_removed, 3);
+    runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert_eq!(
+        runtime.stats().expired_records_removed,
+        3,
+        "a round with nothing due moved the expired-key count"
+    );
+}
+
+/// The overdue count is the backlog a bounded round leaves behind.
+///
+/// Three keys are made due and the round may remove one hot key, so one is removed, two remain
+/// overdue, and the count reads two; the next two rounds drain it to zero. A gauge that read zero
+/// whatever the backlog would report expiry as keeping up on a server where it is not.
+#[test]
+fn the_overdue_count_is_what_a_bounded_round_leaves_due() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 10);
+    let engine = runtime.engine();
+    for index in 0..3 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: format!("due-{index}"),
+                value: vec![b'v'; 16],
+                ttl_ms: 1,
+            },
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(engine.expiry_overdue_keys(), 3);
+    let one_per_round = StorageManagerOptions {
+        max_expire_hot_buckets_per_round: 1,
+        ..StorageManagerOptions::default()
+    };
+    runtime.run_storage_manager_once(1, one_per_round.clone());
+    assert_eq!(engine.expiry_overdue_keys(), 2, "one removed, two still overdue");
+    runtime.run_storage_manager_once(1, one_per_round.clone());
+    runtime.run_storage_manager_once(1, one_per_round);
+    assert_eq!(engine.expiry_overdue_keys(), 0);
+}
+
 /// Measurement harness, not a gate: `--ignored --nocapture`, one test thread, `LOOP_KEYS=<n>`,
 /// `LOOP_WRITES=<writes per round>`. A shard that takes writes between rounds is dirty at every
 /// round, so this prices what a round pays then, stage by stage and by the call site that walked.

@@ -1424,6 +1424,30 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
     }
 
+    /// How many keys across the loaded shards carry a deadline that has already passed and have
+    /// not been removed yet.
+    ///
+    /// The expire stage is bounded per round, so this is the backlog: zero when expiry keeps up,
+    /// growing when deadlines pass faster than rounds remove them. It walks the due prefix of each
+    /// shard's deadline view under the read guard, so it costs the number of overdue keys, which is
+    /// the very number it reports; it is meant for a metrics scrape, not a hot path.
+    pub fn expiry_overdue_keys(&self) -> u64 {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let now = now_ms();
+        let first_future = (now.saturating_add(1), std::sync::Arc::<str>::from(""));
+        self.shards
+            .read()
+            .expect("engine lock poisoned")
+            .values()
+            .map(|shard| {
+                shard
+                    .expiry_by_deadline
+                    .range((Unbounded, Excluded(first_future.clone())))
+                    .count() as u64
+            })
+            .sum()
+    }
+
     pub fn sweep_all_expired_records(&self) -> Vec<ShardExpirySweepReport> {
         self.loaded_shard_ids()
             .into_iter()
