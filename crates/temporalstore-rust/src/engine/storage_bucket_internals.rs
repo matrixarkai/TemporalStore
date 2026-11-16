@@ -1528,6 +1528,135 @@ fn file_rebuilt_block_refs(
 #[path = "rebuilt_ref_filing_tests.rs"]
 mod rebuilt_ref_filing_tests;
 
+/// File a block at its new address, once. Several elements of a folded container point at one new
+/// block, and a block whose handle is already held is not in the map twice, so it must not be in the
+/// lookup twice either: the filing is skipped when the handle is already there.
+#[allow(clippy::too_many_arguments)]
+fn file_moved_block(
+    shard: &mut ShardState,
+    kind: StoredModelKind,
+    object_key: &str,
+    routing_bucket: u32,
+    new: &ElementEntry,
+    dirty: bool,
+    deleted: bool,
+) {
+    let key: Arc<str> = shard
+        .bucket_index
+        .shared_object_key(kind.as_str(), object_key)
+        .or_else(|| shard.bucket_index.any_shared_object_key(object_key))
+        .unwrap_or_else(|| Arc::from(object_key));
+    let entry = BlockIndex::new(kind, new.clone(), dirty, deleted);
+    let handle = {
+        let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+            return;
+        };
+        if bucket.block_index.get(&crate::engine::state::block_index_handle(&key, &entry)).is_some() {
+            return;
+        }
+        bucket.insert_block(&key, entry.clone(), &mut shard.bucket_index.block_slab_live)
+    };
+    shard.bucket_index.insert_object_block_lookup(routing_bucket, handle, &key, &entry);
+}
+
+/// Replace, in the bucket index, the entry of each block a round moved. Returns false, having
+/// changed nothing it cannot account for, when any block's old entry is not where the index should
+/// hold it -- the caller then rebuilds from the model maps, which is always correct.
+///
+/// A relocation changes one thing about a block: its address. The handle a block is filed under
+/// hashes the address, so the entry is removed under its old handle (which discharges the old slab
+/// from the live tally) and filed under the new one (which charges the new slab), and the object's
+/// lookup ref follows. The flags the entry carried travel with it. Nothing is staged for the WAL:
+/// compaction records no outcome, the durable index is the only record of a move.
+///
+/// THE ENTRY IS FOUND THROUGH THE LOOKUP, the object's own slot, so the cost follows the blocks
+/// moved and not the size of the shard. An entry that cannot be found there -- a released bucket,
+/// or a folded block another element of the same object already moved -- is the fallback, not an
+/// error.
+pub(super) fn apply_relocations_in_place(
+    shard: &mut ShardState,
+    moved: &[super::compaction::MovedBlock],
+) -> bool {
+    if moved.is_empty() {
+        return true;
+    }
+    if shard.bucket_index.names_no_object_blocks() {
+        return false;
+    }
+    let mut touched: Vec<u32> = Vec::with_capacity(moved.len());
+    // What each old block was, once it has been taken out: several elements can name one old block
+    // (a folded container block), and each of them still has a new block to file.
+    let mut taken: HashMap<(String, String, ElementEntry), (u32, bool, bool)> = HashMap::new();
+    for block in moved {
+        let taken_key = (block.model_id.clone(), block.object_key.clone(), block.old.clone());
+        if let Some(&(routing_bucket, dirty, deleted)) = taken.get(&taken_key) {
+            let kind = stored_model_kind(&block.model_id);
+            file_moved_block(shard, kind, &block.object_key, routing_bucket, &block.new, dirty, deleted);
+            continue;
+        }
+        let kind = stored_model_kind(&block.model_id);
+        let found = shard
+            .bucket_index
+            .block_refs_for(kind.as_str(), &block.object_key, None)
+            .and_then(|refs| {
+                refs.iter()
+                    .find(|block_ref| {
+                        shard
+                            .bucket_index
+                            .bucket_map
+                            .get(&block_ref.routing_bucket)
+                            .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
+                            .is_some_and(|held| held.address == block.old)
+                    })
+                    .cloned()
+            });
+        let Some(block_ref) = found else {
+            return false;
+        };
+        shard.bucket_index.remove_object_block_lookup_ref(
+            kind.as_str(),
+            &block.object_key,
+            None,
+            &block_ref,
+        );
+        let removed = {
+            let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&block_ref.routing_bucket) else {
+                return false;
+            };
+            // Taken out against a throwaway tally and discharged from the real one WITHOUT a stale
+            // record: a block a round moved did not retire, its bytes are still where the old slab
+            // is read from until the slab is dropped whole, and the funnel that records staleness
+            // would claim them as garbage pending discard.
+            bucket.block_index.remove(
+                &block_ref.block_ref_key,
+                &mut crate::engine::state::BlockSlabLiveIndex::default(),
+                crate::engine::state::StaleCause::Overwrite,
+            )
+        };
+        let Some(removed) = removed else {
+            return false;
+        };
+        shard.bucket_index.block_slab_live.remove_address_unrecorded(&removed.address);
+        taken.insert(taken_key, (block_ref.routing_bucket, removed.dirty(), removed.deleted()));
+        file_moved_block(
+            shard,
+            kind,
+            &block.object_key,
+            block_ref.routing_bucket,
+            &block.new,
+            removed.dirty(),
+            removed.deleted(),
+        );
+        touched.push(block_ref.routing_bucket);
+    }
+    touched.sort_unstable();
+    touched.dedup();
+    for routing_bucket in touched {
+        note_bucket_flags_stale(shard, routing_bucket);
+    }
+    true
+}
+
 pub(super) fn rebuild_bucket_block_ownership(
     shard_id: ShardId,
     shard: &mut ShardState,

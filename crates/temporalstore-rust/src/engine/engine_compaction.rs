@@ -311,6 +311,19 @@ pub(super) struct CompactionRewriteStats {
     /// Blocks `should_relocate` was asked about. A drain round is bounded by what its drain set
     /// names, and this is what shows it: keys with no block on a drain slab are never asked.
     pub(super) decisions: usize,
+    /// Every block this round moved, old address beside new. The bucket index is updated for
+    /// exactly these blocks, so a round no longer rebuilds the whole index from the model maps.
+    pub(super) moved: Vec<MovedBlock>,
+}
+
+/// One block a round relocated: the object it belongs to, the model that holds it, and where it
+/// was and now is. The index entry that named `old` is the one the round has to replace.
+#[derive(Debug, Clone)]
+pub(super) struct MovedBlock {
+    pub(super) model_id: String,
+    pub(super) object_key: String,
+    pub(super) old: ElementEntry,
+    pub(super) new: ElementEntry,
 }
 
 #[derive(Debug, Default)]
@@ -1007,6 +1020,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
                 shard_id,
                 model_id,
                 spelling,
+                object_key,
                 routing_bucket,
                 object_id,
                 batches,
@@ -1032,6 +1046,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
             shard_id,
             model_id,
             spelling,
+            object_key,
             routing_bucket,
             object_id,
             batches,
@@ -1099,6 +1114,7 @@ fn flush_container_batch(
     shard_id: ShardId,
     model_id: &str,
     spelling: super::container_blocks::ElementKeySpelling,
+    object_key: &str,
     routing_bucket: u32,
     object_id: Option<u64>,
     batch_ordinal: usize,
@@ -1143,6 +1159,12 @@ fn flush_container_batch(
                 rewrite_stats.retired_container_wal_blocks.push((object_id, element_name));
             }
         }
+        rewrite_stats.moved.push(MovedBlock {
+            model_id: model_id.to_string(),
+            object_key: object_key.to_string(),
+            old: destination.clone(),
+            new: new_address.clone(),
+        });
         *destination = new_address.clone();
         rewrite_stats.record(model_id, *cold_in_batch);
     }
@@ -1236,6 +1258,12 @@ pub(super) fn compact_block_addresses<'a>(
                 address.block_id().unwrap_or_default() as u32,
             )
             .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
+        rewrite_stats.moved.push(MovedBlock {
+            model_id: model_id.to_string(),
+            object_key: object_key.to_string(),
+            old: address.clone(),
+            new: new_address.clone(),
+        });
         *address = new_address.clone();
         let _ = cache.put(
             CacheKey::page_with_slot_generation(
@@ -1306,6 +1334,12 @@ pub(super) fn compact_feature_block_addresses(
             ),
             bytes,
         );
+        rewrite_stats.moved.push(MovedBlock {
+            model_id: model_id.to_string(),
+            object_key: object_key.to_string(),
+            old: old_address.clone(),
+            new: new_address.clone(),
+        });
         rewritten.insert(old_address, new_address);
         rewrite_stats.record(model_id, cold_block);
     }

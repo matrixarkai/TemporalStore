@@ -231,6 +231,10 @@ fn background_compaction_partial_failure_is_durable_and_resumable() {
     );
     let anchor = engine.compaction_rounds.read().unwrap().get(&1).copied();
     assert!(anchor.is_some());
+    {
+        let shards = engine.shards_write_marked();
+        assert_the_index_names_what_the_maps_hold(shards.get(&1).unwrap());
+    }
     check_values(&engine, 16);
     // Reopen the partially published image before another round can repair anything.
     drop(engine);
@@ -503,5 +507,136 @@ fn a_compaction_round_keeps_every_buckets_dirty_generation() {
         generations(&engine),
         before,
         "a compaction round changed a bucket's dirty generation"
+    );
+}
+
+/// The fields of every bucket a block move cannot change, one line per bucket in bucket order: the
+/// watermarks, the flags, the object and deleted-object ids and the tombstone rows. The blocks
+/// themselves are left out -- moving one changes its address and handle by design, and a folded
+/// container leaves fewer of them -- and are held to account by the model-map agreement, the tally
+/// and the lookup total.
+fn bucket_what_a_move_leaves(shard: &ShardState) -> Vec<String> {
+    let mut rows: Vec<(u32, String)> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .map(|(bucket, node)| {
+            let text = format!("{node:?}");
+            let kept: Vec<&str> = text
+                .split(", ")
+                .filter(|part| {
+                    [
+                        "dirty_generation",
+                        "first_dirty",
+                        "flags",
+                        "deleted_object_index",
+                        "object_index",
+                        "tombstone_elements",
+                    ]
+                    .iter()
+                    .any(|field| part.contains(field))
+                })
+                .collect();
+            (*bucket, kept.join("|"))
+        })
+        .collect();
+    rows.sort();
+    rows.into_iter().map(|(bucket, text)| format!("bucket {bucket}: {text}")).collect()
+}
+
+/// What a rebuild would derive from the model maps is what the bucket index holds.
+fn assert_the_index_names_what_the_maps_hold(shard: &ShardState) {
+    // THE INDEX AND THE MODEL MAPS NAME THE SAME BLOCKS: what a rebuild would derive from the maps is
+    // what the index holds, so a block the round moved is filed at the address the map now reads.
+    // The flag bits an index entry carries beside its address (model, dirty) are left out of the
+    // comparison: they are the index's, and the map's entry has none.
+    {
+        let held: BTreeSet<(String, String)> = collect_live_block_entries(shard)
+            .into_iter()
+            // A removal's tombstone is the index's own record; the maps hold live elements only.
+            .filter(|entry| !entry.deleted)
+            .map(|entry| (entry.object_key.to_string(), format!(
+                    "slab {} offset {} length {} block {:?}",
+                    entry.address.block_slab_id(),
+                    entry.address.offset(),
+                    entry.address.length(),
+                    entry.address.block_id()
+                )))
+            .collect();
+        let derived: BTreeSet<(String, String)> = collect_model_live_block_entries(shard)
+            .into_iter()
+            .map(|entry| (entry.object_key.to_string(), format!(
+                    "slab {} offset {} length {} block {:?}",
+                    entry.address.block_slab_id(),
+                    entry.address.offset(),
+                    entry.address.length(),
+                    entry.address.block_id()
+                )))
+            .collect();
+        let only_index: Vec<_> = held.difference(&derived).take(5).collect();
+        let only_maps: Vec<_> = derived.difference(&held).take(5).collect();
+        assert!(
+            only_index.is_empty() && only_maps.is_empty(),
+            "the index and the model maps name different blocks after a round: \
+             {} only in the index {only_index:?}, {} only in the maps {only_maps:?}",
+            held.difference(&derived).count(),
+            derived.difference(&held).count()
+        );
+    }
+}
+
+/// A round that moves blocks updates the bucket index for just those blocks, and must leave
+/// everything else in it as it was: every bucket keeps its watermarks, flags, deleted-object
+/// ids and tombstone rows, the per-slab live tally agrees with a walk of the index, and the lookup
+/// total is unchanged. A whole rebuild is NOT the oracle: it re-derives from the model maps and so
+/// forgets what only the index holds (a deleted object's marker, a bucket's first-dirty sequences).
+#[test]
+fn a_round_that_updates_the_bucket_index_in_place_changes_only_the_blocks_it_moved() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path(), false);
+    seed(&engine, 8);
+    for member in ["id-1", "id-4"] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SetRemove { key: "order".into(), member: member.as_bytes().to_vec() },
+        });
+        assert!(response.status.ok);
+    }
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringDelete { key: "key-3".into() },
+    });
+    assert!(response.status.ok);
+
+    let before = {
+        let shards = engine.shards_write_marked();
+        bucket_what_a_move_leaves(shards.get(&1).unwrap())
+    };
+    engine.compact_shard_blocks(1).unwrap();
+    assert_eq!(
+        last_round_index_update_for_test(),
+        1,
+        "the round fell back to a rebuild, so this would test the rebuild against itself"
+    );
+    let mut shards = engine.shards_write_marked();
+    let shard = shards.get_mut(&1).unwrap();
+    assert_eq!(
+        bucket_what_a_move_leaves(shard),
+        before,
+        "the round changed more of the bucket index than the blocks it moved"
+    );
+    assert_the_index_names_what_the_maps_hold(shard);
+    // THE COUNTS A REBUILD WOULD EARN, for the two figures the in-place update maintains by hand:
+    // the lookup total and the per-slab tally. The blocks agree with the maps (above), so a rebuild
+    // re-earns exactly these, and the ones the round left must be the same.
+    let lookup_after_round = shard.bucket_index.object_element_name_block_refs;
+    let drift = reconcile_block_slab_live(shard);
+    assert!(drift.slabs_compared > 0, "no slab was compared: {drift:?}");
+    assert_eq!(drift.drifted_slabs, 0, "the live tally disagrees with a walk of the index: {drift:?}");
+    let (start, end) = shard.routing_range();
+    rebuild_bucket_block_ownership(1, shard, start, end);
+    assert_eq!(
+        shard.bucket_index.object_element_name_block_refs, lookup_after_round,
+        "the round left a different number of block lookup refs than a rebuild earns"
     );
 }

@@ -58,8 +58,19 @@ thread_local! {
     static LAST_ROUND_DECISIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(test)]
+thread_local! {
+    static LAST_ROUND_INDEX_UPDATE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
 /// How many blocks the last round on this thread asked `should_relocate` about.
 #[cfg(test)]
+/// 0 before any round, 1 when the last round updated the bucket index in place, 2 when it rebuilt.
+#[cfg(test)]
+pub(crate) fn last_round_index_update_for_test() -> u8 {
+    LAST_ROUND_INDEX_UPDATE.with(|cell| cell.get())
+}
+
 pub(crate) fn last_compaction_round_decisions_for_test() -> usize {
     LAST_ROUND_DECISIONS.with(|cell| cell.get())
 }
@@ -1792,6 +1803,16 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let on_drain = |key: &str| {
             drain_object_keys.as_ref().map_or(true, |keys| keys.contains(key))
         };
+        // THE BUCKET INDEX MUST NAME EVERY LIVE BLOCK BEFORE ANY BLOCK MOVES. The update after the
+        // arms replaces the entry of each block a round moved, so an entry the index never held has
+        // nothing to replace and would stay missing from the image the round publishes. The whole
+        // rebuild this update replaced filed every block from the model maps and so completed an
+        // index that was behind them; the engine's own repair for that state is this call, which is
+        // a walk that asks and rebuilds only when something is missing, and it has to run before
+        // the arms because afterwards every moved block reads as missing.
+        storage_bucket_internals::promote_model_maps_to_bucket_index_authority(
+            shard_id, shard, start_routing_bucket, end_routing_bucket,
+        );
         // Relocate every model's live blocks onto the freshly rolled slab. A mid-way failure
         // (append ENOSPC / an unreadable torn block) is caught below so we can durably commit the
         // consistent partial state instead of leaving the volatile index half-advanced but
@@ -2142,7 +2163,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // non-durable block, then persist -- leaving volatile == durable so reclaim is safe --
             // and propagate the original error so the caller knows compaction did not fully
             // complete (a later run retries the not-yet-moved blocks).
-            rebuild_compacted_bucket_views(shard_id, shard, start_routing_bucket, end_routing_bucket);
+            update_compacted_bucket_views(
+                shard_id, shard, start_routing_bucket, end_routing_bucket, &rewrite_stats.moved,
+            );
             if let Err(barrier) = self.compaction_barrier() {
                 self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
                 return Err(Status::error(
@@ -2193,7 +2216,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 rounds.remove(&shard_id);
             }
         }
-        rebuild_compacted_bucket_views(shard_id, shard, start_routing_bucket, end_routing_bucket);
+        update_compacted_bucket_views(
+            shard_id, shard, start_routing_bucket, end_routing_bucket, &rewrite_stats.moved,
+        );
         // Durability barrier BEFORE publishing the base index that names the relocated blocks.
         // Under deferred-fsync modes (bulk / block_wal_single_barrier -> append.rs
         // defer_data_sync) compaction relocates blocks fsync-deferred, so the moved
@@ -2351,24 +2376,29 @@ fn expiry_scan_budget(limit: usize) -> usize {
     }
 }
 
-/// Re-derive the bucket views a relocation leaves stale, ONCE.
+/// Bring the bucket views up to date with the blocks a round moved.
 ///
 /// A round moves addresses in the model maps and nothing else, so the bucket index, the block
-/// lookup and the per-slab live tally have to be rebuilt from them. The ownership rebuild does all
-/// of that: it clears and refiles every bucket and carries over what the model maps cannot
-/// re-derive (tombstone rows) and what a rebuild must not reset (each bucket's dirty generation).
-/// The first-index rebuild that used to run before it derives the same views from the same maps,
-/// so it only repeated the work -- and it reset every dirty generation to a fresh value, which the
-/// ownership rebuild then carried over as if it were the original. A round therefore changed the
-/// generation a dump manifest is compared against. Running one rebuild keeps the generations.
-fn rebuild_compacted_bucket_views(
+/// lookup and the per-slab live tally describe the old addresses until they are updated. The moved
+/// blocks are known, so each one's entry is replaced in place and the work follows the blocks moved.
+/// When an entry cannot be found where the index should hold it the views are rebuilt from the
+/// model maps instead, which is always correct: the ownership rebuild clears and refiles every
+/// bucket and carries over what the maps cannot re-derive (tombstone rows) and what a rebuild must
+/// not reset (each bucket's dirty generation).
+fn update_compacted_bucket_views(
     shard_id: ShardId,
     shard: &mut ShardState,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
+    moved: &[super::compaction::MovedBlock],
 ) {
+    let in_place = apply_relocations_in_place(shard, moved);
+    #[cfg(test)]
+    LAST_ROUND_INDEX_UPDATE.with(|cell| cell.set(if in_place { 1 } else { 2 }));
     refresh_bucket_runtime_flags(shard);
-    rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
+    if !in_place {
+        rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
+    }
 }
 
 #[track_caller]
