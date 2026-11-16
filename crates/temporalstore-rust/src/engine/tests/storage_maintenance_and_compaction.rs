@@ -8190,9 +8190,13 @@ fn what_apply_storage_lifecycle_walks() {
 /// `collect_live_block_entries`, and this round makes two whole-shard passes that go around it:
 /// `rebuild_bucket_block_ownership` and `rebuild_bucket_first_index` both call
 /// `collect_model_live_block_entries` directly. The sharing work was real and the progression is
-/// real; the absolute numbers were 11.0x, 9.0x and 6.0x. The bound below now sits between 6 and
-/// 9, so losing any of that sharing still fails it. The per-site split is PRINTED above the
+/// real; the absolute numbers were 11.0x, 9.0x and 6.0x. The per-site split is PRINTED above the
 /// assertion, so the next person reading a moved bound sees which site moved it.
+///
+/// THE ROUND NO LONGER REBUILDS THE BUCKET INDEX, it updates the entry of each block it moved, so
+/// the whole-shard model walk the rebuild paid is gone: a round measures 3.0x (validation's listing
+/// and the two registration walks at the publish) and the bound sits just above it. Putting a
+/// rebuild back, or a second listing, moves the figure by a whole 1.0x and fails it.
 ///
 /// It is a BOUND and not an equality, unlike `the_object_lifecycle_snapshot_walks_the_shard_once`.
 /// That one owns every walk in its function and can name the exact number; this round also walks
@@ -8247,13 +8251,12 @@ fn a_compaction_round_shares_one_walk_across_its_live_block_consumers() {
 
     let multiple = walked as f64 / live_blocks as f64;
     assert!(
-        multiple <= 7.0,
+        multiple <= 3.5,
         "a compaction round walked {multiple:.1}x the shard ({walked} entries for {live_blocks} \
 live blocks) from {} site(s). Its ownership validation, utility report, object lifecycle report \
 and object-manager report all share ONE `collect_live_page_entries`: 11.0x when each walked for \
-itself, 9.0x with three sharing, 6.0x with all four, the last two of the six being the bucket \
-ownership and first-index rebuilds. If a new preamble report needs the live-block set, pass it \
-the existing slice rather than calling `collect_live_page_entries` again -- the split printed \
+itself, 9.0x with three sharing, 3.0x now that the bucket index is updated in place rather than \
+rebuilt. If a new preamble report needs the live-block set, pass it the existing slice rather than calling `collect_live_page_entries` again -- the split printed \
 above names whichever site moved this.",
         sites.len(),
     );
