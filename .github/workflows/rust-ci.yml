@@ -855,6 +855,99 @@ jobs:
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
+      - name: cargo test (loop ordering and quarantine grace guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # The periodic loop runs no stage on a shard that is still replaying, and holds a quarantined
+          # slab for its grace. Pinned by exact name: they ran only in the advisory suite above.
+          for t in \
+            data_node::tests::part3::the_loop_runs_no_stage_on_a_shard_that_is_still_replaying \
+            data_node::tests::part3::the_periodic_loop_holds_a_quarantined_slab_for_a_day
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-loop.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-loop.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-loop.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+      - name: cargo test (index stage and dump floor guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # The index stage gates on bytes and on the floor, and the dump decision takes the larger of
+          # the floor and the last image. Pinned by exact name: they ran only in the advisory suite above.
+          for t in \
+            data_node::tests::part3::the_index_stage_below_the_gate_and_the_floor_writes_no_manifest \
+            data_node::tests::part3::the_index_stage_dumps_once_the_byte_gate_is_met_and_reports_the_image \
+            data_node::tests::part3::a_reopen_after_gated_rounds_replays_only_the_gated_bytes_and_loses_nothing \
+            data_node::runtime_storage::index_log_forces_dump_guards::a_log_shorter_than_the_last_image_does_not_force_a_dump \
+            data_node::runtime_storage::index_log_forces_dump_guards::the_floor_bounds_the_decision_from_below
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-index.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-index.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-index.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+      - name: cargo test (compaction hold and drain guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # A failed compaction keeps the slabs the disk index names, a drain round asks only about keys
+          # that hold a block on the drain slab, and a round keeps every bucket's dirty generation.
+          # Pinned by exact name: they ran only in the advisory suite above.
+          for t in \
+            engine::recovery_sweep_compact::compaction_execution_tests::a_compaction_whose_index_publish_failed_keeps_the_slabs_the_disk_index_names \
+            engine::recovery_sweep_compact::compaction_execution_tests::a_compaction_whose_barrier_failed_keeps_the_slabs_the_disk_index_names \
+            engine::recovery_sweep_compact::compaction_execution_tests::a_partial_compaction_whose_barrier_failed_keeps_the_slabs_the_disk_index_names \
+            engine::recovery_sweep_compact::compaction_execution_tests::unloading_a_shard_drops_its_unpublished_compaction_hold \
+            engine::recovery_sweep_compact::compaction_execution_tests::a_failed_compaction_barrier_followed_by_reclaim_and_a_restart_loses_no_key \
+            engine::recovery_sweep_compact::compaction_execution_tests::two_failed_compaction_rounds_keep_the_slabs_of_the_first \
+            engine::recovery_sweep_compact::compaction_execution_tests::a_drain_round_asks_only_about_keys_that_hold_a_block_on_the_drain_slab \
+            engine::recovery_sweep_compact::compaction_execution_tests::a_compaction_round_keeps_every_buckets_dirty_generation
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-compact.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-compact.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-compact.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+      - name: cargo test (async reopen finds every acknowledged key guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # A reopen after capped dumps and a log reclaim finds every acknowledged key, through each
+          # async write path. Pinned by exact name: they ran only in the advisory suite above.
+          for t in \
+            engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_key_written_through_the_single_command_async_path \
+            engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_key_written_through_the_batch_path \
+            engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_live_key_after_async_deadline_keys_expire_between_cycles \
+            engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_live_key_after_async_expire_commands_on_clean_keys
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-reopen.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-reopen.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-reopen.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+
       # Three of these four build a corpus and compare measured surfaces, so they run far longer
       # than the read-safety guards above -- 42s to 376s each in a debug run on a loaded box. They
       # are pinned in a step with its own budget so that a slow cost guard cannot starve the fast
