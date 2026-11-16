@@ -561,6 +561,7 @@ impl TemporalEngine {
             maintenance_mirror: Arc::default(),
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
             compaction_rounds: Arc::default(),
+            compaction_passes: Arc::default(),
             unpublished_compaction_slabs: Arc::default(),
             recovery_probe_cursors: Arc::default(),
             concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),

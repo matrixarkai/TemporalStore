@@ -99,7 +99,11 @@ pub(super) fn run_compaction_background_draining(
     shard_id: ShardId,
     drain_block_slab_ids: BTreeSet<u64>,
 ) -> Status {
-    let result = inner.engine.compact_shard_blocks_draining_background(shard_id, drain_block_slab_ids);
+    let result = inner.engine.compact_shard_blocks_draining_sliced(
+        shard_id,
+        drain_block_slab_ids,
+        crate::engine::COMPACTION_SLICE_KEYS,
+    );
     inner.stats.lock().expect("runtime stats lock poisoned").compaction_runs += 1;
     match result {
         Ok(()) => Status::ok(),

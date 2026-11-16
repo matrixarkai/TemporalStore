@@ -112,6 +112,7 @@ pub(crate) mod eviction_sampler;
 // which previously kept a drifted subset that mis-classified context/control-state writes
 // as reads -> lifecycle-write-barrier bypass + missing dump scheduling).
 pub(crate) use command_validation::{command_object_keys, is_write_command};
+pub(crate) use recovery_sweep_compact::COMPACTION_SLICE_KEYS;
 #[cfg(test)]
 pub(crate) use storage_bucket_internals::uncovered_maintenance;
 mod storage_bucket_internals;
@@ -291,6 +292,9 @@ pub struct TemporalEngine {
     /// Not durable: a restart loses at most the knowledge that a round was open, and the next
     /// round then rolls, which is correct if wasteful once.
     compaction_rounds: Arc<RwLock<HashMap<ShardId, (u64, u64)>>>,
+    /// The sliced compaction pass each shard has in flight, if any. One slot per shard so a slice
+    /// holds only its own shard's lock; see `compaction_slices.rs`.
+    compaction_passes: Arc<std::sync::Mutex<HashMap<ShardId, recovery_sweep_compact::PassSlot>>>,
     /// Slabs a compaction round vacated in MEMORY but whose new index never reached disk.
     ///
     /// Compaction advances no applied sequence and emits no record, so the durable index is the
@@ -484,6 +488,10 @@ mod log_backed_string_tests;
 #[cfg(test)]
 #[path = "engine/expiry_residency_tests.rs"]
 mod expiry_residency_tests;
+
+#[cfg(test)]
+#[path = "engine/writer_stall_probe.rs"]
+pub(crate) mod writer_stall_probe;
 
 /// How far below the limit a sweep goes, so a shard sitting exactly at the ceiling does not
 /// materialise on every single append.
