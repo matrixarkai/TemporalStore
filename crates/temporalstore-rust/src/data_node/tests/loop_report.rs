@@ -828,6 +828,94 @@ fn the_overdue_count_is_what_a_bounded_round_leaves_due() {
     assert_eq!(engine.expiry_overdue_keys(), 0);
 }
 
+/// A shard's round expires that shard's keys and no other shard's.
+///
+/// The expire stage used to sweep every loaded shard from each shard's round, so with two shards a
+/// round for shard 1 removed shard 2's due key and reported it as its own. Shard 2 holds the only
+/// due key here; shard 1's round must remove nothing and shard 2's own round must remove it.
+#[test]
+fn a_shards_round_expires_only_that_shards_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 10);
+    let engine = runtime.engine();
+    engine.load_shard(2);
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 2,
+        command: Command::StringSetEx {
+            key: "other-shard-due".to_string(),
+            value: vec![b'v'; 16],
+            ttl_ms: 1,
+        },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let options = StorageManagerOptions::default();
+    let own = runtime.run_storage_manager_once(1, options.clone());
+    assert_eq!(
+        own.expired_records_removed, 0,
+        "shard 1's round removed a key that belongs to shard 2"
+    );
+    let other = runtime.run_storage_manager_once(2, options);
+    assert_eq!(
+        other.expired_records_removed, 1,
+        "shard 2's own round did not remove its due key"
+    );
+}
+
+/// The evict and expire counts are each stage's own run count, once per round.
+///
+/// `storage_manager_evict_count` read the reclaim-memory run count, so it stayed at zero on a
+/// server where eviction ran every round, and `storage_manager_expire_count` added a second counter
+/// that the same round also bumped, so it read two per round.
+#[test]
+fn the_expire_and_evict_counts_are_each_stages_own_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let options = StorageManagerOptions::default();
+    for _ in 0..3 {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        assert!(report.executed_stages.iter().any(|stage| stage == "expire"));
+        assert!(report.executed_stages.iter().any(|stage| stage == "evict"));
+        assert!(!report.executed_stages.iter().any(|stage| stage == "reclaim_memory"));
+    }
+    let metrics = data_node_storage_lifecycle_metrics(&runtime.stats());
+    assert_eq!(metrics["storage_manager_expire_count"], 3);
+    assert_eq!(metrics["storage_manager_evict_count"], 3);
+
+    // The evict count moves only on evict: a round with eviction off and the cache bound set runs
+    // reclaim_memory and must leave it where it was.
+    // Eviction has two gates: `enable_evict` and the per-shard index bound, which opens the stage
+    // on its own. Both are off here, or the evict stage runs and its count legitimately moves.
+    let reclaim_only = StorageManagerOptions {
+        enable_evict: false,
+        index_resident_limit_bytes: 0,
+        cache_memory_bytes_pressure: 1,
+        ..StorageManagerOptions::default()
+    };
+    let engine = runtime.engine();
+    // Warm the cache the way the sibling test does, or the one-byte bound has nothing to open on.
+    for index in 0..50 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("loop-{index:06}"),
+            },
+        });
+        assert!(response.status.ok);
+    }
+    let report = runtime.run_storage_manager_once(1, reclaim_only);
+    assert!(
+        report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
+        "the reclaim_memory arm did not run: {:?}",
+        report.executed_stages
+    );
+    let after = data_node_storage_lifecycle_metrics(&runtime.stats());
+    assert_eq!(
+        after["storage_manager_evict_count"], 3,
+        "a reclaim_memory round moved the evict count"
+    );
+}
+
 /// Measurement harness, not a gate: `--ignored --nocapture`, one test thread, `LOOP_KEYS=<n>`,
 /// `LOOP_WRITES=<writes per round>`. A shard that takes writes between rounds is dirty at every
 /// round, so this prices what a round pays then, stage by stage and by the call site that walked.

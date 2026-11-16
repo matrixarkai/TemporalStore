@@ -857,6 +857,7 @@ impl DataNodeRuntime {
 
         if options.enable_expire {
             expired_records_removed = self.sweep_expired_records_bounded(
+                shard_id,
                 options.max_expire_hot_buckets_per_round,
                 options.max_expire_cold_buckets_per_round,
             );
@@ -2264,22 +2265,27 @@ impl DataNodeRuntime {
     /// `hot_limit` / `cold_limit` of 0 mean no limit. With a bound a round takes at most that many
     /// due keys from the front of the deadline-ordered view, so there is nothing to resume: what
     /// is due is always the front, and a key not reached this round is still there next round.
-    pub fn sweep_expired_records_bounded(&self, hot_limit: usize, cold_limit: usize) -> usize {
-        let shard_ids = self.inner.engine.loaded_shard_ids();
-        let mut removed = 0usize;
-        for shard_id in shard_ids {
-            let Ok(report) = self.inner.engine.sweep_expired_records_with_request(
-                crate::engine::reports::ShardExpirySweepRequest {
-                    shard_id,
-                    max_hot_buckets_per_round: hot_limit,
-                    max_cold_buckets_per_round: cold_limit,
-                    load_cold_buckets: true,
-                },
-            ) else {
-                continue;
-            };
-            removed = removed.saturating_add(report.expired_records_removed);
-        }
+    pub fn sweep_expired_records_bounded(
+        &self,
+        shard_id: ShardId,
+        hot_limit: usize,
+        cold_limit: usize,
+    ) -> usize {
+        // THIS SHARD ONLY. The storage manager runs one round per shard, and this used to sweep
+        // every loaded shard from each of them: with S shards a tick took S sweeps of the whole
+        // table, each under the shard-table write guard, and the removals of the other shards
+        // were counted in this shard's report.
+        let removed = self
+            .inner
+            .engine
+            .sweep_expired_records_with_request(crate::engine::reports::ShardExpirySweepRequest {
+                shard_id,
+                max_hot_buckets_per_round: hot_limit,
+                max_cold_buckets_per_round: cold_limit,
+                load_cold_buckets: true,
+            })
+            .map(|report| report.expired_records_removed)
+            .unwrap_or(0);
         let mut stats = self
             .inner
             .stats
@@ -2290,6 +2296,8 @@ impl DataNodeRuntime {
         removed
     }
 
+    /// Test-only: sweeps every loaded shard, unbounded. The loop's expire stage sweeps its own
+    /// shard through `sweep_expired_records_bounded`.
     pub fn sweep_expired_records(&self) -> usize {
         let reports = self.inner.engine.sweep_all_expired_records();
         let removed = reports
@@ -2306,6 +2314,8 @@ impl DataNodeRuntime {
         removed
     }
 
+    /// Test-only: a second driver that sweeps every loaded shard on its own timer. Nothing in the
+    /// server starts it; the storage manager's expire stage is the driver.
     pub fn start_expiry_sweep_scheduler(&self, interval: Duration) -> ExpirySweepScheduler {
         let runtime = self.clone();
         let stop = Arc::new(AtomicBool::new(false));
