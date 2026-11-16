@@ -1151,7 +1151,7 @@ impl TemporalEngine {
         report
     }
 
-    pub(super) fn purge_storage_delayed_destroy(
+    pub(crate) fn purge_storage_delayed_destroy(
         &self,
         request: &StorageLifecycleRequest,
     ) -> crate::block_store::BlockStorePurgeDelayedDestroyReport {
