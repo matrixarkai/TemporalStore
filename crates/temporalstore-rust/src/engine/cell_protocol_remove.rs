@@ -25,7 +25,7 @@
 
 use crate::engine::cell_remove;
 use super::cell_set::{within, EntityValue};
-use super::{invalid, key_of, entity_of, wire, CellStatusCode, Refusal, TableProfile, MAX_MEMBER_LIST};
+use super::{invalid, key_of, entity_of, wire, WindowReduceStatusCode, Refusal, TableProfile, MAX_MEMBER_LIST};
 use crate::types::{
     CellMemberFilter, CellMemberId, CellRemoveSpec, Command, FeatureFilter, FeatureFilterOp,
 };
@@ -76,7 +76,7 @@ fn command_of(key: String, spec: CellRemoveSpec) -> Result<Command, Refusal> {
 /// A remove request as the engine's removal.
 pub(crate) fn translate_remove(
     profile: &TableProfile,
-    request: &wire::CellRemoveRequest,
+    request: &wire::WindowReduceRemoveRequest,
 ) -> Result<Command, Refusal> {
     within("members", request.members.len(), MAX_MEMBER_LIST).map_err(invalid)?;
     within("excluded members", request.excluded_members.len(), MAX_MEMBER_LIST).map_err(invalid)?;
@@ -108,7 +108,7 @@ pub(crate) fn translate_remove(
 /// A delete request as the engine's removal.
 pub(crate) fn translate_delete(
     profile: &TableProfile,
-    request: &wire::CellDeleteRequest,
+    request: &wire::WindowReduceDeleteRequest,
 ) -> Result<Command, Refusal> {
     let selector = request.selector.as_ref().ok_or_else(|| invalid("a delete needs a selector"))?;
     within("members", selector.members.len(), MAX_MEMBER_LIST).map_err(invalid)?;
@@ -135,20 +135,20 @@ pub(crate) struct Receipt {
     pub(crate) cells_removed: u64,
 }
 
-pub(crate) fn remove_response(request: &wire::CellRemoveRequest, receipt: Receipt) -> wire::CellRemoveResponse {
-    wire::CellRemoveResponse {
-        code: CellStatusCode::Ok as i32,
+pub(crate) fn remove_response(request: &wire::WindowReduceRemoveRequest, receipt: Receipt) -> wire::WindowReduceRemoveResponse {
+    wire::WindowReduceRemoveResponse {
+        code: WindowReduceStatusCode::Ok as i32,
         span: request.span.clone(),
-        snapshots_before: receipt.snapshots_before,
-        snapshots_after: receipt.snapshots_after,
+        samples_before: receipt.snapshots_before,
+        samples_after: receipt.snapshots_after,
         cells_before: receipt.cells_before,
         cells_removed: receipt.cells_removed,
         ..Default::default()
     }
 }
 
-pub(crate) fn refused_remove_response(request: &wire::CellRemoveRequest, refusal: &Refusal) -> wire::CellRemoveResponse {
-    wire::CellRemoveResponse {
+pub(crate) fn refused_remove_response(request: &wire::WindowReduceRemoveRequest, refusal: &Refusal) -> wire::WindowReduceRemoveResponse {
+    wire::WindowReduceRemoveResponse {
         code: refusal.code as i32,
         span: request.span.clone(),
         message: refusal.message.clone(),
@@ -157,19 +157,19 @@ pub(crate) fn refused_remove_response(request: &wire::CellRemoveRequest, refusal
     }
 }
 
-pub(crate) fn delete_response(receipt: Receipt) -> wire::CellDeleteResponse {
-    wire::CellDeleteResponse {
-        code: CellStatusCode::Ok as i32,
-        snapshots_before: receipt.snapshots_before,
-        snapshots_after: receipt.snapshots_after,
+pub(crate) fn delete_response(receipt: Receipt) -> wire::WindowReduceDeleteResponse {
+    wire::WindowReduceDeleteResponse {
+        code: WindowReduceStatusCode::Ok as i32,
+        samples_before: receipt.snapshots_before,
+        samples_after: receipt.snapshots_after,
         cells_before: receipt.cells_before,
         cells_removed: receipt.cells_removed,
         ..Default::default()
     }
 }
 
-pub(crate) fn refused_delete_response(refusal: &Refusal) -> wire::CellDeleteResponse {
-    wire::CellDeleteResponse { code: refusal.code as i32, message: refusal.message.clone(), ..Default::default() }
+pub(crate) fn refused_delete_response(refusal: &Refusal) -> wire::WindowReduceDeleteResponse {
+    wire::WindowReduceDeleteResponse { code: refusal.code as i32, message: refusal.message.clone(), ..Default::default() }
 }
 
 #[cfg(test)]
