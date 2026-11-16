@@ -1066,6 +1066,7 @@ jobs:
             engine::tests::a_write_into_a_live_series_borrows_its_key::no_arm_mints_a_key_before_it_looks_the_key_up \
             engine::tests::a_distinct_count_compares_its_members_where_they_are::a_distinct_count_answers_the_size_of_the_union \
             engine::tests::a_counter_window_read_reduces_where_it_sits::a_window_read_answers_what_an_independent_reduction_answers \
+            engine::tests::a_series_at_its_cap_trims_without_a_victim_list::a_bounded_series_keeps_its_newest_points_whatever_the_write_order \
             engine::tests::a_hash_get_all_shares_its_page_keys::a_whole_hash_read_answers_what_the_per_field_reads_answer \
             engine::tests::a_whole_container_read_shares_its_work::a_list_range_answers_the_pushes_it_was_given \
             engine::tests::a_whole_container_read_shares_its_work::a_list_element_name_spells_what_the_formatted_name_spells \
@@ -1206,6 +1207,7 @@ jobs:
             engine::tests::a_timestamped_point_names_itself_once::probe::a_staged_point_does_not_copy_its_name \
             engine::tests::a_distinct_count_compares_its_members_where_they_are::probe::a_distinct_count_does_not_copy_its_members \
             engine::tests::a_counter_window_read_reduces_where_it_sits::probe::a_window_read_does_not_allocate_per_bucket \
+            engine::tests::a_series_at_its_cap_trims_without_a_victim_list::probe::a_write_at_the_cap_allocates_what_a_write_below_it_allocates \
             engine::tests::a_hash_get_all_shares_its_page_keys::probe::a_whole_hash_read_does_not_pay_three_allocations_a_field_for_its_key \
             engine::tests::a_whole_container_read_shares_its_work::probe::a_list_range_does_not_pay_for_its_key_name_and_frame_copy_per_element \
             engine::tests::a_whole_container_read_shares_its_work::probe::a_whole_hash_read_does_not_copy_the_frame_for_each_field \

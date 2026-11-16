@@ -7664,12 +7664,13 @@ fn trim_control_state_series(shard: &mut ShardState, key: &str, max_size: usize)
     if series.len() <= max_size {
         return false;
     }
-    let excess = series.len() - max_size;
-    let victims: Vec<u64> = series.keys().copied().take(excess).collect();
-    for timestamp_ms in &victims {
-        series.remove(timestamp_ms);
+    // Oldest first, one at a time: no list of the victims is built. A series that sits at its cap
+    // trims one point per new bucket, so collecting them allocated a vector on every such write,
+    // twice when the block was due.
+    for _ in 0..series.len() - max_size {
+        series.pop_first();
     }
-    !victims.is_empty()
+    true
 }
 
 thread_local! {
