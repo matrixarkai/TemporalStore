@@ -132,6 +132,7 @@ fn a_read_over_flat_snapshots_answers_what_a_read_over_plain_snapshots_answers()
     let mut state = 0x9e37_79b9_7f4a_7c15u64;
     let mut compared = 0;
     let mut rows_seen = 0;
+    let mut refused = 0;
     for count in [1usize, 2, 7, 12] {
         let snaps = random_snapshots(&mut state, count);
         let (plain, flat) = decoded_both(&header, &snaps);
@@ -141,16 +142,24 @@ fn a_read_over_flat_snapshots_answers_what_a_read_over_plain_snapshots_answers()
             flat.iter().map(|(timestamp_ms, cells)| FlatView { timestamp_ms: *timestamp_ms, cells }).collect();
         for spec in specs() {
             let plan = Plan::compile(&header, &spec).unwrap();
-            let want = plan.run(1_000, &plain_views).unwrap();
-            let got = plan.run(1_000, &flat_views).unwrap();
+            // The answers are compared as results: the `member` score refuses a bytes member, and
+            // both forms must refuse it in the same words.
+            let want = plan.run(1_000, &plain_views);
+            let got = plan.run(1_000, &flat_views);
             assert_eq!(want, got, "{count} snapshots, spec {spec:?}");
-            rows_seen += got.rows.len();
+            match &got {
+                Ok(ranked) => rows_seen += ranked.rows.len(),
+                Err(_) => refused += 1,
+            }
             compared += 1;
         }
     }
     // The control: the comparison saw real answers, not a run of empty ones.
     assert!(compared >= 48, "{compared}");
     assert!(rows_seen > 300, "the reads ranked only {rows_seen} rows in all");
+    // And the one read the data cannot serve (a `member` score over bytes members) was refused by
+    // both forms, once per snapshot count that held a bytes member.
+    assert!(refused >= 1, "no read was refused, so the refusal arm was not compared");
 }
 
 #[test]
@@ -175,10 +184,12 @@ fn a_fan_in_over_flat_snapshots_answers_what_a_fan_in_over_plain_snapshots_answe
     let flat_slices: Vec<&[FlatView<'_>]> = flat_views.iter().map(Vec::as_slice).collect();
     for spec in specs() {
         let plan = Plan::compile(&header, &spec).unwrap();
-        let want = plan.run_fan_in(1_000, &plain_slices).unwrap();
-        let got = plan.run_fan_in(1_000, &flat_slices).unwrap();
+        let want = plan.run_fan_in(1_000, &plain_slices);
+        let got = plan.run_fan_in(1_000, &flat_slices);
         assert_eq!(want, got, "spec {spec:?}");
-        assert_eq!(4, got.keys);
+        if let Ok(ranked) = &got {
+            assert_eq!(4, ranked.keys);
+        }
     }
 }
 
