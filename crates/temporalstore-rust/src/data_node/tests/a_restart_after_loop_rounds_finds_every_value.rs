@@ -42,7 +42,7 @@ fn open(dir: &std::path::Path) -> TemporalEngine {
     engine
 }
 
-fn drive(async_storage: bool) {
+fn drive(async_storage: bool, destroy_quarantine: bool) {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path());
     if async_storage {
@@ -93,8 +93,63 @@ fn drive(async_storage: bool) {
         for item in from..to {
             latest[item] = round;
         }
+        if destroy_quarantine {
+            // Seal the slab the round's writes went to, so the blocks the NEXT round's rewrites
+            // supersede sit in an older slab and that slab goes stale. Without a roll this
+            // workload fits one slab and nothing is ever set aside.
+            runtime
+                .inner
+                .engine
+                .block_store()
+                .roll_slab()
+                .expect("rolling the block slab");
+        }
         runtime.run_storage_manager_once(1, options.clone());
         runtime.inner.engine.flush_shard_index(1);
+    }
+    if destroy_quarantine {
+        // THE STEP THE ROUNDS ABOVE NEVER REACH. A slab the loop sets aside stays in quarantine for
+        // the grace, so a restart over those rounds only ever meets a quarantined slab, which a
+        // restore can bring back. Age every quarantined slab past the grace and run more rounds:
+        // the purge now DESTROYS what it finds unreferenced, and the reads below must still pass.
+        let quarantined = |runtime: &DataNodeRuntime| {
+            runtime
+                .inner
+                .engine
+                .block_store()
+                .delayed_destroy_slab_ids()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<u64>>()
+        };
+        let before = quarantined(&runtime);
+        assert!(
+            !before.is_empty(),
+            "nothing was quarantined, so there is nothing for the purge to destroy"
+        );
+        runtime
+            .inner
+            .engine
+            .block_store()
+            .backdate_delayed_destroy_stamps_for_test(26 * 60 * 60 * 1_000)
+            .expect("backdating the quarantine stamps");
+        for _ in 0..3 {
+            runtime.run_storage_manager_once(1, options.clone());
+            runtime.inner.engine.flush_shard_index(1);
+        }
+        let mut kept = quarantined(&runtime);
+        kept.extend(
+            runtime
+                .inner
+                .engine
+                .block_store()
+                .slab_ids()
+                .unwrap_or_default(),
+        );
+        assert!(
+            before.iter().any(|id| !kept.contains(id)),
+            "no quarantined slab was destroyed, so the reads below prove nothing about destruction"
+        );
     }
     // NON-VACUITY: the loop really did reclaim some log, or the test is not about reclaim.
     let records_left = runtime
@@ -145,10 +200,18 @@ fn drive(async_storage: bool) {
 
 #[test]
 fn a_restart_after_loop_rounds_with_index_flushes_finds_every_value_in_sync_mode() {
-    drive(false);
+    drive(false, false);
 }
 
 #[test]
 fn a_restart_after_loop_rounds_with_index_flushes_finds_every_value_in_async_mode() {
-    drive(true);
+    drive(true, false);
+}
+
+// There is no async-mode arm: with async storage on, a write's value stays in the log until a
+// dump moves it, so this workload never supersedes a block in the block store and no slab goes
+// stale. The arm's own non-vacuity check failed for that reason, so it proved nothing.
+#[test]
+fn a_restart_after_quarantined_slabs_are_destroyed_finds_every_value_in_sync_mode() {
+    drive(false, true);
 }

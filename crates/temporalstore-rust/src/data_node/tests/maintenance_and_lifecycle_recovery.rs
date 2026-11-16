@@ -6050,6 +6050,75 @@ fn the_loop_publishes_how_many_retention_owner_inputs_it_was_given() {
     assert_eq!(runtime.stats().storage_manager_retention_owners_configured, 3);
 }
 
+/// With the index stage off, the loop still destroys a quarantined slab once its grace has passed.
+///
+/// The purge ran only inside the index stage, so a server that turned that stage off quarantined
+/// slabs and never collected them. The control arm leaves the index stage on, where the purge has
+/// always run, and must also destroy: that keeps the first arm from passing because no slab is ever
+/// old enough.
+#[test]
+fn the_loop_destroys_a_quarantined_slab_with_the_index_stage_off() {
+    let run_arm = |index_gc: bool| {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let options = StorageManagerOptions {
+            enable_index_gc: index_gc,
+            ..StorageManagerOptions::default()
+        };
+        let mut written = 0usize;
+        for _ in 0..6 {
+            let engine = runtime.engine();
+            for index in 0..400usize {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("purge-{:06}", (written + index) % 100),
+                        value: vec![b'v'; 96],
+                    },
+                });
+            }
+            written += 400;
+            runtime.run_storage_manager_once(1, options.clone());
+        }
+        let quarantined = |runtime: &DataNodeRuntime| {
+            runtime
+                .engine()
+                .block_store()
+                .delayed_destroy_slab_ids()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<u64>>()
+        };
+        let before = quarantined(&runtime);
+        assert!(!before.is_empty(), "index_gc {index_gc}: nothing was quarantined");
+        runtime
+            .engine()
+            .block_store()
+            .backdate_delayed_destroy_stamps_for_test(26 * 60 * 60 * 1_000)
+            .expect("backdating the quarantine stamps");
+        runtime.run_storage_manager_once(1, options);
+        let mut kept = quarantined(&runtime);
+        kept.extend(runtime.engine().block_store().slab_ids().unwrap_or_default());
+        before.iter().any(|id| !kept.contains(id))
+    };
+    assert!(
+        run_arm(false),
+        "with the index stage off no quarantined slab was destroyed after its grace"
+    );
+    assert!(
+        run_arm(true),
+        "control arm: with the index stage on nothing was destroyed, so the arm above proves nothing"
+    );
+}
+
 /// The maintenance round runs its stages in the intended order.
 ///
 /// Every other assertion about stages in this suite asks whether one RAN -- `.any(|s| s == ..)` --

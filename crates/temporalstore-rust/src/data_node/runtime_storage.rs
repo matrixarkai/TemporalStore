@@ -1237,9 +1237,9 @@ impl DataNodeRuntime {
                     retain_block_slabs_from_id,
                     // Quarantine rather than unlink, as the cycle has always done. This stage
                     // deleted a slab outright, so if the retain floor above was ever computed too
-                    // generously there was nothing left to recover from. The prepare stage passes
-                    // `purge_delayed_destroy` whenever block GC is on, so quarantined slabs are
-                    // still collected -- an hour later, not never.
+                    // generously there was nothing left to recover from. The index stage purges
+                    // what this sets aside, and this stage purges it itself when that stage is
+                    // off, so a quarantined slab is collected after its grace and not never.
                     block_gc_delayed_destroy: true,
                     // This stage ran every round block pressure held, and each run emptied the
                     // shard's cache outright -- memory, pmem and disk tiers alike -- however few
@@ -1277,6 +1277,27 @@ impl DataNodeRuntime {
             skipped_stages.push("reclaim_page_disabled".to_string());
         } else {
             skipped_stages.push("reclaim_page_no_pressure".to_string());
+        }
+        // THE PURGE HAS ONE OWNER PER ROUND. The index stage runs it when it is enabled; with that
+        // stage off, nothing else would, and every slab this stage sets aside would stay in
+        // quarantine for ever. Owners and grace are the ones the index stage passes.
+        if options.enable_block_gc && !options.enable_index_gc {
+            let _ = self
+                .inner
+                .engine
+                .purge_storage_delayed_destroy(&StorageLifecycleRequest {
+                    shard_id,
+                    purge_delayed_destroy: true,
+                    follower_replay_cursors: options.follower_replay_cursors.clone(),
+                    block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
+                    block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
+                    block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
+                    block_gc_raft_install_floor_slab_id: options
+                        .block_gc_raft_install_floor_slab_id,
+                    block_gc_delayed_destroy_grace_ms:
+                        crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
+                    ..StorageLifecycleRequest::default()
+                });
         }
         spans.close("reclaim_page", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
