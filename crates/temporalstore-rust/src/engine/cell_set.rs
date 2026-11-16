@@ -659,7 +659,6 @@ pub(crate) fn check_header(stored: &CellHeader, requested: &CellHeader) -> Resul
         }
     }
 
-    let mut extended = stored.clone();
     for (i, stored_label) in stored.labels.iter().enumerate() {
         match requested.labels.get(i) {
             None => {
@@ -710,6 +709,7 @@ pub(crate) fn check_header(stored: &CellHeader, requested: &CellHeader) -> Resul
             stored.version
         ));
     }
+    let mut extended = stored.clone();
     extended.labels = requested.labels.clone();
     extended.lanes = requested.lanes.clone();
     extended.validate()?;
@@ -1583,14 +1583,44 @@ pub(crate) fn merge_point(
     existing: Existing<'_>,
     request: &[u8],
 ) -> Result<(std::rc::Rc<CellHeader>, FlatCells, MergeCounts), String> {
-    let (requested, incoming) = decode_request(request)?;
-    validate_cells_in_request(incoming.len())?;
-    let effective = match newest {
-        None => std::rc::Rc::new(requested),
-        Some(stored) => match check_header(stored, &requested)? {
-            Some(extended) => std::rc::Rc::new(extended),
-            None => std::rc::Rc::clone(stored),
+    merge_point_known(newest, None, existing, request)
+}
+
+/// [`merge_point`] for a caller that holds the header bytes `newest` was decoded from. A request
+/// whose header bytes are those very bytes declares `newest` exactly, so its header is neither
+/// decoded nor compared: the effective header is `newest` itself, which is what the decode and the
+/// comparison would have returned for it. Any other request takes the full path.
+pub(crate) fn merge_point_known(
+    newest: Option<&std::rc::Rc<CellHeader>>,
+    newest_raw: Option<&[u8]>,
+    existing: Existing<'_>,
+    request: &[u8],
+) -> Result<(std::rc::Rc<CellHeader>, FlatCells, MergeCounts), String> {
+    let declared_alike = match (newest, newest_raw) {
+        (Some(stored), Some(raw)) => match split_value_raw(request) {
+            Ok((head, packed)) if head == raw => Some((std::rc::Rc::clone(stored), packed)),
+            _ => None,
         },
+        _ => None,
+    };
+    let (effective, incoming) = match declared_alike {
+        Some((effective, packed)) => {
+            let incoming = FlatCells::decode(&effective, packed, 0)?;
+            validate_cells_in_request(incoming.len())?;
+            (effective, incoming)
+        }
+        None => {
+            let (requested, incoming) = decode_request(request)?;
+            validate_cells_in_request(incoming.len())?;
+            let effective = match newest {
+                None => std::rc::Rc::new(requested),
+                Some(stored) => match check_header(stored, &requested)? {
+                    Some(extended) => std::rc::Rc::new(extended),
+                    None => std::rc::Rc::clone(stored),
+                },
+            };
+            (effective, incoming)
+        }
     };
     let mut cells = match existing {
         Existing::Nothing => FlatCells::empty(&effective, incoming.len()),

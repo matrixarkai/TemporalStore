@@ -1184,6 +1184,11 @@ jobs:
           # snapshots allocates the same number of times at 50 and at 800 cells a snapshot, because a
           # snapshot is decoded into a few vectors and not two per cell. Each carries a control: the
           # bytes allocated must grow with the cell count, or the probe cannot see it.
+          # a_merge_request_that_carries_the_stored_header_bytes_is_not_decoded_again pins that a
+          # merge-reduce write whose header bytes are the stored header's is not decoded and compared
+          # again: it costs fewer allocations than a request that spells the same header differently
+          # and takes the full path, and both leave the same stored snapshot to the byte. There is no
+          # absolute ceiling; the guard is the difference, which only the shortcut makes positive.
           # a_rollup_through_the_engine_does_not_allocate_per_cell pins that a rollup of stored snapshots
           # allocates the same number of times at 50 and at 400 cells a snapshot, because each snapshot
           # is decoded, folded and written back in a few vectors and not two per cell. Its control is
@@ -1218,6 +1223,7 @@ jobs:
             engine::tests::the_cell_model_allocations_are_counted_per_operation::a_ranked_read_through_the_engine_does_not_allocate_per_cell \
             engine::tests::the_cell_model_allocations_are_counted_per_operation::a_fan_in_read_through_the_engine_does_not_allocate_per_cell \
             engine::tests::the_cell_model_allocations_are_counted_per_operation::a_rollup_through_the_engine_does_not_allocate_per_cell \
+            engine::tests::the_cell_model_allocations_are_counted_per_operation::a_merge_request_that_carries_the_stored_header_bytes_is_not_decoded_again \
             engine::window_aggregate::probe::the_reducers_do_not_allocate_per_point \
             engine::cell_set::tests::probe::a_cell_set_key_costs_one_allocation_whatever_its_size \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_does_not_allocate_more_for_a_longer_key \
