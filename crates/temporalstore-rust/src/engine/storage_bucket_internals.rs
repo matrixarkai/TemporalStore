@@ -5324,7 +5324,7 @@ fn upsert_bucket_index_block_inner(
         // shape of mis-attribution that makes an index look like it is growing when a log is.
         crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::StagedOutcome, || {
             super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-                kind: kind.to_string(),
+                kind: kind.into(),
                 object_key: object_key.to_string(),
                 // THE ELEMENT, NOT WHAT ITS ENTRY WAS FILED UNDER, and this is the one place
                 // where that distinction costs something if it is got wrong in the other

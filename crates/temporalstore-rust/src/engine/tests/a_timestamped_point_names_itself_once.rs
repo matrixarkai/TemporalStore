@@ -52,7 +52,7 @@ fn the_staged_items_are_what_they_were() {
     for (item, (timestamp_ms, address)) in plain.iter().zip(&refs) {
         assert_eq!(
             &WalOutcomeItem {
-                kind: "feature".to_string(),
+                kind: "feature".into(),
                 object_key: "the-key".to_string(),
                 element_name: Some(timestamp_ms.to_string()),
                 object_id,
@@ -81,7 +81,7 @@ fn the_staged_items_are_what_they_were() {
     }
     assert_eq!(
         WalOutcomeItem {
-            kind: "feature".to_string(),
+            kind: "feature".into(),
             object_key: "the-key".to_string(),
             element_name: Some("1787270070123".to_string()),
             object_id,
@@ -130,7 +130,7 @@ mod probe {
         for (timestamp_ms, address) in &refs {
             let element_name = timestamped_element_name(*timestamp_ms, None);
             crate::engine::block_in_wal::stage_outcome(WalOutcomeItem {
-                kind: "feature".to_string(),
+                kind: "feature".into(),
                 object_key: "the-key".to_string(),
                 element_name: Some(element_name.clone()),
                 object_id: 1,

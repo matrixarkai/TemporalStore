@@ -116,7 +116,7 @@ pub(super) fn stage_timestamped_outcomes(
     for (timestamp_ms, address) in refs {
         let element_name = timestamped_element_name(*timestamp_ms, identity);
         super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-            kind: kind.to_string(),
+            kind: kind.into(),
             object_key: key.to_string(),
             // MOVED, NOT CLONED: the name is built for this item and read by nothing after it.
             element_name: Some(element_name),
@@ -144,7 +144,7 @@ pub(super) fn stage_timestamped_removal(
 ) {
     let element_name = timestamp_ms.to_string();
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-        kind: kind.to_string(),
+        kind: kind.into(),
         object_key: key.to_string(),
         // MOVED, NOT CLONED: the name is built for this item and read by nothing after it.
         element_name: Some(element_name),
@@ -186,7 +186,7 @@ fn stage_timestamped_boundary_removal(
     through: u64,
 ) {
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-        kind: kind.to_string(),
+        kind: kind.into(),
         object_key: key.to_string(),
         element_name: Some(timestamped_boundary_element_name(through)),
         object_id: stable_block_object_id(shard_id, kind, key),

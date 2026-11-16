@@ -640,7 +640,7 @@ pub(super) fn install_element_staged_only<K: RecordedKind>(
     address: ElementEntry,
 ) {
     let staged = super::block_in_wal::stage_outcome_attested(crate::wal::WalOutcomeItem {
-        kind: staged_kind.to_string(),
+        kind: staged_kind.into(),
         object_key: object_key.to_string(),
         element_name: Some(element_name.to_string()),
         object_id: super::stable_block_object_id(shard_id, staged_kind, object_key),

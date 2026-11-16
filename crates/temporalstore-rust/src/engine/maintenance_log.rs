@@ -159,7 +159,7 @@ impl TemporalEngine {
                     .map(|key| crate::wal::WalOutcomeItem {
                         object_id: stable_block_object_id(shard_id, "record", &key),
                         routing_bucket: block_routing_bucket(&key, start, end),
-                        kind: "record".to_string(),
+                        kind: "record".into(),
                         object_key: key,
                         element_name: None,
                         address: None,

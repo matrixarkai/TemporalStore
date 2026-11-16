@@ -1155,6 +1155,7 @@ jobs:
             engine::tests::a_cached_feature_query_sees_a_sequence_add::a_cached_feature_query_sees_a_sequence_add_after_expiry \
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::an_in_place_read_answers_what_the_decoder_answered \
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::a_sequence_query_answers_the_rows_that_were_added \
+            engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::an_outcome_kind_serializes_as_the_plain_string_for_every_kind_in_use \
             engine::tests::a_hash_field_presence_is_read_from_its_row::presence_answers_what_the_point_read_answers \
             engine::tests::a_hash_field_presence_is_read_from_its_row::the_door_answers_hexists_and_hsetnx_as_it_did \
             engine::tests::a_timestamped_point_names_itself_once::the_staged_items_are_what_they_were \
@@ -1309,6 +1310,7 @@ jobs:
             engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::probe::a_write_does_not_pay_for_the_objects_it_did_not_touch \
             engine::tests::a_feature_sum_reads_each_point_in_place::probe::a_feature_sum_does_not_allocate_per_point \
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::probe::a_sequence_query_does_not_allocate_per_row \
+            engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::probe::a_known_outcome_kind_allocates_nothing \
             engine::tests::a_hash_field_presence_is_read_from_its_row::probe::a_presence_check_does_not_copy_the_value \
             engine::tests::a_timestamped_point_names_itself_once::probe::a_staged_point_does_not_copy_its_name \
             engine::tests::a_distinct_count_compares_its_members_where_they_are::probe::a_distinct_count_does_not_copy_its_members \

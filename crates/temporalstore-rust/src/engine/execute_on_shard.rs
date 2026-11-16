@@ -155,7 +155,7 @@ fn stage_element_name_outcome(
     value: Option<Vec<u8>>,
 ) {
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-        kind: kind.to_string(),
+        kind: kind.into(),
         object_key: object_key.to_string(),
         // MOVED, NOT CLONED. `element_name` is taken BY VALUE -- it is already the caller's
         // allocation handed over -- and this function ends here, so nothing reads it after.
@@ -184,7 +184,7 @@ fn stage_meta_outcome(
     deleted: bool,
 ) {
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-        kind: kind.to_string(),
+        kind: kind.into(),
         object_key: object_key.to_string(),
         element_name: None,
         object_id: stable_block_object_id(shard_id, kind, object_key),

@@ -288,7 +288,7 @@ fn unescape_newlines(bytes: &[u8]) -> Result<Vec<u8>, String> {
 ///
 /// Order is the wire contract: a code means the same kind forever. A kind missing from this list
 /// travels as its name, which is what keeps the list from having to be exhaustive.
-const KIND_CODES: &[&str] = &[
+pub(crate) const KIND_CODES: &[&str] = &[
     "string",
     "hash",
     "set",
@@ -585,7 +585,7 @@ fn item_to_proto_with_object_id(
         // A known kind travels as a code; anything else keeps its name.
         kind_name: match kind_code(&item.kind) {
             Some(_) => None,
-            None => Some(item.kind.clone()),
+            None => Some(item.kind.clone().into()),
         },
         kind_code: kind_code(&item.kind),
         routing_bucket: Some(item.routing_bucket),
@@ -825,12 +825,13 @@ fn item_from_proto_with_object_id(
     command_key: Option<&str>,
     derived_object_id: Option<u64>,
 ) -> WalOutcomeItem {
+    // A coded kind is a borrow of the roster, so replay builds no string for it.
     let kind = item
         .kind_code
         .and_then(kind_from_code)
-        .map(str::to_string)
-        .or(item.kind_name)
-        .unwrap_or_default();
+        .map(crate::wal_outcome_kind::OutcomeKind::of)
+        .or_else(|| item.kind_name.map(crate::wal_outcome_kind::OutcomeKind::from))
+        .unwrap_or_else(|| crate::wal_outcome_kind::OutcomeKind::of(""));
     // Absent means the record's own command says it, which is the only thing it can mean:
     // the writer omits it exactly when the two agree. This stays FIRST because `object_id` is
     // derived from it below -- restoring later would derive an id against an empty key, which is
@@ -1447,7 +1448,7 @@ mod command_key_tests {
 
     fn outcome(key: &str, element_name: Option<&str>) -> WalOutcomeItem {
         WalOutcomeItem {
-            kind: "string".to_string(),
+            kind: "string".into(),
             object_key: key.to_string(),
             element_name: element_name.map(str::to_string),
             object_id: crate::engine::hashing::stable_block_object_id(
@@ -1668,7 +1669,7 @@ mod tests {
             value: (0..4096u32).map(|index| (index % 7) as u8).collect(),
         }));
         record.outcomes = vec![crate::wal::WalOutcomeItem {
-            kind: "page".to_string(),
+            kind: "page".into(),
             object_key: "tenant/1/object/9".to_string(),
             element_name: Some("body".to_string()),
             object_id: 9,
@@ -1814,7 +1815,7 @@ mod tests {
                 value: vec![1u8; 16],
             }));
             record.outcomes = vec![crate::wal::WalOutcomeItem {
-                kind: "page".to_string(),
+                kind: "page".into(),
                 object_key: "tenant/1/object/9".to_string(),
                 element_name: Some("body".to_string()),
                 object_id: 9,
@@ -1905,7 +1906,7 @@ mod tests {
                                     for routing_bucket in [0u32, 8539] {
                                         for address in addresses.iter() {
                                             let item = crate::wal::WalOutcomeItem {
-                                                kind: kind.to_string(),
+                                                kind: kind.into(),
                                                 object_key: object_key.to_string(),
                                                 element_name: element_name.map(str::to_string),
                                                 object_id,
@@ -2163,7 +2164,7 @@ mod tests {
             value: vec![4; 20],
         }));
         with_outcomes.outcomes = vec![crate::wal::WalOutcomeItem {
-            kind: "page".to_string(),
+            kind: "page".into(),
             object_key: "tenant/1/object/9".to_string(),
             element_name: Some("body".to_string()),
             object_id: 9,
@@ -2188,7 +2189,7 @@ mod tests {
             batch_index: Some(0),
         });
         everything.outcomes = vec![crate::wal::WalOutcomeItem {
-            kind: "page".to_string(),
+            kind: "page".into(),
             object_key: "tenant/1/object/10".to_string(),
             element_name: None,
             object_id: 10,
@@ -2313,7 +2314,7 @@ mod tests {
     /// both paths and untouched by this change.
     fn outcome_with_object_id(object_id: u64) -> crate::wal::WalOutcomeItem {
         crate::wal::WalOutcomeItem {
-            kind: "page".to_string(),
+            kind: "page".into(),
             object_key: "tenant/1/object/9".to_string(),
             element_name: None,
             object_id,

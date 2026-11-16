@@ -587,3 +587,5 @@ mod a_series_at_its_cap_trims_without_a_victim_list;
 mod a_string_set_does_not_copy_the_value_it_replaces;
 #[path = "tests/a_feature_range_read_decodes_each_point_where_it_sits.rs"]
 mod a_feature_range_read_decodes_each_point_where_it_sits;
+#[path = "tests/an_outcome_kind_holds_a_known_kind_without_allocating.rs"]
+mod an_outcome_kind_holds_a_known_kind_without_allocating;

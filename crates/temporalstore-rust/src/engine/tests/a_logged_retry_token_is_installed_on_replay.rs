@@ -123,7 +123,7 @@ fn landed(n: u64) -> RetryReceipt {
 /// The item a write that filed `token` would log.
 fn logged(key: &str, value: Option<Vec<u8>>) -> WalOutcomeItem {
     WalOutcomeItem {
-        kind: "cell_retry".to_string(),
+        kind: "cell_retry".into(),
         object_key: key.to_string(),
         element_name: None,
         object_id: 0,
