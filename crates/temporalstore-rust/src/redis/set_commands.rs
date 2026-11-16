@@ -30,6 +30,22 @@ pub(crate) fn sorted_set_members(
     }
 }
 
+/// Whether `member` is in the set at `key`: one lookup in the member map, not a listing.
+pub(crate) fn set_has_member(
+    key: &str,
+    member: &[u8],
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> Result<bool, String> {
+    match execute(Command::SetIsMember {
+        key: key.to_string(),
+        member: member.to_vec(),
+    }) {
+        Ok(CommandResponse::Integer { value }) => Ok(value != 0),
+        Ok(_) => Err("ERR invalid sismember response".to_string()),
+        Err(err) => Err(format!("ERR {err}")),
+    }
+}
+
 pub(crate) fn set_algebra_response(
     keys: &[Vec<u8>],
     op: SetAlgebraOp,
