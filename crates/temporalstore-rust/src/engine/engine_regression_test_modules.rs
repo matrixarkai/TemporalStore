@@ -577,3 +577,5 @@ mod a_distinct_count_compares_its_members_where_they_are;
 mod a_counter_window_read_reduces_where_it_sits;
 #[path = "tests/a_set_door_asks_one_member_not_the_set.rs"]
 mod a_set_door_asks_one_member_not_the_set;
+#[path = "tests/a_set_pop_and_random_member_read_the_first_members.rs"]
+mod a_set_pop_and_random_member_read_the_first_members;
