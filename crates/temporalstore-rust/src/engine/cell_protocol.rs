@@ -599,7 +599,7 @@ fn member_filter_of(selector: &wire::CellSelector) -> CellMemberFilter {
 
 /// The quota a selector names: `quota_lanes[i]` (a lane position) with `quota_counts[i]`, and
 /// `quota_counts[0]` as the count of members that fit no lane. The first count therefore appears
-/// TWICE in what the quota reserves (see docs/CELLS_PROTOCOL.md, Quota). A request that names only
+/// TWICE in what the quota reserves (see docs/WINDOW_REDUCE_PROTOCOL.md, Quota). A request that names only
 /// the count of members that fit no lane sends one count and no lane.
 fn quota_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<CellQuota, Refusal> {
     let (lanes, counts) = (&selector.quota_lanes, &selector.quota_counts);

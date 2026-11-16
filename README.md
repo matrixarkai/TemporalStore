@@ -37,7 +37,7 @@ others; choose the API and acknowledgement policy before measuring a workload.
 | **Latest features and profiles** | User/item profiles, lookup features, hashes, and online state for recommendation, search, ads, and personalization | [One-cluster architecture](https://github.com/matrixarkai/TemporalStore/blob/main/docs/TEMPORALSTORE_ONE_CLUSTER_TEMPORAL_FEATURES.md) |
 | **Long-sequence features** | Recent clicks, sessions, interactions, and typed behavior histories; timestamp-window reads and count-based retention | [Sequences and aggregates](https://github.com/matrixarkai/TemporalStore/blob/main/docs/blog_feature_sequences_and_aggregates.md) |
 | **High-cardinality features** | Separate user-item, user-category, user-author, device, or campaign histories; exact windowed count, sum, average, min/max, and first/last | [Aggregate example](https://github.com/matrixarkai/TemporalStore/blob/main/docs/feature_aggregate_high_cardinality_example.md) |
-| **WindowReduce Features** | Merge cell snapshots, reduce member statistics over a time window, and rank candidates by counts, ratios, or weighted scores | [Cell-based feature model](#windowreduce-features), [worked example](docs/CELLS_WORKED_EXAMPLE.md) |
+| **WindowReduce Features** | Merge cell samples, reduce member statistics over a time window, and rank candidates by counts, ratios, or weighted scores | [Window Reducer model](#windowreduce-features), [worked example](docs/WINDOW_REDUCE_WORKED_EXAMPLE.md) |
 | **Control state** | Set/get online state, atomic single-key counters, quotas, pacing, suppression, and risk/fraud decisions | [Control-state guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/blog_control_state_frequency_caps.md) |
 | **Frequency caps** | Per-user, campaign, or placement exposure limits using windowed counters | [Frequency-cap guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/blog_control_state_frequency_caps.md) |
 | **LLM context and agent memory** | Conversations, resources, entities, reusable memory, retrieval, and token-budgeted context assembly | [Context guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/context_management_on_temporalstore.md) |
@@ -149,15 +149,15 @@ and memory costs; compare mixed reads and writes, not write QPS alone.
 
 ### WindowReduce Features
 
-A cell-based model within Feature stores timestamped snapshots of members,
-labels, and numeric lanes. Writes merge lanes with declared reducers.
+The Window Reducer (WindowReduce) is a cell-based model within Feature. It stores
+timestamped samples of members, labels, and numeric lanes. Writes merge lanes with declared reducers.
 `CellRankQuery` selects a window, filters, reduces per member, scores, returns
 bounded top-k, and projects fields; it can also restrict the members it reads,
-end a trailing window at the newest stored snapshot, guarantee members in chosen
+end a trailing window at the newest stored sample, guarantee members in chosen
 lanes, and score by a decayed sum. `CellFanInRankQuery` ranks the merged cells of
 several keys and `CellRankBatchQuery` answers several independent reads in one
-request. `CellRollup` folds old snapshots into coarser time buckets and can cap
-each label group, so a key written every minute does not keep every snapshot. A
+request. `CellRollup` folds old samples into coarser time buckets and can cap
+each label group, so a key written every minute does not keep every sample. A
 retried write carries a token, so sending it twice does not count it twice. Build
 engagement rankings, conversion rates, and multi-signal features alongside
 scalar aggregates, with explicit schema and query bounds.
@@ -168,8 +168,9 @@ later write is checked against that header.
 
 | Term | Meaning |
 |---|---|
+| **Window Reducer** (WindowReduce) | The model: samples of cells under one key, merged by lane reducers on write and reduced over a time window on read. |
 | **Entity** and **dimensions** | An entity (a `u64`, text or bytes) plus up to eight named dimensions become one stored feature key, so a read by those values is one lookup. |
-| **Snapshot** | The set of cells stored at one timestamp of that key. |
+| **Sample** | The set of cells stored at one timestamp of that key. |
 | **Cell** | A **member** (an id or bytes), up to four named `u64` **labels**, and one to sixteen named `i64` **lanes**. |
 | **Lane reducer** | The verb that merges two values of a lane for one member: `Sum`, `Max`, `Min`, `First`, `Last` or `Count`. |
 
@@ -177,42 +178,44 @@ later write is checked against that header.
 
 Each scenario below is exercised by a test named in the last column.
 
-| Scenario | How the cell model is used | Test |
+| Scenario | How the Window Reducer is used | Test |
 |---|---|---|
-| **Per-user engagement counters by channel and content kind** | Entity = user; dimensions = `channel`, `kind`; members = items shown; lanes = `impressions`, `clicks` (both `Sum`). Writes at the same timestamp merge into one snapshot and the receipt says what was created and what merged. | `a_worked_example_of_cells` |
+| **Per-user engagement counters by channel and content kind** | Entity = user; dimensions = `channel`, `kind`; members = items shown; lanes = `impressions`, `clicks` (both `Sum`). Writes at the same timestamp merge into one sample and the receipt says what was created and what merged. | `a_worked_example_of_cells` |
 | **Per-item rolling ratios** | `CellRankQuery` over `Last { duration_ms: 60_000 }` reduces each item across the window and scores it by `Ratio` (click rate) or `Wilson` (a lower confidence bound that does not trust a rate seen once). In the example the two scores order the same three items oppositely. | `a_worked_example_of_cells` |
-| **Best items for a placement** | A predicate on a label (`slot < 3`) cuts cells before a member's snapshots are reduced, then the read ranks the rest. | `a_worked_example_of_cells` |
-| **Rolling history compacted into coarser buckets** | `CellRollup` with `older_than_ms` and `bucket_ms` folds minute snapshots into one snapshot per hour. Each lane folds by its own verb: summed lanes add, a `Max` lane keeps the peak, a `Last` lane keeps the newest value. Rolling an already-rolled bucket again changes nothing. | `a_worked_example_of_a_rollup` |
+| **Best items for a placement** | A predicate on a label (`slot < 3`) cuts cells before a member's samples are reduced, then the read ranks the rest. | `a_worked_example_of_cells` |
+| **Rolling history compacted into coarser buckets** | `CellRollup` with `older_than_ms` and `bucket_ms` folds minute samples into one sample per hour. Each lane folds by its own verb: summed lanes add, a `Max` lane keeps the peak, a `Last` lane keeps the newest value. Rolling an already-rolled bucket again changes nothing. | `a_worked_example_of_a_rollup` |
 | **Bounded member sets per label** | The rollup's optional cap keeps the best `keep` cells of each label group, scored like a ranked read, so a long-lived key does not grow without bound. | `a_worked_example_of_a_rollup` |
-| **Ranking inside a chosen set of members** | A member set on the read: `include` names the members to read and `exclude` those to leave out (exclusion wins), applied before a member's snapshots are reduced. Used for "rank these candidates" and "rank everything except what was already shown". | `a_member_set_changes_the_answer_exactly_as_an_independent_fold_says` |
-| **A window that follows the data, not the clock** | `anchor: newest` ends a `Last` window at the newest stored snapshot, so a key whose writes stopped (a paused or replayed feed) reads the same whenever it is read. | `an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says` |
+| **Ranking inside a chosen set of members** | A member set on the read: `include` names the members to read and `exclude` those to leave out (exclusion wins), applied before a member's samples are reduced. Used for "rank these candidates" and "rank everything except what was already shown". | `a_member_set_changes_the_answer_exactly_as_an_independent_fold_says` |
+| **A window that follows the data, not the clock** | `anchor: newest` ends a `Last` window at the newest stored sample, so a key whose writes stopped (a paused or replayed feed) reads the same whenever it is read. | `an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says` |
 | **Guaranteed minimum per lane** | A quota keeps at least so many members with a non-zero `clicks` value among the top-k, even when the best-ranked members have none. It never returns more than `top_k` rows. | `a_quota_selects_exactly_as_a_fold_of_the_ranking_says` |
-| **Recency-weighted scores** | `Decay { lane, half_life_ms }` scores a member by its stored values, each halved for every half-life of age from the newest snapshot of the window. No clock is read. | `a_decay_score_answers_its_hand_computed_value_live_and_after_a_restart` |
-| **One question over several keys** | When `channel` is a dimension, "the best items for this user over every channel" spans keys. `CellFanInRankQuery` merges the cells of up to 64 keys before it scores, so the answer is the one a single key holding all their snapshots would give. | `a_worked_example_of_a_ranked_read_across_the_channels_of_one_user` |
+| **Recency-weighted scores** | `Decay { lane, half_life_ms }` scores a member by its stored values, each halved for every half-life of age from the newest sample of the window. No clock is read. | `a_decay_score_answers_its_hand_computed_value_live_and_after_a_restart` |
+| **One question over several keys** | When `channel` is a dimension, "the best items for this user over every channel" spans keys. `CellFanInRankQuery` merges the cells of up to 64 keys before it scores, so the answer is the one a single key holding all their samples would give. | `a_worked_example_of_a_ranked_read_across_the_channels_of_one_user` |
 | **Several independent reads in one request** | `CellRankBatchQuery` carries up to 64 reads, each with its own key and spec, and answers them in request order; one failing read fails no other. | `a_batch_of_reads_answers_each_as_the_single_read_would_in_request_order_and_one_failing_read_fails_no_other` |
 | **A write that can be sent twice** | A merge-reduce append may carry a `retry_token`. The same token on the same key answers the first receipt with `replayed` set and writes nothing; a key remembers its last 16 tokens. | `a_repeated_token_answers_the_first_receipt_and_writes_nothing`, `the_ring_holds_sixteen_through_the_engine_and_the_seventeenth_token_evicts_the_first` |
-| **Rolling history in tiers** | The rollup fold accepts an ordered list of tiers, finest first: recent history stays at a fine bucket and older history gets a coarser one, with an optional catch-all that folds everything older into one snapshot at stamp 0. Today this is the pure function inside the crate; its command is not on `main` yet (see In progress). | `a_tiered_rollup_equals_an_independent_fold_with_a_bucket_per_tier` (unit test, `engine::cell_rollup::tier_tests`) |
+| **Rolling history in tiers** | The rollup fold accepts an ordered list of tiers, finest first: recent history stays at a fine bucket and older history gets a coarser one, with an optional catch-all that folds everything older into one sample at stamp 0. Today this is the pure function inside the crate; its command is not on `main` yet (see In progress). | `a_tiered_rollup_equals_an_independent_fold_with_a_bucket_per_tier` (unit test, `engine::cell_rollup::tier_tests`) |
 | **Multi-signal features from one key** | One header can declare up to sixteen lanes with different reducers (counts, maxima, latest values), read back together in one ranked read with `Weighted` scores. | `a_cell_rollup_is_a_command`, `a_ranked_cell_read_is_a_command` |
 
 The tests are in `crates/temporalstore-rust/src/engine/tests/`. The write, read
 and rollup walk-throughs, with the numbers each step produces, are in
-[Cells: merged, windowed, ranked statistics](docs/CELLS_WORKED_EXAMPLE.md).
+[Window Reducer: merged, windowed, ranked statistics](docs/WINDOW_REDUCE_WORKED_EXAMPLE.md).
 
 #### Commands
 
+The command names below are the ones in the code today; they move to `WindowReduce*` names in a later change.
+
 | Command | What it does |
 |---|---|
-| `FeatureAppendWithPolicy` with `MergeReduce` | Merges the request's cells into the snapshot stored at each point's timestamp, lane by lane. Answers a receipt: snapshots written, cells created, cells merged. Mismatch with the stored header is refused naming the differing field. |
+| `FeatureAppendWithPolicy` with `MergeReduce` | Merges the request's cells into the sample stored at each point's timestamp, lane by lane. Answers a receipt: samples written, cells created, cells merged. Mismatch with the stored header is refused naming the differing field. |
 | `CellRankQuery` | Window (`Between`, `Last`, `Since`, `LastN`), named predicates over labels, lanes or `member`, a score (`Lane`, `Ratio`, `Wilson`, `Member`, `Time`, `Weighted`, `Decay`), `top_k`, and optional projected fields. Optional controls, left out of the encoding when unused: a member set (`members`: `include`, `exclude`), an `anchor` (`request` or `newest`), and a `quota`. A name the key does not declare is refused. |
-| `CellFanInRankQuery` | The same read over up to 64 keys that share one spec. The cells of every key are merged before they are scored; the answer says how many keys held a snapshot in the window. Keys are read on one shard. |
+| `CellFanInRankQuery` | The same read over up to 64 keys that share one spec. The cells of every key are merged before they are scored; the answer says how many keys held a sample in the window. Keys are read on one shard. |
 | `CellRankBatchQuery` | Up to 64 independent reads, each with its own key and spec, answered in request order. A read that cannot be served answers with its reason and fails no other. |
-| `CellRollup` | Folds every snapshot stamped strictly before `older_than_ms` into `bucket_ms` buckets (cells merge by member, oldest first) and optionally caps each group. Answers snapshots and cells before and after, and cells dropped. A rollup that would change nothing writes nothing. |
-| `CellRemove` | Removes cells from one key by time window (stamps, inclusive), member set (include and exclude) and predicates over a label, a lane or `member`, at most 8, ANDed. Answers snapshots before and after, cells in the window, and cells removed. A snapshot left with no cell is removed; a request that restricts nothing is refused and one that matches nothing writes nothing. |
+| `CellRollup` | Folds every sample stamped strictly before `older_than_ms` into `bucket_ms` buckets (cells merge by member, oldest first) and optionally caps each group. Answers samples and cells before and after, and cells dropped. A rollup that would change nothing writes nothing. |
+| `CellRemove` | Removes cells from one key by time window (stamps, inclusive), member set (include and exclude) and predicates over a label, a lane or `member`, at most 8, ANDed. Answers samples before and after, cells in the window, and cells removed. A sample left with no cell is removed; a request that restricts nothing is refused and one that matches nothing writes nothing. |
 
 The shape of each request, copied from the tests:
 
 ```rust
-// Write: merge cells into the snapshot at a timestamp.
+// Write: merge cells into the sample at a timestamp.
 Command::FeatureAppendWithPolicy {
     key: key.to_string(),
     points: vec![FeaturePoint { timestamp_ms, value: encode_value(&header(), cells).unwrap() }],
@@ -236,7 +239,7 @@ Command::CellRankQuery {
 }
 
 // The same read, narrowed: only these members, none of those, the window ends at the newest
-// stored snapshot, and at least two members with a click are guaranteed a place.
+// stored sample, and at least two members with a click are guaranteed a place.
 let narrowed = CellRankSpec {
     members: CellMemberFilter {
         include: Some(vec![CellMemberId::U64(1), CellMemberId::U64(2), CellMemberId::U64(3)]),
@@ -251,7 +254,7 @@ let narrowed = CellRankSpec {
     )
 };
 
-// Recency-weighted: clicks halved for every 10 minutes of age from the newest snapshot.
+// Recency-weighted: clicks halved for every 10 minutes of age from the newest sample.
 let decayed = CellScore::Decay { lane: "clicks".to_string(), half_life_ms: 600_000 };
 
 // One question over every channel of one user: the keys are merged before they are scored.
@@ -265,7 +268,7 @@ Command::CellRankBatchQuery {
     ],
 }
 
-// Roll old snapshots into hours, keeping the best item of each slot.
+// Roll old samples into hours, keeping the best item of each slot.
 Command::CellRollup {
     key: key.to_string(),
     spec: CellRollupSpec {
@@ -289,21 +292,21 @@ A request over a limit is refused, not truncated.
 | Dimensions per key, labels per cell, lanes per cell | 8, 4, 16 |
 | Member bytes, entity bytes, text dimension bytes | 256 each |
 | Field name bytes | 64 |
-| Cells per point of a write request, cells per snapshot | 1,024, 4,096 |
+| Cells per point of a write request, cells per sample | 1,024, 4,096 |
 | Cells in all the points of one merge-reduce command | 262,144 |
 | `top_k` | 1,000 |
-| Snapshots in one ranked window | 512 (a wider window is refused, not truncated) |
+| Samples in one ranked window | 512 (a wider window is refused, not truncated) |
 | Predicates per read, lanes in a `Weighted` score | 8, 8 |
 | Members in a read's `include` set, and in its `exclude` set | 1,024 each, as sent |
 | Lanes in a quota, members a quota reserves (lane counts plus `others`) | 16, 1,000 |
 | Half-life of a `Decay` score | 1 ms to ten years |
-| Keys, snapshots and cells in one fan-in read | 64, 1,024, 262,144 |
+| Keys, samples and cells in one fan-in read | 64, 1,024, 262,144 |
 | Reads in one batch | 64 |
 | Retry tokens a key remembers | the last 16 |
-| Snapshots below one rollup cutoff | 1,024 (roll a longer history in steps by moving the cutoff forward) |
+| Samples below one rollup cutoff | 1,024 (roll a longer history in steps by moving the cutoff forward) |
 | Cells kept per group by a rollup cap | 1 to 4,096 |
 
-A rollup bucket whose members would exceed the 4,096 cells of one snapshot is
+A rollup bucket whose members would exceed the 4,096 cells of one sample is
 refused; use a smaller bucket. A key has one time-to-live, as every feature key
 does; a time-to-live per group is not provided. The in-process C-string door
 refuses `MergeReduce` because it cannot carry a binary value; use the proxy
@@ -324,7 +327,7 @@ Open pull request, not yet part of `main`: a typed reducer for feature aggregate
 the member set, anchor, quota, decay score, fan-in
 and batch reads and the retry ring described above are on `main`; the wire
 messages and the translator that maps them are described in
-[Cells protocol](docs/CELLS_PROTOCOL.md).
+[Window Reducer protocol](docs/WINDOW_REDUCE_PROTOCOL.md).
 
 Feast remains a first-class integration, not a replacement for native clients.
 Use the [Rust SDK](https://github.com/matrixarkai/TemporalStore/tree/main/sdk/rust/temporalstore),

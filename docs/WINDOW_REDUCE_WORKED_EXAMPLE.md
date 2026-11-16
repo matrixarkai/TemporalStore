@@ -1,8 +1,13 @@
-# Cells: merged, windowed, ranked statistics
+# Window Reducer: merged, windowed, ranked statistics
 
-A feature key can hold, at each timestamp, a snapshot of **cells**. A cell is a **member** (an id
+A feature key can hold, at each timestamp, a sample of **cells**. A cell is a **member** (an id
 or bytes), up to four named `u64` **labels**, and between one and sixteen named `i64` **lanes**.
 Nothing in the engine knows what the names mean; a deployment declares them once.
+
+Naming: the model is the Window Reducer (WindowReduce). The unit it stores at one timestamp of a key, all the
+cells of that key at that timestamp, is a **sample**. The command, message and field names in this page are the
+names on the wire today (`Cell*`, `snapshots_written`, `snapshot_info`, and so on); their numbers do not change when
+they are later renamed to WindowReduce names, and the stored bytes do not change either.
 
 * **Key.** An **entity** (a `u64`, text or bytes) and up to eight named **dimensions** become one
   stored feature key, so a read by those values is one lookup.
@@ -10,44 +15,44 @@ Nothing in the engine knows what the names mean; a deployment declares them once
   merge verb (`Sum`, `Max`, `Min`, `First`, `Last`, `Count`). Every later write is checked against
   it, and a mismatch is refused naming the differing field.
 * **Write.** `FeatureAppendWithPolicy` with `MergeReduce` merges the request's cells into the
-  snapshot already stored at that timestamp, lane by lane, and answers a receipt: snapshots
+  sample already stored at that timestamp, lane by lane, and answers a receipt: samples
   written, cells created, cells merged.
 * **Ranked read.** `CellRankQuery` takes a window (`Between`, `Last`, `Since`, `LastN`), named
   predicates over labels, lanes or `member`, a score (`Lane`, `Ratio`, `Wilson`, `Member`, `Time`,
-  `Weighted`, `Decay`) and `top_k`. It reduces each member across the window's snapshots, scores it and
+  `Weighted`, `Decay`) and `top_k`. It reduces each member across the window's samples, scores it and
   returns the best `k`. A name the key does not declare is refused.
-* **Rollup.** `CellRollup` takes `older_than_ms`, `bucket_ms` and an optional cap. Every snapshot
-  stamped strictly below the cutoff is folded, with the others of its bucket, into one snapshot
-  stored at the bucket start. Cells merge by member, oldest snapshot first. A `Count` lane holds
+* **Rollup.** `CellRollup` takes `older_than_ms`, `bucket_ms` and an optional cap. Every sample
+  stamped strictly below the cutoff is folded, with the others of its bucket, into one sample
+  stored at the bucket start. Cells merge by member, oldest sample first. A `Count` lane holds
   counts, and counts add; `Sum` adds (and saturates), `Max` and `Min` compare, `First` keeps the
   oldest value and `Last` the newest. The cap keeps the best `keep` cells of each group (a label's
   value, or all cells), scored like a ranked read, ties by member, and runs after the fold. The
-  receipt says snapshots before and after, cells before and after, and cells dropped. Rolling
+  receipt says samples before and after, cells before and after, and cells dropped. Rolling
   an already-rolled bucket again, with the same arguments, changes nothing.
   Optional fields extend it, and a request that sets none of them is the request above, unchanged:
   `coarser_tiers` add tiers (an `older_than_ms` and a `bucket_ms` each, finest first, a coarser
-  bucket a multiple of the finer, a last bucket of `u64::MAX` being the catch-all, one snapshot at
+  bucket a multiple of the finer, a last bucket of `u64::MAX` being the catch-all, one sample at
   stamp 0), so recent history stays fine and old history gets coarser in one request; `anchor`
-  reads every `older_than_ms` as an age against the newest snapshot the key holds
-  (`newest_minus_age`) instead of a stamp; `truncate` keeps the newest `keep_last` snapshots, acting
+  reads every `older_than_ms` as an age against the newest sample the key holds
+  (`newest_minus_age`) instead of a stamp; `truncate` keeps the newest `keep_last` samples, acting
   once the key holds more than its `trigger`; and the cap takes `protect_newest_ppm` (a share of
   `keep` reserved for the members seen most recently) and `trigger_over` (a group is cut only when
   it holds more than `keep + trigger_over`).
 
-Bounds: 8 dimensions, 4 labels, 16 lanes, 1 000 top-k, 512 snapshots per window, 8 predicates and
+Bounds: 8 dimensions, 4 labels, 16 lanes, 1 000 top-k, 512 samples per window, 8 predicates and
 8 lanes in a weighted score.
-A rollup touches at most 1 024 snapshots below its first cutoff (a longer history is rolled in
+A rollup touches at most 1 024 samples below its first cutoff (a longer history is rolled in
 steps, by moving the cutoff forward), keeps between 1 and 4 096 cells per group, adds at most 8
-coarser tiers, truncates to between 1 and 1 000 000 snapshots (trigger at most 10 000 000), protects
+coarser tiers, truncates to between 1 and 1 000 000 samples (trigger at most 10 000 000), protects
 at most 1 000 000 parts per million of `keep` and tolerates at most 4 096 members over it. A bucket
-whose members would exceed the 4 096 cells of one snapshot is refused: use a smaller bucket. A
+whose members would exceed the 4 096 cells of one sample is refused: use a smaller bucket. A
 request the key cannot serve is refused before anything is written.
 
 ## A worked example
 
 `crates/temporalstore-rust/src/engine/tests/a_worked_example_of_cells.rs` is a runnable test that
 doubles as this page's example. One user, two dimensions (`channel`, `kind`), a label (`slot`) and
-two lanes (`impressions`, `clicks`, both summed): it writes four snapshots, merges two writes at
+two lanes (`impressions`, `clicks`, both summed): it writes four samples, merges two writes at
 one timestamp, then ranks the last minute by click rate and by the Wilson lower bound. Item 1,
 clicked once in one impression, leads by click rate and comes last by the bound; item 2, with 80
 clicks in 100 impressions, leads by the bound.
@@ -56,11 +61,11 @@ clicks in 100 impressions, leads by the bound.
 
 `a_worked_example_of_a_rollup`, in
 `crates/temporalstore-rust/src/engine/tests/a_cell_rollup_is_a_command.rs`, follows one user
-(entity 42) on one channel. Three minute snapshots hold items 1, 2 and 3 with the lanes
-`impressions` and `clicks` (summed) and `peak` (max), and a fourth snapshot comes an hour later.
-Rolled per hour with the cutoff at the hour, the three minutes become one snapshot at the start of
+(entity 42) on one channel. Three minute samples hold items 1, 2 and 3 with the lanes
+`impressions` and `clicks` (summed) and `peak` (max), and a fourth sample comes an hour later.
+Rolled per hour with the cutoff at the hour, the three minutes become one sample at the start of
 the hour: item 1 has 60 impressions, 3 clicks and a peak of 9, item 2 has 10, 5 and 2, item 3 has
-100, 1 and 3, and the later snapshot is untouched. The receipt reads 4 snapshots before, 2 after,
+100, 1 and 3, and the later sample is untouched. The receipt reads 4 samples before, 2 after,
 6 cells before, 3 after. Capped to one item per `slot` by click rate (`clicks / impressions`),
 item 2 (0.5) stays and item 1 (0.05) goes; item 3 is alone in its slot.
 
@@ -69,32 +74,32 @@ item 2 (0.5) stays and item 1 (0.05) goes; item 3 is alone in its slot.
 `a_tiered_request_coarsens_old_history_in_one_command_and_ranks_the_same`,
 `an_age_resolves_against_the_newest_stored_snapshot_and_follows_it` and
 `a_truncation_acts_over_its_trigger_and_keeps_the_newest_snapshots`, in the same test file, work one
-twelve-snapshot key (stamps 100 to 1 200). Below 1 100 the buckets are 200 wide, below 700 they are
+twelve-sample key (stamps 100 to 1 200). Below 1 100 the buckets are 200 wide, below 700 they are
 400 wide (700 is aligned down to 600, a multiple of 200), so the twelve become seven, at 0, 400,
 600, 800, 1 000, 1 100 and 1 200. Asked as ages (100 and 500) against the newest stamp, 1 200, the
-same request gives the same bytes; after a snapshot at 1 300 arrives the same ages are other
-cutoffs (1 200 and 800) and the key settles at six snapshots. With a `truncate` of the newest 4,
+same request gives the same bytes; after a sample at 1 300 arrives the same ages are other
+cutoffs (1 200 and 800) and the key settles at six samples. With a `truncate` of the newest 4,
 the seven become 800, 1 000, 1 100 and 1 200.
 
 ## Rolling up in tiers
 
 One bucket width is a blunt tool for a long history: hourly buckets are too coarse for yesterday and
 too fine for last year. The rollup fold accepts an ordered list of **tiers**, finest first, each an
-`older_than` cutoff and a `bucket_ms`. A snapshot takes the bucket width of the coarsest tier whose
+`older_than` cutoff and a `bucket_ms`. A sample takes the bucket width of the coarsest tier whose
 cutoff is above its stamp. With two tiers, "older than a day, hourly" and "older than 30 days, daily",
-a snapshot from last week folds into its hour, one from last year folds into its day, and one from the
+a sample from last week folds into its hour, one from last year folds into its day, and one from the
 last day is left alone.
 
 * **Order and widths.** A coarser tier reaches further back, and each width is a multiple of the width
   before it, so the output stays ascending. A tier's cutoff is aligned down to a multiple of the finer
   width, so a bucket never straddles a boundary and rolling the result again changes nothing.
 * **Catch-all.** A last tier whose width is `u64::MAX` folds everything older than its cutoff into ONE
-  snapshot stored at stamp 0.
+  sample stored at stamp 0.
 * **No clock.** An `older_than` can be an absolute stamp or an age resolved against the newest stamp
   the key holds (saturating at 0), so a leader, a follower and a replay resolve the same cutoffs.
-* **Bounds.** At most 8 coarser tiers; at most 1 024 snapshots below the first cutoff in one request,
+* **Bounds.** At most 8 coarser tiers; at most 1 024 samples below the first cutoff in one request,
   whatever the tiers.
-* **Extra controls.** A truncation (keep the newest N snapshots, acting only above a trigger) and cap
+* **Extra controls.** A truncation (keep the newest N samples, acting only above a trigger) and cap
   controls (`protect_newest_ppm` keeps that share of `keep` for the most recently seen members; a group
   is cut only once it exceeds `keep + trigger_over`).
 
@@ -123,7 +128,7 @@ store.
   accepted is never refused for what the key has grown into since.
 * **Only merge-reduce.** A token on any other write policy is refused, not ignored.
 * **A key that goes forgets its tokens.** Deleting the key, its expiry, and a trim that leaves it no
-  snapshot each clear the ring: the same token on the key written again is a new request.
+  sample each clear the ring: the same token on the key written again is a new request.
 * **Durable.** The rings are stored with the shard's index image (a new `retry_rings` domain, one
   byte string per key), so they come back after a restart and after the log has been reclaimed.
   Like a deadline or a seen set, a ring is held in the image and not in the blocks, and the
@@ -179,14 +184,14 @@ answered exactly as before: the fields are left out of the encoding when they ar
 spec that lacks them reads as one that has them at rest.
 
 * **Member set** (`members`). `include` is a set the member must belong to and `exclude` one it must
-  not; both apply to a cell before the member's snapshots are reduced, together with the predicates.
+  not; both apply to a cell before the member's samples are reduced, together with the predicates.
   `include` left out restricts nothing, and an include set that names nothing is refused (an empty
   list of members to read is almost always a caller that lost its list). A member in both sets is
   excluded. Each set holds at most 1 024 entries as sent, duplicates included, and a bytes member at
   most 256 bytes; a request past either is refused at admission. The request's order and repeats do
   not change the answer.
 * **Anchor** (`anchor`: `request`, the default, or `newest`). A `Last` window ends at the clock the
-  request carries; with `newest` it ends at the newest snapshot the key holds, so a key whose writes
+  request carries; with `newest` it ends at the newest sample the key holds, so a key whose writes
   stopped reads the same whenever it is read. With newest stamp `n` and duration `d` the window is
   `[n + 1 - d, n]`, floored at zero: it spans exactly `d` stamps, and `d = 0` holds nothing. (On the
   request clock the window is `[now - d, now]`, one stamp wider.) An anchor on `Between`, `Since` or
@@ -199,27 +204,27 @@ spec that lacks them reads as one that has them at rest.
   fill leaves the answer short rather than padded. Counts plus `others` are at most 1 000, a quota
   names at most 16 lanes, a count is at least 1 and a lane is named once.
 * **Decay score** (`CellScore::Decay { lane, half_life_ms }`). A member's score is
-  `sum(value * 0.5^(age / half_life_ms))` over the values its snapshots store for the lane, with
-  `age` measured from the newest snapshot of the window, so no clock is read. The half-life is
+  `sum(value * 0.5^(age / half_life_ms))` over the values its samples store for the lane, with
+  `age` measured from the newest sample of the window, so no clock is read. The half-life is
   between 1 ms and ten years. The total is a float and cannot wrap. A rollup cap refuses it: a cap
   scores one folded cell.
 
 ### An example
 
 `a_quota_selects_exactly_as_a_fold_of_the_ranking_says`, in
-`crates/temporalstore-rust/src/engine/tests/a_ranked_cell_read_is_a_command.rs`, stores one snapshot
+`crates/temporalstore-rust/src/engine/tests/a_ranked_cell_read_is_a_command.rs`, stores one sample
 of eight members with the lanes `shown` and `clicked`. Ranked by `shown` they come 1 to 8, and only
 members 3, 6 and 8 have a click. The plain top four are 1, 2, 3, 4. With a quota of two members with
 a click and `top_k` 8, the answer is members 3 and 6; with `top_k` 5 it is member 3 alone, because
 the quota never reaches past the top-k; with `others` 2 added, members 1 and 2 come first, so the
 answer is 1, 2, 3, 6.
 
-`an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says` stores four snapshots at
-100, 200, 300 and 400 and ranks by `shown`: an anchored `Last` of 100 is `[301, 400]`, one snapshot;
-300 is `[101, 400]`, three; 301 reaches the snapshot at 100. The same `Last` of 100 on the request
+`an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says` stores four samples at
+100, 200, 300 and 400 and ranks by `shown`: an anchored `Last` of 100 is `[301, 400]`, one sample;
+300 is `[101, 400]`, three; 301 reaches the sample at 100. The same `Last` of 100 on the request
 clock, read long after the writes, is empty.
 
-`a_member_set_changes_the_answer_exactly_as_an_independent_fold_says` stores four snapshots of four
+`a_member_set_changes_the_answer_exactly_as_an_independent_fold_says` stores four samples of four
 members under the lanes `shown` (summed) and `peak` (maximum) and reads every combination of include
 and exclude set (256 reads) against a fold written in the test. Ranked by `shown` the members total
 m1 30, m2 60, m3 200 and m4 10. Include `{m1, m2}` with a predicate `peak > 4` keeps only the stored
@@ -227,12 +232,12 @@ cells whose `peak` is above 4 before anything is reduced, so m2 reads 30 and m1 
 m2 then m1.
 
 `a_decay_score_answers_its_hand_computed_value_live_and_after_a_restart` ranks the same four
-snapshots (stamped 100, 200, 300 and 400) by `Decay` of `shown` with a half-life of 100 ms. The age is
-measured from the newest snapshot in the window, 400, so the snapshot at 400 weighs 1, the one at 300
+samples (stamped 100, 200, 300 and 400) by `Decay` of `shown` with a half-life of 100 ms. The age is
+measured from the newest sample in the window, 400, so the sample at 400 weighs 1, the one at 300
 weighs 1/2, at 200 1/4 and at 100 1/8. m3 stored 100 at 100 and 100 at 300 and scores 12.5 + 50 = 62.5;
 m2 stored 20, 30 and 10 (at 100, 200 and 400) and scores 2.5 + 7.5 + 10 = 20; m1 scores 8.75 and m4 4.
 The plain sum ranks 3, 2, 1, 4 as well here, but on `peak` (a maximum lane) the decay of the values each
-snapshot stored puts m2 first with 9.625, where the lane's own maximum puts m1 first.
+sample stored puts m2 first with 9.625, where the lane's own maximum puts m1 first.
 
 On the wire (JSON), a read that uses them looks like this; the three keys appear only when set:
 
@@ -248,10 +253,10 @@ When the dimensions you always query by are in the key, a question that spans th
 this user respond to best over ALL channels?") spans keys. `CellFanInRankQuery` takes up to 64 keys
 that share one spec and the same read as `CellRankQuery` (window, predicates, score, `top_k`,
 projection). It merges the cells of every key BEFORE it scores, so the answer is the one a single
-key holding all their snapshots would give. Merging the per-key top lists afterwards cannot match
+key holding all their samples would give. Merging the per-key top lists afterwards cannot match
 it: an item that is second in each of two keys can lead their sum.
 
-* The window applies to each key: `LastN { n }` is the newest `n` snapshots of every key.
+* The window applies to each key: `LastN { n }` is the newest `n` samples of every key.
 * Cells combine in stamp order, a tie between keys broken by the key's position in the request, so
   `Sum`, `Max` and `Min` lanes do not depend on the order of the keys while a `First` lane takes the
   earliest stamp and a `Last` lane the latest.
@@ -262,7 +267,7 @@ it: an item that is second in each of two keys can lead their sum.
   can tell the answer is partial.
 * The keys are read on the shard the request names (it is routed by the first key), so they must
   live together.
-* Bounds, each refused whole and never truncated: 64 keys, 1 024 snapshots and 262 144 cells per
+* Bounds, each refused whole and never truncated: 64 keys, 1 024 samples and 262 144 cells per
   request, a key named once.
 
 ### A batch of independent reads
@@ -282,15 +287,15 @@ Command::CellFanInRankQuery { keys: vec![email_key, push_key, feed_key], spec }
 ```
 
 `crates/temporalstore-rust/src/engine/tests/a_ranked_read_over_several_cell_keys.rs` is the runnable
-example: one user, a `channel` dimension in the key, three channels and six snapshots, ranked by a
-summed lane and by a maximum lane, checked equal to a single key that holds the same six snapshots,
+example: one user, a `channel` dimension in the key, three channels and six samples, ranked by a
+summed lane and by a maximum lane, checked equal to a single key that holds the same six samples,
 and then read again after a restart.
 
 ## On the wire
 
 The messages that carry these reads and writes (add, restore, ranked read, merged read, batch, the
 member set, anchor, quota, decay mode and the retry token) are described in
-[Cells protocol](CELLS_PROTOCOL.md).
+[Window Reducer protocol](WINDOW_REDUCE_PROTOCOL.md).
 
 ## Not included
 
