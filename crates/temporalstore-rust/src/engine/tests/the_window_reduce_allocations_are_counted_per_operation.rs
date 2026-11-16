@@ -558,8 +558,8 @@ fn merges_into_stored_samples(packed: bool) -> (f64, Vec<FeaturePoint>) {
 /// A merge write reads the sample it merges into where it sits in the cached block, and keeps one
 /// copy of it. It used to decode every sample of that block into vectors of their own and hold the
 /// block in a table, so a block of many samples cost an allocation or more per sample, twice per
-/// write (validation and execution). The same samples stored as one block and as many give the
-/// same allocations now, and the same series to the byte.
+/// write (validation and execution). The same samples stored as one block and as many cost the
+/// planner no more in the one block than in the many, and leave the same series to the byte.
 ///
 /// The CONTROL is a plain read of the whole series: it allocates at least once per sample, so the
 /// probe can see the sample count. There is no absolute ceiling.
@@ -577,8 +577,11 @@ fn a_merge_write_reads_a_stored_sample_in_place_whatever_its_block_holds() {
     eprintln!("SAMPLE_IN_PLACE one block of 24 samples: {packed} allocs a write; 24 blocks: {separate} allocs a write");
     assert_eq!(packed_series, separate_series, "the two stores left different series");
     assert!(separate > 20.0, "the probe is blind: {separate} allocations for a merge write");
+    // A block read once serves the samples it holds, so the packed store may cost LESS (a block
+    // read alone pays its own frame read); it must never cost more. Decoding the block sample by
+    // sample made it cost more, by about three allocations a sample.
     assert!(
-        (packed - separate).abs() < 4.0,
+        packed <= separate + 2.0,
         "a merge write costs {packed} allocations when its sample sits in a block of 24 and {separate} when it sits alone: the block is decoded sample by sample"
     );
 }
