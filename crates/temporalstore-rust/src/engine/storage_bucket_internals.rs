@@ -5719,6 +5719,142 @@ fn upsert_bucket_index_block_inner(
     shard.buckets_pending_flag_refresh.extend(touched_buckets);
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test switch: file a series write by restating the whole live set, as every write that
+    /// replaced or trimmed a point did before [`file_series_blocks_after_write`]. The differential
+    /// test replays one sequence with this on and off and compares what was stored.
+    pub(super) static RESTATE_SERIES_BLOCKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// File what a series write did to the object's blocks: publish the blocks it wrote and retire
+/// the ones it left with no point.
+///
+/// `vacated` is every address a dropped, replaced or trimmed point held. A restating publish
+/// drops all of the object's blocks and files the live ones back -- the object's whole block
+/// count, per write, for a write that changed one. This asks the series which of the vacated
+/// blocks nobody maps to ([`addresses_no_point_names`]) and removes exactly those, by the handle
+/// their identity hashes to. A write that vacated nothing publishes only the new blocks, as a
+/// pure append always has.
+///
+/// WHAT IT FALLS BACK TO. A retired block that is not where its identity says it is filed leaves
+/// the index in a state this cannot narrow, so the whole live set is restated -- the old path, for
+/// the case the index and the series already disagree.
+pub(super) fn file_series_blocks_after_write(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    published: Vec<ElementEntry>,
+    vacated: Vec<ElementEntry>,
+    dirty: bool,
+) {
+    if vacated.is_empty() {
+        sync_bucket_index_object_blocks_with_mode(
+            shard, shard_id, kind, object_key, published, dirty, false,
+        );
+        return;
+    }
+    #[cfg(test)]
+    let restate = RESTATE_SERIES_BLOCKS.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let restate = false;
+    let retired = {
+        let series = shard.objects_of_kind(stored_model_kind(kind)).get(object_key);
+        match series {
+            Some(series) => super::addresses_no_point_names(series, vacated),
+            None => vacated,
+        }
+    };
+    if !restate {
+        sync_bucket_index_object_blocks_with_mode(
+            shard, shard_id, kind, object_key, published, dirty, false,
+        );
+        if retire_object_blocks(shard, shard_id, kind, object_key, &retired, dirty) {
+            return;
+        }
+    }
+    let live_addresses = shard
+        .objects_of_kind(stored_model_kind(kind))
+        .get(object_key)
+        .map(|series| series.addresses().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    sync_bucket_index_object_blocks(shard, shard_id, kind, object_key, live_addresses, dirty);
+}
+
+/// Remove the named blocks of one object from the bucket index, and from the object's block refs.
+///
+/// Returns false, having removed nothing it was not asked to, when a block is not filed where its
+/// identity says: the caller restates the live set then.
+fn retire_object_blocks(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    retired: &[ElementEntry],
+    dirty: bool,
+) -> bool {
+    if retired.is_empty() {
+        return true;
+    }
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    if !shard.bucket_index.released_buckets.is_empty() {
+        reload_released_bucket(shard, shard_id, routing_bucket);
+    }
+    let entry_kind = stored_model_kind(kind);
+    let mut all_found = true;
+    for address in retired {
+        let handle = crate::engine::state::block_index_handle(
+            object_key,
+            &BlockIndex::new(entry_kind, address.clone(), false, false),
+        );
+        let removed = {
+            let CoreIndex {
+                bucket_map,
+                block_slab_live,
+                ..
+            } = &mut shard.bucket_index;
+            match bucket_map.get_mut(&routing_bucket) {
+                None => None,
+                Some(mut bucket) => {
+                    let removed = bucket.block_index.remove(
+                        &handle,
+                        block_slab_live,
+                        crate::engine::state::StaleCause::Overwrite,
+                    );
+                    if let Some(removed) = &removed {
+                        let next_flag = bucket.dirty() | dirty;
+                        bucket.set_dirty(next_flag);
+                        let next_flag = bucket.block_index.is_empty();
+                        bucket.set_deleted(next_flag);
+                        if dirty {
+                            bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
+                        }
+                        classify_bucket_layout_after_block_removal(&mut bucket, removed);
+                    }
+                    removed
+                }
+            }
+        };
+        if removed.is_none() {
+            all_found = false;
+            continue;
+        }
+        shard.bucket_index.remove_object_block_lookup_ref(
+            kind,
+            object_key,
+            None,
+            &crate::engine::state::BlockLookupRef {
+                routing_bucket,
+                block_ref_key: handle,
+            },
+        );
+    }
+    shard.buckets_pending_flag_refresh.insert(routing_bucket);
+    all_found
+}
+
 pub(super) fn sync_bucket_index_object_blocks(
     shard: &mut ShardState,
     shard_id: ShardId,

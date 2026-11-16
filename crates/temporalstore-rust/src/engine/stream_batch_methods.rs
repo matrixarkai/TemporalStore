@@ -2171,10 +2171,11 @@ impl TemporalEngine {
                 // single-command path states: the gate above asks about a shrink or a deadline,
                 // and a pure add -- the write whose element the fold could not restore -- is
                 // neither.
-                key_states.extend(capture_container_element_states(
-                    shard,
-                    &batch_touched_container_elements,
-                ));
+                key_states.extend(
+                    capture_container_element_states(shard, &batch_touched_container_elements)
+                        .into_iter()
+                        .map(crate::index_log::KeyState::from),
+                );
                 let appended_index_log_sequence = self
                     .index_log_store
                     .append_delta(

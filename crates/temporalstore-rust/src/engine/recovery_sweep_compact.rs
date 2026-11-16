@@ -203,7 +203,7 @@ struct ExpiryIndexDelta {
     items: Vec<crate::index_log::IndexItem>,
     /// One blob per covered key, carrying no map fields: the fold reads an absent field as a
     /// removal, so these are tombstones across every per-key map, `expires_at_ms` included.
-    key_states: Vec<serde_json::Value>,
+    key_states: Vec<crate::index_log::KeyState>,
     /// The WAL sequence this checkpoint reflects -- anchored AFTER the round's tombstones, so
     /// folding the anchor and folding the deletions are the same act.
     applied_wal_sequence: Option<u64>,

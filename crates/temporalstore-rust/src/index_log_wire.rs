@@ -401,7 +401,7 @@ impl ProtoMetaItem {
 }
 
 impl ProtoIndexLog {
-    pub fn from_record(record: &IndexDeltaRecord) -> Result<Self, String> {
+    pub fn from_record<K: serde::Serialize>(record: &IndexDeltaRecord<K>) -> Result<Self, String> {
         let mut key_states = Vec::with_capacity(record.key_states.len());
         for state in &record.key_states {
             key_states.push(serde_json::to_vec(state).map_err(|error| error.to_string())?);
@@ -443,7 +443,7 @@ impl ProtoIndexLog {
 }
 
 /// The record as protobuf bytes.
-pub fn encode_delta_record(record: &IndexDeltaRecord) -> Result<Vec<u8>, String> {
+pub fn encode_delta_record<K: serde::Serialize>(record: &IndexDeltaRecord<K>) -> Result<Vec<u8>, String> {
     Ok(ProtoIndexLog::from_record(record)?.encode_to_vec())
 }
 

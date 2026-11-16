@@ -211,10 +211,35 @@ pub(super) fn drop_timestamped_points(
     series: &mut impl super::timestamped_series::TimestampedSeriesWrite,
     timestamps: &[u64],
 ) -> bool {
+    drop_timestamped_points_naming_what_left(
+        shard_id,
+        kind,
+        key,
+        routing_bucket,
+        series,
+        timestamps,
+        None,
+    )
+}
+
+/// [`drop_timestamped_points`], and every address the dropped points held is pushed onto
+/// `vacated` (see [`trim_timestamped_series_naming_what_left`]).
+pub(super) fn drop_timestamped_points_naming_what_left(
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    routing_bucket: u32,
+    series: &mut impl super::timestamped_series::TimestampedSeriesWrite,
+    timestamps: &[u64],
+    mut vacated: Option<&mut Vec<ElementEntry>>,
+) -> bool {
     let mut dropped = false;
     let mut object_id = None;
     for timestamp_ms in timestamps {
-        if series.get(*timestamp_ms).is_some() {
+        if let Some(address) = series.get(*timestamp_ms) {
+            if let Some(vacated) = vacated.as_deref_mut() {
+                vacated.push(address.clone());
+            }
             series.clear(*timestamp_ms);
             let object_id = *object_id
                 .get_or_insert_with(|| stable_block_object_id(shard_id, kind, key));
@@ -239,14 +264,49 @@ pub(super) fn trim_timestamped_series(
     max_size: usize,
     boundary_record: bool,
 ) -> bool {
+    trim_timestamped_series_naming_what_left(
+        shard_id,
+        kind,
+        key,
+        routing_bucket,
+        series,
+        max_size,
+        boundary_record,
+        None,
+    )
+}
+
+/// [`trim_timestamped_series`], and every address the dropped points held is pushed onto
+/// `vacated`.
+///
+/// A block can be named by several points, so a dropped point does not say its block is gone: the
+/// caller asks [`addresses_no_point_names`] which of these no live point still maps to.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn trim_timestamped_series_naming_what_left(
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    routing_bucket: u32,
+    series: &mut impl super::timestamped_series::TimestampedSeriesWrite,
+    max_size: usize,
+    boundary_record: bool,
+    mut vacated: Option<&mut Vec<ElementEntry>>,
+) -> bool {
     let mut newest_dropped = None;
     let mut object_id = None;
     while series.len() > max_size {
         // THE OLDEST POINT IS THE FIRST, because `points` promises ascending order. A
         // representation that could not promise it is not a timestamped series.
-        let Some(oldest) = series.points().next().map(|(instant, _)| instant) else {
+        let Some((oldest, address)) = series
+            .points()
+            .next()
+            .map(|(instant, address)| (instant, vacated.is_some().then(|| address.clone())))
+        else {
             break;
         };
+        if let (Some(vacated), Some(address)) = (vacated.as_deref_mut(), address) {
+            vacated.push(address);
+        }
         series.clear(oldest);
         if !boundary_record {
             let object_id = *object_id
@@ -266,6 +326,50 @@ pub(super) fn trim_timestamped_series(
         stage_timestamped_boundary_removal(shard_id, kind, key, routing_bucket, through);
     }
     true
+}
+
+/// Of the addresses a write vacated, those no point of the series maps to any more.
+///
+/// A POINT DROPPED OR REPLACED DOES NOT SAY ITS BLOCK IS GONE. A block holds every point of the
+/// chunk it was written with, so the block outlives the points that leave it for as long as one
+/// of its points stays -- and the points of one block are not contiguous once a later write has
+/// replaced some of them, so "the oldest block is the dead one" is not a rule the series keeps.
+/// The only sound answer is to ask the series, which this does in one allocation-free pass that
+/// stops as soon as every candidate has been seen alive. A candidate nobody names costs the whole
+/// pass, because absence is only proved by reading to the end.
+///
+/// The addresses come back sorted by identity and without repeats.
+pub(super) fn addresses_no_point_names(
+    series: &impl super::timestamped_series::TimestampedSeries,
+    mut vacated: Vec<ElementEntry>,
+) -> Vec<ElementEntry> {
+    use super::storage_bucket_internals::block_physical_identity_key as identity;
+    vacated.sort_unstable_by_key(identity);
+    vacated.dedup_by_key(|address| identity(address));
+    if vacated.is_empty() {
+        return vacated;
+    }
+    let mut seen_alive = vec![false; vacated.len()];
+    let mut unseen = vacated.len();
+    for address in series.addresses() {
+        let held = identity(address);
+        if let Ok(at) = vacated.binary_search_by_key(&held, |candidate| identity(candidate)) {
+            if !seen_alive[at] {
+                seen_alive[at] = true;
+                unseen -= 1;
+                if unseen == 0 {
+                    return Vec::new();
+                }
+            }
+        }
+    }
+    let mut at = 0;
+    vacated.retain(|_| {
+        let dead = !seen_alive[at];
+        at += 1;
+        dead
+    });
+    vacated
 }
 
 pub(super) fn append_timestamped_kv_blocks(

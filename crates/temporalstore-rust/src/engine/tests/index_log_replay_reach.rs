@@ -375,9 +375,9 @@ fn base_with_deadlines_and_anchor_less_deltas(
     let per_delta = keys.div_ceil(with_content.max(1)).max(1);
     let mut planted = Vec::new();
     for chunk in (0..keys).collect::<Vec<_>>().chunks(per_delta) {
-        let key_states: Vec<serde_json::Value> = chunk
+        let key_states: Vec<crate::index_log::KeyState> = chunk
             .iter()
-            .map(|index| serde_json::json!({ "key": deadline_key(*index) }))
+            .map(|index| serde_json::json!({ "key": deadline_key(*index) }).into())
             .collect();
         planted.push(
             engine
@@ -393,7 +393,7 @@ fn base_with_deadlines_and_anchor_less_deltas(
         .append_delta(
             SHARD,
             Vec::new(),
-            vec![serde_json::json!({ "key": deadline_key(0), "expires_at_ms": u64::MAX })],
+            vec![serde_json::json!({ "key": deadline_key(0), "expires_at_ms": u64::MAX }).into()],
             Some(base_anchor),
             None,
             false,
@@ -409,7 +409,7 @@ fn base_with_deadlines_and_anchor_less_deltas(
             .append_delta(
                 SHARD,
                 Vec::new(),
-                vec![serde_json::json!({ "key": format!("tenant/1/above/{index:04}") })],
+                vec![serde_json::json!({ "key": format!("tenant/1/above/{index:04}") }).into()],
                 Some(base_anchor + offset),
                 None,
                 false,

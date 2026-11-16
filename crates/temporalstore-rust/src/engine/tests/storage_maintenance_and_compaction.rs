@@ -6607,7 +6607,7 @@ fn what_capturing_a_writes_key_states_costs() {
     let warm = super::capture_key_states(shard, &keys);
     assert_eq!(warm.len(), 1, "one key in, one blob out");
     assert!(
-        warm[0].get("context_nodes").is_some() || warm[0].get("key").is_some(),
+        { let blob = warm[0].to_value(); blob.get("context_nodes").is_some() || blob.get("key").is_some() },
         "the blob must actually describe the key, or this measures an empty object"
     );
 
