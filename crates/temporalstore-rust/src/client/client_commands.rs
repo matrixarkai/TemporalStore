@@ -95,14 +95,14 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::FeatureQuery { key, .. }
         | Command::FeatureQueryFiltered { key, .. }
         | Command::FeatureReplace { key, .. }
-        | Command::CellRollup { key, .. }
-        | Command::CellRemove { key, .. }
+        | Command::WindowReduceRollup { key, .. }
+        | Command::WindowReduceRemove { key, .. }
         | Command::FeatureDelete { key }
         | Command::FeatureAggQuery { key, .. }
         | Command::FeatureProtoAggQuery { key, .. }
         | Command::SequenceAdd { key, .. }
         | Command::SequenceQuery { key, .. }
-        | Command::CellRankQuery { key, .. }
+        | Command::WindowReduceRank { key, .. }
         | Command::ControlStateIncrement { key, .. }
         | Command::ControlStateIncrementWithOptions { key, .. }
         | Command::ControlStateChangeAdd { key, .. }
@@ -119,8 +119,8 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ControlStateDebug { key, .. } => Some(key),
         // Several keys that must live together: routed by the first, as the other reads that
         // name many ids are.
-        Command::CellFanInRankQuery { keys, .. } => keys.first().map(String::as_str),
-        Command::CellRankBatchQuery { queries } => queries.first().map(|query| query.key.as_str()),
+        Command::WindowReduceFanInRank { keys, .. } => keys.first().map(String::as_str),
+        Command::WindowReduceRankBatch { queries } => queries.first().map(|query| query.key.as_str()),
         Command::SequenceBatchQuery { .. }
         | Command::ContextUpsertNode { .. }
         | Command::ContextGetNode { .. }

@@ -37,7 +37,7 @@ use super::window::window_samples;
 use super::*;
 use crate::block_store::ElementEntry;
 use crate::engine::timestamped_series::TimestampedSeries as _;
-use crate::types::{CellRankSpec, RankedCells};
+use crate::types::{WindowReduceRankSpec, RankedCells};
 
 /// The samples a read decoded, oldest first, each in the flat form: a fixed handful of
 /// allocations per sample however many cells it holds.
@@ -79,7 +79,7 @@ fn newest_header(
 
 /// The samples the window names, newest first, bounded. One more than the window bound is
 /// returned for a range of stamps, so a caller can tell a window at the bound from one over it.
-fn named_samples<'s>(series: &'s ObjectSlot, spec: &CellRankSpec, now_ms: u64) -> Vec<(u64, &'s ElementEntry)> {
+fn named_samples<'s>(series: &'s ObjectSlot, spec: &WindowReduceRankSpec, now_ms: u64) -> Vec<(u64, &'s ElementEntry)> {
     window_samples(series, &spec.window, spec.anchor, now_ms, MAX_WINDOW_SAMPLES + 1)
 }
 
@@ -95,7 +95,7 @@ fn decode_named(
     named: Vec<(u64, &ElementEntry)>,
     header: &CellHeader,
 ) -> Result<Decoded, String> {
-    let mut snapshots: Decoded = Vec::with_capacity(named.len());
+    let mut samples: Decoded = Vec::with_capacity(named.len());
     for (timestamp_ms, address) in named.into_iter().rev() {
         let decoded = read_feature_value_with(
             cache,
@@ -115,16 +115,16 @@ fn decode_named(
             },
         );
         match decoded {
-            Some(Ok(cells)) => snapshots.push((timestamp_ms, cells)),
+            Some(Ok(cells)) => samples.push((timestamp_ms, cells)),
             Some(Err(why)) => return Err(format!("the sample at {timestamp_ms}: {why}")),
             None => return Err(format!("the sample at {timestamp_ms} cannot be read")),
         }
     }
-    Ok(snapshots)
+    Ok(samples)
 }
 
-fn views(snapshots: &Decoded) -> Vec<FlatView<'_>> {
-    snapshots
+fn views(samples: &Decoded) -> Vec<FlatView<'_>> {
+    samples
         .iter()
         .map(|(timestamp_ms, cells)| FlatView { timestamp_ms: *timestamp_ms, cells })
         .collect()
@@ -137,7 +137,7 @@ pub(super) fn serve(
     shard_id: ShardId,
     shard: &ShardState,
     key: &str,
-    spec: &CellRankSpec,
+    spec: &WindowReduceRankSpec,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
     now_ms: u64,
@@ -160,12 +160,12 @@ pub(super) fn serve(
     };
 
     let named = named_samples(series, spec, now_ms);
-    let snapshots =
+    let samples =
         match decode_named(cache, block_store, shard_id, key, routing_bucket, &mut page_keys, named, &header) {
-            Ok(snapshots) => snapshots,
+            Ok(samples) => samples,
             Err(why) => return refused(why),
         };
-    plan.run(now_ms, &views(&snapshots)).unwrap_or_else(refused)
+    plan.run(now_ms, &views(&samples)).unwrap_or_else(refused)
 }
 
 /// The header a request over several keys reads under: `a` when it equals or extends `b`, `b` when
@@ -193,7 +193,7 @@ pub(super) fn serve_many(
     shard_id: ShardId,
     shard: &ShardState,
     keys: &[String],
-    spec: &CellRankSpec,
+    spec: &WindowReduceRankSpec,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
     now_ms: u64,
@@ -250,12 +250,12 @@ pub(super) fn serve_many(
             return refused(why);
         }
         match decode_named(cache, block_store, shard_id, key, *routing_bucket, &mut page_keys, named, &header) {
-            Ok(snapshots) => {
-                cell_count += snapshots.iter().map(|(_, cells)| cells.len()).sum::<usize>();
+            Ok(samples) => {
+                cell_count += samples.iter().map(|(_, cells)| cells.len()).sum::<usize>();
                 if let Err(why) = validate_chosen(sample_count, cell_count) {
                     return refused(why);
                 }
-                decoded.push(snapshots);
+                decoded.push(samples);
             }
             Err(why) => return refused(format!("key {position}: {why}")),
         }

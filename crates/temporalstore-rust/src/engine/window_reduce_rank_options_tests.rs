@@ -28,7 +28,7 @@ fn anchored() -> RankOptions {
 }
 
 fn run_with(
-    spec: &CellRankSpec,
+    spec: &WindowReduceRankSpec,
     options: &RankOptions,
     snaps: &Samples,
     now_ms: u64,
@@ -44,7 +44,7 @@ fn shown(options: &RankOptions) -> RankedCells {
 
 #[test]
 fn an_include_and_an_exclude_set_keep_exactly_the_members_they_name() {
-    let rows = |ranked: &RankedCells| (order(ranked), scores(ranked), ranked.snapshots);
+    let rows = |ranked: &RankedCells| (order(ranked), scores(ranked), ranked.samples);
     // Nothing named: every member, as before.
     assert_eq!(rows(&shown(&RankOptions::default())), (vec![3, 2, 1, 4, 99], vec![200, 60, 30, 10, 5], 4));
     // Include: m1, m3 and the bytes member.
@@ -105,7 +105,7 @@ fn a_member_set_read_equals_the_same_read_over_cells_filtered_by_an_independent_
     let (mut compared, mut narrowed) = (0usize, 0usize);
     for _ in 0..60 {
         let count = 1 + rng.next() % 8;
-        let snapshots: Samples = (1..=count)
+        let samples: Samples = (1..=count)
             .map(|i| {
                 let mut cells = Vec::new();
                 for member in 0..30u64 {
@@ -154,25 +154,25 @@ fn a_member_set_read_equals_the_same_read_over_cells_filtered_by_an_independent_
                 };
                 include.as_ref().map_or(true, |set| set.contains(&member)) && !exclude.contains(&member)
             };
-            let folded: Samples = snapshots
+            let folded: Samples = samples
                 .iter()
                 .map(|(ts, cells)| (*ts, cells.iter().filter(|c| wanted(c)).cloned().collect()))
                 .collect();
 
             for score in [
                 lane("shown"),
-                CellScore::Time,
-                CellScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() },
-                CellScore::Weighted { lanes: vec!["shown".to_string(), "seen".to_string()], weights: vec![0.5, 2.0] },
+                WindowReduceScore::Time,
+                WindowReduceScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() },
+                WindowReduceScore::Weighted { lanes: vec!["shown".to_string(), "seen".to_string()], weights: vec![0.5, 2.0] },
             ] {
                 for k in [3usize, 1000] {
                     let mut query = spec(ALL, score.clone(), k);
                     query.filters = vec![filter("slot", FeatureFilterOp::NotEqual, 3)];
-                    let got = run_with(&query, &options, &snapshots, 0).unwrap();
+                    let got = run_with(&query, &options, &samples, 0).unwrap();
                     let want = run_on(&query, &folded, 0).unwrap();
                     assert_eq!(got, want, "{score:?} k = {k} include {include:?} exclude {exclude:?}");
                     compared += got.rows.len();
-                    if got != run_on(&query, &snapshots, 0).unwrap() {
+                    if got != run_on(&query, &samples, 0).unwrap() {
                         narrowed += 1;
                     }
                 }
@@ -189,7 +189,7 @@ fn a_member_set_read_equals_the_same_read_over_cells_filtered_by_an_independent_
             expected.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
             let mut query = spec(ALL, lane("shown"), 1000);
             query.filters = vec![filter("slot", FeatureFilterOp::NotEqual, 3)];
-            let got = run_with(&query, &options, &snapshots, 0).unwrap();
+            let got = run_with(&query, &options, &samples, 0).unwrap();
             let got_pairs: Vec<(Member, i64)> = got
                 .rows
                 .iter()
@@ -259,17 +259,17 @@ fn at_stamps(stamps: &[u64]) -> Samples {
 
 fn count_in(duration_ms: u64, anchor: Anchor, snaps: &Samples, now_ms: u64) -> usize {
     let options = RankOptions { anchor, ..RankOptions::default() };
-    run_with(&spec(CellWindow::Last { duration_ms }, lane("shown"), 1), &options, snaps, now_ms)
+    run_with(&spec(WindowReduceWindow::Last { duration_ms }, lane("shown"), 1), &options, snaps, now_ms)
         .unwrap()
-        .snapshots
+        .samples
 }
 
 #[test]
 fn an_anchored_last_window_ends_at_the_newest_snapshot_whatever_the_clock_says() {
-    let last = |duration_ms| spec(CellWindow::Last { duration_ms }, lane("shown"), 10);
+    let last = |duration_ms| spec(WindowReduceWindow::Last { duration_ms }, lane("shown"), 10);
     let result = |duration_ms, options: &RankOptions, now_ms| {
         let ranked = run_with(&last(duration_ms), options, &data(), now_ms).unwrap();
-        (order(&ranked), scores(&ranked), ranked.snapshots)
+        (order(&ranked), scores(&ranked), ranked.samples)
     };
     // Newest = 400, so the window is [301, 400]: the sample at 400 alone. The request clock at
     // 400 would read [300, 400]: the samples at 300 and 400.
@@ -325,9 +325,9 @@ fn the_anchored_window_spans_exactly_its_duration_and_a_duration_of_zero_holds_n
 #[test]
 fn an_anchor_on_any_window_but_last_is_refused_and_a_request_anchor_is_accepted_on_all() {
     let windows = [
-        CellWindow::Between { start_ms: 1, end_ms: 2 },
-        CellWindow::Since { start_ms: 1 },
-        CellWindow::LastN { n: 1 },
+        WindowReduceWindow::Between { start_ms: 1, end_ms: 2 },
+        WindowReduceWindow::Since { start_ms: 1 },
+        WindowReduceWindow::LastN { n: 1 },
     ];
     for window in windows {
         let error = validate_options(&window, &anchored()).unwrap_err();
@@ -335,7 +335,7 @@ fn an_anchor_on_any_window_but_last_is_refused_and_a_request_anchor_is_accepted_
         assert!(Plan::compile_with(&header(), &spec(window.clone(), lane("shown"), 1), &anchored()).is_err());
         assert!(validate_options(&window, &RankOptions::default()).is_ok(), "{window:?}");
     }
-    assert!(validate_options(&CellWindow::Last { duration_ms: 1 }, &anchored()).is_ok());
+    assert!(validate_options(&WindowReduceWindow::Last { duration_ms: 1 }, &anchored()).is_ok());
 }
 
 // ---- no option, no difference ----------------------------------------------------------------
@@ -345,12 +345,12 @@ fn a_read_that_uses_no_option_answers_what_compile_has_always_answered() {
     let mut cases = 0;
     for window in [
         ALL,
-        CellWindow::Between { start_ms: 100, end_ms: 300 },
-        CellWindow::Last { duration_ms: 150 },
-        CellWindow::Since { start_ms: 200 },
-        CellWindow::LastN { n: 3 },
+        WindowReduceWindow::Between { start_ms: 100, end_ms: 300 },
+        WindowReduceWindow::Last { duration_ms: 150 },
+        WindowReduceWindow::Since { start_ms: 200 },
+        WindowReduceWindow::LastN { n: 3 },
     ] {
-        for score in [lane("shown"), lane("seen"), CellScore::Time] {
+        for score in [lane("shown"), lane("seen"), WindowReduceScore::Time] {
             for filters in [vec![], vec![filter("slot", FeatureFilterOp::NotEqual, 3)]] {
                 for now_ms in [0, 400, 9_000] {
                     let mut query = spec(window.clone(), score.clone(), 4);
@@ -393,8 +393,8 @@ mod probe {
         let snaps = dataset(members);
         let views = views(&snaps);
         let options = members_options();
-        let query = CellRankSpec {
-            window: CellWindow::LastN { n: 8 },
+        let query = WindowReduceRankSpec {
+            window: WindowReduceWindow::LastN { n: 8 },
             filters: Vec::new(),
             score: lane("shown"),
             top_k: 10,

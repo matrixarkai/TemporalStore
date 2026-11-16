@@ -105,6 +105,8 @@ mod real_capture_tests;
 /// which is a different failure and had no gate at all until this module.
 #[cfg(test)]
 mod foreign_type_name_guard;
+#[cfg(test)]
+pub(crate) mod wire_check;
 
 pub use block_store::{
     ElementEntry, BlockStoreSlabDescriptor, BlockStoreSlabState, BlockStoreSlabSummary,

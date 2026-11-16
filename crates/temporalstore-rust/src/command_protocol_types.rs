@@ -125,7 +125,7 @@ pub enum FeatureWritePolicy {
     ReplaceExisting,
     #[serde(alias = "BLOCK", alias = "block")]
     Block,
-    /// Merge each point's cells into the snapshot already stored at its timestamp, lane by lane
+    /// Merge each point's cells into the sample already stored at its timestamp, lane by lane
     /// under the reducers the point's own header declares. The point's VALUE is the request: it
     /// carries the key spec, the label and lane names and the per-lane reducers followed by the
     /// cells (`engine::cell_set::encode_value`), so the command shape does not change. Every
@@ -202,9 +202,9 @@ pub fn parse_feature_filters<'a>(
 
 /// One read of a batch of independent ranked cell reads: a key and what to ask of it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CellRankBatchItem {
+pub struct WindowReduceRankBatchItem {
     pub key: String,
-    pub spec: CellRankSpec,
+    pub spec: WindowReduceRankSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,17 +217,17 @@ pub struct SequenceQuerySpec {
     pub filters: Vec<FeatureFilter>,
 }
 
-/// Which snapshots of a cell-set key a ranked read looks at. Every bound is inclusive.
+/// Which samples of a cell-set key a ranked read looks at. Every bound is inclusive.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CellWindow {
-    /// Snapshots stamped in `[start_ms, end_ms]`.
+pub enum WindowReduceWindow {
+    /// Samples stamped in `[start_ms, end_ms]`.
     Between { start_ms: u64, end_ms: u64 },
-    /// Snapshots stamped in the last `duration_ms` up to the instant the read runs.
+    /// Samples stamped in the last `duration_ms` up to the instant the read runs.
     Last { duration_ms: u64 },
-    /// Snapshots stamped at or after `start_ms`.
+    /// Samples stamped at or after `start_ms`.
     Since { start_ms: u64 },
-    /// The `n` newest snapshots.
+    /// The `n` newest samples.
     LastN { n: usize },
 }
 
@@ -235,7 +235,7 @@ pub enum CellWindow {
 /// refused.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum CellScore {
+pub enum WindowReduceScore {
     /// The member's reduced value of one lane.
     Lane { lane: String },
     /// `numerator / denominator` of two reduced lanes; a member whose denominator is `0` is not
@@ -247,20 +247,20 @@ pub enum CellScore {
     Wilson { successes: String, trials: String, z: f64 },
     /// The member's own value (`u64` members only).
     Member,
-    /// The stamp of the member's newest snapshot in the window.
+    /// The stamp of the member's newest sample in the window.
     Time,
     /// `sum(lane[i] * weights[i])` over reduced lanes.
     Weighted { lanes: Vec<String>, weights: Vec<f64> },
-    /// The member's values of one lane, each halved for every `half_life_ms` between its snapshot and
-    /// the newest snapshot of the window, and summed: `sum(value * 0.5^(age / half_life_ms))`. The
-    /// values are the ones each snapshot stores (not the lane's reduction across snapshots). The
+    /// The member's values of one lane, each halved for every `half_life_ms` between its sample and
+    /// the newest sample of the window, and summed: `sum(value * 0.5^(age / half_life_ms))`. The
+    /// values are the ones each sample stores (not the lane's reduction across samples). The
     /// score is a float, so a total past 2^53 is rounded and never wraps.
     Decay { lane: String, half_life_ms: u64 },
     /// Not an ordering of members: the read answers STORED CELLS, one row per cell and none of
-    /// them reduced, the newest snapshot first (cells of one snapshot by member, smaller first,
-    /// and of two keys' snapshots sharing a stamp in a merged read, the later key first). A row's
-    /// `last_ms` is its snapshot's stamp, its `score` the same stamp as a float, and its labels and
-    /// lanes are the values that snapshot stores. `top_k` bounds the rows; `filters`, `members`
+    /// them reduced, the newest sample first (cells of one sample by member, smaller first,
+    /// and of two keys' samples sharing a stamp in a merged read, the later key first). A row's
+    /// `last_ms` is its sample's stamp, its `score` the same stamp as a float, and its labels and
+    /// lanes are the values that sample stores. `top_k` bounds the rows; `filters`, `members`
     /// and `project` apply to each cell. A quota is refused (it chooses among reduced members) and
     /// a rollup cap cannot use it.
     Recent,
@@ -269,18 +269,18 @@ pub enum CellScore {
 /// Which instant a `Last` window ends at.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CellAnchor {
+pub enum WindowReduceAnchor {
     /// The clock the request carries.
     #[default]
     Request,
-    /// The newest snapshot the key holds: the window is `[newest + 1 - duration_ms, newest]`, so a
+    /// The newest sample the key holds: the window is `[newest + 1 - duration_ms, newest]`, so a
     /// key whose writes stopped reads the same whenever it is read. Only a `Last` window takes it.
     Newest,
 }
 
-impl CellAnchor {
+impl WindowReduceAnchor {
     pub fn is_request(&self) -> bool {
-        *self == CellAnchor::Request
+        *self == WindowReduceAnchor::Request
     }
 }
 
@@ -302,7 +302,7 @@ impl CellMemberFilter {
 
 /// How many members must have a non-zero value in `lane`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CellLaneQuota {
+pub struct WindowReduceLaneQuota {
     pub lane: String,
     pub count: usize,
 }
@@ -311,14 +311,14 @@ pub struct CellLaneQuota {
 /// value in it, and `others` members that fit no lane still short. Counts plus `others` are at most
 /// 1000 and a quota names at most 16 lanes. See `engine::window_reduce_rank_options`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CellQuota {
+pub struct WindowReduceQuota {
     #[serde(default)]
-    pub lanes: Vec<CellLaneQuota>,
+    pub lanes: Vec<WindowReduceLaneQuota>,
     #[serde(default)]
     pub others: usize,
 }
 
-impl CellQuota {
+impl WindowReduceQuota {
     pub fn is_none(&self) -> bool {
         self.lanes.is_empty() && self.others == 0
     }
@@ -326,14 +326,14 @@ impl CellQuota {
 
 /// A ranked windowed read: `window -> select -> reduce per member -> score -> top-k -> project`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CellRankSpec {
-    pub window: CellWindow,
+pub struct WindowReduceRankSpec {
+    pub window: WindowReduceWindow,
     /// Named predicates (`=`, `!=`, `>`, `>=`, `<`, `<=`) over a label, a lane or `member`, ANDed.
-    /// Each is tested on a cell as one snapshot stores it, before that member's snapshots are
+    /// Each is tested on a cell as one sample stores it, before that member's samples are
     /// reduced together. A name the key does not declare is refused.
     #[serde(default)]
     pub filters: Vec<FeatureFilter>,
-    pub score: CellScore,
+    pub score: WindowReduceScore,
     pub top_k: usize,
     /// Label and lane names to return. Empty returns every label and every lane.
     #[serde(default)]
@@ -342,40 +342,40 @@ pub struct CellRankSpec {
     #[serde(default, skip_serializing_if = "CellMemberFilter::is_open")]
     pub members: CellMemberFilter,
     /// The instant a `Last` window ends at. Left out of the encoding when it is the request clock.
-    #[serde(default, skip_serializing_if = "CellAnchor::is_request")]
-    pub anchor: CellAnchor,
+    #[serde(default, skip_serializing_if = "WindowReduceAnchor::is_request")]
+    pub anchor: WindowReduceAnchor,
     /// Members guaranteed a place among the top-k. Left out of the encoding when it asks for nothing.
-    #[serde(default, skip_serializing_if = "CellQuota::is_none")]
-    pub quota: CellQuota,
+    #[serde(default, skip_serializing_if = "WindowReduceQuota::is_none")]
+    pub quota: WindowReduceQuota,
 }
 
-impl CellRankSpec {
+impl WindowReduceRankSpec {
     /// A read with no predicate, every column and none of the optional controls.
-    pub fn new(window: CellWindow, score: CellScore, top_k: usize) -> Self {
-        CellRankSpec {
+    pub fn new(window: WindowReduceWindow, score: WindowReduceScore, top_k: usize) -> Self {
+        WindowReduceRankSpec {
             window,
             filters: Vec::new(),
             score,
             top_k,
             project: Vec::new(),
             members: CellMemberFilter::default(),
-            anchor: CellAnchor::default(),
-            quota: CellQuota::default(),
+            anchor: WindowReduceAnchor::default(),
+            quota: WindowReduceQuota::default(),
         }
     }
 }
 
-/// Keep the best `keep` cells of each group of a rolled snapshot. Cells are grouped by the value
+/// Keep the best `keep` cells of each group of a rolled sample. Cells are grouped by the value
 /// of the label `group_by` (all cells are one group when it is `None`), scored by `score`, and
 /// ties break by member, smaller first.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CellCapSpec {
+pub struct WindowReduceCapSpec {
     #[serde(default)]
     pub group_by: Option<String>,
-    pub score: CellScore,
+    pub score: WindowReduceScore,
     pub keep: usize,
     /// Parts per million of `keep` (rounded down) reserved for the group's most recently seen
-    /// members, which survive whatever their score. A member is as recent as the newest snapshot
+    /// members, which survive whatever their score. A member is as recent as the newest sample
     /// that wrote it; ties go to the smaller member. 0 (the default) protects none. At most
     /// 1 000 000.
     #[serde(default)]
@@ -389,61 +389,61 @@ pub struct CellCapSpec {
 /// What `older_than_ms` means, for the first tier and every coarser one.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum CellRollupAnchor {
-    /// An absolute stamp: snapshots stamped strictly below it are in the tier.
+pub enum WindowReduceRollupAnchor {
+    /// An absolute stamp: samples stamped strictly below it are in the tier.
     #[default]
     Request,
-    /// An age: the cutoff is the stamp of the newest snapshot the key holds minus the age,
-    /// saturating at 0. The newest snapshot is stored state, not a clock, so a follower and a
+    /// An age: the cutoff is the stamp of the newest sample the key holds minus the age,
+    /// saturating at 0. The newest sample is stored state, not a clock, so a follower and a
     /// replay resolve the same cutoff.
     NewestMinusAge,
 }
 
-/// A tier coarser than the first: the snapshots below its cutoff are folded into buckets of
+/// A tier coarser than the first: the samples below its cutoff are folded into buckets of
 /// `bucket_ms`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CellRollupTier {
+pub struct WindowReduceRollupTier {
     pub older_than_ms: u64,
     pub bucket_ms: u64,
 }
 
-/// Keep the newest `keep_last` snapshots of the key (1 to 1 000 000), acting only when it holds
+/// Keep the newest `keep_last` samples of the key (1 to 1 000 000), acting only when it holds
 /// more than `trigger` (at least `keep_last`, at most 10 000 000; default `keep_last`).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CellTruncateSpec {
+pub struct WindowReduceTruncateSpec {
     pub keep_last: usize,
     #[serde(default)]
     pub trigger: Option<usize>,
 }
 
-/// Roll the snapshots stamped strictly below `older_than_ms` up into buckets of `bucket_ms`, each
-/// stored at its bucket start, and optionally cap each rolled snapshot.
+/// Roll the samples stamped strictly below `older_than_ms` up into buckets of `bucket_ms`, each
+/// stored at its bucket start, and optionally cap each rolled sample.
 ///
 /// A request that sets none of `anchor`, `coarser_tiers` and `truncate`, and none of the cap's two
 /// controls, is the single-tier request: it means, and stores, what it always has.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CellRollupSpec {
+pub struct WindowReduceRollupSpec {
     pub older_than_ms: u64,
     pub bucket_ms: u64,
     #[serde(default)]
-    pub cap: Option<CellCapSpec>,
+    pub cap: Option<WindowReduceCapSpec>,
     /// Whether `older_than_ms` (and each tier's) is a stamp or an age.
     #[serde(default)]
-    pub anchor: CellRollupAnchor,
+    pub anchor: WindowReduceRollupAnchor,
     /// Coarser tiers, at most 8, after the first pair. Each cutoff reaches further back than the
     /// one before (stamps fall, ages grow) and each `bucket_ms` is a multiple of the one before; a
-    /// last tier of `u64::MAX` is the catch-all, one snapshot at stamp 0.
+    /// last tier of `u64::MAX` is the catch-all, one sample at stamp 0.
     #[serde(default)]
-    pub coarser_tiers: Vec<CellRollupTier>,
-    /// Remove the oldest snapshots of the key once it holds more than the trigger.
+    pub coarser_tiers: Vec<WindowReduceRollupTier>,
+    /// Remove the oldest samples of the key once it holds more than the trigger.
     #[serde(default)]
-    pub truncate: Option<CellTruncateSpec>,
+    pub truncate: Option<WindowReduceTruncateSpec>,
 }
 
 /// What a merge-reduce append landed, as the client reports it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct CellMergeSummary {
-    pub snapshots_written: u64,
+    pub samples_written: u64,
     pub cells_created: u64,
     pub cells_merged: u64,
     /// Set when the request carried a retry token the key still remembered: the counts are the
@@ -451,23 +451,23 @@ pub struct CellMergeSummary {
     pub replayed: bool,
 }
 
-/// Which cells of one key a removal takes out. A cell goes when its snapshot is stamped inside the
+/// Which cells of one key a removal takes out. A cell goes when its sample is stamped inside the
 /// time window AND its member passes `members` AND every predicate in `filters` holds on it; a
 /// field left open restricts nothing. At least one of the three must restrict something, so a
 /// request that would empty the key is refused (delete the key to do that).
 ///
-/// * `start_ms`, `end_ms`: the snapshots stamped in `[start_ms, end_ms]`, both inclusive; an absent
+/// * `start_ms`, `end_ms`: the samples stamped in `[start_ms, end_ms]`, both inclusive; an absent
 ///   end is open on that side, and `start_ms` after `end_ms` is refused.
 /// * `members`: the same set a ranked read takes. `include` names the members to remove
 ///   (`Some([])` is refused) and `exclude` the members to spare; a member in both is spared. Each
 ///   side holds at most 1024 entries as sent.
 /// * `filters`: at most 8 predicates over a label, a lane or `member`, ANDed, each tested on the
-///   cell as its snapshot stores it. A name the key does not declare is refused.
+///   cell as its sample stores it. A name the key does not declare is refused.
 ///
-/// At most 1024 snapshots may fall inside the window; a request over that is refused before any
-/// snapshot is read, and is made in steps by narrowing the window.
+/// At most 1024 samples may fall inside the window; a request over that is refused before any
+/// sample is read, and is made in steps by narrowing the window.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct CellRemoveSpec {
+pub struct WindowReduceRemoveSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -478,14 +478,14 @@ pub struct CellRemoveSpec {
     pub filters: Vec<FeatureFilter>,
 }
 
-/// What a removal did, as the client reports it. Cell counts are over the snapshots inside the
-/// window; snapshots are counted over the whole series.
+/// What a removal did, as the client reports it. Cell counts are over the samples inside the
+/// window; samples are counted over the whole series.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct CellRemoveSummary {
-    pub snapshots_before: u64,
-    /// A snapshot left with no cell is removed from the series, so this can be lower.
-    pub snapshots_after: u64,
-    /// Cells in the snapshots inside the window, before the removal.
+pub struct WindowReduceRemoveSummary {
+    pub samples_before: u64,
+    /// A sample left with no cell is removed from the series, so this can be lower.
+    pub samples_after: u64,
+    /// Cells in the samples inside the window, before the removal.
     pub cells_before: u64,
     /// Cells the removal took out.
     pub cells_removed: u64,
@@ -493,11 +493,11 @@ pub struct CellRemoveSummary {
 
 /// What a rollup did, as the client reports it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct CellRollupSummary {
-    /// Snapshots the key held before and after, over the whole series.
-    pub snapshots_before: u64,
-    pub snapshots_after: u64,
-    /// Cells in the snapshots below the cutoff, before and after; the others are not read.
+pub struct WindowReduceRollupSummary {
+    /// Samples the key held before and after, over the whole series.
+    pub samples_before: u64,
+    pub samples_after: u64,
+    /// Cells in the samples below the cutoff, before and after; the others are not read.
     pub cells_before: u64,
     pub cells_after: u64,
     /// Cells the cap removed.
@@ -518,9 +518,9 @@ pub struct RankedCellRow {
     /// The ordering value, as a float. Integer scores above 2^53 lose their low bits here only;
     /// the ordering itself is exact.
     pub score: f64,
-    /// The stamp of the member's newest snapshot in the window.
+    /// The stamp of the member's newest sample in the window.
     pub last_ms: u64,
-    /// Labels as the newest snapshot holding the member carries them, in `label_columns` order.
+    /// Labels as the newest sample holding the member carries them, in `label_columns` order.
     pub labels: Vec<u64>,
     /// Reduced lane values, in `lane_columns` order.
     pub lanes: Vec<i64>,
@@ -530,9 +530,9 @@ pub struct RankedCellRow {
 pub struct RankedCells {
     pub label_columns: Vec<String>,
     pub lane_columns: Vec<String>,
-    /// Snapshots the window selected.
-    pub snapshots: usize,
-    /// Keys that held at least one snapshot in the window: 1 for a read of one key that had
+    /// Samples the window selected.
+    pub samples: usize,
+    /// Keys that held at least one sample in the window: 1 for a read of one key that had
     /// some, and for a read over several keys how many of them did. A read that names keys the
     /// serving shard does not hold counts them here as absent, so a caller who named N keys and
     /// got fewer back can tell the answer is partial.
@@ -544,7 +544,7 @@ pub struct RankedCells {
     /// Best first; equal scores order by member, smaller first.
     pub rows: Vec<RankedCellRow>,
     /// Why the read was refused, when it was: a name the key does not declare, a window over the
-    /// bound, a snapshot that cannot be read. Empty when the read was served. A refused read has no
+    /// bound, a sample that cannot be read. Empty when the read was served. A refused read has no
     /// rows, and an empty `rows` with an empty `refused` means there was nothing to rank.
     #[serde(default)]
     pub refused: String,
@@ -2084,39 +2084,39 @@ pub enum Command {
     SequenceBatchQuery {
         queries: Vec<SequenceQuerySpec>,
     },
-    /// A ranked windowed read over the cell snapshots stored under `key`.
-    CellRankQuery {
+    /// A ranked windowed read over the cell samples stored under `key`.
+    WindowReduceRank {
         key: String,
-        spec: CellRankSpec,
+        spec: WindowReduceRankSpec,
     },
-    /// Rolls the old cell snapshots under `key` up into coarser buckets and optionally caps each
-    /// rolled snapshot. A write: the series below the cutoff is replaced.
-    CellRollup {
+    /// Rolls the old cell samples under `key` up into coarser buckets and optionally caps each
+    /// rolled sample. A write: the series below the cutoff is replaced.
+    WindowReduceRollup {
         key: String,
-        spec: CellRollupSpec,
+        spec: WindowReduceRollupSpec,
     },
-    /// A ranked windowed read over the cell snapshots of several keys that share one spec: the
-    /// answer one key holding all of their snapshots would give. The keys are read on the shard
+    /// A ranked windowed read over the cell samples of several keys that share one spec: the
+    /// answer one key holding all of their samples would give. The keys are read on the shard
     /// the request names, so they must live together; `RankedCells::keys` says how many of them
-    /// held a snapshot in the window.
-    CellFanInRankQuery {
+    /// held a sample in the window.
+    WindowReduceFanInRank {
         keys: Vec<String>,
-        spec: CellRankSpec,
+        spec: WindowReduceRankSpec,
     },
-    /// Removes cells from the snapshots of one key by time window, member set and predicate, and
-    /// answers what it removed. The series is replaced in one step, so a reader sees the snapshots
+    /// Removes cells from the samples of one key by time window, member set and predicate, and
+    /// answers what it removed. The series is replaced in one step, so a reader sees the samples
     /// before the removal or after it and a replay reaches the same bytes; a request that matches
-    /// nothing writes nothing. A snapshot left with no cell is removed.
-    CellRemove {
+    /// nothing writes nothing. A sample left with no cell is removed.
+    WindowReduceRemove {
         key: String,
-        spec: CellRemoveSpec,
+        spec: WindowReduceRemoveSpec,
     },
     /// N independent ranked reads in one request, each with its own key and spec, answered in
     /// request order, one [`RankedCells`] each (a key with nothing to rank answers empty, a read
     /// that cannot be served answers with `refused` set, and neither fails the others). The keys
     /// are read on the shard the request names.
-    CellRankBatchQuery {
-        queries: Vec<CellRankBatchItem>,
+    WindowReduceRankBatch {
+        queries: Vec<WindowReduceRankBatchItem>,
     },
     ControlStateIncrement {
         key: String,
@@ -3239,11 +3239,11 @@ pub enum CommandResponse {
     Aggregate {
         value: i64,
     },
-    /// What a merge-reduce append landed: snapshots written (one per distinct timestamp in the
+    /// What a merge-reduce append landed: samples written (one per distinct timestamp in the
     /// request), cells created, cells merged into a member already stored (or repeated within
-    /// the request), and the cells the newest written snapshot holds afterwards.
+    /// the request), and the cells the newest written sample holds afterwards.
     CellMergeReceipt {
-        snapshots_written: u64,
+        samples_written: u64,
         cells_created: u64,
         cells_merged: u64,
         /// Set when the request carried a retry token the key still remembered: the counts above
@@ -3257,27 +3257,27 @@ pub enum CommandResponse {
     SequenceRowGroups {
         groups: Vec<(String, Vec<SequenceFeatureRow>)>,
     },
-    CellRanking {
+    WindowReduceRanking {
         ranked: RankedCells,
     },
-    /// What a rollup did: snapshots and cells before and after, and the cells the cap removed.
-    CellRollupReceipt {
-        snapshots_before: u64,
-        snapshots_after: u64,
+    /// What a rollup did: samples and cells before and after, and the cells the cap removed.
+    WindowReduceRollupReceipt {
+        samples_before: u64,
+        samples_after: u64,
         cells_before: u64,
         cells_after: u64,
         cells_dropped: u64,
     },
-    /// What a removal did: the snapshots of the key before and after, the cells in the window
+    /// What a removal did: the samples of the key before and after, the cells in the window
     /// before, and the cells removed. A key the shard does not hold answers zeros.
-    CellRemoveReceipt {
-        snapshots_before: u64,
-        snapshots_after: u64,
+    WindowReduceRemoveReceipt {
+        samples_before: u64,
+        samples_after: u64,
         cells_before: u64,
         cells_removed: u64,
     },
     /// The answers of a batch of ranked cell reads, in request order.
-    CellRankings {
+    WindowReduceRankings {
         rankings: Vec<RankedCells>,
     },
     ContextNode {

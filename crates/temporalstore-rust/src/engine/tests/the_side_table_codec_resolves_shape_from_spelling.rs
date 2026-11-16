@@ -62,7 +62,7 @@ fn every_domain() -> HashMap<SideTable, SideTableData> {
                 ring.record(
                     41,
                     crate::engine::cell_retry_ring::RetryReceipt {
-                        snapshots_written: 1,
+                        samples_written: 1,
                         cells_created: 2,
                         cells_merged: 3,
                     },
@@ -140,7 +140,7 @@ fn every_side_table_domain_round_trips_as_its_own_shape() {
                     ring.admit(41),
                     crate::engine::cell_retry_ring::Admission::Replay(
                         crate::engine::cell_retry_ring::RetryReceipt {
-                            snapshots_written: 1,
+                            samples_written: 1,
                             cells_created: 2,
                             cells_merged: 3,
                         }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Tests of the stored-cell read (`CellScore::Recent`): one row per stored cell, none reduced, the
+//! Tests of the stored-cell read (`WindowReduceScore::Recent`): one row per stored cell, none reduced, the
 //! newest sample first. The data is `data()` of the parent module; its eleven cells, newest
 //! first, are
 //!
@@ -15,8 +15,8 @@
 
 use super::*;
 
-fn recent(window: CellWindow, top_k: usize) -> CellRankSpec {
-    spec(window, CellScore::Recent, top_k)
+fn recent(window: WindowReduceWindow, top_k: usize) -> WindowReduceRankSpec {
+    spec(window, WindowReduceScore::Recent, top_k)
 }
 
 fn stamps(ranked: &RankedCells) -> Vec<u64> {
@@ -31,7 +31,7 @@ fn a_recent_read_answers_every_stored_cell_once_newest_snapshot_first_and_reduce
     let ranked = run(&recent(ALL, 100));
     assert_eq!(order(&ranked), NEWEST_FIRST_MEMBERS);
     assert_eq!(stamps(&ranked), NEWEST_FIRST_STAMPS);
-    assert_eq!(ranked.snapshots, 4);
+    assert_eq!(ranked.samples, 4);
     assert_eq!(ranked.keys, 1);
     assert_eq!(ranked.unscored, 0);
     // The stored values, not the window's reduction: m1 appears at 100, 200 and 300 with the
@@ -77,9 +77,9 @@ fn rows_are_bounded_by_the_limit_and_the_walk_stops_in_the_middle_of_a_snapshot(
 #[test]
 fn the_window_the_predicates_the_member_set_and_the_projection_apply_to_each_cell() {
     // A window of 150 to 350 holds samples 200 and 300.
-    let windowed = run(&recent(CellWindow::Between { start_ms: 150, end_ms: 350 }, 100));
+    let windowed = run(&recent(WindowReduceWindow::Between { start_ms: 150, end_ms: 350 }, 100));
     assert_eq!(order(&windowed), vec![1, 3, 99, 1, 2, 4]);
-    assert_eq!(windowed.snapshots, 2);
+    assert_eq!(windowed.samples, 2);
 
     // slot = 1 keeps m1@100, m3@100, m1@200 and m3@300, newest first.
     let mut slot1 = recent(ALL, 100);
@@ -131,15 +131,15 @@ fn snapshots_sharing_a_stamp_come_back_with_the_later_one_in_the_slice_first() {
 #[test]
 fn a_recent_read_refuses_a_quota_and_is_no_score_for_a_cap() {
     let mut quota = recent(ALL, 10);
-    quota.quota = crate::types::CellQuota { lanes: Vec::new(), others: 1 };
+    quota.quota = crate::types::WindowReduceQuota { lanes: Vec::new(), others: 1 };
     assert!(validate_spec(&quota).unwrap_err().contains("takes no quota"));
     assert!(Plan::compile(&header(), &quota).is_err());
     // The same quota on a reduced read is accepted: the refusal is about the stored-cell read.
-    let mut reduced = spec(ALL, CellScore::Member, 10);
+    let mut reduced = spec(ALL, WindowReduceScore::Member, 10);
     reduced.quota = quota.quota.clone();
     assert!(validate_spec(&reduced).is_ok());
     // A rollup cap scores one folded cell by a header name; this is no such score.
-    assert!(Scorer::compile(&header(), &CellScore::Recent).err().expect("refused").contains("not a score a cap can use"));
+    assert!(Scorer::compile(&header(), &WindowReduceScore::Recent).err().expect("refused").contains("not a score a cap can use"));
 }
 
 #[test]

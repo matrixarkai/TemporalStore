@@ -9,7 +9,7 @@
 //!
 //! # WHAT EACH STAGE MEANS
 //!
-//! * WINDOW picks samples: [`CellWindow`]. A window that would hold more than
+//! * WINDOW picks samples: [`WindowReduceWindow`]. A window that would hold more than
 //!   [`MAX_WINDOW_SAMPLES`] samples is refused, not truncated.
 //! * SELECT tests every cell of every chosen sample against the named predicates, which reuse
 //!   the six `FeatureFilter` operators. A name is a label, a lane or `member`; any other name is
@@ -18,7 +18,7 @@
 //! * REDUCE folds one member's surviving cells lane by lane with the reduction the header declares
 //!   for that lane ([`read_reducer`]: the write-side merge verb, as the read-side window reduction) through the shared window
 //!   reducers, in sample order. Labels are the newest surviving cell's.
-//! * SCORE turns the reduced lanes into the ordering value: [`CellScore`]. A member whose score is
+//! * SCORE turns the reduced lanes into the ordering value: [`WindowReduceScore`]. A member whose score is
 //!   undefined (a zero denominator, no trials) is counted in `unscored` and not ranked.
 //!   The one score that is not a function of the reduced lanes is `Decay`: it reads the value each of
 //!   the member's samples stores for a lane and halves it for every half-life between that sample
@@ -34,7 +34,7 @@
 //!
 //! Samples are stored sorted by member, so the members of all chosen samples are visited in
 //! order by a k-way merge: a member's cells meet each other without any per-member table. Work is
-//! `O(cells * log snapshots)` for the merge plus `O(snapshots * lanes)` per member for the
+//! `O(cells * log samples)` for the merge plus `O(samples * lanes)` per member for the
 //! reduction, and the heap is `O(k)`. THE ALLOCATIONS DO NOT DEPEND ON THE NUMBER OF CELLS OR
 //! MEMBERS: the cursors, the merge heap, the per-member scratch and the result slots are sized by
 //! the sample count, the lane count and `k`, once, before the first cell is read. A sample
@@ -54,7 +54,7 @@ use super::cell_set::Member;
 use super::product_model::filter_op_holds;
 use super::window_aggregate::{ratio, weighted_sum, wilson_lower_bound, DecayedSumAcc, Reduced, Reducer};
 use crate::types::{
-    CellMemberId, CellRankSpec, CellScore, CellWindow, FeatureFilter, FeatureFilterOp, RankedCellRow,
+    CellMemberId, WindowReduceRankSpec, WindowReduceScore, WindowReduceWindow, FeatureFilter, FeatureFilterOp, RankedCellRow,
     RankedCells,
 };
 
@@ -152,7 +152,7 @@ impl Predicate {
     }
 }
 
-/// A [`CellScore`] with every name resolved to a lane position. The ranked read and the capped
+/// A [`WindowReduceScore`] with every name resolved to a lane position. The ranked read and the capped
 /// group of a rollup score a cell by this one type.
 pub(crate) enum Scorer {
     Lane(usize),
@@ -166,13 +166,13 @@ pub(crate) enum Scorer {
 
 /// A query checked against a header: every name resolved to a position, every bound met.
 pub(crate) struct Plan {
-    window: CellWindow,
+    window: WindowReduceWindow,
     members: CompiledMembers,
     anchor: Anchor,
     quota: Option<CompiledQuota>,
     predicates: Vec<Predicate>,
     scorer: Scorer,
-    /// The read answers stored cells, newest sample first ([`CellScore::Recent`]).
+    /// The read answers stored cells, newest sample first ([`WindowReduceScore::Recent`]).
     recent: bool,
     top_k: usize,
     lane_count: usize,
@@ -233,14 +233,14 @@ fn lane_named(header: &CellHeader, name: &str) -> Result<usize, String> {
 /// The checks that need no header: bounds, ranges and parameters. A command runs this at
 /// admission, before any sample is read; [`Plan::compile`] runs it again so a plan can never be
 /// built from a spec that skipped it.
-pub(crate) fn validate_spec(spec: &CellRankSpec) -> Result<(), String> {
+pub(crate) fn validate_spec(spec: &WindowReduceRankSpec) -> Result<(), String> {
     validate_top_k(spec.top_k)?;
     within("predicates per query", spec.filters.len(), MAX_PREDICATES)?;
     match &spec.window {
-        CellWindow::Between { start_ms, end_ms } if start_ms > end_ms => {
+        WindowReduceWindow::Between { start_ms, end_ms } if start_ms > end_ms => {
             return Err(format!("window starts at {start_ms}, after it ends at {end_ms}"))
         }
-        CellWindow::LastN { n } => {
+        WindowReduceWindow::LastN { n } => {
             if *n == 0 {
                 return Err("window of the last 0 samples is empty".to_string());
             }
@@ -255,20 +255,20 @@ pub(crate) fn validate_spec(spec: &CellRankSpec) -> Result<(), String> {
 
 /// A `Recent` read answers stored cells, and a quota chooses among reduced members: the two
 /// cannot be asked together.
-fn check_recent(score: &CellScore, quota: &crate::types::CellQuota) -> Result<(), String> {
-    if matches!(score, CellScore::Recent) && !quota.is_none() {
+fn check_recent(score: &WindowReduceScore, quota: &crate::types::WindowReduceQuota) -> Result<(), String> {
+    if matches!(score, WindowReduceScore::Recent) && !quota.is_none() {
         return Err("a recent read returns stored cells and takes no quota".to_string());
     }
     Ok(())
 }
 
 /// The checks on a score that need no header.
-pub(crate) fn validate_score(score: &CellScore) -> Result<(), String> {
+pub(crate) fn validate_score(score: &WindowReduceScore) -> Result<(), String> {
     match score {
-        CellScore::Wilson { z, .. } if !z.is_finite() || *z < 0.0 => {
+        WindowReduceScore::Wilson { z, .. } if !z.is_finite() || *z < 0.0 => {
             return Err(format!("wilson z must be finite and not negative, got {z}"))
         }
-        CellScore::Weighted { lanes, weights } => {
+        WindowReduceScore::Weighted { lanes, weights } => {
             if lanes.is_empty() {
                 return Err("a weighted score needs at least one lane".to_string());
             }
@@ -280,7 +280,7 @@ pub(crate) fn validate_score(score: &CellScore) -> Result<(), String> {
                 return Err(format!("weight {bad} is not finite"));
             }
         }
-        CellScore::Decay { half_life_ms, .. } => {
+        WindowReduceScore::Decay { half_life_ms, .. } => {
             if !(MIN_HALF_LIFE_MS..=MAX_HALF_LIFE_MS).contains(half_life_ms) {
                 return Err(format!(
                     "half-life {half_life_ms} ms is outside {MIN_HALF_LIFE_MS}..={MAX_HALF_LIFE_MS}"
@@ -294,23 +294,23 @@ pub(crate) fn validate_score(score: &CellScore) -> Result<(), String> {
 
 impl Scorer {
     /// Resolves the names of `score` against `header`.
-    pub(crate) fn compile(header: &CellHeader, score: &CellScore) -> Result<Scorer, String> {
+    pub(crate) fn compile(header: &CellHeader, score: &WindowReduceScore) -> Result<Scorer, String> {
         Ok(match score {
-            CellScore::Lane { lane } => Scorer::Lane(lane_named(header, lane)?),
-            CellScore::Ratio { numerator, denominator } => {
+            WindowReduceScore::Lane { lane } => Scorer::Lane(lane_named(header, lane)?),
+            WindowReduceScore::Ratio { numerator, denominator } => {
                 Scorer::Ratio(lane_named(header, numerator)?, lane_named(header, denominator)?)
             }
-            CellScore::Wilson { successes, trials, z } => {
+            WindowReduceScore::Wilson { successes, trials, z } => {
                 Scorer::Wilson(lane_named(header, successes)?, lane_named(header, trials)?, *z)
             }
-            CellScore::Member => Scorer::Member,
-            CellScore::Time => Scorer::Time,
-            CellScore::Weighted { lanes, weights } => {
+            WindowReduceScore::Member => Scorer::Member,
+            WindowReduceScore::Time => Scorer::Time,
+            WindowReduceScore::Weighted { lanes, weights } => {
                 let indexes = lanes.iter().map(|name| lane_named(header, name)).collect::<Result<Vec<_>, _>>()?;
                 Scorer::Weighted(indexes, weights.clone())
             }
-            CellScore::Decay { lane, half_life_ms } => Scorer::Decay(lane_named(header, lane)?, *half_life_ms),
-            CellScore::Recent => {
+            WindowReduceScore::Decay { lane, half_life_ms } => Scorer::Decay(lane_named(header, lane)?, *half_life_ms),
+            WindowReduceScore::Recent => {
                 return Err("`recent` returns stored cells, not members, and is not a score a cap can use".to_string())
             }
         })
@@ -319,17 +319,17 @@ impl Scorer {
 
 impl Plan {
     /// Checks `spec` against `header`. Every refusal names what was wrong; nothing is read.
-    pub(crate) fn compile(header: &CellHeader, spec: &CellRankSpec) -> Result<Plan, String> {
+    pub(crate) fn compile(header: &CellHeader, spec: &WindowReduceRankSpec) -> Result<Plan, String> {
         Plan::compile_with(header, spec, &RankOptions::of(spec))
     }
 
     /// [`Plan::compile`] with the controls given instead of the ones the spec carries; `compile` is
     /// this with `RankOptions::of(spec)`.
-    pub(crate) fn compile_with(header: &CellHeader, spec: &CellRankSpec, options: &RankOptions) -> Result<Plan, String> {
+    pub(crate) fn compile_with(header: &CellHeader, spec: &WindowReduceRankSpec, options: &RankOptions) -> Result<Plan, String> {
         validate_spec(spec)?;
         validate_options(&spec.window, options)?;
         check_recent(&spec.score, &options.quota)?;
-        let recent = matches!(spec.score, CellScore::Recent);
+        let recent = matches!(spec.score, WindowReduceScore::Recent);
         let members = CompiledMembers::compile(&options.members)?;
         let quota = if options.quota.is_none() {
             None
@@ -564,10 +564,10 @@ fn member_id(member: MemberRef<'_>) -> CellMemberId {
 // Running a plan
 // ------------------------------------------------------------------------------------------
 
-fn samples_between<'s, 'a, V: SampleRead<'a>>(snapshots: &'s [V], from_ms: u64, to_ms: u64) -> &'s [V] {
-    let first = snapshots.partition_point(|s| s.stamp() < from_ms);
-    let end = snapshots.partition_point(|s| s.stamp() <= to_ms);
-    &snapshots[first..end.max(first)]
+fn samples_between<'s, 'a, V: SampleRead<'a>>(samples: &'s [V], from_ms: u64, to_ms: u64) -> &'s [V] {
+    let first = samples.partition_point(|s| s.stamp() < from_ms);
+    let end = samples.partition_point(|s| s.stamp() <= to_ms);
+    &samples[first..end.max(first)]
 }
 
 impl Plan {
@@ -575,22 +575,22 @@ impl Plan {
     pub(crate) fn select_window<'s, 'a, V: SampleRead<'a>>(
         &self,
         now_ms: u64,
-        snapshots: &'s [V],
+        samples: &'s [V],
     ) -> Result<&'s [V], String> {
-        if snapshots.windows(2).any(|pair| pair[0].stamp() >= pair[1].stamp()) {
+        if samples.windows(2).any(|pair| pair[0].stamp() >= pair[1].stamp()) {
             return Err("samples are not in strictly ascending stamp order".to_string());
         }
         let chosen = match &self.window {
-            CellWindow::Between { start_ms, end_ms } => samples_between(snapshots, *start_ms, *end_ms),
-            CellWindow::Last { duration_ms } => {
-                let newest = snapshots.last().map(|s| s.stamp());
+            WindowReduceWindow::Between { start_ms, end_ms } => samples_between(samples, *start_ms, *end_ms),
+            WindowReduceWindow::Last { duration_ms } => {
+                let newest = samples.last().map(|s| s.stamp());
                 match last_bounds(self.anchor, *duration_ms, now_ms, newest) {
-                    Some((from_ms, to_ms)) => samples_between(snapshots, from_ms, to_ms),
-                    None => &snapshots[..0],
+                    Some((from_ms, to_ms)) => samples_between(samples, from_ms, to_ms),
+                    None => &samples[..0],
                 }
             }
-            CellWindow::Since { start_ms } => samples_between(snapshots, *start_ms, u64::MAX),
-            CellWindow::LastN { n } => &snapshots[snapshots.len().saturating_sub(*n)..],
+            WindowReduceWindow::Since { start_ms } => samples_between(samples, *start_ms, u64::MAX),
+            WindowReduceWindow::LastN { n } => &samples[samples.len().saturating_sub(*n)..],
         };
         within("samples in the window", chosen.len(), MAX_WINDOW_SAMPLES)?;
         Ok(chosen)
@@ -598,9 +598,9 @@ impl Plan {
 
     /// The first cell at or after `*at` that passes every predicate, as its member. Each cell is
     /// visited once, so this is also where the shape and the order of a sample are checked.
-    fn settle<'a, V: SampleRead<'a>>(&self, snapshot: &V, at: &mut usize) -> Result<Option<MemberRef<'a>>, String> {
-        while *at < snapshot.cell_count() {
-            let cell = snapshot.cell(*at);
+    fn settle<'a, V: SampleRead<'a>>(&self, sample: &V, at: &mut usize) -> Result<Option<MemberRef<'a>>, String> {
+        while *at < sample.cell_count() {
+            let cell = sample.cell(*at);
             if cell.lanes.len() != self.lane_count || cell.labels.len() != self.label_count {
                 return Err(format!(
                     "a cell has {} labels and {} lanes, the header declares {} and {}",
@@ -610,7 +610,7 @@ impl Plan {
                     self.lane_count
                 ));
             }
-            if *at > 0 && snapshot.cell(*at - 1).member >= cell.member {
+            if *at > 0 && sample.cell(*at - 1).member >= cell.member {
                 return Err("a sample is not strictly ascending by member".to_string());
             }
             if self.members.allows(cell.member) && self.predicates.iter().all(|predicate| predicate.holds(&cell)) {
@@ -639,7 +639,7 @@ impl Plan {
         Ok(())
     }
 
-    /// The rows of a [`CellScore::Recent`] read: the stored cells of `chosen` that pass the member
+    /// The rows of a [`WindowReduceScore::Recent`] read: the stored cells of `chosen` that pass the member
     /// set and every predicate, the newest sample first, each sample's cells by member, until
     /// `top_k` rows are held. No cell is reduced with another, so a member written in three
     /// samples is three rows. Where two samples share a stamp the later one in `chosen` goes
@@ -647,14 +647,14 @@ impl Plan {
     /// is bounded by the window and by the rows asked for.
     fn run_recent<'a, V: SampleRead<'a>>(&self, chosen: &[V]) -> Result<RankedCells, String> {
         let mut rows = Vec::with_capacity(self.top_k.min(chosen.iter().map(|s| s.cell_count()).sum::<usize>()));
-        'newest: for snapshot in chosen.iter().rev() {
+        'newest: for sample in chosen.iter().rev() {
             let mut at = 0usize;
-            while self.settle(snapshot, &mut at)?.is_some() {
-                let cell = snapshot.cell(at);
+            while self.settle(sample, &mut at)?.is_some() {
+                let cell = sample.cell(at);
                 rows.push(RankedCellRow {
                     member: member_id(cell.member),
-                    score: snapshot.stamp() as f64,
-                    last_ms: snapshot.stamp(),
+                    score: sample.stamp() as f64,
+                    last_ms: sample.stamp(),
                     labels: self.labels_out.iter().map(|&i| cell.labels[i]).collect(),
                     lanes: self.lanes_out.iter().map(|&i| cell.lanes[i]).collect(),
                 });
@@ -667,7 +667,7 @@ impl Plan {
         Ok(RankedCells {
             label_columns: self.label_names.clone(),
             lane_columns: self.lane_names.clone(),
-            snapshots: chosen.len(),
+            samples: chosen.len(),
             keys: 0,
             unscored: 0,
             rows,
@@ -675,10 +675,10 @@ impl Plan {
         })
     }
 
-    /// Runs the plan over `snapshots` (ascending by stamp; the window is applied here). `now_ms`
+    /// Runs the plan over `samples` (ascending by stamp; the window is applied here). `now_ms`
     /// is the instant a `Last` window ends at.
-    pub(crate) fn run<'a, V: SampleRead<'a>>(&self, now_ms: u64, snapshots: &[V]) -> Result<RankedCells, String> {
-        let chosen = self.select_window(now_ms, snapshots)?;
+    pub(crate) fn run<'a, V: SampleRead<'a>>(&self, now_ms: u64, samples: &[V]) -> Result<RankedCells, String> {
+        let chosen = self.select_window(now_ms, samples)?;
         let mut ranked = self.run_ordered(chosen)?;
         ranked.keys = usize::from(!chosen.is_empty());
         Ok(ranked)
@@ -700,10 +700,10 @@ impl Plan {
         let mut reduced = vec![0i64; self.lane_count];
         let mut top = TopK::new(self.top_k, self.lane_count, self.label_count);
         let mut unscored = 0u64;
-        let as_of_ms = chosen.last().map_or(0, |snapshot| snapshot.stamp());
+        let as_of_ms = chosen.last().map_or(0, |sample| sample.stamp());
 
-        for (i, snapshot) in chosen.iter().enumerate() {
-            if let Some(member) = self.settle(snapshot, &mut at[i])? {
+        for (i, sample) in chosen.iter().enumerate() {
+            if let Some(member) = self.settle(sample, &mut at[i])? {
                 queue.push(Reverse((member, i)));
             }
         }
@@ -752,7 +752,7 @@ impl Plan {
         Ok(RankedCells {
             label_columns: self.label_names.clone(),
             lane_columns: self.lane_names.clone(),
-            snapshots: chosen.len(),
+            samples: chosen.len(),
             // The caller knows how many series `chosen` came from.
             keys: 0,
             unscored,

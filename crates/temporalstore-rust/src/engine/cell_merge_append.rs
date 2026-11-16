@@ -165,9 +165,9 @@ pub(super) fn plan_cell_merge(
                 None => cell_set::Existing::Nothing,
                 Some(series) => match newest_stored.as_ref().filter(|n| n.timestamp_ms == timestamp_ms) {
                     Some(stored) => {
-                        let (_, snapshot) = cell_set::split_value_raw(&stored.value)
+                        let (_, sample) = cell_set::split_value_raw(&stored.value)
                             .map_err(|err| refuse(key, format!("point at {timestamp_ms}: {err}")))?;
-                        cell_set::Existing::Stored { header: &*stored.header, snapshot }
+                        cell_set::Existing::Stored { header: &*stored.header, sample }
                     }
                     None => {
                         loaded = stored_value(
@@ -182,10 +182,10 @@ pub(super) fn plan_cell_merge(
                         match loaded.as_deref() {
                             None => cell_set::Existing::Nothing,
                             Some(value) => {
-                                let (header, snapshot) = cell_set::split_value(value)
+                                let (header, sample) = cell_set::split_value(value)
                                     .map_err(|err| refuse(key, format!("point at {timestamp_ms}: {err}")))?;
                                 own = header;
-                                cell_set::Existing::Stored { header: &own, snapshot }
+                                cell_set::Existing::Stored { header: &own, sample }
                             }
                         }
                     }

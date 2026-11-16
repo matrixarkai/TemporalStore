@@ -910,42 +910,42 @@ pub struct ProxySequenceQueryCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyCellRollupCommandRequest {
+pub struct ProxyWindowReduceRollupCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    pub spec: crate::types::CellRollupSpec,
+    pub spec: crate::types::WindowReduceRollupSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyCellRemoveCommandRequest {
+pub struct ProxyWindowReduceRemoveCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    pub spec: crate::types::CellRemoveSpec,
+    pub spec: crate::types::WindowReduceRemoveSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyCellRankQueryCommandRequest {
+pub struct ProxyWindowReduceRankCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    pub spec: crate::types::CellRankSpec,
+    pub spec: crate::types::WindowReduceRankSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyCellRankBatchQueryCommandRequest {
+pub struct ProxyWindowReduceRankBatchCommandRequest {
     pub namespace: String,
     pub table_name: String,
-    pub queries: Vec<crate::types::CellRankBatchItem>,
+    pub queries: Vec<crate::types::WindowReduceRankBatchItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyCellFanInRankQueryCommandRequest {
+pub struct ProxyWindowReduceFanInRankCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub keys: Vec<String>,
-    pub spec: crate::types::CellRankSpec,
+    pub spec: crate::types::WindowReduceRankSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

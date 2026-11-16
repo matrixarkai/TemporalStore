@@ -36,7 +36,7 @@
 use super::window_reduce_rank::{compile_predicates, Predicate};
 use super::window_reduce_rank_options::CompiledMembers;
 use super::cell_set::{within, Cell, CellHeader, CellRef};
-use crate::types::CellRemoveSpec;
+use crate::types::WindowReduceRemoveSpec;
 
 /// Samples a removal may read: the ones stamped inside its window.
 pub(crate) const MAX_REMOVE_SAMPLES: usize = 1024;
@@ -46,7 +46,7 @@ pub(crate) const MAX_REMOVE_PREDICATES: usize = 8;
 /// The checks that need no header: bounds, ranges and the rule that something must restrict. A
 /// command runs this at admission before any sample is read; [`Selection::compile`] runs it
 /// again so a selection can never be built from a spec that skipped it.
-pub(crate) fn validate_spec(spec: &CellRemoveSpec) -> Result<(), String> {
+pub(crate) fn validate_spec(spec: &WindowReduceRemoveSpec) -> Result<(), String> {
     within("predicates per removal", spec.filters.len(), MAX_REMOVE_PREDICATES)?;
     if let (Some(start), Some(end)) = (spec.start_ms, spec.end_ms) {
         if start > end {
@@ -74,7 +74,7 @@ pub(crate) struct Selection {
 }
 
 impl Selection {
-    pub(crate) fn compile(header: &CellHeader, spec: &CellRemoveSpec) -> Result<Selection, String> {
+    pub(crate) fn compile(header: &CellHeader, spec: &WindowReduceRemoveSpec) -> Result<Selection, String> {
         validate_spec(spec)?;
         Ok(Selection {
             from_ms: spec.start_ms.unwrap_or(0),
@@ -106,12 +106,12 @@ pub(crate) struct Outcome {
     pub(crate) removed: usize,
 }
 
-/// The removal of `selection` from `snapshots` (ascending by stamp, each cell list as stored). A
+/// The removal of `selection` from `samples` (ascending by stamp, each cell list as stored). A
 /// sample outside the window passes through untouched and is not reported. Returns one outcome
 /// per sample INSIDE the window, in the order given.
-pub(crate) fn remove_cells(selection: &Selection, snapshots: Vec<(u64, Vec<Cell>)>) -> Vec<Outcome> {
+pub(crate) fn remove_cells(selection: &Selection, samples: Vec<(u64, Vec<Cell>)>) -> Vec<Outcome> {
     let (from, to) = selection.window();
-    snapshots
+    samples
         .into_iter()
         .filter(|(timestamp_ms, _)| (from..=to).contains(timestamp_ms))
         .map(|(timestamp_ms, cells)| {

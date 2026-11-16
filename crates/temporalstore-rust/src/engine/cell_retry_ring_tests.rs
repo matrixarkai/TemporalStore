@@ -4,7 +4,7 @@
 use super::*;
 
 fn receipt(n: u64) -> RetryReceipt {
-    RetryReceipt { snapshots_written: n, cells_created: n * 10, cells_merged: n * 100 }
+    RetryReceipt { samples_written: n, cells_created: n * 10, cells_merged: n * 100 }
 }
 
 /// A ring after tokens `1..=n` were applied in order, each with the receipt `receipt(token)`.
@@ -165,8 +165,8 @@ fn an_empty_ring_holds_nothing_and_stores_no_bytes() {
 #[test]
 fn the_stored_bytes_are_the_hand_written_ones_and_round_trip() {
     let mut ring = RetryRing::new();
-    ring.record(5, RetryReceipt { snapshots_written: 1, cells_created: 2, cells_merged: 3 }).unwrap();
-    ring.record(300, RetryReceipt { snapshots_written: 0, cells_created: 0, cells_merged: 128 }).unwrap();
+    ring.record(5, RetryReceipt { samples_written: 1, cells_created: 2, cells_merged: 3 }).unwrap();
+    ring.record(300, RetryReceipt { samples_written: 0, cells_created: 0, cells_merged: 128 }).unwrap();
     let want: Vec<u8> = vec![
         0x0a, 0x08, 0x08, 0x05, 0x10, 0x01, 0x18, 0x02, 0x20, 0x03, // token 5: 1, 2, 3
         0x0a, 0x0a, 0x08, 0xac, 0x02, 0x10, 0x00, 0x18, 0x00, 0x20, 0x80, 0x01, // token 300: 0, 0, 128
@@ -175,7 +175,7 @@ fn the_stored_bytes_are_the_hand_written_ones_and_round_trip() {
     assert_eq!(RetryRing::decode(&want).unwrap(), ring);
     // The extreme values a counter can reach survive the trip.
     let mut wide = RetryRing::new();
-    let big = RetryReceipt { snapshots_written: u64::MAX, cells_created: u64::MAX - 1, cells_merged: 1 << 63 };
+    let big = RetryReceipt { samples_written: u64::MAX, cells_created: u64::MAX - 1, cells_merged: 1 << 63 };
     wide.record(u64::MAX, big).unwrap();
     assert_eq!(RetryRing::decode(&wide.encode()).unwrap().admit(u64::MAX), Admission::Replay(big));
 }
@@ -314,7 +314,7 @@ fn a_logged_entry_is_the_four_fields_a_ring_stores_and_reads_back_only_in_that_s
     // The log carries exactly the bytes the index image stores for the entry: a ring of one entry is
     // the entry in a length-delimited field 1.
     for token in [0u64, 1, 127, 128, 300, u64::MAX] {
-        let landed = RetryReceipt { snapshots_written: token, cells_created: 1, cells_merged: u64::MAX };
+        let landed = RetryReceipt { samples_written: token, cells_created: 1, cells_merged: u64::MAX };
         let mut ring = RetryRing::new();
         ring.record(token, landed).unwrap();
         let stored = ring.encode();
@@ -326,7 +326,7 @@ fn a_logged_entry_is_the_four_fields_a_ring_stores_and_reads_back_only_in_that_s
     }
     // A small token and a small receipt cost a handful of bytes: 2 per field.
     assert_eq!(encode_entry(7, &receipt(1)).len(), 8);
-    assert_eq!(encode_entry(7, &RetryReceipt { snapshots_written: 1, cells_created: 1, cells_merged: 1 }).len(), 8);
+    assert_eq!(encode_entry(7, &RetryReceipt { samples_written: 1, cells_created: 1, cells_merged: 1 }).len(), 8);
 
     let good = encode_entry(42, &receipt(2));
     assert!(decode_logged_entry(&good).is_ok());

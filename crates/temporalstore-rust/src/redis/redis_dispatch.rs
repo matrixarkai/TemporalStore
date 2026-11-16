@@ -1476,15 +1476,15 @@ pub fn execute_redis_command_with_state(
                 retry_token: None,
             });
             // A merge-reduce append answers with what landed rather than a changed/unchanged flag:
-            // [snapshots written, cells created, cells merged].
+            // [samples written, cells created, cells merged].
             match result {
                 Ok(CommandResponse::CellMergeReceipt {
-                    snapshots_written,
+                    samples_written,
                     cells_created,
                     cells_merged,
                     ..
                 }) => RespValue::Array(vec![
-                    RespValue::Integer(snapshots_written as i64),
+                    RespValue::Integer(samples_written as i64),
                     RespValue::Integer(cells_created as i64),
                     RespValue::Integer(cells_merged as i64),
                 ]),

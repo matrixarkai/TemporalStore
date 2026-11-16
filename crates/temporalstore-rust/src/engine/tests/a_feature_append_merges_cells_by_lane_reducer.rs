@@ -114,8 +114,8 @@ fn merge(engine: &TemporalEngine, key: &str, points: Vec<FeaturePoint>) -> Execu
 fn landed(response: &ExecuteResponse) -> (u64, u64, u64) {
     assert!(response.status.ok, "the request was refused: {:?}", response.status);
     match &response.response {
-        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged, .. } => {
-            (*snapshots_written, *cells_created, *cells_merged)
+        CommandResponse::CellMergeReceipt { samples_written, cells_created, cells_merged, .. } => {
+            (*samples_written, *cells_created, *cells_merged)
         }
         other => panic!("a merge-reduce append answers a receipt, got {other:?}"),
     }
@@ -139,7 +139,7 @@ fn raw_series(engine: &TemporalEngine, key: &str) -> Vec<FeaturePoint> {
     }
 }
 
-fn snapshots(engine: &TemporalEngine, key: &str) -> Vec<(u64, CellHeader, Vec<Cell>)> {
+fn samples(engine: &TemporalEngine, key: &str) -> Vec<(u64, CellHeader, Vec<Cell>)> {
     raw_series(engine, key)
         .into_iter()
         .map(|p| {
@@ -150,7 +150,7 @@ fn snapshots(engine: &TemporalEngine, key: &str) -> Vec<(u64, CellHeader, Vec<Ce
 }
 
 fn lanes_of(engine: &TemporalEngine, key: &str, timestamp_ms: u64, member: u64) -> Vec<i64> {
-    snapshots(engine, key)
+    samples(engine, key)
         .into_iter()
         .find(|(at, _, _)| *at == timestamp_ms)
         .and_then(|(_, _, cells)| cells.into_iter().find(|c| c.member == Member::U64(member)))
@@ -297,13 +297,13 @@ fn a_merged_snapshot_survives_a_cold_reload_and_keeps_merging() {
     for v in [5i64, -3, 9] {
         landed(&merge(&engine, &key, vec![point(&h, 100, &[cell(10, &[v, v, v, v, v, 0])])]));
     }
-    let before = snapshots(&engine, &key);
+    let before = samples(&engine, &key);
     assert_eq!(vec![11, 9, -3, 5, 9, 3], before[0].2[0].lanes);
     engine.unload_shard(1);
     drop(engine);
 
     let reloaded = engine_on(dir.path(), None);
-    assert_eq!(before, snapshots(&reloaded, &key), "a cold reload served another sample");
+    assert_eq!(before, samples(&reloaded, &key), "a cold reload served another sample");
     landed(&merge(&reloaded, &key, vec![point(&h, 100, &[cell(10, &[1, 1, 1, 1, 1, 0])])]));
     // The merge continued from the reloaded value: sum 12, count 4, max still 9.
     assert_eq!(vec![12, 9, -3, 5, 1, 4], lanes_of(&reloaded, &key, 100, 10));
@@ -426,7 +426,7 @@ fn cells_per_request_and_per_snapshot_refuse_one_past_and_accept_the_limit() {
         landed(&merge(&engine, &key, vec![point(&h, 1, &distinct(next, MAX_CELLS_PER_REQUEST))]));
         next += MAX_CELLS_PER_REQUEST as u64;
     }
-    assert_eq!(MAX_CELLS_PER_SAMPLE, snapshots(&engine, &key)[0].2.len(), "DENOMINATOR: at the limit");
+    assert_eq!(MAX_CELLS_PER_SAMPLE, samples(&engine, &key)[0].2.len(), "DENOMINATOR: at the limit");
     // At the limit a request that only merges is accepted ...
     assert_eq!((1, 0, 2), landed(&merge(&engine, &key, vec![point(&h, 1, &distinct(0, 2))])));
     // ... and one new member is one too many, with nothing changed.
@@ -497,7 +497,7 @@ fn the_trim_keeps_the_newest_snapshots_and_each_still_carries_its_header() {
     for at in 1..=5u64 {
         landed(&merge(&engine, &key, vec![point(&h, at, &[cell(1, &[at as i64])])]));
     }
-    let live = |e: &TemporalEngine| snapshots(e, &key).into_iter().map(|(at, hd, c)| (at, hd == h, c[0].lanes[0])).collect::<Vec<_>>();
+    let live = |e: &TemporalEngine| samples(e, &key).into_iter().map(|(at, hd, c)| (at, hd == h, c[0].lanes[0])).collect::<Vec<_>>();
     assert_eq!(vec![(3, true, 3), (4, true, 4), (5, true, 5)], live(&engine));
     // Merging into a sample already in the series adds nothing to trim.
     landed(&merge(&engine, &key, vec![point(&h, 4, &[cell(1, &[10])])]));
@@ -522,7 +522,7 @@ fn a_key_past_its_deadline_merges_as_a_new_key() {
     std::thread::sleep(std::time::Duration::from_millis(30));
     // Member 1 is written again: if the expired sample were merged into, its sum would be 12.
     assert_eq!((1, 1, 0), landed(&merge(&engine, &key, vec![point(&h, 1, &[cell(1, &[7])])])));
-    let cells = &snapshots(&engine, &key)[0].2;
+    let cells = &samples(&engine, &key)[0].2;
     assert_eq!(1, cells.len(), "the expired sample's other member came back");
     assert_eq!(vec![7], cells[0].lanes);
 }

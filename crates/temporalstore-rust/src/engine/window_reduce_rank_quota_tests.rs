@@ -72,7 +72,7 @@ fn members_that_fit_no_short_lane_are_kept_up_to_the_others_count_and_the_walk_e
     // A lane nobody fits leaves it short, and with no `others` nothing else is kept: the answer is
     // empty although the ranking is not.
     let empty = pick(&[("seen", 1)], 0, 8, &snaps);
-    assert_eq!((empty.rows.len(), empty.snapshots, empty.unscored), (0, 1, 0));
+    assert_eq!((empty.rows.len(), empty.samples, empty.unscored), (0, 1, 0));
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn a_quota_only_drops_members_and_leaves_every_surviving_row_as_the_plain_read_h
         assert_eq!(Some(r.clone()), by_member(&plain, m));
     }
     assert_eq!(picked.rows.len(), 4);
-    assert_eq!((picked.snapshots, picked.unscored), (plain.snapshots, plain.unscored));
+    assert_eq!((picked.samples, picked.unscored), (plain.samples, plain.unscored));
     // And no quota is the plain read, byte for byte.
     let none = Plan::compile_with(&header(), &spec(ALL, lane("shown"), 8), &with_quota(Quota::default())).unwrap();
     assert_eq!(none.run(0, &views(&snaps)).unwrap(), plain);
@@ -157,7 +157,7 @@ fn a_quota_answers_what_a_literal_scan_of_the_ranking_answers() {
     let (mut compared, mut dropped) = (0usize, 0usize);
     let names = ["shown", "clicked", "peak", "seen"];
     for _ in 0..200 {
-        let snapshots: Samples = vec![(
+        let samples: Samples = vec![(
             100,
             (0..30u64)
                 .map(|m| {
@@ -183,11 +183,11 @@ fn a_quota_answers_what_a_literal_scan_of_the_ranking_answers() {
             continue;
         }
 
-        let plain = run_on(&spec(ALL, lane("shown"), k), &snapshots, 0).unwrap();
+        let plain = run_on(&spec(ALL, lane("shown"), k), &samples, 0).unwrap();
         // The read reports every lane in header order, so a lane's column is its header position.
         let positions = [0usize, 1, 2, 3];
         let want = scan(&plain, &chosen, others, &positions);
-        let got = pick(&lanes, others, k, &snapshots);
+        let got = pick(&lanes, others, k, &samples);
         let got_members: Vec<u64> = order(&got);
         assert_eq!(got_members, want, "k = {k} lanes {lanes:?} others {others}");
         compared += got_members.len();

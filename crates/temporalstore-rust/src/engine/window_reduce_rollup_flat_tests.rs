@@ -11,7 +11,7 @@ use crate::engine::cell_set::{
     decode_sample, encode_value, split_value, DimSpec, DimType, EntityType, KeySpec, LaneSpec, Member,
     HEADER_VERSION,
 };
-use crate::types::{CellCapSpec, CellRollupSpec, CellRollupTier, CellScore};
+use crate::types::{WindowReduceCapSpec, WindowReduceRollupSpec, WindowReduceRollupTier, WindowReduceScore};
 
 fn xorshift(state: &mut u64) -> u64 {
     *state ^= *state << 13;
@@ -65,8 +65,8 @@ fn random_samples(state: &mut u64, count: usize) -> Vec<(u64, Vec<Cell>)> {
     out
 }
 
-fn spec(older_than_ms: u64, bucket_ms: u64, cap: Option<CellCapSpec>) -> CellRollupSpec {
-    CellRollupSpec {
+fn spec(older_than_ms: u64, bucket_ms: u64, cap: Option<WindowReduceCapSpec>) -> WindowReduceRollupSpec {
+    WindowReduceRollupSpec {
         older_than_ms,
         bucket_ms,
         cap,
@@ -76,21 +76,21 @@ fn spec(older_than_ms: u64, bucket_ms: u64, cap: Option<CellCapSpec>) -> CellRol
     }
 }
 
-fn cap(group_by: Option<&str>, keep: usize, protect_newest_ppm: u32, trigger_over: usize) -> CellCapSpec {
-    CellCapSpec {
+fn cap(group_by: Option<&str>, keep: usize, protect_newest_ppm: u32, trigger_over: usize) -> WindowReduceCapSpec {
+    WindowReduceCapSpec {
         group_by: group_by.map(str::to_string),
-        score: CellScore::Lane { lane: "a".to_string() },
+        score: WindowReduceScore::Lane { lane: "a".to_string() },
         keep,
         protect_newest_ppm,
         trigger_over,
     }
 }
 
-fn specs() -> Vec<CellRollupSpec> {
+fn specs() -> Vec<WindowReduceRollupSpec> {
     let mut tiered = spec(1_800, 300, None);
-    tiered.coarser_tiers = vec![CellRollupTier { older_than_ms: 900, bucket_ms: 900 }];
+    tiered.coarser_tiers = vec![WindowReduceRollupTier { older_than_ms: 900, bucket_ms: 900 }];
     let mut tiered_capped = spec(1_800, 300, Some(cap(Some("g1"), 6, 500_000, 2)));
-    tiered_capped.coarser_tiers = vec![CellRollupTier { older_than_ms: 900, bucket_ms: 900 }];
+    tiered_capped.coarser_tiers = vec![WindowReduceRollupTier { older_than_ms: 900, bucket_ms: 900 }];
     vec![
         spec(1_800, 300, None),
         spec(1_800, 100, None),
@@ -126,8 +126,8 @@ fn a_rollup_over_flat_snapshots_rolls_up_what_a_rollup_over_plain_snapshots_roll
             let want = rollup_spec(&header, plain, &spec, newest).unwrap();
             let got = rollup_flat_spec(&header, flat, &spec, newest).unwrap();
             assert_eq!(want.stats, got.stats, "{count} samples, spec {spec:?}");
-            assert_eq!(want.snapshots.len(), got.snapshots.len(), "{count} samples, spec {spec:?}");
-            for (w, g) in want.snapshots.iter().zip(&got.snapshots) {
+            assert_eq!(want.samples.len(), got.samples.len(), "{count} samples, spec {spec:?}");
+            for (w, g) in want.samples.iter().zip(&got.samples) {
                 assert_eq!(w.timestamp_ms, g.timestamp_ms, "{count} samples, spec {spec:?}");
                 assert_eq!(
                     encode_value(&header, &w.cells).unwrap(),

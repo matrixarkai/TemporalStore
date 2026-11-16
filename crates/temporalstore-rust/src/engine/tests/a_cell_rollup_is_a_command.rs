@@ -21,8 +21,8 @@ use crate::engine::cell_set::{
     EntityType, EntityValue, KeySpec, LaneReducer, LaneSpec, Member, HEADER_VERSION,
 };
 use crate::types::{
-    CellCapSpec, CellMemberId, CellRankSpec, CellRollupAnchor, CellRollupSpec, CellRollupTier, CellScore,
-    CellTruncateSpec, CellWindow, RankedCells,
+    WindowReduceCapSpec, CellMemberId, WindowReduceRankSpec, WindowReduceRollupAnchor, WindowReduceRollupSpec, WindowReduceRollupTier, WindowReduceScore,
+    WindowReduceTruncateSpec, WindowReduceWindow, RankedCells,
 };
 use std::collections::BTreeSet;
 
@@ -126,40 +126,40 @@ fn decoded(engine: &TemporalEngine, key: &str) -> Vec<(u64, Vec<Cell>)> {
         .collect()
 }
 
-fn roll(older_than_ms: u64, bucket_ms: u64, cap: Option<CellCapSpec>) -> CellRollupSpec {
-    CellRollupSpec { older_than_ms, bucket_ms, cap, anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None }
+fn roll(older_than_ms: u64, bucket_ms: u64, cap: Option<WindowReduceCapSpec>) -> WindowReduceRollupSpec {
+    WindowReduceRollupSpec { older_than_ms, bucket_ms, cap, anchor: Default::default(), coarser_tiers: Vec::new(), truncate: None }
 }
 
-fn lane(name: &str) -> CellScore {
-    CellScore::Lane { lane: name.to_string() }
+fn lane(name: &str) -> WindowReduceScore {
+    WindowReduceScore::Lane { lane: name.to_string() }
 }
 
-fn rollup_response(engine: &TemporalEngine, key: &str, spec: CellRollupSpec) -> ExecuteResponse {
-    exec(engine, Command::CellRollup { key: key.to_string(), spec })
+fn rollup_response(engine: &TemporalEngine, key: &str, spec: WindowReduceRollupSpec) -> ExecuteResponse {
+    exec(engine, Command::WindowReduceRollup { key: key.to_string(), spec })
 }
 
 /// (samples before, samples after, cells before, cells after, cells dropped)
 fn receipt(response: &ExecuteResponse) -> [u64; 5] {
     assert!(response.status.ok, "{:?}", response.status);
     match &response.response {
-        CommandResponse::CellRollupReceipt {
-            snapshots_before,
-            snapshots_after,
+        CommandResponse::WindowReduceRollupReceipt {
+            samples_before,
+            samples_after,
             cells_before,
             cells_after,
             cells_dropped,
-        } => [*snapshots_before, *snapshots_after, *cells_before, *cells_after, *cells_dropped],
+        } => [*samples_before, *samples_after, *cells_before, *cells_after, *cells_dropped],
         other => panic!("a rollup answers a receipt, got {other:?}"),
     }
 }
 
-fn rank(engine: &TemporalEngine, key: &str, score: CellScore) -> RankedCells {
+fn rank(engine: &TemporalEngine, key: &str, score: WindowReduceScore) -> RankedCells {
     let response = exec(
         engine,
-        Command::CellRankQuery {
+        Command::WindowReduceRank {
             key: key.to_string(),
-            spec: CellRankSpec {
-                window: CellWindow::Between { start_ms: 0, end_ms: u64::MAX },
+            spec: WindowReduceRankSpec {
+                window: WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX },
                 filters: Vec::new(),
                 score,
                 top_k: 100,
@@ -172,7 +172,7 @@ fn rank(engine: &TemporalEngine, key: &str, score: CellScore) -> RankedCells {
     );
     assert!(response.status.ok, "{:?}", response.status);
     match response.response {
-        CommandResponse::CellRanking { ranked } => {
+        CommandResponse::WindowReduceRanking { ranked } => {
             assert!(ranked.refused.is_empty(), "refused: {}", ranked.refused);
             ranked
         }
@@ -193,7 +193,7 @@ fn answers(ranked: &RankedCells) -> Vec<(CellMemberId, u64, Vec<u64>, Vec<i64>)>
 /// `(m + i)` is a multiple of 3, so members come and go; every lane value is a function of
 /// `(m, i)` and the label is where the item was placed that time, `(m + i) % 3`.
 fn seed(engine: &TemporalEngine, key: &str) -> Vec<(u64, Vec<Cell>)> {
-    let snapshots: Vec<(u64, Vec<Cell>)> = (1..=12u64)
+    let samples: Vec<(u64, Vec<Cell>)> = (1..=12u64)
         .map(|i| {
             let cells = (1..=6u64)
                 .filter(|m| (m + i) % 3 != 0)
@@ -208,8 +208,8 @@ fn seed(engine: &TemporalEngine, key: &str) -> Vec<(u64, Vec<Cell>)> {
             (i * 100, cells)
         })
         .collect();
-    append(engine, key, snapshots.iter().map(|(ts, cells)| point(*ts, cells)).collect());
-    snapshots
+    append(engine, key, samples.iter().map(|(ts, cells)| point(*ts, cells)).collect());
+    samples
 }
 
 #[test]
@@ -224,15 +224,15 @@ fn a_ranking_over_the_rolled_buckets_answers_what_it_answered_over_the_snapshots
         lane("clicks"),
         lane("peak"),
         lane("seen"),
-        CellScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
+        WindowReduceScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
     ];
     let before: Vec<RankedCells> = scores.iter().map(|s| rank(&engine, &key, s.clone())).collect();
-    assert!(before.iter().all(|b| b.snapshots == 12 && b.rows.len() == 6));
+    assert!(before.iter().all(|b| b.samples == 12 && b.rows.len() == 6));
 
     // Cutoff 1000, buckets of 400: 100..300 fold into 0, 400..700 into 400, 800..900 into 800.
     // 1000, 1100 and 1200 are at or after the cutoff and stay.
     let response = rollup_response(&engine, &key, roll(1000, 400, None));
-    let [snapshots_before, snapshots_after, cells_before, cells_after, dropped] = receipt(&response);
+    let [samples_before, samples_after, cells_before, cells_after, dropped] = receipt(&response);
 
     let rolled: Vec<(u64, BTreeSet<u64>)> = [(0u64, 100u64..=300), (400, 400..=700), (800, 800..=900)]
         .into_iter()
@@ -247,7 +247,7 @@ fn a_ranking_over_the_rolled_buckets_answers_what_it_answered_over_the_snapshots
         .collect();
     let below: u64 = seeded.iter().filter(|(ts, _)| *ts < 1000).map(|(_, cells)| cells.len() as u64).sum();
     let after: u64 = rolled.iter().map(|(_, members)| members.len() as u64).sum();
-    assert_eq!([snapshots_before, snapshots_after], [12, 6]);
+    assert_eq!([samples_before, samples_after], [12, 6]);
     assert_eq!([cells_before, cells_after, dropped], [below, after, 0]);
     assert!(below > after, "DENOMINATOR: members repeat across a bucket, so the rollup folded something");
 
@@ -263,7 +263,7 @@ fn a_ranking_over_the_rolled_buckets_answers_what_it_answered_over_the_snapshots
 
     for (score, before) in scores.iter().zip(&before) {
         let after = rank(&engine, &key, score.clone());
-        assert_eq!(after.snapshots, 6);
+        assert_eq!(after.samples, 6);
         assert_eq!(answers(&after), answers(before), "{score:?} ranked another way after the rollup");
     }
 }
@@ -274,7 +274,7 @@ fn a_cold_reload_reads_the_rolled_bytes_and_rolling_again_changes_nothing() {
     let engine = engine_on(dir.path(), None);
     let key = stored_key(8);
     seed(&engine, &key);
-    let cap = Some(CellCapSpec { group_by: Some("slot".to_string()), score: lane("impressions"), keep: 1, protect_newest_ppm: 0, trigger_over: 0 });
+    let cap = Some(WindowReduceCapSpec { group_by: Some("slot".to_string()), score: lane("impressions"), keep: 1, protect_newest_ppm: 0, trigger_over: 0 });
     let request = roll(1000, 400, cap);
     let first = receipt(&rollup_response(&engine, &key, request.clone()));
     assert!(first[4] > 0, "DENOMINATOR: the cap dropped something for the second run to be idempotent about");
@@ -298,7 +298,7 @@ fn replaying_the_log_reaches_the_bytes_the_live_engine_reached() {
     let engine = engine_on(dir.path(), Some(async_config));
     let key = stored_key(9);
     seed(&engine, &key);
-    let cap = Some(CellCapSpec { group_by: None, score: lane("impressions"), keep: 3, protect_newest_ppm: 0, trigger_over: 0 });
+    let cap = Some(WindowReduceCapSpec { group_by: None, score: lane("impressions"), keep: 3, protect_newest_ppm: 0, trigger_over: 0 });
     let landed = receipt(&rollup_response(&engine, &key, roll(900, 300, cap)));
     assert!(landed[4] > 0 && landed[0] > landed[1]);
     let live = series(&engine, &key);
@@ -316,9 +316,9 @@ fn the_same_request_on_two_engines_leaves_the_same_bytes() {
     let request = roll(
         1100,
         500,
-        Some(CellCapSpec {
+        Some(WindowReduceCapSpec {
             group_by: Some("slot".to_string()),
-            score: CellScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
+            score: WindowReduceScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
             keep: 1, protect_newest_ppm: 0, trigger_over: 0,
         }),
     );
@@ -344,21 +344,21 @@ fn a_request_the_key_cannot_serve_is_refused_and_writes_nothing() {
     let stored = series(&engine, &key);
     let writes = engine.write_ahead_log_store().stats(1).writes;
 
-    let refused = |spec: CellRollupSpec, needle: &str| {
+    let refused = |spec: WindowReduceRollupSpec, needle: &str| {
         let response = rollup_response(&engine, &key, spec);
         assert_eq!((response.status.ok, response.status.code.as_str()), (false, "invalid_argument"), "{:?}", response.status);
         assert!(response.status.message.contains(needle), "{:?} does not name `{needle}`", response.status.message);
         assert_eq!(series(&engine, &key), stored, "a refused rollup changed the series");
         assert_eq!(engine.write_ahead_log_store().stats(1).writes, writes, "a refused rollup reached the log");
     };
-    let capped = |group_by: Option<&str>, score: CellScore, keep: usize| {
-        roll(1000, 400, Some(CellCapSpec { group_by: group_by.map(str::to_string), score, keep, protect_newest_ppm: 0, trigger_over: 0 }))
+    let capped = |group_by: Option<&str>, score: WindowReduceScore, keep: usize| {
+        roll(1000, 400, Some(WindowReduceCapSpec { group_by: group_by.map(str::to_string), score, keep, protect_newest_ppm: 0, trigger_over: 0 }))
     };
     refused(roll(1000, 0, None), "bucket_ms must be at least 1");
     refused(capped(Some("gid"), lane("clicks"), 1), "gid");
     refused(capped(None, lane("views"), 1), "views");
-    refused(capped(None, CellScore::Time, 1), "time");
-    refused(capped(None, CellScore::Decay { lane: "clicks".to_string(), half_life_ms: 10 }, 1), "decay");
+    refused(capped(None, WindowReduceScore::Time, 1), "time");
+    refused(capped(None, WindowReduceScore::Decay { lane: "clicks".to_string(), half_life_ms: 10 }, 1), "decay");
     refused(capped(None, lane("clicks"), 0), "at least 1");
     refused(capped(None, lane("clicks"), 4097), "over the limit");
 
@@ -390,7 +390,7 @@ fn each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it() {
 
     // keep: 1 and 4096 are accepted; the engine key holds one cell, so nothing is dropped.
     for keep in [1usize, 4096] {
-        let capped = roll(2000, 1_000_000, Some(CellCapSpec { group_by: None, score: lane("clicks"), keep, protect_newest_ppm: 0, trigger_over: 0 }));
+        let capped = roll(2000, 1_000_000, Some(WindowReduceCapSpec { group_by: None, score: lane("clicks"), keep, protect_newest_ppm: 0, trigger_over: 0 }));
         assert_eq!(receipt(&rollup_response(&engine, &key, capped))[4], 0);
     }
     // bucket_ms: 1 is accepted.
@@ -421,18 +421,18 @@ fn a_rollup_is_a_write_the_log_can_carry_in_every_score_spelling() {
     use crate::shared_store::{command_from_protobuf_bytes, command_protobuf_bytes};
     let scores = [
         lane("clicks"),
-        CellScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
-        CellScore::Wilson { successes: "clicks".to_string(), trials: "impressions".to_string(), z: 1.96 },
-        CellScore::Member,
-        CellScore::Time,
-        CellScore::Weighted { lanes: vec!["clicks".to_string(), "peak".to_string()], weights: vec![0.5, -2.0] },
+        WindowReduceScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
+        WindowReduceScore::Wilson { successes: "clicks".to_string(), trials: "impressions".to_string(), z: 1.96 },
+        WindowReduceScore::Member,
+        WindowReduceScore::Time,
+        WindowReduceScore::Weighted { lanes: vec!["clicks".to_string(), "peak".to_string()], weights: vec![0.5, -2.0] },
     ];
     let mut seen_bytes = BTreeSet::new();
     for score in scores {
         for group_by in [None, Some("slot".to_string())] {
-            let command = Command::CellRollup {
+            let command = Command::WindowReduceRollup {
                 key: "k".to_string(),
-                spec: roll(123, 45, Some(CellCapSpec { group_by, score: score.clone(), keep: 7, protect_newest_ppm: 0, trigger_over: 0 })),
+                spec: roll(123, 45, Some(WindowReduceCapSpec { group_by, score: score.clone(), keep: 7, protect_newest_ppm: 0, trigger_over: 0 })),
             };
             assert!(crate::engine::is_write_command(&command));
             let bytes = command_protobuf_bytes(&command).expect("a rollup has a protobuf encoding");
@@ -442,7 +442,7 @@ fn a_rollup_is_a_write_the_log_can_carry_in_every_score_spelling() {
         }
     }
     assert_eq!(seen_bytes.len(), 12, "every score spelling and group spelling has its own bytes");
-    let uncapped = Command::CellRollup { key: "k".to_string(), spec: roll(1, 2, None) };
+    let uncapped = Command::WindowReduceRollup { key: "k".to_string(), spec: roll(1, 2, None) };
     let bytes = command_protobuf_bytes(&uncapped).unwrap();
     assert_eq!(command_from_protobuf_bytes(&bytes).unwrap(), uncapped);
 }
@@ -496,9 +496,9 @@ fn a_worked_example_of_a_rollup() {
     let capped = roll(
         hour,
         hour,
-        Some(CellCapSpec {
+        Some(WindowReduceCapSpec {
             group_by: Some("slot".to_string()),
-            score: CellScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
+            score: WindowReduceScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
             keep: 1, protect_newest_ppm: 0, trigger_over: 0,
         }),
     );
@@ -514,16 +514,16 @@ fn tiered(
     older_than_ms: u64,
     bucket_ms: u64,
     coarser: &[(u64, u64)],
-    anchor: CellRollupAnchor,
-) -> CellRollupSpec {
-    CellRollupSpec {
+    anchor: WindowReduceRollupAnchor,
+) -> WindowReduceRollupSpec {
+    WindowReduceRollupSpec {
         older_than_ms,
         bucket_ms,
         cap: None,
         anchor,
         coarser_tiers: coarser
             .iter()
-            .map(|&(older_than_ms, bucket_ms)| CellRollupTier { older_than_ms, bucket_ms })
+            .map(|&(older_than_ms, bucket_ms)| WindowReduceRollupTier { older_than_ms, bucket_ms })
             .collect(),
         truncate: None,
     }
@@ -555,11 +555,11 @@ fn a_tiered_request_coarsens_old_history_in_one_command_and_ranks_the_same() {
         lane("clicks"),
         lane("peak"),
         lane("seen"),
-        CellScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
+        WindowReduceScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
     ];
     let before: Vec<RankedCells> = scores.iter().map(|s| rank(&engine, &key, s.clone())).collect();
 
-    let landed = receipt(&rollup_response(&engine, &key, tiered(1100, 200, &[(700, 400)], CellRollupAnchor::Request)));
+    let landed = receipt(&rollup_response(&engine, &key, tiered(1100, 200, &[(700, 400)], WindowReduceRollupAnchor::Request)));
     assert_eq!(stamps(&engine, &key), TIER_STAMPS.to_vec());
     let below: u64 = seeded.iter().filter(|(ts, _)| *ts < 1100).map(|(_, cells)| cells.len() as u64).sum();
     let kept: u64 = decoded(&engine, &key).iter().filter(|(ts, _)| *ts < 1100).map(|(_, cells)| cells.len() as u64).sum();
@@ -569,7 +569,7 @@ fn a_tiered_request_coarsens_old_history_in_one_command_and_ranks_the_same() {
     assert_eq!(&decoded(&engine, &key)[5..], &seeded[10..]);
     for (score, before) in scores.iter().zip(&before) {
         let after = rank(&engine, &key, score.clone());
-        assert_eq!(after.snapshots, 7);
+        assert_eq!(after.samples, 7);
         assert_eq!(answers(&after), answers(before), "{score:?} ranked another way after the tiered rollup");
     }
 }
@@ -580,11 +580,11 @@ fn an_age_resolves_against_the_newest_stored_snapshot_and_follows_it() {
     // request as above, so the same bytes.
     let (_d1, by_stamp, key) = fresh(21);
     seed(&by_stamp, &key);
-    receipt(&rollup_response(&by_stamp, &key, tiered(1100, 200, &[(700, 400)], CellRollupAnchor::Request)));
+    receipt(&rollup_response(&by_stamp, &key, tiered(1100, 200, &[(700, 400)], WindowReduceRollupAnchor::Request)));
 
     let (_d2, by_age, key2) = fresh(21);
     seed(&by_age, &key2);
-    let age = tiered(100, 200, &[(500, 400)], CellRollupAnchor::NewestMinusAge);
+    let age = tiered(100, 200, &[(500, 400)], WindowReduceRollupAnchor::NewestMinusAge);
     receipt(&rollup_response(&by_age, &key2, age.clone()));
     assert_eq!(series(&by_age, &key2), series(&by_stamp, &key));
     assert_eq!(stamps(&by_age, &key2), TIER_STAMPS.to_vec());
@@ -605,11 +605,11 @@ fn an_age_resolves_against_the_newest_stored_snapshot_and_follows_it() {
 #[test]
 fn a_truncation_acts_over_its_trigger_and_keeps_the_newest_snapshots() {
     let with_truncate = |keep_last: usize, trigger: Option<usize>| {
-        let mut spec = tiered(1100, 200, &[(700, 400)], CellRollupAnchor::Request);
-        spec.truncate = Some(CellTruncateSpec { keep_last, trigger });
+        let mut spec = tiered(1100, 200, &[(700, 400)], WindowReduceRollupAnchor::Request);
+        spec.truncate = Some(WindowReduceTruncateSpec { keep_last, trigger });
         spec
     };
-    let run = |spec: CellRollupSpec| {
+    let run = |spec: WindowReduceRollupSpec| {
         let (_dir, engine, key) = fresh(22);
         seed(&engine, &key);
         let landed = receipt(&rollup_response(&engine, &key, spec));
@@ -626,8 +626,8 @@ fn a_truncation_acts_over_its_trigger_and_keeps_the_newest_snapshots() {
     assert_eq!(run(with_truncate(4, Some(6))).1, vec![800, 1000, 1100, 1200]);
 
     // A truncation alone: nothing below the cutoff, twelve samples, keep the newest five.
-    let mut only = tiered(0, 1, &[], CellRollupAnchor::Request);
-    only.truncate = Some(CellTruncateSpec { keep_last: 5, trigger: None });
+    let mut only = tiered(0, 1, &[], WindowReduceRollupAnchor::Request);
+    only.truncate = Some(WindowReduceTruncateSpec { keep_last: 5, trigger: None });
     let (_dir, engine, key) = fresh(23);
     seed(&engine, &key);
     assert_eq!(receipt(&rollup_response(&engine, &key, only.clone())), [12, 5, 0, 0, 0]);
@@ -656,7 +656,7 @@ fn a_protected_share_of_the_newest_members_and_a_cap_trigger_act_through_the_eng
         roll(
             1000,
             100,
-            Some(CellCapSpec {
+            Some(WindowReduceCapSpec {
                 group_by: None,
                 score: lane("impressions"),
                 keep,
@@ -665,7 +665,7 @@ fn a_protected_share_of_the_newest_members_and_a_cap_trigger_act_through_the_eng
             }),
         )
     };
-    let run = |spec: CellRollupSpec| {
+    let run = |spec: WindowReduceRollupSpec| {
         let (_dir, engine, key) = fresh(24);
         seed_six(&engine, &key);
         let landed = receipt(&rollup_response(&engine, &key, spec));
@@ -688,8 +688,8 @@ fn replaying_the_log_reaches_the_tiered_truncated_bytes_the_live_engine_reached(
     let engine = engine_on(dir.path(), Some(async_config));
     let key = stored_key(25);
     seed(&engine, &key);
-    let mut spec = tiered(100, 200, &[(500, 400)], CellRollupAnchor::NewestMinusAge);
-    spec.truncate = Some(CellTruncateSpec { keep_last: 5, trigger: Some(6) });
+    let mut spec = tiered(100, 200, &[(500, 400)], WindowReduceRollupAnchor::NewestMinusAge);
+    spec.truncate = Some(WindowReduceTruncateSpec { keep_last: 5, trigger: Some(6) });
     let landed = receipt(&rollup_response(&engine, &key, spec));
     assert_eq!([landed[0], landed[1]], [12, 5]);
     let live = series(&engine, &key);
@@ -705,7 +705,7 @@ fn a_new_control_that_cannot_be_served_is_refused_and_writes_nothing_and_each_bo
     seed(&engine, &key);
     let stored = series(&engine, &key);
     let writes = engine.write_ahead_log_store().stats(1).writes;
-    let refused = |spec: CellRollupSpec, needle: &str| {
+    let refused = |spec: WindowReduceRollupSpec, needle: &str| {
         let response = rollup_response(&engine, &key, spec);
         assert_eq!((response.status.ok, response.status.code.as_str()), (false, "invalid_argument"), "{:?}", response.status);
         assert!(response.status.message.contains(needle), "{:?} does not name `{needle}`", response.status.message);
@@ -714,13 +714,13 @@ fn a_new_control_that_cannot_be_served_is_refused_and_writes_nothing_and_each_bo
     };
     // An accepted request runs on a series of its own, so the one the refusals compare against is
     // never changed.
-    let accepted = |spec: CellRollupSpec| {
+    let accepted = |spec: WindowReduceRollupSpec| {
         let (_other_dir, other, other_key) = fresh(27);
         seed(&other, &other_key);
         let response = rollup_response(&other, &other_key, spec);
         assert!(response.status.ok, "{:?}", response.status);
     };
-    use CellRollupAnchor::{NewestMinusAge, Request};
+    use WindowReduceRollupAnchor::{NewestMinusAge, Request};
     refused(tiered(1000, 100, &[(1000, 100)], Request), "further back");
     refused(tiered(1000, 100, &[(2000, 100)], Request), "further back");
     refused(tiered(1000, 100, &[(900, 150)], Request), "not a multiple");
@@ -734,7 +734,7 @@ fn a_new_control_that_cannot_be_served_is_refused_and_writes_nothing_and_each_bo
 
     let truncating = |keep_last: usize, trigger: Option<usize>| {
         let mut spec = tiered(0, 1, &[], Request);
-        spec.truncate = Some(CellTruncateSpec { keep_last, trigger });
+        spec.truncate = Some(WindowReduceTruncateSpec { keep_last, trigger });
         spec
     };
     refused(truncating(0, None), "at least 1");
@@ -746,7 +746,7 @@ fn a_new_control_that_cannot_be_served_is_refused_and_writes_nothing_and_each_bo
     accepted(truncating(1, Some(10_000_000)));
 
     let capped = |ppm: u32, over: usize| {
-        roll(0, 1, Some(CellCapSpec { group_by: None, score: lane("clicks"), keep: 1, protect_newest_ppm: ppm, trigger_over: over }))
+        roll(0, 1, Some(WindowReduceCapSpec { group_by: None, score: lane("clicks"), keep: 1, protect_newest_ppm: ppm, trigger_over: over }))
     };
     refused(capped(1_000_001, 0), "protect_newest_ppm");
     refused(capped(0, 4097), "trigger_over");
@@ -759,14 +759,14 @@ fn a_request_with_none_of_the_new_fields_keeps_its_wire_and_json_bytes() {
     use prost::Message;
     // The original request, as it was framed: field 69 of the command, then the key (field 1), the
     // cutoff (2) and the bucket (3). The new fields are zero or absent, so they add no byte.
-    let original = Command::CellRollup { key: "k".to_string(), spec: roll(123, 45, None) };
+    let original = Command::WindowReduceRollup { key: "k".to_string(), spec: roll(123, 45, None) };
     let bytes = command_protobuf_bytes(&original).unwrap();
     assert_eq!(bytes, vec![0xAA, 0x04, 0x07, 0x0A, 0x01, 0x6B, 0x10, 0x7B, 0x18, 0x2D]);
     assert_eq!(command_from_protobuf_bytes(&bytes).unwrap(), original);
     // The cap's two new controls at zero add no byte either.
-    let capped = Command::CellRollup {
+    let capped = Command::WindowReduceRollup {
         key: "k".to_string(),
-        spec: roll(1, 2, Some(CellCapSpec { group_by: None, score: lane("a"), keep: 3, protect_newest_ppm: 0, trigger_over: 0 })),
+        spec: roll(1, 2, Some(WindowReduceCapSpec { group_by: None, score: lane("a"), keep: 3, protect_newest_ppm: 0, trigger_over: 0 })),
     };
     assert_eq!(
         command_protobuf_bytes(&capped).unwrap(),
@@ -774,15 +774,15 @@ fn a_request_with_none_of_the_new_fields_keeps_its_wire_and_json_bytes() {
     );
 
     // Every new field set: its own bytes, and it comes back.
-    let full = Command::CellRollup {
+    let full = Command::WindowReduceRollup {
         key: "k".to_string(),
-        spec: CellRollupSpec {
+        spec: WindowReduceRollupSpec {
             older_than_ms: 1,
             bucket_ms: 2,
-            cap: Some(CellCapSpec { group_by: Some("slot".to_string()), score: lane("a"), keep: 3, protect_newest_ppm: 300_000, trigger_over: 5 }),
-            anchor: CellRollupAnchor::NewestMinusAge,
-            coarser_tiers: vec![CellRollupTier { older_than_ms: 10, bucket_ms: 4 }, CellRollupTier { older_than_ms: 20, bucket_ms: u64::MAX }],
-            truncate: Some(CellTruncateSpec { keep_last: 7, trigger: Some(9) }),
+            cap: Some(WindowReduceCapSpec { group_by: Some("slot".to_string()), score: lane("a"), keep: 3, protect_newest_ppm: 300_000, trigger_over: 5 }),
+            anchor: WindowReduceRollupAnchor::NewestMinusAge,
+            coarser_tiers: vec![WindowReduceRollupTier { older_than_ms: 10, bucket_ms: 4 }, WindowReduceRollupTier { older_than_ms: 20, bucket_ms: u64::MAX }],
+            truncate: Some(WindowReduceTruncateSpec { keep_last: 7, trigger: Some(9) }),
         },
     };
     let full_bytes = command_protobuf_bytes(&full).unwrap();
@@ -790,20 +790,20 @@ fn a_request_with_none_of_the_new_fields_keeps_its_wire_and_json_bytes() {
     // An absent trigger and a trigger of zero are different requests and stay different.
     let mut no_trigger = full.clone();
     let mut zero_trigger = full.clone();
-    if let (Command::CellRollup { spec: a, .. }, Command::CellRollup { spec: b, .. }) = (&mut no_trigger, &mut zero_trigger) {
-        a.truncate = Some(CellTruncateSpec { keep_last: 7, trigger: None });
-        b.truncate = Some(CellTruncateSpec { keep_last: 7, trigger: Some(0) });
+    if let (Command::WindowReduceRollup { spec: a, .. }, Command::WindowReduceRollup { spec: b, .. }) = (&mut no_trigger, &mut zero_trigger) {
+        a.truncate = Some(WindowReduceTruncateSpec { keep_last: 7, trigger: None });
+        b.truncate = Some(WindowReduceTruncateSpec { keep_last: 7, trigger: Some(0) });
     }
     assert_eq!(command_from_protobuf_bytes(&command_protobuf_bytes(&no_trigger).unwrap()).unwrap(), no_trigger);
     assert_eq!(command_from_protobuf_bytes(&command_protobuf_bytes(&zero_trigger).unwrap()).unwrap(), zero_trigger);
 
     // An anchor this build does not know is refused, not read as a stamp.
-    let mut unknown = crate::sdk::cell_rollup_to_proto("k", &roll(1, 2, None));
+    let mut unknown = crate::sdk::window_reduce_rollup_to_proto("k", &roll(1, 2, None));
     unknown.anchor = 9;
-    let encoded = crate::sdk::v1::Command { kind: Some(crate::sdk::v1::command::Kind::CellRollup(unknown)) }.encode_to_vec();
+    let encoded = crate::sdk::v1::Command { kind: Some(crate::sdk::v1::command::Kind::WindowReduceRollup(unknown)) }.encode_to_vec();
     assert!(command_from_protobuf_bytes(&encoded).is_err());
 
     // JSON: a request written before the new fields existed reads with their defaults.
     let old_json = r#"{"older_than_ms":1,"bucket_ms":2}"#;
-    assert_eq!(serde_json::from_str::<CellRollupSpec>(old_json).unwrap(), roll(1, 2, None));
+    assert_eq!(serde_json::from_str::<WindowReduceRollupSpec>(old_json).unwrap(), roll(1, 2, None));
 }

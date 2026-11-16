@@ -19,7 +19,7 @@ use crate::engine::cell_set::{
     DimValue, KeySpec, LaneReducer, LaneSpec, Member, HEADER_VERSION,
 };
 use crate::types::{
-    CellAnchor, CellLaneQuota, CellMemberFilter, CellMemberId, CellQuota, CellRankSpec, CellScore, CellWindow,
+    WindowReduceAnchor, WindowReduceLaneQuota, CellMemberFilter, CellMemberId, WindowReduceQuota, WindowReduceRankSpec, WindowReduceScore, WindowReduceWindow,
     FeatureFilter, FeatureFilterOp, RankedCells,
 };
 
@@ -92,21 +92,21 @@ fn seed(engine: &TemporalEngine, key: &str) {
     put(engine, key, &h, 400, &[cell(2, 2, vec![10, 8]), cell(4, 2, vec![2, 2])]);
 }
 
-fn spec(window: CellWindow, score: CellScore, top_k: usize) -> CellRankSpec {
-    CellRankSpec { window, filters: Vec::new(), score, top_k, project: Vec::new(), members: Default::default(), anchor: Default::default(), quota: Default::default() }
+fn spec(window: WindowReduceWindow, score: WindowReduceScore, top_k: usize) -> WindowReduceRankSpec {
+    WindowReduceRankSpec { window, filters: Vec::new(), score, top_k, project: Vec::new(), members: Default::default(), anchor: Default::default(), quota: Default::default() }
 }
 
-const ALL: CellWindow = CellWindow::Between { start_ms: 0, end_ms: u64::MAX };
+const ALL: WindowReduceWindow = WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX };
 
-fn lane(name: &str) -> CellScore {
-    CellScore::Lane { lane: name.to_string() }
+fn lane(name: &str) -> WindowReduceScore {
+    WindowReduceScore::Lane { lane: name.to_string() }
 }
 
-fn rank(engine: &TemporalEngine, key: &str, spec: CellRankSpec) -> RankedCells {
-    let response = exec(engine, Command::CellRankQuery { key: key.to_string(), spec });
+fn rank(engine: &TemporalEngine, key: &str, spec: WindowReduceRankSpec) -> RankedCells {
+    let response = exec(engine, Command::WindowReduceRank { key: key.to_string(), spec });
     assert!(response.status.ok, "{:?}", response.status);
     match response.response {
-        CommandResponse::CellRanking { ranked } => ranked,
+        CommandResponse::WindowReduceRanking { ranked } => ranked,
         other => panic!("not a ranking: {other:?}"),
     }
 }
@@ -131,13 +131,13 @@ fn a_ranked_read_answers_from_what_was_stored_live_and_after_a_restart() {
 
     let by_sum = spec(ALL, lane("shown"), 10);
     let by_max = spec(ALL, lane("peak"), 10);
-    let windowed = spec(CellWindow::Between { start_ms: 200, end_ms: 300 }, lane("shown"), 10);
+    let windowed = spec(WindowReduceWindow::Between { start_ms: 200, end_ms: 300 }, lane("shown"), 10);
 
     let live = rank(&engine, &key, by_sum.clone());
     // Sum over every sample: 200 60 30 10.
     assert_eq!(members(&live), vec![3, 2, 1, 4]);
     assert_eq!(live.rows.iter().map(|r| r.score as i64).collect::<Vec<_>>(), vec![200, 60, 30, 10]);
-    assert_eq!(live.snapshots, 4);
+    assert_eq!(live.samples, 4);
     assert!(live.refused.is_empty());
     // Max, not sum: a sum of the peaks would put m1 and m2 level at 18.
     assert_eq!(members(&rank(&engine, &key, by_max.clone())), vec![1, 2, 3, 4]);
@@ -210,8 +210,8 @@ fn a_bound_is_refused_at_admission_and_accepted_at_exactly_the_limit() {
     let key = stored_key(3);
     seed(&engine, &key);
 
-    let status_of = |query: CellRankSpec| {
-        exec(&engine, Command::CellRankQuery { key: key.clone(), spec: query }).status
+    let status_of = |query: WindowReduceRankSpec| {
+        exec(&engine, Command::WindowReduceRank { key: key.clone(), spec: query }).status
     };
     // top-k: 1000 is served, 1001 and 0 are refused before any sample is read.
     assert!(status_of(spec(ALL, lane("shown"), 1000)).ok);
@@ -233,15 +233,15 @@ fn a_bound_is_refused_at_admission_and_accepted_at_exactly_the_limit() {
     let weighted = |n: usize| {
         spec(
             ALL,
-            CellScore::Weighted { lanes: (0..n).map(|i| format!("l{i}")).collect(), weights: vec![1.0; n] },
+            WindowReduceScore::Weighted { lanes: (0..n).map(|i| format!("l{i}")).collect(), weights: vec![1.0; n] },
             5,
         )
     };
     assert!(status_of(weighted(8)).ok);
     assert!(!status_of(weighted(9)).ok);
     // window: LastN 512 is admitted, 513 refused.
-    assert!(status_of(spec(CellWindow::LastN { n: 512 }, lane("shown"), 5)).ok);
-    assert!(!status_of(spec(CellWindow::LastN { n: 513 }, lane("shown"), 5)).ok);
+    assert!(status_of(spec(WindowReduceWindow::LastN { n: 512 }, lane("shown"), 5)).ok);
+    assert!(!status_of(spec(WindowReduceWindow::LastN { n: 513 }, lane("shown"), 5)).ok);
 }
 
 #[test]
@@ -254,14 +254,14 @@ fn a_window_over_the_bound_is_refused_after_a_bounded_read_and_one_at_the_bound_
         put(&engine, &key, &h, ts, &[cell(1, 0, vec![1])]);
     }
     // 512 samples: the newest 512, summing to 512.
-    let at = rank(&engine, &key, spec(CellWindow::Between { start_ms: 2, end_ms: u64::MAX }, lane("shown"), 1));
-    assert_eq!((at.snapshots, at.rows[0].score as u64), (512, 512));
+    let at = rank(&engine, &key, spec(WindowReduceWindow::Between { start_ms: 2, end_ms: u64::MAX }, lane("shown"), 1));
+    assert_eq!((at.samples, at.rows[0].score as u64), (512, 512));
     // 513: refused, with rows left empty.
     let over = rank(&engine, &key, spec(ALL, lane("shown"), 1));
     assert!(over.refused.contains("samples in the window"), "{}", over.refused);
     assert!(over.rows.is_empty());
     // The newest 512 by count is served.
-    assert_eq!(rank(&engine, &key, spec(CellWindow::LastN { n: 512 }, lane("shown"), 1)).rows[0].score as u64, 512);
+    assert_eq!(rank(&engine, &key, spec(WindowReduceWindow::LastN { n: 512 }, lane("shown"), 1)).rows[0].score as u64, 512);
 }
 
 #[test]
@@ -283,8 +283,8 @@ fn a_lane_added_later_reads_as_zero_in_the_snapshots_written_before_it() {
 
 // ---- the decay score, through the same path ------------------------------------------------------
 
-fn decay(lane_name: &str, half_life_ms: u64) -> CellScore {
-    CellScore::Decay { lane: lane_name.to_string(), half_life_ms }
+fn decay(lane_name: &str, half_life_ms: u64) -> WindowReduceScore {
+    WindowReduceScore::Decay { lane: lane_name.to_string(), half_life_ms }
 }
 
 fn scores(ranked: &RankedCells) -> Vec<f64> {
@@ -305,7 +305,7 @@ fn a_decay_score_answers_its_hand_computed_value_live_and_after_a_restart() {
     let all = rank(&engine, &key, spec(ALL, decay("shown", 100), 10));
     assert_eq!((members(&all), scores(&all)), (vec![3, 2, 1, 4], vec![62.5, 20.0, 8.75, 4.0]));
     // The window 100..=300 is as of 300: m3 100/4 + 100, m2 20/4 + 30/2, m1 10/4 + 10/2 + 10, m4 8/2.
-    let early = rank(&engine, &key, spec(CellWindow::Between { start_ms: 100, end_ms: 300 }, decay("shown", 100), 10));
+    let early = rank(&engine, &key, spec(WindowReduceWindow::Between { start_ms: 100, end_ms: 300 }, decay("shown", 100), 10));
     assert_eq!((members(&early), scores(&early)), (vec![3, 2, 1, 4], vec![125.0, 20.0, 17.5, 4.0]));
     // `peak` is a Max lane; the decay reads what each sample stored: m2 7/8 + 3/4 + 8 = 9.625 leads
     // where the lane's own Max puts m1 (9) first.
@@ -327,7 +327,7 @@ fn a_half_life_is_refused_at_admission_past_its_limits_and_served_at_them() {
     let key = stored_key(9);
     seed(&engine, &key);
     let status_of = |half_life_ms: u64| {
-        exec(&engine, Command::CellRankQuery { key: key.clone(), spec: spec(ALL, decay("shown", half_life_ms), 5) }).status
+        exec(&engine, Command::WindowReduceRank { key: key.clone(), spec: spec(ALL, decay("shown", half_life_ms), 5) }).status
     };
     let longest = crate::engine::window_reduce_rank::MAX_HALF_LIFE_MS;
     assert_eq!(longest, 315_360_000_000);
@@ -364,8 +364,8 @@ fn id(v: u64) -> CellMemberId {
     CellMemberId::U64(v)
 }
 
-fn with_members(include: Option<Vec<u64>>, exclude: Vec<u64>, base: CellRankSpec) -> CellRankSpec {
-    CellRankSpec {
+fn with_members(include: Option<Vec<u64>>, exclude: Vec<u64>, base: WindowReduceRankSpec) -> WindowReduceRankSpec {
+    WindowReduceRankSpec {
         members: CellMemberFilter {
             include: include.map(|set| set.into_iter().map(id).collect()),
             exclude: exclude.into_iter().map(id).collect(),
@@ -374,8 +374,8 @@ fn with_members(include: Option<Vec<u64>>, exclude: Vec<u64>, base: CellRankSpec
     }
 }
 
-fn status_of(engine: &TemporalEngine, key: &str, query: CellRankSpec) -> (bool, String) {
-    let status = exec(engine, Command::CellRankQuery { key: key.to_string(), spec: query }).status;
+fn status_of(engine: &TemporalEngine, key: &str, query: WindowReduceRankSpec) -> (bool, String) {
+    let status = exec(engine, Command::WindowReduceRank { key: key.to_string(), spec: query }).status;
     (status.ok, status.code.clone())
 }
 
@@ -440,7 +440,7 @@ fn the_member_set_is_bounded_at_admission_and_accepted_at_exactly_the_limit() {
     seed(&engine, &key);
     let many = |n: u64| (1..=n).collect::<Vec<u64>>();
     let plain = || spec(ALL, lane("shown"), 10);
-    let outcome = |query: CellRankSpec| status_of(&engine, &key, query);
+    let outcome = |query: WindowReduceRankSpec| status_of(&engine, &key, query);
     let refused = (false, "invalid_argument".to_string());
     // 1024 a side is served; 1025 is refused before any sample is read.
     assert!(outcome(with_members(Some(many(1024)), vec![], plain())).0);
@@ -459,30 +459,30 @@ fn an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says() {
     let engine = engine_on(dir.path());
     let key = stored_key(13);
     seed(&engine, &key); // samples at 100 200 300 400
-    let anchored = |duration_ms: u64| CellRankSpec {
-        anchor: CellAnchor::Newest,
-        ..spec(CellWindow::Last { duration_ms }, lane("shown"), 10)
+    let anchored = |duration_ms: u64| WindowReduceRankSpec {
+        anchor: WindowReduceAnchor::Newest,
+        ..spec(WindowReduceWindow::Last { duration_ms }, lane("shown"), 10)
     };
     // [301, 400]: the sample at 400 alone: m2 10, m4 2.
     let one = rank(&engine, &key, anchored(100));
-    assert_eq!((members(&one), scores(&one), one.snapshots), (vec![2, 4], vec![10.0, 2.0], 1));
+    assert_eq!((members(&one), scores(&one), one.samples), (vec![2, 4], vec![10.0, 2.0], 1));
     // [101, 400]: 200, 300 and 400. m1 20, m2 30 + 10, m3 100, m4 8 + 2.
     let three = rank(&engine, &key, anchored(300));
     assert_eq!(
-        (members(&three), scores(&three), three.snapshots),
+        (members(&three), scores(&three), three.samples),
         (vec![3, 2, 1, 4], vec![100.0, 40.0, 20.0, 10.0], 3)
     );
     // The start is inclusive: 301 reaches back to 100.
-    assert_eq!(rank(&engine, &key, anchored(301)).snapshots, 4);
+    assert_eq!(rank(&engine, &key, anchored(301)).samples, 4);
     // A duration of 0 holds nothing.
-    assert_eq!(rank(&engine, &key, anchored(0)).snapshots, 0);
+    assert_eq!(rank(&engine, &key, anchored(0)).samples, 0);
     // The request clock is the real clock, far past every stamp: the same window on it is empty.
-    let on_the_clock = rank(&engine, &key, spec(CellWindow::Last { duration_ms: 100 }, lane("shown"), 10));
-    assert_eq!((on_the_clock.snapshots, on_the_clock.rows.len()), (0, 0));
+    let on_the_clock = rank(&engine, &key, spec(WindowReduceWindow::Last { duration_ms: 100 }, lane("shown"), 10));
+    assert_eq!((on_the_clock.samples, on_the_clock.rows.len()), (0, 0));
     // An anchor on any other window is refused at admission.
-    for window in [ALL, CellWindow::Since { start_ms: 1 }, CellWindow::LastN { n: 2 }] {
+    for window in [ALL, WindowReduceWindow::Since { start_ms: 1 }, WindowReduceWindow::LastN { n: 2 }] {
         let status =
-            status_of(&engine, &key, CellRankSpec { anchor: CellAnchor::Newest, ..spec(window, lane("shown"), 10) });
+            status_of(&engine, &key, WindowReduceRankSpec { anchor: WindowReduceAnchor::Newest, ..spec(window, lane("shown"), 10) });
         assert_eq!(status, (false, "invalid_argument".to_string()));
     }
     // A key with no sample is an empty answer.
@@ -503,10 +503,10 @@ fn ladder_key(engine: &TemporalEngine, key: &str) {
     put(engine, key, &h, 100, &cells);
 }
 
-fn quota(lanes: &[(&str, usize)], others: usize, top_k: usize) -> CellRankSpec {
-    CellRankSpec {
-        quota: CellQuota {
-            lanes: lanes.iter().map(|(lane, count)| CellLaneQuota { lane: lane.to_string(), count: *count }).collect(),
+fn quota(lanes: &[(&str, usize)], others: usize, top_k: usize) -> WindowReduceRankSpec {
+    WindowReduceRankSpec {
+        quota: WindowReduceQuota {
+            lanes: lanes.iter().map(|(lane, count)| WindowReduceLaneQuota { lane: lane.to_string(), count: *count }).collect(),
             others,
         },
         ..spec(ALL, lane("shown"), top_k)
@@ -568,7 +568,7 @@ fn a_quota_is_refused_at_admission_past_its_bounds_and_served_at_them() {
     let engine = engine_on(dir.path());
     let key = stored_key(15);
     ladder_key(&engine, &key);
-    let outcome = |query: CellRankSpec| status_of(&engine, &key, query);
+    let outcome = |query: WindowReduceRankSpec| status_of(&engine, &key, query);
     let refused = (false, "invalid_argument".to_string());
     // The reservation, counts plus others, is at most 1000.
     assert!(outcome(quota(&[("clicked", 1000)], 0, 8)).0);
@@ -582,9 +582,9 @@ fn a_quota_is_refused_at_admission_past_its_bounds_and_served_at_them() {
     assert_eq!(outcome(quota(&[("clicked", 1), ("clicked", 1)], 0, 8)), refused);
     // Lanes in a quota: 16 distinct names are admitted (and then refused by name as a served
     // refusal, the key declaring two lanes); 17 are refused at admission.
-    let named = |n: usize| CellRankSpec {
-        quota: CellQuota {
-            lanes: (0..n).map(|i| CellLaneQuota { lane: format!("l{i}"), count: 1 }).collect(),
+    let named = |n: usize| WindowReduceRankSpec {
+        quota: WindowReduceQuota {
+            lanes: (0..n).map(|i| WindowReduceLaneQuota { lane: format!("l{i}"), count: 1 }).collect(),
             others: 0,
         },
         ..spec(ALL, lane("shown"), 8)
@@ -600,23 +600,23 @@ fn a_quota_is_refused_at_admission_past_its_bounds_and_served_at_them() {
 fn a_query_that_uses_none_of_the_controls_is_encoded_and_answered_as_it_always_was() {
     // The encoding: none of the new keys appears, so a spec written by an older client and a spec
     // written today are the same bytes.
-    let plain = spec(CellWindow::Last { duration_ms: 150 }, lane("shown"), 5);
+    let plain = spec(WindowReduceWindow::Last { duration_ms: 150 }, lane("shown"), 5);
     let json = serde_json::to_string(&plain).unwrap();
     assert_eq!(
         json,
         r#"{"window":{"last":{"duration_ms":150}},"filters":[],"score":{"lane":{"lane":"shown"}},"top_k":5,"project":[]}"#
     );
     // A spec that lacks the keys still reads, as the spec with the controls at rest.
-    assert_eq!(serde_json::from_str::<CellRankSpec>(&json).unwrap(), plain);
+    assert_eq!(serde_json::from_str::<WindowReduceRankSpec>(&json).unwrap(), plain);
     // And one that names them at rest is the same spec.
     let explicit = r#"{"window":{"last":{"duration_ms":150}},"filters":[],"score":{"lane":{"lane":"shown"}},"top_k":5,"project":[],"anchor":"request","members":{},"quota":{}}"#;
-    assert_eq!(serde_json::from_str::<CellRankSpec>(explicit).unwrap(), plain);
+    assert_eq!(serde_json::from_str::<WindowReduceRankSpec>(explicit).unwrap(), plain);
 
     // With the controls set, their encoding is the one the docs show.
-    let used = CellRankSpec {
+    let used = WindowReduceRankSpec {
         members: CellMemberFilter { include: Some(vec![id(1)]), exclude: vec![id(2)] },
-        anchor: CellAnchor::Newest,
-        quota: CellQuota { lanes: vec![CellLaneQuota { lane: "peak".to_string(), count: 2 }], others: 1 },
+        anchor: WindowReduceAnchor::Newest,
+        quota: WindowReduceQuota { lanes: vec![WindowReduceLaneQuota { lane: "peak".to_string(), count: 2 }], others: 1 },
         ..plain.clone()
     };
     let used_json = serde_json::to_string(&used).unwrap();
@@ -624,7 +624,7 @@ fn a_query_that_uses_none_of_the_controls_is_encoded_and_answered_as_it_always_w
         used_json,
         r#"{"window":{"last":{"duration_ms":150}},"filters":[],"score":{"lane":{"lane":"shown"}},"top_k":5,"project":[],"members":{"include":[{"u64":1}],"exclude":[{"u64":2}]},"anchor":"newest","quota":{"lanes":[{"lane":"peak","count":2}],"others":1}}"#
     );
-    assert_eq!(serde_json::from_str::<CellRankSpec>(&used_json).unwrap(), used);
+    assert_eq!(serde_json::from_str::<WindowReduceRankSpec>(&used_json).unwrap(), used);
 
     // The answer: the same through the engine whether the spec was built or read from its bytes.
     let dir = tempfile::tempdir().expect("tempdir");
@@ -632,7 +632,7 @@ fn a_query_that_uses_none_of_the_controls_is_encoded_and_answered_as_it_always_w
     let key = stored_key(16);
     seed(&engine, &key);
     let all = spec(ALL, lane("shown"), 10);
-    let from_bytes: CellRankSpec = serde_json::from_str(&serde_json::to_string(&all).unwrap()).unwrap();
+    let from_bytes: WindowReduceRankSpec = serde_json::from_str(&serde_json::to_string(&all).unwrap()).unwrap();
     assert_eq!(rank(&engine, &key, all.clone()), rank(&engine, &key, from_bytes));
     assert_eq!(members(&rank(&engine, &key, all)), vec![3, 2, 1, 4]);
 }
@@ -649,15 +649,15 @@ fn a_recent_read_answers_the_stored_cells_newest_first_live_and_after_a_restart(
     let want_stamps = vec![400, 400, 300, 300, 200, 200, 200, 100, 100, 100];
     let want_shown = vec![10, 2, 10, 100, 10, 30, 8, 10, 20, 100];
     let check = |engine: &TemporalEngine| {
-        let ranked = rank(engine, &key, spec(ALL, CellScore::Recent, 100));
+        let ranked = rank(engine, &key, spec(ALL, WindowReduceScore::Recent, 100));
         assert!(ranked.refused.is_empty(), "{}", ranked.refused);
         assert_eq!(members(&ranked), want_members);
         assert_eq!(ranked.rows.iter().map(|r| r.last_ms).collect::<Vec<_>>(), want_stamps);
         assert_eq!(ranked.rows.iter().map(|r| r.lanes[0]).collect::<Vec<_>>(), want_shown);
-        assert_eq!(ranked.snapshots, 4);
+        assert_eq!(ranked.samples, 4);
         // A limit cuts the newest rows; a lane test keeps the cells that stored that value.
-        assert_eq!(members(&rank(engine, &key, spec(ALL, CellScore::Recent, 3))), vec![2, 4, 1]);
-        let mut matched = spec(ALL, CellScore::Recent, 100);
+        assert_eq!(members(&rank(engine, &key, spec(ALL, WindowReduceScore::Recent, 3))), vec![2, 4, 1]);
+        let mut matched = spec(ALL, WindowReduceScore::Recent, 100);
         matched.filters = vec![FeatureFilter { field: "shown".into(), op: FeatureFilterOp::Equal, value: 100 }];
         let matched = rank(engine, &key, matched);
         assert_eq!((members(&matched), matched.rows.iter().map(|r| r.last_ms).collect::<Vec<_>>()), (vec![3, 3], vec![300, 100]));
@@ -676,9 +676,9 @@ fn a_recent_read_is_bounded_like_the_ranked_read_and_refuses_a_quota() {
     let key = stored_key(22);
     seed(&engine, &key);
     let refused = (false, "invalid_argument".to_string());
-    let outcome = |query: CellRankSpec| status_of(&engine, &key, query);
-    assert!(outcome(spec(ALL, CellScore::Recent, 1000)).0);
-    assert_eq!(outcome(spec(ALL, CellScore::Recent, 1001)), refused);
-    assert_eq!(outcome(spec(ALL, CellScore::Recent, 0)), refused);
-    assert_eq!(outcome(CellRankSpec { score: CellScore::Recent, ..quota(&[], 1, 8) }), refused);
+    let outcome = |query: WindowReduceRankSpec| status_of(&engine, &key, query);
+    assert!(outcome(spec(ALL, WindowReduceScore::Recent, 1000)).0);
+    assert_eq!(outcome(spec(ALL, WindowReduceScore::Recent, 1001)), refused);
+    assert_eq!(outcome(spec(ALL, WindowReduceScore::Recent, 0)), refused);
+    assert_eq!(outcome(WindowReduceRankSpec { score: WindowReduceScore::Recent, ..quota(&[], 1, 8) }), refused);
 }

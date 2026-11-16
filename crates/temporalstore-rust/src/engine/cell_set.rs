@@ -934,18 +934,18 @@ pub(crate) struct MergeCounts {
     pub(crate) merged: usize,
 }
 
-/// Merges `incoming` into `snapshot` (kept sorted by member) under the header's lane reducers.
+/// Merges `incoming` into `sample` (kept sorted by member) under the header's lane reducers.
 /// Nothing is changed when the result would hold more than [`MAX_CELLS_PER_SAMPLE`] cells or any
 /// incoming cell is invalid. A member that appears twice in `incoming` merges twice.
-pub(crate) fn merge_into_sample(header: &CellHeader, snapshot: &mut Vec<Cell>, incoming: &[Cell]) -> Result<MergeCounts, String> {
+pub(crate) fn merge_into_sample(header: &CellHeader, sample: &mut Vec<Cell>, incoming: &[Cell]) -> Result<MergeCounts, String> {
     validate_cells_in_request(incoming.len())?;
-    if !is_strictly_ascending(snapshot) {
+    if !is_strictly_ascending(sample) {
         return Err("stored sample is not strictly ascending by member".to_string());
     }
     for cell in incoming {
         validate_cell(header, cell)?;
     }
-    let mut next = snapshot.clone();
+    let mut next = sample.clone();
     let mut counts = MergeCounts::default();
     for cell in incoming {
         match next.binary_search_by(|have| have.member.cmp(&cell.member)) {
@@ -965,7 +965,7 @@ pub(crate) fn merge_into_sample(header: &CellHeader, snapshot: &mut Vec<Cell>, i
             }
         }
     }
-    *snapshot = next;
+    *sample = next;
     Ok(counts)
 }
 
@@ -986,27 +986,27 @@ pub(crate) fn encode_value(header: &CellHeader, cells: &[Cell]) -> Result<Vec<u8
 /// The header and the still-packed sample bytes of a value, the header still undecoded.
 pub(crate) fn split_value_raw(bytes: &[u8]) -> Result<(&[u8], &[u8]), String> {
     let mut cursor = 0;
-    let (mut header, mut snapshot) = (None, None);
+    let (mut header, mut sample) = (None, None);
     while cursor < bytes.len() {
         let (field, wire) = read_tag(bytes, &mut cursor)?;
         match (field, wire) {
             (1, 2) if header.is_none() => header = Some(read_bytes(bytes, &mut cursor)?),
-            (2, 2) if snapshot.is_none() => snapshot = Some(read_bytes(bytes, &mut cursor)?),
+            (2, 2) if sample.is_none() => sample = Some(read_bytes(bytes, &mut cursor)?),
             _ => return Err(format!("unexpected or repeated value field {field}/{wire}")),
         }
     }
-    Ok((header.ok_or("value has no header")?, snapshot.unwrap_or(&[])))
+    Ok((header.ok_or("value has no header")?, sample.unwrap_or(&[])))
 }
 
 /// The header and the still-packed sample bytes of a value.
 pub(crate) fn split_value(bytes: &[u8]) -> Result<(CellHeader, &[u8]), String> {
-    let (header, snapshot) = split_value_raw(bytes)?;
-    Ok((CellHeader::decode(header)?, snapshot))
+    let (header, sample) = split_value_raw(bytes)?;
+    Ok((CellHeader::decode(header)?, sample))
 }
 
 pub(crate) fn decode_value(bytes: &[u8]) -> Result<(CellHeader, Vec<Cell>), String> {
-    let (header, snapshot) = split_value(bytes)?;
-    let cells = decode_sample(&header, snapshot)?;
+    let (header, sample) = split_value(bytes)?;
+    let cells = decode_sample(&header, sample)?;
     Ok((header, cells))
 }
 
@@ -1032,9 +1032,9 @@ pub(crate) fn merge_request(
     let existing = match existing {
         None => Existing::Nothing,
         Some(bytes) => {
-            let (header, snapshot) = split_value(bytes)?;
+            let (header, sample) = split_value(bytes)?;
             own = header;
-            Existing::Stored { header: &own, snapshot }
+            Existing::Stored { header: &own, sample }
         }
     };
     let (effective, cells, counts) = merge_point(newest.as_ref(), existing, request)?;
@@ -1569,7 +1569,7 @@ pub(crate) enum Existing<'a> {
     /// Nothing is stored or planned there.
     Nothing,
     /// A stored value: its header, and its still-packed sample.
-    Stored { header: &'a CellHeader, snapshot: &'a [u8] },
+    Stored { header: &'a CellHeader, sample: &'a [u8] },
     /// Cells an earlier point of the same request already merged there, with the header they were
     /// merged under.
     Planned { header: std::rc::Rc<CellHeader>, cells: FlatCells },
@@ -1626,12 +1626,12 @@ pub(crate) fn merge_point_known(
     };
     let mut cells = match existing {
         Existing::Nothing => FlatCells::empty(&effective, incoming.len()),
-        Existing::Stored { header, snapshot } => {
+        Existing::Stored { header, sample } => {
             if *header != *effective {
                 // The stored sample may only be an earlier, shorter form of the effective header.
                 check_header(header, &effective)?;
             }
-            FlatCells::decode(&effective, snapshot, incoming.len())?
+            FlatCells::decode(&effective, sample, incoming.len())?
         }
         Existing::Planned { header, mut cells } => {
             if *header != *effective {
@@ -1861,12 +1861,12 @@ mod tests {
     #[test]
     fn merging_applies_each_lane_reducer_per_member_and_replaces_labels() {
         let h = header();
-        let mut snapshot = Vec::new();
+        let mut sample = Vec::new();
         let cell = |m: u64, slot: u64, watch: i64, peak: i64| Cell { member: Member::U64(m), labels: vec![slot], lanes: vec![watch, peak] };
-        merge_into_sample(&h, &mut snapshot, &[cell(2, 1, 10, 3), cell(1, 1, 1, 1)]).unwrap();
-        merge_into_sample(&h, &mut snapshot, &[cell(2, 9, 5, 8), cell(2, 9, 5, 2)]).unwrap();
-        assert_eq!(snapshot, vec![cell(1, 1, 1, 1), cell(2, 9, 20, 8)]);
-        assert!(snapshot.windows(2).all(|w| w[0].member < w[1].member), "sorted by member");
+        merge_into_sample(&h, &mut sample, &[cell(2, 1, 10, 3), cell(1, 1, 1, 1)]).unwrap();
+        merge_into_sample(&h, &mut sample, &[cell(2, 9, 5, 8), cell(2, 9, 5, 2)]).unwrap();
+        assert_eq!(sample, vec![cell(1, 1, 1, 1), cell(2, 9, 20, 8)]);
+        assert!(sample.windows(2).all(|w| w[0].member < w[1].member), "sorted by member");
     }
 
     /// One row per bound: (name, refusal at limit + 1, acceptance at exactly the limit).
@@ -1976,15 +1976,15 @@ mod tests {
     #[test]
     fn a_merge_that_would_overflow_the_snapshot_changes_nothing() {
         let h = CellHeader { labels: vec![], lanes: vec![LaneSpec { name: "n".into(), reducer: LaneReducer::Sum }], ..header() };
-        let mut snapshot: Vec<Cell> = (0..MAX_CELLS_PER_SAMPLE as u64).map(|m| Cell { member: Member::U64(m), labels: vec![], lanes: vec![1] }).collect();
-        let before = snapshot.clone();
+        let mut sample: Vec<Cell> = (0..MAX_CELLS_PER_SAMPLE as u64).map(|m| Cell { member: Member::U64(m), labels: vec![], lanes: vec![1] }).collect();
+        let before = sample.clone();
         let fresh = Cell { member: Member::U64(u64::MAX), labels: vec![], lanes: vec![1] };
-        assert!(merge_into_sample(&h, &mut snapshot, &[fresh]).is_err());
-        assert_eq!(snapshot, before);
+        assert!(merge_into_sample(&h, &mut sample, &[fresh]).is_err());
+        assert_eq!(sample, before);
         // A merge into an existing member at the limit is fine.
         let existing = Cell { member: Member::U64(0), labels: vec![], lanes: vec![4] };
-        merge_into_sample(&h, &mut snapshot, &[existing]).unwrap();
-        assert_eq!(snapshot[0].lanes, vec![5]);
+        merge_into_sample(&h, &mut sample, &[existing]).unwrap();
+        assert_eq!(sample[0].lanes, vec![5]);
     }
 
     fn one_lane_header() -> CellHeader {
@@ -2296,7 +2296,7 @@ mod tests {
             None => requested,
             Some(stored) => check_header(stored, &requested)?.unwrap_or_else(|| stored.clone()),
         };
-        let mut snapshot = match existing {
+        let mut sample = match existing {
             None => Vec::new(),
             Some(bytes) => {
                 let (own, packed) = split_value(bytes)?;
@@ -2306,8 +2306,8 @@ mod tests {
                 decode_sample(&effective, packed)?
             }
         };
-        let counts = merge_into_sample(&effective, &mut snapshot, &cells)?;
-        Ok((encode_value(&effective, &snapshot)?, effective, counts))
+        let counts = merge_into_sample(&effective, &mut sample, &cells)?;
+        Ok((encode_value(&effective, &sample)?, effective, counts))
     }
 
     fn random_header(state: &mut u64, labels: usize, lanes: usize) -> CellHeader {
@@ -2575,9 +2575,9 @@ mod tests {
                 for (i, count) in [10usize, 110].into_iter().enumerate() {
                     let cells = cells_of(count, width);
                     let (a, b) = counted(|| {
-                        let mut snapshot = Vec::new();
-                        merge_into_sample(&h, &mut snapshot, &cells).unwrap();
-                        let packed = encode_sample(&h, &snapshot).unwrap();
+                        let mut sample = Vec::new();
+                        merge_into_sample(&h, &mut sample, &cells).unwrap();
+                        let packed = encode_sample(&h, &sample).unwrap();
                         decode_sample(&h, &packed).unwrap()
                     });
                     allocs[i] = a;

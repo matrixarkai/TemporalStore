@@ -40,11 +40,11 @@ use super::window_reduce_remove::{remove_cells, validate_spec, Selection, MAX_RE
 use super::cell_set::{check_header, decode_sample, encode_value, split_value, Cell, CellHeader};
 use super::*;
 use crate::engine::timestamped_series::TimestampedSeries;
-use crate::types::{CellRemoveSpec, FeaturePoint};
+use crate::types::{WindowReduceRemoveSpec, FeaturePoint};
 
 /// What a removal does to a series.
 #[derive(Debug, PartialEq)]
-pub(super) struct CellRemovePlan {
+pub(super) struct WindowReduceRemovePlan {
     /// The stamps of the samples the replacement covers, ascending, from the first that changes
     /// to the last: every stored sample in that range.
     pub(super) replaced: Vec<u64>,
@@ -53,8 +53,8 @@ pub(super) struct CellRemovePlan {
     pub(super) points: Vec<FeaturePoint>,
     /// Whether the series changes.
     pub(super) changed: bool,
-    pub(super) snapshots_before: u64,
-    pub(super) snapshots_after: u64,
+    pub(super) samples_before: u64,
+    pub(super) samples_after: u64,
     pub(super) cells_before: u64,
     pub(super) cells_removed: u64,
 }
@@ -72,15 +72,15 @@ pub(super) fn plan_window_reduce_remove(
     series: Option<&impl TimestampedSeries>,
     key: &str,
     routing_bucket: u32,
-    spec: &CellRemoveSpec,
-) -> Result<CellRemovePlan, Status> {
+    spec: &WindowReduceRemoveSpec,
+) -> Result<WindowReduceRemovePlan, Status> {
     validate_spec(spec).map_err(|why| refuse(key, why))?;
-    let nothing = |snapshots: u64, cells_before: u64| CellRemovePlan {
+    let nothing = |samples: u64, cells_before: u64| WindowReduceRemovePlan {
         replaced: Vec::new(),
         points: Vec::new(),
         changed: false,
-        snapshots_before: snapshots,
-        snapshots_after: snapshots,
+        samples_before: samples,
+        samples_after: samples,
         cells_before,
         cells_removed: 0,
     };
@@ -168,12 +168,12 @@ pub(super) fn plan_window_reduce_remove(
             points.push(FeaturePoint { timestamp_ms: outcome.timestamp_ms, value });
         }
     }
-    Ok(CellRemovePlan {
+    Ok(WindowReduceRemovePlan {
         replaced,
         points,
         changed: true,
-        snapshots_before: total,
-        snapshots_after: total - emptied,
+        samples_before: total,
+        samples_after: total - emptied,
         cells_before,
         cells_removed,
     })

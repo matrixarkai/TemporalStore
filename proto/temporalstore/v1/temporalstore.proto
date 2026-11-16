@@ -288,13 +288,13 @@ message Command {
     HashMultiSetWithTtl hash_multi_set_with_ttl = 66;
     ZSetCountAdjust zset_count_adjust = 67;
     ZSetScan zset_scan = 68;
-    CellRollup cell_rollup = 69;
+    WindowReduceRollup window_reduce_rollup = 69;
     StringIncrBy string_incr_by = 70;
     StringAppend string_append = 71;
     ListSet list_set = 72;
     ListRemove list_remove = 73;
     ListTrim list_trim = 74;
-    CellRemove cell_remove = 75;
+    WindowReduceRemove window_reduce_remove = 75;
   }
 }
 
@@ -307,18 +307,18 @@ message CommandResponse {
   repeated ContextNode context_nodes = 6;
   uint64 count = 7;
   bool exists = 8;
-  // A merge-reduce feature append reports what landed. `count` stays the snapshots written.
+  // A merge-reduce feature append reports what landed. `count` stays the samples written.
   uint64 cells_created = 9;
   uint64 cells_merged = 10;
   // Set when the append carried a retry token the key still remembered: the counts are the first
   // application's and nothing was written.
   bool replayed = 15;
-  // A rollup reports what it did: `count` is the snapshots after, these are the rest.
-  uint64 snapshots_before = 11;
+  // A rollup reports what it did: `count` is the samples after, these are the rest.
+  uint64 samples_before = 11;
   uint64 cells_before = 12;
   uint64 cells_after = 13;
   uint64 cells_dropped = 14;
-  // A removal reports what it did: `count` is the snapshots after, `snapshots_before` and
+  // A removal reports what it did: `count` is the samples after, `samples_before` and
   // `cells_before` as for a rollup, and this is the cells it took out.
   uint64 cells_removed = 16;
 }
@@ -1195,40 +1195,40 @@ message FeatureAppendWithPolicy {
   optional uint64 retry_token = 16;
 }
 
-// Rolls the cell snapshots of `key` stamped strictly below `older_than_ms` up into buckets of
-// `bucket_ms`, each stored at its bucket start, and optionally caps each rolled snapshot.
-message CellRollup {
+// Rolls the cell samples of `key` stamped strictly below `older_than_ms` up into buckets of
+// `bucket_ms`, each stored at its bucket start, and optionally caps each rolled sample.
+message WindowReduceRollup {
   string key = 1;
   uint64 older_than_ms = 2;
   uint64 bucket_ms = 3;
-  CellRollupCap cap = 4;
+  WindowReduceRollupCap cap = 4;
   // Absent (the first value) is the original request, whose older_than_ms is a stamp.
-  CellRollupAnchor anchor = 5;
+  WindowReduceRollupAnchor anchor = 5;
   // Tiers coarser than the first pair, finest first.
-  repeated CellRollupTier coarser_tiers = 6;
-  CellRollupTruncate truncate = 7;
+  repeated WindowReduceRollupTier coarser_tiers = 6;
+  WindowReduceRollupTruncate truncate = 7;
 }
 
-enum CellRollupAnchor {
-  CELL_ROLLUP_ANCHOR_REQUEST = 0;
-  CELL_ROLLUP_ANCHOR_NEWEST_MINUS_AGE = 1;
+enum WindowReduceRollupAnchor {
+  WINDOW_REDUCE_ROLLUP_ANCHOR_REQUEST = 0;
+  WINDOW_REDUCE_ROLLUP_ANCHOR_NEWEST_MINUS_AGE = 1;
 }
 
-message CellRollupTier {
+message WindowReduceRollupTier {
   uint64 older_than_ms = 1;
   uint64 bucket_ms = 2;
 }
 
-// Keep the newest keep_last snapshots, acting only over the trigger (absent: over keep_last).
-message CellRollupTruncate {
+// Keep the newest keep_last samples, acting only over the trigger (absent: over keep_last).
+message WindowReduceRollupTruncate {
   uint64 keep_last = 1;
   optional uint64 trigger = 2;
 }
 
 // Keep the best `keep` cells of each group. Absent `group_by`: every cell is one group.
-message CellRollupCap {
+message WindowReduceRollupCap {
   optional string group_by = 1;
-  CellRollupScore score = 2;
+  WindowReduceRollupScore score = 2;
   uint64 keep = 3;
   // Parts per million of keep reserved for the most recently seen members; 0 protects none.
   uint32 protect_newest_ppm = 4;
@@ -1237,29 +1237,29 @@ message CellRollupCap {
 }
 
 // What a cap orders cells by. Lanes are named, never numbered.
-message CellRollupScore {
+message WindowReduceRollupScore {
   oneof kind {
     string lane = 1;
-    CellRollupRatio ratio = 2;
-    CellRollupWilson wilson = 3;
+    WindowReduceRollupRatio ratio = 2;
+    WindowReduceRollupWilson wilson = 3;
     bool member = 4;
     bool time = 5;
-    CellRollupWeighted weighted = 6;
+    WindowReduceRollupWeighted weighted = 6;
   }
 }
 
-message CellRollupRatio {
+message WindowReduceRollupRatio {
   string numerator = 1;
   string denominator = 2;
 }
 
-message CellRollupWilson {
+message WindowReduceRollupWilson {
   string successes = 1;
   string trials = 2;
   double z = 3;
 }
 
-message CellRollupWeighted {
+message WindowReduceRollupWeighted {
   repeated string lanes = 1;
   repeated double weights = 2;
 }
@@ -2141,11 +2141,11 @@ message ContextMemoryIngestResponse {
   repeated ContextMemorySourceReceipt sources = 2;
 }
 
-// Removes cells from the snapshots of `key`: a cell goes when its snapshot is stamped in
+// Removes cells from the samples of `key`: a cell goes when its sample is stamped in
 // [start_ms, end_ms] (an absent bound is open), its member is in `include` (absent: any member)
 // and not in `exclude`, and every predicate in `filters` holds on it. A request that restricts
-// nothing is refused. A snapshot left with no cell is removed.
-message CellRemove {
+// nothing is refused. A sample left with no cell is removed.
+message WindowReduceRemove {
   string key = 1;
   optional uint64 start_ms = 2;
   optional uint64 end_ms = 3;

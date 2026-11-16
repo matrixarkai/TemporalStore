@@ -837,6 +837,11 @@ jobs:
             engine::window_reduce_protocol::wire_tests::every_golden_value_sets_every_field_its_message_has_so_no_field_escapes_the_comparison \
             engine::window_reduce_protocol::wire_tests::the_field_numbers_wire_types_labels_enum_values_and_reserved_numbers_are_those_the_proto_had_before \
             engine::window_reduce_protocol::wire_tests::the_proto_names_no_snapshot_for_this_unit_and_the_stored_key_tag_is_still_cells \
+            sdk::window_reduce_wire_tests::the_golden_bytes_of_every_touched_command_message_decode_and_re_encode_identically \
+            sdk::window_reduce_wire_tests::the_oneof_field_numbers_of_the_two_commands_are_69_and_75_under_their_new_names \
+            sdk::window_reduce_wire_tests::every_golden_command_value_sets_the_fields_it_states_and_together_they_cover_every_declared_field \
+            sdk::window_reduce_wire_tests::the_command_proto_field_numbers_wire_types_labels_and_enum_values_are_those_it_had_before \
+            sdk::window_reduce_wire_tests::the_command_proto_names_no_cell_rollup_or_cell_remove_and_no_snapshot_count_field \
             engine::window::tests::a_range_stops_at_its_cap_newest_first_and_a_newest_n_is_not_capped_by_it \
             engine::window::tests::a_window_is_resolved_against_the_clock_and_the_anchor_it_names \
             engine::window::tests::every_window_kind_names_the_samples_the_walk_it_replaced_named \
