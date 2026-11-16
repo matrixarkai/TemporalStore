@@ -63,14 +63,14 @@ thread_local! {
     static LAST_ROUND_INDEX_UPDATE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
 }
 
-/// How many blocks the last round on this thread asked `should_relocate` about.
-#[cfg(test)]
 /// 0 before any round, 1 when the last round updated the bucket index in place, 2 when it rebuilt.
 #[cfg(test)]
 pub(crate) fn last_round_index_update_for_test() -> u8 {
     LAST_ROUND_INDEX_UPDATE.with(|cell| cell.get())
 }
 
+/// How many blocks the last round on this thread asked `should_relocate` about.
+#[cfg(test)]
 pub(crate) fn last_compaction_round_decisions_for_test() -> usize {
     LAST_ROUND_DECISIONS.with(|cell| cell.get())
 }
