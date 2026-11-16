@@ -199,7 +199,7 @@ async fn one_append(
 
     // ---- THE ENTRY, and then EVERY object the append left behind. The sidecar is a second
     // ---- object and it is part of what an append costs, so it is counted rather than ignored.
-    let blob_key = format!("{cluster}/shards/{SHARD}/shared/wal/wal.protobuf.blob");
+    let blob_key = format!("{cluster}/shards/{SHARD}/shared/wal/seg_00000000000000000001.wal.protobuf.blob");
     let objects = store
         .list(&format!("{cluster}/shards/{SHARD}/shared/wal/"))
         .await
@@ -309,7 +309,7 @@ async fn batched_appends(
         "the last entry of a {count}-entry batch did not read back intact"
     );
 
-    let blob_key = format!("{cluster}/shards/{SHARD}/shared/wal/wal.protobuf.blob");
+    let blob_key = format!("{cluster}/shards/{SHARD}/shared/wal/seg_00000000000000000001.wal.protobuf.blob");
     let objects = store
         .list(&format!("{cluster}/shards/{SHARD}/shared/wal/"))
         .await

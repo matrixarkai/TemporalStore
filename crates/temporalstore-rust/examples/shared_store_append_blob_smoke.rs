@@ -68,8 +68,8 @@ async fn main() {
             .unwrap();
     }
 
-    let blob_key = "cluster-a/shards/1/shared/wal/wal.protobuf.blob";
-    let offset_index_key = "cluster-a/shards/1/shared/wal/wal.offset_index.protobuf.blob";
+    let blob_key = "cluster-a/shards/1/shared/wal/seg_00000000000000000001.wal.protobuf.blob";
+    let offset_index_key = "cluster-a/shards/1/shared/wal/seg_00000000000000000001.index.protobuf.blob";
     // THE APPEND PATH WRITES AN OFFSET INDEX BESIDE THE BLOB. This asserted the blob ALONE, which
     // was true when it was written and has not been since -- another thing an uncompiled feature
     // hid. Both are named rather than the assertion loosened, so a layer going missing still fails.

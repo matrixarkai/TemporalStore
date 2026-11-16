@@ -281,7 +281,7 @@ async fn main() {
     report(&mo_out);
 
     // ---- WHAT MATRIXOBJECT LAID OUT, which the file backend has no equivalent of.
-    let blob_key = format!("{CLUSTER}/shards/{SHARD}/shared/wal/wal.protobuf.blob");
+    let blob_key = format!("{CLUSTER}/shards/{SHARD}/shared/wal/seg_00000000000000000001.wal.protobuf.blob");
     if mo_out.objects.iter().any(|o| o == &blob_key) {
         let inner = mo_store.inner();
         let guard = inner.lock().expect("store lock poisoned");

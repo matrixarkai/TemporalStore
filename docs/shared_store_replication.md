@@ -168,6 +168,36 @@ shared store wal -> command replay -> catch up after checkpoint
 
 ## Local Storage Modes Harness
 
+## The shared WAL is a run of segments
+
+In the default (append-blob) layout the shared WAL of a shard is a run of SEGMENTS under
+`<cluster>/shards/<shard>/shared/wal/`, each a pair of objects named by the first WAL index it holds:
+
+```
+seg_<first index, 20 digits>.wal.protobuf.blob     the log: one append per batch
+seg_<first index, 20 digits>.index.protobuf.blob   its offset index: one append per batch
+```
+
+The object stores this log lives on bound the extents of one object, and what it costs to describe an
+object grows with them, so no object may grow with the log. A writer starts the next segment once the
+current one has taken a quota of appends: `TS_SHARED_STORE_WAL_SEGMENT_APPENDS` (builder
+`with_wal_segment_appends`). The default is 256, sized for plain publication; a store that publishes
+compactly can take 2048 (`SHARED_STORE_WAL_SEGMENT_APPENDS_COMPACT`). It is counted per BATCH, because a
+batch is one append to each object and never spans two segments. A writer that starts always opens a new
+segment, named by the next index, so it never has to learn how many extents an earlier owner left.
+
+- **Replay** reads only the index segments that can hold an entry above the starting position and checks the
+  union for a hole, so a missing or shortened segment is a `ReplayGap` at the boundary.
+- **A start** reads the highest index segment, not the history.
+- **Collection** (`collect_to_checkpoint` -> `gc_wal_before`) deletes sealed segments wholly below the
+  retention point, index first and then log, sweeps a log no index names, and never deletes the highest
+  index segment (a restart finds the last index there) or the highest segment of all (the next append goes
+  on to it). It still honours the replay-cursor clamp.
+- **The pre-segment layout** (`wal.protobuf.blob` and `wal.offset_index.protobuf.blob`) is refused by name
+  with `WalLayoutUnsupported`, never read as empty. The per-key compatibility mode
+  (`SharedStoreWalAppendMode::PerKeyObject`) is a separately selected mode and is unchanged; the default
+  mode does not read its objects.
+
 Run the harness below when changing shared-store storage, replay, or local Raft WAL behavior:
 
 ```bash
