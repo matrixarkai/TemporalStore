@@ -7,7 +7,7 @@ use crate::engine::cell_set::{
 };
 use super::*;
 use prost::Message;
-use wire::{CellDeleteRequest, CellRemoveRequest, CellSelector, KeyFilter, TimeSpan};
+use wire::{WindowReduceDeleteRequest, WindowReduceRemoveRequest, WindowReduceSelector, KeyFilter, TimeSpan};
 
 fn profile(labels: &[&str]) -> TableProfile {
     TableProfile {
@@ -43,8 +43,8 @@ fn key(profile: &TableProfile, entity: u64, channel: u16, kind: u16) -> String {
     .unwrap()
 }
 
-fn request(span: Option<(i64, i64)>, filter: Option<KeyFilter>) -> CellRemoveRequest {
-    CellRemoveRequest {
+fn request(span: Option<(i64, i64)>, filter: Option<KeyFilter>) -> WindowReduceRemoveRequest {
+    WindowReduceRemoveRequest {
         entity: 7,
         span: span.map(|(start_us, end_us)| TimeSpan { start_us, end_us }),
         table: b"stats".to_vec(),
@@ -99,7 +99,7 @@ fn a_span_that_holds_no_whole_millisecond_or_runs_backwards_or_is_negative_is_re
     assert!(refused((5, 4)).message.contains("after it ends"));
     assert!(refused((-1, 5_000)).message.contains("negative"));
     assert!(refused((0, -1)).message.contains("negative"));
-    assert_eq!(refused((5, 4)).code, CellStatusCode::InvalidArgument);
+    assert_eq!(refused((5, 4)).code, WindowReduceStatusCode::InvalidArgument);
 }
 
 #[test]
@@ -111,13 +111,13 @@ fn a_remove_that_restricts_nothing_is_refused_and_a_member_set_or_a_span_restric
     // Each of the three alone is enough.
     assert!(translate_remove(&table, &request(Some((0, 5_000)), None)).is_ok());
     assert!(translate_remove(&table, &request(None, filter(2))).is_ok());
-    let members = CellRemoveRequest { members: vec![9, 3], ..request(None, None) };
+    let members = WindowReduceRemoveRequest { members: vec![9, 3], ..request(None, None) };
     let spec = spec_of(translate_remove(&table, &members).unwrap());
     assert_eq!(spec.members.include, Some(vec![CellMemberId::U64(9), CellMemberId::U64(3)]));
-    let spare = CellRemoveRequest { excluded_members: vec![4], ..request(None, None) };
+    let spare = WindowReduceRemoveRequest { excluded_members: vec![4], ..request(None, None) };
     assert_eq!(spec_of(translate_remove(&table, &spare).unwrap()).members.exclude, vec![CellMemberId::U64(4)]);
     // A flagged, empty include set is refused as it is on a read; an unflagged one restricts nothing.
-    let flagged = CellRemoveRequest { has_members: true, ..request(Some((0, 5_000)), None) };
+    let flagged = WindowReduceRemoveRequest { has_members: true, ..request(Some((0, 5_000)), None) };
     assert!(translate_remove(&table, &flagged).unwrap_err().message.contains("names no member"));
     assert!(translate_remove(&table, &request(Some((0, 5_000)), None)).is_ok());
 }
@@ -126,22 +126,22 @@ fn a_remove_that_restricts_nothing_is_refused_and_a_member_set_or_a_span_restric
 fn member_lists_are_accepted_at_1024_and_refused_at_1025() {
     let table = profile(&["slot"]);
     let list = |n: i64| (1..=n).collect::<Vec<_>>();
-    assert!(translate_remove(&table, &CellRemoveRequest { members: list(1024), ..request(None, None) }).is_ok());
-    assert!(translate_remove(&table, &CellRemoveRequest { members: list(1025), ..request(None, None) }).is_err());
-    assert!(translate_remove(&table, &CellRemoveRequest { excluded_members: list(1024), ..request(None, None) }).is_ok());
-    let over = translate_remove(&table, &CellRemoveRequest { excluded_members: list(1025), ..request(None, None) });
+    assert!(translate_remove(&table, &WindowReduceRemoveRequest { members: list(1024), ..request(None, None) }).is_ok());
+    assert!(translate_remove(&table, &WindowReduceRemoveRequest { members: list(1025), ..request(None, None) }).is_err());
+    assert!(translate_remove(&table, &WindowReduceRemoveRequest { excluded_members: list(1024), ..request(None, None) }).is_ok());
+    let over = translate_remove(&table, &WindowReduceRemoveRequest { excluded_members: list(1025), ..request(None, None) });
     assert!(over.unwrap_err().message.contains("over the limit"));
 }
 
 #[test]
 fn a_delete_is_a_removal_by_label_and_member_over_every_snapshot_and_never_of_the_key() {
     let table = profile(&["slot"]);
-    let delete = |selector: CellSelector| CellDeleteRequest {
+    let delete = |selector: WindowReduceSelector| WindowReduceDeleteRequest {
         entity: 7,
         selector: Some(selector),
         table: b"stats".to_vec(),
     };
-    let selector = CellSelector { channel: 4, kind: 3, label: 5, members: vec![11, 12], excluded_members: vec![12], ..Default::default() };
+    let selector = WindowReduceSelector { channel: 4, kind: 3, label: 5, members: vec![11, 12], excluded_members: vec![12], ..Default::default() };
     let Command::CellRemove { key: named, spec } = translate_delete(&table, &delete(selector)).unwrap() else { panic!() };
     assert_eq!(named, key(&table, 7, 4, 3));
     assert_eq!((spec.start_ms, spec.end_ms), (None, None));
@@ -150,18 +150,18 @@ fn a_delete_is_a_removal_by_label_and_member_over_every_snapshot_and_never_of_th
     assert_eq!(spec.members.exclude, vec![CellMemberId::U64(12)]);
 
     // The label alone restricts, at 0 too, as it does on a read.
-    let label_only = CellSelector { channel: 4, kind: 3, ..Default::default() };
+    let label_only = WindowReduceSelector { channel: 4, kind: 3, ..Default::default() };
     assert_eq!(spec_of(translate_delete(&table, &delete(label_only.clone())).unwrap()).filters, vec![slot(0)]);
     // A table with no label and a selector with no member would empty the key.
     let unlabelled = profile(&[]);
     let err = translate_delete(&unlabelled, &delete(label_only.clone())).unwrap_err();
     assert!(err.message.contains("would empty the key"), "{err:?}");
-    let named_members = CellSelector { members: vec![1], ..label_only.clone() };
+    let named_members = WindowReduceSelector { members: vec![1], ..label_only.clone() };
     assert!(translate_delete(&unlabelled, &delete(named_members)).is_ok());
     // A label the table cannot carry, a missing selector and an oversize list are refused.
-    assert!(translate_delete(&unlabelled, &delete(CellSelector { label: 2, members: vec![1], ..label_only.clone() })).is_err());
-    assert!(translate_delete(&table, &CellDeleteRequest { selector: None, ..delete(label_only.clone()) }).is_err());
-    let big = |n: i64| CellSelector { members: (1..=n).collect(), ..label_only.clone() };
+    assert!(translate_delete(&unlabelled, &delete(WindowReduceSelector { label: 2, members: vec![1], ..label_only.clone() })).is_err());
+    assert!(translate_delete(&table, &WindowReduceDeleteRequest { selector: None, ..delete(label_only.clone()) }).is_err());
+    let big = |n: i64| WindowReduceSelector { members: (1..=n).collect(), ..label_only.clone() };
     assert!(translate_delete(&table, &delete(big(1024))).is_ok());
     assert!(translate_delete(&table, &delete(big(1025))).is_err());
 }
@@ -171,39 +171,39 @@ fn the_responses_carry_the_receipt_on_the_additive_fields_and_the_established_on
     let receipt = Receipt { snapshots_before: 5, snapshots_after: 4, cells_before: 30, cells_removed: 7 };
     let asked = request(Some((1_000, 9_000)), filter(1));
     let ok = remove_response(&asked, receipt);
-    assert_eq!(ok.code, CellStatusCode::Ok as i32);
+    assert_eq!(ok.code, WindowReduceStatusCode::Ok as i32);
     assert_eq!(ok.span, asked.span, "the span is echoed");
     assert!(!ok.has_message && ok.message.is_empty());
-    assert_eq!((ok.snapshots_before, ok.snapshots_after, ok.cells_before, ok.cells_removed), (5, 4, 30, 7));
+    assert_eq!((ok.samples_before, ok.samples_after, ok.cells_before, ok.cells_removed), (5, 4, 30, 7));
     // Field numbers 16 to 19, written as varints: tag 0x80 0x01 for 16 and 0x98 0x01 for 19.
     let bytes = ok.encode_to_vec();
     assert!(bytes.windows(3).any(|w| w == [0x80, 0x01, 5]), "{bytes:?}");
     assert!(bytes.windows(3).any(|w| w == [0x98, 0x01, 7]), "{bytes:?}");
-    assert_eq!(wire::CellRemoveResponse::decode(bytes.as_slice()).unwrap(), ok);
+    assert_eq!(wire::WindowReduceRemoveResponse::decode(bytes.as_slice()).unwrap(), ok);
 
     let refusal = invalid("no good");
     let refused = refused_remove_response(&asked, &refusal);
-    assert_eq!((refused.code, refused.message.as_str(), refused.has_message), (CellStatusCode::InvalidArgument as i32, "no good", true));
+    assert_eq!((refused.code, refused.message.as_str(), refused.has_message), (WindowReduceStatusCode::InvalidArgument as i32, "no good", true));
     assert_eq!(refused.cells_removed, 0);
 
     let deleted = delete_response(receipt);
-    assert_eq!((deleted.code, deleted.snapshots_after, deleted.cells_removed), (0, 4, 7));
+    assert_eq!((deleted.code, deleted.samples_after, deleted.cells_removed), (0, 4, 7));
     assert!(deleted.encode_to_vec().windows(3).any(|w| w == [0x98, 0x01, 7]));
     let refused = refused_delete_response(&refusal);
-    assert_eq!((refused.code, refused.message.as_str()), (CellStatusCode::InvalidArgument as i32, "no good"));
+    assert_eq!((refused.code, refused.message.as_str()), (WindowReduceStatusCode::InvalidArgument as i32, "no good"));
 }
 
 #[test]
 fn a_remove_request_round_trips_its_additive_fields_and_an_older_reader_skips_them() {
-    let sent = CellRemoveRequest {
+    let sent = WindowReduceRemoveRequest {
         members: vec![3, 1],
         has_members: true,
         excluded_members: vec![2],
         ..request(Some((10, 20)), filter(4))
     };
-    assert_eq!(CellRemoveRequest::decode(sent.encode_to_vec().as_slice()).unwrap(), sent);
+    assert_eq!(WindowReduceRemoveRequest::decode(sent.encode_to_vec().as_slice()).unwrap(), sent);
     // The established fields alone, as an older sender writes them, translate as they did.
     let older = request(Some((0, 5_000)), filter(4));
     assert!(older.members.is_empty() && !older.has_members && older.excluded_members.is_empty());
-    assert_eq!(CellRemoveRequest::decode(older.encode_to_vec().as_slice()).unwrap(), older);
+    assert_eq!(WindowReduceRemoveRequest::decode(older.encode_to_vec().as_slice()).unwrap(), older);
 }

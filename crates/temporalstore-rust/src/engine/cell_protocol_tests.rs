@@ -54,16 +54,16 @@ fn observation(entity: i64, ts_us: i64, entries: Vec<CellEntry>) -> Observation 
     Observation { entity, timestamp_us: ts_us, kind: 3, channel: 4, entries, ..Default::default() }
 }
 
-fn add(observations: Vec<Observation>) -> CellAddRequest {
-    CellAddRequest { table: b"stats".to_vec(), observations, ..Default::default() }
+fn add(observations: Vec<Observation>) -> WindowReduceAddRequest {
+    WindowReduceAddRequest { table: b"stats".to_vec(), observations, ..Default::default() }
 }
 
-fn query(window: Window, selector: CellSelector) -> CellQuery {
-    CellQuery { entity: 7, window: Some(window), selector: Some(selector), table: b"stats".to_vec(), ..Default::default() }
+fn query(window: Window, selector: WindowReduceSelector) -> WindowReduceQuery {
+    WindowReduceQuery { entity: 7, window: Some(window), selector: Some(selector), table: b"stats".to_vec(), ..Default::default() }
 }
 
-fn selector(mode: RankMode) -> CellSelector {
-    CellSelector { channel: 4, kind: 3, label: 5, mode: mode as i32, limit: 10, has_limit: true, ..Default::default() }
+fn selector(mode: RankMode) -> WindowReduceSelector {
+    WindowReduceSelector { channel: 4, kind: 3, label: 5, mode: mode as i32, limit: 10, has_limit: true, ..Default::default() }
 }
 
 fn trailing() -> Window {
@@ -74,7 +74,7 @@ fn trailing() -> Window {
 
 #[test]
 fn the_add_request_wire_bytes_follow_the_established_field_numbers() {
-    let request = CellAddRequest {
+    let request = WindowReduceAddRequest {
         table: b"t".to_vec(),
         observations: vec![Observation {
             entity: 7,
@@ -109,15 +109,15 @@ fn an_unknown_field_is_skipped_and_the_rest_reads_the_same() {
     let mut bytes = request.encode_to_vec();
     bytes.extend([0xf8, 0x06, 0x2a]); // field 111, varint
     bytes.extend([0x92, 0x06, 0x02, 0xaa, 0xbb]); // field 98, length-delimited
-    assert_eq!(CellAddRequest::decode(bytes.as_slice()).unwrap(), request);
+    assert_eq!(WindowReduceAddRequest::decode(bytes.as_slice()).unwrap(), request);
 }
 
 #[test]
 fn a_query_and_its_answer_round_trip_through_the_wire() {
     let q = query(trailing(), selector(RankMode::Ratio));
-    assert_eq!(CellQuery::decode(q.encode_to_vec().as_slice()).unwrap(), q);
-    let a = CellAnswer { entity: 7, first_us: 3, last_us: 4, code: 8, message: "m".into(), ..Default::default() };
-    assert_eq!(CellAnswer::decode(a.encode_to_vec().as_slice()).unwrap(), a);
+    assert_eq!(WindowReduceQuery::decode(q.encode_to_vec().as_slice()).unwrap(), q);
+    let a = WindowReduceAnswer { entity: 7, first_us: 3, last_us: 4, code: 8, message: "m".into(), ..Default::default() };
+    assert_eq!(WindowReduceAnswer::decode(a.encode_to_vec().as_slice()).unwrap(), a);
     // Field numbers 3 and 4 are the answer's time span, 16 and 17 its own status.
     assert_eq!(
         a.encode_to_vec(),
@@ -208,14 +208,14 @@ fn a_request_with_a_wrong_shape_an_unknown_table_or_a_duplicate_is_refused_with_
     strict.refuse_duplicates = true;
     let twice = add(vec![observation(7, NOW_US, vec![pair_entry(9, 1, 1), pair_entry(9, 1, 1)])]);
     assert!(translate_add(&profile, &twice, NOW_US).is_ok());
-    assert_eq!(translate_add(&strict, &twice, NOW_US).unwrap_err().code, CellStatusCode::DuplicateRefused);
+    assert_eq!(translate_add(&strict, &twice, NOW_US).unwrap_err().code, WindowReduceStatusCode::DuplicateRefused);
 
     let list_entry = CellEntry { member: 1, shape: CellShape::List as i32, ..Default::default() };
     let err = translate_add(&profile, &add(vec![observation(7, NOW_US, vec![list_entry])]), NOW_US).unwrap_err();
-    assert_eq!(err.code, CellStatusCode::InvalidArgument);
+    assert_eq!(err.code, WindowReduceStatusCode::InvalidArgument);
 
     let profiles = Profiles::new(vec![profile]).unwrap();
-    assert_eq!(profiles.lookup(b"absent").unwrap_err().code, CellStatusCode::NoSuchTable);
+    assert_eq!(profiles.lookup(b"absent").unwrap_err().code, WindowReduceStatusCode::NoSuchTable);
     assert!(profiles.lookup(b"stats").is_ok());
 }
 
@@ -237,7 +237,7 @@ fn an_unreadable_channel_or_label_is_refused_not_wrapped() {
 
 // ---------------------------------------------------------------- bounds: refuse past, accept at
 
-fn many(cells: usize) -> CellAddRequest {
+fn many(cells: usize) -> WindowReduceAddRequest {
     add(vec![observation(7, NOW_US, (0..cells as i64).map(|m| pair_entry(m + 1, 1, 1)).collect())])
 }
 
@@ -253,7 +253,7 @@ fn cells_per_request_are_accepted_at_the_limit_and_refused_one_past_it() {
 fn queries_per_batch_are_accepted_at_the_limit_and_refused_one_past_it() {
     let profiles = Profiles::new(vec![pair_profile()]).unwrap();
     let q = query(trailing(), selector(RankMode::FirstLane));
-    let batch = |n: usize| CellBatchQuery { queries: vec![q.clone(); n] };
+    let batch = |n: usize| WindowReduceBatchQuery { queries: vec![q.clone(); n] };
     assert_eq!(translate_batch(&profiles, &batch(MAX_BATCH_QUERIES)).unwrap().len(), MAX_BATCH_QUERIES);
     assert!(translate_batch(&profiles, &batch(MAX_BATCH_QUERIES + 1)).unwrap_err().message.contains("over the limit"));
     assert!(translate_batch(&profiles, &batch(0)).is_err());
@@ -265,11 +265,11 @@ fn a_batch_names_the_position_of_the_query_that_refused_it() {
     let good = query(trailing(), selector(RankMode::FirstLane));
     let mut bad = good.clone();
     bad.table = b"absent".to_vec();
-    let err = translate_batch(&profiles, &CellBatchQuery { queries: vec![good.clone(), bad] }).unwrap_err();
-    assert_eq!(err.code, CellStatusCode::NoSuchTable);
+    let err = translate_batch(&profiles, &WindowReduceBatchQuery { queries: vec![good.clone(), bad] }).unwrap_err();
+    assert_eq!(err.code, WindowReduceStatusCode::NoSuchTable);
     let mut worse = good.clone();
     worse.selector.as_mut().unwrap().limit = 0;
-    let err = translate_batch(&profiles, &CellBatchQuery { queries: vec![good.clone(), good, worse] }).unwrap_err();
+    let err = translate_batch(&profiles, &WindowReduceBatchQuery { queries: vec![good.clone(), good, worse] }).unwrap_err();
     assert!(err.message.starts_with("query 2:"), "{err:?}");
 }
 
@@ -279,7 +279,7 @@ fn the_table_name_is_accepted_at_64_bytes_and_refused_at_65() {
     p.name = "n".repeat(64);
     let profiles = Profiles::new(vec![p]).unwrap();
     assert!(profiles.lookup("n".repeat(64).as_bytes()).is_ok());
-    assert_eq!(profiles.lookup("n".repeat(65).as_bytes()).unwrap_err().code, CellStatusCode::InvalidArgument);
+    assert_eq!(profiles.lookup("n".repeat(65).as_bytes()).unwrap_err().code, WindowReduceStatusCode::InvalidArgument);
 }
 
 #[test]
@@ -295,7 +295,7 @@ fn the_limit_of_a_read_is_accepted_at_1000_and_refused_at_1001() {
 #[test]
 fn weighted_lanes_are_accepted_at_8_and_refused_at_9() {
     let profile = list_profile(16);
-    let weighted = |n: usize| CellSelector {
+    let weighted = |n: usize| WindowReduceSelector {
         has_weighted_lanes: true,
         has_weights: true,
         weighted_lanes: (0..n as i32).collect(),
@@ -310,7 +310,7 @@ fn weighted_lanes_are_accepted_at_8_and_refused_at_9() {
 #[test]
 fn member_lists_and_extra_entities_are_accepted_at_the_limit_and_refused_one_past_it() {
     let profile = pair_profile();
-    let with_members = |n: usize, excluded: usize| CellSelector {
+    let with_members = |n: usize, excluded: usize| WindowReduceSelector {
         members: vec![1; n],
         has_members: true,
         excluded_members: vec![2; excluded],
@@ -350,7 +350,7 @@ fn the_accepted_timestamp_range_is_open_at_both_ends() {
 #[test]
 fn each_translated_rank_mode_becomes_the_score_it_names() {
     let profile = pair_profile();
-    let score = |s: CellSelector| translate_query(&profile, &query(trailing(), s)).unwrap().spec.score;
+    let score = |s: WindowReduceSelector| translate_query(&profile, &query(trailing(), s)).unwrap().spec.score;
     assert_eq!(score(selector(RankMode::FirstLane)), CellScore::Lane { lane: "impressions".into() });
     assert_eq!(score(selector(RankMode::SecondLane)), CellScore::Lane { lane: "clicks".into() });
     assert_eq!(score(selector(RankMode::Member)), CellScore::Member);
@@ -362,11 +362,11 @@ fn each_translated_rank_mode_becomes_the_score_it_names() {
         score(selector(RankMode::Wilson)),
         CellScore::Wilson { successes: "impressions".into(), trials: "clicks".into(), z: DEFAULT_WILSON_Z }
     );
-    let z = CellSelector { has_wilson_z: true, wilson_z: 2.5, ..selector(RankMode::Wilson) };
+    let z = WindowReduceSelector { has_wilson_z: true, wilson_z: 2.5, ..selector(RankMode::Wilson) };
     assert!(matches!(score(z), CellScore::Wilson { z, .. } if z == 2.5));
-    let named = CellSelector { has_sort_lane: true, sort_lane: 1, ..selector(RankMode::NamedLane) };
+    let named = WindowReduceSelector { has_sort_lane: true, sort_lane: 1, ..selector(RankMode::NamedLane) };
     assert_eq!(score(named), CellScore::Lane { lane: "clicks".into() });
-    let off = CellSelector { has_sort_lane: true, sort_lane: 2, ..selector(RankMode::NamedLane) };
+    let off = WindowReduceSelector { has_sort_lane: true, sort_lane: 2, ..selector(RankMode::NamedLane) };
     assert!(translate_query(&profile, &query(trailing(), off)).is_err());
 }
 
@@ -395,10 +395,10 @@ fn a_mode_or_window_that_is_not_built_yet_is_refused_and_says_so() {
 #[test]
 fn a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time() {
     let profile = pair_profile();
-    let plan = |s: CellSelector| translate_query(&profile, &query(trailing(), s));
+    let plan = |s: WindowReduceSelector| translate_query(&profile, &query(trailing(), s));
     // The limit of the request is ignored, even a limit of zero: the read asks for as many rows as
     // the set holds, and orders them by the stamp of each member's newest snapshot.
-    let only = |members: Vec<i64>| CellSelector {
+    let only = |members: Vec<i64>| WindowReduceSelector {
         has_members: true,
         members,
         limit: 0,
@@ -425,7 +425,7 @@ fn a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time() {
     let over = plan(only((0..=MAX_TOP_K as i64).collect())).unwrap_err();
     assert!(over.message.contains("over the limit"), "{over:?}");
     // CONTROL: the same selector in another mode keeps its limit.
-    let ranked = CellSelector { has_members: true, members: vec![3, 4, 5], ..selector(RankMode::FirstLane) };
+    let ranked = WindowReduceSelector { has_members: true, members: vec![3, 4, 5], ..selector(RankMode::FirstLane) };
     assert_eq!(10, plan(ranked).unwrap().spec.top_k);
 }
 
@@ -461,10 +461,10 @@ fn an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time() {
         }],
         refused: String::new(),
     };
-    let q = CellQuery { echo: true, has_echo: true, ..query(trailing(), selector(RankMode::Ratio)) };
+    let q = WindowReduceQuery { echo: true, has_echo: true, ..query(trailing(), selector(RankMode::Ratio)) };
     let a = answer_of(&profile, &q, &ranked);
-    assert_eq!(a.code, CellStatusCode::Ok as i32);
-    assert_eq!((a.snapshots, a.unscored), (2, 1));
+    assert_eq!(a.code, WindowReduceStatusCode::Ok as i32);
+    assert_eq!((a.samples, a.unscored), (2, 1));
     assert_eq!(a.entries[0].member, 9);
     assert!(a.entries[0].has_label && a.entries[0].label == 5);
     let pair = a.entries[0].pair.as_ref().unwrap();
@@ -472,7 +472,7 @@ fn an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time() {
     assert_eq!(a.first_us, 1_700_000_000_123_000);
     assert!(a.echoed_selector.is_some() && a.echoed_window.is_some());
     let refused = answer_of(&profile, &q, &RankedCells { refused: "why".into(), ..Default::default() });
-    assert_eq!((refused.code, refused.message.as_str()), (CellStatusCode::InvalidArgument as i32, "why"));
+    assert_eq!((refused.code, refused.message.as_str()), (WindowReduceStatusCode::InvalidArgument as i32, "why"));
 }
 
 #[test]
@@ -481,9 +481,9 @@ fn the_skip_existing_flag_is_carried_and_refused_with_a_message_that_says_what_t
     assert!(translate_add(&pair_profile(), &request, NOW_US).is_ok());
     request.skip_existing = true;
     let err = translate_add(&pair_profile(), &request, NOW_US).unwrap_err();
-    assert_eq!(err.code, CellStatusCode::InvalidArgument);
+    assert_eq!(err.code, WindowReduceStatusCode::InvalidArgument);
     assert!(err.message.contains("retry token"), "{err:?}");
-    let restore = CellRestoreRequest {
+    let restore = WindowReduceRestoreRequest {
         table: b"stats".to_vec(),
         skip_existing: true,
         observations: vec![RestoredObservation { entity: 7, latest_us: NOW_US, earliest_us: NOW_US, entries: vec![pair_entry(9, 1, 1)], ..Default::default() }],
@@ -512,7 +512,7 @@ fn a_retry_token_on_the_wire_rides_on_every_key_of_the_append_and_a_zero_token_i
     assert_eq!(tokens_of(&translate_add(&profile, &request, NOW_US).unwrap()), vec![None, None]);
     let wide: u64 = (3u64 << 40) + 77;
     request.retry_token = wide;
-    let sent = CellAddRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+    let sent = WindowReduceAddRequest::decode(request.encode_to_vec().as_slice()).unwrap();
     assert_eq!(
         tokens_of(&translate_add(&profile, &sent, NOW_US).unwrap()),
         vec![Some(wide), Some(wide)]
@@ -523,7 +523,7 @@ fn a_retry_token_on_the_wire_rides_on_every_key_of_the_append_and_a_zero_token_i
 
 #[test]
 fn the_token_and_the_replayed_flag_have_the_established_field_numbers() {
-    let request = CellAddRequest { table: b"t".to_vec(), retry_token: 300, ..Default::default() };
+    let request = WindowReduceAddRequest { table: b"t".to_vec(), retry_token: 300, ..Default::default() };
     assert_eq!(request.encode_to_vec(), vec![0x0a, 0x01, b't', 0x80, 0x01, 0xac, 0x02]);
     let response = add_response(0, 0, 0, true);
     assert_eq!(response.encode_to_vec(), vec![0x98, 0x01, 0x01]);
@@ -534,15 +534,15 @@ fn a_replayed_receipt_is_reported_with_the_counts_of_the_first_application() {
     let first = add_response(2, 5, 1, false);
     let replay = add_response(2, 5, 1, true);
     assert!(!first.replayed && replay.replayed);
-    assert_eq!((replay.snapshots_written, replay.cells_created, replay.cells_merged), (2, 5, 1));
-    assert_eq!(replay.code, CellStatusCode::Ok as i32);
+    assert_eq!((replay.samples_written, replay.cells_created, replay.cells_merged), (2, 5, 1));
+    assert_eq!(replay.code, WindowReduceStatusCode::Ok as i32);
     let encoded = replay.encode_to_vec();
-    assert_eq!(CellAddResponse::decode(encoded.as_slice()).unwrap(), replay);
+    assert_eq!(WindowReduceAddResponse::decode(encoded.as_slice()).unwrap(), replay);
 }
 
 #[test]
 fn a_restore_never_carries_a_token() {
-    let restore = CellRestoreRequest {
+    let restore = WindowReduceRestoreRequest {
         table: b"stats".to_vec(),
         observations: vec![RestoredObservation { entity: 7, latest_us: NOW_US, earliest_us: NOW_US, entries: vec![pair_entry(9, 1, 1)], ..Default::default() }],
         ..Default::default()
@@ -552,17 +552,17 @@ fn a_restore_never_carries_a_token() {
 
 // ---------------------------------------------------------------- read options, fan-in, batch
 
-fn plan(selector: CellSelector) -> ReadPlan {
+fn plan(selector: WindowReduceSelector) -> ReadPlan {
     translate_query(&pair_profile(), &query(trailing(), selector)).unwrap()
 }
 
-fn refusal(selector: CellSelector) -> Refusal {
+fn refusal(selector: WindowReduceSelector) -> Refusal {
     translate_query(&pair_profile(), &query(trailing(), selector)).unwrap_err()
 }
 
 #[test]
 fn a_member_set_round_trips_the_wire_and_becomes_the_include_and_exclude_filter() {
-    let sent = CellSelector {
+    let sent = WindowReduceSelector {
         members: vec![30, 10, 30],
         has_members: true,
         excluded_members: vec![9, -1],
@@ -570,10 +570,10 @@ fn a_member_set_round_trips_the_wire_and_becomes_the_include_and_exclude_filter(
     };
     // The exclude list is field 40 (tag 0xc2 0x02), packed.
     assert_eq!(
-        CellSelector { excluded_members: vec![9], ..Default::default() }.encode_to_vec(),
+        WindowReduceSelector { excluded_members: vec![9], ..Default::default() }.encode_to_vec(),
         vec![0xc2, 0x02, 0x01, 0x09]
     );
-    let back = CellSelector::decode(sent.encode_to_vec().as_slice()).unwrap();
+    let back = WindowReduceSelector::decode(sent.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, sent);
     let planned = plan(back);
     assert_eq!(
@@ -585,7 +585,7 @@ fn a_member_set_round_trips_the_wire_and_becomes_the_include_and_exclude_filter(
     );
     assert_eq!(planned.clone().command(), Command::CellRankQuery { key: planned.key, spec: planned.spec });
     // An exclusion alone leaves the include set absent: nothing is restricted but those members.
-    let only_exclude = plan(CellSelector { excluded_members: vec![4], ..selector(RankMode::FirstLane) });
+    let only_exclude = plan(WindowReduceSelector { excluded_members: vec![4], ..selector(RankMode::FirstLane) });
     assert_eq!(only_exclude.spec.members.include, None);
     assert_eq!(only_exclude.spec.members.exclude, vec![CellMemberId::U64(4)]);
     // No member list at all is the read as it was before the set existed.
@@ -594,13 +594,13 @@ fn a_member_set_round_trips_the_wire_and_becomes_the_include_and_exclude_filter(
 
 #[test]
 fn a_flagged_empty_include_set_is_refused_and_an_unflagged_one_restricts_nothing() {
-    let flagged = CellSelector { has_members: true, ..selector(RankMode::FirstLane) };
+    let flagged = WindowReduceSelector { has_members: true, ..selector(RankMode::FirstLane) };
     let err = refusal(flagged);
-    assert_eq!(err.code, CellStatusCode::InvalidArgument);
+    assert_eq!(err.code, WindowReduceStatusCode::InvalidArgument);
     assert!(err.message.contains("include set names no member"), "{err:?}");
     assert!(plan(selector(RankMode::FirstLane)).spec.members.include.is_none());
     // A list that holds members is the include set even when the flag is left off.
-    let unflagged = CellSelector { members: vec![5], ..selector(RankMode::FirstLane) };
+    let unflagged = WindowReduceSelector { members: vec![5], ..selector(RankMode::FirstLane) };
     assert_eq!(plan(unflagged).spec.members.include, Some(vec![CellMemberId::U64(5)]));
 }
 
@@ -628,8 +628,8 @@ fn a_window_anchored_on_the_newest_snapshot_becomes_the_newest_anchor_and_the_cl
 
 #[test]
 fn a_quota_names_lanes_by_position_and_its_first_count_is_also_the_others_count() {
-    let sent = CellSelector { quota_lanes: vec![1, 0], quota_counts: vec![2, 3], ..selector(RankMode::FirstLane) };
-    let back = CellSelector::decode(sent.encode_to_vec().as_slice()).unwrap();
+    let sent = WindowReduceSelector { quota_lanes: vec![1, 0], quota_counts: vec![2, 3], ..selector(RankMode::FirstLane) };
+    let back = WindowReduceSelector::decode(sent.encode_to_vec().as_slice()).unwrap();
     assert_eq!(back, sent);
     let quota = plan(back).spec.quota;
     assert_eq!(
@@ -643,7 +643,7 @@ fn a_quota_names_lanes_by_position_and_its_first_count_is_also_the_others_count(
         }
     );
     // One count and no lane asks for members that fit no lane, and nothing else.
-    let others_only = plan(CellSelector { quota_counts: vec![4], ..selector(RankMode::FirstLane) }).spec.quota;
+    let others_only = plan(WindowReduceSelector { quota_counts: vec![4], ..selector(RankMode::FirstLane) }).spec.quota;
     assert_eq!(others_only, CellQuota { lanes: Vec::new(), others: 4 });
     assert!(plan(selector(RankMode::FirstLane)).spec.quota.is_none());
 }
@@ -654,7 +654,7 @@ fn a_quota_names_lanes_by_position_and_its_first_count_is_also_the_others_count(
 /// 1000 members, and one that sums to 501 is refused for reserving 1002.
 #[test]
 fn a_quota_whose_wire_counts_sum_to_500_reserves_1000_and_one_more_is_refused() {
-    let quota = |count: i32| CellSelector { quota_lanes: vec![0], quota_counts: vec![count], ..selector(RankMode::FirstLane) };
+    let quota = |count: i32| WindowReduceSelector { quota_lanes: vec![0], quota_counts: vec![count], ..selector(RankMode::FirstLane) };
     let planned = plan(quota(500)).spec.quota;
     assert_eq!((planned.lanes[0].count, planned.others), (500, 500));
     let reserved = planned.lanes.iter().map(|l| l.count).sum::<usize>() + planned.others;
@@ -666,7 +666,7 @@ fn a_quota_whose_wire_counts_sum_to_500_reserves_1000_and_one_more_is_refused() 
 #[test]
 fn a_quota_is_accepted_at_16_lanes_and_refused_at_17_and_a_malformed_one_is_refused() {
     let profile = list_profile(17);
-    let quota = |lanes: usize| CellSelector {
+    let quota = |lanes: usize| WindowReduceSelector {
         quota_lanes: (0..lanes as i32).collect(),
         quota_counts: vec![1; lanes],
         ..selector(RankMode::FirstLane)
@@ -675,28 +675,28 @@ fn a_quota_is_accepted_at_16_lanes_and_refused_at_17_and_a_malformed_one_is_refu
     assert_eq!(at.spec.quota.lanes.len(), 16);
     let over = translate_query(&profile, &query(trailing(), quota(17))).unwrap_err();
     assert!(over.message.contains("lanes in a quota 17 is over the limit of 16"), "{over:?}");
-    let short = CellSelector { quota_lanes: vec![0, 1], quota_counts: vec![1], ..selector(RankMode::FirstLane) };
+    let short = WindowReduceSelector { quota_lanes: vec![0, 1], quota_counts: vec![1], ..selector(RankMode::FirstLane) };
     assert!(refusal(short).message.contains("one count for each lane"));
-    let negative = CellSelector { quota_lanes: vec![0], quota_counts: vec![-1], ..selector(RankMode::FirstLane) };
+    let negative = WindowReduceSelector { quota_lanes: vec![0], quota_counts: vec![-1], ..selector(RankMode::FirstLane) };
     assert!(refusal(negative).message.contains("negative"));
-    let zero = CellSelector { quota_lanes: vec![0], quota_counts: vec![0], ..selector(RankMode::FirstLane) };
+    let zero = WindowReduceSelector { quota_lanes: vec![0], quota_counts: vec![0], ..selector(RankMode::FirstLane) };
     assert!(refusal(zero).message.contains("asks for no member"));
-    let unknown = CellSelector { quota_lanes: vec![2], quota_counts: vec![1], ..selector(RankMode::FirstLane) };
+    let unknown = WindowReduceSelector { quota_lanes: vec![2], quota_counts: vec![1], ..selector(RankMode::FirstLane) };
     assert!(refusal(unknown).message.contains("is not a lane of this table"));
-    let twice = CellSelector { quota_lanes: vec![1, 1], quota_counts: vec![1, 1], ..selector(RankMode::FirstLane) };
+    let twice = WindowReduceSelector { quota_lanes: vec![1, 1], quota_counts: vec![1, 1], ..selector(RankMode::FirstLane) };
     assert!(refusal(twice).message.contains("in the quota twice"));
 }
 
 #[test]
 fn a_decayed_lane_takes_its_half_life_from_decay_made_whole_by_its_rounding() {
-    let decayed = |decay: f64, rounding: Rounding| CellSelector {
+    let decayed = |decay: f64, rounding: Rounding| WindowReduceSelector {
         decay,
         decay_rounding: rounding as i32,
         has_sort_lane: true,
         sort_lane: 1,
         ..selector(RankMode::DecayedLane)
     };
-    let half_life = |s: CellSelector| match plan(s).spec.score {
+    let half_life = |s: WindowReduceSelector| match plan(s).spec.score {
         CellScore::Decay { lane, half_life_ms } => {
             assert_eq!(lane, "clicks");
             half_life_ms
@@ -708,23 +708,23 @@ fn a_decayed_lane_takes_its_half_life_from_decay_made_whole_by_its_rounding() {
     assert_eq!(half_life(decayed(1500.5, Rounding::Round)), 1501);
     assert_eq!(half_life(decayed(1500.4, Rounding::Round)), 1500);
     // The lane defaults to the first, and the field numbers are the established ones.
-    let first = plan(CellSelector { decay: 7.0, ..selector(RankMode::DecayedLane) });
+    let first = plan(WindowReduceSelector { decay: 7.0, ..selector(RankMode::DecayedLane) });
     assert_eq!(first.spec.score, CellScore::Decay { lane: "impressions".into(), half_life_ms: 7 });
-    assert_eq!(CellSelector { decay: 1.0, ..Default::default() }.encode_to_vec(), vec![0x51, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f]);
+    assert_eq!(WindowReduceSelector { decay: 1.0, ..Default::default() }.encode_to_vec(), vec![0x51, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f]);
     // The mode is a new enum value; the other modes still ignore `decay`.
-    assert_eq!(plan(CellSelector { decay: 99.0, ..selector(RankMode::FirstLane) }).spec.score, plan(selector(RankMode::FirstLane)).spec.score);
+    assert_eq!(plan(WindowReduceSelector { decay: 99.0, ..selector(RankMode::FirstLane) }).spec.score, plan(selector(RankMode::FirstLane)).spec.score);
 }
 
 #[test]
 fn a_half_life_is_accepted_at_one_and_at_ten_years_and_refused_outside_them() {
     use crate::engine::cell_rank::MAX_HALF_LIFE_MS;
-    let read = |decay: f64| translate_query(&pair_profile(), &query(trailing(), CellSelector { decay, ..selector(RankMode::DecayedLane) }));
+    let read = |decay: f64| translate_query(&pair_profile(), &query(trailing(), WindowReduceSelector { decay, ..selector(RankMode::DecayedLane) }));
     assert!(read(1.0).is_ok());
     assert!(read(MAX_HALF_LIFE_MS as f64).is_ok());
     assert!(read(MAX_HALF_LIFE_MS as f64 + 1.0).unwrap_err().message.contains("half-life"));
     assert!(read(0.0).unwrap_err().message.contains("half-life 0 ms is outside"));
     for bad in [f64::NAN, f64::INFINITY, -1.0, 1.0e19] {
-        assert_eq!(read(bad).unwrap_err().code, CellStatusCode::InvalidArgument, "{bad}");
+        assert_eq!(read(bad).unwrap_err().code, WindowReduceStatusCode::InvalidArgument, "{bad}");
     }
 }
 
@@ -733,7 +733,7 @@ fn more_entities_become_one_merged_read_over_every_key_in_request_order() {
     let profile = pair_profile();
     let mut q = query(trailing(), selector(RankMode::FirstLane));
     q.more_entities = vec![8, 9];
-    let q = CellQuery::decode(q.encode_to_vec().as_slice()).unwrap();
+    let q = WindowReduceQuery::decode(q.encode_to_vec().as_slice()).unwrap();
     let key_of_entity = |id: u64| {
         cell_set::encode_key(
             &profile.header().key,
@@ -775,19 +775,19 @@ fn a_merged_read_refuses_a_key_named_twice_and_an_entity_that_is_not_an_id() {
 fn a_merged_answer_reports_how_many_keys_held_a_snapshot() {
     let ranked = RankedCells { snapshots: 4, keys: 3, ..Default::default() };
     let a = answer_of(&pair_profile(), &query(trailing(), selector(RankMode::FirstLane)), &ranked);
-    assert_eq!((a.snapshots, a.keys), (4, 3));
+    assert_eq!((a.samples, a.keys), (4, 3));
     // Field 20, varint: tag 0xa0 0x01.
-    assert_eq!(CellAnswer { keys: 3, ..Default::default() }.encode_to_vec(), vec![0xa0, 0x01, 0x03]);
-    assert_eq!(CellAnswer::decode(a.encode_to_vec().as_slice()).unwrap(), a);
+    assert_eq!(WindowReduceAnswer { keys: 3, ..Default::default() }.encode_to_vec(), vec![0xa0, 0x01, 0x03]);
+    assert_eq!(WindowReduceAnswer::decode(a.encode_to_vec().as_slice()).unwrap(), a);
 }
 
 #[test]
 fn a_batch_becomes_one_batch_command_that_the_engine_admits_and_a_merged_read_has_no_place_in_it() {
     let profiles = Profiles::new(vec![pair_profile()]).unwrap();
     let first = query(trailing(), selector(RankMode::FirstLane));
-    let second = query(trailing(), CellSelector { excluded_members: vec![3], ..selector(RankMode::Ratio) });
-    let batch = CellBatchQuery { queries: vec![first, second] };
-    let batch = CellBatchQuery::decode(batch.encode_to_vec().as_slice()).unwrap();
+    let second = query(trailing(), WindowReduceSelector { excluded_members: vec![3], ..selector(RankMode::Ratio) });
+    let batch = WindowReduceBatchQuery { queries: vec![first, second] };
+    let batch = WindowReduceBatchQuery::decode(batch.encode_to_vec().as_slice()).unwrap();
     let plans = translate_batch(&profiles, &batch).unwrap();
     let expected: Vec<CellRankBatchItem> =
         plans.iter().cloned().map(|p| CellRankBatchItem { key: p.key, spec: p.spec }).collect();
@@ -795,10 +795,10 @@ fn a_batch_becomes_one_batch_command_that_the_engine_admits_and_a_merged_read_ha
     assert_eq!(expected[1].spec.members.exclude, vec![CellMemberId::U64(3)]);
     let mut merged = batch.queries[0].clone();
     merged.more_entities = vec![8];
-    let plans = translate_batch(&profiles, &CellBatchQuery { queries: vec![batch.queries[0].clone(), merged] }).unwrap();
+    let plans = translate_batch(&profiles, &WindowReduceBatchQuery { queries: vec![batch.queries[0].clone(), merged] }).unwrap();
     assert!(batch_command(plans).unwrap_err().message.starts_with("query 1: a read over several entities"));
     // At the engine's limit of reads the command is admitted.
-    let full = translate_batch(&profiles, &CellBatchQuery { queries: vec![batch.queries[0].clone(); MAX_BATCH_QUERIES] }).unwrap();
+    let full = translate_batch(&profiles, &WindowReduceBatchQuery { queries: vec![batch.queries[0].clone(); MAX_BATCH_QUERIES] }).unwrap();
     assert!(batch_command(full).is_ok());
 }
 
@@ -807,20 +807,20 @@ fn a_batch_answer_holds_one_answer_per_query_in_order_each_with_its_own_status()
     let profiles = Profiles::new(vec![pair_profile()]).unwrap();
     let mut other = query(trailing(), selector(RankMode::FirstLane));
     other.entity = 8;
-    let batch = CellBatchQuery { queries: vec![query(trailing(), selector(RankMode::FirstLane)), other] };
+    let batch = WindowReduceBatchQuery { queries: vec![query(trailing(), selector(RankMode::FirstLane)), other] };
     let rankings = vec![
         RankedCells { snapshots: 2, keys: 1, ..Default::default() },
         RankedCells { refused: "why".into(), ..Default::default() },
     ];
     let answer = batch_answer(&profiles, &batch, &rankings);
-    assert_eq!(answer.code, CellStatusCode::Ok as i32);
+    assert_eq!(answer.code, WindowReduceStatusCode::Ok as i32);
     assert_eq!(answer.answers.len(), 2);
-    assert_eq!((answer.answers[0].entity, answer.answers[0].code, answer.answers[0].snapshots), (7, 0, 2));
-    assert_eq!((answer.answers[1].entity, answer.answers[1].code), (8, CellStatusCode::InvalidArgument as i32));
+    assert_eq!((answer.answers[0].entity, answer.answers[0].code, answer.answers[0].samples), (7, 0, 2));
+    assert_eq!((answer.answers[1].entity, answer.answers[1].code), (8, WindowReduceStatusCode::InvalidArgument as i32));
     assert_eq!(answer.answers[1].message, "why");
-    assert_eq!(CellBatchAnswer::decode(answer.encode_to_vec().as_slice()).unwrap(), answer);
+    assert_eq!(WindowReduceBatchAnswer::decode(answer.encode_to_vec().as_slice()).unwrap(), answer);
     let short = batch_answer(&profiles, &batch, &rankings[..1]);
-    assert_eq!(short.code, CellStatusCode::Error as i32);
+    assert_eq!(short.code, WindowReduceStatusCode::Error as i32);
     assert!(short.answers.is_empty());
 }
 
@@ -831,21 +831,21 @@ fn a_selector_that_asks_for_snapshot_info_or_a_member_limit_is_refused_naming_th
     // The unset request is translated: the refusals below are the option, not the selector.
     assert!(translate_query(&pair_profile(), &query(trailing(), selector(RankMode::FirstLane))).is_ok());
 
-    // `want_snapshot_info` is a request for something the answer cannot carry, with or without its
+    // `want_sample_info` is a request for something the answer cannot carry, with or without its
     // presence flag.
     for flagged in [false, true] {
-        let asked = CellSelector { want_snapshot_info: true, has_want_snapshot_info: flagged, ..selector(RankMode::FirstLane) };
+        let asked = WindowReduceSelector { want_sample_info: true, has_want_sample_info: flagged, ..selector(RankMode::FirstLane) };
         let err = refusal(asked);
-        assert_eq!(err.code, CellStatusCode::InvalidArgument);
-        assert!(err.message.contains("want_snapshot_info is not supported"), "{err:?}");
+        assert_eq!(err.code, WindowReduceStatusCode::InvalidArgument);
+        assert!(err.message.contains("want_sample_info is not supported"), "{err:?}");
     }
 
     // A member limit refuses at 1, the first value that limits anything, and at the extremes.
     for limit in [1, 2, 1000, i32::MAX, -1, i32::MIN] {
         for flagged in [false, true] {
-            let capped = CellSelector { limit_members: limit, has_limit_members: flagged, ..selector(RankMode::FirstLane) };
+            let capped = WindowReduceSelector { limit_members: limit, has_limit_members: flagged, ..selector(RankMode::FirstLane) };
             let err = refusal(capped);
-            assert_eq!(err.code, CellStatusCode::InvalidArgument);
+            assert_eq!(err.code, WindowReduceStatusCode::InvalidArgument);
             assert!(err.message.contains(&format!("limit_members {limit} is not supported")), "{limit}: {err:?}");
             assert!(err.message.contains("use `limit`"), "{err:?}");
         }
@@ -853,25 +853,25 @@ fn a_selector_that_asks_for_snapshot_info_or_a_member_limit_is_refused_naming_th
 
     // Every mode that reads is refused alike, and so is a query inside a batch, by position.
     for mode in [RankMode::SecondLane, RankMode::Member, RankMode::MembersOnly, RankMode::DecayedLane] {
-        let asked = CellSelector { want_snapshot_info: true, members: vec![1], ..selector(mode) };
-        assert!(refusal(asked).message.contains("want_snapshot_info"), "{mode:?}");
+        let asked = WindowReduceSelector { want_sample_info: true, members: vec![1], ..selector(mode) };
+        assert!(refusal(asked).message.contains("want_sample_info"), "{mode:?}");
     }
     let profiles = Profiles::new(vec![pair_profile()]).unwrap();
     let good = query(trailing(), selector(RankMode::FirstLane));
     let mut capped = good.clone();
     capped.selector.as_mut().unwrap().limit_members = 5;
-    let err = translate_batch(&profiles, &CellBatchQuery { queries: vec![good.clone(), capped] }).unwrap_err();
+    let err = translate_batch(&profiles, &WindowReduceBatchQuery { queries: vec![good.clone(), capped] }).unwrap_err();
     assert!(err.message.starts_with("query 1:") && err.message.contains("limit_members 5"), "{err:?}");
 }
 
 #[test]
 fn a_selector_that_sets_them_off_is_translated_to_exactly_the_read_it_was_without_them() {
     let plain = plan(selector(RankMode::FirstLane));
-    // A false `want_snapshot_info` and a limit of 0 are statements that nothing is wanted, even
+    // A false `want_sample_info` and a limit of 0 are statements that nothing is wanted, even
     // when their presence flags are on; they change no byte of the read.
-    let off = plan(CellSelector {
-        want_snapshot_info: false,
-        has_want_snapshot_info: true,
+    let off = plan(WindowReduceSelector {
+        want_sample_info: false,
+        has_want_sample_info: true,
         limit_members: 0,
         has_limit_members: true,
         ..selector(RankMode::FirstLane)
@@ -893,12 +893,12 @@ fn recent_is_the_stored_cell_read_with_the_selectors_label_and_limit() {
     assert_eq!(recent.spec.filters, vec![slot_is_five()]);
     assert_eq!(recent.spec.top_k, 10);
     // The limit is the read's: accepted at 1000, refused at 1001 and at 0.
-    let limited = |limit: i32| translate_query(&pair_profile(), &query(trailing(), CellSelector { limit, ..selector(RankMode::Recent) }));
+    let limited = |limit: i32| translate_query(&pair_profile(), &query(trailing(), WindowReduceSelector { limit, ..selector(RankMode::Recent) }));
     assert_eq!(limited(1000).unwrap().spec.top_k, 1000);
     assert!(limited(1001).unwrap_err().message.contains("over the limit"));
     assert!(limited(0).is_err());
     // A quota chooses among reduced members, so it is refused here with the engine's own words.
-    let quota = CellSelector { quota_lanes: vec![0], quota_counts: vec![1], ..selector(RankMode::Recent) };
+    let quota = WindowReduceSelector { quota_lanes: vec![0], quota_counts: vec![1], ..selector(RankMode::Recent) };
     assert!(refusal(quota).message.contains("takes no quota"));
 }
 
@@ -909,7 +909,7 @@ fn match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_s
             &pair_profile(),
             &query(
                 trailing(),
-                CellSelector {
+                WindowReduceSelector {
                     has_match_lane: lane.is_some(),
                     match_lane: lane.unwrap_or(0),
                     has_match_value: value.is_some(),
@@ -933,7 +933,7 @@ fn match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_s
     assert!(matched(Some(i64::MAX), Some(1)).unwrap_err().message.contains("match lane"));
     assert!(matched(Some(0), Some(-1)).unwrap_err().message.contains("negative"));
     // The match fields mean nothing to any other mode: its filters are the label alone.
-    let ignored = CellSelector { has_match_lane: true, match_lane: 1, has_match_value: true, match_value: 9, ..selector(RankMode::FirstLane) };
+    let ignored = WindowReduceSelector { has_match_lane: true, match_lane: 1, has_match_value: true, match_value: 9, ..selector(RankMode::FirstLane) };
     assert_eq!(plan(ignored).spec.filters, vec![slot_is_five()]);
 }
 

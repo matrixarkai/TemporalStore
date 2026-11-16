@@ -1,15 +1,15 @@
 # Window Reducer protocol
 
 A wire protocol for adding, restoring, removing, deleting and reading merged cell samples
-(`docs/WINDOW_REDUCE_WORKED_EXAMPLE.md`). The messages live in `proto/temporalstore/cells/v1/cells.proto`.
+(`docs/WINDOW_REDUCE_WORKED_EXAMPLE.md`). The messages live in `proto/temporalstore/windowreduce/v1/windowreduce.proto`.
 Field numbers and wire types are fixed so that clients speaking this message shape are understood;
 every name is ours, and the behaviour is a generalisation: anything the narrower shape could say,
 this one says the same way.
 
 Naming: the model is the Window Reducer (WindowReduce). The unit it stores at one timestamp of a key, all the
-cells of that key at that timestamp, is a **sample**. The command, message and field names in this page are the
-names on the wire today (`Cell*`, `snapshots_written`, `snapshot_info`, and so on); their numbers do not change when
-they are later renamed to WindowReduce names, and the stored bytes do not change either.
+cells of that key at that timestamp, is a **sample**. The message and field names on the wire are the new ones
+(`WindowReduce*`, `samples_written`, `sample_info`, and so on); the command names in this page are renamed to
+WindowReduce names later. Neither rename changes a field number, a wire type or a stored byte.
 
 ## Conventions
 
@@ -35,18 +35,18 @@ header written with the first write of a key family still guards every later wri
 
 | Message | Field | Number | Type |
 |---|---|---|---|
-| CellAddRequest | table, observations, group_on_server, skip_existing, retry_token | 1, 2, 3, 4, 16 | bytes, repeated message, bool, bool, uint64 |
-| CellAddResponse | code, message, snapshots_written, cells_created, cells_merged, replayed | 1, 2, 16, 17, 18, 19 | enum, string, uint64 x3, bool |
+| WindowReduceAddRequest | table, observations, group_on_server, skip_existing, retry_token | 1, 2, 3, 4, 16 | bytes, repeated message, bool, bool, uint64 |
+| WindowReduceAddResponse | code, message, samples_written, cells_created, cells_merged, replayed | 1, 2, 16, 17, 18, 19 | enum, string, uint64 x3, bool |
 | Observation | entity, timestamp_us, kind, channel, entries, entity_text, entity_bytes | 1, 2, 3, 4, 5, 16, 17 | int64, int64, int32, int32, repeated message, string, bytes (6 reserved) |
 | RestoredObservation | entity, latest_us, earliest_us, kind, channel, entries, entity_text, entity_bytes | 1, 2, 3, 4, 5, 6, 16, 17 | as above (7 reserved) |
 | CellEntry | member, shorthand_first, shorthand_second, shape, pair, list, label, has_label, member_bytes | 1..8, 16 | int64, int64, int64, enum, message, message, int32, bool, bytes |
 | PairLanes | first, second, timestamp_us | 1, 2, 3 | int64 |
 | LaneList | timestamp_us, values | 1, 2 | int64, repeated int64 |
-| CellQuery | entity, window, selector, echo, table, has_echo, entity_text, entity_bytes, more_entities | 1, 2, 3, 4, 5, 6, 16, 17, 20 | int64, message, message, bool, bytes, bool, string, bytes, repeated int64 |
-| CellBatchQuery | queries | 1 | repeated message |
-| CellAnswer | entity, first_us, last_us, entries, snapshot_info, echoed_selector, echoed_window, code, message, snapshots, unscored, keys | 1, 3, 4, 6, 7, 8, 9, 16, 17, 18, 19, 20 | (2 and 5 unused) |
-| CellBatchAnswer | answers, code, message | 1, 2, 3 | |
-| CellSelector | see the proto (`members` 18, `quota_lanes` 14, `quota_counts` 15, `decay` 10, `decay_rounding` 11, `excluded_members` 40) | 1..30, 40 | presence flags are separate bools |
+| WindowReduceQuery | entity, window, selector, echo, table, has_echo, entity_text, entity_bytes, more_entities | 1, 2, 3, 4, 5, 6, 16, 17, 20 | int64, message, message, bool, bytes, bool, string, bytes, repeated int64 |
+| WindowReduceBatchQuery | queries | 1 | repeated message |
+| WindowReduceAnswer | entity, first_us, last_us, entries, sample_info, echoed_selector, echoed_window, code, message, samples, unscored, keys | 1, 3, 4, 6, 7, 8, 9, 16, 17, 18, 19, 20 | (2 and 5 unused) |
+| WindowReduceBatchAnswer | answers, code, message | 1, 2, 3 | |
+| WindowReduceSelector | see the proto (`members` 18, `quota_lanes` 14, `quota_counts` 15, `decay` 10, `decay_rounding` 11, `excluded_members` 40) | 1..30, 40 | presence flags are separate bools |
 | Window | kind, span, start_us | 1, 2, 3 | enum, int64, int64 |
 
 Enum values: operations ADD 0, BATCH_QUERY 1, REMOVE 2, RESTORE 3, DELETE 4. Status codes OK 0,
@@ -143,7 +143,7 @@ two samples share one. The command is the ranked read with the score `Recent`.
 **Several entities.** `more_entities` (at most 63, 64 bit ids, none repeated, none equal to `entity`)
 turns the query into one merged read over the keys of `entity` and each of them, same channel and kind:
 the answer one key holding all of their samples would give, not a merge of per-key top lists. The
-window applies to each key. `CellAnswer.keys` says how many of the keys held a sample in the window.
+window applies to each key. `WindowReduceAnswer.keys` says how many of the keys held a sample in the window.
 The keys must live on one shard. A table whose entity is not a 64 bit id refuses it.
 
 **Batch.** The queries become one batch command of independent reads, at most 64, answered in request
@@ -156,11 +156,11 @@ a list table `list`; `timestamp_us` is the newest sample holding the member.
 **Errors.** Refusals answer INVALID_ARGUMENT, an unknown table NO_SUCH_TABLE, a duplicate refused
 under a no-merge profile DUPLICATE_REFUSED, an exhausted quota QUOTA_EXHAUSTED, anything else ERROR.
 
-**Options no read honours.** `want_snapshot_info` (selector field 19) and `limit_members` (field 12)
+**Options no read honours.** `want_sample_info` (selector field 19) and `limit_members` (field 12)
 are in the wire shape, and no read implements either: an answer carries no per-sample summary and a
-read cannot cap the members it considers. A selector that sets `want_snapshot_info` to true, or
+read cannot cap the members it considers. A selector that sets `want_sample_info` to true, or
 `limit_members` to anything but 0, is refused with INVALID_ARGUMENT and a message naming the field
-(`limit` caps the rows returned). A `want_snapshot_info` of false and a `limit_members` of 0 mean "not
+(`limit` caps the rows returned). A `want_sample_info` of false and a `limit_members` of 0 mean "not
 asked", with or without their presence flags, and read as if absent.
 
 ## Where this deliberately differs from the narrower shape
@@ -237,9 +237,9 @@ Bounds, each refused one past the limit and accepted at it: 1024 samples inside 
 before any is read; narrow the window and remove in steps), 8 predicates, 1024 members a side, and a
 bytes member of at most 256 bytes.
 
-The receipt is `snapshots_before` and `snapshots_after` over the whole series, `cells_before` over the
+The receipt is `samples_before` and `samples_after` over the whole series, `cells_before` over the
 samples inside the window, and `cells_removed`. On the wire they are the additive fields 16 to 19 of
-`CellRemoveResponse` and `CellDeleteResponse`; the established fields are unchanged. The command's
+`WindowReduceRemoveResponse` and `WindowReduceDeleteResponse`; the established fields are unchanged. The command's
 `CommandResponse` carries them as `snapshots_before`, `count` (the samples after), `cells_before` and
 `cells_removed` (field 16).
 

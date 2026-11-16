@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! The cell protocol as a pure translator: wire messages (`proto/temporalstore/cells/v1`) to the
+//! The cell protocol as a pure translator: wire messages (`proto/temporalstore/windowreduce/v1`) to the
 //! commands the engine already runs, and the engine's answers back to wire messages. It reads no
 //! engine state and writes nothing.
 //!
@@ -30,7 +30,7 @@
 //! ([`Command::CellRemove`]); see [`remove`].
 //! `MEMBERS_ONLY` reads exactly the include set, ordered by time.
 //!
-//! The selector's `want_snapshot_info` and `limit_members` are accepted by the wire shape and
+//! The selector's `want_sample_info` and `limit_members` are accepted by the wire shape and
 //! honoured by no read, so a request that sets either is refused by name
 //! ([`refuse_unbuilt_options`]) and never answered as if the option were absent.
 
@@ -50,9 +50,9 @@ use crate::types::{
 
 pub(crate) mod wire {
     #![allow(clippy::all, missing_docs)]
-    tonic::include_proto!("temporalstore.cells.v1");
+    tonic::include_proto!("temporalstore.windowreduce.v1");
 }
-use wire::CellStatusCode;
+use wire::WindowReduceStatusCode;
 
 /// Queries in one batch.
 pub(crate) const MAX_BATCH_QUERIES: usize = 64;
@@ -68,12 +68,12 @@ pub(crate) const DEFAULT_WILSON_Z: f64 = 1.96;
 /// A refusal: the status code and a message that names what was wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Refusal {
-    pub(crate) code: CellStatusCode,
+    pub(crate) code: WindowReduceStatusCode,
     pub(crate) message: String,
 }
 
 fn invalid(message: impl Into<String>) -> Refusal {
-    Refusal { code: CellStatusCode::InvalidArgument, message: message.into() }
+    Refusal { code: WindowReduceStatusCode::InvalidArgument, message: message.into() }
 }
 
 fn bound(what: &str, got: usize, limit: usize) -> Result<(), Refusal> {
@@ -189,7 +189,7 @@ impl Profiles {
             .iter()
             .find(|profile| profile.name.as_bytes() == table)
             .ok_or_else(|| Refusal {
-                code: CellStatusCode::NoSuchTable,
+                code: WindowReduceStatusCode::NoSuchTable,
                 message: format!("no table named `{}`", String::from_utf8_lossy(table)),
             })
     }
@@ -333,7 +333,7 @@ fn refuse_skip_existing(requested: bool) -> Result<(), Refusal> {
 /// point per distinct millisecond. `now_us` is the clock the accepted range is measured from.
 pub(crate) fn translate_add(
     profile: &TableProfile,
-    request: &wire::CellAddRequest,
+    request: &wire::WindowReduceAddRequest,
     now_us: i64,
 ) -> Result<Vec<Command>, Refusal> {
     refuse_skip_existing(request.skip_existing)?;
@@ -358,7 +358,7 @@ pub(crate) fn translate_add(
 /// Pre-aggregated cells written at their latest timestamp; the earliest must not follow it.
 pub(crate) fn translate_restore(
     profile: &TableProfile,
-    request: &wire::CellRestoreRequest,
+    request: &wire::WindowReduceRestoreRequest,
     now_us: i64,
 ) -> Result<Vec<Command>, Refusal> {
     refuse_skip_existing(request.skip_existing)?;
@@ -435,7 +435,7 @@ fn translate_observations(
             let cell = cell_of(profile, entry)?;
             if profile.refuse_duplicates && groups[at].2.iter().any(|c| c.member == cell.member) {
                 return Err(Refusal {
-                    code: CellStatusCode::DuplicateRefused,
+                    code: WindowReduceStatusCode::DuplicateRefused,
                     message: "a second cell for a member at one timestamp is refused by this table".to_string(),
                 });
             }
@@ -468,23 +468,23 @@ fn translate_observations(
 /// The response to a write, from what the engine's receipts add up to. `replayed` is true only when
 /// every key of the request answered a remembered token, so nothing at all was written.
 pub(crate) fn add_response(
-    snapshots_written: u64,
+    samples_written: u64,
     cells_created: u64,
     cells_merged: u64,
     replayed: bool,
-) -> wire::CellAddResponse {
-    wire::CellAddResponse {
-        code: CellStatusCode::Ok as i32,
+) -> wire::WindowReduceAddResponse {
+    wire::WindowReduceAddResponse {
+        code: WindowReduceStatusCode::Ok as i32,
         message: String::new(),
-        snapshots_written,
+        samples_written,
         cells_created,
         cells_merged,
         replayed,
     }
 }
 
-pub(crate) fn refused_add_response(refusal: &Refusal) -> wire::CellAddResponse {
-    wire::CellAddResponse {
+pub(crate) fn refused_add_response(refusal: &Refusal) -> wire::WindowReduceAddResponse {
+    wire::WindowReduceAddResponse {
         code: refusal.code as i32,
         message: refusal.message.clone(),
         ..Default::default()
@@ -569,7 +569,7 @@ fn anchor_of(window: &wire::Window) -> CellAnchor {
 
 /// The half-life a decayed-lane rank asks for: `decay`, made a whole number of milliseconds by
 /// `decay_rounding`. The engine's own bounds on a half-life are applied by admission afterwards.
-fn half_life_of(selector: &wire::CellSelector) -> Result<u64, Refusal> {
+fn half_life_of(selector: &wire::WindowReduceSelector) -> Result<u64, Refusal> {
     let decay = selector.decay;
     if !decay.is_finite() || decay < 0.0 {
         return Err(invalid(format!("decay {decay} is not a non-negative number of milliseconds")));
@@ -588,7 +588,7 @@ fn half_life_of(selector: &wire::CellSelector) -> Result<u64, Refusal> {
 
 /// The member set a selector names. `members` is the include set: present when flagged or when it
 /// holds anything, so a present, empty set reaches admission and is refused there.
-fn member_filter_of(selector: &wire::CellSelector) -> CellMemberFilter {
+fn member_filter_of(selector: &wire::WindowReduceSelector) -> CellMemberFilter {
     let id = |member: &i64| CellMemberId::U64(*member as u64);
     CellMemberFilter {
         include: (selector.has_members || !selector.members.is_empty())
@@ -601,7 +601,7 @@ fn member_filter_of(selector: &wire::CellSelector) -> CellMemberFilter {
 /// `quota_counts[0]` as the count of members that fit no lane. The first count therefore appears
 /// TWICE in what the quota reserves (see docs/WINDOW_REDUCE_PROTOCOL.md, Quota). A request that names only
 /// the count of members that fit no lane sends one count and no lane.
-fn quota_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<CellQuota, Refusal> {
+fn quota_of(profile: &TableProfile, selector: &wire::WindowReduceSelector) -> Result<CellQuota, Refusal> {
     let (lanes, counts) = (&selector.quota_lanes, &selector.quota_counts);
     if lanes.is_empty() && counts.is_empty() {
         return Ok(CellQuota::default());
@@ -625,7 +625,7 @@ fn quota_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<Cel
     Ok(CellQuota { lanes: entries, others })
 }
 
-fn score_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<CellScore, Refusal> {
+fn score_of(profile: &TableProfile, selector: &wire::WindowReduceSelector) -> Result<CellScore, Refusal> {
     use wire::RankMode as Mode;
     Ok(match selector.mode() {
         Mode::FirstLane => CellScore::Lane { lane: lane_name(profile, 0, "lane")? },
@@ -680,17 +680,17 @@ fn score_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<Cel
 }
 
 /// The two selector options no read honours: a per-snapshot summary in the answer
-/// (`want_snapshot_info`) and a cap on the members one read may consider (`limit_members`).
+/// (`want_sample_info`) and a cap on the members one read may consider (`limit_members`).
 /// Neither is built, and dropping one silently would answer a question the caller did not ask, so
 /// a request that sets either is refused and the message names the field.
 ///
-/// `want_snapshot_info` is unset when false whatever its presence flag says. `limit_members` is
+/// `want_sample_info` is unset when false whatever its presence flag says. `limit_members` is
 /// unset when it is 0 (with or without its flag): a flagged 0 limits nothing. A negative one is a
 /// limit, so it is refused like any other.
-fn refuse_unbuilt_options(selector: &wire::CellSelector) -> Result<(), Refusal> {
-    if selector.want_snapshot_info {
+fn refuse_unbuilt_options(selector: &wire::WindowReduceSelector) -> Result<(), Refusal> {
+    if selector.want_sample_info {
         return Err(invalid(
-            "want_snapshot_info is not supported: an answer carries no per-snapshot summary, leave it unset",
+            "want_sample_info is not supported: an answer carries no per-sample summary, leave it unset",
         ));
     }
     if selector.limit_members != 0 {
@@ -706,7 +706,7 @@ fn refuse_unbuilt_options(selector: &wire::CellSelector) -> Result<(), Refusal> 
 /// The lane test of a `MATCH_LANE` read: the stored cells whose lane at `match_lane` (the first
 /// when absent) holds `match_value` (0 when absent). A lane is a signed number and a predicate
 /// compares an unsigned one, so a negative `match_value` is refused rather than wrapped.
-fn match_filter_of(profile: &TableProfile, selector: &wire::CellSelector) -> Result<Option<FeatureFilter>, Refusal> {
+fn match_filter_of(profile: &TableProfile, selector: &wire::WindowReduceSelector) -> Result<Option<FeatureFilter>, Refusal> {
     if selector.mode() != wire::RankMode::MatchLane {
         return Ok(None);
     }
@@ -722,7 +722,7 @@ fn match_filter_of(profile: &TableProfile, selector: &wire::CellSelector) -> Res
 }
 
 /// One wire query as the engine's ranked read.
-pub(crate) fn translate_query(profile: &TableProfile, query: &wire::CellQuery) -> Result<ReadPlan, Refusal> {
+pub(crate) fn translate_query(profile: &TableProfile, query: &wire::WindowReduceQuery) -> Result<ReadPlan, Refusal> {
     bound("more entities", query.more_entities.len(), MAX_MORE_ENTITIES)?;
     if let Some(selector) = query.selector.as_ref() {
         bound("members", selector.members.len(), MAX_MEMBER_LIST)?;
@@ -793,7 +793,7 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::CellQuery) -
 /// the whole batch, naming its position.
 pub(crate) fn translate_batch(
     profiles: &Profiles,
-    batch: &wire::CellBatchQuery,
+    batch: &wire::WindowReduceBatchQuery,
 ) -> Result<Vec<ReadPlan>, Refusal> {
     within_nonzero("queries per batch", batch.queries.len(), MAX_BATCH_QUERIES).map_err(invalid)?;
     batch
@@ -828,12 +828,12 @@ pub(crate) fn batch_command(plans: Vec<ReadPlan>) -> Result<Command, Refusal> {
 /// The answers of a batch, in request order, one per query, each with its own status.
 pub(crate) fn batch_answer(
     profiles: &Profiles,
-    batch: &wire::CellBatchQuery,
+    batch: &wire::WindowReduceBatchQuery,
     rankings: &[RankedCells],
-) -> wire::CellBatchAnswer {
+) -> wire::WindowReduceBatchAnswer {
     if rankings.len() != batch.queries.len() {
-        return wire::CellBatchAnswer {
-            code: CellStatusCode::Error as i32,
+        return wire::WindowReduceBatchAnswer {
+            code: WindowReduceStatusCode::Error as i32,
             message: format!("{} queries were answered with {} rankings", batch.queries.len(), rankings.len()),
             ..Default::default()
         };
@@ -844,7 +844,7 @@ pub(crate) fn batch_answer(
         .zip(rankings)
         .map(|(query, ranked)| match profiles.lookup(&query.table) {
             Ok(profile) => answer_of(profile, query, ranked),
-            Err(refusal) => wire::CellAnswer {
+            Err(refusal) => wire::WindowReduceAnswer {
                 entity: query.entity,
                 code: refusal.code as i32,
                 message: refusal.message,
@@ -852,15 +852,15 @@ pub(crate) fn batch_answer(
             },
         })
         .collect();
-    wire::CellBatchAnswer { answers, code: CellStatusCode::Ok as i32, message: String::new() }
+    wire::WindowReduceBatchAnswer { answers, code: WindowReduceStatusCode::Ok as i32, message: String::new() }
 }
 
 /// The engine's ranked answer as a wire answer.
-pub(crate) fn answer_of(profile: &TableProfile, query: &wire::CellQuery, ranked: &RankedCells) -> wire::CellAnswer {
+pub(crate) fn answer_of(profile: &TableProfile, query: &wire::WindowReduceQuery, ranked: &RankedCells) -> wire::WindowReduceAnswer {
     if !ranked.refused.is_empty() {
-        return wire::CellAnswer {
+        return wire::WindowReduceAnswer {
             entity: query.entity,
-            code: CellStatusCode::InvalidArgument as i32,
+            code: WindowReduceStatusCode::InvalidArgument as i32,
             message: ranked.refused.clone(),
             ..Default::default()
         };
@@ -900,17 +900,17 @@ pub(crate) fn answer_of(profile: &TableProfile, query: &wire::CellQuery, ranked:
         })
         .collect::<Vec<_>>();
     let echoed = query.echo && query.has_echo;
-    wire::CellAnswer {
+    wire::WindowReduceAnswer {
         entity: query.entity,
         first_us: if entries.is_empty() { 0 } else { (first as i64).saturating_mul(1000) },
         last_us: (last as i64).saturating_mul(1000),
         entries,
-        snapshot_info: None,
+        sample_info: None,
         echoed_selector: echoed.then(|| query.selector.clone()).flatten(),
         echoed_window: echoed.then(|| query.window.clone()).flatten(),
-        code: CellStatusCode::Ok as i32,
+        code: WindowReduceStatusCode::Ok as i32,
         message: String::new(),
-        snapshots: ranked.snapshots as u64,
+        samples: ranked.snapshots as u64,
         unscored: ranked.unscored,
         keys: ranked.keys as u64,
     }
@@ -923,3 +923,7 @@ pub(crate) mod remove;
 #[cfg(test)]
 #[path = "cell_protocol_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cell_protocol_wire_tests.rs"]
+mod wire_tests;

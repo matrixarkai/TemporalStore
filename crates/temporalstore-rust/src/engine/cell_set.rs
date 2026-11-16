@@ -162,7 +162,9 @@ pub(crate) struct CellKey {
     pub(crate) dims: Vec<Option<DimValue>>,
 }
 
-const VIEW_TAG: &str = "cells";
+/// The tag every stored key of this model begins with. It is a STORAGE tag, written into every key
+/// already on disk: it is not a name, and no rename of the model may touch it. A test pins it.
+pub(crate) const VIEW_TAG: &str = "cells";
 const SEP: char = '\u{1f}';
 
 impl KeySpec {

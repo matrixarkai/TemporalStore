@@ -5,9 +5,9 @@ or bytes), up to four named `u64` **labels**, and between one and sixteen named 
 Nothing in the engine knows what the names mean; a deployment declares them once.
 
 Naming: the model is the Window Reducer (WindowReduce). The unit it stores at one timestamp of a key, all the
-cells of that key at that timestamp, is a **sample**. The command, message and field names in this page are the
-names on the wire today (`Cell*`, `snapshots_written`, `snapshot_info`, and so on); their numbers do not change when
-they are later renamed to WindowReduce names, and the stored bytes do not change either.
+cells of that key at that timestamp, is a **sample**. The message and field names on the wire are the new ones
+(`WindowReduce*`, `samples_written`, `sample_info`, and so on); the command names in this page are renamed to
+WindowReduce names later. Neither rename changes a field number, a wire type or a stored byte.
 
 * **Key.** An **entity** (a `u64`, text or bytes) and up to eight named **dimensions** become one
   stored feature key, so a read by those values is one lookup.
@@ -138,7 +138,7 @@ store.
   the ring before it, whether the token was filed before the last flush or after. A request
   without a token logs exactly the record it always logged, and a key that never uses a token pays
   nothing.
-* **What the answer says.** `snapshots_written`, `cells_created` and `cells_merged` are the first
+* **What the answer says.** `samples_written`, `cells_created` and `cells_merged` are the first
   application's, so a retry of a request that created a cell reads "created", where a request that
   merged again would read "merged". A request without a token is applied every time, as before.
 
