@@ -573,3 +573,5 @@ mod sync_value_once;
 mod a_write_into_a_live_series_borrows_its_key;
 #[path = "tests/a_distinct_count_compares_its_members_where_they_are.rs"]
 mod a_distinct_count_compares_its_members_where_they_are;
+#[path = "tests/a_feature_range_read_decodes_each_point_where_it_sits.rs"]
+mod a_feature_range_read_decodes_each_point_where_it_sits;

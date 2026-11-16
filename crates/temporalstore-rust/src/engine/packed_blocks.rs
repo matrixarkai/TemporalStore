@@ -791,6 +791,159 @@ pub(super) fn read_feature_value_with<R>(
     with_feature_point_value(&bytes, timestamp_ms, with)
 }
 
+/// Where a run of ascending reads has got to in one sound binary block.
+pub(super) struct AscendingCursor {
+    /// Byte offset of the first point header.
+    body: usize,
+    /// Points the block holds.
+    count: usize,
+    /// Byte offset of the next header to look at, and how many points precede it.
+    offset: usize,
+    index: usize,
+    /// The instant the last read asked for. A read at or below it starts the block over.
+    last: Option<u64>,
+}
+
+/// The sound binary block whose instants strictly ascend, as the cursor to walk it with.
+///
+/// `None` for anything else -- the JSON shape, an unframed value, a torn or forged block, a repeated
+/// or descending instant -- and those are read by [`feature_point_in_place`], which answers for all
+/// of them. The strict walk here is the decoder's: a block with a torn tail or bytes after the last
+/// point is refused, so a point is never served out of a block the strict decoder would reject.
+pub(super) fn ascending_cursor(bytes: &[u8]) -> Option<AscendingCursor> {
+    let payload = bytes.strip_prefix(FEATURE_BLOCK_BINARY_MAGIC)?;
+    let (count_bytes, mut rest) = split_at_checked(payload, 4)?;
+    let count = u32::from_le_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]])
+        as usize;
+    if count.saturating_mul(FEATURE_POINT_HEADER_BYTES) > rest.len() {
+        return None;
+    }
+    let mut previous: Option<u64> = None;
+    for _ in 0..count {
+        let (header, tail) = split_at_checked(rest, FEATURE_POINT_HEADER_BYTES)?;
+        let instant = u64::from_le_bytes([
+            header[0], header[1], header[2], header[3], header[4], header[5], header[6], header[7],
+        ]);
+        let length = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
+        let (_, tail) = split_at_checked(tail, length)?;
+        if previous.is_some_and(|before| before >= instant) {
+            return None;
+        }
+        previous = Some(instant);
+        rest = tail;
+    }
+    if !rest.is_empty() {
+        return None;
+    }
+    let body = FEATURE_BLOCK_HEADER_BYTES;
+    Some(AscendingCursor {
+        body,
+        count,
+        offset: body,
+        index: 0,
+        last: None,
+    })
+}
+
+impl AscendingCursor {
+    /// The value stored at `instant`, found by stepping forward from where the last read stopped.
+    ///
+    /// The block was checked whole when the cursor was made, so every header read here is in bounds.
+    pub(super) fn value_at<'b>(&mut self, bytes: &'b [u8], instant: u64) -> Option<&'b [u8]> {
+        if self.last.is_some_and(|last| instant <= last) {
+            self.offset = self.body;
+            self.index = 0;
+        }
+        self.last = Some(instant);
+        while self.index < self.count {
+            let header = &bytes[self.offset..self.offset + FEATURE_POINT_HEADER_BYTES];
+            let stored = u64::from_le_bytes([
+                header[0], header[1], header[2], header[3], header[4], header[5], header[6],
+                header[7],
+            ]);
+            let length = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
+            let value_at = self.offset + FEATURE_POINT_HEADER_BYTES;
+            if stored > instant {
+                return None;
+            }
+            self.offset = value_at + length;
+            self.index += 1;
+            if stored == instant {
+                return Some(&bytes[value_at..value_at + length]);
+            }
+        }
+        None
+    }
+}
+
+/// One block of a run of feature points, held between them.
+struct HeldFeatureBlock {
+    address: ElementEntry,
+    bytes: std::sync::Arc<[u8]>,
+    /// `Some` for a sound ascending binary block; every other shape is read point by point.
+    cursor: Option<AscendingCursor>,
+}
+
+/// Feature points read in order out of the blocks they sit in.
+///
+/// A range read used to copy each block out of the cache, decode the whole of it into a
+/// `Vec<FeaturePoint>` (a value `Vec` per point), keep that in a table keyed by the block's address,
+/// and clone the wanted point out of it: two allocations per point of the block, and a third copy for
+/// each point it returned. The block's shared bytes are walked where they sit instead, and the value
+/// is handed to the caller as a slice of them, so the caller allocates only for what it keeps.
+///
+/// The last block read is held, so the points of one block read it from the cache once.
+pub(super) struct FeatureRangeReader {
+    keys: PageKeys,
+    held: Option<HeldFeatureBlock>,
+}
+
+impl FeatureRangeReader {
+    pub(super) fn new() -> Self {
+        Self {
+            keys: PageKeys::new(),
+            held: None,
+        }
+    }
+
+    /// Hand `with` the value of the point at `timestamp_ms` in the block `address` names, borrowed
+    /// from the block's bytes. `None` for a point the block does not hold, for a block that does not
+    /// decode, and for a block that cannot be read: the answers `read_feature_point_cached` gave.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn with_point<R>(
+        &mut self,
+        cache: &MultiLayerCache,
+        block_store: &BlockStore,
+        shard_id: ShardId,
+        timestamp_ms: u64,
+        address: &ElementEntry,
+        identity: BlockIdentity<'_>,
+        routing_bucket: Option<u32>,
+        with: impl FnOnce(&[u8]) -> R,
+    ) -> Option<R> {
+        let held_here = self.held.as_ref().is_some_and(|held| held.address == *address);
+        if !held_here {
+            let cache_key = self.keys.key(shard_id, address, routing_bucket);
+            let bytes =
+                read_block_shared_keyed(cache, block_store, shard_id, address, identity, cache_key)?;
+            let cursor = ascending_cursor(&bytes);
+            self.held = Some(HeldFeatureBlock {
+                address: address.clone(),
+                bytes,
+                cursor,
+            });
+        }
+        let held = self.held.as_mut()?;
+        match &mut held.cursor {
+            Some(cursor) => cursor.value_at(&held.bytes, timestamp_ms).map(with),
+            None => match feature_point_in_place(&held.bytes, timestamp_ms, with) {
+                PointRead::Found(found) => Some(found),
+                PointRead::Absent | PointRead::Corrupt => None,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod block_encoding_tests {
     use super::*;
