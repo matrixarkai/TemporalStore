@@ -1087,15 +1087,16 @@ fn a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound() {
     assert_eq!(checked, 3);
 }
 
-/// A DIRTY ROUND UNDER THE BYTE GATE LISTS FEWER THAN THE DUMP ARM'S FLOOR OF LIVE BLOCKS.
+/// A DIRTY ROUND UNDER THE BYTE GATE LISTS NOTHING FOR THE INDEX STAGE.
 ///
 /// The other arm of `a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound`: the same
-/// fixture with the shipped gate, where the round has no dump to make and the stages skip their
-/// plan builds. A round that still listed the shard at the dump arm's floor (ten shard-sizes) is
-/// building plans to decide nothing.
+/// fixture with the shipped gate, where the round has no dump to make. In every round where the
+/// index log is below its floor and the plan names no prune, roll-forward or destroy, the index
+/// stage's own span must list zero live blocks. The round total stays under the dumping arm's 18
+/// listings in every round.
 ///
 /// Planted fault: reverting the index stage's idle test to "nothing dirty and nothing undumped"
-/// puts the round back at the dump arm's walk and fails the bound.
+/// makes the stage list the shard and fails the zero assertion.
 #[test]
 fn a_dirty_round_under_the_byte_gate_lists_less_than_a_dumping_round_does() {
     let keys = 300usize;
@@ -1107,6 +1108,7 @@ fn a_dirty_round_under_the_byte_gate_lists_less_than_a_dumping_round_does() {
         runtime.run_storage_manager_once(1, options.clone());
     }
     let engine = runtime.engine();
+    let mut checked = 0;
     for round in 0..4usize {
         for write in 0..writes {
             let index = (round * writes + write) % keys;
@@ -1119,18 +1121,46 @@ fn a_dirty_round_under_the_byte_gate_lists_less_than_a_dumping_round_does() {
             });
             assert!(response.status.ok, "write {index}: {:?}", response.status);
         }
+        // The index log is read before the round: once it reaches the floor the stage collects it by
+        // design, and only below the floor is "lists nothing" the claim.
+        let log_below_floor = engine.index_log_store().log_len_bytes(1)
+            < StorageManagerCycleRequest::default().index_gc_index_log_bytes_threshold;
         let report = runtime.run_storage_manager_once(1, options.clone());
         let walked: u64 = report.stage_spans.iter().map(|s| s.walk.live_block_entries).sum();
-        eprintln!("gated dirty round {round}: walk_entries={walked} ({:.1} listings)", walked as f64 / keys as f64);
+        // The stage also has work when the round's own plan names a manifest to prune, an install to
+        // roll forward or a slab to destroy; those rounds are the stage doing its job, not a walk
+        // the gate should have saved.
+        let plan = &report.lifecycle_plan;
+        let other_work = plan.reasons.iter().any(|reason| {
+            reason == "slot_dump_manifest_prune" || reason == "slot_dump_install_roll_forward_check"
+        }) || !plan.delayed_destroy_block_slab_ids.is_empty();
+        eprintln!(
+            "gated dirty round {round}: walk_entries={walked} ({:.1} listings), index stage walk={}, \
+             log below floor={log_below_floor}, other work={other_work}, reasons={:?}",
+            walked as f64 / keys as f64,
+            index_stage_walk(&report),
+            plan.reasons
+        );
         assert!(
             report.pressure.dirty_bucket_count > 0,
             "round {round}: the fixture must keep the shard dirty under the shipped gate"
         );
+        if log_below_floor && !other_work {
+            assert_eq!(
+                index_stage_walk(&report),
+                0,
+                "round {round}: the index stage listed live blocks although the gate holds its dump back"
+            );
+            checked += 1;
+        }
+        // Other stages may still list, so the round total is only held under the dumping arm's
+        // measured level (18 listings), not under a floor of its own.
         assert!(
-            walked < keys as u64 * 10,
-            "round {round}: a dirty round the gate holds back listed {walked} entries, at or above \
-             the dumping round's floor of {}",
-            keys * 10
+            walked < keys as u64 * 18,
+            "round {round}: a dirty round the gate holds back listed {walked} entries, at the dumping \
+             round's level of {}",
+            keys * 18
         );
     }
+    assert!(checked >= 1, "no round had an idle index stage under the gate, so nothing was checked");
 }
