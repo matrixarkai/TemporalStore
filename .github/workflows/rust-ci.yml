@@ -388,6 +388,8 @@ jobs:
             engine::tests::a_set_length_and_membership_read_the_member_map::the_point_commands_answer_what_the_listing_answers \
             engine::tests::a_set_length_and_membership_read_the_member_map::the_point_commands_answer_the_same_with_the_map_switched_off \
             engine::tests::a_set_length_and_membership_read_the_member_map::the_resp_door_answers_through_the_point_commands \
+            engine::tests::a_set_door_asks_one_member_not_the_set::the_door_answers_what_it_always_answered \
+            engine::tests::a_set_door_asks_one_member_not_the_set::the_door_never_lists_the_set \
             shared_store::tests::a_string_increment_and_an_append_are_framed_as_protobuf_and_round_trip \
             engine::tests::part4::what_each_command_recorded_describes_everything_it_changed \
             engine::tests::the_side_table_codec_resolves_shape_from_spelling::every_side_table_domain_round_trips_as_its_own_shape \
@@ -1201,6 +1203,7 @@ jobs:
             engine::tests::a_whole_container_read_shares_its_work::probe::a_whole_hash_read_does_not_copy_the_frame_for_each_field \
             engine::tests::a_container_point_read_searches_without_building_its_key::probe::a_block_lookup_allocates_only_its_answer \
             engine::tests::a_container_point_read_searches_without_building_its_key::probe::a_whole_hash_read_spends_no_allocation_on_a_name_it_does_not_return \
+            engine::tests::a_set_door_asks_one_member_not_the_set::probe::the_door_allocates_the_same_over_twenty_members_and_over_two_thousand \
             engine::tests::the_cell_model_allocations_are_counted_per_operation::a_ranked_read_through_the_engine_does_not_allocate_per_cell \
             engine::tests::the_cell_model_allocations_are_counted_per_operation::a_fan_in_read_through_the_engine_does_not_allocate_per_cell \
             engine::tests::the_cell_model_allocations_are_counted_per_operation::a_rollup_through_the_engine_does_not_allocate_per_cell \
