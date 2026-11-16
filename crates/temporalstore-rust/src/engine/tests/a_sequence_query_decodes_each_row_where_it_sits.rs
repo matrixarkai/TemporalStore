@@ -424,10 +424,13 @@ mod probe {
             "the control spent {control_slope:.2} allocations per row, so the probe cannot see \
              work that grows with the series"
         );
+        // THE CONTROL NOW READS EACH POINT WHERE IT SITS TOO (a feature range read keeps one value
+        // per point it returns), so it no longer costs several times a row. What it still spends
+        // beyond a sequence read is the value it keeps for each point, and that is the margin.
         assert!(
-            slope <= control_slope / 2.0,
+            slope < control_slope,
             "a sequence read spent {slope:.2} allocations per row against {control_slope:.2} for \
-             the range read that builds a point per point; it must cost less than half"
+             the range read that keeps a value per point; it must cost less"
         );
         assert!(
             batched_slope <= slope / 2.0,

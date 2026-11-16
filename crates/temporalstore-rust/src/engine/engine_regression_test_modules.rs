@@ -585,3 +585,5 @@ mod a_container_add_does_not_pay_for_the_elements_it_already_has;
 mod a_series_at_its_cap_trims_without_a_victim_list;
 #[path = "tests/a_string_set_does_not_copy_the_value_it_replaces.rs"]
 mod a_string_set_does_not_copy_the_value_it_replaces;
+#[path = "tests/a_feature_range_read_decodes_each_point_where_it_sits.rs"]
+mod a_feature_range_read_decodes_each_point_where_it_sits;
