@@ -230,6 +230,29 @@ fn oldest_dirty_buckets(
     ranked.iter().map(|&(_, _, bucket)| bucket).collect()
 }
 
+/// Whether the dump gate holds a dump back: both thresholds agree there is not enough undumped log
+/// yet. Each threshold can only RELEASE a dump, never hold it alone, because requiring both to be
+/// crossed would let one suppress a dump the other had already earned.
+///
+/// ZERO MEANS DIFFERENT THINGS. Bytes at 0 never fires (the byte arm says wait). Records at 0 fails
+/// the `> 0` guard, so the record arm says go: a dump every round, which callers that want exactly
+/// that pass on purpose, and why the record arm is switched off with `u64::MAX` and not with 0.
+///
+/// This is the one definition: the plan decides with it whether to select buckets, and the index
+/// stage decides with it whether the round has any dump to make, so the two cannot disagree.
+pub(crate) fn dump_gate_delays(
+    min_undumped_wal_records: u64,
+    min_undumped_wal_bytes: u64,
+    undumped_wal_records: u64,
+    undumped_wal_bytes: u64,
+) -> bool {
+    let records_say_wait =
+        min_undumped_wal_records > 0 && undumped_wal_records < min_undumped_wal_records;
+    let bytes_say_wait =
+        min_undumped_wal_bytes == 0 || undumped_wal_bytes < min_undumped_wal_bytes;
+    records_say_wait && bytes_say_wait
+}
+
 #[cfg(test)]
 #[path = "planning_order_tests.rs"]
 mod planning_order_tests;
@@ -387,16 +410,14 @@ impl TemporalEngine {
         // ship, a shard under ordinary traffic crossed the record arm continuously and every round
         // took a dump, so the byte threshold never got a turn.
         //
-        // NOTE THE ASYMMETRY IN WHAT ZERO MEANS, because it is why the record arm is disabled with
-        // `u64::MAX` and not with 0. Bytes at 0 makes `bytes_say_wait` true, which is "this trigger
-        // never fires". Records at 0 fails the `> 0` guard, which makes `records_say_wait` FALSE --
-        // a dump on every round. Callers that want exactly that pass 0 on purpose, so 0 is not
-        // available as an off switch.
-        let records_say_wait = request.min_undumped_wal_records > 0
-            && undumped_wal_records < request.min_undumped_wal_records;
-        let bytes_say_wait = request.min_undumped_wal_bytes == 0
-            || undumped_wal_bytes < request.min_undumped_wal_bytes;
-        let dump_delayed = !explicit_buckets && records_say_wait && bytes_say_wait;
+        // What zero means for each threshold is on `dump_gate_delays`.
+        let dump_delayed = !explicit_buckets
+            && dump_gate_delays(
+                request.min_undumped_wal_records,
+                request.min_undumped_wal_bytes,
+                undumped_wal_records,
+                undumped_wal_bytes,
+            );
         let mut selected_dump_buckets = if explicit_buckets {
             request.selected_dump_buckets.clone()
         } else if full_dump_forced_by_item_amplification {

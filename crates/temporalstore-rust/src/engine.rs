@@ -78,6 +78,7 @@ mod maintenance_log;
 #[path = "engine/portable_checkpoint.rs"]
 mod portable_checkpoint;
 mod storage_lifecycle_methods;
+pub(crate) use storage_lifecycle_methods::dump_gate_delays;
 pub use storage_lifecycle_methods::{
     eviction_sampler_buckets_scanned, reset_eviction_sampler_buckets_scanned,
     reset_storage_plan_build_counts, storage_plan_build_counts,
