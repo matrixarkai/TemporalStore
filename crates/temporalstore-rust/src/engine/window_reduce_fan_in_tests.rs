@@ -429,7 +429,7 @@ fn the_keys_count_is_a_wire_field_that_an_answer_without_it_reads_as_zero() {
     let json = serde_json::to_string(&ranked).unwrap();
     assert!(json.contains("\"keys\":3"), "{json}");
     assert_eq!(serde_json::from_str::<RankedCells>(&json).unwrap(), ranked);
-    let without = r#"{"label_columns":[],"lane_columns":[],"snapshots":5,"unscored":0,"rows":[]}"#;
+    let without = r#"{"label_columns":[],"lane_columns":[],"samples":5,"unscored":0,"rows":[]}"#;
     assert_eq!(serde_json::from_str::<RankedCells>(without).unwrap().keys, 0);
 }
 
