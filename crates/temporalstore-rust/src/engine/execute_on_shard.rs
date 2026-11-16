@@ -2143,14 +2143,29 @@ pub(crate) fn execute_on_shard(
             // THE FIELD MAP IS THE SOURCE `HashGet` READS A FIELD'S ADDRESS FROM, so asking it
             // whether the field is there answers what `HashGet` would answer `Some` or `None` to,
             // without opening the field's block and copying its value out to be dropped.
+            let read = execute_on_shard(
+                cache,
+                block_store,
+                feature_max_size,
+                async_storage,
+                control_rollup_enabled,
+                control_coalesce_persist,
+                control_state_max_size,
+                control_distinct_sketch,
+                trim_boundary_record,
+                set_listing_from_map,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                Command::HashGet { key, field },
+            );
+            mutated |= read.mutated;
             CommandResponse::Integer {
-                value: i64::from(
-                    shard
-                        .bucket_index
-                        .hashes
-                        .get(&key)
-                        .is_some_and(|fields| fields.contains_key(&field)),
-                ),
+                value: match read.response {
+                    CommandResponse::Bytes { value } => i64::from(value.is_some()),
+                    _ => 0,
+                },
             }
         }
         Command::HashGet { key, field } => {
