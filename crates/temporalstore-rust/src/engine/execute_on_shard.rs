@@ -1889,23 +1889,48 @@ pub(crate) fn execute_on_shard(
             keep_ttl,
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let old_value = shard.string_address(key.as_str()).and_then(|address| {
-                read_block_bytes(
-                    cache,
-                    block_store,
-                    shard_id,
-                    &address,
-                    // `shard.strings`: a whole-object block, so the element is `None` and the
-                    // object is the key itself.
-                    BlockIdentity::of(shard_id, "string", &key, None),
-                    Some(block_routing_bucket(
-                        &key,
-                        start_routing_bucket,
-                        end_routing_bucket,
-                    )),
-                )
-            });
-            let exists = old_value.is_some();
+            // THE OLD VALUE IS COPIED OUT ONLY FOR A CALLER THAT ASKED FOR IT.
+            //
+            // A write that answers "did it land" used to read the whole old value into a `Vec`
+            // first -- a copy of every byte of the value it was about to replace, and a block-store
+            // read when the old frame was not cached -- and then dropped it unread. What the write
+            // needs from the old value is one bit, and only under NX/XX: whether the key is there,
+            // which its row says without a block read. An unconditional write that does not return
+            // the old value needs nothing from it.
+            let string_identity = BlockIdentity::of(shard_id, "string", &key, None);
+            let string_bucket = Some(block_routing_bucket(
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+            ));
+            let old_value = if return_old {
+                shard.string_address(key.as_str()).and_then(|address| {
+                    read_block_bytes(
+                        cache,
+                        block_store,
+                        shard_id,
+                        &address,
+                        // `shard.strings`: a whole-object block, so the element is `None` and the
+                        // object is the key itself.
+                        string_identity,
+                        string_bucket,
+                    )
+                })
+            } else {
+                None
+            };
+            let exists = if return_old {
+                old_value.is_some()
+            } else if condition == StringSetCondition::Always {
+                // Not consulted below: `Always` sets whatever is there.
+                false
+            } else {
+                // PRESENCE IS THE ROW. `string_address` answers from the key's row in memory, with no
+                // block read: NX and XX ask whether the key is there, which the row says. A row
+                // whose block cannot be read still counts as there (a read of it answers nothing,
+                // and `EXISTS` and `TYPE` already agree with the row).
+                shard.string_address(key.as_str()).is_some()
+            };
             let should_set = match condition {
                 StringSetCondition::Always => true,
                 StringSetCondition::IfExists => exists,
