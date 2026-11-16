@@ -1224,16 +1224,15 @@ pub fn execute_redis_command_with_state(
         },
         "SADD" if args.len() >= 3 => {
             let key = name_arg(&args[1]);
-            let mut existing = match execute(Command::SetMembers { key: key.clone() }) {
-                Ok(CommandResponse::Members { members }) => {
-                    members.into_iter().collect::<HashSet<_>>()
-                }
-                Ok(_) => return RespValue::Error("ERR invalid smembers response".to_string()),
-                Err(err) => return RespValue::Error(format!("ERR {err}")),
-            };
+            // ONE LOOKUP PER ARGUMENT, not a listing of the whole set to search. Each add lands
+            // before the next lookup, so a member named twice in one call counts once.
             let mut added = 0;
             for member in args.iter().skip(2) {
-                if existing.insert(member.clone()) {
+                let present = match set_has_member(&key, member, &mut execute) {
+                    Ok(present) => present,
+                    Err(err) => return RespValue::Error(err),
+                };
+                if !present {
                     if let Err(err) = execute(Command::SetAdd {
                         key: key.clone(),
                         member: member.clone(),
@@ -1294,16 +1293,13 @@ pub fn execute_redis_command_with_state(
         }
         "SREM" if args.len() >= 3 => {
             let key = name_arg(&args[1]);
-            let mut existing = match execute(Command::SetMembers { key: key.clone() }) {
-                Ok(CommandResponse::Members { members }) => {
-                    members.into_iter().collect::<HashSet<_>>()
-                }
-                Ok(_) => return RespValue::Error("ERR invalid smembers response".to_string()),
-                Err(err) => return RespValue::Error(format!("ERR {err}")),
-            };
             let mut removed = 0;
             for member in args.iter().skip(2) {
-                if existing.remove(member) {
+                let present = match set_has_member(&key, member, &mut execute) {
+                    Ok(present) => present,
+                    Err(err) => return RespValue::Error(err),
+                };
+                if present {
                     if let Err(err) = execute(Command::SetRemove {
                         key: key.clone(),
                         member: member.clone(),
@@ -1415,10 +1411,8 @@ pub fn execute_redis_command_with_state(
             let source = name_arg(&args[1]);
             let destination = name_arg(&args[2]);
             let member = args[3].clone();
-            match execute(Command::SetMembers {
-                key: source.clone(),
-            }) {
-                Ok(CommandResponse::Members { members }) if members.contains(&member) => {
+            match set_has_member(&source, &member, &mut execute) {
+                Ok(true) => {
                     if let Err(err) = execute(Command::SetRemove {
                         key: source,
                         member: member.clone(),
@@ -1434,9 +1428,8 @@ pub fn execute_redis_command_with_state(
                     state.keyspace.insert(destination);
                     RespValue::Integer(1)
                 }
-                Ok(CommandResponse::Members { .. }) => RespValue::Integer(0),
-                Ok(_) => RespValue::Error("ERR invalid smove response".to_string()),
-                Err(err) => RespValue::Error(format!("ERR {err}")),
+                Ok(false) => RespValue::Integer(0),
+                Err(err) => RespValue::Error(err),
             }
         }
         "SDIFF" if args.len() >= 2 => {

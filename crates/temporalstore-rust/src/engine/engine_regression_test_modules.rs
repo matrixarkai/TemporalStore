@@ -575,3 +575,5 @@ mod a_write_into_a_live_series_borrows_its_key;
 mod a_distinct_count_compares_its_members_where_they_are;
 #[path = "tests/a_counter_window_read_reduces_where_it_sits.rs"]
 mod a_counter_window_read_reduces_where_it_sits;
+#[path = "tests/a_set_door_asks_one_member_not_the_set.rs"]
+mod a_set_door_asks_one_member_not_the_set;

@@ -247,11 +247,11 @@ pub(super) fn redis_type_response(
         Ok(_) => return RespValue::Error("ERR invalid type list response".to_string()),
         Err(err) => return RespValue::Error(format!("ERR {err}")),
     }
-    match execute(Command::SetMembers { key }) {
-        Ok(CommandResponse::Members { members }) if !members.is_empty() => {
+    match execute(Command::SetCard { key }) {
+        Ok(CommandResponse::Integer { value }) if value > 0 => {
             RespValue::SimpleString("set".to_string())
         }
-        Ok(CommandResponse::Members { .. }) => RespValue::SimpleString("none".to_string()),
+        Ok(CommandResponse::Integer { .. }) => RespValue::SimpleString("none".to_string()),
         Ok(_) => RespValue::Error("ERR invalid type set response".to_string()),
         Err(err) => RespValue::Error(format!("ERR {err}")),
     }
