@@ -383,3 +383,118 @@ fn the_merge_plan_allocations_by_step() {
         eprintln!("PLANSTEP {name:<36} allocs={allocs:.1}");
     }
 }
+
+/// 400 merge-reduce writes of 64 cells into a snapshot of the same members, for a heap profiler
+/// to attribute the allocations of one write to the code that makes them. It asserts nothing.
+#[test]
+#[ignore = "profiling: run under a heap profiler"]
+fn a_merge_write_loop_for_a_heap_profiler() {
+    let h = header();
+    let key = stored_key(1);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    let members = cells(64, 1);
+    let requests: Vec<Vec<u8>> = (0..401).map(|_| encode_value(&h, &members).unwrap()).collect();
+    for value in requests {
+        let response = exec(
+            &engine,
+            Command::FeatureAppendWithPolicy {
+                key: key.clone(),
+                points: vec![FeaturePoint { timestamp_ms: 100, value }],
+                policy: FeatureWritePolicy::MergeReduce,
+                retry_token: None,
+            },
+        );
+        assert!(response.status.ok, "{:?}", response.status);
+    }
+}
+
+/// A request value whose header bytes are not the canonical spelling (the version field moved
+/// last) and decode to the very same header.
+fn respelled_request(h: &CellHeader, members: &[Cell]) -> Vec<u8> {
+    use crate::engine::cell_set::split_value_raw;
+    let canonical = encode_value(h, members).unwrap();
+    let (head, packed) = split_value_raw(&canonical).unwrap();
+    let mut head = head.to_vec();
+    // The first field is the version, a tag and a one-byte varint.
+    head.rotate_left(2);
+    let mut out = Vec::new();
+    crate::types::encode_bytes_field(&mut out, 1, &head);
+    crate::types::encode_bytes_field(&mut out, 2, packed);
+    out
+}
+
+/// Allocations of one merge write (64 cells, the same members each time) and the snapshot left
+/// stored, when the requests carry the canonical header bytes or a respelling of them.
+fn merge_writes(respelled: bool) -> (f64, Vec<u8>) {
+    const OPS: usize = 20;
+    let h = header();
+    let key = stored_key(1);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    let members = cells(64, 1);
+    let make = || if respelled { respelled_request(&h, &members) } else { encode_value(&h, &members).unwrap() };
+    let write = |value: Vec<u8>| {
+        let response = exec(
+            &engine,
+            Command::FeatureAppendWithPolicy {
+                key: key.clone(),
+                points: vec![FeaturePoint { timestamp_ms: 100, value }],
+                policy: FeatureWritePolicy::MergeReduce,
+                retry_token: None,
+            },
+        );
+        assert!(response.status.ok, "{:?}", response.status);
+    };
+    // The first write creates the key from a canonical request, so the stored header is canonical.
+    write(encode_value(&h, &members).unwrap());
+    write(make());
+    let requests: Vec<Vec<u8>> = (0..OPS).map(|_| make()).collect();
+    let probe = Probe::start();
+    for value in requests {
+        write(value);
+    }
+    let spent = probe.stop().allocs as f64 / OPS as f64;
+    let stored = match exec(
+        &engine,
+        Command::FeatureQuery { key: key.clone(), start_ms: 0, end_ms: u64::MAX, count: Some(10) },
+    )
+    .response
+    {
+        CommandResponse::FeaturePoints { points } => {
+            assert_eq!(1, points.len());
+            points[0].value.clone()
+        }
+        other => panic!("not points: {other:?}"),
+    };
+    (spent, stored)
+}
+
+/// A merge-reduce request whose header bytes are the bytes already stored is not decoded and
+/// compared again: it declares the stored header exactly. A request that spells the same header
+/// differently takes the full path, which decodes it and compares it, and costs more allocations
+/// for a header of this shape (every name in it is a string). Both leave the same stored snapshot,
+/// to the byte: that is the oracle that the shortcut changes nothing but the cost.
+///
+/// There is no absolute ceiling: the guard is the difference between the two, which only the
+/// shortcut can make positive (a plant that turns it off makes the two equal).
+#[test]
+#[ignore = "measurement: run with --features alloc-probe --ignored"]
+fn a_merge_request_that_carries_the_stored_header_bytes_is_not_decoded_again() {
+    let h = header();
+    let members = cells(64, 1);
+    assert_ne!(
+        encode_value(&h, &members).unwrap(),
+        respelled_request(&h, &members),
+        "CONTROL: the respelled request must differ in bytes from the canonical one"
+    );
+    let (fast, fast_stored) = merge_writes(false);
+    let (slow, slow_stored) = merge_writes(true);
+    eprintln!("HEADER_SHORTCUT same bytes: {fast} allocs; respelled header: {slow} allocs");
+    assert_eq!(fast_stored, slow_stored, "the two spellings stored different snapshots");
+    assert!(fast > 20.0, "the probe is blind: {fast} allocations for a merge write");
+    assert!(
+        slow - fast >= 12.0,
+        "a request carrying the stored header bytes ({fast}) costs about as much as one that does not ({slow}): the shortcut is gone"
+    );
+}

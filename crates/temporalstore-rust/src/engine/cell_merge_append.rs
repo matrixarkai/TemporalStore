@@ -192,7 +192,15 @@ pub(super) fn plan_cell_merge(
                 },
             },
         };
-        let (effective, cells, counts) = cell_set::merge_point(newest.as_ref(), existing, &point.value)
+        // While the header in force is the newest stored one itself, its bytes are at hand: a
+        // request that carries the same bytes is not decoded a second time.
+        let newest_raw = match (&newest, &newest_stored) {
+            (Some(in_force), Some(stored)) if Rc::ptr_eq(in_force, &stored.header) => {
+                cell_set::split_value_raw(&stored.value).ok().map(|(head, _)| head)
+            }
+            _ => None,
+        };
+        let (effective, cells, counts) = cell_set::merge_point_known(newest.as_ref(), newest_raw, existing, &point.value)
             .map_err(|err| refuse(key, format!("point at {timestamp_ms}: {err}")))?;
         // The stored key must be the one the declared spec builds, or two spellings of one entity
         // would file under different keys and never merge.
