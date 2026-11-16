@@ -1,0 +1,181 @@
+# (message, field number, wire type, label) of every field, the enum value numbers and the reserved
+# numbers, as the proto stated them before the window reducer rename. Names here are the old ones.
+message PairLanes
+field PairLanes 1 0 single
+field PairLanes 2 0 single
+field PairLanes 3 0 single
+message LaneList
+field LaneList 1 0 single
+field LaneList 2 0 repeated
+message CellEntry
+field CellEntry 1 0 single
+field CellEntry 2 0 single
+field CellEntry 3 0 single
+field CellEntry 4 0 single
+field CellEntry 5 2 single
+field CellEntry 6 2 single
+field CellEntry 7 0 single
+field CellEntry 8 0 single
+field CellEntry 16 2 single
+message Observation
+field Observation 1 0 single
+field Observation 2 0 single
+field Observation 3 0 single
+field Observation 4 0 single
+field Observation 5 2 repeated
+field Observation 16 2 single
+field Observation 17 2 single
+reserved Observation 6
+message RestoredObservation
+field RestoredObservation 1 0 single
+field RestoredObservation 2 0 single
+field RestoredObservation 3 0 single
+field RestoredObservation 4 0 single
+field RestoredObservation 5 0 single
+field RestoredObservation 6 2 repeated
+field RestoredObservation 16 2 single
+field RestoredObservation 17 2 single
+reserved RestoredObservation 7
+message CellAddRequest
+field CellAddRequest 1 2 single
+field CellAddRequest 2 2 repeated
+field CellAddRequest 3 0 single
+field CellAddRequest 4 0 single
+field CellAddRequest 16 0 single
+message CellAddResponse
+field CellAddResponse 1 0 single
+field CellAddResponse 2 2 single
+field CellAddResponse 16 0 single
+field CellAddResponse 17 0 single
+field CellAddResponse 18 0 single
+field CellAddResponse 19 0 single
+message CellRestoreRequest
+field CellRestoreRequest 1 2 single
+field CellRestoreRequest 2 2 repeated
+field CellRestoreRequest 3 0 single
+field CellRestoreRequest 4 0 single
+message CellRestoreResponse
+field CellRestoreResponse 1 0 single
+field CellRestoreResponse 2 2 single
+message CellSelector
+field CellSelector 1 0 single
+field CellSelector 2 0 single
+field CellSelector 3 0 single
+field CellSelector 4 0 single
+field CellSelector 5 0 single
+field CellSelector 6 0 single
+field CellSelector 7 0 single
+field CellSelector 8 0 single
+field CellSelector 9 0 single
+field CellSelector 10 1 single
+field CellSelector 11 0 single
+field CellSelector 12 0 single
+field CellSelector 13 0 single
+field CellSelector 14 0 repeated
+field CellSelector 15 0 repeated
+field CellSelector 16 0 repeated
+field CellSelector 17 0 repeated
+field CellSelector 18 0 repeated
+field CellSelector 19 0 single
+field CellSelector 20 1 single
+field CellSelector 21 0 single
+field CellSelector 22 0 single
+field CellSelector 23 0 single
+field CellSelector 24 0 single
+field CellSelector 25 0 single
+field CellSelector 26 0 single
+field CellSelector 27 0 single
+field CellSelector 28 0 single
+field CellSelector 29 0 single
+field CellSelector 30 0 single
+field CellSelector 40 0 repeated
+message Window
+field Window 1 0 single
+field Window 2 0 single
+field Window 3 0 single
+message CellQuery
+field CellQuery 1 0 single
+field CellQuery 2 2 single
+field CellQuery 3 2 single
+field CellQuery 4 0 single
+field CellQuery 5 2 single
+field CellQuery 6 0 single
+field CellQuery 20 0 repeated
+field CellQuery 16 2 single
+field CellQuery 17 2 single
+message CellBatchQuery
+field CellBatchQuery 1 2 repeated
+message SnapshotInfo
+field SnapshotInfo 1 0 repeated
+field SnapshotInfo 2 0 repeated
+field SnapshotInfo 3 0 repeated
+message CellAnswer
+field CellAnswer 1 0 single
+field CellAnswer 3 0 single
+field CellAnswer 4 0 single
+field CellAnswer 6 2 repeated
+field CellAnswer 7 2 single
+field CellAnswer 8 2 single
+field CellAnswer 9 2 single
+field CellAnswer 16 0 single
+field CellAnswer 17 2 single
+field CellAnswer 18 0 single
+field CellAnswer 19 0 single
+field CellAnswer 20 0 single
+reserved CellAnswer 5
+message CellBatchAnswer
+field CellBatchAnswer 1 2 repeated
+field CellBatchAnswer 2 0 single
+field CellBatchAnswer 3 2 single
+message TimeSpan
+field TimeSpan 1 0 single
+field TimeSpan 2 0 single
+message KeyFilter
+field KeyFilter 1 0 single
+field KeyFilter 2 0 single
+field KeyFilter 3 0 single
+message CellRemoveRequest
+field CellRemoveRequest 1 0 single
+field CellRemoveRequest 2 2 single
+field CellRemoveRequest 3 2 single
+field CellRemoveRequest 4 2 single
+field CellRemoveRequest 16 0 repeated
+field CellRemoveRequest 17 0 single
+field CellRemoveRequest 18 0 repeated
+message CellRemoveResponse
+field CellRemoveResponse 1 0 single
+field CellRemoveResponse 2 2 single
+field CellRemoveResponse 3 2 single
+field CellRemoveResponse 4 0 single
+field CellRemoveResponse 16 0 single
+field CellRemoveResponse 17 0 single
+field CellRemoveResponse 18 0 single
+field CellRemoveResponse 19 0 single
+message CellDeleteRequest
+field CellDeleteRequest 1 0 single
+field CellDeleteRequest 2 2 single
+field CellDeleteRequest 3 2 single
+message CellDeleteResponse
+field CellDeleteResponse 1 0 single
+field CellDeleteResponse 2 2 single
+field CellDeleteResponse 16 0 single
+field CellDeleteResponse 17 0 single
+field CellDeleteResponse 18 0 single
+field CellDeleteResponse 19 0 single
+message CellCall
+field CellCall 1 0 single
+field CellCall 2 0 single
+field CellCall 3 2 single
+message CallStatus
+field CallStatus 1 0 single
+field CallStatus 2 2 single
+message CellReply
+field CellReply 1 2 single
+field CellReply 2 2 single
+field CellReply 3 2 single
+enum CellOperation 0 1 2 3 4
+enum CellStatusCode 0 1 2 3 4 5 6 7 8 9
+enum CellShape 0 1
+enum RankMode 0 1 2 3 4 5 6 7 8 9 10
+enum Rounding 0 1 2
+enum WindowKind 0 1 2 3 4
