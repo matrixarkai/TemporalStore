@@ -9038,6 +9038,7 @@ mod tests {
         ("HashIncrBy", std::mem::size_of::<(String, String, i64)>()),
         ("HashGetAll", std::mem::size_of::<(String)>()),
         ("HashLen", std::mem::size_of::<(String)>()),
+        ("HashFieldExists", std::mem::size_of::<(String, String)>()),
         ("HashDelete", std::mem::size_of::<(String, String)>()),
         ("SetAdd", std::mem::size_of::<(String, Vec<u8>)>()),
         ("ZSetAdd", std::mem::size_of::<(String, Vec<u8>, f64)>()),

@@ -25,6 +25,7 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
         | Command::HashMultiGet { key, .. }
         | Command::HashGetAll { key, .. }
         | Command::HashLen { key, .. }
+        | Command::HashFieldExists { key, .. }
         | Command::SetMembers { key, .. }
         | Command::SetCard { key }
         | Command::SetIsMember { key, .. }
@@ -356,6 +357,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::HashMultiGet { .. }
         | Command::HashGetAll { .. }
         | Command::HashLen { .. }
+        | Command::HashFieldExists { .. }
         | Command::SetMembers { .. }
         | Command::SetCard { .. }
         | Command::SetIsMember { .. }

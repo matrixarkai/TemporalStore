@@ -59,6 +59,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::HashIncrBy { key, .. }
         | Command::HashGetAll { key }
         | Command::HashLen { key }
+        | Command::HashFieldExists { key, .. }
         | Command::HashDelete { key, .. }
         | Command::SetAdd { key, .. }
         | Command::SetMembers { key }
