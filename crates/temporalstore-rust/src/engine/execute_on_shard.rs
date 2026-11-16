@@ -4297,29 +4297,26 @@ pub(crate) fn execute_on_shard(
                         .features()
                         .get(&key[..])
                         .map(|series| {
+                            let mut block_cache = HashMap::new();
                             // feature_append_keeps_oversized_single_timestamped_value_readable:
-                            // each point is read out of the block it sits in, so a large single
-                            // timestamped value remains readable when it occupies its own block.
-                            // The value is copied once, into the point the answer keeps.
-                            let mut reader = crate::engine::packed_blocks::FeatureRangeReader::new();
+                            // range queries rehydrate each timestamp through the packed
+                            // block reader, so a large single timestamped value remains
+                            // readable when it occupies its own block.
                             series
                                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                                 // Default read bound follows feature_max_size so raising the
                                 // retention cap (long-sequence use) also lifts the read limit.
                                 .take(count.unwrap_or(feature_max_size))
                                 .filter_map(|(timestamp_ms, address)| {
-                                    reader.with_point(
+                                    read_feature_point_cached(
                                         cache,
                                         block_store,
                                         shard_id,
                                         timestamp_ms,
                                         address,
                                         identity,
+                                        &mut block_cache,
                                         routing_bucket,
-                                        |value| FeaturePoint {
-                                            timestamp_ms,
-                                            value: value.to_vec(),
-                                        },
                                     )
                                 })
                                 .collect()
@@ -4358,40 +4355,31 @@ pub(crate) fn execute_on_shard(
                 .features()
                 .get(&key[..])
                 .map(|series| {
-                    // EACH POINT IS DECODED WHERE IT SITS, AND ONLY THE ONES THAT PASS ARE COPIED.
-                    // A point the filters refuse used to be built first -- block decoded, value
-                    // copied -- and then dropped. The row is read straight from the cached block's
-                    // bytes and the point's value is copied only if every filter holds. The window
-                    // is still `limit` points BEFORE the filters, exactly as it was.
-                    let mut reader = crate::engine::packed_blocks::FeatureRangeReader::new();
+                    let mut block_cache = HashMap::new();
                     series
                         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                         .take(limit)
                         .filter_map(|(timestamp_ms, address)| {
-                            reader
-                                .with_point(
-                                    cache,
-                                    block_store,
-                                    shard_id,
-                                    timestamp_ms,
-                                    address,
-                                    identity,
-                                    routing_bucket,
-                                    |value| {
-                                        let row = crate::engine::decode_or_count_sequence_row(
-                                            timestamp_ms,
-                                            value,
-                                        )?;
-                                        filters
-                                            .iter()
-                                            .all(|filter| sequence_filter_matches(&row, filter))
-                                            .then(|| FeaturePoint {
-                                                timestamp_ms,
-                                                value: value.to_vec(),
-                                            })
-                                    },
-                                )
-                                .flatten()
+                            read_feature_point_cached(
+                                cache,
+                                block_store,
+                                shard_id,
+                                timestamp_ms,
+                                address,
+                                identity,
+                                &mut block_cache,
+                                routing_bucket,
+                            )
+                            .and_then(|point| {
+                                let row = crate::engine::decode_or_count_sequence_row(
+                                    point.timestamp_ms,
+                                    &point.value,
+                                )?;
+                                filters
+                                    .iter()
+                                    .all(|filter| sequence_filter_matches(&row, filter))
+                                    .then_some(point)
+                            })
                         })
                         .collect()
                 })
