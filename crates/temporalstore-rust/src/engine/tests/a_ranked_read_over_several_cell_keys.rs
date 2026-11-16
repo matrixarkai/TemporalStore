@@ -3,8 +3,8 @@
 
 //! A RANKED READ OVER SEVERAL CELL KEYS, THROUGH THE ENGINE.
 //!
-//! The merge itself is tested in `cell_fan_in` against an independent fold. These tests are about
-//! what only the engine path can get wrong: that the snapshots it merges are the ones stored under
+//! The merge itself is tested in `window_reduce_fan_in` against an independent fold. These tests are about
+//! what only the engine path can get wrong: that the samples it merges are the ones stored under
 //! each named key (live, and after a restart that reads every block cold), that a key the shard
 //! does not hold or one that expired contributes nothing and is not counted, that headers which
 //! differ only by an added lane read under the wider one and any other difference is refused naming
@@ -132,12 +132,12 @@ fn scores(ranked: &RankedCells) -> Vec<i64> {
     ranked.rows.iter().map(|row| row.score as i64).collect()
 }
 
-/// Three channels of user 7, six snapshots at distinct stamps, lanes [shown (Sum), peak (Max)]:
+/// Three channels of user 7, six samples at distinct stamps, lanes [shown (Sum), peak (Max)]:
 ///   channel 1: 100 item 1 [10, 5], item 2 [20, 7]      400 item 3 [30, 2]
 ///   channel 2: 200 item 1 [10, 9], item 3 [40, 3]      500 item 4 [5, 1]
 ///   channel 3: 300 item 2 [25, 8], item 3 [10, 6]      600 item 1 [1, 2]
 /// Over all three channels: item 1 shown 21 peak 9, item 2 shown 45 peak 8, item 3 shown 80 peak 6,
-/// item 4 shown 5 peak 1. The same six snapshots go to user 99's channel 1, a single key.
+/// item 4 shown 5 peak 1. The same six samples go to user 99's channel 1, a single key.
 fn seed(engine: &TemporalEngine) -> (Vec<String>, String) {
     let h = two_lanes();
     let channels = [
@@ -165,7 +165,7 @@ fn a_worked_example_of_a_ranked_read_across_the_channels_of_one_user() {
     let (keys, single) = seed(&engine);
 
     // ---- WHICH ITEMS DID THE USER RESPOND TO MOST, OVER ALL THREE CHANNELS? ---------------------
-    // One read names the three keys. Each item's `shown` is summed over every snapshot of every
+    // One read names the three keys. Each item's `shown` is summed over every sample of every
     // channel: 80, 45, 21, 5. No one channel's own top item list could say it: item 2 is second
     // in channel 1 and leads channel 3, and only the union puts it second overall.
     let by_shown = fan_in(&engine, &keys, spec(ALL, lane("shown"), 10));
@@ -180,7 +180,7 @@ fn a_worked_example_of_a_ranked_read_across_the_channels_of_one_user() {
     assert_eq!((item_1.lanes.clone(), item_1.labels.clone(), item_1.last_ms), (vec![21, 9], vec![3], 600));
 
     // ---- THE ANSWER IS THE ONE A SINGLE KEY HOLDING EVERY SNAPSHOT GIVES -----------------------
-    // User 99 has one key with the same six snapshots. Only the count of keys differs.
+    // User 99 has one key with the same six samples. Only the count of keys differs.
     let one_key = rank(&engine, &single, spec(ALL, lane("shown"), 10));
     assert_eq!(one_key.keys, 1);
     let mut merged = by_shown.clone();
@@ -188,7 +188,7 @@ fn a_worked_example_of_a_ranked_read_across_the_channels_of_one_user() {
     assert_eq!(merged, one_key);
 
     // ---- THE WINDOW APPLIES TO EACH KEY --------------------------------------------------------
-    // The newest snapshot of each channel: 400, 500 and 600. Item 3 30, item 4 5, item 1 1.
+    // The newest sample of each channel: 400, 500 and 600. Item 3 30, item 4 5, item 1 1.
     let newest = fan_in(&engine, &keys, spec(CellWindow::LastN { n: 1 }, lane("shown"), 10));
     assert_eq!((members(&newest), scores(&newest), newest.snapshots), (vec![3, 4, 1], vec![30, 5, 1], 3));
 
@@ -307,12 +307,12 @@ fn the_snapshot_ceiling_holds_while_reading_and_the_limit_is_served() {
     put_many(&engine, &b, &h, 512, &one);
     put_many(&engine, &c, &h, 1, &one);
 
-    // Two keys of 512 (each at the per-key window bound) is 1024: served, every snapshot summed.
+    // Two keys of 512 (each at the per-key window bound) is 1024: served, every sample summed.
     let at = fan_in(&engine, &[a.clone(), b.clone()], spec(ALL, lane("shown"), 1));
     assert_eq!((at.snapshots, scores(&at), at.keys), (1024, vec![1024], 2));
-    // A third key's one snapshot is 1025: refused whole, with no rows.
+    // A third key's one sample is 1025: refused whole, with no rows.
     let over = fan_in(&engine, &[a.clone(), b.clone(), c.clone()], spec(ALL, lane("shown"), 1));
-    assert!(over.refused.contains("snapshots in a fan-in read"), "{}", over.refused);
+    assert!(over.refused.contains("samples in a fan-in read"), "{}", over.refused);
     assert!(over.rows.is_empty());
     // The ceiling is on what the window names: the newest 100 of each key passes.
     let narrow = fan_in(&engine, &[a, b, c], spec(CellWindow::LastN { n: 100 }, lane("shown"), 1));
@@ -326,12 +326,12 @@ fn the_cell_ceiling_holds_while_reading_and_the_limit_is_served() {
     let h = header(&[("shown", LaneReducer::Sum)]);
     let wide: Vec<Cell> = (0..4096u64).map(|m| cell(m, 0, vec![1])).collect();
     let (a, b) = (stored_key(8, 1), stored_key(8, 2));
-    // 64 snapshots of 4 096 cells is exactly the 262 144 cells one fan-in read may visit.
+    // 64 samples of 4 096 cells is exactly the 262 144 cells one fan-in read may visit.
     put_many(&engine, &a, &h, 64, &wide);
     put(&engine, &b, &h, 1, &[cell(0, 0, vec![1])]);
 
     let at = fan_in(&engine, &[a.clone()], spec(ALL, lane("shown"), 1));
-    assert_eq!((at.snapshots, scores(&at)), (64, vec![64]), "member 0 is in every snapshot");
+    assert_eq!((at.snapshots, scores(&at)), (64, vec![64]), "member 0 is in every sample");
     // One cell more, from a second key, is refused whole.
     let over = fan_in(&engine, &[a, b], spec(ALL, lane("shown"), 1));
     assert!(over.refused.contains("cells in a fan-in read"), "{}", over.refused);
@@ -448,7 +448,7 @@ fn a_fan_in_honours_the_member_filter_the_spec_carries() {
     only.members = CellMemberFilter { include: Some(vec![CellMemberId::U64(1), CellMemberId::U64(4)]), exclude: Vec::new() };
     let included = fan_in(&engine, &keys, only.clone());
     assert_eq!((members(&included), scores(&included)), (vec![1, 4], vec![21, 5]));
-    // It is the same restriction the one-key read applies to the single key holding every snapshot.
+    // It is the same restriction the one-key read applies to the single key holding every sample.
     let mut one_key = rank(&engine, &single, only);
     one_key.keys = included.keys;
     assert_eq!(included, one_key);

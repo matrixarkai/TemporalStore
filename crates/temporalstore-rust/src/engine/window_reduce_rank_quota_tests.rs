@@ -2,10 +2,10 @@
 // Copyright 2026 MatrixArkAI
 
 //! Tests of the quota of the ranked cell read: the members that must be present for some lanes,
-//! chosen walking the ranking best first. See the module notes of `cell_rank_options`.
+//! chosen walking the ranking best first. See the module notes of `window_reduce_rank_options`.
 
 use super::*;
-use crate::engine::cell_rank_options::{
+use crate::engine::window_reduce_rank_options::{
     validate_options, validate_quota, LaneQuota, Quota, RankOptions, MAX_QUOTA, MAX_QUOTA_LANES,
 };
 
@@ -20,9 +20,9 @@ fn with_quota(quota: Quota) -> RankOptions {
     RankOptions { quota, ..RankOptions::default() }
 }
 
-/// One snapshot, eight members ranked by `shown` 80 .. 10, in member order. `clicked` is non-zero
+/// One sample, eight members ranked by `shown` 80 .. 10, in member order. `clicked` is non-zero
 /// for m3, m6 and m8; `peak` for m2 and m7; `seen` for nobody.
-fn ladder() -> Snapshots {
+fn ladder() -> Samples {
     let rows: [(u64, [i64; 4]); 8] = [
         (1, [80, 0, 0, 0]),
         (2, [70, 0, 5, 0]),
@@ -36,7 +36,7 @@ fn ladder() -> Snapshots {
     vec![(100, rows.iter().map(|(m, lanes)| cell(*m, 0, *lanes)).collect())]
 }
 
-fn pick(lanes: &[(&str, usize)], others: usize, k: usize, snaps: &Snapshots) -> RankedCells {
+fn pick(lanes: &[(&str, usize)], others: usize, k: usize, snaps: &Samples) -> RankedCells {
     let query = spec(ALL, lane("shown"), k);
     Plan::compile_with(&header(), &query, &with_quota(quota_of(lanes, others)))
         .and_then(|plan| plan.run(0, &views(snaps)))
@@ -157,7 +157,7 @@ fn a_quota_answers_what_a_literal_scan_of_the_ranking_answers() {
     let (mut compared, mut dropped) = (0usize, 0usize);
     let names = ["shown", "clicked", "peak", "seen"];
     for _ in 0..200 {
-        let snapshots: Snapshots = vec![(
+        let snapshots: Samples = vec![(
             100,
             (0..30u64)
                 .map(|m| {

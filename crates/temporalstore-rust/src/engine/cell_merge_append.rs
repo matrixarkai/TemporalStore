@@ -2,15 +2,15 @@
 // Copyright 2026 MatrixArkAI
 
 //! The merge-reduce write policy of the feature append: what the request becomes once its cells
-//! are merged into the snapshots already stored.
+//! are merged into the samples already stored.
 //!
 //! # WHERE A VIOLATION IS REFUSED
 //!
 //! At VALIDATION, before the command reaches the log, the same place `Block` is refused. A refused
 //! request writes nothing: no block, no log record, no index entry. Validation can reach the
-//! stored snapshot (it is handed the cache and the block store, as the hash-increment precheck
+//! stored sample (it is handed the cache and the block store, as the hash-increment precheck
 //! is), so the checks that need stored state -- the header against the newest stored header, the
-//! merged snapshot against its cell limit, a stored value that is not a cell snapshot -- sit beside
+//! merged sample against its cell limit, a stored value that is not a cell sample -- sit beside
 //! the ones that do not.
 //!
 //! Execution runs the SAME planner again. It is a pure function of the command and the state the
@@ -79,7 +79,7 @@ fn stored_value(
     .ok_or_else(|| {
         Status::error(
             "data_loss",
-            format!("{key}: the snapshot stored at {timestamp_ms} cannot be read"),
+            format!("{key}: the sample stored at {timestamp_ms} cannot be read"),
         )
     })
 }
@@ -92,18 +92,18 @@ fn stored_value(
 pub(super) enum PlanOutput {
     /// Count what lands; write no values.
     CountOnly,
-    /// Also encode the value of each snapshot.
+    /// Also encode the value of each sample.
     Values,
 }
 
-/// The newest stored snapshot of a key: where it is, its bytes, and its header read once.
+/// The newest stored sample of a key: where it is, its bytes, and its header read once.
 struct NewestStored {
     timestamp_ms: u64,
     value: Vec<u8>,
     header: Rc<CellHeader>,
 }
 
-/// Merges `points` into the snapshots `series` holds. `series` is `None` for a key that does not
+/// Merges `points` into the samples `series` holds. `series` is `None` for a key that does not
 /// exist (or whose deadline has passed).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan_cell_merge(
@@ -119,7 +119,7 @@ pub(super) fn plan_cell_merge(
     if points.is_empty() {
         return Err(refuse(key, "a merge-reduce append needs at least one point"));
     }
-    // The newest stored snapshot is read ONCE: its header is the one every request is checked
+    // The newest stored sample is read ONCE: its header is the one every request is checked
     // against, and a request point at that timestamp merges into its cells.
     let newest_stored: Option<NewestStored> = match series.and_then(|s| s.range(..).next_back()) {
         None => None,
@@ -128,17 +128,17 @@ pub(super) fn plan_cell_merge(
                 cache,
                 block_store,
                 shard_id,
-                series.expect("a newest snapshot implies a series"),
+                series.expect("a newest sample implies a series"),
                 key,
                 timestamp_ms,
                 routing_bucket,
             )?
             .expect("the newest timestamp has an address");
             let (header_bytes, _) = cell_set::split_value_raw(&value).map_err(|err| {
-                refuse(key, format!("the newest stored value ({timestamp_ms}) is not a cell snapshot: {err}"))
+                refuse(key, format!("the newest stored value ({timestamp_ms}) is not a cell sample: {err}"))
             })?;
             let header = CellHeader::decode(header_bytes).map_err(|err| {
-                refuse(key, format!("the newest stored value ({timestamp_ms}) is not a cell snapshot: {err}"))
+                refuse(key, format!("the newest stored value ({timestamp_ms}) is not a cell sample: {err}"))
             })?;
             Some(NewestStored { timestamp_ms, value, header: Rc::new(header) })
         }
@@ -156,7 +156,7 @@ pub(super) fn plan_cell_merge(
         let timestamp_ms = point.timestamp_ms;
         // The request's own value for this timestamp merges into what is stored there -- or into
         // what an earlier point of this request already merged there -- under one entry point
-        // that owns the header check, the upgrade of an older snapshot and the merge.
+        // that owns the header check, the upgrade of an older sample and the merge.
         let loaded: Option<Vec<u8>>;
         let own: CellHeader;
         let existing = match merged.remove(&timestamp_ms) {

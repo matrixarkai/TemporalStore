@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! The ranked windowed read over merged cell snapshots, as a pure function of decoded snapshots.
+//! The ranked windowed read over merged cell samples, as a pure function of decoded samples.
 //!
 //! ```text
 //! window -> select (named predicates) -> reduce per member -> score -> top-k -> project
@@ -9,20 +9,20 @@
 //!
 //! # WHAT EACH STAGE MEANS
 //!
-//! * WINDOW picks snapshots: [`CellWindow`]. A window that would hold more than
-//!   [`MAX_WINDOW_SNAPSHOTS`] snapshots is refused, not truncated.
-//! * SELECT tests every cell of every chosen snapshot against the named predicates, which reuse
+//! * WINDOW picks samples: [`CellWindow`]. A window that would hold more than
+//!   [`MAX_WINDOW_SAMPLES`] samples is refused, not truncated.
+//! * SELECT tests every cell of every chosen sample against the named predicates, which reuse
 //!   the six `FeatureFilter` operators. A name is a label, a lane or `member`; any other name is
-//!   refused when the plan is compiled, before a snapshot is read. A cell is tested as the snapshot
-//!   stores it, so the predicates cut BEFORE the member's snapshots are reduced together.
+//!   refused when the plan is compiled, before a sample is read. A cell is tested as the sample
+//!   stores it, so the predicates cut BEFORE the member's samples are reduced together.
 //! * REDUCE folds one member's surviving cells lane by lane with the reduction the header declares
 //!   for that lane ([`read_reducer`]: the write-side merge verb, as the read-side window reduction) through the shared window
-//!   reducers, in snapshot order. Labels are the newest surviving cell's.
+//!   reducers, in sample order. Labels are the newest surviving cell's.
 //! * SCORE turns the reduced lanes into the ordering value: [`CellScore`]. A member whose score is
 //!   undefined (a zero denominator, no trials) is counted in `unscored` and not ranked.
 //!   The one score that is not a function of the reduced lanes is `Decay`: it reads the value each of
-//!   the member's snapshots stores for a lane and halves it for every half-life between that snapshot
-//!   and the NEWEST snapshot of the window (so it does not read the clock, and a key read later or
+//!   the member's samples stores for a lane and halves it for every half-life between that sample
+//!   and the NEWEST sample of the window (so it does not read the clock, and a key read later or
 //!   replayed scores the same). Every member's score is scaled by the same factor when that instant
 //!   moves, so the order never depends on it. Its half-life is bounded [`MIN_HALF_LIFE_MS`]..=
 //!   [`MAX_HALF_LIFE_MS`]; the total is a float and cannot wrap.
@@ -32,12 +32,12 @@
 //!
 //! # COST
 //!
-//! Snapshots are stored sorted by member, so the members of all chosen snapshots are visited in
+//! Samples are stored sorted by member, so the members of all chosen samples are visited in
 //! order by a k-way merge: a member's cells meet each other without any per-member table. Work is
 //! `O(cells * log snapshots)` for the merge plus `O(snapshots * lanes)` per member for the
 //! reduction, and the heap is `O(k)`. THE ALLOCATIONS DO NOT DEPEND ON THE NUMBER OF CELLS OR
 //! MEMBERS: the cursors, the merge heap, the per-member scratch and the result slots are sized by
-//! the snapshot count, the lane count and `k`, once, before the first cell is read. A snapshot
+//! the sample count, the lane count and `k`, once, before the first cell is read. A sample
 //! whose cells are not strictly ascending by member is refused (it would be merged wrongly).
 //!
 //! The module is pure: it reads decoded [`Cell`]s and a clock value and touches no engine state.
@@ -45,7 +45,7 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
-use super::cell_rank_options::{
+use super::window_reduce_rank_options::{
     last_bounds, validate_options, Anchor, CompiledMembers, CompiledQuota, RankOptions,
 };
 use super::cell_set::{validate_top_k, within, Cell, CellHeader, CellRef, FlatCells, LaneReducer, MemberRef};
@@ -58,8 +58,8 @@ use crate::types::{
     RankedCells,
 };
 
-/// Snapshots one ranked read may merge.
-pub(crate) const MAX_WINDOW_SNAPSHOTS: usize = 512;
+/// Samples one ranked read may merge.
+pub(crate) const MAX_WINDOW_SAMPLES: usize = 512;
 /// Predicates one ranked read may carry.
 pub(crate) const MAX_PREDICATES: usize = 8;
 /// Lanes in one weighted score.
@@ -69,31 +69,31 @@ pub(crate) const MIN_HALF_LIFE_MS: u64 = 1;
 /// The longest half-life of a decay score: ten years of 365 days.
 pub(crate) const MAX_HALF_LIFE_MS: u64 = 10 * 365 * 24 * 60 * 60 * 1000;
 
-/// One decoded snapshot: its stamp and its cells, sorted strictly ascending by member.
+/// One decoded sample: its stamp and its cells, sorted strictly ascending by member.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct SnapshotView<'a> {
+pub(crate) struct SampleView<'a> {
     pub(crate) timestamp_ms: u64,
     pub(crate) cells: &'a [Cell],
 }
 
-/// One decoded snapshot held in the flat form: the same stamp and cells, with no allocation per cell.
+/// One decoded sample held in the flat form: the same stamp and cells, with no allocation per cell.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FlatView<'a> {
     pub(crate) timestamp_ms: u64,
     pub(crate) cells: &'a FlatCells,
 }
 
-/// What the plan reads of a decoded snapshot: its stamp, and each cell in place. The plain
+/// What the plan reads of a decoded sample: its stamp, and each cell in place. The plain
 /// `Vec<Cell>` form and the flat form both read through it, so the ranking is one piece of code
 /// and the two forms cannot disagree about an answer.
-pub(crate) trait SnapshotRead<'a>: Copy {
+pub(crate) trait SampleRead<'a>: Copy {
     fn stamp(&self) -> u64;
     fn cell_count(&self) -> usize;
     /// Cell `i`, in place. `i` is below `cell_count()`.
     fn cell(&self, i: usize) -> CellRef<'a>;
 }
 
-impl<'a> SnapshotRead<'a> for SnapshotView<'a> {
+impl<'a> SampleRead<'a> for SampleView<'a> {
     fn stamp(&self) -> u64 {
         self.timestamp_ms
     }
@@ -106,7 +106,7 @@ impl<'a> SnapshotRead<'a> for SnapshotView<'a> {
     }
 }
 
-impl<'a> SnapshotRead<'a> for FlatView<'a> {
+impl<'a> SampleRead<'a> for FlatView<'a> {
     fn stamp(&self) -> u64 {
         self.timestamp_ms
     }
@@ -172,7 +172,7 @@ pub(crate) struct Plan {
     quota: Option<CompiledQuota>,
     predicates: Vec<Predicate>,
     scorer: Scorer,
-    /// The read answers stored cells, newest snapshot first ([`CellScore::Recent`]).
+    /// The read answers stored cells, newest sample first ([`CellScore::Recent`]).
     recent: bool,
     top_k: usize,
     lane_count: usize,
@@ -184,8 +184,8 @@ pub(crate) struct Plan {
     lane_names: Vec<String>,
 }
 
-/// The window reduction that combines a lane's STORED values across snapshots. The lane's verb
-/// merged writes into one snapshot; across snapshots a counted lane holds counts, and counts add.
+/// The window reduction that combines a lane's STORED values across samples. The lane's verb
+/// merged writes into one sample; across samples a counted lane holds counts, and counts add.
 fn read_reducer(lane: LaneReducer) -> Reducer {
     match lane {
         LaneReducer::Sum | LaneReducer::Count => Reducer::Sum,
@@ -231,7 +231,7 @@ fn lane_named(header: &CellHeader, name: &str) -> Result<usize, String> {
 }
 
 /// The checks that need no header: bounds, ranges and parameters. A command runs this at
-/// admission, before any snapshot is read; [`Plan::compile`] runs it again so a plan can never be
+/// admission, before any sample is read; [`Plan::compile`] runs it again so a plan can never be
 /// built from a spec that skipped it.
 pub(crate) fn validate_spec(spec: &CellRankSpec) -> Result<(), String> {
     validate_top_k(spec.top_k)?;
@@ -242,9 +242,9 @@ pub(crate) fn validate_spec(spec: &CellRankSpec) -> Result<(), String> {
         }
         CellWindow::LastN { n } => {
             if *n == 0 {
-                return Err("window of the last 0 snapshots is empty".to_string());
+                return Err("window of the last 0 samples is empty".to_string());
             }
-            within("snapshots in the window", *n, MAX_WINDOW_SNAPSHOTS)?;
+            within("samples in the window", *n, MAX_WINDOW_SAMPLES)?;
         }
         _ => {}
     }
@@ -416,7 +416,7 @@ impl Key {
 
 impl Plan {
     /// `None`: the score is undefined for this member (counted, not ranked).
-    /// `points` are the member's occurrences in ascending snapshot order and `as_of_ms` the newest
+    /// `points` are the member's occurrences in ascending sample order and `as_of_ms` the newest
     /// stamp of the window: the two things a decay score reads that a reduced lane does not hold.
     fn score(
         &self,
@@ -468,7 +468,7 @@ impl Scorer {
                 weighted_sum(&picked[..indexes.len()], weights).map(Key::Float)
             }
             Scorer::Decay(..) => {
-                return Err("a decay score reads a member's snapshots, not one folded cell".to_string())
+                return Err("a decay score reads a member's samples, not one folded cell".to_string())
             }
         })
     }
@@ -564,41 +564,41 @@ fn member_id(member: MemberRef<'_>) -> CellMemberId {
 // Running a plan
 // ------------------------------------------------------------------------------------------
 
-fn snapshots_between<'s, 'a, V: SnapshotRead<'a>>(snapshots: &'s [V], from_ms: u64, to_ms: u64) -> &'s [V] {
+fn samples_between<'s, 'a, V: SampleRead<'a>>(snapshots: &'s [V], from_ms: u64, to_ms: u64) -> &'s [V] {
     let first = snapshots.partition_point(|s| s.stamp() < from_ms);
     let end = snapshots.partition_point(|s| s.stamp() <= to_ms);
     &snapshots[first..end.max(first)]
 }
 
 impl Plan {
-    /// The snapshots the window covers, in ascending stamp order.
-    pub(crate) fn select_window<'s, 'a, V: SnapshotRead<'a>>(
+    /// The samples the window covers, in ascending stamp order.
+    pub(crate) fn select_window<'s, 'a, V: SampleRead<'a>>(
         &self,
         now_ms: u64,
         snapshots: &'s [V],
     ) -> Result<&'s [V], String> {
         if snapshots.windows(2).any(|pair| pair[0].stamp() >= pair[1].stamp()) {
-            return Err("snapshots are not in strictly ascending stamp order".to_string());
+            return Err("samples are not in strictly ascending stamp order".to_string());
         }
         let chosen = match &self.window {
-            CellWindow::Between { start_ms, end_ms } => snapshots_between(snapshots, *start_ms, *end_ms),
+            CellWindow::Between { start_ms, end_ms } => samples_between(snapshots, *start_ms, *end_ms),
             CellWindow::Last { duration_ms } => {
                 let newest = snapshots.last().map(|s| s.stamp());
                 match last_bounds(self.anchor, *duration_ms, now_ms, newest) {
-                    Some((from_ms, to_ms)) => snapshots_between(snapshots, from_ms, to_ms),
+                    Some((from_ms, to_ms)) => samples_between(snapshots, from_ms, to_ms),
                     None => &snapshots[..0],
                 }
             }
-            CellWindow::Since { start_ms } => snapshots_between(snapshots, *start_ms, u64::MAX),
+            CellWindow::Since { start_ms } => samples_between(snapshots, *start_ms, u64::MAX),
             CellWindow::LastN { n } => &snapshots[snapshots.len().saturating_sub(*n)..],
         };
-        within("snapshots in the window", chosen.len(), MAX_WINDOW_SNAPSHOTS)?;
+        within("samples in the window", chosen.len(), MAX_WINDOW_SAMPLES)?;
         Ok(chosen)
     }
 
     /// The first cell at or after `*at` that passes every predicate, as its member. Each cell is
-    /// visited once, so this is also where the shape and the order of a snapshot are checked.
-    fn settle<'a, V: SnapshotRead<'a>>(&self, snapshot: &V, at: &mut usize) -> Result<Option<MemberRef<'a>>, String> {
+    /// visited once, so this is also where the shape and the order of a sample are checked.
+    fn settle<'a, V: SampleRead<'a>>(&self, snapshot: &V, at: &mut usize) -> Result<Option<MemberRef<'a>>, String> {
         while *at < snapshot.cell_count() {
             let cell = snapshot.cell(*at);
             if cell.lanes.len() != self.lane_count || cell.labels.len() != self.label_count {
@@ -611,7 +611,7 @@ impl Plan {
                 ));
             }
             if *at > 0 && snapshot.cell(*at - 1).member >= cell.member {
-                return Err("a snapshot is not strictly ascending by member".to_string());
+                return Err("a sample is not strictly ascending by member".to_string());
             }
             if self.members.allows(cell.member) && self.predicates.iter().all(|predicate| predicate.holds(&cell)) {
                 return Ok(Some(cell.member));
@@ -623,7 +623,7 @@ impl Plan {
 
     /// Moves cursor `i` past its current cell, recording that cell as an occurrence of the
     /// member being gathered, and re-queues the cursor at its next surviving cell.
-    fn consume<'a, V: SnapshotRead<'a>>(
+    fn consume<'a, V: SampleRead<'a>>(
         &self,
         chosen: &[V],
         at: &mut [usize],
@@ -640,12 +640,12 @@ impl Plan {
     }
 
     /// The rows of a [`CellScore::Recent`] read: the stored cells of `chosen` that pass the member
-    /// set and every predicate, the newest snapshot first, each snapshot's cells by member, until
+    /// set and every predicate, the newest sample first, each sample's cells by member, until
     /// `top_k` rows are held. No cell is reduced with another, so a member written in three
-    /// snapshots is three rows. Where two snapshots share a stamp the later one in `chosen` goes
+    /// samples is three rows. Where two samples share a stamp the later one in `chosen` goes
     /// first (it is the one a reduction would combine last). The walk stops at `top_k`, so the work
     /// is bounded by the window and by the rows asked for.
-    fn run_recent<'a, V: SnapshotRead<'a>>(&self, chosen: &[V]) -> Result<RankedCells, String> {
+    fn run_recent<'a, V: SampleRead<'a>>(&self, chosen: &[V]) -> Result<RankedCells, String> {
         let mut rows = Vec::with_capacity(self.top_k.min(chosen.iter().map(|s| s.cell_count()).sum::<usize>()));
         'newest: for snapshot in chosen.iter().rev() {
             let mut at = 0usize;
@@ -677,23 +677,23 @@ impl Plan {
 
     /// Runs the plan over `snapshots` (ascending by stamp; the window is applied here). `now_ms`
     /// is the instant a `Last` window ends at.
-    pub(crate) fn run<'a, V: SnapshotRead<'a>>(&self, now_ms: u64, snapshots: &[V]) -> Result<RankedCells, String> {
+    pub(crate) fn run<'a, V: SampleRead<'a>>(&self, now_ms: u64, snapshots: &[V]) -> Result<RankedCells, String> {
         let chosen = self.select_window(now_ms, snapshots)?;
         let mut ranked = self.run_ordered(chosen)?;
         ranked.keys = usize::from(!chosen.is_empty());
         Ok(ranked)
     }
 
-    /// Ranks the members of `chosen`, snapshots already picked and in the order their cells are
+    /// Ranks the members of `chosen`, samples already picked and in the order their cells are
     /// to be combined: ascending by stamp, and where two share a stamp the earlier one in the
     /// slice is combined first (`First` and `Last` lanes resolve a tie by that order). The window
-    /// is not applied again. A caller that merges snapshots of more than one series builds the
+    /// is not applied again. A caller that merges samples of more than one series builds the
     /// slice itself; [`Plan::run`] hands it one series' window.
-    pub(crate) fn run_ordered<'a, V: SnapshotRead<'a>>(&self, chosen: &[V]) -> Result<RankedCells, String> {
+    pub(crate) fn run_ordered<'a, V: SampleRead<'a>>(&self, chosen: &[V]) -> Result<RankedCells, String> {
         if self.recent {
             return self.run_recent(chosen);
         }
-        // Everything sized by the snapshot count, the lane count or k is allocated here, once.
+        // Everything sized by the sample count, the lane count or k is allocated here, once.
         let mut at = vec![0usize; chosen.len()];
         let mut queue: BinaryHeap<Reverse<(MemberRef<'a>, usize)>> = BinaryHeap::with_capacity(chosen.len());
         let mut occurrences: Vec<(u64, CellRef<'a>)> = Vec::with_capacity(chosen.len());
@@ -716,7 +716,7 @@ impl Plan {
                 self.consume(chosen, &mut at, &mut queue, &mut occurrences, i)?;
             }
 
-            // Occurrences arrive in ascending snapshot order: the queue breaks ties by index.
+            // Occurrences arrive in ascending sample order: the queue breaks ties by index.
             for (lane, reducer) in self.reducers.iter().enumerate() {
                 let points = occurrences.iter().map(|(ts, cell)| (*ts, cell.lanes[lane]));
                 match reducer.reduce(points).map_err(|e| e.0)? {
@@ -763,9 +763,9 @@ impl Plan {
 }
 
 #[cfg(test)]
-#[path = "cell_rank_tests.rs"]
+#[path = "window_reduce_rank_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "cell_rank_flat_tests.rs"]
+#[path = "window_reduce_rank_flat_tests.rs"]
 mod flat_tests;

@@ -27,7 +27,7 @@
 //! # BYTES
 //!
 //! One field-1 length-delimited record per entry, oldest first, each holding fields 1 to 4 in order
-//! (token, snapshots written, cells created, cells merged) as varints. The encoding is canonical:
+//! (token, samples written, cells created, cells merged) as varints. The encoding is canonical:
 //! [`RetryRing::decode`] refuses a value that is not exactly what [`RetryRing::encode`] writes
 //! (unknown, missing, repeated or out-of-order fields, trailing bytes, more entries than the
 //! capacity, a token twice), and never panics on a malformed or truncated value.

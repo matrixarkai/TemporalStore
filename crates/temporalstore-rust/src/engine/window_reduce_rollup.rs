@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Rolling old cell snapshots up into coarser time buckets, and capping a label group, as a pure
-//! function of decoded snapshots.
+//! Rolling old cell samples up into coarser time buckets, and capping a label group, as a pure
+//! function of decoded samples.
 //!
-//! A key written every minute for a month holds 43,200 snapshots, each carrying every member.
+//! A key written every minute for a month holds 43,200 samples, each carrying every member.
 //! Retention by trimming can only drop the oldest of them; it cannot make them cheaper. A rollup
-//! replaces many old snapshots by one per bucket, and a cap bounds how many members of a label
+//! replaces many old samples by one per bucket, and a cap bounds how many members of a label
 //! group survive in it.
 //!
 //! # ROLLUP
 //!
-//! `older_than_ms` and `bucket_ms`. A snapshot whose stamp is STRICTLY below the cutoff is rolled:
-//! its bucket is `floor(stamp / bucket_ms) * bucket_ms`, and every snapshot of one bucket becomes
-//! one snapshot stored AT THE BUCKET START. A snapshot at exactly the cutoff, and every later one,
-//! is returned as it was. Inside a bucket the cells merge by member, lane by lane, oldest snapshot
+//! `older_than_ms` and `bucket_ms`. A sample whose stamp is STRICTLY below the cutoff is rolled:
+//! its bucket is `floor(stamp / bucket_ms) * bucket_ms`, and every sample of one bucket becomes
+//! one sample stored AT THE BUCKET START. A sample at exactly the cutoff, and every later one,
+//! is returned as it was. Inside a bucket the cells merge by member, lane by lane, oldest sample
 //! first, under [`combine_aggregated`]. Labels are the newest cell's, as they are for a write.
 //!
 //! # COMBINING IS NOT MERGING A WRITE
@@ -30,53 +30,53 @@
 //! | Sum     | older + newer, SATURATING         |
 //! | Count   | older + newer, SATURATING         |
 //! | Max/Min | the larger / the smaller          |
-//! | First   | older (the oldest snapshot's)     |
-//! | Last    | newer (the newest snapshot's)     |
+//! | First   | older (the oldest sample's)     |
+//! | Last    | newer (the newest sample's)     |
 //!
 //! SUMS SATURATE at `i64::MAX` / `i64::MIN` and never wrap, as the write-time merge and the window
 //! reductions already do. A saturated value is sticky: it is a statement that the true total is at
 //! least that large, not an exact total, and a later combine does not pull it back.
 //!
-//! A snapshot that is already a rolled bucket sits at its own bucket start, so rolling it again
-//! with the same arguments changes nothing: same cells, same bytes. A rolled snapshot is treated
+//! A sample that is already a rolled bucket sits at its own bucket start, so rolling it again
+//! with the same arguments changes nothing: same cells, same bytes. A rolled sample is treated
 //! as occurring at its bucket start. A late write that lands inside a bucket that was already
 //! rolled folds into it as the NEWEST contribution there.
 //!
 //! # CAP
 //!
-//! An optional per-group cap, applied to each rolled snapshot. Cells are grouped by the value of a
+//! An optional per-group cap, applied to each rolled sample. Cells are grouped by the value of a
 //! named label (every cell is one group when none is named), scored by the same [`CellScore`]
 //! vocabulary the ranked read uses (resolved by the same [`Scorer`]), and the best `keep` of each
 //! group survive. Higher scores are better; ties break by member ascending; a cell whose score is
 //! undefined (a zero denominator) ranks after every scored cell. The count of cells dropped is
-//! reported. [`cap_cells`] applies a cap to one snapshot on its own.
+//! reported. [`cap_cells`] applies a cap to one sample on its own.
 //!
 //! The cap runs after the buckets are folded, never before: a member dropped early would lose the
 //! contributions it makes later in the bucket. For the same reason a bucket whose union of
-//! members is over the snapshot limit is REFUSED, not trimmed: use a smaller bucket.
+//! members is over the sample limit is REFUSED, not trimmed: use a smaller bucket.
 //!
 //! # TIERS, THE ANCHOR, TRUNCATION AND CAP CONTROLS
 //!
 //! A request may carry more than the one `(older_than, bucket_ms)` pair ([`PlanSpec`]):
 //!
-//! * TIERS: an ordered list, finest first. A snapshot takes the bucket width of the COARSEST tier
+//! * TIERS: an ordered list, finest first. A sample takes the bucket width of the COARSEST tier
 //!   whose cutoff is above its stamp, so recent history stays fine and old history gets coarser
 //!   in one request. Each coarser width is a multiple of the one before, which keeps the output
 //!   ascending. A final tier of width [`CATCH_ALL_BUCKET_MS`] is the catch-all: everything older
-//!   than its cutoff folds into ONE snapshot stored at stamp 0. A coarser tier's cutoff is aligned
+//!   than its cutoff folds into ONE sample stored at stamp 0. A coarser tier's cutoff is aligned
 //!   down to a multiple of the finer width, so a bucket never straddles a boundary and rolling the
 //!   result again changes nothing.
 //! * ANCHOR: [`Anchor::Request`] reads each `older_than` as a stamp; [`Anchor::NewestMinusAge`]
 //!   reads it as an age and resolves it against the newest stamp the series holds (saturating at
-//!   0). There is no clock: the newest snapshot is part of the stored state, so a follower and a
+//!   0). There is no clock: the newest sample is part of the stored state, so a follower and a
 //!   replay resolve the same cutoffs.
-//! * TRUNCATION: [`truncation_drop`] says how many of the oldest snapshots to remove from a series
+//! * TRUNCATION: [`truncation_drop`] says how many of the oldest samples to remove from a series
 //!   of a given length: none unless it holds more than `trigger` (default `keep_last`), then down
-//!   to `keep_last`. It is separate from the fold because it removes snapshots the rollup never
+//!   to `keep_last`. It is separate from the fold because it removes samples the rollup never
 //!   read.
 //! * CAP CONTROLS: `protect_newest_ppm` reserves that share of `keep` (rounded down) for the
 //!   group's most recently seen members, which survive whatever their score; a member is as recent
-//!   as the newest snapshot that wrote it. `trigger_over` leaves a group alone until it holds more
+//!   as the newest sample that wrote it. `trigger_over` leaves a group alone until it holds more
 //!   than `keep + trigger_over` members, then cuts it to `keep`.
 //!
 //! A request that names none of these is the single-tier request, byte for byte. The wire
@@ -84,37 +84,37 @@
 //!
 //! # BOUNDS
 //!
-//! `bucket_ms >= 1`; `1 <= keep <= `[`MAX_KEEP`]; at most [`MAX_ROLLUP_SNAPSHOTS`] snapshots below
+//! `bucket_ms >= 1`; `1 <= keep <= `[`MAX_KEEP`]; at most [`MAX_ROLLUP_SAMPLES`] samples below
 //! the cutoff in one request, so one request cannot stall a shard. A request over the bound is
 //! refused whole, naming the limit: roll a key up in steps by moving the cutoff forward.
 //!
 //! # PURITY AND COST
 //!
 //! No clock: the cutoff is in the request, so a leader, a follower and a replay reach the same
-//! bytes. The snapshots are taken BY VALUE and the cells are MOVED into the result: the
-//! allocations do not depend on the number of snapshots in a bucket or the number of cells (the
+//! bytes. The samples are taken BY VALUE and the cells are MOVED into the result: the
+//! allocations do not depend on the number of samples in a bucket or the number of cells (the
 //! buffers of the fold are sized once and reused), and are bounded by a small constant per bucket.
 
 use std::cmp::Ordering;
 
-use super::cell_rank::{validate_score, Key, Scorer};
+use super::window_reduce_rank::{validate_score, Key, Scorer};
 use super::cell_set::{
-    is_strictly_ascending, validate_cells_in_snapshot, within, within_nonzero, Cell, CellHeader, CellRef, FlatCells,
-    FoldStep, LaneReducer, MAX_CELLS_PER_SNAPSHOT,
+    is_strictly_ascending, validate_cells_in_sample, within, within_nonzero, Cell, CellHeader, CellRef, FlatCells,
+    FoldStep, LaneReducer, MAX_CELLS_PER_SAMPLE,
 };
 use crate::types::{CellRollupAnchor, CellScore};
 
-/// Snapshots below the cutoff one request may roll up.
-pub(crate) const MAX_ROLLUP_SNAPSHOTS: usize = 1024;
+/// Samples below the cutoff one request may roll up.
+pub(crate) const MAX_ROLLUP_SAMPLES: usize = 1024;
 /// Cells one group may keep.
-pub(crate) const MAX_KEEP: usize = MAX_CELLS_PER_SNAPSHOT;
+pub(crate) const MAX_KEEP: usize = MAX_CELLS_PER_SAMPLE;
 
 /// The request, as the command carries it.
 pub(crate) use crate::types::{CellCapSpec as CapSpec, CellRollupSpec as RollupSpec};
 
-/// One decoded snapshot: its stamp and its cells, strictly ascending by member.
+/// One decoded sample: its stamp and its cells, strictly ascending by member.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Snapshot {
+pub(crate) struct Sample {
     pub(crate) timestamp_ms: u64,
     pub(crate) cells: Vec<Cell>,
 }
@@ -125,7 +125,7 @@ pub(crate) struct RollupStats {
     pub(crate) snapshots_after: u64,
     pub(crate) cells_before: u64,
     pub(crate) cells_after: u64,
-    /// Cells folded into a cell of the same member in an earlier snapshot of their bucket.
+    /// Cells folded into a cell of the same member in an earlier sample of their bucket.
     pub(crate) cells_combined: u64,
     /// Cells the cap removed.
     pub(crate) cells_dropped: u64,
@@ -134,11 +134,11 @@ pub(crate) struct RollupStats {
 #[derive(Debug, PartialEq)]
 pub(crate) struct RollupResult {
     /// Ascending by stamp, strictly.
-    pub(crate) snapshots: Vec<Snapshot>,
+    pub(crate) snapshots: Vec<Sample>,
     pub(crate) stats: RollupStats,
 }
 
-/// The lane value after combining a cell that already aggregates earlier snapshots (`older`) with
+/// The lane value after combining a cell that already aggregates earlier samples (`older`) with
 /// one that aggregates later ones (`newer`). See the module notes for why this is not
 /// [`LaneReducer::combine`].
 pub(crate) fn combine_aggregated(reducer: LaneReducer, older: i64, newer: i64) -> i64 {
@@ -157,37 +157,37 @@ pub(crate) fn combine_aggregated(reducer: LaneReducer, older: i64, newer: i64) -
 
 /// Coarser tiers a request may add to the first.
 pub(crate) const MAX_COARSER_TIERS: usize = 8;
-/// Snapshots a truncation may keep.
+/// Samples a truncation may keep.
 pub(crate) const MAX_TRUNCATE_KEEP: usize = 1_000_000;
-/// Snapshots a truncation trigger may name.
+/// Samples a truncation trigger may name.
 pub(crate) const MAX_TRUNCATE_TRIGGER: usize = 10_000_000;
 /// Parts per million in a whole.
 pub(crate) const PPM: u32 = 1_000_000;
 /// Members a group may exceed its `keep` by before the cap acts.
 pub(crate) const MAX_TRIGGER_OVER: usize = MAX_KEEP;
-/// A tier this wide is the catch-all: one snapshot, stored at stamp 0, holds everything older than
+/// A tier this wide is the catch-all: one sample, stored at stamp 0, holds everything older than
 /// the tier's cutoff. Only the last tier may be it.
 pub(crate) const CATCH_ALL_BUCKET_MS: u64 = u64::MAX;
 
 /// What a tier's `older_than` means.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Anchor {
-    /// An absolute stamp: snapshots stamped strictly below it are in the tier.
+    /// An absolute stamp: samples stamped strictly below it are in the tier.
     #[default]
     Request,
-    /// An age: the cutoff is the NEWEST stored snapshot's stamp minus the age (saturating at 0).
-    /// The newest snapshot is part of the stored series, not of a clock, so replay agrees.
+    /// An age: the cutoff is the NEWEST stored sample's stamp minus the age (saturating at 0).
+    /// The newest sample is part of the stored series, not of a clock, so replay agrees.
     NewestMinusAge,
 }
 
-/// Snapshots below the tier's cutoff are folded into buckets of `bucket_ms`.
+/// Samples below the tier's cutoff are folded into buckets of `bucket_ms`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TierSpec {
     pub(crate) older_than: u64,
     pub(crate) bucket_ms: u64,
 }
 
-/// Keep the newest `keep_last` snapshots, acting only when the series holds more than `trigger`
+/// Keep the newest `keep_last` samples, acting only when the series holds more than `trigger`
 /// (when named; otherwise more than `keep_last`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TruncateSpec {
@@ -311,7 +311,7 @@ fn with_view<R>(spec: &RollupSpec, with: impl FnOnce(&PlanView<'_>) -> R) -> R {
 // Admission and compiling
 // ------------------------------------------------------------------------------------------
 
-/// The checks that need no header and no snapshot: a command runs this at admission.
+/// The checks that need no header and no sample: a command runs this at admission.
 pub(crate) fn validate_spec(spec: &RollupSpec) -> Result<(), String> {
     with_view(spec, validate_view)
 }
@@ -380,10 +380,10 @@ fn validate_view(spec: &PlanView<'_>) -> Result<(), String> {
         within_nonzero("cap keep", cap.keep, MAX_KEEP)?;
         validate_score(cap.score)?;
         if matches!(cap.score, CellScore::Time) {
-            return Err("a cap cannot score by time: every cell of a snapshot shares its stamp".to_string());
+            return Err("a cap cannot score by time: every cell of a sample shares its stamp".to_string());
         }
         if matches!(cap.score, CellScore::Decay { .. }) {
-            return Err("a cap cannot score by decay: it scores one folded cell, and a decay reads a member's snapshots".to_string());
+            return Err("a cap cannot score by decay: it scores one folded cell, and a decay reads a member's samples".to_string());
         }
         if cap.protect_newest_ppm > PPM {
             return Err(format!("protect_newest_ppm {} is over the limit of {PPM}", cap.protect_newest_ppm));
@@ -410,7 +410,7 @@ impl Resolved {
 /// must have passed validation (at most `1 + MAX_COARSER_TIERS` tiers).
 ///
 /// A coarser tier's cutoff is ALIGNED DOWN to a multiple of the finer tier's bucket width. A bucket
-/// of the finer tier then starts at or after the boundary, so a rolled snapshot is always in the
+/// of the finer tier then starts at or after the boundary, so a rolled sample is always in the
 /// tier that rolled it and rolling again with the same arguments changes nothing. The first tier's
 /// cutoff is as given.
 fn resolve(spec: &PlanView<'_>, newest_ms: u64) -> Resolved {
@@ -434,13 +434,13 @@ pub(crate) fn resolve_tiers(spec: &PlanSpec, newest_ms: u64) -> Vec<(u64, u64)> 
     resolve(&spec.view(), newest_ms).as_slice().to_vec()
 }
 
-/// The bucket width of the snapshot stamped `ts`: that of the coarsest tier whose cutoff is above
+/// The bucket width of the sample stamped `ts`: that of the coarsest tier whose cutoff is above
 /// it. `None` when it is at or past every cutoff (not rolled).
 fn bucket_width(tiers: &[(u64, u64)], ts: u64) -> Option<u64> {
     tiers.iter().rev().find(|(cutoff, _)| ts < *cutoff).map(|(_, width)| *width)
 }
 
-/// How many of the oldest snapshots a truncation removes from a series holding `total`.
+/// How many of the oldest samples a truncation removes from a series holding `total`.
 pub(crate) fn truncation_drop(total: usize, truncate: &TruncateSpec) -> usize {
     if total > truncate.trigger.unwrap_or(truncate.keep_last) {
         total - truncate.keep_last
@@ -474,7 +474,7 @@ fn compile_cap(header: &CellHeader, cap: &CapView<'_>) -> Result<Cap, String> {
     })
 }
 
-/// The buffers a cap reuses from one snapshot to the next.
+/// The buffers a cap reuses from one sample to the next.
 #[derive(Default)]
 struct CapScratch {
     order: Vec<(u64, Option<Key>, usize)>,
@@ -592,8 +592,8 @@ fn choose_kept<'c>(
     Ok(true)
 }
 
-/// Applies `cap` to one snapshot's cells on its own. Returns how many cells were removed.
-#[allow(dead_code)] // the command applies a cap through `rollup`; this is the one-snapshot form
+/// Applies `cap` to one sample's cells on its own. Returns how many cells were removed.
+#[allow(dead_code)] // the command applies a cap through `rollup`; this is the one-sample form
 pub(crate) fn cap_cells(header: &CellHeader, cap: &CapSpec, cells: &mut Vec<Cell>) -> Result<u64, String> {
     let spec = RollupSpec {
         older_than_ms: 0,
@@ -613,7 +613,7 @@ pub(crate) fn cap_cells(header: &CellHeader, cap: &CapSpec, cells: &mut Vec<Cell
 
 /// Every cell has the header's shape and the cells ascend strictly by member.
 fn check_cells(header: &CellHeader, cells: &[Cell]) -> Result<(), String> {
-    validate_cells_in_snapshot(cells.len())?;
+    validate_cells_in_sample(cells.len())?;
     if let Some(bad) = cells
         .iter()
         .find(|cell| cell.labels.len() != header.labels.len() || cell.lanes.len() != header.lanes.len())
@@ -627,7 +627,7 @@ fn check_cells(header: &CellHeader, cells: &[Cell]) -> Result<(), String> {
         ));
     }
     if !is_strictly_ascending(cells) {
-        return Err("a snapshot is not strictly ascending by member".to_string());
+        return Err("a sample is not strictly ascending by member".to_string());
     }
     Ok(())
 }
@@ -708,16 +708,16 @@ fn fold_into(
     if seen.track {
         std::mem::swap(&mut seen.acc, &mut seen.tmp);
     }
-    within("cells in a rolled snapshot", acc.len(), MAX_CELLS_PER_SNAPSHOT)
+    within("cells in a rolled sample", acc.len(), MAX_CELLS_PER_SAMPLE)
 }
 
 /// A finished bucket: capped, then filed.
 fn finish(
     cap: &Option<Cap>,
     scratch: &mut CapScratch,
-    mut bucket: Snapshot,
+    mut bucket: Sample,
     seen: &Seen,
-    out: &mut Vec<Snapshot>,
+    out: &mut Vec<Sample>,
     stats: &mut RollupStats,
 ) -> Result<(), String> {
     if let Some(cap) = cap {
@@ -727,13 +727,13 @@ fn finish(
     Ok(())
 }
 
-/// Rolls the snapshots below the cutoff up into buckets and caps each rolled snapshot: the
+/// Rolls the samples below the cutoff up into buckets and caps each rolled sample: the
 /// single-tier request, as it has always been.
 ///
-/// `snapshots` must ascend strictly by stamp and each must be a valid snapshot of `header`
+/// `snapshots` must ascend strictly by stamp and each must be a valid sample of `header`
 /// (checked for the ones below the cutoff; the others are returned as given). Nothing is partly
-/// done: an `Err` returns no snapshots.
-pub(crate) fn rollup(header: &CellHeader, snapshots: Vec<Snapshot>, spec: &RollupSpec) -> Result<RollupResult, String> {
+/// done: an `Err` returns no samples.
+pub(crate) fn rollup(header: &CellHeader, snapshots: Vec<Sample>, spec: &RollupSpec) -> Result<RollupResult, String> {
     rollup_spec(header, snapshots, spec, 0)
 }
 
@@ -741,14 +741,14 @@ pub(crate) fn rollup(header: &CellHeader, snapshots: Vec<Snapshot>, spec: &Rollu
 /// stamp of the whole series; it matters only under `CellRollupAnchor::NewestMinusAge`.
 pub(crate) fn rollup_spec(
     header: &CellHeader,
-    snapshots: Vec<Snapshot>,
+    snapshots: Vec<Sample>,
     spec: &RollupSpec,
     newest_ms: u64,
 ) -> Result<RollupResult, String> {
     with_view(spec, |view| rollup_view(header, snapshots, view, newest_ms))
 }
 
-/// The first cutoff of the request (the stamp below which snapshots are rolled), resolved against
+/// The first cutoff of the request (the stamp below which samples are rolled), resolved against
 /// `newest_ms`. The request must have passed [`validate_spec`].
 pub(crate) fn first_cutoff(spec: &RollupSpec, newest_ms: u64) -> u64 {
     with_view(spec, |view| resolve(view, newest_ms).as_slice()[0].0)
@@ -761,11 +761,11 @@ pub(crate) fn truncation_of(spec: &RollupSpec) -> Option<TruncateSpec> {
 
 /// [`rollup`] for a full request. `newest_ms` is the newest stamp of the whole series (not only of
 /// `snapshots`); it matters only under [`Anchor::NewestMinusAge`]. Truncation is not applied here:
-/// it removes snapshots the rollup never read, so the caller composes [`truncation_drop`] over the
+/// it removes samples the rollup never read, so the caller composes [`truncation_drop`] over the
 /// series it holds.
 pub(crate) fn rollup_tiered(
     header: &CellHeader,
-    snapshots: Vec<Snapshot>,
+    snapshots: Vec<Sample>,
     spec: &PlanSpec,
     newest_ms: u64,
 ) -> Result<RollupResult, String> {
@@ -774,32 +774,32 @@ pub(crate) fn rollup_tiered(
 
 fn rollup_view(
     header: &CellHeader,
-    mut snapshots: Vec<Snapshot>,
+    mut snapshots: Vec<Sample>,
     spec: &PlanView<'_>,
     newest_ms: u64,
 ) -> Result<RollupResult, String> {
     validate_view(spec)?;
     let cap = spec.cap.as_ref().map(|cap| compile_cap(header, cap)).transpose()?;
     if snapshots.windows(2).any(|pair| pair[0].timestamp_ms >= pair[1].timestamp_ms) {
-        return Err("snapshots are not in strictly ascending stamp order".to_string());
+        return Err("samples are not in strictly ascending stamp order".to_string());
     }
     let resolved = resolve(spec, newest_ms);
     let tiers = resolved.as_slice();
     let below = snapshots.partition_point(|snapshot| snapshot.timestamp_ms < tiers[0].0);
-    within("snapshots below the cutoff", below, MAX_ROLLUP_SNAPSHOTS)?;
+    within("samples below the cutoff", below, MAX_ROLLUP_SAMPLES)?;
 
     let mut stats = RollupStats { snapshots_before: snapshots.len() as u64, ..RollupStats::default() };
     let rest = snapshots.split_off(below);
-    let mut out: Vec<Snapshot> = Vec::with_capacity(below + rest.len());
+    let mut out: Vec<Sample> = Vec::with_capacity(below + rest.len());
     let mut scratch = CapScratch::default();
     let mut tmp: Vec<Cell> = Vec::new();
     let mut seen = Seen { track: cap.as_ref().is_some_and(|cap| cap.protect > 0), ..Seen::default() };
-    let mut current: Option<Snapshot> = None;
+    let mut current: Option<Sample> = None;
 
     for snapshot in snapshots {
         check_cells(header, &snapshot.cells)?;
         stats.cells_before += snapshot.cells.len() as u64;
-        let width = bucket_width(tiers, snapshot.timestamp_ms).expect("a snapshot below the first cutoff has a tier");
+        let width = bucket_width(tiers, snapshot.timestamp_ms).expect("a sample below the first cutoff has a tier");
         let bucket_start = snapshot.timestamp_ms - snapshot.timestamp_ms % width;
         match current.as_mut() {
             Some(open) if open.timestamp_ms == bucket_start => {
@@ -821,7 +821,7 @@ fn rollup_view(
                     seen.acc.clear();
                     seen.acc.resize(snapshot.cells.len(), snapshot.timestamp_ms);
                 }
-                current = Some(Snapshot { timestamp_ms: bucket_start, cells: snapshot.cells });
+                current = Some(Sample { timestamp_ms: bucket_start, cells: snapshot.cells });
             }
         }
     }
@@ -841,9 +841,9 @@ fn rollup_view(
 // The same rollup over cells held flat
 // ------------------------------------------------------------------------------------------
 
-/// One decoded snapshot in the flat form: its stamp and its cells, strictly ascending by member.
+/// One decoded sample in the flat form: its stamp and its cells, strictly ascending by member.
 #[derive(Debug)]
-pub(crate) struct FlatSnapshot {
+pub(crate) struct FlatSample {
     pub(crate) timestamp_ms: u64,
     pub(crate) cells: FlatCells,
 }
@@ -851,16 +851,16 @@ pub(crate) struct FlatSnapshot {
 #[derive(Debug)]
 pub(crate) struct FlatRollupResult {
     /// Ascending by stamp, strictly.
-    pub(crate) snapshots: Vec<FlatSnapshot>,
+    pub(crate) snapshots: Vec<FlatSample>,
     pub(crate) stats: RollupStats,
 }
 
-/// [`rollup_spec`] over snapshots decoded flat: the answer is the same snapshots and the same
-/// counts, with a fixed number of allocations a snapshot and a bucket instead of two for every
+/// [`rollup_spec`] over samples decoded flat: the answer is the same samples and the same
+/// counts, with a fixed number of allocations a sample and a bucket instead of two for every
 /// cell. Every cell must have been decoded under `header`.
 pub(crate) fn rollup_flat_spec(
     header: &CellHeader,
-    snapshots: Vec<FlatSnapshot>,
+    snapshots: Vec<FlatSample>,
     spec: &RollupSpec,
     newest_ms: u64,
 ) -> Result<FlatRollupResult, String> {
@@ -868,9 +868,9 @@ pub(crate) fn rollup_flat_spec(
 }
 
 fn check_flat(cells: &FlatCells) -> Result<(), String> {
-    validate_cells_in_snapshot(cells.len())?;
+    validate_cells_in_sample(cells.len())?;
     if !cells.is_strictly_ascending() {
-        return Err("a snapshot is not strictly ascending by member".to_string());
+        return Err("a sample is not strictly ascending by member".to_string());
     }
     Ok(())
 }
@@ -878,9 +878,9 @@ fn check_flat(cells: &FlatCells) -> Result<(), String> {
 fn finish_flat(
     cap: &Option<Cap>,
     scratch: &mut CapScratch,
-    mut bucket: FlatSnapshot,
+    mut bucket: FlatSample,
     seen: &Seen,
-    out: &mut Vec<FlatSnapshot>,
+    out: &mut Vec<FlatSample>,
     stats: &mut RollupStats,
 ) -> Result<(), String> {
     if let Some(cap) = cap {
@@ -892,32 +892,32 @@ fn finish_flat(
 
 fn rollup_flat_view(
     header: &CellHeader,
-    mut snapshots: Vec<FlatSnapshot>,
+    mut snapshots: Vec<FlatSample>,
     spec: &PlanView<'_>,
     newest_ms: u64,
 ) -> Result<FlatRollupResult, String> {
     validate_view(spec)?;
     let cap = spec.cap.as_ref().map(|cap| compile_cap(header, cap)).transpose()?;
     if snapshots.windows(2).any(|pair| pair[0].timestamp_ms >= pair[1].timestamp_ms) {
-        return Err("snapshots are not in strictly ascending stamp order".to_string());
+        return Err("samples are not in strictly ascending stamp order".to_string());
     }
     let resolved = resolve(spec, newest_ms);
     let tiers = resolved.as_slice();
     let below = snapshots.partition_point(|snapshot| snapshot.timestamp_ms < tiers[0].0);
-    within("snapshots below the cutoff", below, MAX_ROLLUP_SNAPSHOTS)?;
+    within("samples below the cutoff", below, MAX_ROLLUP_SAMPLES)?;
 
     let mut stats = RollupStats { snapshots_before: snapshots.len() as u64, ..RollupStats::default() };
     let rest = snapshots.split_off(below);
-    let mut out: Vec<FlatSnapshot> = Vec::with_capacity(below + rest.len());
+    let mut out: Vec<FlatSample> = Vec::with_capacity(below + rest.len());
     let mut scratch = CapScratch::default();
     let mut spare = FlatCells::empty(header, 0);
     let mut seen = Seen { track: cap.as_ref().is_some_and(|cap| cap.protect > 0), ..Seen::default() };
-    let mut current: Option<FlatSnapshot> = None;
+    let mut current: Option<FlatSample> = None;
 
     for snapshot in snapshots {
         check_flat(&snapshot.cells)?;
         stats.cells_before += snapshot.cells.len() as u64;
-        let width = bucket_width(tiers, snapshot.timestamp_ms).expect("a snapshot below the first cutoff has a tier");
+        let width = bucket_width(tiers, snapshot.timestamp_ms).expect("a sample below the first cutoff has a tier");
         let bucket_start = snapshot.timestamp_ms - snapshot.timestamp_ms % width;
         match current.as_mut() {
             Some(open) if open.timestamp_ms == bucket_start => {
@@ -945,7 +945,7 @@ fn rollup_flat_view(
                     std::mem::swap(acc, tmp);
                 }
                 stats.cells_combined += combined;
-                within("cells in a rolled snapshot", open.cells.len(), MAX_CELLS_PER_SNAPSHOT)?;
+                within("cells in a rolled sample", open.cells.len(), MAX_CELLS_PER_SAMPLE)?;
             }
             _ => {
                 if let Some(done) = current.take() {
@@ -955,7 +955,7 @@ fn rollup_flat_view(
                     seen.acc.clear();
                     seen.acc.resize(snapshot.cells.len(), snapshot.timestamp_ms);
                 }
-                current = Some(FlatSnapshot { timestamp_ms: bucket_start, cells: snapshot.cells });
+                current = Some(FlatSample { timestamp_ms: bucket_start, cells: snapshot.cells });
             }
         }
     }
@@ -972,13 +972,13 @@ fn rollup_flat_view(
 }
 
 #[cfg(test)]
-#[path = "cell_rollup_tests.rs"]
+#[path = "window_reduce_rollup_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "cell_rollup_tier_tests.rs"]
+#[path = "window_reduce_rollup_tier_tests.rs"]
 mod tier_tests;
 
 #[cfg(test)]
-#[path = "cell_rollup_flat_tests.rs"]
+#[path = "window_reduce_rollup_flat_tests.rs"]
 mod flat_tests;

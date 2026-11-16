@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! The engine side of the ranked cell read: finds the snapshots a window names under a key, reads
-//! and decodes each through the cache, and hands them to the pure ranking in [`super::cell_rank`]
-//! (one key) or [`super::cell_fan_in`] (several).
+//! The engine side of the ranked cell read: finds the samples a window names under a key, reads
+//! and decodes each through the cache, and hands them to the pure ranking in [`super::window_reduce_rank`]
+//! (one key) or [`super::window_reduce_fan_in`] (several).
 //!
 //! # WHAT IS READ
 //!
-//! The newest snapshot of the key is read first, for its header: the names a query uses are
-//! resolved against it, and every older snapshot is decoded under it (a snapshot written before a
+//! The newest sample of the key is read first, for its header: the names a query uses are
+//! resolved against it, and every older sample is decoded under it (a sample written before a
 //! label or lane was added reads the new field as zero; one whose header is not a prefix of it is
-//! refused). Then only the snapshots the window names are read, at most one more than the window
+//! refused). Then only the samples the window names are read, at most one more than the window
 //! bound, newest first, so a window over the bound is refused after a bounded number of reads and
 //! never after walking the whole series.
 //!
@@ -20,17 +20,17 @@
 //! headers are equal use it, and keys whose headers differ only by labels or lanes appended to the
 //! end are read under the widest (the same rule a write follows, [`check_header`]); any other
 //! difference is refused naming the key. A key the shard does not hold, or one with nothing in the
-//! window, contributes nothing and is not counted in `RankedCells::keys`. The snapshot and cell
-//! ceilings of the request are checked while the snapshots are read, so a request over one stops
+//! window, contributes nothing and is not counted in `RankedCells::keys`. The sample and cell
+//! ceilings of the request are checked while the samples are read, so a request over one stops
 //! before it has decoded every key.
 //!
 //! # WHAT A REFUSAL LOOKS LIKE
 //!
 //! A read that cannot be served returns [`RankedCells`] with `refused` set and no rows. An absent
-//! key, or a key with no snapshots, is an empty answer with `refused` empty: nothing to rank.
+//! key, or a key with no samples, is an empty answer with `refused` empty: nothing to rank.
 
-use super::cell_fan_in::{validate_chosen, validate_keys};
-use super::cell_rank::{FlatView, Plan, MAX_WINDOW_SNAPSHOTS};
+use super::window_reduce_fan_in::{validate_chosen, validate_keys};
+use super::window_reduce_rank::{FlatView, Plan, MAX_WINDOW_SAMPLES};
 use super::cell_set::{check_header, split_value, CellHeader, FlatCells};
 use super::object_record::ObjectSlot;
 use super::window::window_samples;
@@ -39,15 +39,15 @@ use crate::block_store::ElementEntry;
 use crate::engine::timestamped_series::TimestampedSeries as _;
 use crate::types::{CellRankSpec, RankedCells};
 
-/// The snapshots a read decoded, oldest first, each in the flat form: a fixed handful of
-/// allocations per snapshot however many cells it holds.
+/// The samples a read decoded, oldest first, each in the flat form: a fixed handful of
+/// allocations per sample however many cells it holds.
 type Decoded = Vec<(u64, FlatCells)>;
 
 fn refused(why: impl Into<String>) -> RankedCells {
     RankedCells { refused: why.into(), ..RankedCells::default() }
 }
 
-/// The header of the key's newest snapshot, or `None` for a key with no snapshot.
+/// The header of the key's newest sample, or `None` for a key with no sample.
 fn newest_header(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -72,15 +72,15 @@ fn newest_header(
         |bytes| split_value(bytes).map(|(header, _)| header),
     ) {
         Some(Ok(header)) => Ok(Some(header)),
-        Some(Err(why)) => Err(format!("the snapshot at {newest_ms}: {why}")),
-        None => Err(format!("the snapshot at {newest_ms} cannot be read")),
+        Some(Err(why)) => Err(format!("the sample at {newest_ms}: {why}")),
+        None => Err(format!("the sample at {newest_ms} cannot be read")),
     }
 }
 
-/// The snapshots the window names, newest first, bounded. One more than the window bound is
+/// The samples the window names, newest first, bounded. One more than the window bound is
 /// returned for a range of stamps, so a caller can tell a window at the bound from one over it.
-fn named_snapshots<'s>(series: &'s ObjectSlot, spec: &CellRankSpec, now_ms: u64) -> Vec<(u64, &'s ElementEntry)> {
-    window_samples(series, &spec.window, spec.anchor, now_ms, MAX_WINDOW_SNAPSHOTS + 1)
+fn named_samples<'s>(series: &'s ObjectSlot, spec: &CellRankSpec, now_ms: u64) -> Vec<(u64, &'s ElementEntry)> {
+    window_samples(series, &spec.window, spec.anchor, now_ms, MAX_WINDOW_SAMPLES + 1)
 }
 
 /// Reads and decodes `named` (newest first) under `header`, returning them oldest first.
@@ -116,8 +116,8 @@ fn decode_named(
         );
         match decoded {
             Some(Ok(cells)) => snapshots.push((timestamp_ms, cells)),
-            Some(Err(why)) => return Err(format!("the snapshot at {timestamp_ms}: {why}")),
-            None => return Err(format!("the snapshot at {timestamp_ms} cannot be read")),
+            Some(Err(why)) => return Err(format!("the sample at {timestamp_ms}: {why}")),
+            None => return Err(format!("the sample at {timestamp_ms} cannot be read")),
         }
     }
     Ok(snapshots)
@@ -148,7 +148,7 @@ pub(super) fn serve(
     let routing_bucket = Some(block_routing_bucket(key, start_routing_bucket, end_routing_bucket));
     let mut page_keys = PageKeys::new();
 
-    // The header the names are resolved against: the key's newest snapshot's.
+    // The header the names are resolved against: the key's newest sample's.
     let header = match newest_header(cache, block_store, shard_id, series, key, routing_bucket, &mut page_keys) {
         Ok(Some(header)) => header,
         Ok(None) => return RankedCells::default(),
@@ -159,7 +159,7 @@ pub(super) fn serve(
         Err(why) => return refused(why),
     };
 
-    let named = named_snapshots(series, spec, now_ms);
+    let named = named_samples(series, spec, now_ms);
     let snapshots =
         match decode_named(cache, block_store, shard_id, key, routing_bucket, &mut page_keys, named, &header) {
             Ok(snapshots) => snapshots,
@@ -183,7 +183,7 @@ fn settle_header(a: CellHeader, b: &CellHeader) -> Result<CellHeader, String> {
     }
 }
 
-/// A ranked read over the snapshots of every key in `keys`, which the caller has already held to
+/// A ranked read over the samples of every key in `keys`, which the caller has already held to
 /// the key bound and refused duplicates in. Keys the shard does not hold (or whose window is
 /// empty) contribute nothing.
 #[allow(clippy::too_many_arguments)]
@@ -236,23 +236,23 @@ pub(super) fn serve_many(
         Err(why) => return refused(why),
     };
 
-    // The snapshots, key by key, with the request's ceilings checked as they are read.
+    // The samples, key by key, with the request's ceilings checked as they are read.
     let mut decoded: Vec<Decoded> = Vec::with_capacity(keys.len());
-    let (mut snapshot_count, mut cell_count) = (0usize, 0usize);
+    let (mut sample_count, mut cell_count) = (0usize, 0usize);
     for (position, (key, series)) in keys.iter().zip(&held).enumerate() {
         let Some((series, routing_bucket)) = series else {
             decoded.push(Vec::new());
             continue;
         };
-        let named = named_snapshots(series, spec, now_ms);
-        snapshot_count += named.len();
-        if let Err(why) = validate_chosen(snapshot_count, cell_count) {
+        let named = named_samples(series, spec, now_ms);
+        sample_count += named.len();
+        if let Err(why) = validate_chosen(sample_count, cell_count) {
             return refused(why);
         }
         match decode_named(cache, block_store, shard_id, key, *routing_bucket, &mut page_keys, named, &header) {
             Ok(snapshots) => {
                 cell_count += snapshots.iter().map(|(_, cells)| cells.len()).sum::<usize>();
-                if let Err(why) = validate_chosen(snapshot_count, cell_count) {
+                if let Err(why) = validate_chosen(sample_count, cell_count) {
                     return refused(why);
                 }
                 decoded.push(snapshots);

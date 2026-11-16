@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Tests of the pure removal (`cell_remove`). Every expectation is derived by a plain closure over
+//! Tests of the pure removal (`window_reduce_remove`). Every expectation is derived by a plain closure over
 //! the stored cells (stamp, member, label, lane values) that shares no code with the selection, so
 //! the assertions are the arithmetic and not a copy of the code.
 //!
@@ -76,7 +76,7 @@ fn run(spec: &CellRemoveSpec) -> Vec<Outcome> {
     remove_cells(&selection, data())
 }
 
-/// (stamp, members kept, cells removed) per snapshot in the window.
+/// (stamp, members kept, cells removed) per sample in the window.
 fn shape(outcomes: &[Outcome]) -> Vec<(u64, Vec<u64>, usize)> {
     outcomes
         .iter()
@@ -89,7 +89,7 @@ fn a_window_takes_every_cell_of_the_snapshots_inside_it_and_both_bounds_are_incl
     let both = CellRemoveSpec { start_ms: Some(200), end_ms: Some(300), ..spec() };
     // 100 and 400 are outside the window and are not reported at all.
     assert_eq!(shape(&run(&both)), vec![(200, vec![], 3), (300, vec![], 3)]);
-    // One stamp past either end leaves that snapshot out.
+    // One stamp past either end leaves that sample out.
     let inner = CellRemoveSpec { start_ms: Some(201), end_ms: Some(299), ..spec() };
     assert_eq!(shape(&run(&inner)), vec![]);
     let from = CellRemoveSpec { start_ms: Some(300), ..spec() };
@@ -174,7 +174,7 @@ fn the_window_the_members_and_the_predicates_are_anded() {
         filters: vec![on("slot", FeatureFilterOp::Equal, 1)],
     };
     // Inside 100..=300, members 1, 3 or 4, slot 1: m1 and m3 at 100, m1 at 200, m3 at 300. The
-    // snapshot at 400 is outside the window, so it is not reported though m4 is named.
+    // sample at 400 is outside the window, so it is not reported though m4 is named.
     assert_eq!(shape(&run(&all)), vec![(100, vec![2], 2), (200, vec![2, 4], 1), (300, vec![1, 99], 1)]);
 }
 

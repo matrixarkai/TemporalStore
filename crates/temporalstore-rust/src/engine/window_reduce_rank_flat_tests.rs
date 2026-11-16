@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! The ranked read over the flat form of a snapshot answers exactly what the same read over the
+//! The ranked read over the flat form of a sample answers exactly what the same read over the
 //! plain `Vec<Cell>` form answers. The plain form is the statement of the format; the flat form
 //! is what the engine reads, with no allocation per cell, so the two are compared on random data
 //! with every option a read can carry.
 
 use super::*;
 use crate::engine::cell_set::{
-    decode_snapshot, encode_value, split_value, DimSpec, DimType, EntityType, KeySpec, LaneSpec, HEADER_VERSION,
+    decode_sample, encode_value, split_value, DimSpec, DimType, EntityType, KeySpec, LaneSpec, HEADER_VERSION,
 };
 use crate::types::{CellLaneQuota, CellMemberFilter, CellQuota};
 
@@ -38,8 +38,8 @@ fn wide_header() -> CellHeader {
     }
 }
 
-/// Members 0..48 as numbers plus a few bytes members, each snapshot holding a random subset.
-fn random_snapshots(state: &mut u64, count: usize) -> Vec<(u64, Vec<Cell>)> {
+/// Members 0..48 as numbers plus a few bytes members, each sample holding a random subset.
+fn random_samples(state: &mut u64, count: usize) -> Vec<(u64, Vec<Cell>)> {
     let mut out = Vec::new();
     for at in 0..count {
         let mut cells: Vec<Cell> = Vec::new();
@@ -69,7 +69,7 @@ fn decoded_both(header: &CellHeader, snaps: &[(u64, Vec<Cell>)]) -> (Vec<(u64, V
         let value = encode_value(header, cells).unwrap();
         let (own, packed) = split_value(&value).unwrap();
         assert_eq!(own, *header);
-        plain.push((*stamp, decode_snapshot(header, packed).unwrap()));
+        plain.push((*stamp, decode_sample(header, packed).unwrap()));
         flat.push((*stamp, FlatCells::decode(header, packed, 0).unwrap()));
     }
     (plain, flat)
@@ -134,10 +134,10 @@ fn a_read_over_flat_snapshots_answers_what_a_read_over_plain_snapshots_answers()
     let mut rows_seen = 0;
     let mut refused = 0;
     for count in [1usize, 2, 7, 12] {
-        let snaps = random_snapshots(&mut state, count);
+        let snaps = random_samples(&mut state, count);
         let (plain, flat) = decoded_both(&header, &snaps);
-        let plain_views: Vec<SnapshotView<'_>> =
-            plain.iter().map(|(timestamp_ms, cells)| SnapshotView { timestamp_ms: *timestamp_ms, cells }).collect();
+        let plain_views: Vec<SampleView<'_>> =
+            plain.iter().map(|(timestamp_ms, cells)| SampleView { timestamp_ms: *timestamp_ms, cells }).collect();
         let flat_views: Vec<FlatView<'_>> =
             flat.iter().map(|(timestamp_ms, cells)| FlatView { timestamp_ms: *timestamp_ms, cells }).collect();
         for spec in specs() {
@@ -146,7 +146,7 @@ fn a_read_over_flat_snapshots_answers_what_a_read_over_plain_snapshots_answers()
             // both forms must refuse it in the same words.
             let want = plan.run(1_000, &plain_views);
             let got = plan.run(1_000, &flat_views);
-            assert_eq!(want, got, "{count} snapshots, spec {spec:?}");
+            assert_eq!(want, got, "{count} samples, spec {spec:?}");
             match &got {
                 Ok(ranked) => rows_seen += ranked.rows.len(),
                 Err(_) => refused += 1,
@@ -158,7 +158,7 @@ fn a_read_over_flat_snapshots_answers_what_a_read_over_plain_snapshots_answers()
     assert!(compared >= 48, "{compared}");
     assert!(rows_seen > 300, "the reads ranked only {rows_seen} rows in all");
     // And the one read the data cannot serve (a `member` score over bytes members) was refused by
-    // both forms, once per snapshot count that held a bytes member.
+    // both forms, once per sample count that held a bytes member.
     assert!(refused >= 1, "no read was refused, so the refusal arm was not compared");
 }
 
@@ -166,12 +166,12 @@ fn a_read_over_flat_snapshots_answers_what_a_read_over_plain_snapshots_answers()
 fn a_fan_in_over_flat_snapshots_answers_what_a_fan_in_over_plain_snapshots_answers() {
     let header = wide_header();
     let mut state = 0x1234_5678_9abc_def1u64;
-    let keys: Vec<Vec<(u64, Vec<Cell>)>> = (0..4).map(|_| random_snapshots(&mut state, 5)).collect();
+    let keys: Vec<Vec<(u64, Vec<Cell>)>> = (0..4).map(|_| random_samples(&mut state, 5)).collect();
     let decoded: Vec<_> = keys.iter().map(|snaps| decoded_both(&header, snaps)).collect();
-    let plain_views: Vec<Vec<SnapshotView<'_>>> = decoded
+    let plain_views: Vec<Vec<SampleView<'_>>> = decoded
         .iter()
         .map(|(plain, _)| {
-            plain.iter().map(|(timestamp_ms, cells)| SnapshotView { timestamp_ms: *timestamp_ms, cells }).collect()
+            plain.iter().map(|(timestamp_ms, cells)| SampleView { timestamp_ms: *timestamp_ms, cells }).collect()
         })
         .collect();
     let flat_views: Vec<Vec<FlatView<'_>>> = decoded
@@ -180,7 +180,7 @@ fn a_fan_in_over_flat_snapshots_answers_what_a_fan_in_over_plain_snapshots_answe
             flat.iter().map(|(timestamp_ms, cells)| FlatView { timestamp_ms: *timestamp_ms, cells }).collect()
         })
         .collect();
-    let plain_slices: Vec<&[SnapshotView<'_>]> = plain_views.iter().map(Vec::as_slice).collect();
+    let plain_slices: Vec<&[SampleView<'_>]> = plain_views.iter().map(Vec::as_slice).collect();
     let flat_slices: Vec<&[FlatView<'_>]> = flat_views.iter().map(Vec::as_slice).collect();
     for spec in specs() {
         let plan = Plan::compile(&header, &spec).unwrap();
@@ -203,7 +203,7 @@ fn a_flat_snapshot_out_of_order_is_refused_as_a_plain_one_is() {
     let (plain, flat) = decoded_both(&header, &[(100, unordered)]);
     let spec = CellRankSpec::new(CellWindow::Between { start_ms: 0, end_ms: u64::MAX }, CellScore::Member, 5);
     let plan = Plan::compile(&header, &spec).unwrap();
-    let plain_views = [SnapshotView { timestamp_ms: plain[0].0, cells: &plain[0].1 }];
+    let plain_views = [SampleView { timestamp_ms: plain[0].0, cells: &plain[0].1 }];
     let flat_views = [FlatView { timestamp_ms: flat[0].0, cells: &flat[0].1 }];
     let want = plan.run(1_000, &plain_views).unwrap_err();
     let got = plan.run(1_000, &flat_views).unwrap_err();

@@ -673,7 +673,7 @@ pub(super) fn validate_command_preconditions(
         // bounds, the window, the score parameters. Names are checked against the key's header when
         // the read runs.
         Command::CellRankQuery { spec, .. } => {
-            if let Err(why) = super::cell_rank::validate_spec(spec) {
+            if let Err(why) = super::window_reduce_rank::validate_spec(spec) {
                 return Err(Status::error("invalid_argument", why));
             }
         }
@@ -681,17 +681,17 @@ pub(super) fn validate_command_preconditions(
         // single-key read would be refused for (its member set, anchor and quota included): the
         // whole request, before any key is read.
         Command::CellRankBatchQuery { queries } => {
-            if let Err(why) = super::cell_fan_in::validate_batch(queries) {
+            if let Err(why) = super::window_reduce_fan_in::validate_batch(queries) {
                 return Err(Status::error("invalid_argument", why));
             }
         }
         // A fan-in read is refused at admission for what needs no snapshot too: how many keys,
         // a key named twice (it would count twice), and everything a one-key read is refused for.
         Command::CellFanInRankQuery { keys, spec } => {
-            if let Err(why) = super::cell_fan_in::validate_keys(keys) {
+            if let Err(why) = super::window_reduce_fan_in::validate_keys(keys) {
                 return Err(Status::error("invalid_argument", why));
             }
-            if let Err(why) = super::cell_rank::validate_spec(spec) {
+            if let Err(why) = super::window_reduce_rank::validate_spec(spec) {
                 return Err(Status::error("invalid_argument", why));
             }
         }
@@ -797,7 +797,7 @@ pub(super) fn validate_command_preconditions(
         // A rollup is refused HERE, before the log, like a merge-reduce append: the plan reads the
         // snapshots below the cutoff and runs the pure rollup, so a name the key does not declare,
         // a bucket over the snapshot limit and a snapshot that is not a cell snapshot all write
-        // nothing. The plan is thrown away; execution plans again (see `cell_rollup_apply`).
+        // nothing. The plan is thrown away; execution plans again (see `window_reduce_rollup_apply`).
         Command::CellRollup { key, spec } => {
             let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
             // A key past its deadline reads as absent, as it does everywhere else.
@@ -806,7 +806,7 @@ pub(super) fn validate_command_preconditions(
                 .get(key.as_str())
                 .map(|expires_at| *expires_at <= resolve_now_ms())
                 .unwrap_or(false);
-            crate::engine::cell_rollup_apply::plan_cell_rollup(
+            crate::engine::window_reduce_rollup_apply::plan_window_reduce_rollup(
                 cache,
                 block_store,
                 shard_id,
@@ -819,7 +819,7 @@ pub(super) fn validate_command_preconditions(
         // A removal is refused HERE, before the log, as a rollup is: the plan counts the snapshots
         // inside the window, reads them and selects the cells, so a name the key does not declare,
         // a window over the snapshot limit and a snapshot that is not a cell snapshot all write
-        // nothing. The plan is thrown away; execution plans again (see `cell_remove_apply`).
+        // nothing. The plan is thrown away; execution plans again (see `window_reduce_remove_apply`).
         Command::CellRemove { key, spec } => {
             let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
             let expired = shard
@@ -827,7 +827,7 @@ pub(super) fn validate_command_preconditions(
                 .get(key.as_str())
                 .map(|expires_at| *expires_at <= resolve_now_ms())
                 .unwrap_or(false);
-            crate::engine::cell_remove_apply::plan_cell_remove(
+            crate::engine::window_reduce_remove_apply::plan_window_reduce_remove(
                 cache,
                 block_store,
                 shard_id,

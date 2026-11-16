@@ -3,13 +3,13 @@
 
 //! Tests of the rollup extension: tiers, the anchor, truncation and the cap controls. Every
 //! expected number is worked out by hand in a comment beside it, or comes from a fold written
-//! separately in this file. The single-tier request is tested in `cell_rollup_tests`, and still
+//! separately in this file. The single-tier request is tested in `window_reduce_rollup_tests`, and still
 //! runs through the same code: a request that names none of the new controls rolls exactly as it
 //! did.
 
 use super::*;
 use crate::engine::cell_set::{
-    encode_snapshot, DimSpec, DimType, EntityType, KeySpec, LaneSpec, Member, HEADER_VERSION,
+    encode_sample, DimSpec, DimType, EntityType, KeySpec, LaneSpec, Member, HEADER_VERSION,
 };
 use std::collections::BTreeMap;
 
@@ -52,8 +52,8 @@ fn shown(member: u64, slot: u64, shown: i64) -> Cell {
     cell(member, slot, [shown, 1, 1, 1, 1, 1])
 }
 
-fn snap(timestamp_ms: u64, cells: Vec<Cell>) -> Snapshot {
-    Snapshot { timestamp_ms, cells }
+fn snap(timestamp_ms: u64, cells: Vec<Cell>) -> Sample {
+    Sample { timestamp_ms, cells }
 }
 
 fn lane_score(name: &str) -> CellScore {
@@ -84,8 +84,8 @@ fn with_cap(mut spec: PlanSpec, group_by: Option<&str>, keep: usize, ppm: u32, o
     spec
 }
 
-fn bytes_of(snapshots: &[Snapshot]) -> Vec<(u64, Vec<u8>)> {
-    snapshots.iter().map(|s| (s.timestamp_ms, encode_snapshot(&header(), &s.cells).unwrap())).collect()
+fn bytes_of(snapshots: &[Sample]) -> Vec<(u64, Vec<u8>)> {
+    snapshots.iter().map(|s| (s.timestamp_ms, encode_sample(&header(), &s.cells).unwrap())).collect()
 }
 
 fn members(cells: &[Cell]) -> Vec<u64> {
@@ -104,9 +104,9 @@ impl Lcg {
     }
 }
 
-/// Snapshots at irregular stamps over members 0..60, each present about half the time, with small
+/// Samples at irregular stamps over members 0..60, each present about half the time, with small
 /// lane values so no sum can approach a limit.
-fn series(seed: u64, count: usize) -> Vec<Snapshot> {
+fn series(seed: u64, count: usize) -> Vec<Sample> {
     let mut rng = Lcg(seed);
     let mut ts = 5;
     let mut out = Vec::with_capacity(count);
@@ -128,11 +128,11 @@ fn series(seed: u64, count: usize) -> Vec<Snapshot> {
     out
 }
 
-/// What a tiered rollup must produce, written without the module's fold. Each snapshot below the
+/// What a tiered rollup must produce, written without the module's fold. Each sample below the
 /// first cutoff takes the bucket width of the tier with the SMALLEST cutoff above its stamp; the
 /// occurrences of each member of each bucket are gathered in stamp order and each lane is computed
 /// from its own list.
-fn independent_fold(snaps: &[Snapshot], given: &[(u64, u64)]) -> Vec<Snapshot> {
+fn independent_fold(snaps: &[Sample], given: &[(u64, u64)]) -> Vec<Sample> {
     // A coarser tier's cutoff is aligned down to the finer tier's width; the first is as given.
     let cutoffs: Vec<(u64, u64)> = given
         .iter()
@@ -159,7 +159,7 @@ fn independent_fold(snaps: &[Snapshot], given: &[(u64, u64)]) -> Vec<Snapshot> {
             buckets.entry(start).or_default().entry(m).or_default().push((c.labels.clone(), c.lanes.clone()));
         }
     }
-    let mut out: Vec<Snapshot> = buckets
+    let mut out: Vec<Sample> = buckets
         .into_iter()
         .map(|(start, members)| {
             let cells = members
@@ -176,7 +176,7 @@ fn independent_fold(snaps: &[Snapshot], given: &[(u64, u64)]) -> Vec<Snapshot> {
                     Cell { member: Member::U64(m), labels: seen.last().unwrap().0.clone(), lanes }
                 })
                 .collect();
-            Snapshot { timestamp_ms: start, cells }
+            Sample { timestamp_ms: start, cells }
         })
         .collect();
     out.extend(untouched);
@@ -265,7 +265,7 @@ fn a_cutoff_that_is_not_a_multiple_of_the_finer_width_is_aligned_down_to_it() {
 
 #[test]
 fn the_catch_all_tier_holds_everything_older_in_one_snapshot_at_stamp_zero() {
-    // Below 1000 buckets of 100; below 400 everything in one snapshot. 5, 150 and 399 are below
+    // Below 1000 buckets of 100; below 400 everything in one sample. 5, 150 and 399 are below
     // 400 and fold into stamp 0; 400 and 450 are tier 0 and fold into 400; 1200 is not rolled.
     let spec = plan(Anchor::Request, &[(1000, 100), (400, CATCH_ALL_BUCKET_MS)]);
     let snaps = vec![
@@ -293,7 +293,7 @@ fn the_catch_all_tier_holds_everything_older_in_one_snapshot_at_stamp_zero() {
 
 #[test]
 fn an_age_resolves_against_the_newest_stamp_and_a_request_cutoff_ignores_it() {
-    let snaps: Vec<Snapshot> = (0..=40u64).map(|i| snap(i * 250, vec![shown(1, 0, i as i64)])).collect();
+    let snaps: Vec<Sample> = (0..=40u64).map(|i| snap(i * 250, vec![shown(1, 0, i as i64)])).collect();
     // Ages (1000, 5000) against newest 10 000 are the cutoffs (9000, 5000).
     let by_age = plan(Anchor::NewestMinusAge, &[(1000, 100), (5000, 1000)]);
     let by_stamp = plan(Anchor::Request, &[(9000, 100), (5000, 1000)]);
@@ -368,7 +368,7 @@ fn a_request_that_names_every_new_control_at_its_default_is_the_single_tier_requ
 #[test]
 fn a_truncation_acts_only_over_its_trigger_and_then_keeps_the_newest_n() {
     let t = |keep_last, trigger| TruncateSpec { keep_last, trigger };
-    // (snapshots held, keep_last, trigger) -> how many of the oldest go
+    // (samples held, keep_last, trigger) -> how many of the oldest go
     for (total, keep, trigger, want) in [
         (10, 5, None, 5),       // no trigger: acts above keep_last
         (5, 5, None, 0),        // exactly keep_last: nothing to do
@@ -407,9 +407,9 @@ fn truncating_a_rolled_series_keeps_the_newest_snapshots_of_what_the_rollup_left
 // ------------------------------------------------------------------------------------------
 
 /// Six members in one bucket. Shown, by member: 1 -> 100, 2 -> 90, 3 -> 80, 4 -> 70, then 5 and 6
-/// are written again in a later snapshot of the bucket and finish at 61 and 51. By score the top
+/// are written again in a later sample of the bucket and finish at 61 and 51. By score the top
 /// four are members 1 to 4; by recency members 5 and 6 are the newest (stamp 20), the others 10.
-fn recency_snapshots() -> Vec<Snapshot> {
+fn recency_samples() -> Vec<Sample> {
     vec![
         snap(10, (1..=6u64).map(|m| shown(m, 0, 110 - 10 * m as i64)).collect()),
         snap(20, vec![shown(5, 0, 1), shown(6, 0, 1)]),
@@ -420,7 +420,7 @@ fn recency_snapshots() -> Vec<Snapshot> {
 fn a_protected_share_of_the_newest_members_survives_whatever_its_score() {
     let roll = |ppm: u32| {
         let spec = with_cap(plan(Anchor::Request, &[(1000, 100)]), None, 4, ppm, 0);
-        rollup_tiered(&header(), recency_snapshots(), &spec, 0).unwrap()
+        rollup_tiered(&header(), recency_samples(), &spec, 0).unwrap()
     };
     // Shown after the fold: m1 100, m2 90, m3 80, m4 70, m5 61, m6 51.
     // No protection: the four best by score.
@@ -553,12 +553,12 @@ fn truncation_and_cap_controls_are_bounded_at_exactly_the_limit() {
 fn snapshots_below_the_first_cutoff_are_bounded_at_exactly_the_limit_whatever_the_tiers() {
     let many = |n: usize| (0..n as u64).map(|i| snap(i + 1, Vec::new())).collect::<Vec<_>>();
     let spec = plan(Anchor::Request, &[(u64::MAX, 1_000_000), (u64::MAX - 1, 4_000_000)]);
-    assert!(rollup_tiered(&header(), many(MAX_ROLLUP_SNAPSHOTS), &spec, 0).is_ok());
-    let err = rollup_tiered(&header(), many(MAX_ROLLUP_SNAPSHOTS + 1), &spec, 0).unwrap_err();
-    assert!(err.contains("over the limit") && err.contains(&MAX_ROLLUP_SNAPSHOTS.to_string()), "{err}");
+    assert!(rollup_tiered(&header(), many(MAX_ROLLUP_SAMPLES), &spec, 0).is_ok());
+    let err = rollup_tiered(&header(), many(MAX_ROLLUP_SAMPLES + 1), &spec, 0).unwrap_err();
+    assert!(err.contains("over the limit") && err.contains(&MAX_ROLLUP_SAMPLES.to_string()), "{err}");
     // Under the newest anchor the first cutoff is newest minus the age, and it is what is counted.
     let aged = plan(Anchor::NewestMinusAge, &[(10, 1_000_000)]);
-    assert!(rollup_tiered(&header(), many(MAX_ROLLUP_SNAPSHOTS + 1), &aged, MAX_ROLLUP_SNAPSHOTS as u64 + 10).is_ok());
+    assert!(rollup_tiered(&header(), many(MAX_ROLLUP_SAMPLES + 1), &aged, MAX_ROLLUP_SAMPLES as u64 + 10).is_ok());
 }
 
 #[cfg(feature = "alloc-probe")]
@@ -566,9 +566,9 @@ mod probe {
     use super::*;
     use crate::alloc_probe::Probe;
 
-    /// `snapshots` snapshots of `members` cells, every member in every snapshot, all stamped below
+    /// `snapshots` samples of `members` cells, every member in every sample, all stamped below
     /// both cutoffs so they fall into the coarse tier's one bucket.
-    fn dataset(members: u64, snapshots: u64) -> Vec<Snapshot> {
+    fn dataset(members: u64, snapshots: u64) -> Vec<Sample> {
         (1..=snapshots)
             .map(|ts| {
                 let cells = (0..members)
@@ -606,19 +606,19 @@ mod probe {
     }
 
     /// A tiered rollup, with the recency buffers a protected share needs, allocates the same over 4
-    /// and 64 snapshots in a bucket and over 50 and 4,000 members. THE CONTROL: the table of cloned
+    /// and 64 samples in a bucket and over 50 and 4,000 members. THE CONTROL: the table of cloned
     /// cells grows with both.
     #[test]
     #[ignore = "measurement: run with --features alloc-probe --ignored"]
     fn a_tiered_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many() {
         for protect in [false, true] {
             let base = allocations(50, 4, protect);
-            let more_snapshots = allocations(50, 64, protect);
+            let more_samples = allocations(50, 64, protect);
             let more_members = allocations(4000, 4, protect);
             let both = allocations(4000, 64, protect);
-            println!("protect {protect}: 50x4 {base}, 50x64 {more_snapshots}, 4000x4 {more_members}, 4000x64 {both}");
+            println!("protect {protect}: 50x4 {base}, 50x64 {more_samples}, 4000x4 {more_members}, 4000x64 {both}");
             assert!(base > 0, "the probe saw no allocation at all, so it is not installed");
-            assert_eq!(base, more_snapshots, "allocations moved with the snapshots in a bucket (protect {protect})");
+            assert_eq!(base, more_samples, "allocations moved with the samples in a bucket (protect {protect})");
             assert_eq!(base, more_members, "allocations moved with the members (protect {protect})");
             assert_eq!(base, both, "protect {protect}");
             // Measured: 3 without a cap and 9 with one that protects its newest members.
@@ -628,6 +628,6 @@ mod probe {
         let wide = allocations_of_a_cloning_table(4000, 4);
         let deep = allocations_of_a_cloning_table(50, 64);
         assert!(wide > small + 5000, "CONTROL: the table did not grow with the members ({small} -> {wide})");
-        assert!(deep > small, "CONTROL: the table did not grow with the snapshots ({small} -> {deep})");
+        assert!(deep > small, "CONTROL: the table did not grow with the samples ({small} -> {deep})");
     }
 }

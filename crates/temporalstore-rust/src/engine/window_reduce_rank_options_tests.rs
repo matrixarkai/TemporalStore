@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Tests of the member set and the newest-snapshot anchor of the ranked cell read. They run on the
+//! Tests of the member set and the newest-sample anchor of the ranked cell read. They run on the
 //! same hand-worked data as the parent module (see `data()` there): per-member `shown` totals over
-//! the four snapshots are m1 30, m2 60, m3 200, m4 10 and the bytes member `zz` 5.
+//! the four samples are m1 30, m2 60, m3 200, m4 10 and the bytes member `zz` 5.
 
 use super::*;
-use crate::engine::cell_rank_options::{
+use crate::engine::window_reduce_rank_options::{
     last_bounds, validate_options, Anchor, CompiledMembers, MemberFilter, RankOptions, MAX_FILTER_MEMBERS,
 };
 use crate::engine::cell_set::MAX_MEMBER_BYTES;
@@ -30,7 +30,7 @@ fn anchored() -> RankOptions {
 fn run_with(
     spec: &CellRankSpec,
     options: &RankOptions,
-    snaps: &Snapshots,
+    snaps: &Samples,
     now_ms: u64,
 ) -> Result<RankedCells, String> {
     Plan::compile_with(&header(), spec, options)?.run(now_ms, &views(snaps))
@@ -105,7 +105,7 @@ fn a_member_set_read_equals_the_same_read_over_cells_filtered_by_an_independent_
     let (mut compared, mut narrowed) = (0usize, 0usize);
     for _ in 0..60 {
         let count = 1 + rng.next() % 8;
-        let snapshots: Snapshots = (1..=count)
+        let snapshots: Samples = (1..=count)
             .map(|i| {
                 let mut cells = Vec::new();
                 for member in 0..30u64 {
@@ -154,7 +154,7 @@ fn a_member_set_read_equals_the_same_read_over_cells_filtered_by_an_independent_
                 };
                 include.as_ref().map_or(true, |set| set.contains(&member)) && !exclude.contains(&member)
             };
-            let folded: Snapshots = snapshots
+            let folded: Samples = snapshots
                 .iter()
                 .map(|(ts, cells)| (*ts, cells.iter().filter(|c| wanted(c)).cloned().collect()))
                 .collect();
@@ -253,11 +253,11 @@ fn a_set_holds_at_most_the_limit_as_sent_and_a_bytes_member_at_most_its_own_limi
 
 // ---- the anchor ------------------------------------------------------------------------------
 
-fn at_stamps(stamps: &[u64]) -> Snapshots {
+fn at_stamps(stamps: &[u64]) -> Samples {
     stamps.iter().map(|&ts| (ts, vec![cell(1, 0, [1, 0, 0, 0])])).collect()
 }
 
-fn count_in(duration_ms: u64, anchor: Anchor, snaps: &Snapshots, now_ms: u64) -> usize {
+fn count_in(duration_ms: u64, anchor: Anchor, snaps: &Samples, now_ms: u64) -> usize {
     let options = RankOptions { anchor, ..RankOptions::default() };
     run_with(&spec(CellWindow::Last { duration_ms }, lane("shown"), 1), &options, snaps, now_ms)
         .unwrap()
@@ -271,8 +271,8 @@ fn an_anchored_last_window_ends_at_the_newest_snapshot_whatever_the_clock_says()
         let ranked = run_with(&last(duration_ms), options, &data(), now_ms).unwrap();
         (order(&ranked), scores(&ranked), ranked.snapshots)
     };
-    // Newest = 400, so the window is [301, 400]: the snapshot at 400 alone. The request clock at
-    // 400 would read [300, 400]: the snapshots at 300 and 400.
+    // Newest = 400, so the window is [301, 400]: the sample at 400 alone. The request clock at
+    // 400 would read [300, 400]: the samples at 300 and 400.
     let want_anchored = (vec![2, 4], vec![10, 2], 1);
     assert_eq!(result(100, &anchored(), 400), want_anchored);
     assert_eq!(result(100, &RankOptions::default(), 400), (vec![3, 1, 2, 99, 4], vec![100, 10, 10, 5, 2], 2));
@@ -318,7 +318,7 @@ fn the_anchored_window_spans_exactly_its_duration_and_a_duration_of_zero_holds_n
     assert_eq!(last_bounds(Anchor::Newest, 7, 0, None), None);
     assert_eq!(last_bounds(Anchor::Request, 7, 20, None), Some((13, 20)));
 
-    // A key with no snapshot has no newest stamp: an empty answer, not an error.
+    // A key with no sample has no newest stamp: an empty answer, not an error.
     assert_eq!(count_in(100, Anchor::Newest, &Vec::new(), 0), 0);
 }
 
@@ -372,7 +372,7 @@ mod probe {
     use super::*;
     use crate::alloc_probe::Probe;
 
-    fn dataset(members: u64) -> Snapshots {
+    fn dataset(members: u64) -> Samples {
         (1..=8u64)
             .map(|ts| {
                 let cells = (0..members)

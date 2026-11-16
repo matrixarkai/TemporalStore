@@ -309,7 +309,7 @@ pub struct CellLaneQuota {
 
 /// Members guaranteed a place among the top-k: per lane, that many members with a non-zero reduced
 /// value in it, and `others` members that fit no lane still short. Counts plus `others` are at most
-/// 1000 and a quota names at most 16 lanes. See `engine::cell_rank_options`.
+/// 1000 and a quota names at most 16 lanes. See `engine::window_reduce_rank_options`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CellQuota {
     #[serde(default)]
