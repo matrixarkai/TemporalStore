@@ -2009,6 +2009,60 @@ fn prometheus_metrics_include_records_cache_block_and_wal() {
     assert!(metrics.contains("temporalstore_partition_routing_buckets{shard_id=\"1\"} 4294967295"));
 }
 
+/// A scrape must not list the whole shard again while the last scrape's listing is fresh.
+///
+/// Listing the per-bucket summaries walks every live block of the shard under the engine read
+/// guard, and every writer waits that out. Measured on a 1M-key fill with `/metrics` polled every
+/// 2 s: listings took 53% of the run and 220 of the 239 seconds in which no write was
+/// acknowledged overlapped one. Both directions are pinned, so neither a cache that is never hit
+/// nor one that is never refreshed can pass: within the age the listing is the SAME one (and
+/// does not show a later write), past it the listing is rebuilt and does.
+#[test]
+fn a_scrape_reuses_a_fresh_bucket_listing_and_rebuilds_a_stale_one() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let set = |key: &str| {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: key.to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+    };
+    let block_refs = |summaries: &Vec<BucketStorageSummary>| {
+        summaries.iter().map(|s| s.block_ref_count).sum::<u64>()
+    };
+    set("first");
+
+    let hour = Duration::from_secs(3600);
+    let first = engine.scrape_bucket_storage_summaries(1, hour);
+    set("second");
+    let reused = engine.scrape_bucket_storage_summaries(1, hour);
+    assert!(
+        Arc::ptr_eq(&first, &reused),
+        "a scrape inside the age listed the shard again"
+    );
+    assert_eq!(
+        block_refs(&reused),
+        block_refs(&first),
+        "the reused listing was meant to be the older one"
+    );
+
+    let rebuilt = engine.scrape_bucket_storage_summaries(1, Duration::ZERO);
+    assert!(
+        !Arc::ptr_eq(&first, &rebuilt),
+        "a scrape past the age kept serving the old listing"
+    );
+    assert!(
+        block_refs(&rebuilt) > block_refs(&first),
+        "the rebuilt listing does not show the write made after the first one"
+    );
+}
+
 /// The exported label beside a `..._bucket_...` metric must be spelled `bucket`.
 ///
 /// It was spelled `slot` while all four metric names already said bucket, so a query written from

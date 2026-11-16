@@ -300,6 +300,17 @@ pub struct TemporalEngine {
     /// The sliced compaction pass each shard has in flight, if any. One slot per shard so a slice
     /// holds only its own shard's lock; see `compaction_slices.rs`.
     compaction_passes: Arc<std::sync::Mutex<HashMap<ShardId, recovery_sweep_compact::PassSlot>>>,
+    /// The per-bucket summaries the last `/metrics` scrape listed, per shard, and when.
+    ///
+    /// Building them lists every live block of the shard under the engine read guard, which a
+    /// writer must wait out. A scrape polled every few seconds would repeat that on each poll, so
+    /// a scrape within `SCRAPE_BUCKET_SUMMARY_MAX_AGE` of the last one reuses its listing. The
+    /// mutex is held across the listing, so concurrent scrapes share one listing instead of each
+    /// starting their own. Only the scrape reads this: the maintenance plan needs a current
+    /// listing and never goes through it.
+    scrape_bucket_summaries: Arc<
+        std::sync::Mutex<HashMap<ShardId, (std::time::Instant, Arc<Vec<BucketStorageSummary>>)>>,
+    >,
     /// Slabs a compaction round vacated in MEMORY but whose new index never reached disk.
     ///
     /// Compaction advances no applied sequence and emits no record, so the durable index is the
