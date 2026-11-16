@@ -545,9 +545,8 @@ fn a_replayed_log_tail_reaches_the_live_series_bytes_and_leaves_the_flushed_ring
     assert_eq!((1, 0, 1, true), receipt(&send(&replayed, &key, vec![adds(4)], Some(2))));
     assert_eq!(summed, lanes(&replayed, &key), "a retry after the replay was summed again");
     assert_eq!(series, raw_series(&replayed, &key));
-    // NOT ASSERTED, AND NOT TRUE TODAY: a TOKENED append written after the last flush. Replay
-    // installs the outcome the record carries (the points) and does not run the command again, so
-    // the token is not filed and a retry after such a crash would be applied a second time.
+    // A TOKENED append written after the last flush is covered by
+    // `a_tokened_append_is_recovered_with_its_token`: the record logs the entry the write filed.
 }
 
 #[test]

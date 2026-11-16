@@ -126,11 +126,13 @@ store.
   snapshot each clear the ring: the same token on the key written again is a new request.
 * **Durable.** The rings are stored with the shard's index image (a new `retry_rings` domain, one
   byte string per key), so they come back after a restart and after the log has been reclaimed.
-  Like a deadline or a seen set, a ring is held in the image and not in the blocks: tokens filed
-  since the last image flush are rebuilt where the log is replayed (a replicated deployment), and
-  a single node that crashes without replaying a log forgets them. A shard that never used a token
-  stores exactly the bytes it stored before, the image stamp aside, and a key that never uses one
-  pays nothing.
+  Like a deadline or a seen set, a ring is held in the image and not in the blocks, and the
+  image is flushed now and then. A tokened append also writes the entry it filed into its log
+  record, as one small item of the kind `cell_retry` (the token and the receipt, a few bytes, plus
+  the item's own framing), and recovery files it where the write did. So the ring after a crash is
+  the ring before it, whether the token was filed before the last flush or after. A request
+  without a token logs exactly the record it always logged, and a key that never uses a token pays
+  nothing.
 * **What the answer says.** `snapshots_written`, `cells_created` and `cells_merged` are the first
   application's, so a retry of a request that created a cell reads "created", where a request that
   merged again would read "merged". A request without a token is applied every time, as before.
@@ -156,10 +158,9 @@ both claims through the engine, and `a_replayed_log_tail_reaches_the_live_series
 restarts an engine whose last write lives only in its log: the replay reaches the live bytes and the ring
 that was flushed with the index still answers a retry as a replay.
 
-> **Known limit.** A tokened append written after the last flush of the index and lost to a crash is
-> recovered from the log as its recorded points, not by running the command again, so its token is not
-> filed: a retry of exactly that request after such a crash is applied a second time. A token whose append
-> was flushed with the index is not affected.
+The window is still a count of appends and not a time, so a retry that arrives after 16 newer tokens is
+applied again, before or after a crash. `a_tokened_append_written_after_the_last_flush_is_replayed_with_its_token`
+runs a crash after a flush through recovery and retries both requests.
 
 **From a client and through the proxy.** The Rust client sends a token with
 `feature_merge_cells_with_token(key, points, token)` and gets back a `CellMergeSummary`

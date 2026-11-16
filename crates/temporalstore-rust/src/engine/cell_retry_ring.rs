@@ -198,7 +198,6 @@ fn write_entry(out: &mut Vec<u8>, token: u64, receipt: &RetryReceipt) {
 /// One entry in the spelling a ring gives each of its entries, which is also how a log record
 /// carries the entry a write filed: the same four fields and no other spelling, so the log and
 /// the index image cannot disagree about what a token's receipt is.
-#[cfg_attr(not(test), allow(dead_code))] // the writer of a logged entry is the next change
 pub(crate) fn encode_entry(token: u64, receipt: &RetryReceipt) -> Vec<u8> {
     let mut out = Vec::with_capacity(12);
     write_entry(&mut out, token, receipt);
