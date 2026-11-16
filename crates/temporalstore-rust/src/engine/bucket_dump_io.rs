@@ -487,6 +487,20 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
             reason: "raft_snapshot_anchor".to_string(),
         });
     }
+    // EVERY RETAINED MANIFEST KEEPS THE MANIFESTS IT BUILDS ON. A delta is not installable without
+    // its base, so the anchors chosen above are closed under `base_manifest_id`. A chain that cannot
+    // be resolved keeps EVERY manifest: a smaller set is exactly the bug this closes.
+    let links = manifests.iter().map(|manifest| ChainLink::of(manifest)).collect::<Vec<_>>();
+    let anchors = retained.iter().cloned().collect::<Vec<_>>();
+    for anchor in anchors {
+        match chain_to_retain(&links, &anchor) {
+            Ok(chain) => retained.extend(chain),
+            Err(_) => {
+                retained.extend(manifests.iter().map(|manifest| manifest.manifest_id.clone()));
+                break;
+            }
+        }
+    }
     let interrupted = interrupted_bucket_dump_installs_at(index_dir, shard_id)?
         .into_iter()
         .map(|marker| marker.manifest_id)

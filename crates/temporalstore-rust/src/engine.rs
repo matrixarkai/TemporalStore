@@ -68,6 +68,8 @@ mod grouped_series_index;
 mod set_index_serde;
 mod zset_index_serde;
 mod seen_index_serde;
+mod bucket_dump_chain;
+use bucket_dump_chain::{chain_to_retain, installable_image, ChainLink};
 mod bucket_dump_manifest_methods;
 #[path = "engine/wal_application.rs"]
 mod wal_application;

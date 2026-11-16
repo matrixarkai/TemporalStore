@@ -1407,8 +1407,9 @@ impl TemporalEngine {
                             shard_id,
                             manifest,
                             || {
-                                crate::engine::decode_index_bytes(&manifest.index_bytes)
+                                installable_image(manifest)
                                     .ok()
+                                    .and_then(|image| crate::engine::decode_index_bytes(image).ok())
                                     // A MANIFEST WHOSE IMAGE NAMES ANOTHER STRUCT VERSION FINGERPRINTS
                                     // NOTHING, exactly as an undecodable one -- the decode refuses it, so
                                     // it is the same `None`. Not counted: this is a plan, and it installs
@@ -1715,7 +1716,8 @@ impl TemporalEngine {
         let mut floor: Option<u64> = None;
         for manifest in &manifests {
             let image = bucket_dump_io::manifest_wal_floor_memoised(manifest, || {
-                let snapshot = decode_index_bytes(&manifest.index_bytes).map_err(|_| ())?;
+                let snapshot = decode_index_bytes(installable_image(manifest).map_err(|_| ())?)
+                    .map_err(|_| ())?;
                 Ok(wal_floor_of_index_image(&snapshot))
             })?;
             if let Some(sequence) = image {
@@ -1768,7 +1770,8 @@ impl TemporalEngine {
         let mut manifest_floor = None;
         for manifest in &manifests {
             let floor = bucket_dump_io::manifest_wal_floor_memoised(manifest, || {
-                let snapshot = decode_index_bytes(&manifest.index_bytes).map_err(|_| ())?;
+                let snapshot = decode_index_bytes(installable_image(manifest).map_err(|_| ())?)
+                    .map_err(|_| ())?;
                 Ok(wal_floor_of_index_image(&snapshot))
             });
             match floor {

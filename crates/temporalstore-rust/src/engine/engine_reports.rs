@@ -851,6 +851,10 @@ pub struct BucketDumpManifest {
     pub source_manifest_coverage: Vec<BucketDumpSourceCoverage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_manifest_id: Option<String>,
+    /// The manifest a DELTA builds on. Unlike `parent_manifest_id`, which is lineage and may be
+    /// detached by retention, this is a recovery dependency: retention must keep the whole chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_manifest_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub load_version_handoff: Option<BucketDumpLoadVersionHandoff>,
     pub created_unix_ms: u64,

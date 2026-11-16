@@ -1915,8 +1915,11 @@ message DurableBucketDumpManifest {
   // Absent means the all-zero report, which is what a manifest without one has always meant.
   optional DurableStorageObjectLifecycle object_lifecycle = 19;
   string index_sha256 = 20;
-  // Field 21 is not used.
-  // The whole-shard index image. Second-highest tag: see the note above.
+  // The manifest this one builds on, for a DELTA manifest; absent for a whole one. Tag 21, below the
+  // index image's tag 22, so it is written ahead of the image and the digest's streamed layout
+  // (every other field, then the image, then the checksum) is unchanged.
+  optional string base_manifest_id = 21;
+  // The whole-shard index image (empty for a delta manifest). Second-highest tag: see the note above.
   bytes index_bytes = 22;
   // Highest tag, and EMPTY while the digest is computed.
   string checksum = 23;
