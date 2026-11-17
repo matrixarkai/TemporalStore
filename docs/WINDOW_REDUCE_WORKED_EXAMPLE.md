@@ -18,7 +18,7 @@ kind `cell_retry` keep their original spelling because they are written to disk.
 * **Write.** `FeatureAppendWithPolicy` with `MergeReduce` merges the request's cells into the
   sample already stored at that timestamp, lane by lane, and answers a receipt: samples
   written, cells created, cells merged.
-* **Ranked read.** `WindowReduceRank` takes a window (`Between`, `Last`, `Since`, `LastN`), named
+* **Ranked read.** `WindowReduceRank` takes a window (`Between`, `Last`, `Since`, `LastN`, `NewestRows`), named
   predicates over labels, lanes or `member`, a score (`Lane`, `Ratio`, `Wilson`, `Member`, `Time`,
   `Weighted`, `Decay`) and `top_k`. It reduces each member across the window's samples, scores it and
   returns the best `k`. A name the key does not declare is refused.

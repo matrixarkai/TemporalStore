@@ -60,6 +60,9 @@ use crate::types::{
 
 /// Samples one ranked read may merge.
 pub(crate) const MAX_WINDOW_SAMPLES: usize = 512;
+/// Rows a [`WindowReduceWindow::NewestRows`] window may ask for: no more than a merged read of
+/// several keys gathers ([`super::window_reduce_fan_in::MAX_FAN_IN_CELLS`]).
+pub(crate) const MAX_WINDOW_ROWS: usize = 262_144;
 /// Predicates one ranked read may carry.
 pub(crate) const MAX_PREDICATES: usize = 8;
 /// Lanes in one weighted score.
@@ -81,6 +84,17 @@ pub(crate) struct SampleView<'a> {
 pub(crate) struct FlatView<'a> {
     pub(crate) timestamp_ms: u64,
     pub(crate) cells: &'a FlatCells,
+}
+
+/// One decoded sample in the flat form, read without its first `skip` cells: the sample at the
+/// edge of a [`WindowReduceWindow::NewestRows`] window, which holds more cells than the window
+/// has room for. The cells it keeps are its largest members, in order, so everything the ranking
+/// checks of a sample (strictly ascending members) still holds. `skip` of 0 is the whole sample.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CutView<'a> {
+    pub(crate) timestamp_ms: u64,
+    pub(crate) cells: &'a FlatCells,
+    pub(crate) skip: usize,
 }
 
 /// What the plan reads of a decoded sample: its stamp, and each cell in place. The plain
@@ -116,6 +130,19 @@ impl<'a> SampleRead<'a> for FlatView<'a> {
     fn cell(&self, i: usize) -> CellRef<'a> {
         let cells: &'a FlatCells = self.cells;
         cells.cell(i)
+    }
+}
+
+impl<'a> SampleRead<'a> for CutView<'a> {
+    fn stamp(&self) -> u64 {
+        self.timestamp_ms
+    }
+    fn cell_count(&self) -> usize {
+        self.cells.len().saturating_sub(self.skip)
+    }
+    fn cell(&self, i: usize) -> CellRef<'a> {
+        let cells: &'a FlatCells = self.cells;
+        cells.cell(self.skip + i)
     }
 }
 
@@ -245,6 +272,12 @@ pub(crate) fn validate_spec(spec: &WindowReduceRankSpec) -> Result<(), String> {
                 return Err("window of the last 0 samples is empty".to_string());
             }
             within("samples in the window", *n, MAX_WINDOW_SAMPLES)?;
+        }
+        WindowReduceWindow::NewestRows { n } => {
+            if *n == 0 {
+                return Err("window of the newest 0 rows is empty".to_string());
+            }
+            within("rows in the window", *n, MAX_WINDOW_ROWS)?;
         }
         _ => {}
     }
@@ -591,6 +624,11 @@ impl Plan {
             }
             WindowReduceWindow::Since { start_ms } => samples_between(samples, *start_ms, u64::MAX),
             WindowReduceWindow::LastN { n } => &samples[samples.len().saturating_sub(*n)..],
+            // The rows of a rows window are counted where the samples are decoded, because the
+            // sample at its edge is read without its first cells and a slice of samples cannot say
+            // that. The reader hands over exactly the samples the rows reach, so every one of
+            // them is in the window.
+            WindowReduceWindow::NewestRows { .. } => samples,
         };
         within("samples in the window", chosen.len(), MAX_WINDOW_SAMPLES)?;
         Ok(chosen)

@@ -163,6 +163,45 @@ fn a_read_over_flat_samples_answers_what_a_read_over_plain_samples_answers() {
 }
 
 #[test]
+fn a_sample_read_without_its_first_cells_ranks_as_the_plain_sample_without_them() {
+    let header = wide_header();
+    let mut state = 0xfeed_f00d_dead_beefu64;
+    let mut compared = 0;
+    let mut rows_seen = 0;
+    let mut cut_cells = 0;
+    for count in [1usize, 3, 8] {
+        let snaps = random_samples(&mut state, count);
+        let (_, flat) = decoded_both(&header, &snaps);
+        // Every sample gives up a different number of its first cells, from none to all of them.
+        let skips: Vec<usize> = flat.iter().map(|(_, cells)| (xorshift(&mut state) as usize) % (cells.len() + 1)).collect();
+        cut_cells += skips.iter().sum::<usize>();
+        // The statement of the cut: the same cells with the first `skip` dropped, in the plain form.
+        let plain_cut: Vec<(u64, Vec<Cell>)> =
+            snaps.iter().zip(&skips).map(|((stamp, cells), &skip)| (*stamp, cells[skip..].to_vec())).collect();
+        let plain_views: Vec<SampleView<'_>> =
+            plain_cut.iter().map(|(timestamp_ms, cells)| SampleView { timestamp_ms: *timestamp_ms, cells }).collect();
+        let cut_views: Vec<CutView<'_>> = flat
+            .iter()
+            .zip(&skips)
+            .map(|((timestamp_ms, cells), &skip)| CutView { timestamp_ms: *timestamp_ms, cells, skip })
+            .collect();
+        for spec in specs() {
+            let plan = Plan::compile(&header, &spec).unwrap();
+            let want = plan.run(1_000, &plain_views);
+            let got = plan.run(1_000, &cut_views);
+            assert_eq!(want, got, "{count} samples, skips {skips:?}, spec {spec:?}");
+            if let Ok(ranked) = &got {
+                rows_seen += ranked.rows.len();
+            }
+            compared += 1;
+        }
+    }
+    assert!(compared >= 36, "{compared}");
+    assert!(cut_cells > 20, "the comparison cut only {cut_cells} cells, too few to mean anything");
+    assert!(rows_seen > 150, "the reads ranked only {rows_seen} rows in all");
+}
+
+#[test]
 fn a_fan_in_over_flat_samples_answers_what_a_fan_in_over_plain_samples_answers() {
     let header = wide_header();
     let mut state = 0x1234_5678_9abc_def1u64;

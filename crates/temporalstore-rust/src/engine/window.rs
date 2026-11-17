@@ -36,8 +36,44 @@ pub(crate) enum WindowSpec {
     Stamps { from_ms: u64, to_ms: u64 },
     /// The `n` newest samples.
     Newest { n: usize },
+    /// As many of the newest samples as hold `n` cells between them. Which samples that is is not
+    /// known until their cells are counted, so the walk hands back the newest samples up to the
+    /// caller's cap and the caller counts, with [`RowsWindow`].
+    Rows,
     /// No sample: the window holds no instant.
     Nothing,
+}
+
+/// Counts the cells of samples visited newest first until a rows window holds the `want` it asked
+/// for.
+///
+/// A window of rows is `want` stored (instant, member) cells, the newest ones: samples are taken
+/// whole from the newest back, and the sample that crosses `want` gives up only the cells it needs.
+/// Cells of one sample are ordered by member, so the ones it gives up are its largest members, the
+/// newest in (instant, member) order, and the ones it leaves out are its first `skip`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RowsWindow {
+    want: usize,
+    held: usize,
+}
+
+impl RowsWindow {
+    pub(crate) fn new(want: usize) -> Self {
+        Self { want, held: 0 }
+    }
+
+    /// Takes the next older sample, which holds `cells` cells. Returns how many of its first cells
+    /// fall outside the window, and whether the window is full now.
+    pub(crate) fn take(&mut self, cells: usize) -> (usize, bool) {
+        let room = self.want.saturating_sub(self.held);
+        if cells >= room {
+            self.held = self.want;
+            (cells - room, true)
+        } else {
+            self.held += cells;
+            (0, false)
+        }
+    }
 }
 
 /// Applies the clock and the anchor to `window`. `newest_ms` is asked for only by a `Last` window
@@ -63,11 +99,13 @@ pub(crate) fn resolve_window(
         }
         WindowReduceWindow::Since { start_ms } => WindowSpec::Stamps { from_ms: *start_ms, to_ms: u64::MAX },
         WindowReduceWindow::LastN { n } => WindowSpec::Newest { n: *n },
+        WindowReduceWindow::NewestRows { .. } => WindowSpec::Rows,
     }
 }
 
 /// The samples a resolved window names, newest first. A range of instants yields at most `cap`
-/// samples; a newest-`n` window yields at most `n`.
+/// samples; a newest-`n` window yields at most `n`; a rows window yields at most `cap`, and its
+/// caller stops reading at the sample that fills it.
 pub(crate) fn samples_of<'s, S: TimestampedSeries>(
     series: &'s S,
     spec: WindowSpec,
@@ -80,6 +118,7 @@ pub(crate) fn samples_of<'s, S: TimestampedSeries>(
             .take(cap)
             .collect(),
         WindowSpec::Newest { n } => series.range(..).rev().take(n).collect(),
+        WindowSpec::Rows => series.range(..).rev().take(cap).collect(),
         WindowSpec::Nothing => Vec::new(),
     }
 }
@@ -137,6 +176,8 @@ mod tests {
             },
             WindowReduceWindow::Since { start_ms } => bounded(*start_ms, u64::MAX),
             WindowReduceWindow::LastN { n } => series.keys().rev().take(*n).copied().collect(),
+            // The samples a rows window may need, newest first; the caller counts their cells.
+            WindowReduceWindow::NewestRows { .. } => series.keys().rev().take(cap).copied().collect(),
         }
     }
 
@@ -169,6 +210,7 @@ mod tests {
                     WindowReduceWindow::Last { duration_ms },
                     WindowReduceWindow::Since { start_ms: a },
                     WindowReduceWindow::LastN { n },
+                    WindowReduceWindow::NewestRows { n: n + 1 },
                     WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX },
                     WindowReduceWindow::Last { duration_ms: u64::MAX },
                 ];
@@ -221,6 +263,40 @@ mod tests {
             resolve_window(&WindowReduceWindow::Between { start_ms: 5, end_ms: 6 }, WindowReduceAnchor::Request, 100, never),
             WindowSpec::Stamps { from_ms: 5, to_ms: 6 }
         );
+        assert_eq!(
+            resolve_window(&WindowReduceWindow::NewestRows { n: 7 }, WindowReduceAnchor::Request, 100, never),
+            WindowSpec::Rows
+        );
+    }
+
+    #[test]
+    fn a_rows_window_hands_back_samples_up_to_the_cap_and_never_asks_for_the_newest_instant() {
+        let series = series_of(&[10, 20, 30, 40, 50]);
+        let rows = WindowReduceWindow::NewestRows { n: 1 };
+        // The count of rows is not the walk's: it hands back the newest samples up to the cap.
+        assert_eq!(stamps_of(window_samples(&series, &rows, WindowReduceAnchor::Request, 0, 3)), vec![50, 40, 30]);
+        assert_eq!(stamps_of(window_samples(&series, &rows, WindowReduceAnchor::Request, 0, 9)), vec![50, 40, 30, 20, 10]);
+        assert!(window_samples(&series_of(&[]), &rows, WindowReduceAnchor::Request, 0, 9).is_empty());
+    }
+
+    #[test]
+    fn a_rows_window_takes_whole_samples_and_cuts_only_the_one_that_crosses_its_count() {
+        // Samples visited newest first hold 2, 3, 4, 5 cells; the window wants 7.
+        let mut window = RowsWindow::new(7);
+        assert_eq!(window.take(2), (0, false));
+        assert_eq!(window.take(3), (0, false));
+        // 5 held, room for 2 of the 4 cells: the first 2 are left out.
+        assert_eq!(window.take(4), (2, true));
+        // A sample that fills the window exactly is taken whole.
+        let mut exact = RowsWindow::new(5);
+        assert_eq!(exact.take(2), (0, false));
+        assert_eq!(exact.take(3), (0, true));
+        // The first sample may be the one that is cut, and an empty sample adds nothing.
+        let mut first = RowsWindow::new(3);
+        assert_eq!(first.take(0), (0, false));
+        assert_eq!(first.take(10), (7, true));
+        // A window of one row takes the last cell of the newest sample.
+        assert_eq!(RowsWindow::new(1).take(6), (5, true));
     }
 
     #[test]

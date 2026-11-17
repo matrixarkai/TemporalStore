@@ -229,6 +229,13 @@ pub enum WindowReduceWindow {
     Since { start_ms: u64 },
     /// The `n` newest samples.
     LastN { n: usize },
+    /// The `n` newest stored cells, counted as (stamp, member) rows: samples are taken whole from
+    /// the newest back, and the sample that crosses `n` gives up its largest members and keeps
+    /// only as many as it needs. Fewer than `n` cells in the key is the whole key. The cells are
+    /// counted before the member set and the predicates apply, as a sample is chosen before
+    /// either does. At most `engine::window_reduce_rank::MAX_WINDOW_ROWS` rows, and the rows may
+    /// not reach back over more than 512 samples.
+    NewestRows { n: usize },
 }
 
 /// What a ranked read orders members by. Lanes are named, never numbered, and an unknown name is

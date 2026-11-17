@@ -552,9 +552,16 @@ fn window_of(window: &wire::Window) -> Result<WindowReduceWindow, Refusal> {
             }
             Ok(WindowReduceWindow::Between { start_ms: first as u64, end_ms: (after - 1) as u64 })
         }
-        other => Err(invalid(format!(
-            "window kind {other:?} is not translated yet: it needs a read-side option that is not built"
-        ))),
+        // `span` is a count of rows here, not a length of time. A window of no rows holds nothing;
+        // the bound on the count is the engine's, applied by the admission every plan passes.
+        wire::WindowKind::NewestRows => {
+            if window.span == 0 {
+                return Err(invalid("a window of the newest 0 rows holds nothing"));
+            }
+            let rows = usize::try_from(window.span)
+                .map_err(|_| invalid(format!("window of the newest {} rows is too many", window.span)))?;
+            Ok(WindowReduceWindow::NewestRows { n: rows })
+        }
     }
 }
 

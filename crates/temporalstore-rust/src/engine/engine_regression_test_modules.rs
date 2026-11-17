@@ -535,6 +535,8 @@ mod a_retried_merge_append_answers_its_first_receipt;
 mod a_logged_retry_token_is_installed_on_replay;
 #[path = "tests/a_tokened_append_is_recovered_with_its_token.rs"]
 mod a_tokened_append_is_recovered_with_its_token;
+#[path = "tests/a_newest_rows_window_reads_stored_rows.rs"]
+mod a_newest_rows_window_reads_stored_rows;
 #[path = "tests/a_window_reduce_ranked_read_is_a_command.rs"]
 mod a_window_reduce_ranked_read_is_a_command;
 #[path = "tests/a_window_reduce_rollup_is_a_command.rs"]
