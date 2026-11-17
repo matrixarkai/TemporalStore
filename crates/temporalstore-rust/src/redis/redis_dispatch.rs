@@ -530,13 +530,15 @@ pub fn execute_redis_command_with_state(
             let mut added = 0;
             for pair in args[2..].chunks(2) {
                 let field = name_arg(&pair[0]);
-                match execute(Command::HashGet {
+                // Whether the field is there is a question the field map answers; the value is not
+                // wanted, so no block is read for it.
+                match execute(Command::HashFieldExists {
                     key: key.clone(),
                     field,
                 }) {
-                    Ok(CommandResponse::Bytes { value: None }) => added += 1,
-                    Ok(CommandResponse::Bytes { value: Some(_) }) => {}
-                    Ok(_) => return RespValue::Error("ERR invalid hget response".to_string()),
+                    Ok(CommandResponse::Integer { value: 0 }) => added += 1,
+                    Ok(CommandResponse::Integer { value: 1 }) => {}
+                    Ok(_) => return RespValue::Error("ERR invalid hexists response".to_string()),
                     Err(err) => return RespValue::Error(format!("ERR {err}")),
                 }
             }
@@ -707,11 +709,12 @@ pub fn execute_redis_command_with_state(
             let mut removed = 0;
             for field in args.iter().skip(2) {
                 let field = name_arg(field);
-                match execute(Command::HashGet {
+                // Presence is the field map's to say, so the value is not read to count a removal.
+                match execute(Command::HashFieldExists {
                     key: key.clone(),
                     field: field.clone(),
                 }) {
-                    Ok(CommandResponse::Bytes { value: Some(_) }) => {
+                    Ok(CommandResponse::Integer { value: 1 }) => {
                         if let Err(err) = execute(Command::HashDelete {
                             key: key.clone(),
                             field,
@@ -720,8 +723,8 @@ pub fn execute_redis_command_with_state(
                         }
                         removed += 1;
                     }
-                    Ok(CommandResponse::Bytes { value: None }) => {}
-                    Ok(_) => return RespValue::Error("ERR invalid hget response".to_string()),
+                    Ok(CommandResponse::Integer { value: 0 }) => {}
+                    Ok(_) => return RespValue::Error("ERR invalid hexists response".to_string()),
                     Err(err) => return RespValue::Error(format!("ERR {err}")),
                 }
             }

@@ -40,6 +40,8 @@ mod a_container_write_asks_its_own_slot;
 mod reclaim_dump;
 #[path = "tests/claim_stamp_hold.rs"]
 mod claim_stamp_hold;
+#[path = "tests/a_resp_hash_write_asks_the_field_map.rs"]
+mod a_resp_hash_write_asks_the_field_map;
 #[path = "tests/command_surface.rs"]
 mod command_surface;
 #[path = "tests/expiry_command_boundaries.rs"]

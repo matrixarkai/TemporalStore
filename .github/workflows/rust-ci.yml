@@ -407,6 +407,8 @@ jobs:
             engine::tests::a_string_increment_and_append_are_one_step::a_key_past_its_deadline_starts_again_from_nothing \
             engine::tests::a_string_increment_and_append_are_one_step::an_append_creates_the_key_and_answers_the_new_length \
             engine::tests::a_string_increment_and_append_are_one_step::the_stepped_value_survives_a_restart_with_its_deadline \
+            engine::tests::a_resp_hash_write_asks_the_field_map::an_hdel_counts_the_fields_it_removes_by_asking_the_field_map_and_deletes_only_those \
+            engine::tests::a_resp_hash_write_asks_the_field_map::an_hset_counts_the_fields_it_adds_by_asking_the_field_map_and_never_reads_a_value \
             engine::tests::a_set_length_and_membership_read_the_member_map::the_point_commands_answer_what_the_listing_answers \
             engine::tests::a_set_length_and_membership_read_the_member_map::the_point_commands_answer_the_same_with_the_map_switched_off \
             engine::tests::a_set_length_and_membership_read_the_member_map::the_resp_door_answers_through_the_point_commands \
