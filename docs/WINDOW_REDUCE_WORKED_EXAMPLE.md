@@ -5,9 +5,10 @@ or bytes), up to four named `u64` **labels**, and between one and sixteen named 
 Nothing in the engine knows what the names mean; a deployment declares them once.
 
 Naming: the model is the Window Reducer (WindowReduce). The unit it stores at one timestamp of a key, all the
-cells of that key at that timestamp, is a **sample**. The message and field names on the wire are the new ones
-(`WindowReduce*`, `samples_written`, `sample_info`, and so on); the command names in this page are renamed to
-WindowReduce names later. Neither rename changes a field number, a wire type or a stored byte.
+cells of that key at that timestamp, is a **sample**. The command, message and field names in this page are the
+WindowReduce names (`WindowReduceRank`, `WindowReduceAnswer`, `samples_written`, `sample_info`, and so on). The
+rename changed no field number, no wire type and no stored byte; the stored key tag `cells` and the retry item
+kind `cell_retry` keep their original spelling because they are written to disk.
 
 * **Key.** An **entity** (a `u64`, text or bytes) and up to eight named **dimensions** become one
   stored feature key, so a read by those values is one lookup.
@@ -17,11 +18,11 @@ WindowReduce names later. Neither rename changes a field number, a wire type or 
 * **Write.** `FeatureAppendWithPolicy` with `MergeReduce` merges the request's cells into the
   sample already stored at that timestamp, lane by lane, and answers a receipt: samples
   written, cells created, cells merged.
-* **Ranked read.** `CellRankQuery` takes a window (`Between`, `Last`, `Since`, `LastN`), named
+* **Ranked read.** `WindowReduceRank` takes a window (`Between`, `Last`, `Since`, `LastN`), named
   predicates over labels, lanes or `member`, a score (`Lane`, `Ratio`, `Wilson`, `Member`, `Time`,
   `Weighted`, `Decay`) and `top_k`. It reduces each member across the window's samples, scores it and
   returns the best `k`. A name the key does not declare is refused.
-* **Rollup.** `CellRollup` takes `older_than_ms`, `bucket_ms` and an optional cap. Every sample
+* **Rollup.** `WindowReduceRollup` takes `older_than_ms`, `bucket_ms` and an optional cap. Every sample
   stamped strictly below the cutoff is folded, with the others of its bucket, into one sample
   stored at the bucket start. Cells merge by member, oldest sample first. A `Count` lane holds
   counts, and counts add; `Sum` adds (and saturates), `Max` and `Min` compare, `First` keeps the
@@ -169,7 +170,7 @@ runs a crash after a flush through recovery and retries both requests.
 
 **From a client and through the proxy.** The Rust client sends a token with
 `feature_merge_cells_with_token(key, points, token)` and gets back a `CellMergeSummary`
-(`snapshots_written`, `cells_created`, `cells_merged`, `replayed`); `feature_merge_cells` is the same
+(`samples_written`, `cells_created`, `cells_merged`, `replayed`); `feature_merge_cells` is the same
 append with no token. The proxy's `/ProxyService/FeatureAdd` takes `"policy":"merge_reduce"` and an
 optional `"retry_token"` (a number, zero included), and its answer carries `"replayed":true` on a
 replay, the field being left out otherwise. A `retry_token` with no policy is refused with a 400 rather
@@ -179,7 +180,7 @@ token, so a request through it is always the tokenless one.
 
 ## Narrowing a ranked read: members, anchor, quota, decay
 
-A `CellRankQuery` can carry four more things. A read that carries none of them is encoded and
+A `WindowReduceRank` can carry four more things. A read that carries none of them is encoded and
 answered exactly as before: the fields are left out of the encoding when they are at rest, and a
 spec that lacks them reads as one that has them at rest.
 
@@ -203,7 +204,7 @@ spec that lacks them reads as one that has them at rest.
   members from the top-k list, so it never returns more than `top_k` rows, and a lane no member can
   fill leaves the answer short rather than padded. Counts plus `others` are at most 1 000, a quota
   names at most 16 lanes, a count is at least 1 and a lane is named once.
-* **Decay score** (`CellScore::Decay { lane, half_life_ms }`). A member's score is
+* **Decay score** (`WindowReduceScore::Decay { lane, half_life_ms }`). A member's score is
   `sum(value * 0.5^(age / half_life_ms))` over the values its samples store for the lane, with
   `age` measured from the newest sample of the window, so no clock is read. The half-life is
   between 1 ms and ten years. The total is a float and cannot wrap. A rollup cap refuses it: a cap
@@ -250,8 +251,8 @@ On the wire (JSON), a read that uses them looks like this; the three keys appear
 ## Reading across keys
 
 When the dimensions you always query by are in the key, a question that spans them ("which items did
-this user respond to best over ALL channels?") spans keys. `CellFanInRankQuery` takes up to 64 keys
-that share one spec and the same read as `CellRankQuery` (window, predicates, score, `top_k`,
+this user respond to best over ALL channels?") spans keys. `WindowReduceFanInRank` takes up to 64 keys
+that share one spec and the same read as `WindowReduceRank` (window, predicates, score, `top_k`,
 projection). It merges the cells of every key BEFORE it scores, so the answer is the one a single
 key holding all their samples would give. Merging the per-key top lists afterwards cannot match
 it: an item that is second in each of two keys can lead their sum.
@@ -272,18 +273,18 @@ it: an item that is second in each of two keys can lead their sum.
 
 ### A batch of independent reads
 
-When the questions are separate, `CellRankBatchQuery` carries up to 64 reads, each with its own key
+When the questions are separate, `WindowReduceRankBatch` carries up to 64 reads, each with its own key
 and read spec, and answers them in request order, one `RankedCells` each. The reads do not affect
 one another: a key with nothing to rank answers empty, an expired key is dropped and answers empty,
 and a read the key cannot serve (an undeclared name, say) answers with `refused` set while the rest
-are answered normally. Each answer equals the one `CellRankQuery` gives for that key and spec. A
+are answered normally. Each answer equals the one `WindowReduceRank` gives for that key and spec. A
 read over a bound (top-k, window, predicates) refuses the whole batch at admission, naming the
 read's position, before any key is read. As with the fan-in read, the keys are read on the shard the
 request names.
 
 ```rust
 // One user, one channel dimension: the best items over email, push and feed together.
-Command::CellFanInRankQuery { keys: vec![email_key, push_key, feed_key], spec }
+Command::WindowReduceFanInRank { keys: vec![email_key, push_key, feed_key], spec }
 ```
 
 `crates/temporalstore-rust/src/engine/tests/a_window_reduce_read_over_several_keys.rs` is the runnable
