@@ -6241,6 +6241,10 @@ mod portable_checkpoint_tests;
 mod wal_segment_tests;
 
 #[cfg(test)]
+#[path = "shared_wal_failed_publish_tests.rs"]
+mod wal_failed_publish_tests;
+
+#[cfg(test)]
 mod tests {
     /// A forwarding `ObjectStore` wrapper must not drop a DEFAULTED trait method.
     ///
