@@ -3884,6 +3884,24 @@ impl BlockSlabLiveIndex {
         self.ready = false;
     }
 
+    /// Drop one slab's entry, so the tally under-reports a slab the index still points at.
+    ///
+    /// The drift a counting bug would cause, made on purpose: the guard for a collection that
+    /// believes the tally needs a tally that is WRONG, and the walk in
+    /// `recompute_block_slab_live` would otherwise correct it before the guard looked.
+    #[cfg(test)]
+    pub(super) fn drop_slab_for_test(&mut self, block_slab_id: u64) {
+        self.by_slab.remove(&block_slab_id);
+    }
+
+    /// The slabs this tally says hold at least one live block, in order.
+    pub(super) fn live_slab_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.by_slab
+            .iter()
+            .filter(|(_, tally)| tally.block_refs > 0)
+            .map(|(block_slab_id, _)| *block_slab_id)
+    }
+
     pub(super) fn add_address(&mut self, address: &ElementEntry) {
         BLOCK_SLAB_LIVE_CHARGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tally = self.by_slab.entry(address.block_slab_id()).or_default();

@@ -1040,6 +1040,48 @@ impl TemporalEngine {
         )
     }
 
+    /// The slabs holding a live block according to the MAINTAINED tally, across every loaded shard
+    /// plus the slabs a compaction has written but not yet published -- with no walk of any index.
+    ///
+    /// `None` unless every loaded shard's tally has been derived: an empty tally that was never
+    /// derived looks the same as a shard holding nothing, and only the walk can tell them apart.
+    ///
+    /// NOT AN AUTHORITY FOR DESTROYING ANYTHING. The tally is held to the walk by a drift check
+    /// that corrects it after the fact, so it can be wrong for a while. A caller may use it to
+    /// decide that nothing is collectable, where a wrong answer costs a skipped round; it must
+    /// not use it to decide that something is, which the walk has to confirm.
+    pub(crate) fn live_block_slab_ids_from_tally(&self) -> Option<Vec<u64>> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let mut ids = std::collections::BTreeSet::new();
+        for shard in shards.values() {
+            if !shard.bucket_index.block_slab_live.is_ready() {
+                return None;
+            }
+            ids.extend(shard.bucket_index.block_slab_live.live_slab_ids());
+        }
+        for pinned in self
+            .unpublished_compaction_slabs
+            .read()
+            .expect("unpublished compaction lock poisoned")
+            .values()
+        {
+            ids.extend(pinned.iter().copied());
+        }
+        Some(ids.into_iter().collect())
+    }
+
+    /// Make one shard's tally forget a slab, for the guard that needs it wrong.
+    #[cfg(test)]
+    pub(crate) fn forget_tally_slab_for_test(&self, shard_id: ShardId, block_slab_id: u64) {
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        if let Some(shard) = shards.get_mut(&shard_id) {
+            shard
+                .bucket_index
+                .block_slab_live
+                .drop_slab_for_test(block_slab_id);
+        }
+    }
+
     pub fn live_block_slab_ids(&self, shard_id: ShardId) -> Vec<u64> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let mut ids = shards

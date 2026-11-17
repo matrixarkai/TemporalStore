@@ -34,3 +34,5 @@ mod the_loop_reports_its_backlog_and_its_dumps;
 mod a_sync_value_once_survives_the_loop;
 #[path = "tests/a_sync_value_once_does_not_outgrow_the_materialise_cap.rs"]
 mod a_sync_value_once_does_not_outgrow_the_materialise_cap;
+#[path = "tests/an_idle_collection_round_does_not_walk_the_shard.rs"]
+mod an_idle_collection_round_does_not_walk_the_shard;
