@@ -81,6 +81,7 @@ enum SharedWriteExecution {
 }
 
 pub use lifecycle::{decode_lifecycle_snapshot_file, encode_lifecycle_snapshot_file};
+pub use round_budget::storage_manager_tick_ms;
 use lifecycle::{
     final_loaded_lifecycle_state, lifecycle_persistence_report_for_path, lifecycle_snapshot_inner,
     lifecycle_snapshot_path_from_env, persist_lifecycle_snapshot_inner,

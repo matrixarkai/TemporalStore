@@ -21,6 +21,20 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+/// The tick period, in milliseconds, the server runs the storage manager with when the
+/// environment does not set one. Zero is the whole-round loop.
+///
+/// The tick loop is opt-in until a comparison of the two on the same fixture, showing whole-round
+/// latency and loop CPU share, is part of the change that makes it the default.
+pub const DEFAULT_STORAGE_MANAGER_TICK_MS: u64 = 0;
+
+/// The tick period for the value of `MATRIXARK_STORAGE_MANAGER_TICK_MS`, if it is set.
+/// Zero selects the whole-round loop; anything unparseable falls back to the default.
+pub fn storage_manager_tick_ms(raw: Option<&str>) -> u64 {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_STORAGE_MANAGER_TICK_MS)
+}
+
 /// What one tick hands a stage: a deadline and a count of work items it may touch.
 ///
 /// Spent through `spend`, checked through `exhausted` BETWEEN work items. Never checked while a
@@ -214,6 +228,17 @@ impl ShardRoundState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The server starts the whole-round loop unless the tick period is set, and an unusable
+    /// setting does not switch the tick loop on by accident.
+    #[test]
+    fn the_whole_round_loop_is_the_default_and_the_tick_loop_is_opt_in() {
+        assert_eq!(storage_manager_tick_ms(None), 0, "unset must run the whole-round loop");
+        assert_eq!(storage_manager_tick_ms(Some("not a number")), 0);
+        assert_eq!(storage_manager_tick_ms(Some("")), 0);
+        assert_eq!(storage_manager_tick_ms(Some(" 30 ")), 30);
+        assert_eq!(storage_manager_tick_ms(Some("0")), 0);
+    }
 
     #[test]
     fn the_slots_are_spread_over_the_period_and_each_runs_once_per_period() {
