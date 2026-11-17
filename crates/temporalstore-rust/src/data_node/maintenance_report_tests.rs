@@ -126,6 +126,43 @@ fn background_compaction_task_preserves_counters_and_error_status() {
     assert_eq!(runtime.stats().compaction_runs, 2);
 }
 
+/// The draining stage runs a whole round unless the sliced pass is switched on. A sliced pass pauses
+/// between slices, so a boundary callback that never fires is a pass that was not sliced; the
+/// control is the same drain run through the sliced entry point, which must fire it.
+#[test]
+fn the_draining_stage_runs_a_whole_round_unless_the_sliced_pass_is_switched_on() {
+    assert!(
+        !crate::engine::sliced_compaction_enabled(),
+        "the sliced pass must be off unless TS_SLICED_COMPACTION asks for it"
+    );
+    let boundaries = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let count = |boundaries: &std::rc::Rc<std::cell::Cell<usize>>| {
+        let boundaries = std::rc::Rc::clone(boundaries);
+        crate::engine::set_slice_boundary_for_test(Some(Box::new(move |_| {
+            boundaries.set(boundaries.get() + 1);
+        })));
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded(dir.path());
+    let drain: BTreeSet<u64> = runtime.engine().live_block_slab_ids(1).into_iter().collect();
+    count(&boundaries);
+    let status = task_execution::run_compaction_background_draining(&runtime.inner, 1, drain);
+    assert!(status.ok, "{status:?}");
+    assert_eq!(boundaries.get(), 0, "the draining stage paused between slices without being asked to");
+
+    // Control: the instrument fires when the pass is sliced.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded(dir.path());
+    let drain: BTreeSet<u64> = runtime.engine().live_block_slab_ids(1).into_iter().collect();
+    runtime
+        .engine()
+        .compact_shard_blocks_draining_sliced(1, drain, 8)
+        .unwrap();
+    crate::engine::set_slice_boundary_for_test(None);
+    assert!(boundaries.get() > 0, "the control never fired the boundary callback, so the check above proves nothing");
+}
+
 #[test]
 fn timer_manager_compacts_without_a_partial_response_while_explicit_calls_keep_details() {
     for detailed in [false, true] {

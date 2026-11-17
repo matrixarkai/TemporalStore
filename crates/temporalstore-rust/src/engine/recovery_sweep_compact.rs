@@ -9,7 +9,9 @@ use super::*;
 mod compaction_slices;
 pub(crate) use compaction_slices::PassSlot;
 #[allow(unused_imports)]
-pub(crate) use compaction_slices::{SliceProgress, COMPACTION_SLICE_KEYS};
+pub(crate) use compaction_slices::{sliced_compaction_enabled, SliceProgress, COMPACTION_SLICE_KEYS};
+#[cfg(test)]
+pub(crate) use compaction_slices::set_slice_boundary_for_test;
 
 #[cfg(test)]
 #[path = "compaction_execution_tests.rs"]

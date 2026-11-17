@@ -45,6 +45,17 @@ pub(crate) enum SliceProgress {
     Done,
 }
 
+/// Whether the data node's draining stage runs a sliced pass. OFF unless `TS_SLICED_COMPACTION` is
+/// `1` or `true`: each slice still walks the shard's keyed maps to find its keys and refreshes every
+/// bucket, so a pass costs slices x shard size and a large shard waits far longer than it would for
+/// a whole round. The whole round is the default until a slice costs what it moves.
+pub(crate) fn sliced_compaction_enabled() -> bool {
+    matches!(
+        std::env::var("TS_SLICED_COMPACTION").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
 /// Keys a slice moves when the caller does not say.
 pub(crate) const COMPACTION_SLICE_KEYS: usize = 128;
 
@@ -78,7 +89,7 @@ thread_local! {
 
 /// Install (or clear) the callback run between slices of the passes this thread drives.
 #[cfg(test)]
-pub(super) fn set_slice_boundary_for_test(hook: Option<Box<dyn FnMut(&TemporalEngine)>>) {
+pub(crate) fn set_slice_boundary_for_test(hook: Option<Box<dyn FnMut(&TemporalEngine)>>) {
     SLICE_BOUNDARY.with(|cell| *cell.borrow_mut() = hook);
 }
 
