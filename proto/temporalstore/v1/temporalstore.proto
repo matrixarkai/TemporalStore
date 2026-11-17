@@ -295,6 +295,8 @@ message Command {
     ListRemove list_remove = 73;
     ListTrim list_trim = 74;
     WindowReduceRemove window_reduce_remove = 75;
+    SetAddMany set_add_many = 76;
+    SetRemoveMany set_remove_many = 77;
   }
 }
 
@@ -963,6 +965,17 @@ message ListTrim {
 message SetRemove {
   string key = 1;
   bytes member = 2;
+}
+
+// Several members of one set in one command: the answer is how many were absent (add) or present (remove).
+message SetAddMany {
+  string key = 1;
+  repeated bytes members = 2;
+}
+
+message SetRemoveMany {
+  string key = 1;
+  repeated bytes members = 2;
 }
 
 message ZSetAdd {

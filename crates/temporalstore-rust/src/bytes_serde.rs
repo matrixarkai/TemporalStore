@@ -149,6 +149,63 @@ impl<'de> Visitor<'de> for EitherShape {
     }
 }
 
+/// A list of byte payloads, each in the encoded shape a single payload takes.
+///
+/// A field-level `with` does not reach inside a `Vec<Vec<u8>>`, so a list of members written without
+/// this is an array of arrays of decimal numbers. Each element here is the same string
+/// [`serialize`] writes for one payload, and [`deserialize`] accepts either shape per element.
+pub mod list {
+    use serde::de::{Deserialize, Deserializer, SeqAccess, Visitor};
+    use serde::ser::SerializeSeq;
+    use serde::{Serialize, Serializer};
+
+    struct One<'a>(&'a [u8]);
+
+    impl Serialize for One<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            super::serialize(self.0, serializer)
+        }
+    }
+
+    struct Held(Vec<u8>);
+
+    impl<'de> Deserialize<'de> for Held {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            super::deserialize(deserializer).map(Held)
+        }
+    }
+
+    pub fn serialize<S: Serializer>(members: &[Vec<u8>], serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(members.len()))?;
+        for member in members {
+            seq.serialize_element(&One(member))?;
+        }
+        seq.end()
+    }
+
+    struct Members;
+
+    impl<'de> Visitor<'de> for Members {
+        type Value = Vec<Vec<u8>>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a list of byte payloads")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
+            while let Some(Held(bytes)) = seq.next_element()? {
+                out.push(bytes);
+            }
+            Ok(out)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Vec<u8>>, D::Error> {
+        deserializer.deserialize_seq(Members)
+    }
+}
+
 /// The same encoding for a list of (name, bytes) pairs.
 pub mod pairs {
     use super::*;

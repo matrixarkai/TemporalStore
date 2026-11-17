@@ -1424,7 +1424,7 @@ impl TemporalEngine {
                 };
             let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
                 && !object_keys.is_empty()
-                && (matches!(&command, Command::SetAdd { .. })
+                && (matches!(&command, Command::SetAdd { .. } | Command::SetAddMany { .. })
                     || narrow_hash_sync
                     || object_keys.iter().all(|object_key| {
                         storage_bucket_internals::sync_context_blocks_for_object(
@@ -4049,6 +4049,21 @@ fn command_upsert_element_names(
                 Some(crate::engine::execute_on_shard::set_element_name(member)),
             )])
         }
+        // Every member the command names, in order. A member that was already in the set is
+        // named too: the record then restates its unchanged address, which is what the index
+        // already holds, so the elements a new member writes are exactly the ones `SetAdd` writes.
+        Command::SetAddMany { key, members } => Some(
+            members
+                .iter()
+                .map(|member| {
+                    (
+                        "set",
+                        key.clone(),
+                        Some(crate::engine::execute_on_shard::set_element_name(member)),
+                    )
+                })
+                .collect(),
+        ),
         // A push files its block under its sequence number, which is only knowable once the
         // write has landed: post-apply the pushed element is the list's FIRST entry for a left
         // push and its LAST for a right one. That is why this needs shard state and the other
@@ -4234,6 +4249,8 @@ fn command_removed_element_name(command: &Command) -> Option<(&'static str, Opti
             "set",
             Some(crate::engine::execute_on_shard::set_element_name(member)),
         )),
+        // Several elements, so no one name: stated as a removal that names none, as a list's pops are.
+        Command::SetRemoveMany { .. } => Some(("set", Some(String::new()))),
         Command::HashDelete { field, .. } => Some(("hash", Some(field.clone()))),
         _ => None,
     }
@@ -4597,6 +4614,13 @@ fn command_touched_container_elements(
             key: key.clone(),
             member: member.clone(),
         }],
+        Command::SetAddMany { key, members } => members
+            .iter()
+            .map(|member| TouchedContainerElement::Set {
+                key: key.clone(),
+                member: member.clone(),
+            })
+            .collect(),
         // The score is deliberately NOT taken from the command. It is read back out of the durable
         // map at capture time, so the record carries the score the map actually holds rather than a
         // second rendering of the `f64` the caller sent -- which is #1989's rule, applied at the

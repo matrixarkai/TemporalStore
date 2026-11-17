@@ -341,6 +341,10 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             key: command.key,
             member: command.member,
         },
+        v1::command::Kind::SetRemoveMany(command) => types::Command::SetRemoveMany {
+            key: command.key,
+            members: command.members,
+        },
         v1::command::Kind::ZsetAdd(command) => types::Command::ZSetAdd {
             key: command.key,
             member: command.member,
@@ -415,6 +419,10 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
         v1::command::Kind::SetAdd(command) => types::Command::SetAdd {
             key: command.key,
             member: command.member,
+        },
+        v1::command::Kind::SetAddMany(command) => types::Command::SetAddMany {
+            key: command.key,
+            members: command.members,
         },
         v1::command::Kind::SetMembers(command) => types::Command::SetMembers { key: command.key },
         v1::command::Kind::SetScan(command) => types::Command::SetScan {

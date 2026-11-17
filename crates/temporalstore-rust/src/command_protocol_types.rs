@@ -217,6 +217,10 @@ pub struct SequenceQuerySpec {
     pub filters: Vec<FeatureFilter>,
 }
 
+/// Members one `SetAddMany` or `SetRemoveMany` may name. A command over it is refused whole, before it
+/// writes anything; one at it is accepted.
+pub const MAX_SET_MEMBERS_PER_COMMAND: usize = 1024;
+
 /// Which samples of a cell-set key a ranked read looks at. Every bound is inclusive.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1852,6 +1856,15 @@ pub enum Command {
         #[serde(with = "crate::bytes_serde")]
         member: Vec<u8>,
     },
+    /// Add several members in one command. Answers how many were NOT already in the set. Each
+    /// member is asked about and added in order, as the same number of `SetIsMember` and `SetAdd`
+    /// commands would, so a member named twice counts once and a member already present writes
+    /// nothing. At most `MAX_SET_MEMBERS_PER_COMMAND` members, and at least one.
+    SetAddMany {
+        key: String,
+        #[serde(with = "crate::bytes_serde::list")]
+        members: Vec<Vec<u8>>,
+    },
     /// Upsert one member with a score. Answers 1 for a new member, 0 for a re-score.
     ZSetAdd {
         key: String,
@@ -2029,6 +2042,14 @@ pub enum Command {
         key: String,
         #[serde(with = "crate::bytes_serde")]
         member: Vec<u8>,
+    },
+    /// Remove several members in one command. Answers how many were in the set. Each member is
+    /// asked about and removed in order, as the same number of `SetIsMember` and `SetRemove`
+    /// commands would. At most `MAX_SET_MEMBERS_PER_COMMAND` members, and at least one.
+    SetRemoveMany {
+        key: String,
+        #[serde(with = "crate::bytes_serde::list")]
+        members: Vec<Vec<u8>>,
     },
     FeatureAppend {
         key: String,
