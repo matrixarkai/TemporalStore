@@ -613,3 +613,5 @@ mod a_dump_manifest_lists_the_shard_once;
 mod a_string_length_and_range_do_not_copy_the_value;
 #[path = "tests/a_latency_and_throughput_harness.rs"]
 mod a_latency_and_throughput_harness;
+#[path = "tests/a_hash_and_string_point_read_takes_the_shared_lock.rs"]
+mod a_hash_and_string_point_read_takes_the_shared_lock;
