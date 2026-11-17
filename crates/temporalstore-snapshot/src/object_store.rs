@@ -477,6 +477,74 @@ impl MatrixObjectHttpStore {
     /// Paged rather than assumed to fit: the door answers a bounded number of keys and says so
     /// with `IsTruncated`, and a caller reading only the first page would silently see a prefix
     /// of its own log.
+    /// Did `bytes` land at `start_offset` of `key`? A receipt if so, `None` if they are not
+    /// there, and `OutcomeUnknown` when the object could not be read to find out.
+    ///
+    /// An append names the offset it expects and the server appends there or refuses, so bytes
+    /// found at that offset are this append's and bytes not found are not in the object. The
+    /// object may be longer than the append's end, because later appends follow it.
+    fn settle_append(
+        &self,
+        key: &str,
+        start_offset: u64,
+        bytes: &Bytes,
+    ) -> Result<Option<AppendBlobReceipt>, ObjectStoreError> {
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        let unknown = |detail: String| ObjectStoreError::OutcomeUnknown {
+            key: key.to_string(),
+            detail,
+        };
+        let length = bytes.len() as u64;
+        let last = start_offset
+            .checked_add(length)
+            .and_then(|end| end.checked_sub(1))
+            .ok_or_else(|| ObjectStoreError::InvalidKey(format!("{key}: range overflow")))?;
+        let response = self
+            .send(
+                "GET",
+                &self.object_target(key),
+                &[("range", format!("bytes={start_offset}-{last}"))],
+                &[],
+            )
+            .map_err(|error| unknown(format!("the append could not be read back: {error}")))?;
+        let present = match response.status {
+            206 => response.body.as_slice() == bytes.as_ref(),
+            200 => {
+                let start = start_offset as usize;
+                response
+                    .body
+                    .get(start..start + bytes.len())
+                    .is_some_and(|found| found == bytes.as_ref())
+            }
+            404 | 416 => false,
+            status => {
+                return Err(unknown(format!(
+                    "the append could not be read back: the store answered {status}"
+                )))
+            }
+        };
+        if !present {
+            return Ok(None);
+        }
+        let object_length = self.object_length_blocking(key).map_err(|error| {
+            unknown(format!(
+                "the append is present but the length could not be read: {error}"
+            ))
+        })?;
+        self.remember_length(key, object_length);
+        Ok(Some(AppendBlobReceipt {
+            key: key.to_string(),
+            start_offset,
+            end_offset: start_offset + length,
+            bytes_written: length,
+            object_length,
+            physical_slab_count: 0,
+            first_physical_offset: None,
+        }))
+    }
+
     fn list_v2_blocking(
         &self,
         prefix: &str,
@@ -570,26 +638,41 @@ impl ObjectStore for MatrixObjectHttpStore {
         const APPEND_ATTEMPTS: usize = 8;
         let bytes_written = bytes.len() as u64;
         let mut last_conflict: Option<ObjectStoreError> = None;
+        // The offset of an attempt whose outcome is not known: a refused offset (the refusal may
+        // be about OUR OWN bytes, landed by a send this client repeated on a fresh connection),
+        // a connection that failed after the request left, or a server error. Settled by reading
+        // the object BEFORE anything is written again: an offset is a condition, so bytes that
+        // are not at it are not in the object, and bytes that are there must not be stored twice.
+        let mut unsettled: Option<u64> = None;
 
         for attempt in 0..APPEND_ATTEMPTS {
-            // ONE ROUND TRIP INSTEAD OF TWO, when this client already knows the end.
-            //
-            // An append used to HEAD and then PUT every time, so the shared path paid two
-            // requests per record. A successful append already reports the object's new
-            // length, which is the next append's offset -- so the HEAD is only needed when
-            // this client has not seen the object yet, or when a remembered length has just
-            // been proved wrong. The first attempt may use the cache; a retry never does,
-            // because a retry exists precisely because the end moved.
+            if let Some(start_offset) = unsettled.take() {
+                if let Some(receipt) = self.settle_append(key, start_offset, &bytes)? {
+                    return Ok(receipt);
+                }
+            }
+            // ONE ROUND TRIP INSTEAD OF TWO, when this client already knows the end. The first
+            // attempt may use the cached length; a retry never does, because a retry exists
+            // precisely because the end moved.
             let start_offset = match self.cached_length(key) {
                 Some(length) if attempt == 0 => length,
                 _ => self.object_length_blocking(key)?,
             };
-            let response = self.send(
+            let response = match self.send(
                 "PUT",
                 &self.object_target(key),
                 &[("x-amz-write-offset-bytes", start_offset.to_string())],
                 bytes.as_ref(),
-            )?;
+            ) {
+                Ok(response) => response,
+                Err(error) => {
+                    // The request may have been served before the connection failed.
+                    self.forget_length(key);
+                    unsettled = Some(start_offset);
+                    last_conflict = Some(error);
+                    continue;
+                }
+            };
             match response.status {
                 200 | 201 | 204 => {
                     // The server reports what the object is NOW. Deriving it from
@@ -600,13 +683,13 @@ impl ObjectStore for MatrixObjectHttpStore {
                         .and_then(|value| value.trim().parse::<u64>().ok())
                         .ok_or_else(|| {
                             ObjectStoreError::Http(format!(
-                                "{key}: the append gave no usable x-amz-object-size, so where                                  the bytes landed is unknown"
+                                "{key}: the append gave no usable x-amz-object-size, so where the bytes landed is unknown"
                             ))
                         })?;
                     let end_offset = start_offset.saturating_add(bytes_written);
                     if object_length != end_offset {
                         return Err(ObjectStoreError::Http(format!(
-                            "{key}: appended {bytes_written} bytes at {start_offset}, so the                              object should be {end_offset} bytes and the server reports                              {object_length}"
+                            "{key}: appended {bytes_written} bytes at {start_offset}, so the object should be {end_offset} bytes and the server reports {object_length}"
                         )));
                     }
                     self.remember_length(key, object_length);
@@ -617,23 +700,35 @@ impl ObjectStore for MatrixObjectHttpStore {
                         bytes_written,
                         object_length,
                         // NOT KNOWABLE OVER THE WIRE, and reported as absent rather than
-                        // guessed -- exactly as `FileObjectStore` reports them. These describe
-                        // where a chunk-backed store physically put the bytes, and an S3 door
-                        // says nothing about that.
+                        // guessed -- exactly as `FileObjectStore` reports them.
                         physical_slab_count: 0,
                         first_physical_offset: None,
                     });
                 }
-                // The end moved -- either someone else appended, or a remembered length was
-                // stale. Forget it so the retry asks, and try again.
+                // The end moved -- someone else appended, a remembered length was stale, or this
+                // very append landed on an earlier send. Settle before writing again.
                 412 => {
                     self.forget_length(key);
+                    unsettled = Some(start_offset);
                     last_conflict = Some(response.failure(412, key));
+                }
+                // A server error says nothing about whether the append was committed.
+                500..=599 => {
+                    self.forget_length(key);
+                    unsettled = Some(start_offset);
+                    last_conflict = Some(response.failure(response.status, key));
                 }
                 status => return Err(response.failure(status, key)),
             }
         }
 
+        // The last attempt may have left something unsettled; a failure must not be reported as
+        // "not written" when it was.
+        if let Some(start_offset) = unsettled.take() {
+            if let Some(receipt) = self.settle_append(key, start_offset, &bytes)? {
+                return Ok(receipt);
+            }
+        }
         Err(last_conflict.unwrap_or_else(|| {
             ObjectStoreError::Http(format!(
                 "{key}: gave up appending after {APPEND_ATTEMPTS} attempts"

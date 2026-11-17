@@ -3104,6 +3104,8 @@ where
         for attempt in 0..attempts {
             match self.object_store.append_blob(key, bytes.clone()).await {
                 Ok(receipt) => return Ok(Some(receipt)),
+                // Repeating an append whose outcome is unknown can store its bytes twice.
+                Err(err @ ObjectStoreError::OutcomeUnknown { .. }) => return Err(err.into()),
                 Err(err) => {
                     last_error = Some(err);
                     if attempt + 1 < attempts && self.retry_policy.backoff_ms > 0 {
