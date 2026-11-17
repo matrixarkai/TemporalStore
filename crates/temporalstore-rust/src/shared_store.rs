@@ -74,6 +74,17 @@ pub enum SharedStoreReplicationError {
     },
     #[error("WAL replay gap: expected index {expected}, got {actual}")]
     ReplayGap { expected: u64, actual: u64 },
+    /// The shard's shared log is in the layout that kept the whole log in ONE object pair
+    /// (`wal.protobuf.blob` and `wal.offset_index.protobuf.blob`). That layout reached the
+    /// per-object extent bound of the stores it is written to, so this build writes the segmented
+    /// layout (`seg_<first index>.wal.protobuf.blob` and `seg_<first index>.index.protobuf.blob`)
+    /// and does not read the old one.
+    #[error(
+        "the shared WAL of shard {shard_id} is in the pre-segment layout ({key}); this build reads \
+         only the segmented layout (seg_<first wal index>.wal / .index objects) and refuses to read \
+         the old one. Start the shard's shared log fresh from a checkpoint."
+    )]
+    WalLayoutUnsupported { shard_id: ShardId, key: String },
     #[error(
         "shared-store GC would remove WAL entry needed by replay cursor {cursor_wal_index} before retain {retain_from_wal_index}"
     )]
@@ -248,6 +259,58 @@ impl SharedStoreStorageMode {
     }
 }
 
+/// Appends one WAL segment takes before the writer starts the next one.
+///
+/// A segment is a pair of objects, the log and its offset index, and each batch appends once to
+/// each, so this is also the most extents either object holds from one writer. The object stores
+/// this log lives on bound the extents of one object, and the cost of describing an object grows
+/// with its extents, so no object may be allowed to grow with the log. `TS_SHARED_STORE_WAL_SEGMENT_APPENDS`
+/// overrides it; see [`SharedStoreReplicator::with_wal_segment_appends`].
+///
+/// The default is sized for plain publication, where the metadata each append carries grows with
+/// the extents of the object it appends to, so a segment is kept short. A store that publishes
+/// compactly pays a flat cost per append and can take a longer one:
+/// [`SHARED_STORE_WAL_SEGMENT_APPENDS_COMPACT`]. The replicator cannot see which the store does,
+/// so the longer one is chosen by saying so, through the builder or the variable. Neither is
+/// sized from the bound itself: appends that landed and were never acknowledged also take extents.
+pub const SHARED_STORE_WAL_SEGMENT_APPENDS_DEFAULT: usize = 256;
+
+/// The segment length for a store that publishes compactly.
+pub const SHARED_STORE_WAL_SEGMENT_APPENDS_COMPACT: usize = 2048;
+
+fn shared_store_wal_segment_appends() -> usize {
+    std::env::var("TS_SHARED_STORE_WAL_SEGMENT_APPENDS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|appends| *appends > 0)
+        .unwrap_or(SHARED_STORE_WAL_SEGMENT_APPENDS_DEFAULT)
+}
+
+/// The segment a writer is appending to: the first WAL index it holds and how many appends it has
+/// taken. Process memory only, so a writer that starts has no active segment and opens a new one.
+#[derive(Debug, Clone, Copy)]
+struct ActiveWalSegment {
+    first_index: u64,
+    appends: usize,
+}
+
+/// Which of a segment's two objects exist.
+#[derive(Debug, Default, Clone, Copy)]
+struct WalSegmentObjects {
+    log: bool,
+    index: bool,
+}
+
+/// One segment as the object store lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedStoreWalSegment {
+    pub first_wal_index: u64,
+    pub log_key: String,
+    pub index_key: String,
+    pub has_log: bool,
+    pub has_index: bool,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SharedStoreWalAppendMode {
     /// Explicit compatibility mode for stores that only support whole-object puts.
@@ -399,10 +462,29 @@ pub struct SharedStoreReplicator<O> {
     /// When a consumer cursor stops being treated as live. `None` means never, which is what a
     /// replicator does with no policy configured.
     cursor_abandon: Option<SharedStoreCursorAbandonPolicy>,
-    /// What this replicator has already decoded of each shard's offset index. See
+    /// What this replicator has already decoded of each shard's offset index segments. See
     /// [`CachedOffsetIndex`]. One lock per shard, so a slow read of one shard's tail does not hold
     /// up another's.
-    offset_index_cache: Arc<Mutex<BTreeMap<ShardId, Arc<tokio::sync::Mutex<Option<CachedOffsetIndex>>>>>>,
+    offset_index_cache: Arc<Mutex<BTreeMap<ShardId, Arc<tokio::sync::Mutex<CachedSegments>>>>>,
+    /// Appends a WAL segment takes before the next one starts. See
+    /// [`SHARED_STORE_WAL_SEGMENT_APPENDS_DEFAULT`].
+    wal_segment_appends: usize,
+    /// The segment each shard is being appended to by this replicator and its clones.
+    active_segments: Arc<Mutex<BTreeMap<ShardId, ActiveWalSegment>>>,
+}
+
+/// The decoded offset index segments of one shard.
+#[derive(Debug, Default)]
+struct CachedSegments {
+    segments: BTreeMap<u64, CachedSegment>,
+}
+
+#[derive(Debug)]
+struct CachedSegment {
+    index: CachedOffsetIndex,
+    /// A higher segment existed when this one was last read, so the writer had finished with it
+    /// and nothing more will be appended: it is never read again.
+    sealed: bool,
 }
 
 /// The decoded offset index of one shard, and how far into the blob it reaches.
@@ -476,6 +558,9 @@ impl<O> Clone for SharedStoreReplicator<O> {
             // so what one has decoded of an index is what the other would decode, and a clone
             // that started cold would pay a whole read to learn it.
             offset_index_cache: Arc::clone(&self.offset_index_cache),
+            wal_segment_appends: self.wal_segment_appends,
+            // SHARED, so every clone of a writer's replicator appends to the one active segment.
+            active_segments: Arc::clone(&self.active_segments),
         }
     }
 }
@@ -830,6 +915,8 @@ where
             fence: None,
             cursor_abandon: None,
             offset_index_cache: Arc::new(Mutex::new(BTreeMap::new())),
+            wal_segment_appends: shared_store_wal_segment_appends(),
+            active_segments: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -851,7 +938,16 @@ where
             fence: None,
             cursor_abandon: None,
             offset_index_cache: Arc::new(Mutex::new(BTreeMap::new())),
+            wal_segment_appends: shared_store_wal_segment_appends(),
+            active_segments: Arc::new(Mutex::new(BTreeMap::new())),
         }
+    }
+
+    /// How many appends a WAL segment takes before the writer starts the next, at least one.
+    /// Evaluated per batch: a batch is one append to each object of a segment and never spans two.
+    pub fn with_wal_segment_appends(mut self, appends: usize) -> Self {
+        self.wal_segment_appends = appends.max(1);
+        self
     }
 
     /// When a consumer cursor stops being treated as live. See
@@ -1061,22 +1157,66 @@ where
         &self,
         entry: SharedStoreWalEntry,
     ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
-        let key = self.wal_blob_key(entry.shard_id);
+        let first = self.segment_for_append(entry.shard_id, entry.wal_index);
+        let key = self.wal_segment_log_key(entry.shard_id, first);
+        let index_key = self.wal_segment_index_key(entry.shard_id, first);
         let command_metadata = wal_command_metadata(entry.command.as_ref())?;
         let frame = encode_wal_proto_frame(&entry, self.wal_frame_format)?;
         let receipt = self
             .append_blob_with_retry(&key, Bytes::from(frame))
             .await?
             .expect("protobuf append blob must return a receipt");
-        self.publish_wal_offset_metadata(&entry, &key, &receipt, command_metadata)
+        self.note_segment_append(entry.shard_id);
+        self.publish_wal_offset_metadata(&entry, &key, &index_key, &receipt, command_metadata)
             .await?;
         Ok(Some(receipt))
+    }
+
+    /// The segment the next batch starting at `wal_index` is appended to.
+    ///
+    /// A writer that has no active segment, which is every writer that has just started, opens a
+    /// new one named by this batch's first index, so the extent count a previous owner left in an
+    /// older segment never has to be learned. A segment that has taken its quota is closed the same
+    /// way. The decision is per batch because a batch is one append to each object and its entries
+    /// share one span, so it cannot be split across segments.
+    fn segment_for_append(&self, shard_id: ShardId, wal_index: u64) -> u64 {
+        let mut active = self
+            .active_segments
+            .lock()
+            .expect("active WAL segment table poisoned");
+        match active.get(&shard_id).copied() {
+            Some(segment) if segment.appends < self.wal_segment_appends => segment.first_index,
+            _ => {
+                active.insert(
+                    shard_id,
+                    ActiveWalSegment {
+                        first_index: wal_index,
+                        appends: 0,
+                    },
+                );
+                wal_index
+            }
+        }
+    }
+
+    /// Counts an append to the log object, as soon as it has landed. Counted BEFORE the index
+    /// append, so a batch whose index append then failed still counts: those bytes took an extent.
+    fn note_segment_append(&self, shard_id: ShardId) {
+        if let Some(segment) = self
+            .active_segments
+            .lock()
+            .expect("active WAL segment table poisoned")
+            .get_mut(&shard_id)
+        {
+            segment.appends += 1;
+        }
     }
 
     async fn publish_wal_offset_metadata(
         &self,
         entry: &SharedStoreWalEntry,
         wal_blob_key: &str,
+        index_key: &str,
         receipt: &AppendBlobReceipt,
         command_metadata: WalCommandMetadata,
     ) -> Result<(), SharedStoreReplicationError> {
@@ -1094,11 +1234,8 @@ where
             command_encoding: command_metadata.encoding,
         };
         let frame = encode_wal_offset_metadata_frame(&metadata, wal_blob_key);
-        self.append_blob_with_retry(
-            &self.wal_offset_index_blob_key(entry.shard_id),
-            Bytes::from(frame),
-        )
-        .await?;
+        self.append_blob_with_retry(index_key, Bytes::from(frame))
+            .await?;
         Ok(())
     }
 
@@ -1146,7 +1283,9 @@ where
 
         // R2 single-writer fence: re-validate ownership once before the coalesced append.
         self.enforce_fence(shard_id).await?;
-        let wal_blob_key = self.wal_blob_key(shard_id);
+        let segment_first = self.segment_for_append(shard_id, entries[0].wal_index);
+        let wal_blob_key = self.wal_segment_log_key(shard_id, segment_first);
+        let wal_index_key = self.wal_segment_index_key(shard_id, segment_first);
 
         // Concatenate every entry's length-prefixed frame into one append payload, remembering each
         // frame's length (and command metadata) so per-entry offsets can be derived from the single
@@ -1194,6 +1333,7 @@ where
             .append_blob_with_retry(&wal_blob_key, Bytes::from(wal_payload))
             .await?
             .expect("protobuf append blob must return a receipt");
+        self.note_segment_append(shard_id);
 
         // Derive each entry's [start, end) from the batch receipt and build the concatenated
         // offset-index payload, then make it durable in a single append.
@@ -1245,11 +1385,8 @@ where
                 payload
             }
         };
-        self.append_blob_with_retry(
-            &self.wal_offset_index_blob_key(shard_id),
-            Bytes::from(offset_payload),
-        )
-        .await?;
+        self.append_blob_with_retry(&wal_index_key, Bytes::from(offset_payload))
+            .await?;
         Ok(reports)
     }
 
@@ -1259,7 +1396,7 @@ where
         wal_index: u64,
     ) -> Result<Option<SharedStoreWalOffsetMetadata>, SharedStoreReplicationError> {
         Ok(self
-            .load_wal_offset_metadata_cached(shard_id)
+            .load_wal_offset_metadata_cached(shard_id, wal_index.saturating_sub(1))
             .await?
             .get(&wal_index)
             .cloned())
@@ -1872,12 +2009,9 @@ where
             self.wal_append_mode,
             SharedStoreWalAppendMode::ProtobufAppendBlob
         ) {
-            if let Some(report) = self
+            return self
                 .replay_wal_from_offset_metadata(shard_id, after_wal_index, engine)
-                .await?
-            {
-                return Ok(report);
-            }
+                .await;
         }
         let wal_entries = self.load_wal_entries(shard_id).await?;
 
@@ -1991,20 +2125,13 @@ where
         shard_id: ShardId,
         after_wal_index: u64,
         engine: &TemporalEngine,
-    ) -> Result<Option<ReplayReport>, SharedStoreReplicationError> {
-        let offset_metadata = self.load_wal_offset_metadata_cached(shard_id).await?;
-        if offset_metadata.is_empty() {
-            return Ok(None);
-        }
-
-        // A compatibility writer can leave records before, between, or after indexed
-        // records. Select the union reader before applying anything from the fast path.
-        if self.object_store.list(&self.wal_prefix(shard_id)).await?
-            .iter().filter_map(|key| parse_wal_index(key))
-            .any(|index| index > after_wal_index)
-        {
-            return Ok(None);
-        }
+    ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        // Only the segments that can hold an entry above `after_wal_index` are read, and the union
+        // of their indexes is checked for a hole below, so a missing or shortened segment is a
+        // `ReplayGap` at the boundary and never a shorter replay that reports success.
+        let offset_metadata = self
+            .load_wal_offset_metadata_cached(shard_id, after_wal_index)
+            .await?;
 
         let mut expected = after_wal_index + 1;
         let mut report = ReplayReport {
@@ -2093,7 +2220,7 @@ where
             }
         }
         Self::apply_replayed_window(shard_id, &mut window, engine)?;
-        Ok(Some(report))
+        Ok(report)
     }
 
     /// The persisted consumer cursor for `shard_id`, or `None` when no consumer has ever written
@@ -2170,6 +2297,12 @@ where
         shard_id: ShardId,
         retain_from_wal_index: u64,
     ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
+        if matches!(
+            self.wal_append_mode,
+            SharedStoreWalAppendMode::ProtobufAppendBlob
+        ) {
+            return self.gc_wal_segments_before(shard_id, retain_from_wal_index).await;
+        }
         let mut deleted_wal_objects = 0usize;
         for key in self.object_store.list(&self.wal_prefix(shard_id)).await? {
             let Some(wal_index) = parse_wal_index(&key) else {
@@ -2177,6 +2310,69 @@ where
             };
             if wal_index < retain_from_wal_index {
                 self.object_store.delete(&key).await?;
+                deleted_wal_objects += 1;
+            }
+        }
+        Ok(SharedStoreGcReport {
+            shard_id,
+            deleted_wal_objects,
+            ..SharedStoreGcReport::default()
+        })
+    }
+
+    /// Delete the sealed WAL segments that lie wholly below `retain_from_wal_index`, and sweep the
+    /// orphans a crash leaves.
+    ///
+    /// A segment covers `[its first index, the next index segment's first index - 1]`, so whether it
+    /// is wholly below the retention point is known from the names alone. Its index is deleted
+    /// BEFORE its log: a crash between the two leaves a log nothing refers to, which the next pass
+    /// sweeps, where the other order would leave an index naming a log that is gone.
+    ///
+    /// Two segments are never deleted whatever the retention point says. The highest INDEX segment
+    /// is where a restart finds the last index written, and without it the writer would resume at
+    /// 1. The highest segment of all may be a log whose first batch has not yet been indexed, which
+    /// is the one the next append goes on to.
+    async fn gc_wal_segments_before(
+        &self,
+        shard_id: ShardId,
+        retain_from_wal_index: u64,
+    ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
+        let listing = self.list_wal_segments(shard_id).await?;
+        let indexed: Vec<u64> = listing
+            .iter()
+            .filter(|(_, objects)| objects.index)
+            .map(|(first, _)| *first)
+            .collect();
+        let live_index = indexed.last().copied();
+        let highest = listing.keys().next_back().copied();
+        let mut deleted_wal_objects = 0usize;
+        for (first, objects) in &listing {
+            if Some(*first) == live_index || Some(*first) == highest {
+                continue;
+            }
+            let deletable = if objects.index {
+                // Not the highest index segment, so a successor exists.
+                indexed
+                    .iter()
+                    .find(|next| **next > *first)
+                    .is_some_and(|next| *next <= retain_from_wal_index)
+            } else {
+                // A log nothing indexed, below one that was: no index will ever name it.
+                true
+            };
+            if !deletable {
+                continue;
+            }
+            if objects.index {
+                self.object_store
+                    .delete(&self.wal_segment_index_key(shard_id, *first))
+                    .await?;
+                deleted_wal_objects += 1;
+            }
+            if objects.log {
+                self.object_store
+                    .delete(&self.wal_segment_log_key(shard_id, *first))
+                    .await?;
                 deleted_wal_objects += 1;
             }
         }
@@ -2502,50 +2698,133 @@ where
         )
     }
 
-    fn wal_blob_key(&self, shard_id: ShardId) -> String {
-        format!("{}wal.protobuf.blob", self.wal_prefix(shard_id))
-    }
-
-    fn wal_offset_index_blob_key(&self, shard_id: ShardId) -> String {
+    /// The log object of the segment whose first entry is `first_index`.
+    pub fn wal_segment_log_key(&self, shard_id: ShardId, first_index: u64) -> String {
         format!(
-            "{}wal.offset_index.protobuf.blob",
+            "{}{WAL_SEGMENT_PREFIX}{first_index:020}{WAL_SEGMENT_LOG_SUFFIX}",
             self.wal_prefix(shard_id)
         )
     }
 
+    /// The offset index of the segment whose first entry is `first_index`.
+    pub fn wal_segment_index_key(&self, shard_id: ShardId, first_index: u64) -> String {
+        format!(
+            "{}{WAL_SEGMENT_PREFIX}{first_index:020}{WAL_SEGMENT_INDEX_SUFFIX}",
+            self.wal_prefix(shard_id)
+        )
+    }
+
+    /// The log of the segment that starts at index 1, which is the only segment a test that
+    /// writes fewer entries than a segment holds ever has.
+    #[cfg(test)]
+    fn wal_blob_key(&self, shard_id: ShardId) -> String {
+        self.wal_segment_log_key(shard_id, 1)
+    }
+
+    #[cfg(test)]
+    fn wal_offset_index_blob_key(&self, shard_id: ShardId) -> String {
+        self.wal_segment_index_key(shard_id, 1)
+    }
+
+    /// The segment objects the store holds for `shard_id`, in index order. A shard in the
+    /// pre-segment layout is refused here rather than read as empty or sniffed around.
+    async fn list_wal_segments(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<BTreeMap<u64, WalSegmentObjects>, SharedStoreReplicationError> {
+        let mut segments: BTreeMap<u64, WalSegmentObjects> = BTreeMap::new();
+        for key in self.object_store.list(&self.wal_prefix(shard_id)).await? {
+            let name = key.rsplit('/').next().unwrap_or(&key);
+            if name == "wal.protobuf.blob" || name == "wal.offset_index.protobuf.blob" {
+                return Err(SharedStoreReplicationError::WalLayoutUnsupported {
+                    shard_id,
+                    key,
+                });
+            }
+            if let Some((first, is_index)) = parse_wal_segment_key(&key) {
+                let objects = segments.entry(first).or_default();
+                if is_index {
+                    objects.index = true;
+                } else {
+                    objects.log = true;
+                }
+            }
+        }
+        Ok(segments)
+    }
+
+    /// The segments of `shard_id` as the store lists them, for tooling and reports.
+    pub async fn wal_segments(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<Vec<SharedStoreWalSegment>, SharedStoreReplicationError> {
+        Ok(self
+            .list_wal_segments(shard_id)
+            .await?
+            .into_iter()
+            .map(|(first, objects)| SharedStoreWalSegment {
+                first_wal_index: first,
+                log_key: self.wal_segment_log_key(shard_id, first),
+                index_key: self.wal_segment_index_key(shard_id, first),
+                has_log: objects.log,
+                has_index: objects.index,
+            })
+            .collect())
+    }
+
+    /// Every offset-index entry of every segment of `shard_id`, read whole and uncached.
     pub async fn load_wal_offset_metadata(
         &self,
         shard_id: ShardId,
     ) -> Result<BTreeMap<u64, SharedStoreWalOffsetMetadata>, SharedStoreReplicationError> {
-        match self
-            .object_store
-            .get(&self.wal_offset_index_blob_key(shard_id))
-            .await
-        {
-            Ok(bytes) => {
-                decode_wal_offset_metadata_blob(&bytes, &self.wal_blob_key(shard_id))
+        let mut all = BTreeMap::new();
+        for (first, objects) in self.list_wal_segments(shard_id).await? {
+            if !objects.index {
+                continue;
             }
-            Err(ObjectStoreError::NotFound(_)) => Ok(BTreeMap::new()),
-            Err(err) => Err(err.into()),
+            match self
+                .object_store
+                .get(&self.wal_segment_index_key(shard_id, first))
+                .await
+            {
+                Ok(bytes) => all.extend(decode_wal_offset_metadata_blob(
+                    &bytes,
+                    &self.wal_segment_log_key(shard_id, first),
+                )?),
+                Err(ObjectStoreError::NotFound(_)) => {}
+                Err(err) => return Err(err.into()),
+            }
         }
+        Ok(all)
     }
 
-    /// The decoded offset index of `shard_id`, reading only what was appended since the last call.
+    /// The decoded offset index entries of `shard_id` above `after_wal_index`, reading only what was
+    /// appended since the last call.
     ///
-    /// [`Self::load_wal_offset_metadata`] fetches and decodes the whole blob every time, which for
-    /// a follower that replays after each write is one whole-object read per write and a cost that
-    /// grows with the log. This keeps what it decoded and asks the store for the TAIL from the last
-    /// complete frame on, so a call costs the frames added since rather than the frames there are.
+    /// The index of a shard is a run of SEGMENTS, each an append-only blob of self-delimiting
+    /// frames. A segment is read only if it can hold an entry above `after_wal_index` (it covers
+    /// from its first index to the next index segment's first, minus one), so a replay from a
+    /// checkpoint never touches the segments below it. A segment that a higher one has been seen
+    /// above is SEALED once read: its writer had finished with it, so it is kept and never asked
+    /// for again, and only the highest segment costs a tail read per call. The cost of a call is
+    /// therefore the frames added since, plus one list of the wal prefix.
     ///
-    /// It starts over -- one full read, exactly the uncached load -- whenever it cannot be sure the
-    /// cache still describes the object: the object is shorter than what was consumed, the last
-    /// cached frame no longer reads back byte for byte, or the tail does not decode as whole
-    /// frames. Starting over is always correct; it is only slower. A deleted object is an empty
-    /// index, as it is uncached.
+    /// [`Self::load_wal_offset_metadata`] fetches and decodes everything every time. A tail read
+    /// starts over -- one full read of that segment -- whenever it cannot be sure the cache still
+    /// describes the object: the object is shorter than what was consumed, the last cached frame no
+    /// longer reads back byte for byte, or the tail does not decode as whole frames. Starting over
+    /// is always correct; it is only slower. A segment deleted since it was listed is skipped.
     async fn load_wal_offset_metadata_cached(
         &self,
         shard_id: ShardId,
+        after_wal_index: u64,
     ) -> Result<Arc<BTreeMap<u64, SharedStoreWalOffsetMetadata>>, SharedStoreReplicationError> {
+        let listing = self.list_wal_segments(shard_id).await?;
+        let indexed: Vec<u64> = listing
+            .iter()
+            .filter(|(_, objects)| objects.index)
+            .map(|(first, _)| *first)
+            .collect();
         let slot = {
             let mut shards = self
                 .offset_index_cache
@@ -2554,40 +2833,90 @@ where
             shards.entry(shard_id).or_default().clone()
         };
         let mut held = slot.lock().await;
-        let key = self.wal_offset_index_blob_key(shard_id);
-        let derived = self.wal_blob_key(shard_id);
-        if let Some(cached) = held.as_mut() {
-            let anchor_len = cached.anchor.len();
-            let from = cached.consumed - anchor_len as u64;
+        held.segments.retain(|first, _| indexed.contains(first));
+        let mut parts: Vec<Arc<BTreeMap<u64, SharedStoreWalOffsetMetadata>>> = Vec::new();
+        for (position, first) in indexed.iter().enumerate() {
+            let next = indexed.get(position + 1).copied();
+            if next.is_some_and(|next| next <= after_wal_index.saturating_add(1)) {
+                continue;
+            }
+            if let Some(entries) = self
+                .read_cached_segment(shard_id, *first, next.is_some(), &mut held)
+                .await?
+            {
+                parts.push(entries);
+            }
+        }
+        Ok(match parts.len() {
+            0 => Arc::new(BTreeMap::new()),
+            1 => parts.pop().expect("one part"),
+            _ => {
+                let mut union = BTreeMap::new();
+                for part in parts {
+                    union.extend(part.iter().map(|(index, metadata)| (*index, metadata.clone())));
+                }
+                Arc::new(union)
+            }
+        })
+    }
+
+    /// One segment's decoded index through the cache. `sealed_now` says a higher segment was
+    /// listed before this read. `None` when the segment's index object is gone.
+    async fn read_cached_segment(
+        &self,
+        shard_id: ShardId,
+        first: u64,
+        sealed_now: bool,
+        held: &mut CachedSegments,
+    ) -> Result<Option<Arc<BTreeMap<u64, SharedStoreWalOffsetMetadata>>>, SharedStoreReplicationError>
+    {
+        if let Some(segment) = held.segments.get(&first) {
+            if segment.sealed {
+                return Ok(Some(segment.index.entries.clone()));
+            }
+        }
+        let key = self.wal_segment_index_key(shard_id, first);
+        let derived = self.wal_segment_log_key(shard_id, first);
+        let mut cached = held.segments.remove(&first).map(|segment| segment.index);
+        if let Some(index) = cached.as_mut() {
+            let anchor_len = index.anchor.len();
+            let from = index.consumed - anchor_len as u64;
             match self.object_store.get_range_from(&key, from).await {
                 Ok(Some(tail))
-                    if tail.len() >= anchor_len && tail[..anchor_len] == cached.anchor[..] =>
+                    if tail.len() >= anchor_len && tail[..anchor_len] == index.anchor[..] =>
                 {
                     let fresh = &tail[anchor_len..];
-                    if fresh.is_empty() {
-                        return Ok(cached.entries.clone());
+                    let mut usable = fresh.is_empty();
+                    if !usable {
+                        // Cloned only if a reader still holds an earlier answer; a replay that
+                        // finished has dropped it, so the usual case grows the map in place.
+                        let entries = Arc::make_mut(&mut index.entries);
+                        if let Ok(last_frame_len) =
+                            decode_wal_offset_metadata_frames(fresh, &derived, entries)
+                        {
+                            index.consumed += fresh.len() as u64;
+                            index.anchor = fresh[fresh.len() - last_frame_len..].to_vec();
+                            usable = true;
+                        }
                     }
-                    // Cloned only if a reader still holds an earlier answer; a replay that
-                    // finished has dropped it, so the usual case grows the map in place.
-                    let entries = Arc::make_mut(&mut cached.entries);
-                    if let Ok(last_frame_len) =
-                        decode_wal_offset_metadata_frames(fresh, &derived, entries)
-                    {
-                        cached.consumed += fresh.len() as u64;
-                        cached.anchor = fresh[fresh.len() - last_frame_len..].to_vec();
-                        return Ok(cached.entries.clone());
+                    if usable {
+                        let entries = index.entries.clone();
+                        held.segments.insert(
+                            first,
+                            CachedSegment {
+                                index: cached.take().expect("cached index"),
+                                sealed: sealed_now,
+                            },
+                        );
+                        return Ok(Some(entries));
                     }
                 }
-                Err(ObjectStoreError::NotFound(_)) => {
-                    *held = None;
-                    return Ok(Arc::new(BTreeMap::new()));
-                }
+                Err(ObjectStoreError::NotFound(_)) => return Ok(None),
                 Err(err) => return Err(err.into()),
                 // A shorter object, a last frame that no longer matches, or a tail that did not
                 // decode: whatever is held may be partly grown, so none of it is trusted.
                 Ok(_) => {}
             }
-            *held = None;
         }
         match self.object_store.get(&key).await {
             Ok(bytes) => {
@@ -2595,17 +2924,20 @@ where
                 let last_frame_len =
                     decode_wal_offset_metadata_frames(&bytes, &derived, &mut entries)?;
                 let entries = Arc::new(entries);
-                *held = Some(CachedOffsetIndex {
-                    consumed: bytes.len() as u64,
-                    anchor: bytes[bytes.len() - last_frame_len..].to_vec(),
-                    entries: entries.clone(),
-                });
-                Ok(entries)
+                held.segments.insert(
+                    first,
+                    CachedSegment {
+                        index: CachedOffsetIndex {
+                            consumed: bytes.len() as u64,
+                            anchor: bytes[bytes.len() - last_frame_len..].to_vec(),
+                            entries: entries.clone(),
+                        },
+                        sealed: sealed_now,
+                    },
+                );
+                Ok(Some(entries))
             }
-            Err(ObjectStoreError::NotFound(_)) => {
-                *held = None;
-                Ok(Arc::new(BTreeMap::new()))
-            }
+            Err(ObjectStoreError::NotFound(_)) => Ok(None),
             Err(err) => Err(err.into()),
         }
     }
@@ -2668,14 +3000,38 @@ where
         &self,
         shard_id: ShardId,
     ) -> Result<u64, SharedStoreReplicationError> {
-        let offset_metadata = self.load_wal_offset_metadata_cached(shard_id).await?;
-        if let Some(max) = offset_metadata.last_key_value().map(|(index, _)| *index) {
-            let legacy_max = self.object_store.list(&self.wal_prefix(shard_id)).await?
-                .iter().filter_map(|key| parse_wal_index(key)).max().unwrap_or(0);
-            return Ok(max.max(legacy_max));
+        if !matches!(
+            self.wal_append_mode,
+            SharedStoreWalAppendMode::ProtobufAppendBlob
+        ) {
+            let entries = self.load_wal_entries(shard_id).await?;
+            return Ok(entries.keys().max().copied().unwrap_or(0));
         }
-        let entries = self.load_wal_entries(shard_id).await?;
-        Ok(entries.keys().max().copied().unwrap_or(0))
+        // The last index is in the HIGHEST index segment, so only that one is read: its length is
+        // bounded by the segment size and not by the history, which is what keeps a start flat.
+        let listing = self.list_wal_segments(shard_id).await?;
+        let Some(highest) = listing
+            .iter()
+            .filter(|(_, objects)| objects.index)
+            .map(|(first, _)| *first)
+            .next_back()
+        else {
+            return Ok(0);
+        };
+        let slot = {
+            let mut shards = self
+                .offset_index_cache
+                .lock()
+                .expect("offset index cache poisoned");
+            shards.entry(shard_id).or_default().clone()
+        };
+        let mut held = slot.lock().await;
+        let entries = self
+            .read_cached_segment(shard_id, highest, false, &mut held)
+            .await?;
+        Ok(entries
+            .and_then(|entries| entries.last_key_value().map(|(index, _)| *index))
+            .unwrap_or(highest.saturating_sub(1)))
     }
 
     async fn load_wal_entries(
@@ -2710,16 +3066,6 @@ where
                     entries.insert(*wal_index, entry);
                 }
             }
-        }
-
-        match self.object_store.get(&self.wal_blob_key(shard_id)).await {
-            Ok(bytes) => {
-                for entry in decode_wal_proto_blob(&bytes)? {
-                    entries.insert(entry.wal_index, entry);
-                }
-            }
-            Err(ObjectStoreError::NotFound(_)) => {}
-            Err(err) => return Err(err.into()),
         }
         Ok(entries)
     }
@@ -4021,6 +4367,20 @@ fn checkpoint_manifest_to_proto(
     }
 }
 
+const WAL_SEGMENT_PREFIX: &str = "seg_";
+const WAL_SEGMENT_LOG_SUFFIX: &str = ".wal.protobuf.blob";
+const WAL_SEGMENT_INDEX_SUFFIX: &str = ".index.protobuf.blob";
+
+/// `(first index, is the index object)` for a segment object's key, `None` for anything else.
+fn parse_wal_segment_key(key: &str) -> Option<(u64, bool)> {
+    let name = key.rsplit('/').next()?.strip_prefix(WAL_SEGMENT_PREFIX)?;
+    if let Some(number) = name.strip_suffix(WAL_SEGMENT_LOG_SUFFIX) {
+        return Some((number.parse().ok()?, false));
+    }
+    let number = name.strip_suffix(WAL_SEGMENT_INDEX_SUFFIX)?;
+    Some((number.parse().ok()?, true))
+}
+
 fn parse_wal_index(key: &str) -> Option<u64> {
     key.rsplit('/')
         .next()?
@@ -4910,6 +5270,9 @@ fn wal_batch_entry_to_record(
     ))
 }
 
+/// Only a test reads a whole log blob now: a replay reads one entry at a time by its recorded
+/// offsets, and no reader of the pre-segment single-object log remains.
+#[cfg(test)]
 /// Every entry of one container, each verified against its own checksum.
 fn decode_wal_batch_container_body(
     body: &[u8],
@@ -4964,6 +5327,9 @@ fn decode_wal_batch_container_entry_exact(
     wal_batch_entry_to_record(&container, position, entry, source)
 }
 
+/// Only a test reads a whole log blob now: a replay reads one entry at a time by its recorded
+/// offsets, and no reader of the pre-segment single-object log remains.
+#[cfg(test)]
 fn decode_wal_proto_blob(
     bytes: &[u8],
 ) -> Result<Vec<SharedStoreWalEntry>, SharedStoreReplicationError> {
@@ -5816,6 +6182,10 @@ fn now_ms() -> u64 {
 mod portable_checkpoint_tests;
 
 #[cfg(test)]
+#[path = "shared_wal_segment_tests.rs"]
+mod wal_segment_tests;
+
+#[cfg(test)]
 mod tests {
     /// A forwarding `ObjectStore` wrapper must not drop a DEFAULTED trait method.
     ///
@@ -5958,7 +6328,7 @@ mod tests {
 
 
     #[tokio::test]
-    async fn default_shared_wal_preserves_multiple_binary_outcomes_beside_a_per_key_object() {
+    async fn default_shared_wal_records_multiple_binary_outcomes_and_does_not_read_a_per_key_object() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
         let legacy = SharedStoreReplicator::new("default-binary", store.clone())
@@ -6045,7 +6415,8 @@ mod tests {
             };
             assert!(writer.publish_wal_entry(entry).await.unwrap().is_some());
         }
-        let bytes = store.get(&writer.wal_blob_key(1)).await.unwrap();
+        // The writer's first index is 2, so its segment is the one named by 2.
+        let bytes = store.get(&writer.wal_segment_log_key(1, 2)).await.unwrap();
         let records = decode_wal_proto_blob(&bytes).unwrap();
         assert_eq!(
             records.len(),
@@ -6059,28 +6430,18 @@ mod tests {
         }
         let reader = SharedStoreReplicator::new("default-binary", store.clone());
         assert_eq!(reader.latest_persisted_wal_index(1).await.unwrap(), 3);
+        // The per-key object at index 1 is not part of the segmented log, so a replay from the
+        // start finds the log beginning at 2 and says so, instead of quietly reading around it.
         let follower = test_engine(dir.path(), "default-reader");
         follower.load_shard(1);
-        let replay = reader.replay_wal_strict(1, 0, &follower).await.unwrap();
-        assert_eq!(replay.applied, 3);
-        for (key, expected) in [
-            ("old", b"old-value".to_vec()),
-            ("new-2", vec![0, 255, 2]),
-            ("new-3", vec![0, 255, 3]),
-        ] {
-            assert_eq!(
-                follower
-                    .execute(ExecuteRequest {
-                        shard_id: 1,
-                        command: Command::StringGet { key: key.into() }
-                    })
-                    .response,
-                CommandResponse::Bytes {
-                    value: Some(expected)
-                }
-            );
-        }
-        store.delete(&legacy.wal_key(1, 1)).await.unwrap();
+        assert!(matches!(
+            reader.replay_wal_strict(1, 0, &follower).await,
+            Err(SharedStoreReplicationError::ReplayGap {
+                expected: 1,
+                actual: 2
+            })
+        ));
+        // From a position something else vouches for, the segmented log replays whole.
         let indexed = test_engine(dir.path(), "indexed-reader");
         indexed.load_shard(1);
         let replay = reader.replay_wal_strict(1, 1, &indexed).await.unwrap();
@@ -6091,16 +6452,14 @@ mod tests {
                 shard_id: 1, command: Command::StringGet { key: format!("new-{index}") },
             }).response, CommandResponse::Bytes { value: Some(vec![0, 255, index as u8]) });
         }
+        // A per-key object past the end is not read either: the log still ends at 3.
         legacy.publish_wal_entry(SharedStoreWalEntry {
             shard_id: 1, wal_index: 4,
             command: Some(Command::StringSet { key: "compat-tail".into(), value: vec![4] }),
             outcomes: Vec::new(), staged_blocks: Vec::new(),
         }).await.unwrap();
-        assert_eq!(reader.latest_persisted_wal_index(1).await.unwrap(), 4);
-        assert_eq!(reader.replay_wal_strict(1, 3, &indexed).await.unwrap().applied, 1);
-        assert_eq!(indexed.execute(ExecuteRequest {
-            shard_id: 1, command: Command::StringGet { key: "compat-tail".into() },
-        }).response, CommandResponse::Bytes { value: Some(vec![4]) });
+        assert_eq!(reader.latest_persisted_wal_index(1).await.unwrap(), 3);
+        assert_eq!(reader.replay_wal_strict(1, 3, &indexed).await.unwrap().applied, 0);
     }
 
     #[test]
@@ -6544,7 +6903,7 @@ mod tests {
     mod one_offset_frame_per_container {
         use super::*;
 
-        const KEY: &str = "cluster-a/shards/1/shared/wal/wal.protobuf.blob";
+        const KEY: &str = "cluster-a/shards/1/shared/wal/seg_00000000000000000001.wal.protobuf.blob";
 
         fn entry(index: u64, size: u64) -> SharedStoreWalOffsetMetadata {
             SharedStoreWalOffsetMetadata {
@@ -6698,7 +7057,7 @@ mod tests {
 
         /// The real production key, not a short stand-in: its LENGTH is the cost being priced, so
         /// a made-up short key would under-report the very term under test.
-        const TERM_BLOB_KEY: &str = "cluster-a/shards/1/shared/wal/wal.protobuf.blob";
+        const TERM_BLOB_KEY: &str = "cluster-a/shards/1/shared/wal/seg_00000000000000000001.wal.protobuf.blob";
 
         fn offset_metadata(key: &str) -> SharedStoreWalOffsetMetadata {
             SharedStoreWalOffsetMetadata {
@@ -6794,7 +7153,7 @@ mod tests {
 
             // A key that is NOT the derived one is written out and comes back as itself -- the
             // field still works when it has something to say.
-            let other = "cluster-a/shards/1/shared/wal/wal.protobuf.blob.rotated";
+            let other = "cluster-a/shards/1/shared/wal/seg_00000000000000000001.wal.protobuf.blob.rotated";
             let rotated = encode_wal_offset_metadata_frame(&offset_metadata(other), key);
             assert!(
                 rotated.windows(other.len()).any(|window| window == other.as_bytes()),
@@ -6871,8 +7230,8 @@ mod tests {
             let now = encode_wal_offset_metadata_frame(&offset_metadata(TERM_BLOB_KEY), TERM_BLOB_KEY);
             assert_eq!(
                 blob.len(),
-                137,
-                "the retired shape should encode to 137 B for this key; it is {} B, so this \
+                162,
+                "the retired shape should encode to 162 B for this key; it is {} B, so this \
                  fixture is not the shape that was retired",
                 blob.len()
             );
@@ -7741,7 +8100,7 @@ mod tests {
                     .expect("the append reaches the store");
 
                 let key = format!(
-                    "{TEST_CLUSTER_ID}/shards/{TERM_SHARD}/shared/wal/wal.protobuf.blob"
+                    "{TEST_CLUSTER_ID}/shards/{TERM_SHARD}/shared/wal/seg_00000000000000000001.wal.protobuf.blob"
                 );
                 let bytes = store.get(&key).await.expect("the log object is there");
                 // The object holds one length-prefixed frame.
@@ -9488,7 +9847,7 @@ mod tests {
 
         // Sized like the real thing: the shared store's WAL blob key, and a frame about as
         // wide as one entry's.
-        let key = "scale-harness/shards/1/shared/wal/wal.protobuf.blob";
+        let key = "scale-harness/shards/1/shared/wal/seg_00000000000000000001.wal.protobuf.blob";
         const RECORDS: usize = 64;
         const FRAME: usize = 300;
         let frame = vec![b'w'; FRAME];
@@ -12613,8 +12972,8 @@ mod tests {
         );
         assert!(append_receipts[1].physical_slab_count > 1);
 
-        let blob_key = "cluster-a/shards/1/shared/wal/wal.protobuf.blob";
-        let offset_index_key = "cluster-a/shards/1/shared/wal/wal.offset_index.protobuf.blob";
+        let blob_key = "cluster-a/shards/1/shared/wal/seg_00000000000000000001.wal.protobuf.blob";
+        let offset_index_key = "cluster-a/shards/1/shared/wal/seg_00000000000000000001.index.protobuf.blob";
         assert_eq!(
             store
                 .list("cluster-a/shards/1/shared/wal/")
@@ -13080,7 +13439,7 @@ mod tests {
                 next += 1;
             }
             let before = store.whole_gets_of(&index_key);
-            let cached = replicator.load_wal_offset_metadata_cached(1).await.unwrap();
+            let cached = replicator.load_wal_offset_metadata_cached(1, 0).await.unwrap();
             if round > 0 {
                 assert_eq!(
                     store.whole_gets_of(&index_key),
@@ -13137,25 +13496,25 @@ mod tests {
                 .await
                 .unwrap();
         }
-        assert_eq!(replicator.load_wal_offset_metadata_cached(1).await.unwrap().len(), 12);
+        assert_eq!(replicator.load_wal_offset_metadata_cached(1, 0).await.unwrap().len(), 12);
 
         // LONGER, and different: 30 entries of another width.
         let (_longer_dir, longer) = publish_log(30, 25).await;
         store.put(&index_key, longer).await.unwrap();
-        let cached = replicator.load_wal_offset_metadata_cached(1).await.unwrap();
+        let cached = replicator.load_wal_offset_metadata_cached(1, 0).await.unwrap();
         assert_eq!(*cached, replicator.load_wal_offset_metadata(1).await.unwrap());
         assert_eq!(cached.len(), 30, "a longer replacement was not noticed");
 
         // SHORTER than what was consumed.
         let (_shorter_dir, shorter) = publish_log(5, 17).await;
         store.put(&index_key, shorter).await.unwrap();
-        let cached = replicator.load_wal_offset_metadata_cached(1).await.unwrap();
+        let cached = replicator.load_wal_offset_metadata_cached(1, 0).await.unwrap();
         assert_eq!(*cached, replicator.load_wal_offset_metadata(1).await.unwrap());
         assert_eq!(cached.len(), 5, "a shorter replacement was not noticed");
 
         // DELETED: an empty index, as the uncached load says.
         store.delete(&index_key).await.unwrap();
-        let cached = replicator.load_wal_offset_metadata_cached(1).await.unwrap();
+        let cached = replicator.load_wal_offset_metadata_cached(1, 0).await.unwrap();
         assert!(cached.is_empty(), "a deleted index still answered from the cache");
         assert!(replicator.load_wal_offset_metadata(1).await.unwrap().is_empty());
     }
@@ -13563,11 +13922,11 @@ mod tests {
         // swap between them cannot read as a pass.
         assert_eq!(
             replicator.wal_blob_key(1),
-            "cluster-a/shards/1/shared/wal/wal.protobuf.blob"
+            "cluster-a/shards/1/shared/wal/seg_00000000000000000001.wal.protobuf.blob"
         );
         assert_eq!(
             replicator.wal_offset_index_blob_key(1),
-            "cluster-a/shards/1/shared/wal/wal.offset_index.protobuf.blob"
+            "cluster-a/shards/1/shared/wal/seg_00000000000000000001.index.protobuf.blob"
         );
         assert_eq!(
             replicator.replay_cursor_key(1),

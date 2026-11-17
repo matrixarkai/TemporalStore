@@ -1226,7 +1226,7 @@ fn key_for(shard_id: u64, index: u64, phase: &str) -> String {
 }
 
 fn blob_key(shard_id: u64) -> String {
-    format!("cluster-a/shards/{shard_id}/shared/wal/wal.protobuf.blob")
+    format!("cluster-a/shards/{shard_id}/shared/wal/seg_00000000000000000001.wal.protobuf.blob")
 }
 
 fn offsets_monotonic(receipts: &[AppendBlobReceipt]) -> bool {

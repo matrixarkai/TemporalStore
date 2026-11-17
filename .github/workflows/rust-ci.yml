@@ -343,6 +343,28 @@ jobs:
             # `cargo test` exits 0 when a filter matches NOTHING, so assert the count too.
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/wal-byte-gate.log || { echo "guard did not run and pass: $t"; exit 1; }
           done
+      # The shared WAL is a run of segments and an object never grows with the log. These run in
+      # the advisory step above and nowhere else, so they are pinned by exact name: a rename or a
+      # move would turn a filter into a no-op that still exits 0, hence the count on each.
+      - name: cargo test (shared WAL segment guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          for t in \
+            shared_store::wal_segment_tests::the_segment_names_the_quota_and_the_builder_floor_are_pinned \
+            shared_store::wal_segment_tests::a_crash_between_two_segments_loses_nothing_acknowledged_and_resumes_at_the_next_index \
+            shared_store::wal_segment_tests::replay_crosses_every_segment_boundary_in_order_and_skips_the_segments_below_a_checkpoint \
+            shared_store::wal_segment_tests::a_hole_between_segments_is_refused_and_never_replayed_as_a_shorter_log \
+            shared_store::wal_segment_tests::the_collector_never_deletes_the_live_segment_and_deletes_index_before_log \
+            shared_store::wal_segment_tests::the_collector_sweeps_orphan_logs_and_keeps_the_one_the_next_append_goes_to \
+            shared_store::wal_segment_tests::no_object_takes_more_appends_than_the_quota_and_a_batch_never_straddles_segments \
+            shared_store::wal_segment_tests::a_restart_reads_the_highest_index_segment_and_not_the_history \
+            shared_store::wal_segment_tests::a_shard_in_the_pre_segment_layout_is_refused_by_name_and_per_key_objects_are_not_read \
+            shared_store::wal_segment_tests::a_fenced_stale_owner_cannot_open_a_new_segment
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/wal-segment-gate.log
+            grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/wal-segment-gate.log || { echo "guard did not run and pass: $t"; exit 1; }
+          done
       - name: cargo test (read-safety guards, hard gate)
         timeout-minutes: 20
         run: |
@@ -353,7 +375,7 @@ jobs:
             raft::tests::part5::only_the_majority_check_refuses_a_read_on_a_node_that_lost_its_peers \
             raft::tests::part5::the_sender_of_an_append_is_attributed_in_both_encodings \
             shared_store::tests::outcome_only_binary_frames_recover_in_every_supported_format \
-            shared_store::tests::default_shared_wal_preserves_multiple_binary_outcomes_beside_a_per_key_object \
+            shared_store::tests::default_shared_wal_records_multiple_binary_outcomes_and_does_not_read_a_per_key_object \
             shared_store::tests::a_default_replicator_publishes_a_batch_as_one_container_and_replays_it \
             shared_store::tests::one_offset_frame_per_container::a_container_frame_decodes_to_the_map_its_entry_frames_decode_to \
             shared_store::tests::one_offset_frame_per_container::the_container_frame_is_a_fraction_of_the_entry_frames \
