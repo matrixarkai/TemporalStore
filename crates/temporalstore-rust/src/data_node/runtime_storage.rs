@@ -1392,12 +1392,28 @@ impl DataNodeRuntime {
             pressure.undumped_wal_records,
             pressure.wal_bytes,
         );
+        // A QUARANTINED SLAB IS WORK ONLY WHEN IT CAN BE ACTED ON. The plan lists every slab in
+        // quarantine, but the purge destroys none before the grace has passed and restores one only
+        // when the live set names it; a store that has already checked the quarantine against the
+        // live set, with nothing old enough, is asked nothing the purge would answer differently.
+        // Under steady overwrite load a quarantine is never empty, so reading "any slab" as work kept
+        // this stage on its full path every round. A retention owner can name a quarantined slab with
+        // no new arrival, so with one configured the plan's list stands.
+        let index_quarantine_waits = options.block_gc_shared_store_cursors.is_empty()
+            && !self.inner.engine.has_registered_replay_readers(shard_id)
+            && options.raft_snapshot_refs.is_empty()
+            && options.block_gc_checkpoint_floor_slab_id.is_none()
+            && options.block_gc_raft_install_floor_slab_id.is_none()
+            && self
+                .inner
+                .engine
+                .quarantine_waits_for_age(crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS);
         let index_gc_has_no_work = options.enable_index_gc
             && index_log_floor != 0
             && ((pressure.dirty_bucket_count == 0 && pressure.undumped_wal_records == 0)
                 || index_dump_held_back)
             && !index_gc_pressure
-            && lifecycle_plan.delayed_destroy_block_slab_ids.is_empty()
+            && (lifecycle_plan.delayed_destroy_block_slab_ids.is_empty() || index_quarantine_waits)
             && self
                 .inner
                 .engine
