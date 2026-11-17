@@ -54,8 +54,8 @@ use super::cell_set::Member;
 use super::product_model::filter_op_holds;
 use super::window_aggregate::{ratio, weighted_sum, wilson_lower_bound, DecayedSumAcc, Reduced, Reducer};
 use crate::types::{
-    CellMemberId, WindowReduceRankSpec, WindowReduceScore, WindowReduceWindow, FeatureFilter, FeatureFilterOp, RankedCellRow,
-    RankedCells,
+    CellMemberId, WindowReduceRankSpec, WindowReduceSampleInfo, WindowReduceScore, WindowReduceWindow, FeatureFilter,
+    FeatureFilterOp, RankedCellRow, RankedCells,
 };
 
 /// Samples one ranked read may merge.
@@ -201,6 +201,8 @@ pub(crate) struct Plan {
     scorer: Scorer,
     /// The read answers stored cells, newest sample first ([`WindowReduceScore::Recent`]).
     recent: bool,
+    /// The answer says which samples were used and how many cells each held.
+    sample_info: bool,
     top_k: usize,
     lane_count: usize,
     label_count: usize,
@@ -406,6 +408,7 @@ impl Plan {
             predicates,
             scorer,
             recent,
+            sample_info: spec.sample_info,
             top_k: spec.top_k,
             lane_count: header.lanes.len(),
             label_count: header.labels.len(),
@@ -677,6 +680,19 @@ impl Plan {
         Ok(())
     }
 
+    /// What the answer says of the samples it used, oldest first: nothing unless the read asked.
+    /// A sample's cells are counted as the window holds them, before the member set and the
+    /// predicates apply.
+    fn sample_summary<'a, V: SampleRead<'a>>(&self, chosen: &[V]) -> Vec<WindowReduceSampleInfo> {
+        if !self.sample_info {
+            return Vec::new();
+        }
+        chosen
+            .iter()
+            .map(|sample| WindowReduceSampleInfo { timestamp_ms: sample.stamp(), cells: sample.cell_count() })
+            .collect()
+    }
+
     /// The rows of a [`WindowReduceScore::Recent`] read: the stored cells of `chosen` that pass the member
     /// set and every predicate, the newest sample first, each sample's cells by member, until
     /// `top_k` rows are held. No cell is reduced with another, so a member written in three
@@ -710,6 +726,7 @@ impl Plan {
             unscored: 0,
             rows,
             refused: String::new(),
+            sample_info: self.sample_summary(chosen),
         })
     }
 
@@ -796,6 +813,7 @@ impl Plan {
             unscored,
             rows,
             refused: String::new(),
+            sample_info: self.sample_summary(chosen),
         })
     }
 }

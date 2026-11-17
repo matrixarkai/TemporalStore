@@ -123,7 +123,18 @@ fn specs() -> Vec<WindowReduceRankSpec> {
         others: 3,
     };
     out.push(quota);
+    // The answer that says which samples it used: both forms count the same cells in each.
+    let mut info = WindowReduceRankSpec::new(WindowReduceWindow::LastN { n: 3 }, lane("a"), 6);
+    info.sample_info = true;
+    out.push(info);
+    let mut info_recent = WindowReduceRankSpec::new(all_window(), WindowReduceScore::Recent, 7);
+    info_recent.sample_info = true;
+    out.push(info_recent);
     out
+}
+
+fn all_window() -> WindowReduceWindow {
+    WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX }
 }
 
 #[test]

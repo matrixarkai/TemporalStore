@@ -116,6 +116,7 @@ fn rank(engine: &TemporalEngine, key: &str, filters: Vec<FeatureFilter>, score: 
                 members: Default::default(),
                 anchor: Default::default(),
                 quota: Default::default(),
+                sample_info: false,
             },
         },
     });
@@ -241,6 +242,7 @@ fn a_worked_example_of_window_reduce() {
                 members: Default::default(),
                 anchor: Default::default(),
                 quota: Default::default(),
+                sample_info: false,
             },
         },
     });

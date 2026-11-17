@@ -354,6 +354,10 @@ pub struct WindowReduceRankSpec {
     /// Members guaranteed a place among the top-k. Left out of the encoding when it asks for nothing.
     #[serde(default, skip_serializing_if = "WindowReduceQuota::is_none")]
     pub quota: WindowReduceQuota,
+    /// Ask the answer to say which samples the read used and how many cells each held. Left out
+    /// of the encoding when it is not asked for.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sample_info: bool,
 }
 
 impl WindowReduceRankSpec {
@@ -368,6 +372,7 @@ impl WindowReduceRankSpec {
             members: CellMemberFilter::default(),
             anchor: WindowReduceAnchor::default(),
             quota: WindowReduceQuota::default(),
+            sample_info: false,
         }
     }
 }
@@ -555,6 +560,18 @@ pub struct RankedCells {
     /// rows, and an empty `rows` with an empty `refused` means there was nothing to rank.
     #[serde(default)]
     pub refused: String,
+    /// One entry per sample the read used, oldest first, when the spec asked for them
+    /// ([`WindowReduceRankSpec::sample_info`]); empty otherwise, and then left out of the encoding.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sample_info: Vec<WindowReduceSampleInfo>,
+}
+
+/// One sample a read used: its stamp and how many of its cells were in the window. The cells are
+/// counted before the member set and the predicates apply.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WindowReduceSampleInfo {
+    pub timestamp_ms: u64,
+    pub cells: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

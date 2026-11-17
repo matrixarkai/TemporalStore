@@ -478,6 +478,7 @@ fn an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time() {
             lanes: vec![5_000_000_000, 2],
         }],
         refused: String::new(),
+        sample_info: Vec::new(),
     };
     let q = WindowReduceQuery { echo: true, has_echo: true, ..query(trailing(), selector(RankMode::Ratio)) };
     let a = answer_of(&profile, &q, &ranked);
@@ -845,18 +846,9 @@ fn a_batch_answer_holds_one_answer_per_query_in_order_each_with_its_own_status()
 // ---------------------------------------------------------------- options no read honours
 
 #[test]
-fn a_selector_that_asks_for_sample_info_or_a_member_limit_is_refused_naming_the_field() {
+fn a_selector_that_asks_for_a_member_limit_is_refused_naming_the_field() {
     // The unset request is translated: the refusals below are the option, not the selector.
     assert!(translate_query(&pair_profile(), &query(trailing(), selector(RankMode::FirstLane))).is_ok());
-
-    // `want_sample_info` is a request for something the answer cannot carry, with or without its
-    // presence flag.
-    for flagged in [false, true] {
-        let asked = WindowReduceSelector { want_sample_info: true, has_want_sample_info: flagged, ..selector(RankMode::FirstLane) };
-        let err = refusal(asked);
-        assert_eq!(err.code, WindowReduceStatusCode::InvalidArgument);
-        assert!(err.message.contains("want_sample_info is not supported"), "{err:?}");
-    }
 
     // A member limit refuses at 1, the first value that limits anything, and at the extremes.
     for limit in [1, 2, 1000, i32::MAX, -1, i32::MIN] {
@@ -871,8 +863,8 @@ fn a_selector_that_asks_for_sample_info_or_a_member_limit_is_refused_naming_the_
 
     // Every mode that reads is refused alike, and so is a query inside a batch, by position.
     for mode in [RankMode::SecondLane, RankMode::Member, RankMode::MembersOnly, RankMode::DecayedLane] {
-        let asked = WindowReduceSelector { want_sample_info: true, members: vec![1], ..selector(mode) };
-        assert!(refusal(asked).message.contains("want_sample_info"), "{mode:?}");
+        let asked = WindowReduceSelector { limit_members: 3, members: vec![1], ..selector(mode) };
+        assert!(refusal(asked).message.contains("limit_members 3"), "{mode:?}");
     }
     let profiles = Profiles::new(vec![pair_profile()]).unwrap();
     let good = query(trailing(), selector(RankMode::FirstLane));
@@ -880,6 +872,64 @@ fn a_selector_that_asks_for_sample_info_or_a_member_limit_is_refused_naming_the_
     capped.selector.as_mut().unwrap().limit_members = 5;
     let err = translate_batch(&profiles, &WindowReduceBatchQuery { queries: vec![good.clone(), capped] }).unwrap_err();
     assert!(err.message.starts_with("query 1:") && err.message.contains("limit_members 5"), "{err:?}");
+}
+
+#[test]
+fn a_selector_that_wants_sample_info_asks_the_read_for_it_and_changes_nothing_else() {
+    let plain = plan(selector(RankMode::FirstLane));
+    assert!(!plain.spec.sample_info, "the read asks for nothing it was not asked for");
+    // Wanted, with or without its presence flag, for every mode that reads.
+    for flagged in [false, true] {
+        for mode in [RankMode::FirstLane, RankMode::SecondLane, RankMode::Ratio, RankMode::Member, RankMode::Recent] {
+            let base = plan(selector(mode));
+            let asked = plan(WindowReduceSelector { want_sample_info: true, has_want_sample_info: flagged, ..selector(mode) });
+            assert!(asked.spec.sample_info, "{mode:?} flagged {flagged}");
+            assert_eq!(WindowReduceRankSpec { sample_info: false, ..asked.spec }, base.spec, "{mode:?}");
+            assert_eq!(asked.key, base.key);
+        }
+    }
+    // A query inside a batch carries it too.
+    let profiles = Profiles::new(vec![pair_profile()]).unwrap();
+    let mut wants = query(trailing(), selector(RankMode::FirstLane));
+    wants.selector.as_mut().unwrap().want_sample_info = true;
+    let plans = translate_batch(&profiles, &WindowReduceBatchQuery { queries: vec![query(trailing(), selector(RankMode::FirstLane)), wants] })
+        .unwrap();
+    assert_eq!(plans.iter().map(|p| p.spec.sample_info).collect::<Vec<_>>(), vec![false, true]);
+}
+
+#[test]
+fn an_answer_says_which_samples_the_read_used_in_microseconds_and_leaves_the_field_out_when_not_asked() {
+    let profile = pair_profile();
+    let q = query(trailing(), selector(RankMode::FirstLane));
+    let used = vec![
+        WindowReduceSampleInfo { timestamp_ms: 1_700_000_000_123, cells: 4 },
+        WindowReduceSampleInfo { timestamp_ms: 1_700_000_000_456, cells: 2 },
+    ];
+    let asked = answer_of(&profile, &q, &RankedCells { samples: 2, sample_info: used, ..Default::default() });
+    let info = asked.sample_info.as_ref().expect("the read asked for it");
+    // A sample is one instant: its start and its end are the same.
+    assert_eq!(info.starts_us, vec![1_700_000_000_123_000, 1_700_000_000_456_000]);
+    assert_eq!(info.ends_us, info.starts_us);
+    assert_eq!(info.member_counts, vec![4, 2]);
+    // Not asked: no message at all.
+    assert!(answer_of(&profile, &q, &RankedCells { samples: 2, ..Default::default() }).sample_info.is_none());
+
+    // The bytes: the entity (field 1, the query's 7), then one sample at 1 ms holding 3 cells as
+    // field 7 (starts, ends, counts, each packed), then the established `samples` field. An answer
+    // that did not ask has no field 7.
+    let one = RankedCells {
+        samples: 1,
+        sample_info: vec![WindowReduceSampleInfo { timestamp_ms: 1, cells: 3 }],
+        ..Default::default()
+    };
+    assert_eq!(
+        answer_of(&profile, &q, &one).encode_to_vec(),
+        vec![0x08, 0x07, 0x3a, 0x0b, 0x0a, 0x02, 0xe8, 0x07, 0x12, 0x02, 0xe8, 0x07, 0x1a, 0x01, 0x03, 0x90, 0x01, 0x01]
+    );
+    assert_eq!(
+        answer_of(&profile, &q, &RankedCells { samples: 1, ..Default::default() }).encode_to_vec(),
+        vec![0x08, 0x07, 0x90, 0x01, 0x01]
+    );
 }
 
 #[test]
