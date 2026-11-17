@@ -21,6 +21,8 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
         Command::CommonTtl { key, .. }
         | Command::CommonExists { key, .. }
         | Command::StringGet { key, .. }
+        | Command::StringLen { key }
+        | Command::StringGetRange { key, .. }
         | Command::HashGet { key, .. }
         | Command::HashMultiGet { key, .. }
         | Command::HashGetAll { key, .. }
@@ -353,6 +355,8 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::CommonTtl { .. }
         | Command::CommonExists { .. }
         | Command::StringGet { .. }
+        | Command::StringLen { .. }
+        | Command::StringGetRange { .. }
         | Command::HashGet { .. }
         | Command::HashMultiGet { .. }
         | Command::HashGetAll { .. }

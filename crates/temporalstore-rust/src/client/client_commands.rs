@@ -49,6 +49,8 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::StringIncrBy { key, .. }
         | Command::StringAppend { key, .. }
         | Command::StringGet { key }
+        | Command::StringLen { key }
+        | Command::StringGetRange { key, .. }
         | Command::StringDelete { key }
         | Command::HashSet { key, .. }
         | Command::HashGet { key, .. }

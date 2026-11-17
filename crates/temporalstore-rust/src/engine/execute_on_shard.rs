@@ -2080,6 +2080,57 @@ pub(crate) fn execute_on_shard(
                 ),
             }
         }
+        Command::StringLen { key } => {
+            if drop_if_expired(cache, shard_id, shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            // THE LENGTH IS TAKEN FROM THE CACHE'S SHARED BYTES, NOT FROM A COPY OF THEM. A string
+            // block is the whole value, so its length is the value's.
+            CommandResponse::Integer {
+                value: read_bucket_index_value_shared(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard,
+                    "string",
+                    &key,
+                    None,
+                )
+                .map_or(0, |bytes| bytes.len() as i64),
+            }
+        }
+        Command::StringGetRange { key, start, end } => {
+            if drop_if_expired(cache, shard_id, shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
+                return ExecuteOutcome {
+                    response: CommandResponse::Bytes { value: None },
+                    mutated,
+                };
+            }
+            // ONLY THE SLICE IS COPIED. The whole value used to be copied out of the cache and the
+            // door then copied the range out of that copy.
+            CommandResponse::Bytes {
+                value: read_bucket_index_value_shared(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard,
+                    "string",
+                    &key,
+                    None,
+                )
+                .map(|bytes| {
+                    let (from, to) = crate::redis::normalize_range(start, end, bytes.len());
+                    bytes[from..to].to_vec()
+                }),
+            }
+        }
         Command::StringDelete { key } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             stage_meta_outcome(

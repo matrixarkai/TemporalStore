@@ -208,7 +208,7 @@ use self::bucket_dump_io::*;
 use self::control_state_block::*;
 use self::sequence_row_value::*;
 use self::bucket_dump_codec::*;
-use self::bucket_store::{read_bucket_index_value, bucket_index_element_name_block_addresses};
+use self::bucket_store::{read_bucket_index_value, read_bucket_index_value_shared, bucket_index_element_name_block_addresses};
 use self::state::*;
 use crate::block_store::BlockAppendRecord;
 // FOR `set` ON A SLOT. A migrated series map's writer records a point through the write
