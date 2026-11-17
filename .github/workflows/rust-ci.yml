@@ -1176,6 +1176,11 @@ jobs:
             engine::tests::a_distinct_count_compares_its_members_where_they_are::a_distinct_count_answers_the_size_of_the_union \
             engine::tests::a_counter_window_read_reduces_where_it_sits::a_window_read_answers_what_an_independent_reduction_answers \
             engine::tests::a_series_at_its_cap_trims_without_a_victim_list::a_bounded_series_keeps_its_newest_points_whatever_the_write_order \
+            engine::tests::a_feature_series_at_its_cap_files_only_what_changed::a_captured_series_is_written_in_the_bytes_the_value_was \
+            engine::tests::a_feature_series_at_its_cap_files_only_what_changed::a_write_that_leaves_a_block_one_live_point_keeps_it \
+            engine::tests::a_feature_series_at_its_cap_files_only_what_changed::the_blocks_filed_are_the_blocks_the_points_name_after_every_write \
+            engine::tests::a_feature_series_at_its_cap_files_only_what_changed::the_capture_of_a_key_names_the_series_it_holds \
+            engine::tests::a_feature_series_at_its_cap_files_only_what_changed::the_old_and_the_new_filing_store_the_same \
             engine::tests::a_string_set_does_not_copy_the_value_it_replaces::a_conditional_write_answers_what_it_always_answered \
             engine::tests::a_string_set_does_not_copy_the_value_it_replaces::the_value_a_write_leaves_is_the_value_a_read_returns \
             engine::tests::a_feature_range_read_decodes_each_point_where_it_sits::the_cursor_answers_what_the_decoder_answers \
@@ -1332,6 +1337,7 @@ jobs:
             engine::tests::a_distinct_count_compares_its_members_where_they_are::probe::a_distinct_count_does_not_copy_its_members \
             engine::tests::a_counter_window_read_reduces_where_it_sits::probe::a_window_read_does_not_allocate_per_bucket \
             engine::tests::a_series_at_its_cap_trims_without_a_victim_list::probe::a_write_at_the_cap_allocates_what_a_write_below_it_allocates \
+            engine::tests::a_feature_series_at_its_cap_files_only_what_changed::probe::an_append_at_the_cap_allocates_the_same_whatever_the_series_length \
             engine::tests::a_string_set_does_not_copy_the_value_it_replaces::probe::a_string_overwrite_does_not_copy_the_old_value \
             engine::tests::a_feature_range_read_decodes_each_point_where_it_sits::probe::a_feature_range_read_does_not_allocate_per_point_of_the_block \
             engine::tests::a_hash_get_all_shares_its_page_keys::probe::a_whole_hash_read_does_not_pay_three_allocations_a_field_for_its_key \

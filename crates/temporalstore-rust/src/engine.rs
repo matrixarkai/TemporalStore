@@ -1744,10 +1744,11 @@ impl TemporalEngine {
                 //
                 // It costs one blob per touched key holding one entry per touched element, so it
                 // does not reintroduce the whole-collection capture that gate exists to avoid.
-                key_states.extend(capture_container_element_states(
-                    shard,
-                    &touched_container_elements,
-                ));
+                key_states.extend(
+                    capture_container_element_states(shard, &touched_container_elements)
+                        .into_iter()
+                        .map(crate::index_log::KeyState::from),
+                );
                 // `durable` fsyncs the delta record before returning. Deferred on the raft
                 // apply path (raft log is the durability source) and, under the single-barrier
                 // default, on the single-node path too: the record is still written (so the
@@ -4726,11 +4727,29 @@ fn capture_container_element_states(
         .collect()
 }
 
-fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Value> {
+#[cfg(test)]
+thread_local! {
+    /// Test switch: capture a series by building its `Value`, as every capture did before the
+    /// points were written straight to the encoder. The differential and the growing control.
+    pub(crate) static CAPTURE_SERIES_AS_VALUES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<crate::index_log::KeyState> {
     keys.iter()
         .map(|key| {
             let mut blob = serde_json::Map::new();
             blob.insert("key".to_string(), serde_json::Value::String(key.clone()));
+            // THE SERIES IS NOT TURNED INTO A `Value`. That built a map, five keys and a node per
+            // point on every write that trimmed one; the points are carried as they are and
+            // written straight to the encoder, in the same bytes (`KeyState`).
+            let features: Option<Vec<(u64, ElementEntry)>> = shard.features().get(&key[..]).map(|series| {
+                let mut points: Vec<(u64, ElementEntry)> =
+                    series.points().map(|(at, address)| (at, address.clone())).collect();
+                points.sort_unstable_by(|left, right| {
+                    crate::index_log::compare_instants_as_text(left.0, right.0)
+                });
+                points
+            });
             let mut put = |name: &str, value: Option<serde_json::Value>| {
                 if let Some(value) = value {
                     if !value.is_null() {
@@ -4741,13 +4760,6 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
             // THE BLOB KEEPS THE STORED SHAPE. The map holds the owned array; the capture field has
         // always been the B-tree object, and changing it here would change the blob format for
         // a representation change that is supposed to be invisible outside the map.
-        put(
-            "features",
-            shard
-                .features()
-                .get(&key[..])
-                .and_then(|v| serde_json::to_value(v.to_btree()).ok()),
-        );
             put("expires_at_ms", shard.expires_at_ms().get(key.as_str()).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_changes", shard.control_state_changes.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_selection", shard.control_state_selection.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
@@ -4817,7 +4829,17 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                     .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
             );
             put("context_entities", shard.context_entities().get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
-            serde_json::Value::Object(blob)
+            match features {
+                #[cfg(test)]
+                Some(features) if CAPTURE_SERIES_AS_VALUES.with(std::cell::Cell::get) => {
+                    // The path every capture took before: the series as a `Value`.
+                    let series: std::collections::BTreeMap<u64, ElementEntry> = features.into_iter().collect();
+                    blob.insert("features".to_string(), serde_json::to_value(series).expect("a series is a value"));
+                    crate::index_log::KeyState::Json(serde_json::Value::Object(blob))
+                }
+                Some(features) => crate::index_log::KeyState::Captured { rest: blob, features },
+                None => crate::index_log::KeyState::Json(serde_json::Value::Object(blob)),
+            }
         })
         .collect()
 }
@@ -9451,7 +9473,8 @@ mod key_state_shape_tests {
         let shard = ShardState::default();
         let blobs = capture_key_states(&shard, &["m:0".to_string()]);
         assert_eq!(blobs.len(), 1);
-        let object = blobs[0].as_object().expect("a blob is an object");
+        let blob = blobs[0].to_value();
+        let object = blob.as_object().expect("a blob is an object");
         assert_eq!(object.get("key").and_then(|v| v.as_str()), Some("m:0"));
         assert_eq!(
             object.len(),

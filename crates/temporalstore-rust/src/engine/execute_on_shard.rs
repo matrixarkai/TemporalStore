@@ -1422,15 +1422,18 @@ fn replace_feature_range(
         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
         .map(|(timestamp_ms, _)| timestamp_ms)
         .collect::<Vec<_>>();
-    mutated |= drop_timestamped_points(
+    let mut vacated: Vec<ElementEntry> = Vec::new();
+    mutated |= drop_timestamped_points_naming_what_left(
         shard_id,
         "feature",
         key,
         routing_bucket,
         series,
         &replaced,
+        Some(&mut vacated),
     );
     let points = sorted_feature_points(points);
+    let mut published: Vec<ElementEntry> = Vec::new();
     if let Ok(addresses) = append_timestamped_kv_blocks(
         cache,
         block_store,
@@ -1444,11 +1447,17 @@ fn replace_feature_range(
         next_block_index,
     ) {
         for (timestamp_ms, address) in addresses {
+            // The range was emptied above, but a point of the request outside it can still land
+            // on a point the series holds, and that point's block may be left with none.
+            if let Some(superseded) = series.get(timestamp_ms) {
+                vacated.push(superseded.clone());
+            }
+            published.push(address.clone());
             series.set(timestamp_ms, address);
             mutated = true;
         }
     }
-    mutated |= trim_timestamped_series(
+    mutated |= trim_timestamped_series_naming_what_left(
         shard_id,
         "feature",
         key,
@@ -1456,16 +1465,9 @@ fn replace_feature_range(
         series,
         feature_max_size,
         trim_boundary_record,
+        Some(&mut vacated),
     );
-    let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-    sync_bucket_index_object_blocks(
-        shard,
-        shard_id,
-        "feature",
-        key,
-        live_addresses,
-        mutated,
-    );
+    file_series_blocks_after_write(shard, shard_id, "feature", key, published, vacated, mutated);
     mutated
 }
 
@@ -3986,7 +3988,8 @@ pub(crate) fn execute_on_shard(
                 .or_default();
             let points = sorted_feature_points(points);
             let mut published: Vec<ElementEntry> = Vec::new();
-            let mut replaced_any = false;
+            // THE ADDRESSES THIS WRITE TOOK A POINT OFF: replaced points here, trimmed ones below.
+            let mut vacated: Vec<ElementEntry> = Vec::new();
             // feature_append_chunks_and_persists_timestamped_kv_blocks: append each
             // timestamped feature point through the block-backed KV layout, then
             // publish the resulting block addresses into the bucket index below.
@@ -4003,19 +4006,19 @@ pub(crate) fn execute_on_shard(
                 next_block_index,
             ) {
                 for (timestamp_ms, address) in addresses {
-                    // A replaced timestamp supersedes a block, and a superseded block must be
-                    // dropped rather than joined -- so record it and take the restating path.
-                    // `set` returns nothing where `insert` returned the superseded value,
-                    // so the question has to be asked BEFORE the write rather than read off it.
-                    if series.get(timestamp_ms).is_some() {
-                        replaced_any = true;
+                    // A replaced timestamp may leave its old block with no point, so the address
+                    // it held is noted. `set` returns nothing where `insert` returned the
+                    // superseded value, so the question has to be asked BEFORE the write rather
+                    // than read off it.
+                    if let Some(superseded) = series.get(timestamp_ms) {
+                        vacated.push(superseded.clone());
                     }
                     series.set(timestamp_ms, address.clone());
                     published.push(address);
                     mutated = true;
                 }
             }
-            let trimmed = trim_timestamped_series(
+            let trimmed = trim_timestamped_series_naming_what_left(
                 shard_id,
                 "feature",
                 &key,
@@ -4023,27 +4026,15 @@ pub(crate) fn execute_on_shard(
                 series,
                 feature_max_size,
                 trim_boundary_record,
+                Some(&mut vacated),
             );
             mutated |= trimmed;
-            if replaced_any || trimmed {
-                // Something was superseded or evicted: the live set has to be restated in full.
-                let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-                sync_bucket_index_object_blocks(
-                    shard,
-                    shard_id,
-                    "feature",
-                    &key,
-                    live_addresses,
-                    mutated,
-                );
-            } else {
-                // A pure append. Publishing only the new blocks leaves the index in the same
-                // state, and stops an append costing the length of the series it joins:
-                // restating every address measured 4.07 MB for one point on a 3,200-point series.
-                sync_bucket_index_object_blocks_with_mode(
-                    shard, shard_id, "feature", &key, published, mutated, false,
-                );
-            }
+            // Publish the blocks written and retire the ones left with no point. Restating the
+            // whole live set instead cost the length of the series on every append at its cap
+            // (and 4.07 MB for one point on a 3,200-point series before a pure append stopped it).
+            file_series_blocks_after_write(
+                shard, shard_id, "feature", &key, published, vacated, mutated,
+            );
             if let Some(ttl_ms) = ttl_ms {
                 if shard.features().get(&key[..]).is_some_and(|series| series.len() > 0) {
                     let expires_at = resolve_now_ms().saturating_add(ttl_ms);
@@ -4157,7 +4148,7 @@ pub(crate) fn execute_on_shard(
             let mut accepted_points = Vec::new();
             let mut accepted_timestamps = BTreeSet::new();
             let mut published: Vec<ElementEntry> = Vec::new();
-            let mut replaced_any = false;
+            let mut vacated: Vec<ElementEntry> = Vec::new();
             // Whether THIS command wrote a point. `mutated` can already be set by the expiry
             // above, so it cannot say.
             let mut appended = false;
@@ -4197,8 +4188,8 @@ pub(crate) fn execute_on_shard(
                     next_block_index,
                 ) {
                     for (timestamp_ms, address) in addresses {
-                        if series.get(timestamp_ms).is_some() {
-                            replaced_any = true;
+                        if let Some(superseded) = series.get(timestamp_ms) {
+                            vacated.push(superseded.clone());
                         }
                         series.set(timestamp_ms, address.clone());
                         published.push(address);
@@ -4207,7 +4198,7 @@ pub(crate) fn execute_on_shard(
                     }
                 }
             }
-            let trimmed = trim_timestamped_series(
+            let trimmed = trim_timestamped_series_naming_what_left(
                 shard_id,
                 "feature",
                 &key,
@@ -4215,23 +4206,12 @@ pub(crate) fn execute_on_shard(
                 series,
                 feature_max_size,
                 trim_boundary_record,
+                Some(&mut vacated),
             );
             mutated |= trimmed;
-            if replaced_any || trimmed {
-                let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-                sync_bucket_index_object_blocks(
-                    shard,
-                    shard_id,
-                    "feature",
-                    &key,
-                    live_addresses,
-                    mutated,
-                );
-            } else {
-                sync_bucket_index_object_blocks_with_mode(
-                    shard, shard_id, "feature", &key, published, mutated, false,
-                );
-            }
+            file_series_blocks_after_write(
+                shard, shard_id, "feature", &key, published, vacated, mutated,
+            );
             // THE TOKEN IS FILED AFTER THE SERIES IS DONE WITH, because the ring lives in the shard
             // and the series borrows the whole of it until here. It is filed only when this command
             // wrote, and only while the key still holds a series: an append that the trim emptied
@@ -4691,7 +4671,7 @@ pub(crate) fn execute_on_shard(
                 .collect::<Vec<_>>();
             let points = sorted_feature_points(points);
             let mut published: Vec<ElementEntry> = Vec::new();
-            let mut replaced_any = false;
+            let mut vacated: Vec<ElementEntry> = Vec::new();
             if let Ok(addresses) = append_timestamped_kv_blocks(
                 cache,
                 block_store,
@@ -4705,19 +4685,19 @@ pub(crate) fn execute_on_shard(
                 next_block_index,
             ) {
                 for (timestamp_ms, address) in addresses {
-                    // A replaced timestamp supersedes a block, and a superseded block must be
-                    // dropped rather than joined -- so record it and take the restating path.
-                    // `set` returns nothing where `insert` returned the superseded value, so
-                    // the question has to be asked BEFORE the write rather than read off it.
-                    if series.get(timestamp_ms).is_some() {
-                        replaced_any = true;
+                    // A replaced timestamp may leave its old block with no point, so the address
+                    // it held is noted. `set` returns nothing where `insert` returned the
+                    // superseded value, so the question has to be asked BEFORE the write rather
+                    // than read off it.
+                    if let Some(superseded) = series.get(timestamp_ms) {
+                        vacated.push(superseded.clone());
                     }
                     series.set(timestamp_ms, address.clone());
                     published.push(address);
                     mutated = true;
                 }
             }
-            let trimmed = trim_timestamped_series(
+            let trimmed = trim_timestamped_series_naming_what_left(
                 shard_id,
                 "feature",
                 &key,
@@ -4725,26 +4705,12 @@ pub(crate) fn execute_on_shard(
                 series,
                 feature_max_size,
                 trim_boundary_record,
+                Some(&mut vacated),
             );
             mutated |= trimmed;
-            if replaced_any || trimmed {
-                // Something was superseded or evicted: the live set has to be restated in full.
-                let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-                sync_bucket_index_object_blocks(
-                    shard,
-                    shard_id,
-                    "feature",
-                    &key,
-                    live_addresses,
-                    mutated,
-                );
-            } else {
-                // A pure append. Publishing only the new blocks leaves the index in the same
-                // state, and stops a row append costing the length of the series it joins.
-                sync_bucket_index_object_blocks_with_mode(
-                    shard, shard_id, "feature", &key, published, mutated, false,
-                );
-            }
+            file_series_blocks_after_write(
+                shard, shard_id, "feature", &key, published, vacated, mutated,
+            );
             // A sequence row is a feature point: retire cached feature answers, as the append does.
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty

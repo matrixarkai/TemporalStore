@@ -517,6 +517,27 @@ impl TryFrom<BlockAddressWire> for ElementEntry {
 /// risk in dropping a slot here is not a loud refusal of every stored row -- it is a SILENT
 /// reinterpretation of every stored row by a reader that still expects the slot, which is worse
 /// and was being counted as the safe case.
+impl ElementEntry {
+    /// Serialize this address as the MAP `serde_json::to_value(self)` builds and encodes: the same
+    /// five names in the order a `Value` object keeps them (sorted), a `None` as nil, every number
+    /// as an unsigned integer. A streaming writer that has to agree with a `Value` byte for byte,
+    /// in every encoder, without building the `Value`.
+    pub(crate) fn serialize_as_sorted_map<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let wire = BlockAddressWire::from(self.clone());
+        let mut map = serializer.serialize_map(Some(5))?;
+        map.serialize_entry("a", &wire.address)?;
+        map.serialize_entry("g", &wire.generation)?;
+        map.serialize_entry("l", &wire.length)?;
+        map.serialize_entry("oi", &wire.object_id)?;
+        map.serialize_entry("pi", &wire.block_id)?;
+        map.end()
+    }
+}
+
 impl From<ElementEntry> for BlockAddressWire {
     fn from(entry: ElementEntry) -> Self {
         Self {
