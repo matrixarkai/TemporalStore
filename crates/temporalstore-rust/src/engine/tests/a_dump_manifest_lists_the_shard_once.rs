@@ -74,3 +74,22 @@ fn a_manifest_lists_the_live_blocks_once() {
         "the live shard was listed again for the summaries: {scanned} entries for {live_blocks} blocks"
     );
 }
+
+/// MEASUREMENT (ignored): the manifest call's busy time and listing size at `DUMP_KEYS` keys.
+#[test]
+#[ignore]
+fn what_one_manifest_call_costs_by_key_count() {
+    let keys: usize = std::env::var("DUMP_KEYS").ok().and_then(|v| v.parse().ok()).unwrap_or(20_000);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_with_keys(dir.path(), keys);
+    let mut micros = Vec::new();
+    for _ in 0..5 {
+        reset_live_block_scan_entries();
+        let started = std::time::Instant::now();
+        engine.create_bucket_dump_manifest(SHARD, Vec::new()).unwrap();
+        micros.push(started.elapsed().as_micros());
+        println!("[manifest-call] keys={keys} listed_entries={} us={}", live_block_scan_entries(), micros.last().unwrap());
+    }
+    micros.sort();
+    println!("[manifest-call] keys={keys} median_us={}", micros[micros.len() / 2]);
+}
