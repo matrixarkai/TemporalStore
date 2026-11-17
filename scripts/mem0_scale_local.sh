@@ -22,12 +22,12 @@ while (($#)); do
       shift 2 ;;
     --skip-build) skip_build=1; shift ;;
     --keep-data) keep_data=1; shift ;;
-    --records|--batch-size|--tenant-shards|--users|--searches|--payload-bytes|--provider-json|--infer|--metadata-updates|--crud-rounds)
+    --records|--batch-size|--tenant-shards|--users|--searches|--checkpoints|--payload-bytes|--provider-json|--infer|--metadata-updates|--crud-rounds)
       (($# >= 2)) || { echo "Missing value for $1" >&2; exit 2; }
       workload+=("$1" "$2"); shift 2 ;;
     --help)
       printf '%s\n' 'Usage: scripts/mem0_scale_local.sh [--work-dir DIR] [--port-base PORT] [--skip-build] [--bin-dir DIR] [--keep-data] [workload options]' \
-        'Workload options: --records --batch-size --tenant-shards --users --searches --payload-bytes --provider-json --infer true|false --metadata-updates ROUNDS --crud-rounds ROUNDS' \
+        'Workload options: --records --batch-size --tenant-shards --users --searches --checkpoints ROWS,ROWS --payload-bytes --provider-json --infer true|false --metadata-updates ROUNDS --crud-rounds ROUNDS' \
         'Results: report.json, source.json, and three service logs in the work directory.' \
         'The isolated data directory must be absent; it is removed on exit unless --keep-data is set.'
       exit 0 ;;
@@ -63,10 +63,15 @@ cd -- "$repo"
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-"$repo/target"}
 revision=$(git rev-parse HEAD)
 diff_hash=$(git diff --binary HEAD | sha256sum | cut -d' ' -f1)
+runtime_inputs_hash() {
+  git ls-files -z --cached --others --exclude-standard -- Cargo.toml Cargo.lock build.rs .cargo crates proto \
+    | sort -zu | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+}
+inputs_hash=$(runtime_inputs_hash)
 if (( ! skip_build )); then
   cargo build --release -p temporalstore-rust --bin server --bin proxy --bin metaserver --bin mem0_scale_harness
-  [[ $(git rev-parse HEAD) == "$revision" && $(git diff --binary HEAD | sha256sum | cut -d' ' -f1) == "$diff_hash" ]] || {
-    echo 'Tracked source changed during the build; rerun against a stable checkout' >&2; exit 1;
+  [[ $(git rev-parse HEAD) == "$revision" && $(runtime_inputs_hash) == "$inputs_hash" ]] || {
+    echo 'Runtime source changed during the build; rerun against a stable checkout' >&2; exit 1;
   }
 fi
 if [[ -n $bin_dir ]]; then
@@ -75,8 +80,8 @@ else
   bin=$(realpath -- "$CARGO_TARGET_DIR")/release
 fi
 for executable in server proxy metaserver mem0_scale_harness; do test -x "$bin/$executable"; done
-printf '{"checkout_revision":"%s","tracked_diff_sha256":"%s","build_skipped":%s}\n' \
-  "$revision" "$diff_hash" "$([[ $skip_build == 1 ]] && echo true || echo false)" > "$work_dir/source.json"
+printf '{"checkout_revision":"%s","tracked_diff_sha256":"%s","runtime_inputs_sha256":"%s","build_skipped":%s}\n' \
+  "$revision" "$diff_hash" "$inputs_hash" "$([[ $skip_build == 1 ]] && echo true || echo false)" > "$work_dir/source.json"
 sha256sum "$bin/server" "$bin/proxy" "$bin/metaserver" "$bin/mem0_scale_harness" > "$work_dir/binaries.sha256"
 pids=()
 cleanup() {

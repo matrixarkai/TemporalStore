@@ -218,6 +218,41 @@ echo the title and the source has a different nonempty body, extraction returns
 `model_provider_label_only_summary` instead of reporting successful extraction.
 An unusable batch item does not discard its usable neighbors.
 
+### Mem0 Corpus Growth Runs
+
+The repository's Rust harness exercises the Mem0 HTTP APIs against isolated
+metadata, data-server, and proxy processes:
+
+```bash
+CARGO_BUILD_JOBS=1 bash scripts/mem0_scale_local.sh \
+  --records 100000 --batch-size 64 --infer false \
+  --checkpoints 8192,32768,100000 --searches 100 \
+  --metadata-updates 10 --crud-rounds 10
+```
+
+The runner builds all four executables from this checkout, records source and
+binary hashes, and removes its isolated data on exit. Use `--work-dir` to place
+the report and service logs in an existing shared build area. `--skip-build`
+records that the binaries were not built by the run; it does not establish that
+they match the current sources.
+
+Each checkpoint runs after the completed ingestion batch reaches the requested
+size. Thresholds reached in the same batch share one checkpoint. Reports contain
+actual attempted and acknowledged source counts, memory counts, search latency
+percentiles, and cumulative per-service CPU ticks and RSS snapshots. Checkpoint
+search time is excluded from ingestion throughput. Compare CPU deltas between
+checkpoints using `clock_ticks_per_second`; peak RSS is cumulative, not a phase
+allocation measurement. The sampler excludes external model-server processes.
+
+Explicit ingestion (`--infer false`) requires searches to return the exact source
+marker, including probes of the oldest source and current tail. Inferred ingestion
+(`--infer true`) distinguishes source acknowledgements from extracted fact counts;
+its search validation checks candidate structure, not extraction quality. Supply
+`--provider-json` or `TS_MEM0_PROVIDER_JSON` to select a configured model provider.
+Use a smaller inferred run first when measuring Ollama extraction, and profile
+the Ollama process separately. A successful run alone does not establish flat
+latency, distributed scaling, or model quality.
+
 Each structured extraction request returns the L0/L1 summaries and up to eight
 normalized durable entities in one model call. Entity names and values are
 byte-bounded, duplicate entities are removed before persistence, and the cap
