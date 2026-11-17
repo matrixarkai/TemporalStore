@@ -3468,6 +3468,40 @@ pub(crate) fn execute_on_shard(
                 }),
             }
         }
+        Command::ListPushMany { key, members, left } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            // Each element goes through `ListPush`, so what it writes is what the same number of
+            // `ListPush` commands written one at a time would write, in the same order.
+            let run = |shard: &mut ShardState, command: Command| {
+                execute_on_shard(
+                    cache,
+                    block_store,
+                    feature_max_size,
+                    async_storage,
+                    control_rollup_enabled,
+                    control_coalesce_persist,
+                    control_state_max_size,
+                    control_distinct_sketch,
+                    trim_boundary_record,
+                    set_listing_from_map,
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                )
+            };
+            let mut length = 0i64;
+            for member in members {
+                let outcome = run(shard, Command::ListPush { key: key.clone(), member, left });
+                mutated |= outcome.mutated;
+                if let CommandResponse::Integer { value } = outcome.response {
+                    length = value;
+                }
+            }
+            CommandResponse::Integer { value: length }
+        }
         Command::ListPush { key, member, left } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             // READ, NOT `entry().or_default()`, WHICH CLOSES #2087 BY CONSTRUCTION.
@@ -3546,6 +3580,39 @@ pub(crate) fn execute_on_shard(
             }
             let length = shard.bucket_index.lists.get(&key).map_or(0, BTreeMap::len) as i64;
             CommandResponse::Integer { value: length }
+        }
+        Command::ListPopMany { key, left, count } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let run = |shard: &mut ShardState, command: Command| {
+                execute_on_shard(
+                    cache,
+                    block_store,
+                    feature_max_size,
+                    async_storage,
+                    control_rollup_enabled,
+                    control_coalesce_persist,
+                    control_state_max_size,
+                    control_distinct_sketch,
+                    trim_boundary_record,
+                    set_listing_from_map,
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                )
+            };
+            let mut popped: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..count {
+                let outcome = run(shard, Command::ListPop { key: key.clone(), left });
+                mutated |= outcome.mutated;
+                match outcome.response {
+                    CommandResponse::Bytes { value: Some(value) } => popped.push(value),
+                    _ => break,
+                }
+            }
+            CommandResponse::Members { members: popped }
         }
         Command::ListPop { key, left } => {
             if drop_if_expired(cache, shard_id, shard, &key) {

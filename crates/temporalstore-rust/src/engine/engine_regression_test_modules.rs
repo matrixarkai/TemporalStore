@@ -46,6 +46,8 @@ mod a_resp_hash_write_asks_the_field_map;
 mod a_set_command_can_name_many_members;
 #[path = "tests/a_sorted_set_command_can_name_many_members.rs"]
 mod a_sorted_set_command_can_name_many_members;
+#[path = "tests/a_list_command_can_name_many_elements.rs"]
+mod a_list_command_can_name_many_elements;
 #[path = "tests/command_surface.rs"]
 mod command_surface;
 #[path = "tests/expiry_command_boundaries.rs"]

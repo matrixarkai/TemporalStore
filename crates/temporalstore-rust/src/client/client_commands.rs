@@ -73,6 +73,8 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::SetRemoveMany { key, .. }
         | Command::ListPush { key, .. }
         | Command::ListPop { key, .. }
+        | Command::ListPushMany { key, .. }
+        | Command::ListPopMany { key, .. }
         | Command::ListRange { key, .. }
         | Command::ListLen { key }
         | Command::ListSet { key, .. }

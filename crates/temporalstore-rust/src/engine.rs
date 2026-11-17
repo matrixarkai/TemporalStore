@@ -4090,6 +4090,28 @@ fn command_upsert_element_names(
                 Some(format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64))),
             )])
         }
+        // The elements a run of pushes filed: the list's first (left) or last (right) entries, as
+        // many as the command pushed, read back the same way.
+        Command::ListPushMany { key, members, left } => {
+            let list = shard.bucket_index.lists.get(key)?;
+            let sequences: Vec<i64> = if *left {
+                list.keys().take(members.len()).copied().collect()
+            } else {
+                list.keys().rev().take(members.len()).copied().collect()
+            };
+            Some(
+                sequences
+                    .into_iter()
+                    .map(|sequence| {
+                        (
+                            "list",
+                            key.clone(),
+                            Some(format!("{:016x}", (sequence as u64).wrapping_sub(i64::MIN as u64))),
+                        )
+                    })
+                    .collect(),
+            )
+        }
         _ => None,
     }
 }
@@ -4252,7 +4274,7 @@ fn command_removed_element_name(command: &Command) -> Option<(&'static str, Opti
         )),
         // Several elements, so no one name: stated as a removal that names none, as a list's pops are.
         Command::ZSetRemoveMany { .. } => Some(("zset", Some(String::new()))),
-        Command::ListPop { .. } | Command::ListRemove { .. } | Command::ListTrim { .. } => {
+        Command::ListPop { .. } | Command::ListPopMany { .. } | Command::ListRemove { .. } | Command::ListTrim { .. } => {
             Some(("list", Some(String::new())))
         }
         Command::SetRemove { member, .. } => Some((
@@ -4680,6 +4702,22 @@ fn command_touched_container_elements(
                     key: key.clone(),
                     sequence,
                 }]
+            })
+            .unwrap_or_default(),
+        Command::ListPushMany { key, members, left } => shard
+            .bucket_index
+            .lists
+            .get(key)
+            .map(|list| {
+                let sequences: Vec<i64> = if *left {
+                    list.keys().take(members.len()).copied().collect()
+                } else {
+                    list.keys().rev().take(members.len()).copied().collect()
+                };
+                sequences
+                    .into_iter()
+                    .map(|sequence| TouchedContainerElement::List { key: key.clone(), sequence })
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_default(),
         _ => Vec::new(),

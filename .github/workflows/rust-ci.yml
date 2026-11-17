@@ -419,6 +419,10 @@ jobs:
             engine::tests::a_sorted_set_command_can_name_many_members::the_member_bound_is_accepted_at_the_limit_and_refused_one_past_it_and_at_none \
             engine::tests::a_sorted_set_command_can_name_many_members::the_two_commands_are_writes_a_client_can_route_and_the_wal_encodes_as_protobuf \
             engine::tests::a_sorted_set_command_can_name_many_members::zadd_and_zrem_are_one_command_per_run_of_members_and_answer_what_they_always_answered \
+            engine::tests::a_list_command_can_name_many_elements::lpush_rpush_and_lpop_are_one_command_per_run_and_answer_what_they_always_answered \
+            engine::tests::a_list_command_can_name_many_elements::many_elements_leave_what_the_one_at_a_time_path_leaves_and_answer_the_same \
+            engine::tests::a_list_command_can_name_many_elements::the_bounds_are_accepted_at_the_limit_and_refused_one_past_it_and_at_none \
+            engine::tests::a_list_command_can_name_many_elements::the_two_commands_are_writes_a_client_can_route_and_the_wal_encodes_as_protobuf \
             engine::tests::a_set_length_and_membership_read_the_member_map::the_point_commands_answer_what_the_listing_answers \
             engine::tests::a_set_length_and_membership_read_the_member_map::the_point_commands_answer_the_same_with_the_map_switched_off \
             engine::tests::a_set_length_and_membership_read_the_member_map::the_resp_door_answers_through_the_point_commands \
