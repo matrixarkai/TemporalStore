@@ -160,6 +160,8 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::HashDelete { key, .. }
         | Command::SetAdd { key, .. }
         | Command::SetRemove { key, .. }
+        | Command::SetAddMany { key, .. }
+        | Command::SetRemoveMany { key, .. }
         | Command::ListPush { key, .. }
         | Command::ListPop { key, .. }
         | Command::ListRange { key, .. }
@@ -420,6 +422,8 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
+            | Command::SetAddMany { .. }
+            | Command::SetRemoveMany { .. }
             | Command::ListPush { .. }
             | Command::ListPop { .. }
             | Command::ListSet { .. }
@@ -490,6 +494,8 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
+            | Command::SetAddMany { .. }
+            | Command::SetRemoveMany { .. }
             | Command::ListPush { .. }
             | Command::ListPop { .. }
             | Command::ListSet { .. }
@@ -649,6 +655,18 @@ pub(super) fn validate_command_preconditions(
     command: &Command,
 ) -> Result<(), Status> {
     match command {
+        Command::SetAddMany { members, .. } | Command::SetRemoveMany { members, .. }
+            if members.is_empty() || members.len() > crate::types::MAX_SET_MEMBERS_PER_COMMAND =>
+        {
+            return Err(Status::error(
+                "invalid_argument",
+                format!(
+                    "a set command names between 1 and {} members, not {}",
+                    crate::types::MAX_SET_MEMBERS_PER_COMMAND,
+                    members.len()
+                ),
+            ));
+        }
         Command::SetScan { limit, .. } if *limit == 0 || *limit > 10_000 => {
             return Err(Status::error(
                 "invalid_argument",

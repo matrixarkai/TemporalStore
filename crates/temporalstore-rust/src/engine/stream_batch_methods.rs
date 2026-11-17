@@ -1823,7 +1823,7 @@ impl TemporalEngine {
                 // still runs; and an empty bucket_map still rebuilds, because maintenance updates
                 // an index rather than constructing one.
                 let maintained_bucket_index = if hash_index_filed.is_some()
-                    || matches!(command_for_post_write_ref, Command::SetAdd { .. })
+                    || matches!(command_for_post_write_ref, Command::SetAdd { .. } | Command::SetAddMany { .. })
                 {
                     // These writers already filed the applied elements and swept tombstones.
                     true

@@ -409,6 +409,11 @@ jobs:
             engine::tests::a_string_increment_and_append_are_one_step::the_stepped_value_survives_a_restart_with_its_deadline \
             engine::tests::a_resp_hash_write_asks_the_field_map::an_hdel_counts_the_fields_it_removes_by_asking_the_field_map_and_deletes_only_those \
             engine::tests::a_resp_hash_write_asks_the_field_map::an_hset_counts_the_fields_it_adds_by_asking_the_field_map_and_never_reads_a_value \
+            engine::tests::a_set_command_can_name_many_members::many_members_leave_what_the_one_at_a_time_path_leaves_and_count_the_same \
+            engine::tests::a_set_command_can_name_many_members::removing_the_last_members_removes_the_key_as_a_remove_does_and_an_absent_key_removes_nothing \
+            engine::tests::a_set_command_can_name_many_members::sadd_and_srem_are_one_command_per_run_of_members_and_answer_what_they_always_answered \
+            engine::tests::a_set_command_can_name_many_members::the_member_bound_is_accepted_at_the_limit_and_refused_one_past_it_and_at_none \
+            engine::tests::a_set_command_can_name_many_members::the_two_commands_are_writes_a_client_can_route_and_the_wal_encodes_as_protobuf \
             engine::tests::a_set_length_and_membership_read_the_member_map::the_point_commands_answer_what_the_listing_answers \
             engine::tests::a_set_length_and_membership_read_the_member_map::the_point_commands_answer_the_same_with_the_map_switched_off \
             engine::tests::a_set_length_and_membership_read_the_member_map::the_resp_door_answers_through_the_point_commands \

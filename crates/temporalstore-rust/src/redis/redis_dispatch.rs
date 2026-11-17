@@ -1227,24 +1227,22 @@ pub fn execute_redis_command_with_state(
         },
         "SADD" if args.len() >= 3 => {
             let key = name_arg(&args[1]);
-            // ONE LOOKUP PER ARGUMENT, not a listing of the whole set to search. Each add lands
-            // before the next lookup, so a member named twice in one call counts once.
+            // One command per run of members, each member asked about and added in order, so a
+            // member named twice in one call counts once. A command takes a bounded number of
+            // members, so a longer call is several.
             let mut added = 0;
-            for member in args.iter().skip(2) {
-                let present = match set_has_member(&key, member, &mut execute) {
-                    Ok(present) => present,
-                    Err(err) => return RespValue::Error(err),
-                };
-                if !present {
-                    if let Err(err) = execute(Command::SetAdd {
-                        key: key.clone(),
-                        member: member.clone(),
-                    }) {
-                        return RespValue::Error(format!("ERR {err}"));
-                    }
-                    state.keyspace.insert(key.clone());
-                    added += 1;
+            for members in args[2..].chunks(crate::types::MAX_SET_MEMBERS_PER_COMMAND) {
+                match execute(Command::SetAddMany {
+                    key: key.clone(),
+                    members: members.to_vec(),
+                }) {
+                    Ok(CommandResponse::Integer { value }) => added += value,
+                    Ok(_) => return RespValue::Error("ERR invalid sadd response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
                 }
+            }
+            if added > 0 {
+                state.keyspace.insert(key);
             }
             RespValue::Integer(added)
         }
@@ -1297,19 +1295,14 @@ pub fn execute_redis_command_with_state(
         "SREM" if args.len() >= 3 => {
             let key = name_arg(&args[1]);
             let mut removed = 0;
-            for member in args.iter().skip(2) {
-                let present = match set_has_member(&key, member, &mut execute) {
-                    Ok(present) => present,
-                    Err(err) => return RespValue::Error(err),
-                };
-                if present {
-                    if let Err(err) = execute(Command::SetRemove {
-                        key: key.clone(),
-                        member: member.clone(),
-                    }) {
-                        return RespValue::Error(format!("ERR {err}"));
-                    }
-                    removed += 1;
+            for members in args[2..].chunks(crate::types::MAX_SET_MEMBERS_PER_COMMAND) {
+                match execute(Command::SetRemoveMany {
+                    key: key.clone(),
+                    members: members.to_vec(),
+                }) {
+                    Ok(CommandResponse::Integer { value }) => removed += value,
+                    Ok(_) => return RespValue::Error("ERR invalid srem response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
                 }
             }
             RespValue::Integer(removed)

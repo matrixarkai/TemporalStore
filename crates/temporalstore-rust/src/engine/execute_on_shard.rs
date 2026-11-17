@@ -2651,6 +2651,46 @@ pub(crate) fn execute_on_shard(
             let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty
         }
+        Command::SetAddMany { key, members } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            // Each member goes through the single-member commands, so what it asks the set and what it
+            // writes are exactly what a `SetIsMember` and a `SetAdd` (or `SetRemove`) issued one at a
+            // time would ask and write: the same elements, the same blocks, in the same order.
+            let run = |shard: &mut ShardState, command: Command| {
+                execute_on_shard(
+                    cache,
+                    block_store,
+                    feature_max_size,
+                    async_storage,
+                    control_rollup_enabled,
+                    control_coalesce_persist,
+                    control_state_max_size,
+                    control_distinct_sketch,
+                    trim_boundary_record,
+                    set_listing_from_map,
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                )
+            };
+            let mut added = 0i64;
+            for member in members {
+                let asked = run(
+                    shard,
+                    Command::SetIsMember { key: key.clone(), member: member.clone() },
+                );
+                mutated |= asked.mutated;
+                // Each add lands before the next question, so a member named twice counts once.
+                if !matches!(asked.response, CommandResponse::Integer { value: 1 }) {
+                    mutated |= run(shard, Command::SetAdd { key: key.clone(), member }).mutated;
+                    added += 1;
+                }
+            }
+            CommandResponse::Integer { value: added }
+        }
         Command::ZSetAdd { key, member, score } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let biased = zset_score_bits(score);
@@ -3958,6 +3998,45 @@ pub(crate) fn execute_on_shard(
             );
             let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty
+        }
+        Command::SetRemoveMany { key, members } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            // Each member goes through the single-member commands, so what it asks the set and what it
+            // writes are exactly what a `SetIsMember` and a `SetAdd` (or `SetRemove`) issued one at a
+            // time would ask and write: the same elements, the same blocks, in the same order.
+            let run = |shard: &mut ShardState, command: Command| {
+                execute_on_shard(
+                    cache,
+                    block_store,
+                    feature_max_size,
+                    async_storage,
+                    control_rollup_enabled,
+                    control_coalesce_persist,
+                    control_state_max_size,
+                    control_distinct_sketch,
+                    trim_boundary_record,
+                    set_listing_from_map,
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                )
+            };
+            let mut removed = 0i64;
+            for member in members {
+                let asked = run(
+                    shard,
+                    Command::SetIsMember { key: key.clone(), member: member.clone() },
+                );
+                mutated |= asked.mutated;
+                if matches!(asked.response, CommandResponse::Integer { value: 1 }) {
+                    mutated |= run(shard, Command::SetRemove { key: key.clone(), member }).mutated;
+                    removed += 1;
+                }
+            }
+            CommandResponse::Integer { value: removed }
         }
         append_command @ (Command::FeatureAppend { .. }
         | Command::FeatureAppendWithTtl { .. }) => {

@@ -5541,6 +5541,10 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             key: key.clone(),
             member: member.clone(),
         }),
+        Command::SetRemoveMany { key, members } => v1::command::Kind::SetRemoveMany(v1::SetRemoveMany {
+            key: key.clone(),
+            members: members.clone(),
+        }),
         Command::ZSetAdd { key, member, score } => v1::command::Kind::ZsetAdd(v1::ZSetAdd {
             key: key.clone(),
             member: member.clone(),
@@ -5662,6 +5666,10 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
         Command::SetAdd { key, member } => v1::command::Kind::SetAdd(v1::SetAdd {
             key: key.clone(),
             member: member.clone(),
+        }),
+        Command::SetAddMany { key, members } => v1::command::Kind::SetAddMany(v1::SetAddMany {
+            key: key.clone(),
+            members: members.clone(),
         }),
         Command::SetMembers { key } => {
             v1::command::Kind::SetMembers(v1::SetMembers { key: key.clone() })

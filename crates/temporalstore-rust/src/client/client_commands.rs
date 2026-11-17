@@ -62,11 +62,13 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::HashFieldExists { key, .. }
         | Command::HashDelete { key, .. }
         | Command::SetAdd { key, .. }
+        | Command::SetAddMany { key, .. }
         | Command::SetMembers { key }
         | Command::SetCard { key }
         | Command::SetIsMember { key, .. }
         | Command::SetScan { key, .. }
         | Command::SetRemove { key, .. }
+        | Command::SetRemoveMany { key, .. }
         | Command::ListPush { key, .. }
         | Command::ListPop { key, .. }
         | Command::ListRange { key, .. }
