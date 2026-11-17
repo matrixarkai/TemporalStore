@@ -498,3 +498,90 @@ fn a_merge_request_that_carries_the_stored_header_bytes_is_not_decoded_again() {
         "a request carrying the stored header bytes ({fast}) costs about as much as one that does not ({slow}): the shortcut is gone"
     );
 }
+
+/// 24 samples of 4 cells, stored either as 24 blocks of one sample (`packed == false`) or as the
+/// points of ONE append, which the store packs into a block of many samples. The same data either
+/// way. Returns the engine and the key.
+fn sample_series(packed: bool) -> (tempfile::TempDir, TemporalEngine, String) {
+    let h = header();
+    let key = stored_key(1);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    let points: Vec<FeaturePoint> = (0..24u64)
+        .map(|i| FeaturePoint { timestamp_ms: 100 * (i + 1), value: encode_value(&h, &cells(4, i + 1)).unwrap() })
+        .collect();
+    if packed {
+        let response = exec(&engine, Command::FeatureAppend { key: key.clone(), points });
+        assert!(response.status.ok, "{:?}", response.status);
+    } else {
+        for point in points {
+            let response = exec(&engine, Command::FeatureAppend { key: key.clone(), points: vec![point] });
+            assert!(response.status.ok, "{:?}", response.status);
+        }
+    }
+    (dir, engine, key)
+}
+
+fn whole_series(engine: &TemporalEngine, key: &str) -> Vec<FeaturePoint> {
+    match exec(engine, Command::FeatureQuery { key: key.to_string(), start_ms: 0, end_ms: u64::MAX, count: Some(1000) })
+        .response
+    {
+        CommandResponse::FeaturePoints { points } => points,
+        other => panic!("not points: {other:?}"),
+    }
+}
+
+/// Allocations of 20 merge writes, each into a different OLDER sample (so each reads the sample it
+/// merges into from the block the seed wrote), and the series left behind.
+fn merges_into_stored_samples(packed: bool) -> (f64, Vec<FeaturePoint>) {
+    let h = header();
+    let (_dir, engine, key) = sample_series(packed);
+    let requests: Vec<(u64, Vec<u8>)> =
+        (0..20u64).map(|i| (100 * (i + 1), encode_value(&h, &cells(4, 50 + i)).unwrap())).collect();
+    let probe = Probe::start();
+    for (timestamp_ms, value) in requests {
+        let response = exec(
+            &engine,
+            Command::FeatureAppendWithPolicy {
+                key: key.clone(),
+                points: vec![FeaturePoint { timestamp_ms, value }],
+                policy: FeatureWritePolicy::MergeReduce,
+                retry_token: None,
+            },
+        );
+        assert!(response.status.ok, "{:?}", response.status);
+    }
+    let spent = probe.stop().allocs as f64 / 20.0;
+    (spent, whole_series(&engine, &key))
+}
+
+/// A merge write reads the sample it merges into where it sits in the cached block, and keeps one
+/// copy of it. It used to decode every sample of that block into vectors of their own and hold the
+/// block in a table, so a block of many samples cost an allocation or more per sample, twice per
+/// write (validation and execution). The same samples stored as one block and as many cost the
+/// planner no more in the one block than in the many, and leave the same series to the byte.
+///
+/// The CONTROL is a plain read of the whole series: it allocates at least once per sample, so the
+/// probe can see the sample count. There is no absolute ceiling.
+#[test]
+#[ignore = "measurement: run with --features alloc-probe --ignored"]
+fn a_merge_write_reads_a_stored_sample_in_place_whatever_its_block_holds() {
+    let (_dir, engine, key) = sample_series(true);
+    let probe = Probe::start();
+    let read = whole_series(&engine, &key);
+    let read_allocs = probe.stop().allocs;
+    assert_eq!(24, read.len());
+    assert!(read_allocs >= 24, "CONTROL: a read of 24 samples spent {read_allocs} allocations, so the probe cannot see samples");
+    let (packed, packed_series) = merges_into_stored_samples(true);
+    let (separate, separate_series) = merges_into_stored_samples(false);
+    eprintln!("SAMPLE_IN_PLACE one block of 24 samples: {packed} allocs a write; 24 blocks: {separate} allocs a write");
+    assert_eq!(packed_series, separate_series, "the two stores left different series");
+    assert!(separate > 20.0, "the probe is blind: {separate} allocations for a merge write");
+    // A block read once serves the samples it holds, so the packed store may cost LESS (a block
+    // read alone pays its own frame read); it must never cost more. Decoding the block sample by
+    // sample made it cost more, by about three allocations a sample.
+    assert!(
+        packed <= separate + 2.0,
+        "a merge write costs {packed} allocations when its sample sits in a block of 24 and {separate} when it sits alone: the block is decoded sample by sample"
+    );
+}
