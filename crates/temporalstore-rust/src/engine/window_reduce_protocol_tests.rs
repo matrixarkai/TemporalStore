@@ -914,8 +914,9 @@ fn an_answer_says_which_samples_the_read_used_in_microseconds_and_leaves_the_fie
     // Not asked: no message at all.
     assert!(answer_of(&profile, &q, &RankedCells { samples: 2, ..Default::default() }).sample_info.is_none());
 
-    // The bytes: one sample at 1 ms holding 3 cells is field 7 (starts, ends, counts, each packed),
-    // then the established `samples` field, and an answer that did not ask has no field 7.
+    // The bytes: the entity (field 1, the query's 7), then one sample at 1 ms holding 3 cells as
+    // field 7 (starts, ends, counts, each packed), then the established `samples` field. An answer
+    // that did not ask has no field 7.
     let one = RankedCells {
         samples: 1,
         sample_info: vec![WindowReduceSampleInfo { timestamp_ms: 1, cells: 3 }],
@@ -923,11 +924,11 @@ fn an_answer_says_which_samples_the_read_used_in_microseconds_and_leaves_the_fie
     };
     assert_eq!(
         answer_of(&profile, &q, &one).encode_to_vec(),
-        vec![0x3a, 0x0b, 0x0a, 0x02, 0xe8, 0x07, 0x12, 0x02, 0xe8, 0x07, 0x1a, 0x01, 0x03, 0x90, 0x01, 0x01]
+        vec![0x08, 0x07, 0x3a, 0x0b, 0x0a, 0x02, 0xe8, 0x07, 0x12, 0x02, 0xe8, 0x07, 0x1a, 0x01, 0x03, 0x90, 0x01, 0x01]
     );
     assert_eq!(
         answer_of(&profile, &q, &RankedCells { samples: 1, ..Default::default() }).encode_to_vec(),
-        vec![0x90, 0x01, 0x01]
+        vec![0x08, 0x07, 0x90, 0x01, 0x01]
     );
 }
 
