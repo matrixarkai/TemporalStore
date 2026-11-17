@@ -128,6 +128,8 @@ field Command 72 2 single
 field Command 73 2 single
 field Command 74 2 single
 field Command 75 2 single
+field Command 76 2 single
+field Command 77 2 single
 message CommandResponse
 field CommandResponse 1 2 single
 field CommandResponse 2 2 single

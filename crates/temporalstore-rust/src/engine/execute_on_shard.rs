@@ -2652,6 +2652,8 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::SetAddMany { key, members } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             // Each member goes through the single-member commands, so what it asks the set and what it
             // writes are exactly what a `SetIsMember` and a `SetAdd` (or `SetRemove`) issued one at a
             // time would ask and write: the same elements, the same blocks, in the same order.
@@ -3998,6 +4000,8 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::SetRemoveMany { key, members } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             // Each member goes through the single-member commands, so what it asks the set and what it
             // writes are exactly what a `SetIsMember` and a `SetAdd` (or `SetRemove`) issued one at a
             // time would ask and write: the same elements, the same blocks, in the same order.
