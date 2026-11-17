@@ -918,7 +918,8 @@ jobs:
           # slab for its grace. Pinned by exact name: they ran only in the advisory suite above.
           for t in \
             data_node::tests::part3::the_loop_runs_no_stage_on_a_shard_that_is_still_replaying \
-            data_node::tests::part3::the_periodic_loop_holds_a_quarantined_slab_for_a_day
+            data_node::tests::part3::the_periodic_loop_holds_a_quarantined_slab_for_a_day \
+            data_node::round_budget::tests::the_whole_round_loop_is_the_default_and_the_tick_loop_is_opt_in
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-loop.log
             # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.

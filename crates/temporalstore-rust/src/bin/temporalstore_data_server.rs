@@ -284,14 +284,15 @@ fn main() {
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(30_000);
     //
-    // The loop is a short TICK (default 30 ms) that does the cheap work and at most one heavy
-    // stage; each heavy stage falls due once per `interval` above, the five spread across it, so
-    // a request waits behind one stage and not behind all of them. A tick of 0 runs the old
-    // whole-round loop once per interval.
-    let storage_manager_tick_ms = std::env::var("MATRIXARK_STORAGE_MANAGER_TICK_MS")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(30);
+    // MATRIXARK_STORAGE_MANAGER_TICK_MS opts in to a short TICK (for example 30 ms) that does the
+    // cheap work and at most one heavy stage; each heavy stage falls due once per `interval`
+    // above, the five spread across it, so a request waits behind one stage and not behind all of
+    // them. Unset or 0 runs the whole-round loop once per interval.
+    let storage_manager_tick_ms = temporalstore_rust::data_node::storage_manager_tick_ms(
+        std::env::var("MATRIXARK_STORAGE_MANAGER_TICK_MS")
+            .ok()
+            .as_deref(),
+    );
     let _storage_manager_scheduler = (storage_manager_interval_ms > 0).then(|| {
         eprintln!(
             "matrixark_storage_manager_scheduler interval_ms={storage_manager_interval_ms} \
