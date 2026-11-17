@@ -272,7 +272,29 @@ fn fresh_hash_batches_do_not_scan_preexisting_refs_per_field() {
         write(&engine, hash(0, 2_048));
         reset();
         write(&engine, hash(2_048, 128));
-        assert_eq!(counts(), (0, 2_176));
+        assert_eq!(counts(), (0, 0), "already-dirty blocks need no second walk");
+        let block_marks = || {
+            let shards = engine.shards.read().unwrap();
+            let shard = &shards[&1];
+            shard
+                .bucket_index
+                .block_refs_for("hash", "catalog", None)
+                .unwrap()
+                .iter()
+                .map(|at| {
+                    shard
+                        .bucket_index
+                        .bucket_map
+                        .get(&at.routing_bucket)
+                        .unwrap()
+                        .block_index
+                        .get(&at.block_ref_key)
+                        .unwrap()
+                        .dirty()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(block_marks().iter().all(|dirty| *dirty));
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::HashLen {
@@ -281,5 +303,16 @@ fn fresh_hash_batches_do_not_scan_preexisting_refs_per_field() {
         });
         assert!(response.status.ok);
         assert_eq!(response.response, CommandResponse::Integer { value: 2_176 });
+        engine.unload_shard(1);
+        engine.load_shard(1);
+        assert!(block_marks().iter().all(|dirty| !dirty));
+        reset();
+        write(&engine, hash(2_176, 128));
+        assert_eq!(
+            counts(),
+            (0, 2_304),
+            "a clean hash still needs its first walk"
+        );
+        assert!(block_marks().iter().all(|dirty| *dirty));
     }
 }

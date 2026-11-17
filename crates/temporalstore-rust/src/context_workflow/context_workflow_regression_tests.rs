@@ -9,6 +9,9 @@ use std::thread;
 #[path = "scoped_retrieval_tests.rs"]
 mod scoped_retrieval_tests;
 
+#[path = "evidence_ranking_tests.rs"]
+mod evidence_ranking_tests;
+
 #[test]
 fn bounded_summary_selection_matches_full_ranking() {
     for count in [0, 1, 7, 8, 64, 4096] {

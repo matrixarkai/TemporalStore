@@ -1279,23 +1279,52 @@ impl TemporalEngine {
             (command, None)
         };
 
-        let outcome = execute_on_shard(
-            &self.cache,
-            &self.block_store,
-            config.feature_max_size,
-            defer_storage,
-            config.control_rollup_enabled(),
-            config.control_coalesce_persist_enabled(),
-            config.control_state_max_size(),
-            config.control_distinct_sketch_enabled(),
-                config.trim_boundary_record_enabled(),
-            config.set_listing_from_map_enabled(),
-            request.shard_id,
-            start_routing_bucket,
-            end_routing_bucket,
-            shard,
-            execution_command,
-        );
+        let hash_was_dirty = match &execution_command {
+            Command::HashMultiSet { key, .. } => shard.dirty_objects.contains(key),
+            _ => false,
+        };
+        // Preserve the writer's proof so maintenance does not file its fields twice.
+        let (outcome, hash_index_filed) = match execution_command {
+            Command::HashMultiSet { key, entries } => {
+                shard.control_coalesce_persist = config.control_coalesce_persist_enabled();
+                shard.control_state_max_size = config.control_state_max_size();
+                shard.control_distinct_sketch = config.control_distinct_sketch_enabled();
+                shard.set_listing_from_map = config.set_listing_from_map_enabled();
+                let (outcome, _, filed) = execute_on_shard::execute_hash_multi_set_reusing_metadata(
+                    &self.cache,
+                    &self.block_store,
+                    request.shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    defer_storage,
+                    false,
+                    key,
+                    entries,
+                );
+                (outcome, filed)
+            }
+            command => (
+                execute_on_shard(
+                    &self.cache,
+                    &self.block_store,
+                    config.feature_max_size,
+                    defer_storage,
+                    config.control_rollup_enabled(),
+                    config.control_coalesce_persist_enabled(),
+                    config.control_state_max_size(),
+                    config.control_distinct_sketch_enabled(),
+                    config.trim_boundary_record_enabled(),
+                    config.set_listing_from_map_enabled(),
+                    request.shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                ),
+                None,
+            ),
+        };
         // LRU recency: record that this command touched its
         // bucket(s), read or write, so eviction can prefer least-recently-used buckets.
         {
@@ -1362,12 +1391,23 @@ impl TemporalEngine {
                     // did, which is why a synchronous write leaves as much pending as an async one
                     // (measured: 64 of 64 either way). Writing through is still to be built; this
                     // removes the branch that suggested it already had been.
-                    mark_object_dirty(
-                        shard,
-                        object_key,
-                        start_routing_bucket,
-                        end_routing_bucket,
-                    );
+                    if hash_index_filed.is_some() && hash_was_dirty {
+                        // Older blocks already carry the mark; the writer dirtied its
+                        // new/replaced blocks. Keep the bucket generation without a walk.
+                        let routing_bucket = block_routing_bucket(
+                            object_key, start_routing_bucket, end_routing_bucket,
+                        );
+                        storage_bucket_internals::mark_object_dirty_at_bucket_deferred(
+                            shard, object_key, routing_bucket,
+                        );
+                    } else {
+                        mark_object_dirty(
+                            shard,
+                            object_key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        );
+                    }
                 }
             }
             // Rebuild the first-index only outside the deferred-reconstruct windows
@@ -1398,7 +1438,8 @@ impl TemporalEngine {
             // write at 100. The batch path has filed only what a command wrote since it existed.
             // A command not named here takes the whole-object sync exactly as before, so a new
             // hash command costs more rather than leaving a field unfiled.
-            let narrow_hash_sync = !shard.bucket_index.bucket_map.is_empty()
+            let narrow_hash_sync = hash_index_filed.is_none()
+                && !shard.bucket_index.bucket_map.is_empty()
                 && match &command {
                     Command::HashSet { key, field, .. } | Command::HashIncrBy { key, field, .. } => {
                         storage_bucket_internals::sync_written_hash_fields(
@@ -1422,17 +1463,18 @@ impl TemporalEngine {
                     Command::HashDelete { .. } => storage_bucket_internals::hash_delete_maintained(),
                     _ => false,
                 };
-            let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
-                && !object_keys.is_empty()
-                && (matches!(&command, Command::SetAdd { .. } | Command::SetAddMany { .. })
-                    || narrow_hash_sync
-                    || object_keys.iter().all(|object_key| {
-                        storage_bucket_internals::sync_context_blocks_for_object(
-                            shard,
-                            request.shard_id,
-                            object_key,
-                        )
-                    }));
+            let maintained_bucket_index = hash_index_filed.is_some()
+                || (!shard.bucket_index.bucket_map.is_empty()
+                    && !object_keys.is_empty()
+                    && (matches!(&command, Command::SetAdd { .. } | Command::SetAddMany { .. })
+                        || narrow_hash_sync
+                        || object_keys.iter().all(|object_key| {
+                            storage_bucket_internals::sync_context_blocks_for_object(
+                                shard,
+                                request.shard_id,
+                                object_key,
+                            )
+                        })));
             let rebuilt_bucket_index = !maintained_bucket_index
                 && !defer_bucket_index_reconstruct()
                 // A command that writes no block cannot have changed the block index, so rebuilding it
@@ -9406,6 +9448,9 @@ fn object_manager_stats(
 #[cfg(test)]
 #[path = "engine/engine_regression_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod hash_execute_filed_tests;
 
 #[cfg(test)]
 mod flag_default_doc_tests {

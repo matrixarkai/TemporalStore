@@ -123,6 +123,56 @@ impl EmbeddingIndexRegistry {
         batch: &[EmbeddingVector<'_>],
         only_missing: bool,
     ) -> Result<Option<EmbeddingWriteReport>, EmbeddingIndexError> {
+        if let [input] = batch {
+            let space = EmbeddingSpace {
+                channel,
+                model_hash,
+                dimensions: input.values.len(),
+            };
+            if let Some(index) = self.spaces.get(&space) {
+                let exists = index.contains(input.key);
+                let growth = usize::from(!exists);
+                let growth_bytes = growth.saturating_mul(
+                    space.dimensions.saturating_add(std::mem::size_of::<f32>()),
+                );
+                // Existing keys cannot grow any budget. Only insertions need scans.
+                if exists || (index.len().saturating_add(growth)
+                    <= self.max_entries_for_dimensions(space.dimensions)
+                    && self.len().saturating_add(growth) <= self.max_entries
+                    && self.quantized_vector_bytes().saturating_add(growth_bytes)
+                        <= self.max_vector_bytes)
+                {
+                    // Validate and quantize directly into the index before removing
+                    // obsolete model copies. Invalid input must leave every space intact.
+                    let report = if only_missing && exists {
+                        None
+                    } else {
+                        Some(self.spaces.get_mut(&space).expect("embedding space exists")
+                            .upsert_batch(batch)?)
+                    };
+                    for (existing_space, index) in &mut self.spaces {
+                        if existing_space.channel == channel && *existing_space != space {
+                            index.remove(input.key);
+                        }
+                    }
+                    self.prune_empty_spaces();
+                    if report.is_some() {
+                        self.touch_space(space);
+                    }
+                    return Ok(report);
+                }
+            }
+        }
+        self.upsert_prepared(channel, model_hash, batch, only_missing)
+    }
+
+    fn upsert_prepared(
+        &mut self,
+        channel: EmbeddingChannel,
+        model_hash: u64,
+        batch: &[EmbeddingVector<'_>],
+        only_missing: bool,
+    ) -> Result<Option<EmbeddingWriteReport>, EmbeddingIndexError> {
         let Some(first) = batch.first() else {
             return Ok(None);
         };
@@ -558,6 +608,10 @@ fn cache_budget(name: &str, fallback: usize) -> usize {
         .filter(|value| *value > 0)
         .unwrap_or(fallback)
 }
+
+#[cfg(test)]
+#[path = "registry_single_row_tests.rs"]
+mod single_row_tests;
 
 #[cfg(test)]
 mod tests {

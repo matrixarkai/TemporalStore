@@ -24,6 +24,11 @@ pub(super) fn note_set_write_scan(dirty: bool) {
 #[cfg(test)]
 #[path = "set_batch_work_tests.rs"]
 mod set_batch_work_tests;
+
+#[cfg(test)]
+pub(super) fn dirty_propagation_visits() -> u64 {
+    SET_WRITE_SCANS.with(|counts| counts.get().1)
+}
 use crate::engine::reports::StageWalkCharges;
 use std::sync::Arc;
 
