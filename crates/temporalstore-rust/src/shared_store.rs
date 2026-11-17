@@ -13620,7 +13620,8 @@ mod tests {
         let blob = store.get(&replicator.wal_blob_key(1)).await.unwrap();
         assert!(
             is_wal_batch_container(&blob),
-            "a batch of six published by a default replicator was written as frames, so the              container is not the default"
+            "a batch of six published by a default replicator was written as frames, so the \
+             container is not the default"
         );
         let follower = test_engine(dir.path(), "follower");
         follower.load_shard(1);
@@ -14482,7 +14483,8 @@ fn the_covered_writes_are_framed_as_protobuf_and_round_trip() {
             .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
         assert_eq!(
             frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
-            "{name} is still framed as encoding {} -- the mapping exists but the frame did not              take it",
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not \
+             take it",
             frame.command_encoding
         );
         // The declared id is written by the same code that chose the arm, so it cannot be the only
