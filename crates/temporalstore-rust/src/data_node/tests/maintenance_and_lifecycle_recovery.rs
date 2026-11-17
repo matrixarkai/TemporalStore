@@ -3699,6 +3699,8 @@ fn the_periodic_expire_stage_takes_a_bounded_window_each_round() {
     let options = StorageManagerOptions {
         max_expire_hot_buckets_per_round: WINDOW,
         max_expire_cold_buckets_per_round: WINDOW,
+        // One slice a round: this test is about the key bound, not the time budget.
+        expire_round_budget_micros: 0,
         ..StorageManagerOptions::default()
     };
     bounded.run_storage_manager_once(1, options.clone());

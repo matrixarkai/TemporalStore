@@ -852,6 +852,8 @@ fn the_overdue_count_is_what_a_bounded_round_leaves_due() {
     assert_eq!(engine.expiry_overdue_keys(), 3);
     let one_per_round = StorageManagerOptions {
         max_expire_hot_buckets_per_round: 1,
+        // One slice a round: this test is about the key bound, not the time budget.
+        expire_round_budget_micros: 0,
         ..StorageManagerOptions::default()
     };
     runtime.run_storage_manager_once(1, one_per_round.clone());
