@@ -115,6 +115,74 @@ pub(super) fn run_compaction_background_draining(
     }
 }
 
+thread_local! {
+    /// Lifecycle plans built at the end of a collection on THIS thread, and heap trims it asked
+    /// for. Per thread for the same reason as the walk count below.
+    static GC_LIFECYCLE_PLANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static GC_HEAP_TRIMS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn gc_lifecycle_plans() -> u64 {
+    GC_LIFECYCLE_PLANS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(super) fn gc_heap_trims() -> u64 {
+    GC_HEAP_TRIMS.with(std::cell::Cell::get)
+}
+
+thread_local! {
+    /// How many times collection on THIS thread fell back to walking every shard's index for its
+    /// live slab set. Per thread because the guard reads it around a call made on its own thread,
+    /// and a process-wide count would also move for every other test running beside it.
+    static GC_LIVE_SET_WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Walks made so far on this thread. For the guard.
+#[cfg(test)]
+pub(super) fn gc_live_set_walks() -> u64 {
+    GC_LIVE_SET_WALKS.with(std::cell::Cell::get)
+}
+
+/// The slab ids collection has to keep, built the cheap way when the cheap way can be trusted.
+///
+/// WHAT IS ASKED OF THE TALLY IS NARROW. Collection only ever removes a slab below the retain
+/// point that is neither live nor the one appends are landing in. If every such slab is accounted
+/// for by the maintained per-slab tally, the retained manifests or the unpublished compaction
+/// set, there is nothing for the walk to find, and the answer is the union of those, which costs
+/// a map read instead of a pass over every index entry of every shard.
+///
+/// THE TALLY IS ONLY EVER BELIEVED IN THE SAFE DIRECTION. If it overstates what is live, a slab
+/// stays a round longer. If it understates -- a counting bug, a door that forgot a charge -- the
+/// slab it forgot reads as collectable, the candidate test below sees it, and the authoritative
+/// walk runs and confirms it before anything is destroyed. So a wrong tally can cost a walk or a
+/// skipped round and cannot cost a live slab; the walk stays the only thing that may say a slab
+/// is dead.
+fn live_block_slab_ids_for_collection(
+    inner: &DataNodeRuntimeInner,
+    retain_from_block_slab_id: u64,
+    manifest_block_slab_ids: &std::collections::BTreeSet<u64>,
+) -> Vec<u64> {
+    if let Some(from_tally) = inner.engine.live_block_slab_ids_from_tally() {
+        if let Ok(on_disk) = inner.engine.block_store().slab_ids() {
+            let current = inner.engine.block_store().current_block_slab_id();
+            let tally_live: std::collections::BTreeSet<u64> = from_tally.into_iter().collect();
+            let anything_collectable = on_disk.iter().any(|block_slab_id| {
+                *block_slab_id < retain_from_block_slab_id
+                    && *block_slab_id != current
+                    && !tally_live.contains(block_slab_id)
+                    && !manifest_block_slab_ids.contains(block_slab_id)
+            });
+            if !anything_collectable {
+                return tally_live.into_iter().collect();
+            }
+        }
+    }
+    GC_LIVE_SET_WALKS.with(|walks| walks.set(walks.get() + 1));
+    inner.engine.live_block_slab_ids_all_shards()
+}
+
 pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> GcResponse {
     // REFUSE WHILE THE SHARD IS RECOVERING (WAL replay still to run, or running).
     //
@@ -298,16 +366,25 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             // One engine shares a single block_store across every shard it hosts, so a slab can
             // hold blocks from multiple shards. Retain slabs live in ANY loaded shard, not just
             // this request's shard; a per-shard live set would delete another shard's live blocks.
-            let mut live_block_slab_ids = inner.engine.live_block_slab_ids_all_shards();
+            // The retained manifests first, because both ways of building the live set need them.
+            let manifest_block_slab_ids: std::collections::BTreeSet<u64> = inner
+                .engine
+                .list_bucket_dump_manifests(request.shard_id)
+                .iter()
+                .flat_map(|manifest| manifest.block_slab_ids.iter().copied())
+                .collect();
+            let mut live_block_slab_ids = live_block_slab_ids_for_collection(
+                inner,
+                retain_from_block_slab_id,
+                &manifest_block_slab_ids,
+            );
             // Retain any block slab still referenced by a durable bucket-dump manifest. The
             // operator /gc RPC must not delete a slab a retained manifest needs: a lagging
             // follower's replay or a snapshot-install reads it, and deleting it makes the
             // manifest uninstallable (replica data loss). The gated storage-manager cycle
             // already blocks this via storage_block_gc_dependency_plan; mirror that manifest
             // guard here so the operator path cannot bypass it.
-            for manifest in inner.engine.list_bucket_dump_manifests(request.shard_id) {
-                live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
-            }
+            live_block_slab_ids.extend(manifest_block_slab_ids.iter().copied());
             // Quarantine or unlink, nothing else: `delayed_destroy` is the last argument below
             // and changes only what happens to a slab once it has been selected.
             //
@@ -424,7 +501,8 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             }
         }
     }
-    let lifecycle_plan = Some(
+    let lifecycle_plan = request.include_lifecycle_plan.then(|| {
+        GC_LIFECYCLE_PLANS.with(|plans| plans.set(plans.get() + 1));
         inner
             .engine
             .storage_lifecycle_plan(StorageLifecycleRequest {
@@ -446,8 +524,8 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
                 block_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
-            }),
-    );
+            })
+    });
     inner
         .stats
         .lock()
@@ -456,7 +534,19 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     // Hand back what this just released. `free` returns memory to the allocator, not to the kernel:
     // measured here, dropping 46 MB returned 2.3% of it, and one trim returned 95% of the rest. GC
     // is where a lot is released at once and nothing is waiting on the result.
-    let _ = crate::memory_trim::release_free_heap_to_os();
+    //
+    // ONLY WHEN THE ROUND RELEASED SOMETHING. A trim walks the allocator's free lists, and a round
+    // that removed nothing has nothing new to hand back: it used to trim after every run, idle
+    // ones included, which is a cost paid on the loop thread for no memory.
+    if block_slabs_removed > 0
+        || cache_entries_removed > 0
+        || cache_disk_bytes_removed > 0
+        || wal_records_removed > 0
+        || index_log_records_removed > 0
+    {
+        GC_HEAP_TRIMS.with(|trims| trims.set(trims.get() + 1));
+        let _ = crate::memory_trim::release_free_heap_to_os();
+    }
     GcResponse {
         status,
         shard_id: request.shard_id,

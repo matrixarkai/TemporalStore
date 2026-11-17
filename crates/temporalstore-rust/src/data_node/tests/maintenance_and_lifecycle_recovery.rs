@@ -1239,6 +1239,7 @@ fn gc_does_not_clear_the_dirty_scheduling_tracker() {
             block_gc_raft_snapshot_refs: Vec::new(),
             block_gc_checkpoint_floor_slab_id: None,
             block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2256,6 +2257,7 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             block_gc_raft_snapshot_refs: Vec::new(),
             block_gc_checkpoint_floor_slab_id: None,
             block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2360,6 +2362,7 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
             block_gc_raft_snapshot_refs: Vec::new(),
             block_gc_checkpoint_floor_slab_id: None,
             block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2540,6 +2543,7 @@ fn runtime_honors_inflight_cancellation_before_gc_side_effects() {
             block_gc_raft_snapshot_refs: Vec::new(),
             block_gc_checkpoint_floor_slab_id: None,
             block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         }),
     };
     runtime
@@ -2660,6 +2664,7 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
             block_gc_raft_snapshot_refs: Vec::new(),
             block_gc_checkpoint_floor_slab_id: None,
             block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -6092,6 +6097,7 @@ fn a_gc_request_with_no_owner_fields_still_honours_a_registered_reader() {
                 block_gc_raft_snapshot_refs: Vec::new(),
                 block_gc_checkpoint_floor_slab_id: None,
                 block_gc_raft_install_floor_slab_id: None,
+                include_lifecycle_plan: false,
             },
             RequestController { timeout_ms: 1000 },
         );
@@ -10178,6 +10184,7 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
             block_gc_raft_snapshot_refs: Vec::new(),
             block_gc_checkpoint_floor_slab_id: None,
             block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         },
         RequestController { timeout_ms: 5000 },
     );
@@ -12238,6 +12245,7 @@ fn reclaim_is_refused_while_the_shard_is_recovering() {
             block_gc_raft_snapshot_refs: Vec::new(),
             block_gc_checkpoint_floor_slab_id: None,
             block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         },
         RequestController { timeout_ms: 5_000 },
     );

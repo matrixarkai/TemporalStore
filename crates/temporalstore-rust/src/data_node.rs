@@ -985,6 +985,14 @@ pub struct GcRequest {
     pub block_gc_checkpoint_floor_slab_id: Option<u64>,
     #[serde(default)]
     pub block_gc_raft_install_floor_slab_id: Option<u64>,
+    /// Build the shard's lifecycle plan after the reclaim and return it in the response.
+    ///
+    /// Off by default. The plan is a survey of the whole shard, and building it at the end of every
+    /// round put a pass over every index entry after work that had often found nothing to do. The
+    /// periodic loop surveys the shard once per round for its own decisions and does not read this
+    /// one; an operator who wants the post-reclaim picture asks for it.
+    #[serde(default)]
+    pub include_lifecycle_plan: bool,
     /// Slabs one round may destroy. 0 means NO BOUND.
     ///
     /// THREE BOUNDS THAT EXISTED ONLY ON THE OTHER PIPELINE. `StorageManagerCycleRequest` has

@@ -1263,6 +1263,7 @@ impl DataNodeRuntime {
                         .block_gc_max_destroy_physical_bytes_per_round,
                     block_gc_min_slab_garbage_basis_points: options
                         .block_gc_min_slab_garbage_basis_points,
+                    include_lifecycle_plan: false,
                 },
             );
             if !response.status.ok {

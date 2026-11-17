@@ -2272,6 +2272,14 @@ impl BlockStore {
         Ok(())
     }
 
+    /// The slab appends are landing in now. Collection never removes it.
+    pub fn current_block_slab_id(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("block store lock poisoned")
+            .block_slab_id
+    }
+
     pub fn roll_slab(&self) -> Result<BlockStoreRollReport, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         roll_slab_inner(&mut inner)
