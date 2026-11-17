@@ -13711,6 +13711,89 @@ mod tests {
         }
     }
 
+    /// Counts `append_blob` calls and fails each with one fixed error.
+    #[derive(Debug)]
+    struct AppendAlwaysFails {
+        calls: AtomicU64,
+        unknown: bool,
+    }
+
+    #[async_trait]
+    impl ObjectStore for AppendAlwaysFails {
+        async fn put(&self, _key: &str, _bytes: Bytes) -> Result<(), ObjectStoreError> {
+            Ok(())
+        }
+        async fn append_blob(
+            &self,
+            key: &str,
+            _bytes: Bytes,
+        ) -> Result<AppendBlobReceipt, ObjectStoreError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.unknown {
+                Err(ObjectStoreError::OutcomeUnknown {
+                    key: key.to_string(),
+                    detail: "injected".to_string(),
+                })
+            } else {
+                Err(ObjectStoreError::Http("injected".to_string()))
+            }
+        }
+        async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+            Err(ObjectStoreError::NotFound(key.to_string()))
+        }
+        async fn list(&self, _prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+            Ok(Vec::new())
+        }
+        async fn delete(&self, _key: &str) -> Result<(), ObjectStoreError> {
+            Ok(())
+        }
+        fn uri(&self, key: &str) -> String {
+            key.to_string()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_append_of_unknown_outcome_is_not_retried_and_an_ordinary_failure_is() {
+        const ATTEMPTS: usize = 5;
+        let policy = SharedStoreRetryPolicy {
+            max_attempts: ATTEMPTS,
+            backoff_ms: 0,
+        };
+        // CONTROL: an ordinary failure uses every attempt, so the loop is live and the count
+        // below is the variant's doing and not a loop that never repeats.
+        let ordinary = Arc::new(AppendAlwaysFails {
+            calls: AtomicU64::new(0),
+            unknown: false,
+        });
+        let replicator =
+            SharedStoreReplicator::with_retry_policy(TEST_CLUSTER_ID, ordinary.clone(), policy);
+        assert!(replicator
+            .append_blob_with_retry("k", Bytes::from_static(b"x"))
+            .await
+            .is_err());
+        assert_eq!(ordinary.calls.load(Ordering::SeqCst), ATTEMPTS as u64);
+
+        // An append that may already be in the object is sent once and reported as unknown.
+        let unknown = Arc::new(AppendAlwaysFails {
+            calls: AtomicU64::new(0),
+            unknown: true,
+        });
+        let replicator =
+            SharedStoreReplicator::with_retry_policy(TEST_CLUSTER_ID, unknown.clone(), policy);
+        let error = replicator
+            .append_blob_with_retry("k", Bytes::from_static(b"x"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                SharedStoreReplicationError::ObjectStore(ObjectStoreError::OutcomeUnknown { .. })
+            ),
+            "got {error:?}"
+        );
+        assert_eq!(unknown.calls.load(Ordering::SeqCst), 1, "never sent again");
+    }
+
     /// (a) Concurrent sync writers coalesce onto FAR fewer durable appends than writes, while every
     /// write is Ok with a distinct byte range, and (b) every acked write is recoverable after a
     /// simulated restart (fresh replicator replays the shared WAL) — proving durability.
