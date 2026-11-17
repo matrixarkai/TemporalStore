@@ -912,6 +912,34 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-loop.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
+      - name: cargo test (expire, evict and cache-bound stage guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # A shard's round expires only that shard's keys, the expire and evict counts are each stage's
+          # own runs, the runtime counts what expiry removed and what it left overdue, the cache-bound
+          # stage drops the cache and dumps nothing, a long run of due cold keys does not starve a hot
+          # one, and a shard that finishes recovery has its due keys removed by its own next round.
+          # Pinned by exact name: they ran only in the advisory suite above.
+          for t in \
+            data_node::tests::loop_report::a_shards_round_expires_only_that_shards_keys \
+            data_node::tests::loop_report::the_expire_and_evict_counts_are_each_stages_own_runs \
+            data_node::tests::loop_report::the_runtime_counts_the_keys_the_expire_stage_removed \
+            data_node::tests::loop_report::the_overdue_count_is_what_a_bounded_round_leaves_due \
+            data_node::tests::loop_report::the_cache_bound_stage_drops_the_cache_and_dumps_nothing \
+            engine::tests::expiry_scale::a_long_run_of_due_cold_keys_does_not_starve_a_due_hot_key \
+            data_node::tests::part3::a_shard_that_finishes_recovery_has_its_due_keys_removed_by_its_own_next_round
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-memory-stages.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-memory-stages.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-memory-stages.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
       - name: cargo test (index stage and dump floor guards, hard gate)
         timeout-minutes: 20
         run: |
