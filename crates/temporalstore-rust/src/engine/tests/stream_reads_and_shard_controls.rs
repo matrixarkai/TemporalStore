@@ -3384,3 +3384,60 @@ fn clear_string_rows_keeping_their_blocks_named(
     shard.strings_mut().clear();
     moved
 }
+
+/// A listing must release its read guard on the shard before it builds the summaries.
+///
+/// Every writer takes the write guard for its whole command, so for as long as a listing holds the
+/// read guard no write is acknowledged. The listing used to hold it across the copy out of the
+/// shard AND the summaries and digests built from the copy, and across reading the latest manifest
+/// off disk. On a 1M-key fill, whole-shard listings took 14% of the run with the longest at 4.5 s,
+/// and 27 of 29 seconds in which no write was acknowledged overlapped one.
+///
+/// The hook runs on the listing's thread at the point it has let the shard go. A write started
+/// there from another thread must finish while the listing is parked; if the listing still held
+/// its guard the write could not finish until the hook returned.
+#[test]
+fn a_writer_is_not_blocked_while_a_listing_builds_its_summaries() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "first".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+
+    let finished_while_parked = Arc::new(AtomicBool::new(false));
+    let writer_engine = engine.clone();
+    let flag = Arc::clone(&finished_while_parked);
+    crate::engine::storage_reporting::on_next_listing_released(move || {
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            writer_engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "during".to_string(),
+                    value: b"v".to_vec(),
+                },
+            });
+            let _ = done_tx.send(());
+        });
+        flag.store(
+            done_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            Ordering::SeqCst,
+        );
+        writer.join().expect("writer thread");
+    });
+
+    let _ = engine.bucket_storage_summaries(1);
+    assert!(
+        finished_while_parked.load(Ordering::SeqCst),
+        "a write could not finish while the listing was building its summaries: the listing \
+         still holds its read guard on the shard"
+    );
+}
