@@ -31,6 +31,13 @@ pub enum ObjectStoreError {
     /// hard abort, never a retryable transient error.
     #[error("object store condition failed for {key}: {detail}")]
     ConditionFailed { key: String, detail: String },
+    /// A write was sent and neither its success nor its absence could be established.
+    ///
+    /// The write may or may not be in the object. A caller must NOT repeat it blindly -- for an
+    /// append that would store the bytes twice -- and must settle it by reading the object
+    /// first.
+    #[error("object store outcome unknown for {key}: {detail}")]
+    OutcomeUnknown { key: String, detail: String },
 }
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Serialize)]
@@ -1435,5 +1442,225 @@ mod tests {
             store.get("shards/1/wal/0001.json").await.unwrap(),
             Bytes::from_static(b"durable")
         );
+    }
+
+    // ---- An append whose outcome is unknown is settled by reading, never repeated blind ----
+    //
+    // A scripted one-object S3 server. It commits a PUT and THEN misbehaves (drops the socket,
+    // answers 503), which is the case a real gateway produces when a consensus deadline passes
+    // after the manifest was committed.
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Fault {
+        None,
+        /// Commit the append, then close the socket without answering.
+        CommitThenDrop,
+        /// Commit the append, then answer 503.
+        CommitThen503,
+        /// Answer 503 and commit nothing.
+        Refuse503,
+    }
+
+    struct ScriptedState {
+        data: Vec<u8>,
+        existing: bool,
+        puts: usize,
+        fault_on_first_put: Fault,
+        /// Every GET with a range answers 500.
+        reads_fail: bool,
+    }
+
+    fn scripted_server(
+        fault_on_first_put: Fault,
+        reads_fail: bool,
+    ) -> (String, Arc<Mutex<ScriptedState>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = Arc::new(Mutex::new(ScriptedState {
+            data: Vec::new(),
+            existing: false,
+            puts: 0,
+            fault_on_first_put,
+            reads_fail,
+        }));
+        let shared = state.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let head_end = loop {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break None;
+                    }
+                    raw.extend_from_slice(&chunk[..n]);
+                    if let Some(at) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break Some(at + 4);
+                    }
+                };
+                let Some(head_end) = head_end else { continue };
+                let head = String::from_utf8_lossy(&raw[..head_end]).to_string();
+                let mut lines = head.lines();
+                let request_line = lines.next().unwrap_or_default().to_string();
+                let method = request_line.split(' ').next().unwrap_or_default().to_string();
+                let header = |name: &str| -> Option<String> {
+                    head.lines().find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case(name).then(|| value.trim().to_string())
+                    })
+                };
+                let content_length: usize = header("content-length")
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(0);
+                while raw.len() < head_end + content_length {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&chunk[..n]);
+                }
+                let body = raw[head_end..].to_vec();
+                let reply = |status: &str, extra: &str, body: &[u8], with_body: bool| {
+                    let mut out = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n",
+                        body.len()
+                    )
+                    .into_bytes();
+                    if with_body {
+                        out.extend_from_slice(body);
+                    }
+                    out
+                };
+                let mut state = shared.lock().unwrap();
+                let answer: Option<Vec<u8>> = match method.as_str() {
+                    "HEAD" if !state.existing => Some(reply("404 Not Found", "", b"", false)),
+                    "HEAD" => Some(reply(
+                        "200 OK",
+                        &format!("x-amz-object-size: {}\r\n", state.data.len()),
+                        &vec![0u8; state.data.len()],
+                        false,
+                    )),
+                    "GET" => {
+                        if state.reads_fail {
+                            Some(reply("500 Internal Server Error", "", b"read failed", true))
+                        } else if !state.existing {
+                            Some(reply("404 Not Found", "", b"", true))
+                        } else if let Some(range) = header("range") {
+                            let spec = range.trim_start_matches("bytes=");
+                            let (first, last) = spec.split_once('-').unwrap();
+                            let first: usize = first.parse().unwrap();
+                            if first >= state.data.len() {
+                                Some(reply("416 Range Not Satisfiable", "", b"", true))
+                            } else {
+                                let last = last
+                                    .parse::<usize>()
+                                    .unwrap_or(usize::MAX)
+                                    .min(state.data.len() - 1);
+                                Some(reply("206 Partial Content", "", &state.data[first..=last], true))
+                            }
+                        } else {
+                            Some(reply("200 OK", "", &state.data.clone(), true))
+                        }
+                    }
+                    "PUT" => {
+                        state.puts += 1;
+                        let fault = if state.puts == 1 { state.fault_on_first_put } else { Fault::None };
+                        let offset: usize = header("x-amz-write-offset-bytes")
+                            .and_then(|value| value.parse().ok())
+                            .expect("an append carries its offset");
+                        if offset != state.data.len() {
+                            Some(reply("412 Precondition Failed", "", b"offset", true))
+                        } else if fault == Fault::Refuse503 {
+                            Some(reply("503 Service Unavailable", "", b"try later", true))
+                        } else {
+                            state.data.extend_from_slice(&body);
+                            state.existing = true;
+                            match fault {
+                                Fault::CommitThenDrop => None,
+                                Fault::CommitThen503 => Some(reply(
+                                    "503 Service Unavailable",
+                                    "",
+                                    b"the publication is unconfirmed",
+                                    true,
+                                )),
+                                _ => Some(reply(
+                                    "200 OK",
+                                    &format!("x-amz-object-size: {}\r\n", state.data.len()),
+                                    b"",
+                                    false,
+                                )),
+                            }
+                        }
+                    }
+                    _ => Some(reply("405 Method Not Allowed", "", b"", true)),
+                };
+                drop(state);
+                if let Some(answer) = answer {
+                    let _ = stream.write_all(&answer);
+                }
+            }
+        });
+        (format!("matrixobject://{addr}"), state)
+    }
+
+    #[tokio::test]
+    async fn an_append_committed_before_the_socket_dropped_is_reported_landed_not_repeated() {
+        let (uri, state) = scripted_server(Fault::CommitThenDrop, false);
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        let receipt = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect("the bytes are in the object, so the append succeeded");
+        assert_eq!((receipt.start_offset, receipt.end_offset), (0, 10));
+        assert_eq!(receipt.object_length, 10);
+        let state = state.lock().unwrap();
+        assert_eq!(state.data, b"record-one", "stored exactly once");
+        assert_eq!(state.puts, 1, "nothing was sent a second time");
+    }
+
+    #[tokio::test]
+    async fn an_append_committed_before_a_503_is_reported_landed_not_repeated() {
+        let (uri, state) = scripted_server(Fault::CommitThen503, false);
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        let receipt = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect("a 503 after the commit must be settled by reading");
+        assert_eq!((receipt.start_offset, receipt.end_offset), (0, 10));
+        let state = state.lock().unwrap();
+        assert_eq!(state.data, b"record-one", "stored exactly once");
+    }
+
+    #[tokio::test]
+    async fn an_append_refused_with_a_503_and_not_committed_is_retried_once_it_is_known_absent() {
+        let (uri, state) = scripted_server(Fault::Refuse503, false);
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        let receipt = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect("nothing was committed, so the retry is safe and lands");
+        assert_eq!((receipt.start_offset, receipt.end_offset), (0, 10));
+        let state = state.lock().unwrap();
+        assert_eq!(state.data, b"record-one");
+        assert_eq!(state.puts, 2);
+    }
+
+    #[tokio::test]
+    async fn an_append_that_cannot_be_read_back_reports_an_unknown_outcome_and_is_not_repeated() {
+        let (uri, state) = scripted_server(Fault::CommitThenDrop, true);
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        let error = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect_err("whether it landed cannot be established");
+        assert!(
+            matches!(error, ObjectStoreError::OutcomeUnknown { .. }),
+            "got {error:?}"
+        );
+        let state = state.lock().unwrap();
+        assert_eq!(state.puts, 1, "an append of unknown outcome is never sent again");
+        assert_eq!(state.data, b"record-one");
     }
 }
