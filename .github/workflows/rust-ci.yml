@@ -867,7 +867,12 @@ jobs:
             engine::window_reduce_protocol::tests::the_token_and_the_replayed_flag_have_the_established_field_numbers \
             engine::window_reduce_protocol::tests::a_replayed_receipt_is_reported_with_the_counts_of_the_first_application \
             engine::window_reduce_protocol::tests::a_restore_never_carries_a_token \
-            engine::window_reduce_protocol::tests::a_selector_that_asks_for_sample_info_or_a_member_limit_is_refused_naming_the_field \
+            engine::tests::a_read_can_say_which_samples_it_used::a_merged_read_says_the_samples_of_every_key_in_stamp_order \
+            engine::tests::a_read_can_say_which_samples_it_used::a_read_that_asks_says_which_samples_it_used_and_how_many_cells_each_held_live_and_after_a_restart \
+            engine::tests::a_read_can_say_which_samples_it_used::a_read_that_does_not_ask_answers_what_it_always_answered_and_its_json_has_no_new_field \
+            engine::window_reduce_protocol::tests::a_selector_that_asks_for_a_member_limit_is_refused_naming_the_field \
+            engine::window_reduce_protocol::tests::a_selector_that_wants_sample_info_asks_the_read_for_it_and_changes_nothing_else \
+            engine::window_reduce_protocol::tests::an_answer_says_which_samples_the_read_used_in_microseconds_and_leaves_the_field_out_when_not_asked \
             engine::window_reduce_protocol::tests::a_selector_that_sets_them_off_is_translated_to_exactly_the_read_it_was_without_them \
             engine::window_reduce_protocol::wire_tests::the_golden_bytes_of_every_message_decode_and_re_encode_identically \
             engine::window_reduce_protocol::wire_tests::every_golden_value_sets_every_field_its_message_has_so_no_field_escapes_the_comparison \

@@ -167,6 +167,7 @@ fn rank(engine: &TemporalEngine, key: &str, score: WindowReduceScore) -> RankedC
                 members: Default::default(),
                 anchor: Default::default(),
                 quota: Default::default(),
+                sample_info: false,
             },
         },
     );

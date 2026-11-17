@@ -163,12 +163,18 @@ a list table `list`; `timestamp_us` is the newest sample holding the member.
 **Errors.** Refusals answer INVALID_ARGUMENT, an unknown table NO_SUCH_TABLE, a duplicate refused
 under a no-merge profile DUPLICATE_REFUSED, an exhausted quota QUOTA_EXHAUSTED, anything else ERROR.
 
-**Options no read honours.** `want_sample_info` (selector field 19) and `limit_members` (field 12)
-are in the wire shape, and no read implements either: an answer carries no per-sample summary and a
-read cannot cap the members it considers. A selector that sets `want_sample_info` to true, or
-`limit_members` to anything but 0, is refused with INVALID_ARGUMENT and a message naming the field
-(`limit` caps the rows returned). A `want_sample_info` of false and a `limit_members` of 0 mean "not
-asked", with or without their presence flags, and read as if absent.
+**Sample info.** `want_sample_info` (selector field 19) true asks the answer to say which samples the
+read used: `sample_info` (answer field 7) holds, oldest sample first, `starts_us` and `ends_us` (a
+sample is one instant, so the two are equal) and `member_counts`, the cells each sample held in the
+window. The cells are counted before the member set and the predicates apply. The list is the samples the answer's
+`samples` counts, over every key of a merged read in stamp order. Every read mode takes it. A
+`want_sample_info` of false means "not asked", with or without its presence flag, and the answer then
+carries no `sample_info` at all.
+
+**Options no read honours.** `limit_members` (field 12) is in the wire shape, and no read implements
+it: a read cannot cap the members it considers. A selector that sets `limit_members` to anything but
+0 is refused with INVALID_ARGUMENT and a message naming the field (`limit` caps the rows returned). A
+`limit_members` of 0 means "not asked", with or without its presence flag, and reads as if absent.
 
 ## Where this deliberately differs from the narrower shape
 

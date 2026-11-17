@@ -402,6 +402,7 @@ mod probe {
             members: Default::default(),
             anchor: Default::default(),
             quota: Default::default(),
+            sample_info: false,
         };
         let plan = Plan::compile_with(&header(), &query, &options).unwrap();
         let probe = Probe::start();

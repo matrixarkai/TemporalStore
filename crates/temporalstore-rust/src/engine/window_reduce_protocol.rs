@@ -30,9 +30,10 @@
 //! ([`Command::WindowReduceRemove`]); see [`remove`].
 //! `MEMBERS_ONLY` reads exactly the include set, ordered by time.
 //!
-//! The selector's `want_sample_info` and `limit_members` are accepted by the wire shape and
-//! honoured by no read, so a request that sets either is refused by name
-//! ([`refuse_unbuilt_options`]) and never answered as if the option were absent.
+//! The selector's `limit_members` is accepted by the wire shape and honoured by no read, so a
+//! request that sets it is refused by name ([`refuse_unbuilt_options`]) and never answered as if
+//! the option were absent. `want_sample_info` asks the answer to say which samples the read used
+//! and how many cells each held (`SampleInfo`, oldest sample first).
 
 use super::window_reduce_fan_in;
 use super::window_reduce_rank;
@@ -44,8 +45,8 @@ use super::cell_set::{
 };
 use crate::types::{
     WindowReduceAnchor, WindowReduceLaneQuota, CellMemberFilter, CellMemberId, WindowReduceQuota, WindowReduceRankBatchItem, WindowReduceRankSpec,
-    WindowReduceScore, WindowReduceWindow, Command, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy,
-    RankedCells,
+    WindowReduceSampleInfo, WindowReduceScore, WindowReduceWindow, Command, FeatureFilter, FeatureFilterOp, FeaturePoint,
+    FeatureWritePolicy, RankedCells,
 };
 
 pub(crate) mod wire {
@@ -686,20 +687,13 @@ fn score_of(profile: &TableProfile, selector: &wire::WindowReduceSelector) -> Re
     })
 }
 
-/// The two selector options no read honours: a per-sample summary in the answer
-/// (`want_sample_info`) and a cap on the members one read may consider (`limit_members`).
-/// Neither is built, and dropping one silently would answer a question the caller did not ask, so
-/// a request that sets either is refused and the message names the field.
+/// The selector option no read honours: a cap on the members one read may consider
+/// (`limit_members`). It is not built, and dropping it silently would answer a question the caller
+/// did not ask, so a request that sets it is refused and the message names the field.
 ///
-/// `want_sample_info` is unset when false whatever its presence flag says. `limit_members` is
-/// unset when it is 0 (with or without its flag): a flagged 0 limits nothing. A negative one is a
-/// limit, so it is refused like any other.
+/// `limit_members` is unset when it is 0 (with or without its flag): a flagged 0 limits nothing. A
+/// negative one is a limit, so it is refused like any other.
 fn refuse_unbuilt_options(selector: &wire::WindowReduceSelector) -> Result<(), Refusal> {
-    if selector.want_sample_info {
-        return Err(invalid(
-            "want_sample_info is not supported: an answer carries no per-sample summary, leave it unset",
-        ));
-    }
     if selector.limit_members != 0 {
         return Err(invalid(format!(
             "limit_members {} is not supported: a read cannot cap the members it considers, \
@@ -790,7 +784,19 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::WindowReduce
         None => {}
     }
     filters.extend(match_filter_of(profile, selector)?);
-    let spec = WindowReduceRankSpec { window, filters, score, top_k, project: Vec::new(), members, anchor, quota };
+    // A false `want_sample_info` asks for nothing, with or without its presence flag.
+    let sample_info = selector.want_sample_info;
+    let spec = WindowReduceRankSpec {
+        window,
+        filters,
+        score,
+        top_k,
+        project: Vec::new(),
+        members,
+        anchor,
+        quota,
+        sample_info,
+    };
     // The engine's own admission: what is accepted here is accepted by the command.
     window_reduce_rank::validate_spec(&spec).map_err(invalid)?;
     Ok(ReadPlan { key, more_keys, spec })
@@ -912,7 +918,7 @@ pub(crate) fn answer_of(profile: &TableProfile, query: &wire::WindowReduceQuery,
         first_us: if entries.is_empty() { 0 } else { (first as i64).saturating_mul(1000) },
         last_us: (last as i64).saturating_mul(1000),
         entries,
-        sample_info: None,
+        sample_info: sample_info_of(&ranked.sample_info),
         echoed_selector: echoed.then(|| query.selector.clone()).flatten(),
         echoed_window: echoed.then(|| query.window.clone()).flatten(),
         code: WindowReduceStatusCode::Ok as i32,
@@ -921,6 +927,21 @@ pub(crate) fn answer_of(profile: &TableProfile, query: &wire::WindowReduceQuery,
         unscored: ranked.unscored,
         keys: ranked.keys as u64,
     }
+}
+
+/// The per-sample summary of an answer: stamps in microseconds (a sample is one instant, so its
+/// start and its end are the same) and the cells each held. `None` when the read did not ask, which
+/// leaves the field out of the encoded answer.
+fn sample_info_of(used: &[WindowReduceSampleInfo]) -> Option<wire::SampleInfo> {
+    if used.is_empty() {
+        return None;
+    }
+    let stamps: Vec<i64> = used.iter().map(|sample| (sample.timestamp_ms as i64).saturating_mul(1000)).collect();
+    Some(wire::SampleInfo {
+        starts_us: stamps.clone(),
+        ends_us: stamps,
+        member_counts: used.iter().map(|sample| sample.cells as i64).collect(),
+    })
 }
 
 // `REMOVE` and `DELETE`, as the one command that removes cells.
