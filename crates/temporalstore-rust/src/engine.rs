@@ -112,7 +112,9 @@ pub(crate) mod eviction_sampler;
 // which previously kept a drifted subset that mis-classified context/control-state writes
 // as reads -> lifecycle-write-barrier bypass + missing dump scheduling).
 pub(crate) use command_validation::{command_object_keys, is_write_command};
-pub(crate) use recovery_sweep_compact::COMPACTION_SLICE_KEYS;
+pub(crate) use recovery_sweep_compact::{sliced_compaction_enabled, COMPACTION_SLICE_KEYS};
+#[cfg(test)]
+pub(crate) use recovery_sweep_compact::set_slice_boundary_for_test;
 #[cfg(test)]
 pub(crate) use storage_bucket_internals::uncovered_maintenance;
 mod storage_bucket_internals;
