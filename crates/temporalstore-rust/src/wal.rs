@@ -9031,6 +9031,8 @@ mod tests {
         ("StringSetEx", std::mem::size_of::<(String, Vec<u8>, u64)>()),
         ("StringSetConditional", std::mem::size_of::<(String, Vec<u8>, Option<u64>, StringSetCondition, bool, bool)>()),
         ("StringGet", std::mem::size_of::<(String)>()),
+        ("StringLen", std::mem::size_of::<(String)>()),
+        ("StringGetRange", std::mem::size_of::<(String, i64, i64)>()),
         ("StringDelete", std::mem::size_of::<(String)>()),
         ("HashSet", std::mem::size_of::<(String, String, Vec<u8>)>()),
         ("HashGet", std::mem::size_of::<(String, String)>()),

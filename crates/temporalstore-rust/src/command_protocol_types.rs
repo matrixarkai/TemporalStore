@@ -1799,6 +1799,19 @@ pub enum Command {
     StringGet {
         key: String,
     },
+    /// The length of a string in bytes, as an integer (0 for a missing key). The point read copies
+    /// the whole value out to have its length taken; this reads the cache's shared bytes.
+    StringLen {
+        key: String,
+    },
+    /// The bytes of a string between two positions, counted as `GETRANGE` counts them (negative
+    /// positions from the end, both ends included). Answers the slice only, never the whole value;
+    /// a missing key answers nothing.
+    StringGetRange {
+        key: String,
+        start: i64,
+        end: i64,
+    },
     StringDelete {
         key: String,
     },
