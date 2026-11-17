@@ -1854,11 +1854,6 @@ impl TemporalEngine {
             request.command,
             Command::StringGet { .. }
                 | Command::HashGetAll { .. }
-                | Command::StringLen { .. }
-                | Command::StringGetRange { .. }
-                | Command::HashGet { .. }
-                | Command::HashLen { .. }
-                | Command::HashFieldExists { .. }
         );
         if !read_command {
             return None;
