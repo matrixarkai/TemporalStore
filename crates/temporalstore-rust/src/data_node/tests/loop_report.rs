@@ -974,6 +974,16 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
     } else {
         StorageManagerOptions::default()
     };
+    // `LOOP_DUMP=1` crosses the byte gate so every round dumps, which prices the whole-index encode.
+    let shipped = if std::env::var("LOOP_DUMP").is_ok() {
+        StorageManagerOptions {
+            dirty_bucket_pressure: 1,
+            min_undumped_wal_bytes: 1,
+            ..shipped
+        }
+    } else {
+        shipped
+    };
     let dir = tempfile::tempdir().unwrap();
     let runtime = seeded_runtime(dir.path(), keys);
     // Warm the cache the way a served shard would be, so the stage's gate has something to see.
@@ -1014,8 +1024,12 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
         );
         for span in &report.stage_spans {
             eprintln!(
-                "      {:<18} ran={} {:>8} us walk={}",
-                span.stage, span.executed, span.duration_us, span.walk.live_block_entries
+                "      {:<18} ran={} {:>8} us walk={} encodes={}",
+                span.stage,
+                span.executed,
+                span.duration_us,
+                span.walk.live_block_entries,
+                span.walk.index_encodes
             );
         }
         for (site, entries) in crate::engine::live_block_scan_sites_snapshot() {
@@ -1226,31 +1240,40 @@ fn a_writers_waits_are_attributed_to_the_stage_window_it_began_in() {
     }
 }
 
-/// Runs the gated fixture and returns, per round, whether the plan listed a quarantined slab and
-/// what the index stage walked.
-fn quarantine_rounds(options: StorageManagerOptions) -> Vec<(bool, u64)> {
+/// Runs the gated fixture for ten rounds, writing only in the first `write_rounds` of them, and
+/// returns per round whether the plan listed a quarantined slab and what the index stage walked.
+///
+/// The writing rounds are what put a slab in quarantine; the quiet rounds after them are the shape a
+/// running server spends nearly all its time in, with a quarantine that is neither growing nor old
+/// enough to purge. `options_for` picks the options of each round.
+fn quarantine_rounds(
+    write_rounds: usize,
+    options_for: impl Fn(usize) -> StorageManagerOptions,
+) -> Vec<(bool, u64)> {
     let keys = 300usize;
     let writes = 20usize;
     let dir = tempfile::tempdir().unwrap();
     let runtime = seeded_runtime(dir.path(), keys);
     for _ in 0..6 {
-        runtime.run_storage_manager_once(1, options.clone());
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
     }
     let engine = runtime.engine();
     let mut rounds = Vec::new();
-    for round in 0..8usize {
-        for write in 0..writes {
-            let index = (round * writes + write) % keys;
-            let response = engine.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::StringSet {
-                    key: format!("loop-{index:06}"),
-                    value: vec![b'w'; 96],
-                },
-            });
-            assert!(response.status.ok, "write {index}: {:?}", response.status);
+    for round in 0..10usize {
+        if round < write_rounds {
+            for write in 0..writes {
+                let index = (round * writes + write) % keys;
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("loop-{index:06}"),
+                        value: vec![b'w'; 96],
+                    },
+                });
+                assert!(response.status.ok, "write {index}: {:?}", response.status);
+            }
         }
-        let report = runtime.run_storage_manager_once(1, options.clone());
+        let report = runtime.run_storage_manager_once(1, options_for(round));
         let quarantined = !report.lifecycle_plan.delayed_destroy_block_slab_ids.is_empty();
         eprintln!(
             "quarantine round {round}: quarantined={quarantined} index stage walk={} reasons={:?}",
@@ -1262,48 +1285,54 @@ fn quarantine_rounds(options: StorageManagerOptions) -> Vec<(bool, u64)> {
     rounds
 }
 
-/// A QUARANTINED SLAB THAT HAS NOT AGED OUT DOES NOT MAKE THE INDEX STAGE WALK THE SHARD.
+/// A QUARANTINE THAT HAS NOT AGED OUT AND HAS BEEN CHECKED DOES NOT MAKE THE INDEX STAGE WALK.
 ///
-/// Under steady overwrite load the quarantine is never empty, and the plan lists every slab in it.
-/// The purge acts on none of them before the grace has passed, so a quarantine that has been checked
-/// against the live set and holds nothing old enough is not work for the stage. Every round whose
-/// plan lists a quarantined slab must leave the index stage at zero walk, and there must be at least
-/// two such rounds (the denominator).
+/// The plan lists every slab in quarantine, and a quarantine is never empty once overwrites have
+/// collected a slab. The purge acts on none of it before the grace has passed, so a quarantine that
+/// nothing has joined since a purge round checked it against the live set is not work for the stage.
+/// After four writing rounds the shard goes quiet with its quarantine intact; the last three rounds
+/// must list a quarantined slab (the denominator) and leave the index stage at zero walk. The first
+/// quiet rounds may still pay one full round for the arrival that preceded them.
 ///
-/// Planted fault: dropping `|| index_quarantine_waits` from the stage's idle test puts the walk back
-/// (1500 entries = five listings on this fixture).
+/// Planted fault: dropping `|| index_quarantine_waits` from the stage's idle test, or the
+/// `checked == arrivals` half from the store's answer, puts the walk back (1500 entries on this
+/// fixture).
 #[test]
-fn a_quarantine_that_has_not_aged_out_does_not_make_the_index_stage_walk() {
-    let rounds = quarantine_rounds(StorageManagerOptions::default());
-    let quarantined: Vec<_> = rounds.iter().filter(|(quarantined, _)| *quarantined).collect();
-    assert!(
-        quarantined.len() >= 2,
-        "the fixture must leave a slab in quarantine for at least two rounds, got {rounds:?}"
-    );
-    for (_, walk) in &quarantined {
-        assert_eq!(*walk, 0, "a round with only a young quarantine walked the shard: {rounds:?}");
+fn a_checked_quarantine_that_has_not_aged_out_does_not_make_the_index_stage_walk() {
+    let rounds = quarantine_rounds(4, |_| StorageManagerOptions::default());
+    for round in 7..10usize {
+        let (quarantined, walk) = rounds[round];
+        assert!(quarantined, "round {round} must still list a quarantined slab: {rounds:?}");
+        assert_eq!(walk, 0, "round {round}: a young checked quarantine made the stage walk: {rounds:?}");
     }
 }
 
 /// A RETENTION OWNER KEEPS THE STAGE ON ITS FULL PATH, because it can name a quarantined slab that
 /// no new arrival announced.
 ///
+/// The same fixture settles under the default options, then the last two rounds run with a retention
+/// floor configured: the quarantine is unchanged and still young, and the stage must walk.
+///
 /// Planted fault: dropping the floor test from `index_quarantine_waits` lets the stage skip here and
 /// fails the walk assertion.
 #[test]
-fn a_retention_floor_keeps_the_index_stage_walking_while_a_slab_is_quarantined() {
-    let options = StorageManagerOptions {
-        block_gc_checkpoint_floor_slab_id: Some(0),
-        ..StorageManagerOptions::default()
-    };
-    let rounds = quarantine_rounds(options);
-    let quarantined: Vec<_> = rounds.iter().filter(|(quarantined, _)| *quarantined).collect();
-    assert!(
-        quarantined.len() >= 2,
-        "the fixture must leave a slab in quarantine for at least two rounds, got {rounds:?}"
-    );
-    assert!(
-        quarantined.iter().all(|(_, walk)| *walk > 0),
-        "a round under a retention floor skipped the stage: {rounds:?}"
-    );
+fn a_retention_floor_makes_the_index_stage_walk_again_over_a_settled_quarantine() {
+    let rounds = quarantine_rounds(4, |round| {
+        if round >= 8 {
+            StorageManagerOptions {
+                block_gc_checkpoint_floor_slab_id: Some(0),
+                ..StorageManagerOptions::default()
+            }
+        } else {
+            StorageManagerOptions::default()
+        }
+    });
+    let (settled_quarantined, settled_walk) = rounds[7];
+    assert!(settled_quarantined, "round 7 must list a quarantined slab: {rounds:?}");
+    assert_eq!(settled_walk, 0, "the quarantine never settled, so the control proves nothing: {rounds:?}");
+    for round in 8..10usize {
+        let (quarantined, walk) = rounds[round];
+        assert!(quarantined, "round {round} must still list a quarantined slab: {rounds:?}");
+        assert!(walk > 0, "round {round}: a retention floor did not keep the stage walking: {rounds:?}");
+    }
 }
