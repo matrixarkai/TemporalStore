@@ -6,7 +6,8 @@
 //!
 //! Each of them listed every member of the set (`SetMembers`) to search it or to ask whether it
 //! was empty. The cost followed the size of the set for an answer about one member. They now
-//! issue `SetIsMember` per argument (`SetCard` for `TYPE`).
+//! ask about one member (`SetIsMember` for `SMOVE`, inside `SetAddMany` and `SetRemoveMany` for `SADD`
+//! and `SREM`) or the length (`SetCard` for `TYPE`).
 //!
 //! WHAT DID NOT MOVE: the integers the door answers, the order the writes are issued in, and every
 //! stored byte.
@@ -43,6 +44,8 @@ fn door(engine: &TemporalEngine, issued: &mut Vec<&'static str>, args: &[&[u8]])
         issued.push(match &command {
             Command::SetMembers { .. } => "SetMembers",
             Command::SetIsMember { .. } => "SetIsMember",
+            Command::SetAddMany { .. } => "SetAddMany",
+            Command::SetRemoveMany { .. } => "SetRemoveMany",
             Command::SetCard { .. } => "SetCard",
             _ => "other",
         });
@@ -112,7 +115,14 @@ fn the_door_never_lists_the_set() {
             !issued.contains(&"SetMembers"),
             "{label} listed the whole set: {issued:?}"
         );
-        let point = if label == "TYPE" { "SetCard" } else { "SetIsMember" };
+        // SADD and SREM name their members in one command (each asked about inside it, never by
+        // listing the set); the others ask about one member or the length.
+        let point = match label {
+            "TYPE" => "SetCard",
+            "SADD" => "SetAddMany",
+            "SREM" => "SetRemoveMany",
+            _ => "SetIsMember",
+        };
         assert!(issued.contains(&point), "{label} never asked {point}: {issued:?}");
     }
 }
