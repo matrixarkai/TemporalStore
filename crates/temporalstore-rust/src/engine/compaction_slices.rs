@@ -46,9 +46,8 @@ pub(crate) enum SliceProgress {
 }
 
 /// Whether the data node's draining stage runs a sliced pass. OFF unless `TS_SLICED_COMPACTION` is
-/// `1` or `true`: each slice still walks the shard's keyed maps to find its keys and refreshes every
-/// bucket, so a pass costs slices x shard size and a large shard waits far longer than it would for
-/// a whole round. The whole round is the default until a slice costs what it moves.
+/// `1` or `true`. Keyed slices use direct lookups and refresh changed buckets, but setup, unkeyed
+/// relocation and final publication still perform whole-shard work.
 pub(crate) fn sliced_compaction_enabled() -> bool {
     matches!(
         std::env::var("TS_SLICED_COMPACTION").as_deref(),
@@ -192,6 +191,7 @@ impl TemporalEngine {
         // the blocks it did move are where the maps say, and the index must say the same.
         update_compacted_bucket_views(
             shard_id, shard, start_routing_bucket, end_routing_bucket, &stats.moved,
+            CompactionIndexRefresh::ChangedBuckets,
         );
         pass.note_slice(shard, stats);
         let pass_ended = moved.is_err() || pass.remaining_keys.is_empty();
@@ -330,7 +330,7 @@ impl TemporalEngine {
             shard,
             start_routing_bucket,
             end_routing_bucket,
-            &|key: &str| keys.contains(key),
+            Some(&keys),
             stats,
         )?;
         Self::unreadable_blocks_failure(stats)
@@ -409,6 +409,8 @@ impl TemporalEngine {
         shard: &mut ShardState,
         pass: &SlicedPass,
     ) -> Result<(), Status> {
+        // Publication owes complete flags and TTL rollups; intermediate slices do not.
+        refresh_bucket_runtime_flags(shard);
         let mut stats = CompactionRewriteStats::for_drain_round(
             pass.target_block_slab_id,
             u64::MAX,

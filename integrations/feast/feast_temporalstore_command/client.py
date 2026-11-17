@@ -39,6 +39,17 @@ __all__ = [
     "encode_bytes",
 ]
 
+_READ_ONLY_COMMAND_KINDS = frozenset({
+    "string_get", "hash_get", "hash_multi_get", "set_members", "set_scan",
+    "feature_query", "feature_query_filtered", "feature_agg_query",
+    "feature_proto_agg_query", "sequence_query", "window_reduce_rank",
+})
+_CLOSED_CONNECTION_ERRORS = (
+    BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+    http.client.RemoteDisconnected, http.client.CannotSendRequest,
+    http.client.ResponseNotReady, http.client.IncompleteRead,
+)
+
 
 class TemporalStoreCommandError(RuntimeError):
     """A command reached the node and the node refused it.
@@ -210,6 +221,9 @@ class TemporalStoreClient:
         self._conditional_shared_field_ttl_write_supported: Optional[bool] = (
             False if msgpack is None else None
         )
+        self._interleaved_conditional_write_supported: Optional[bool] = (
+            False if msgpack is None else None
+        )
 
     def timestamp_prefetch_preferred(self) -> bool:
         """Whether this thread recently observed mostly stale bulk writes."""
@@ -260,11 +274,9 @@ class TemporalStoreClient:
         """Close every connection this client opened, on any thread.
 
         Idempotent, and safe to call from a thread that never issued a request.
-        A connection closed here that some thread still has in its
-        `threading.local` is reopened on that thread's next call, because
-        :meth:`_connection` builds one whenever its slot is empty -- and a
-        closed `HTTPConnection` raises on reuse, which `_post` already treats
-        as a dropped pooled connection and retries once.
+        Clearing the thread-local registry makes the next call open a fresh
+        connection. Known read-only requests also reconnect once when a pooled
+        socket closes; writes are never automatically resent.
         """
         with self._registry_lock:
             connections = list(self._all_connections)
@@ -298,11 +310,30 @@ class TemporalStoreClient:
             )
         return raw
 
+    def _request_read_encoded(
+        self, path: str, body: bytes, content_type: str = "application/json"
+    ) -> bytes:
+        try:
+            return self._request_encoded(path, body, content_type)
+        except _CLOSED_CONNECTION_ERRORS:
+            self._drop_connection()
+        # Leave the handler before retrying so IncompleteRead releases its partial body.
+        return self._request_encoded(path, body, content_type)
+
     def _post_encoded(self, path: str, body: bytes) -> Dict[str, Any]:
         return json.loads(self._request_encoded(path, body))
 
+    def _post_read_encoded(self, path: str, body: bytes) -> Dict[str, Any]:
+        try:
+            return self._post_encoded(path, body)
+        except _CLOSED_CONNECTION_ERRORS:
+            self._drop_connection()
+        return self._post_encoded(path, body)
+
     def _post(self, path: str, document: Dict[str, Any]) -> Dict[str, Any]:
         body = json.dumps(document, separators=(",", ":")).encode("utf-8")
+        if path == "/execute" and document.get("command", {}).get("kind") in _READ_ONLY_COMMAND_KINDS:
+            return self._post_read_encoded(path, body)
         return self._post_encoded(path, body)
 
     # -- commands ------------------------------------------------------------
@@ -337,7 +368,10 @@ class TemporalStoreClient:
                 for chunk, body in self._binary_batches(
                     commands, self.max_batch_commands
                 ):
-                    raw = self._request_encoded(
+                    request = self._request_read_encoded if all(
+                        command.get("kind") in _READ_ONLY_COMMAND_KINDS for command in chunk
+                    ) else self._request_encoded
+                    raw = request(
                         "/batch_execute_msgpack", body, "application/msgpack"
                     )
                     envelope = msgpack.unpackb(raw, raw=False)
@@ -378,7 +412,7 @@ class TemporalStoreClient:
             compact_results: List[List[Any]] = []
             try:
                 for chunk, body in self._shared_field_read_batches(keys, fields):
-                    raw = self._request_encoded(
+                    raw = self._request_read_encoded(
                         "/batch_hash_multi_get_compact_msgpack",
                         body,
                         "application/msgpack",
@@ -403,7 +437,7 @@ class TemporalStoreClient:
             results: List[List[Any]] = []
             try:
                 for chunk, body in self._shared_field_read_batches(keys, fields):
-                    raw = self._request_encoded(
+                    raw = self._request_read_encoded(
                         "/batch_hash_multi_get_msgpack",
                         body,
                         "application/msgpack",
@@ -468,7 +502,9 @@ class TemporalStoreClient:
         # Packer buffer and a second assembled request of the same size.
         if encoded_upper_bound > self.max_batch_request_bytes:
             return None
-        body = msgpack.packb(document, use_bin_type=True)
+        # Small requests do not need a 256 KiB initial encoding arena.
+        initial_buffer_bytes = min(256 * 1024, max(256, encoded_upper_bound))
+        body = msgpack.packb(document, use_bin_type=True, buf_size=initial_buffer_bytes)
         return body if len(body) <= self.max_batch_request_bytes else None
 
     def _shared_field_read_batches(
@@ -672,6 +708,37 @@ class TemporalStoreClient:
         request_upper_bound: Optional[int] = None,
         ttl_ms: Optional[int] = None,
     ) -> Optional[Tuple[int, int]]:
+        """Write timestamp-conditioned rows through the atomic batch route."""
+        return self._batch_hash_timestamp_set(
+            fields, timestamp_field, rows, request_upper_bound, ttl_ms, False
+        )
+
+    def batch_hash_timestamp_set_interleaved(
+        self,
+        fields: List[str],
+        timestamp_field: str,
+        rows: List[Tuple[str, int, int, List[bytes]]],
+        request_upper_bound: Optional[int] = None,
+        ttl_ms: Optional[int] = None,
+    ) -> Optional[Tuple[int, int]]:
+        """Keep rows atomic, allow readers between groups, and await durability.
+
+        A failed call may have applied a prefix. Only an unattempted route-level
+        404 permits fallback; an application error or unknown result does not.
+        """
+        return self._batch_hash_timestamp_set(
+            fields, timestamp_field, rows, request_upper_bound, ttl_ms, True
+        )
+
+    def _batch_hash_timestamp_set(
+        self,
+        fields: List[str],
+        timestamp_field: str,
+        rows: List[Tuple[str, int, int, List[bytes]]],
+        request_upper_bound: Optional[int] = None,
+        ttl_ms: Optional[int] = None,
+        interleaved: bool = False,
+    ) -> Optional[Tuple[int, int]]:
         """Atomically write rows whose stored timestamp is older.
 
         ``None`` means the node does not expose the route and no row was
@@ -682,10 +749,16 @@ class TemporalStoreClient:
         """
         if not rows:
             return (0, 0)
+        if interleaved and self._interleaved_conditional_write_supported is False:
+            interleaved = False
         capability = (
-            self._conditional_shared_field_ttl_write_supported
-            if ttl_ms is not None
-            else self._conditional_shared_field_write_supported
+            self._interleaved_conditional_write_supported
+            if interleaved
+            else (
+                self._conditional_shared_field_ttl_write_supported
+                if ttl_ms is not None
+                else self._conditional_shared_field_write_supported
+            )
         )
         if msgpack is None or capability is False:
             return None
@@ -698,15 +771,20 @@ class TemporalStoreClient:
                 fields, timestamp_field, rows, request_upper_bound, ttl_ms
             ):
                 path = (
-                    "/batch_hash_timestamp_set_ttl_msgpack"
-                    if ttl_ms is not None
-                    else "/batch_hash_timestamp_set_msgpack"
+                    "/batch_hash_timestamp_set_interleaved_msgpack"
+                    if interleaved
+                    else (
+                        "/batch_hash_timestamp_set_ttl_msgpack"
+                        if ttl_ms is not None
+                        else "/batch_hash_timestamp_set_msgpack"
+                    )
                 )
                 raw = self._request_encoded(
                     path,
                     body,
                     "application/msgpack",
                 )
+                processed_any = True
                 envelope = msgpack.unpackb(raw, raw=False)
                 status = envelope.get("status") or {}
                 if not status.get("ok", False):
@@ -732,10 +810,14 @@ class TemporalStoreClient:
                     )
                 applied += chunk_applied
                 skipped += chunk_skipped
-                processed_any = True
         except TemporalStoreCommandError as error:
             if error.code != "http_404" or processed_any:
                 raise
+            if interleaved:
+                self._interleaved_conditional_write_supported = False
+                return self._batch_hash_timestamp_set(
+                    fields, timestamp_field, rows, request_upper_bound, ttl_ms, False
+                )
             if ttl_ms is None:
                 self._conditional_shared_field_write_supported = False
             else:
@@ -746,7 +828,9 @@ class TemporalStoreClient:
                 "invalid_binary_response", str(error)
             ) from error
 
-        if ttl_ms is None:
+        if interleaved:
+            self._interleaved_conditional_write_supported = True
+        elif ttl_ms is None:
             self._conditional_shared_field_write_supported = True
         else:
             self._conditional_shared_field_ttl_write_supported = True
@@ -947,7 +1031,10 @@ class TemporalStoreClient:
         commands: List[Dict[str, Any]],
         body: bytes,
     ) -> List[Dict[str, Any]]:
-        envelope = self._post_encoded("/batch_execute", body)
+        post = self._post_read_encoded if commands and all(
+            command.get("kind") in _READ_ONLY_COMMAND_KINDS for command in commands
+        ) else self._post_encoded
+        envelope = post("/batch_execute", body)
         return self._decode_batch_envelope(envelope, commands)
 
     def _decode_batch_envelope(

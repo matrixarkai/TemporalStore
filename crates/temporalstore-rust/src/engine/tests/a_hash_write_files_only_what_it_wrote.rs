@@ -470,6 +470,7 @@ fn durable_shared_rows_keep_latest_fallback_through_size_transitions() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     let object_id = stable_block_object_id(1, "hash", "sized");
+    let mut previous_address = None;
     for (generation, width) in [(1, 48), (2, 16 * 1024), (3, 48), (4, 16 * 1024)] {
         let expected = vec![generation; width];
         let (response, _) = engine.batch_execute_shared_hash_rows(BatchHashMultiSetRequest {
@@ -477,12 +478,17 @@ fn durable_shared_rows_keep_latest_fallback_through_size_transitions() {
             rows: vec![BatchHashMultiSetRow("sized".to_string(), vec![BatchHashMultiSetValue(expected.clone())])],
         });
         assert!(response.status.ok, "{:?}", response.status);
-        let frame = super::super::block_in_wal::read_block(&engine.block_store, 1, object_id, Some("payload"))
+        let address = engine.shards.read().unwrap().get(&1).unwrap().bucket_index.hashes.get("sized").unwrap().get("payload").unwrap().clone();
+        if let Some(previous) = &previous_address {
+            assert!(super::super::block_in_wal::read_block_at(&engine.block_store, 1, object_id, Some("payload"), previous).is_none());
+        }
+        let frame = super::super::block_in_wal::read_block_at(&engine.block_store, 1, object_id, Some("payload"), &address)
             .expect("latest carried frame remains available");
         match super::super::container_blocks::select_container_element(&frame, "payload") {
             super::super::container_blocks::ContainerElementRead::Found(value) => assert_eq!(value, expected),
             _ => panic!("latest field must be in the carried frame"),
         }
+        previous_address = Some(address);
     }
     engine.compact_shard_blocks(1).unwrap();
     assert_eq!(engine.registration_count_for_test(1), 0);

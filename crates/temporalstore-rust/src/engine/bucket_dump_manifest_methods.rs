@@ -79,9 +79,30 @@ impl TemporalEngine {
                     "shard is unloaded or its WAL application is incomplete"))?;
             (snapshot, None, publication)
         };
-        let dump_live_block_entries = collect_live_block_entries(&dump_index_state);
+        let mut retained_objects = std::collections::HashSet::new();
+        let mut block_slab_ids = BTreeSet::new();
+        let mut described_wal_blocks = 0usize;
+        let mut lifecycle = ObjectLifecycleAccumulator::default();
+        // Consume block facts once without retaining a temporary row per field in the shard.
+        let mut observe_entry = |entry: &LiveBlockEntry| {
+            let slab = entry.address.block_slab_id();
+            block_slab_ids.insert(slab);
+            if crate::wal_record::is_wal_resident(slab) {
+                retained_objects.insert(expected_live_block_object_id(shard_id, entry));
+                if !dump_index_state.bucket_index.released_buckets.contains(&entry.filed_routing_bucket) {
+                    described_wal_blocks += 1;
+                }
+            }
+            let bucket = entry.filed_bucket().unwrap_or_else(|| self.routing_bucket_for_key(shard_id, &entry.object_key));
+            if selected_buckets.is_empty() || selected_buckets.contains(&bucket) {
+                lifecycle.observe(shard_id, entry);
+            }
+        };
         let summaries = match live_summaries {
-            Some(live) => live,
+            Some(live) => {
+                visit_live_block_entries(&dump_index_state, |entry| observe_entry(&entry));
+                live
+            }
             None => {
                 let (start, end) = self
                     .infos
@@ -90,12 +111,12 @@ impl TemporalEngine {
                     .get(&shard_id)
                     .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
                     .unwrap_or((0, u32::MAX));
-                bucket_storage_summaries_from_entries(
-                    &dump_index_state,
-                    start,
-                    end,
-                    &dump_live_block_entries,
-                )
+                bucket_storage_summaries_from_visit(&dump_index_state, start, end, |consume| {
+                    visit_live_block_entries(&dump_index_state, |entry| {
+                        consume(&entry);
+                        observe_entry(&entry);
+                    });
+                })
             }
         };
         let mut bucket_summaries = summaries
@@ -105,10 +126,6 @@ impl TemporalEngine {
             })
             .collect::<Vec<_>>();
         bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
-        let mut retained_objects = dump_live_block_entries.iter()
-            .filter(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()))
-            .map(|entry| stable_block_object_id(shard_id, entry.kind.as_str(), &entry.object_key))
-            .collect::<std::collections::HashSet<_>>();
         let mut retirements = if bulk_ingest_mode() {
             Vec::new()
         } else {
@@ -170,10 +187,6 @@ impl TemporalEngine {
                     crate::wal_record::is_wal_resident(block.address.block_slab_id())
                 }).count();
             storage_bucket_internals::note_bucket_block_visits(visited);
-            let described_wal_blocks = dump_live_block_entries.iter().filter(|entry| {
-                crate::wal_record::is_wal_resident(entry.address.block_slab_id())
-                    && !dump_index_state.bucket_index.released_buckets.contains(&entry.filed_routing_bucket)
-            }).count();
             if dump_index_state.bucket_index.bucket_map.is_empty()
                 || indexed_wal_blocks != described_wal_blocks
             {
@@ -239,19 +252,12 @@ impl TemporalEngine {
         // this against -- under bulk ingest the exported index and the volatile summaries are not
         // the same state. The index walk above is shared with the object-lifecycle report.
         // Retirement additionally checks the model maps when unused registrations need proof.
-        let block_slab_ids = dump_live_block_entries
-            .iter()
-            .map(|entry| entry.address.block_slab_id())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
+        let block_slab_ids = block_slab_ids.into_iter().collect::<Vec<_>>();
         // Dirty-object bookkeeping is process-local and was absent from the decoded
         // checkpoint previously used for this durable report.
         dump_index_state.dirty_objects.clear();
-        let object_lifecycle = object_lifecycle_report_from_entries(
-            shard_id,
+        let object_lifecycle = lifecycle.finish(
             &dump_index_state,
-            dump_live_block_entries,
             &selected_buckets,
             |key| self.routing_bucket_for_key(shard_id, key),
         );
