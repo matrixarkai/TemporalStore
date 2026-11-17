@@ -166,7 +166,8 @@ under a no-merge profile DUPLICATE_REFUSED, an exhausted quota QUOTA_EXHAUSTED, 
 **Sample info.** `want_sample_info` (selector field 19) true asks the answer to say which samples the
 read used: `sample_info` (answer field 7) holds, oldest sample first, `starts_us` and `ends_us` (a
 sample is one instant, so the two are equal) and `member_counts`, the cells each sample held in the
-window. The cells are counted before the member set and the predicates apply. The list is the samples the answer's
+window. The cells are counted before the member set and the predicates apply, and the sample at the
+edge of a `NEWEST_ROWS` window counts only the cells the window holds. The list is the samples the answer's
 `samples` counts, over every key of a merged read in stamp order. Every read mode takes it. A
 `want_sample_info` of false means "not asked", with or without its presence flag, and the answer then
 carries no `sample_info` at all.

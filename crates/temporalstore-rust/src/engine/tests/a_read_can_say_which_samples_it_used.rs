@@ -148,6 +148,20 @@ fn a_read_that_asks_says_which_samples_it_used_and_how_many_cells_each_held_live
 }
 
 #[test]
+fn a_rows_window_counts_only_the_cells_it_holds_of_the_sample_at_its_edge() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let key = stored_key(33);
+    seed(&engine, &key);
+    // The newest 3 rows: the sample at 400 whole (2 cells) and 1 cell of the sample at 300 (2 cells).
+    let three = rank(&engine, &key, spec(WindowReduceWindow::NewestRows { n: 3 }, shown(), true));
+    assert_eq!(used(&three), vec![(300, 1), (400, 2)]);
+    // 4 rows end exactly at a sample.
+    let four = rank(&engine, &key, spec(WindowReduceWindow::NewestRows { n: 4 }, shown(), true));
+    assert_eq!(used(&four), vec![(300, 2), (400, 2)]);
+}
+
+#[test]
 fn a_read_that_does_not_ask_answers_what_it_always_answered_and_its_json_has_no_new_field() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
