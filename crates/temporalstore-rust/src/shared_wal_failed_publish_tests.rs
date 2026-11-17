@@ -206,3 +206,144 @@ async fn a_failed_publish_does_not_leave_a_hole_in_the_log() {
     }
     assert_eq!(report.applied, 2 + usize::from(third.is_ok()) + usize::from(fourth.is_ok()));
 }
+
+fn kind_count(store: &Arc<FlakyStore>) -> (usize, usize) {
+    (store.landed_on(".wal.protobuf.blob"), store.landed_on(".index.protobuf.blob"))
+}
+
+/// A refused append is retried at the SAME index, so the caller's write succeeds and the log has no
+/// hole.
+#[tokio::test]
+async fn a_refused_append_is_retried_at_the_same_index_and_the_write_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FlakyStore::new(dir.path());
+    let writer = SharedStoreReplicator::new(CLUSTER, store.clone())
+        .storage_writer(SharedStoreStorageMode::Sync, 1);
+    writer.write(SHARD, set("k1")).await.unwrap();
+    writer.write(SHARD, set("k2")).await.unwrap();
+    store.inject(".wal.protobuf.blob", Kind::Refuse, 2);
+    let third = writer.write(SHARD, set("k3")).await.expect("two refusals are within the retry bound");
+    assert_eq!(third.wal_index, 3, "the retry keeps the number");
+    let fourth = writer.write(SHARD, set("k4")).await.unwrap();
+    assert_eq!(fourth.wal_index, 4);
+    assert_eq!(writer.unresolved_hole(), None);
+    assert_eq!(kind_count(&store), (4, 4), "four writes, four appends to each object");
+    let (result, follower) = replay(&store, dir.path(), "retried", 0).await;
+    assert_eq!(result.unwrap().applied, 4);
+    assert!(has(&follower, "k3") && has(&follower, "k4"));
+}
+
+/// An append that committed and then reported failure must not be appended again: the writer reads
+/// the object at the offset it knows and finds its own record there.
+#[tokio::test]
+async fn an_append_that_committed_before_it_reported_failure_is_not_written_twice() {
+    for object in [".wal.protobuf.blob", ".index.protobuf.blob"] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FlakyStore::new(dir.path());
+        let writer = SharedStoreReplicator::new(CLUSTER, store.clone())
+            .storage_writer(SharedStoreStorageMode::Sync, 1);
+        writer.write(SHARD, set("k1")).await.unwrap();
+        writer.write(SHARD, set("k2")).await.unwrap();
+        store.inject(object, Kind::CommitThenFail, 1);
+        let third = writer.write(SHARD, set("k3")).await.expect("it landed, so the write is done");
+        assert_eq!(third.wal_index, 3);
+        writer.write(SHARD, set("k4")).await.unwrap();
+        assert_eq!(kind_count(&store), (4, 4), "{object}: exactly one record per write in each object");
+        let (result, _) = replay(&store, dir.path(), "once", 0).await;
+        assert_eq!(result.unwrap().applied, 4, "{object}");
+        // The offsets the index records are the ones the log has: every log byte is accounted for.
+        let indexed_len: u64 = SharedStoreReplicator::new(CLUSTER, store.clone())
+            .load_wal_offset_metadata(SHARD)
+            .await
+            .unwrap()
+            .values()
+            .map(|entry| entry.wal_blob_end_offset - entry.wal_blob_start_offset)
+            .sum();
+        let log_key = SharedStoreReplicator::new(CLUSTER, store.clone()).wal_segment_log_key(SHARD, 1);
+        assert_eq!(store.inner.get(&log_key).await.unwrap().len() as u64, indexed_len, "{object}");
+    }
+}
+
+/// When the retries run out the write is an error, the hole is named, and nothing is numbered over
+/// it; a checkpoint at or above the hole lets writing go on and replay never meets the hole.
+#[tokio::test]
+async fn retries_that_run_out_name_the_hole_refuse_later_writes_and_a_checkpoint_clears_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FlakyStore::new(dir.path());
+    let writer = SharedStoreReplicator::new(CLUSTER, store.clone())
+        .with_publish_retry(1, Duration::ZERO)
+        .storage_writer(SharedStoreStorageMode::Sync, 1);
+    writer.write(SHARD, set("k1")).await.unwrap();
+    writer.write(SHARD, set("k2")).await.unwrap();
+    store.inject(".wal.protobuf.blob", Kind::Refuse, 1);
+    assert!(writer.write(SHARD, set("k3")).await.is_err());
+    assert_eq!(writer.unresolved_hole(), Some((3, 3)));
+    match writer.write(SHARD, set("k4")).await {
+        Err(SharedStoreReplicationError::UnresolvedWalHole { first_index: 3, last_index: 3, .. }) => {}
+        other => panic!("a later write must be refused with the hole named: {other:?}"),
+    }
+    // Nothing was numbered over the hole: the log is a clean prefix, and it replays.
+    let (result, follower) = replay(&store, dir.path(), "prefix", 0).await;
+    assert_eq!(result.unwrap().applied, 2);
+    assert!(!has(&follower, "k3") && !has(&follower, "k4"));
+    // A checkpoint below the hole does not cover it; one at or above does.
+    assert!(!writer.resolve_hole_through(2));
+    assert!(writer.resolve_hole_through(3));
+    assert_eq!(writer.unresolved_hole(), None);
+    let fourth = writer.write(SHARD, set("k4")).await.unwrap();
+    assert_eq!(fourth.wal_index, 4);
+    // A replay that starts at the checkpoint is whole; one that starts before it meets the hole,
+    // which is what the checkpoint is for.
+    let (covered, after_checkpoint) = replay(&store, dir.path(), "covered", 3).await;
+    assert_eq!(covered.unwrap().applied, 1);
+    assert!(has(&after_checkpoint, "k4"));
+    // The write that returned an error never reappeared: its entry is in no segment.
+    let indexed = SharedStoreReplicator::new(CLUSTER, store.clone())
+        .load_wal_offset_metadata(SHARD)
+        .await
+        .unwrap();
+    assert_eq!(indexed.keys().copied().collect::<Vec<_>>(), vec![1, 2, 4]);
+    assert!(!has(&after_checkpoint, "k3"));
+}
+
+/// An append that failed and whose object cannot be read back is reported as unknown, never
+/// repeated, and it opens the hole too.
+#[tokio::test]
+async fn an_append_whose_outcome_cannot_be_read_back_is_reported_unknown_and_not_repeated() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FlakyStore::new(dir.path());
+    let writer = SharedStoreReplicator::new(CLUSTER, store.clone())
+        .storage_writer(SharedStoreStorageMode::Sync, 1);
+    writer.write(SHARD, set("k1")).await.unwrap();
+    store.inject(".wal.protobuf.blob", Kind::CommitThenFail, 1);
+    store.fail_reads.store(3, AtomicOrdering::SeqCst);
+    match writer.write(SHARD, set("k2")).await {
+        Err(SharedStoreReplicationError::AppendOutcomeUnknown { .. }) => {}
+        other => panic!("expected an unknown outcome: {other:?}"),
+    }
+    assert_eq!(store.landed_on(".wal.protobuf.blob"), 2, "the record was not appended a second time");
+    assert_eq!(writer.unresolved_hole(), Some((2, 2)));
+}
+
+/// With group commit a failed batch is remembered whole, and the entries numbered behind it are
+/// refused, not published after the hole.
+#[tokio::test]
+async fn a_failed_group_commit_batch_opens_one_hole_and_later_writes_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FlakyStore::new(dir.path());
+    let writer = SharedStoreReplicator::new(CLUSTER, store.clone())
+        .with_publish_retry(1, Duration::ZERO)
+        .storage_writer(SharedStoreStorageMode::Sync, 1)
+        .with_group_commit(true, Duration::ZERO);
+    writer.write(SHARD, set("k1")).await.unwrap();
+    store.inject(".wal.protobuf.blob", Kind::Refuse, 1);
+    assert!(writer.write(SHARD, set("k2")).await.is_err());
+    assert_eq!(writer.unresolved_hole(), Some((2, 2)));
+    assert!(matches!(
+        writer.write(SHARD, set("k3")).await,
+        Err(SharedStoreReplicationError::UnresolvedWalHole { .. })
+    ));
+    let (result, follower) = replay(&store, dir.path(), "group", 0).await;
+    assert_eq!(result.unwrap().applied, 1);
+    assert!(!has(&follower, "k2") && !has(&follower, "k3"));
+}

@@ -75,6 +75,22 @@ pub enum SharedStoreReplicationError {
     },
     #[error("WAL replay gap: expected index {expected}, got {actual}")]
     ReplayGap { expected: u64, actual: u64 },
+    /// An append failed and what the object holds afterwards does not say whether it landed, so it
+    /// is neither repeated (that could write the record twice) nor reported as done.
+    #[error("append to {key} failed and whether it landed could not be determined: {detail}")]
+    AppendOutcomeUnknown { key: String, detail: String },
+    /// A publish failed for good: its entries are not durable, and the writer will not number a
+    /// later entry over the open range, because a log with a hole in it cannot be replayed from
+    /// before the hole. Writes are refused until a checkpoint at or above `last_index` covers it
+    /// (see `SharedStoreStorageWriter::resolve_hole_through`).
+    #[error(
+        "the shared WAL has an unresolved hole at WAL indexes {first_index}..={last_index} ({cause}); writes are refused until a checkpoint at or above {last_index} covers it"
+    )]
+    UnresolvedWalHole {
+        first_index: u64,
+        last_index: u64,
+        cause: String,
+    },
     /// The shard's shared log is in the layout that kept the whole log in ONE object pair
     /// (`wal.protobuf.blob` and `wal.offset_index.protobuf.blob`). That layout reached the
     /// per-object extent bound of the stores it is written to, so this build writes the segmented
@@ -293,6 +309,38 @@ fn shared_store_wal_segment_appends() -> usize {
 struct ActiveWalSegment {
     first_index: u64,
     appends: usize,
+    /// How long the segment's log and index objects are after the last append this writer made to
+    /// each. The writer is the only one appending to them (the shard lease fences any other), so
+    /// after a failed append the object is either this long or this long plus the record, and
+    /// reading it at this offset says which.
+    log_len: u64,
+    index_len: u64,
+}
+
+/// How a publish retries: a bounded number of attempts inside a bounded time. Each retry is of an
+/// append that is known not to have landed, so a retry cannot write a record twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedStorePublishRetry {
+    pub attempts: usize,
+    pub total: Duration,
+    pub backoff: Duration,
+}
+
+impl Default for SharedStorePublishRetry {
+    fn default() -> Self {
+        Self {
+            attempts: 3,
+            total: Duration::from_secs(5),
+            backoff: Duration::from_millis(100),
+        }
+    }
+}
+
+/// What reading an object at a known offset says about an append that returned an error.
+enum AppendResolution {
+    Landed,
+    NotLanded,
+    Unknown(String),
 }
 
 /// Which of a segment's two objects exist.
@@ -472,6 +520,8 @@ pub struct SharedStoreReplicator<O> {
     wal_segment_appends: usize,
     /// The segment each shard is being appended to by this replicator and its clones.
     active_segments: Arc<Mutex<BTreeMap<ShardId, ActiveWalSegment>>>,
+    /// Bounds on retrying a failed publish. See [`SharedStorePublishRetry`].
+    publish_retry: SharedStorePublishRetry,
 }
 
 /// The decoded offset index segments of one shard.
@@ -562,6 +612,7 @@ impl<O> Clone for SharedStoreReplicator<O> {
             wal_segment_appends: self.wal_segment_appends,
             // SHARED, so every clone of a writer's replicator appends to the one active segment.
             active_segments: Arc::clone(&self.active_segments),
+            publish_retry: self.publish_retry,
         }
     }
 }
@@ -850,6 +901,20 @@ pub struct SharedStoreStorageWriter<O> {
     /// Group-commit staging buffer + leader flag. A writer pushes its `(entry, waker)` here; the
     /// first arrival becomes the flusher (leader) and every later arrival awaits its waker.
     commit: Mutex<GroupCommitBuffer>,
+    /// WAL indexes that were numbered and could not be published. While this is set no later
+    /// entry is numbered or published, because it would sit after a hole in the log.
+    hole: Mutex<Option<UnresolvedHole>>,
+    /// Serialises the numbering and publishing of one sync write, so a failed publish is known
+    /// before the next entry is numbered.
+    publish_order: tokio::sync::Mutex<()>,
+}
+
+/// The range of WAL indexes a failed publish left open, and why.
+#[derive(Debug, Clone)]
+struct UnresolvedHole {
+    first_index: u64,
+    last_index: u64,
+    cause: String,
 }
 
 /// One sync writer waiting on the group-commit barrier: its entry (staged for the next flush)
@@ -918,6 +983,7 @@ where
             offset_index_cache: Arc::new(Mutex::new(BTreeMap::new())),
             wal_segment_appends: shared_store_wal_segment_appends(),
             active_segments: Arc::new(Mutex::new(BTreeMap::new())),
+            publish_retry: SharedStorePublishRetry::default(),
         }
     }
 
@@ -941,7 +1007,16 @@ where
             offset_index_cache: Arc::new(Mutex::new(BTreeMap::new())),
             wal_segment_appends: shared_store_wal_segment_appends(),
             active_segments: Arc::new(Mutex::new(BTreeMap::new())),
+            publish_retry: SharedStorePublishRetry::default(),
         }
+    }
+
+    /// How a failed publish retries: attempts (at least one) and the total time they may take.
+    /// A retry happens only for an append that has been shown not to have landed.
+    pub fn with_publish_retry(mut self, attempts: usize, total: Duration) -> Self {
+        self.publish_retry.attempts = attempts.max(1);
+        self.publish_retry.total = total;
+        self
     }
 
     /// How many appends a WAL segment takes before the writer starts the next, at least one.
@@ -1158,18 +1233,24 @@ where
         &self,
         entry: SharedStoreWalEntry,
     ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
-        let first = self.segment_for_append(entry.shard_id, entry.wal_index);
-        let key = self.wal_segment_log_key(entry.shard_id, first);
-        let index_key = self.wal_segment_index_key(entry.shard_id, first);
+        let segment = self.segment_for_append(entry.shard_id, entry.wal_index);
+        let key = self.wal_segment_log_key(entry.shard_id, segment.first_index);
+        let index_key = self.wal_segment_index_key(entry.shard_id, segment.first_index);
         let command_metadata = wal_command_metadata(entry.command.as_ref())?;
         let frame = encode_wal_proto_frame(&entry, self.wal_frame_format)?;
         let receipt = self
-            .append_blob_with_retry(&key, Bytes::from(frame))
-            .await?
-            .expect("protobuf append blob must return a receipt");
-        self.note_segment_append(entry.shard_id);
-        self.publish_wal_offset_metadata(&entry, &key, &index_key, &receipt, command_metadata)
+            .append_resolved(&key, Bytes::from(frame), segment.log_len)
             .await?;
+        self.note_segment_append(entry.shard_id, receipt.object_length);
+        self.publish_wal_offset_metadata(
+            &entry,
+            &key,
+            &index_key,
+            &receipt,
+            command_metadata,
+            segment.index_len,
+        )
+        .await?;
         Ok(Some(receipt))
     }
 
@@ -1180,29 +1261,29 @@ where
     /// older segment never has to be learned. A segment that has taken its quota is closed the same
     /// way. The decision is per batch because a batch is one append to each object and its entries
     /// share one span, so it cannot be split across segments.
-    fn segment_for_append(&self, shard_id: ShardId, wal_index: u64) -> u64 {
+    fn segment_for_append(&self, shard_id: ShardId, wal_index: u64) -> ActiveWalSegment {
         let mut active = self
             .active_segments
             .lock()
             .expect("active WAL segment table poisoned");
         match active.get(&shard_id).copied() {
-            Some(segment) if segment.appends < self.wal_segment_appends => segment.first_index,
+            Some(segment) if segment.appends < self.wal_segment_appends => segment,
             _ => {
-                active.insert(
-                    shard_id,
-                    ActiveWalSegment {
-                        first_index: wal_index,
-                        appends: 0,
-                    },
-                );
-                wal_index
+                let segment = ActiveWalSegment {
+                    first_index: wal_index,
+                    appends: 0,
+                    log_len: 0,
+                    index_len: 0,
+                };
+                active.insert(shard_id, segment);
+                segment
             }
         }
     }
 
     /// Counts an append to the log object, as soon as it has landed. Counted BEFORE the index
     /// append, so a batch whose index append then failed still counts: those bytes took an extent.
-    fn note_segment_append(&self, shard_id: ShardId) {
+    fn note_segment_append(&self, shard_id: ShardId, log_len: u64) {
         if let Some(segment) = self
             .active_segments
             .lock()
@@ -1210,6 +1291,102 @@ where
             .get_mut(&shard_id)
         {
             segment.appends += 1;
+            segment.log_len = log_len;
+        }
+    }
+
+    fn note_segment_index_len(&self, shard_id: ShardId, index_len: u64) {
+        if let Some(segment) = self
+            .active_segments
+            .lock()
+            .expect("active WAL segment table poisoned")
+            .get_mut(&shard_id)
+        {
+            segment.index_len = index_len;
+        }
+    }
+
+    /// Append `bytes` to `key`, which this writer knows to be `known_len` bytes long, and never
+    /// write the record twice.
+    ///
+    /// An append that returns an error may still have landed: the store committed it and the
+    /// answer was lost, or the gateway timed out waiting on a commit that then completed. Repeating
+    /// it blindly writes the record again. So after an error the object is READ at `known_len`:
+    /// nothing there means it did not land and the append is repeated, the record's own bytes there
+    /// means it did and the append counts as done, and anything else, or a read that fails too,
+    /// leaves the outcome unknown and is reported as such. Retries are bounded by
+    /// [`SharedStorePublishRetry`].
+    async fn append_resolved(
+        &self,
+        key: &str,
+        bytes: Bytes,
+        known_len: u64,
+    ) -> Result<AppendBlobReceipt, SharedStoreReplicationError> {
+        let started = std::time::Instant::now();
+        let policy = self.publish_retry;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let error = match self.object_store.append_blob(key, bytes.clone()).await {
+                Ok(receipt) => return Ok(receipt),
+                Err(error) => error,
+            };
+            // A refused fence is not an ambiguity, and not something to repeat.
+            if matches!(error, ObjectStoreError::ConditionFailed { .. }) {
+                return Err(error.into());
+            }
+            let mut resolution = AppendResolution::Unknown(String::new());
+            for look in 0..3 {
+                resolution = self.resolve_append(key, known_len, &bytes).await;
+                if !matches!(resolution, AppendResolution::Unknown(_)) {
+                    break;
+                }
+                if look < 2 {
+                    tokio::time::sleep(policy.backoff).await;
+                }
+            }
+            match resolution {
+                AppendResolution::Landed => {
+                    let end = known_len + bytes.len() as u64;
+                    return Ok(AppendBlobReceipt {
+                        key: key.to_string(),
+                        start_offset: known_len,
+                        end_offset: end,
+                        bytes_written: bytes.len() as u64,
+                        object_length: end,
+                        physical_slab_count: 0,
+                        first_physical_offset: None,
+                    });
+                }
+                AppendResolution::NotLanded => {
+                    if attempt >= policy.attempts || started.elapsed() >= policy.total {
+                        return Err(error.into());
+                    }
+                    tokio::time::sleep(policy.backoff).await;
+                }
+                AppendResolution::Unknown(detail) => {
+                    return Err(SharedStoreReplicationError::AppendOutcomeUnknown {
+                        key: key.to_string(),
+                        detail: format!("{error}; {detail}"),
+                    });
+                }
+            }
+        }
+    }
+
+    async fn resolve_append(&self, key: &str, known_len: u64, bytes: &Bytes) -> AppendResolution {
+        match self.object_store.get_range_from(key, known_len).await {
+            Ok(Some(tail)) if tail.is_empty() => AppendResolution::NotLanded,
+            Ok(Some(tail)) if tail.as_ref() == bytes.as_ref() => AppendResolution::Landed,
+            Ok(Some(tail)) => AppendResolution::Unknown(format!(
+                "the object holds {} unexpected bytes at offset {known_len}",
+                tail.len()
+            )),
+            Ok(None) => AppendResolution::Unknown(format!(
+                "the object is shorter than the {known_len} bytes this writer appended"
+            )),
+            Err(ObjectStoreError::NotFound(_)) if known_len == 0 => AppendResolution::NotLanded,
+            Err(error) => AppendResolution::Unknown(format!("reading it back failed: {error}")),
         }
     }
 
@@ -1220,6 +1397,7 @@ where
         index_key: &str,
         receipt: &AppendBlobReceipt,
         command_metadata: WalCommandMetadata,
+        index_len: u64,
     ) -> Result<(), SharedStoreReplicationError> {
         let metadata = SharedStoreWalOffsetMetadata {
             shard_id: entry.shard_id,
@@ -1235,8 +1413,10 @@ where
             command_encoding: command_metadata.encoding,
         };
         let frame = encode_wal_offset_metadata_frame(&metadata, wal_blob_key);
-        self.append_blob_with_retry(index_key, Bytes::from(frame))
+        let landed = self
+            .append_resolved(index_key, Bytes::from(frame), index_len)
             .await?;
+        self.note_segment_index_len(entry.shard_id, landed.object_length);
         Ok(())
     }
 
@@ -1284,9 +1464,9 @@ where
 
         // R2 single-writer fence: re-validate ownership once before the coalesced append.
         self.enforce_fence(shard_id).await?;
-        let segment_first = self.segment_for_append(shard_id, entries[0].wal_index);
-        let wal_blob_key = self.wal_segment_log_key(shard_id, segment_first);
-        let wal_index_key = self.wal_segment_index_key(shard_id, segment_first);
+        let segment = self.segment_for_append(shard_id, entries[0].wal_index);
+        let wal_blob_key = self.wal_segment_log_key(shard_id, segment.first_index);
+        let wal_index_key = self.wal_segment_index_key(shard_id, segment.first_index);
 
         // Concatenate every entry's length-prefixed frame into one append payload, remembering each
         // frame's length (and command metadata) so per-entry offsets can be derived from the single
@@ -1331,10 +1511,9 @@ where
             }
         };
         let receipt = self
-            .append_blob_with_retry(&wal_blob_key, Bytes::from(wal_payload))
-            .await?
-            .expect("protobuf append blob must return a receipt");
-        self.note_segment_append(shard_id);
+            .append_resolved(&wal_blob_key, Bytes::from(wal_payload), segment.log_len)
+            .await?;
+        self.note_segment_append(shard_id, receipt.object_length);
 
         // Derive each entry's [start, end) from the batch receipt and build the concatenated
         // offset-index payload, then make it durable in a single append.
@@ -1386,8 +1565,10 @@ where
                 payload
             }
         };
-        self.append_blob_with_retry(&wal_index_key, Bytes::from(offset_payload))
+        let landed = self
+            .append_resolved(&wal_index_key, Bytes::from(offset_payload), segment.index_len)
             .await?;
+        self.note_segment_index_len(shard_id, landed.object_length);
         Ok(reports)
     }
 
@@ -1640,6 +1821,8 @@ where
             group_commit: false,
             commit_delay: Duration::ZERO,
             commit: Mutex::default(),
+            hole: Mutex::new(None),
+            publish_order: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -3095,32 +3278,6 @@ where
             .into())
     }
 
-    async fn append_blob_with_retry(
-        &self,
-        key: &str,
-        bytes: Bytes,
-    ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
-        let attempts = self.retry_policy.max_attempts.max(1);
-        let mut last_error = None;
-        for attempt in 0..attempts {
-            match self.object_store.append_blob(key, bytes.clone()).await {
-                Ok(receipt) => return Ok(Some(receipt)),
-                // Repeating an append whose outcome is unknown can store its bytes twice.
-                Err(err @ ObjectStoreError::OutcomeUnknown { .. }) => return Err(err.into()),
-                Err(err) => {
-                    last_error = Some(err);
-                    if attempt + 1 < attempts && self.retry_policy.backoff_ms > 0 {
-                        tokio::time::sleep(Duration::from_millis(self.retry_policy.backoff_ms))
-                            .await;
-                    }
-                }
-            }
-        }
-        Err(last_error
-            .expect("retry loop must record failed object-store error")
-            .into())
-    }
-
     async fn delete_prefix(&self, prefix: &str) -> Result<usize, SharedStoreReplicationError> {
         let keys = self.object_store.list(prefix).await?;
         let deleted = keys.len();
@@ -3839,27 +3996,102 @@ where
         self
     }
 
+    /// The WAL indexes a failed publish left open, as `(first, last)`, or `None` when the log has
+    /// no hole. While there is one every write is refused: see [`Self::resolve_hole_through`].
+    pub fn unresolved_hole(&self) -> Option<(u64, u64)> {
+        self.hole
+            .lock()
+            .expect("shared-store hole lock poisoned")
+            .as_ref()
+            .map(|hole| (hole.first_index, hole.last_index))
+    }
+
+    /// A checkpoint at `checkpoint_wal_index` covers the hole when it is at or above the hole's
+    /// last index: a replay starts after the checkpoint and never reads the missing entries. Clears
+    /// the hole in that case and says whether it did.
+    pub fn resolve_hole_through(&self, checkpoint_wal_index: u64) -> bool {
+        let mut hole = self.hole.lock().expect("shared-store hole lock poisoned");
+        if hole
+            .as_ref()
+            .is_some_and(|open| checkpoint_wal_index >= open.last_index)
+        {
+            *hole = None;
+            return true;
+        }
+        false
+    }
+
+    fn refuse_if_hole(&self) -> Result<(), SharedStoreReplicationError> {
+        match self
+            .hole
+            .lock()
+            .expect("shared-store hole lock poisoned")
+            .as_ref()
+        {
+            Some(open) => Err(SharedStoreReplicationError::UnresolvedWalHole {
+                first_index: open.first_index,
+                last_index: open.last_index,
+                cause: open.cause.clone(),
+            }),
+            None => Ok(()),
+        }
+    }
+
+    fn record_hole(&self, first_index: u64, last_index: u64, error: &SharedStoreReplicationError) {
+        let mut hole = self.hole.lock().expect("shared-store hole lock poisoned");
+        match hole.as_mut() {
+            Some(open) => {
+                open.first_index = open.first_index.min(first_index);
+                open.last_index = open.last_index.max(last_index);
+            }
+            None => {
+                *hole = Some(UnresolvedHole {
+                    first_index,
+                    last_index,
+                    cause: error.to_string().chars().take(300).collect(),
+                });
+            }
+        }
+    }
+
     pub async fn write(
         &self,
         shard_id: ShardId,
         command: Command,
     ) -> Result<SharedStoreWriteReport, SharedStoreReplicationError> {
+        // An open hole refuses the write BEFORE it is numbered: numbering N+1 over an open N would
+        // make the hole permanent.
+        self.refuse_if_hole()?;
+        // A sync write without group commit is numbered and published under one lock, so a
+        // publish that fails is known, and recorded, before the next entry gets its number.
+        let _order = match self.mode {
+            SharedStoreStorageMode::Sync if !self.group_commit => {
+                let guard = self.publish_order.lock().await;
+                self.refuse_if_hole()?;
+                Some(guard)
+            }
+            _ => None,
+        };
         let wal_index = self.next_wal_index.fetch_add(1, Ordering::Relaxed);
         let entry = SharedStoreWalEntry {
             shard_id,
             wal_index,
             command: Some(command),
-        
-                        staged_blocks: Vec::new(),
-                                outcomes: Vec::new(),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
         };
         match self.mode {
             SharedStoreStorageMode::Sync if self.group_commit => {
                 self.group_commit_write(entry).await
             }
             SharedStoreStorageMode::Sync => {
-                let receipt = self.replicator.publish_wal_entry(entry).await?;
-                Ok(write_report_from_receipt(wal_index, receipt.as_ref()))
+                match self.replicator.publish_wal_entry(entry).await {
+                    Ok(receipt) => Ok(write_report_from_receipt(wal_index, receipt.as_ref())),
+                    Err(error) => {
+                        self.record_hole(wal_index, wal_index, &error);
+                        Err(error)
+                    }
+                }
             }
             SharedStoreStorageMode::Async => {
                 // Read the depth and release the lock before any await: holding it across the
@@ -3877,8 +4109,13 @@ where
                     // non-graceful exit would drop. The report already tells the truth about
                     // which happened -- `published`, not `queued`.
                     self.capacity_hits.fetch_add(1, Ordering::Relaxed);
-                    let receipt = self.replicator.publish_wal_entry(entry).await?;
-                    return Ok(write_report_from_receipt(wal_index, receipt.as_ref()));
+                    return match self.replicator.publish_wal_entry(entry).await {
+                        Ok(receipt) => Ok(write_report_from_receipt(wal_index, receipt.as_ref())),
+                        Err(error) => {
+                            self.record_hole(wal_index, wal_index, &error);
+                            Err(error)
+                        }
+                    };
                 }
                 self.pending
                     .lock()
@@ -3961,7 +4198,19 @@ where
 
             let entries: Vec<SharedStoreWalEntry> =
                 batch.iter().map(|waiter| waiter.entry.clone()).collect();
-            let result = self.replicator.publish_wal_entries_batch(&entries).await;
+            // Entries numbered before an earlier round failed are refused, not published: they
+            // would sit after the hole that round left.
+            let result = match self.refuse_if_hole() {
+                Err(error) => Err(error),
+                Ok(()) => self.replicator.publish_wal_entries_batch(&entries).await,
+            };
+            if let Err(error) = &result {
+                if !matches!(error, SharedStoreReplicationError::UnresolvedWalHole { .. }) {
+                    let first = entries.iter().map(|entry| entry.wal_index).min().unwrap_or(0);
+                    let last = entries.iter().map(|entry| entry.wal_index).max().unwrap_or(0);
+                    self.record_hole(first, last, error);
+                }
+            }
             match result {
                 Ok(reports) => {
                     for (waiter, report) in batch.into_iter().zip(reports.into_iter()) {
@@ -13779,6 +14028,8 @@ mod tests {
     struct AppendAlwaysFails {
         calls: AtomicU64,
         unknown: bool,
+        /// When set, reading the object back fails too, so an append cannot be resolved.
+        readback_fails: bool,
     }
 
     #[async_trait]
@@ -13802,7 +14053,11 @@ mod tests {
             }
         }
         async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
-            Err(ObjectStoreError::NotFound(key.to_string()))
+            if self.readback_fails {
+                Err(ObjectStoreError::Http("injected read failure".to_string()))
+            } else {
+                Err(ObjectStoreError::NotFound(key.to_string()))
+            }
         }
         async fn list(&self, _prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
             Ok(Vec::new())
@@ -13818,40 +14073,37 @@ mod tests {
     #[tokio::test]
     async fn an_append_of_unknown_outcome_is_not_retried_and_an_ordinary_failure_is() {
         const ATTEMPTS: usize = 5;
-        let policy = SharedStoreRetryPolicy {
-            max_attempts: ATTEMPTS,
-            backoff_ms: 0,
-        };
-        // CONTROL: an ordinary failure uses every attempt, so the loop is live and the count
-        // below is the variant's doing and not a loop that never repeats.
+        // CONTROL: an ordinary failure whose read-back shows nothing landed uses every attempt, so
+        // the loop is live and the count below is the read-back's doing and not a loop that never
+        // repeats.
         let ordinary = Arc::new(AppendAlwaysFails {
             calls: AtomicU64::new(0),
             unknown: false,
+            readback_fails: false,
         });
-        let replicator =
-            SharedStoreReplicator::with_retry_policy(TEST_CLUSTER_ID, ordinary.clone(), policy);
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, ordinary.clone())
+            .with_publish_retry(ATTEMPTS, Duration::from_secs(60));
         assert!(replicator
-            .append_blob_with_retry("k", Bytes::from_static(b"x"))
+            .append_resolved("k", Bytes::from_static(b"x"), 0)
             .await
             .is_err());
         assert_eq!(ordinary.calls.load(Ordering::SeqCst), ATTEMPTS as u64);
 
-        // An append that may already be in the object is sent once and reported as unknown.
+        // An append that may already be in the object, and cannot be read back to find out, is
+        // sent once and reported as unknown.
         let unknown = Arc::new(AppendAlwaysFails {
             calls: AtomicU64::new(0),
             unknown: true,
+            readback_fails: true,
         });
-        let replicator =
-            SharedStoreReplicator::with_retry_policy(TEST_CLUSTER_ID, unknown.clone(), policy);
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, unknown.clone())
+            .with_publish_retry(ATTEMPTS, Duration::from_secs(60));
         let error = replicator
-            .append_blob_with_retry("k", Bytes::from_static(b"x"))
+            .append_resolved("k", Bytes::from_static(b"x"), 0)
             .await
             .unwrap_err();
         assert!(
-            matches!(
-                error,
-                SharedStoreReplicationError::ObjectStore(ObjectStoreError::OutcomeUnknown { .. })
-            ),
+            matches!(error, SharedStoreReplicationError::AppendOutcomeUnknown { .. }),
             "got {error:?}"
         );
         assert_eq!(unknown.calls.load(Ordering::SeqCst), 1, "never sent again");
