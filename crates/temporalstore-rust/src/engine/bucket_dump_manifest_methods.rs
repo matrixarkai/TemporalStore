@@ -47,23 +47,18 @@ impl TemporalEngine {
         selected_buckets: impl IntoIterator<Item = u32>,
     ) -> Result<BucketDumpManifest, Status> {
         let selected_buckets = selected_buckets.into_iter().collect::<BTreeSet<_>>();
-        let summaries = self.bucket_storage_summaries(shard_id);
-        if summaries.is_empty()
-            && !self
-                .shards
-                .read()
-                .expect("engine lock poisoned")
-                .contains_key(&shard_id)
+        if !self
+            .shards
+            .read()
+            .expect("engine lock poisoned")
+            .contains_key(&shard_id)
         {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         }
-        let mut bucket_summaries = summaries
-            .into_iter()
-            .filter(|summary| {
-                selected_buckets.is_empty() || selected_buckets.contains(&summary.routing_bucket)
-            })
-            .collect::<Vec<_>>();
-        bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
+        // Bulk ingest dumps an exported image whose summaries are volatile, so only that path asks
+        // the live shard for them. Every other dump summarises the CAPTURED state off the one
+        // listing taken of it below, instead of listing the live shard first and the capture again.
+        let live_summaries = bulk_ingest_mode().then(|| self.bucket_storage_summaries(shard_id));
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let (mut dump_index_state, mut captured_bytes, publication) = if bulk_ingest_mode() {
             let publication = {
@@ -85,6 +80,31 @@ impl TemporalEngine {
             (snapshot, None, publication)
         };
         let dump_live_block_entries = collect_live_block_entries(&dump_index_state);
+        let summaries = match live_summaries {
+            Some(live) => live,
+            None => {
+                let (start, end) = self
+                    .infos
+                    .read()
+                    .expect("info lock poisoned")
+                    .get(&shard_id)
+                    .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
+                    .unwrap_or((0, u32::MAX));
+                bucket_storage_summaries_from_entries(
+                    &dump_index_state,
+                    start,
+                    end,
+                    &dump_live_block_entries,
+                )
+            }
+        };
+        let mut bucket_summaries = summaries
+            .into_iter()
+            .filter(|summary| {
+                selected_buckets.is_empty() || selected_buckets.contains(&summary.routing_bucket)
+            })
+            .collect::<Vec<_>>();
+        bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
         let mut retained_objects = dump_live_block_entries.iter()
             .filter(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()))
             .map(|entry| stable_block_object_id(shard_id, entry.kind.as_str(), &entry.object_key))
