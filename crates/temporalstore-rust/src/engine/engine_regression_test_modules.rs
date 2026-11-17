@@ -601,3 +601,5 @@ mod an_outcome_kind_holds_a_known_kind_without_allocating;
 mod a_delta_manifest_is_never_read_as_a_whole_image;
 #[path = "tests/a_feature_series_at_its_cap_files_only_what_changed.rs"]
 mod a_feature_series_at_its_cap_files_only_what_changed;
+#[path = "tests/a_dump_manifest_lists_the_shard_once.rs"]
+mod a_dump_manifest_lists_the_shard_once;

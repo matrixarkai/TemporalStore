@@ -9043,7 +9043,9 @@ before the dump.",
 fn one_call_walks_the_live_blocks_a_known_number_of_times() {
     const RECORDS: usize = 1_000;
     // 6 -> 5: the plan's summaries and digests come off one listing (`a_plan_lists_the_shards_blocks_once`).
-    const EXPECTED_MULTIPLE: u64 = 5;
+    // 5 -> 4: the dump manifest's bucket summaries come off the capture's listing
+    // (`a_dump_manifest_lists_the_shard_once`).
+    const EXPECTED_MULTIPLE: u64 = 4;
 
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -10572,8 +10574,8 @@ fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
 /// because that report is taken whether or not the round has work, which is exactly why the idle
 /// half is measured separately.
 const EXPECTED_IDLE_MULTIPLE: u64 = 2;
-// 6 -> 5 for the same reason as `EXPECTED_MULTIPLE` in `one_call_walks_the_live_blocks_a_known_number_of_times`.
-const EXPECTED_DIRTY_MULTIPLE: u64 = 5;
+// 6 -> 5 -> 4 for the same reasons as `EXPECTED_MULTIPLE` in `one_call_walks_the_live_blocks_a_known_number_of_times`.
+const EXPECTED_DIRTY_MULTIPLE: u64 = 4;
 
 /// What one round walked, at one corpus size.
 struct RoundWalkMeasurement {
