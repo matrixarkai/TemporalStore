@@ -1307,32 +1307,62 @@ fn a_checked_quarantine_that_has_not_aged_out_does_not_make_the_index_stage_walk
     }
 }
 
-/// A RETENTION OWNER KEEPS THE STAGE ON ITS FULL PATH, because it can name a quarantined slab that
-/// no new arrival announced.
+/// A YOUNG QUARANTINE COSTS THE INDEX STAGE NO WALK EVEN WHILE WRITES KEEP ADDING TO IT.
 ///
-/// The same fixture settles under the default options, then the last two rounds run with a retention
-/// floor configured: the quarantine is unchanged and still young, and the stage must walk.
+/// With writes every round the page stage sets a new slab aside each time, so the quarantine is
+/// never "checked since the last arrival" and the stage cannot skip. It still needs only the purge:
+/// the dump, the prune, the roll-forward and the log collector are idle, and the purge reads the
+/// maintained tally while nothing can age out. Every round whose plan lists a quarantined slab must
+/// leave the index stage at zero walk, and at least two must exist.
 ///
-/// Planted fault: dropping the floor test from `index_quarantine_waits` lets the stage skip here and
-/// fails the walk assertion.
+/// Planted fault: making `index_gc_purge_only` false sends these rounds down the full path and the
+/// stage walks the shard again (1500 entries on this fixture).
 #[test]
-fn a_retention_floor_makes_the_index_stage_walk_again_over_a_settled_quarantine() {
-    let rounds = quarantine_rounds(4, |round| {
-        if round >= 8 {
-            StorageManagerOptions {
-                block_gc_checkpoint_floor_slab_id: Some(0),
-                ..StorageManagerOptions::default()
-            }
-        } else {
-            StorageManagerOptions::default()
+fn a_young_quarantine_fed_by_steady_writes_costs_the_index_stage_no_walk() {
+    let rounds = quarantine_rounds(10, |_| StorageManagerOptions::default());
+    let quarantined: Vec<_> = rounds.iter().filter(|(quarantined, _)| *quarantined).collect();
+    assert!(
+        quarantined.len() >= 2,
+        "the fixture must leave a slab in quarantine for at least two rounds, got {rounds:?}"
+    );
+    for (_, walk) in &quarantined {
+        assert_eq!(*walk, 0, "a young quarantine made the stage walk the shard: {rounds:?}");
+    }
+}
+
+/// THE TALLY NAMES THE SLABS THE WALK DOES, on the shapes this fixture can make: overwrites that
+/// retire slabs, with rounds of compaction and collection between them.
+///
+/// The tally is only handed to a purge that cannot destroy, so a gap would delay a restore and not
+/// lose a slab; this is what says the gap is not there for strings. It does not cover the other
+/// models, which is why the walked set stays the one a purge that can destroy is given.
+///
+/// Planted fault: leaving the tally's compaction-pinned slabs out of the set makes the two differ
+/// while a compaction round is unpublished.
+#[test]
+fn the_tally_names_the_slabs_the_walk_does_across_overwrites_and_collection() {
+    let keys = 300usize;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    let engine = runtime.engine();
+    for round in 0..8usize {
+        for write in 0..40usize {
+            let index = (round * 40 + write) % keys;
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("loop-{index:06}"),
+                    value: vec![b'w'; 96],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
         }
-    });
-    let (settled_quarantined, settled_walk) = rounds[7];
-    assert!(settled_quarantined, "round 7 must list a quarantined slab: {rounds:?}");
-    assert_eq!(settled_walk, 0, "the quarantine never settled, so the control proves nothing: {rounds:?}");
-    for round in 8..10usize {
-        let (quarantined, walk) = rounds[round];
-        assert!(quarantined, "round {round} must still list a quarantined slab: {rounds:?}");
-        assert!(walk > 0, "round {round}: a retention floor did not keep the stage walking: {rounds:?}");
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        let walked = engine.live_block_slab_ids_all_shards();
+        let from_tally = engine
+            .live_block_slab_ids_all_shards_from_tally()
+            .expect("the tally is derived after loop rounds");
+        assert!(!walked.is_empty(), "round {round}: the fixture holds no live slab");
+        assert_eq!(from_tally, walked, "round {round}: the tally and the walk name different slabs");
     }
 }

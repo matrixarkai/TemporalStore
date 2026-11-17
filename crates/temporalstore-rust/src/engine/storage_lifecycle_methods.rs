@@ -1235,7 +1235,21 @@ impl TemporalEngine {
                 return Default::default();
             }
         }
-        let mut live_block_slab_ids = self.live_block_slab_ids_all_shards();
+        let min_age_ms = request
+            .block_gc_delayed_destroy_grace_ms
+            .max(crate::block_store::DELAYED_DESTROY_MIN_AGE_MS);
+        // WHILE NOTHING CAN AGE OUT THE ROUND CAN ONLY RESTORE, so the live set it is handed need not
+        // be the walked one: the maintained tally names the slabs the shard holds without visiting a
+        // block. The moment a slab can mature the round can destroy, and then only the walk will do.
+        let mut live_block_slab_ids = if self
+            .block_store
+            .quarantine_is_too_young_to_purge(min_age_ms)
+        {
+            self.live_block_slab_ids_all_shards_from_tally()
+                .unwrap_or_else(|| self.live_block_slab_ids_all_shards())
+        } else {
+            self.live_block_slab_ids_all_shards()
+        };
         let manifests = match list_reclaim_manifests_at(&self.index_dir) {
             Ok(manifests) => manifests,
             // Recovery can skip damaged dumps; physical deletion cannot assume they own nothing.
@@ -1290,8 +1304,7 @@ impl TemporalEngine {
         let report = self
             .block_store
             .purge_delayed_destroy_slabs_selected(
-                request.block_gc_delayed_destroy_grace_ms
-                    .max(crate::block_store::DELAYED_DESTROY_MIN_AGE_MS),
+                min_age_ms,
                 live_block_slab_ids,
                 selected,
             )

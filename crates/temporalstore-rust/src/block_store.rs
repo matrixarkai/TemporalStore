@@ -1996,8 +1996,14 @@ fn quarantine_purge_would_do_nothing(
     arrivals: u64,
     checked: u64,
 ) -> bool {
+    quarantine_too_young(earliest, now, min_age_ms) && checked == arrivals
+}
+
+/// Can no slab in quarantine have aged out? True only when the earliest arrival is known and younger
+/// than `min_age_ms`; an unknown earliest and an age of zero both answer false.
+fn quarantine_too_young(earliest: Option<u64>, now: u64, min_age_ms: u64) -> bool {
     match earliest {
-        Some(earliest) => now.saturating_sub(earliest) < min_age_ms && checked == arrivals,
+        Some(earliest) => now.saturating_sub(earliest) < min_age_ms,
         None => false,
     }
 }
@@ -2010,7 +2016,7 @@ fn checked_arrivals_after_note(current: u64, reported: u64, arrivals: u64) -> u6
 
 #[cfg(test)]
 mod quarantine_wait_guards {
-    use super::{checked_arrivals_after_note, quarantine_purge_would_do_nothing};
+    use super::{checked_arrivals_after_note, quarantine_purge_would_do_nothing, quarantine_too_young};
 
     const HOUR: u64 = 60 * 60 * 1000;
 
@@ -2035,6 +2041,16 @@ mod quarantine_wait_guards {
     fn every_doubt_answers_that_the_round_must_look() {
         assert!(!quarantine_purge_would_do_nothing(None, 2_000, HOUR, 3, 3));
         assert!(!quarantine_purge_would_do_nothing(Some(1_000), 2_000, 0, 3, 3));
+    }
+
+    /// The age half alone decides whether a purge could destroy anything, whatever was checked.
+    /// Planted fault: compare with `<=`, which calls a slab exactly at the age too young.
+    #[test]
+    fn too_young_is_strictly_below_the_age_and_needs_a_known_earliest() {
+        assert!(quarantine_too_young(Some(1_000), 1_000 + HOUR - 1, HOUR));
+        assert!(!quarantine_too_young(Some(1_000), 1_000 + HOUR, HOUR));
+        assert!(!quarantine_too_young(None, 2_000, HOUR));
+        assert!(!quarantine_too_young(Some(1_000), 2_000, 0));
     }
 
     /// A report can neither lower the count nor cover an arrival the store has not seen. Planted
@@ -2935,6 +2951,19 @@ impl BlockStore {
             arrivals_seen,
             inner.quarantine_arrivals,
         );
+    }
+
+    /// Whether a purge round at `min_age_ms` can destroy nothing, because no slab in quarantine can
+    /// have aged out. Such a round can still RESTORE a slab the live set names, so the live set it is
+    /// handed must still be a real one; what changes is that an approximate one is enough, since a
+    /// missed name delays a restore and cannot destroy.
+    pub fn quarantine_is_too_young_to_purge(&self, min_age_ms: u64) -> bool {
+        let inner = self.inner.lock().expect("block store lock poisoned");
+        quarantine_too_young(
+            inner.delayed_destroy_earliest_unix_ms,
+            now_unix_ms(),
+            min_age_ms,
+        )
     }
 
     /// Whether a purge round would do nothing at all, answered from memory.

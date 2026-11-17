@@ -1123,6 +1123,31 @@ impl TemporalEngine {
         ids.into_iter().collect()
     }
 
+    /// [`Self::live_block_slab_ids_all_shards`] read off the maintained per-slab tally instead of
+    /// walking every live block, or `None` when any loaded shard's tally has not been derived yet.
+    ///
+    /// NOT THE SAME DEFINITION. The tally counts what the bucket index holds, the walk reads the
+    /// model maps, and this has not been shown equal on every model, so it is only for a caller that
+    /// cannot destroy on the strength of it: a purge whose quarantine is too young to age out can only
+    /// restore, and a name this set misses delays a restore rather than losing a slab.
+    pub(crate) fn live_block_slab_ids_all_shards_from_tally(&self) -> Option<Vec<u64>> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let mut ids = std::collections::BTreeSet::new();
+        for shard in shards.values() {
+            let tally = &shard.bucket_index.block_slab_live;
+            if !tally.is_ready() {
+                return None;
+            }
+            ids.extend(tally.iter().map(|(block_slab_id, _)| block_slab_id));
+        }
+        for pinned in self.unpublished_compaction_slabs
+            .read().expect("unpublished compaction lock poisoned").values()
+        {
+            ids.extend(pinned.iter().copied());
+        }
+        Some(ids.into_iter().collect())
+    }
+
 /// How far a round may walk to fill its window.
 ///
 /// The window is the useful work; the budget stops a long run of keys in the other category from
