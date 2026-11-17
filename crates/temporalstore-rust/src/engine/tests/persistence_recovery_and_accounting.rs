@@ -13144,8 +13144,8 @@ fn what_eight_records_per_ingest_cost() {
 /// deletion policy. Every value written is read back after the sweeps have run.
 #[test]
 fn registrations_plateau_instead_of_tracking_writes() {
-    let previous = std::env::var("TS_WAL_RESIDENT_PAGES").ok();
-    std::env::set_var("TS_WAL_RESIDENT_PAGES", "64");
+    let previous = std::env::var("TS_WAL_RESIDENT_BLOCKS").ok();
+    std::env::set_var("TS_WAL_RESIDENT_BLOCKS", "64");
     let before_sweeps = crate::engine::RESIDENT_SWEEPS.load(std::sync::atomic::Ordering::Relaxed);
 
     let dir = tempfile::tempdir().unwrap();
@@ -13187,8 +13187,8 @@ fn registrations_plateau_instead_of_tracking_writes() {
     }
     let after_sweeps = crate::engine::RESIDENT_SWEEPS.load(std::sync::atomic::Ordering::Relaxed);
     match previous {
-        Some(value) => std::env::set_var("TS_WAL_RESIDENT_PAGES", value),
-        None => std::env::remove_var("TS_WAL_RESIDENT_PAGES"),
+        Some(value) => std::env::set_var("TS_WAL_RESIDENT_BLOCKS", value),
+        None => std::env::remove_var("TS_WAL_RESIDENT_BLOCKS"),
     }
 
     println!("  writes -> registrations held (limit 64)");

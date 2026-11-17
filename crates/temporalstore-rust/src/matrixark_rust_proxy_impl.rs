@@ -5286,8 +5286,6 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
             &[
                 "MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_ENABLED",
                 "TS_BLOCK_STORE_COMPRESSION_ENABLED",
-                "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED",
-                "TS_PAGE_STORE_COMPRESSION_ENABLED",
             ],
             defaults.compression_enabled,
         ),
@@ -5295,8 +5293,6 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
             &[
                 "MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_MIN_BYTES",
                 "TS_BLOCK_STORE_COMPRESSION_MIN_BYTES",
-                "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES",
-                "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
             ],
             // Was 4096, and every index write an add makes is smaller than that: the postings, the
             // placement rows, the locator entries. Those are also the most repetitive bytes in the
@@ -5313,8 +5309,6 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
             &[
                 "MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_LEVEL",
                 "TS_BLOCK_STORE_COMPRESSION_LEVEL",
-                "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL",
-                "TS_PAGE_STORE_COMPRESSION_LEVEL",
             ],
             defaults.compression_level,
         ),
@@ -9913,12 +9907,12 @@ mod tests {
     #[test]
     fn matrixark_proxy_block_store_options_default_to_throughput_threshold() {
         let _guard = env_guard();
-        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED");
-        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES");
-        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL");
-        env::remove_var("TS_PAGE_STORE_COMPRESSION_ENABLED");
-        env::remove_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES");
-        env::remove_var("TS_PAGE_STORE_COMPRESSION_LEVEL");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_ENABLED");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_MIN_BYTES");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_LEVEL");
+        env::remove_var("TS_BLOCK_STORE_COMPRESSION_ENABLED");
+        env::remove_var("TS_BLOCK_STORE_COMPRESSION_MIN_BYTES");
+        env::remove_var("TS_BLOCK_STORE_COMPRESSION_LEVEL");
 
         let options = matrixark_proxy_block_store_options();
         assert!(options.compression_enabled);
@@ -9935,20 +9929,40 @@ mod tests {
             BlockStoreOptions::default().compression_level
         );
 
-        env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED", "false");
-        env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES", "8192");
-        env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL", "3");
+        env::set_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_ENABLED", "false");
+        env::set_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_MIN_BYTES", "8192");
+        env::set_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_LEVEL", "3");
         let overridden = matrixark_proxy_block_store_options();
         assert!(!overridden.compression_enabled);
         assert_eq!(overridden.compression_min_bytes, 8192);
         assert_eq!(overridden.compression_level, 3);
 
-        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED");
-        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES");
-        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL");
-        env::remove_var("TS_PAGE_STORE_COMPRESSION_ENABLED");
-        env::remove_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES");
-        env::remove_var("TS_PAGE_STORE_COMPRESSION_LEVEL");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_ENABLED");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_MIN_BYTES");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_LEVEL");
+        env::remove_var("TS_BLOCK_STORE_COMPRESSION_ENABLED");
+        env::remove_var("TS_BLOCK_STORE_COMPRESSION_MIN_BYTES");
+        env::remove_var("TS_BLOCK_STORE_COMPRESSION_LEVEL");
+
+        // The older spellings are retired: setting them changes nothing, and the values here
+        // differ from the defaults so that "ignored" cannot pass as "read and equal".
+        let retired = [
+            ("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED", "false"),
+            ("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES", "8192"),
+            ("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL", "3"),
+            ("TS_PAGE_STORE_COMPRESSION_ENABLED", "false"),
+            ("TS_PAGE_STORE_COMPRESSION_MIN_BYTES", "8192"),
+            ("TS_PAGE_STORE_COMPRESSION_LEVEL", "3"),
+        ];
+        for (name, value) in retired {
+            env::set_var(name, value);
+        }
+        let ignored = matrixark_proxy_block_store_options();
+        assert!(ignored.compression_enabled, "a retired spelling turned compression off");
+        assert_eq!(ignored.compression_min_bytes, 256);
+        for (name, _) in retired {
+            env::remove_var(name);
+        }
     }
 
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
