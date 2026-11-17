@@ -217,6 +217,10 @@ pub struct SequenceQuerySpec {
     pub filters: Vec<FeatureFilter>,
 }
 
+/// Elements one `ListPushMany` may push, and one `ListPopMany` may pop. A command over it is refused
+/// whole, before it writes anything; one at it is accepted.
+pub const MAX_LIST_ELEMENTS_PER_COMMAND: usize = 1024;
+
 /// Members one `SetAddMany` or `SetRemoveMany` may name. A command over it is refused whole, before it
 /// writes anything; one at it is accepted.
 pub const MAX_SET_MEMBERS_PER_COMMAND: usize = 1024;
@@ -2010,6 +2014,24 @@ pub enum Command {
     ListPop {
         key: String,
         left: bool,
+    },
+    /// Push several elements onto a list end, one after another as the same number of `ListPush`
+    /// commands would (so a left push leaves the last element named at the head). Answers the new
+    /// length. At most `MAX_LIST_ELEMENTS_PER_COMMAND` elements, and at least one.
+    ListPushMany {
+        key: String,
+        #[serde(with = "crate::bytes_serde::list")]
+        members: Vec<Vec<u8>>,
+        left: bool,
+    },
+    /// Pop up to `count` elements off a list end, one after another as the same number of `ListPop`
+    /// commands would. Answers the elements popped, in the order they came off: fewer than `count`
+    /// when the list held fewer, none for an empty or missing list. `count` is at least 1 and at most
+    /// `MAX_LIST_ELEMENTS_PER_COMMAND`.
+    ListPopMany {
+        key: String,
+        left: bool,
+        count: usize,
     },
     /// Inclusive range with Redis index semantics (negatives count from the tail).
     ListRange {

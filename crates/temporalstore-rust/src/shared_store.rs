@@ -5537,6 +5537,16 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             key: key.clone(),
             left: *left,
         }),
+        Command::ListPushMany { key, members, left } => v1::command::Kind::ListPushMany(v1::ListPushMany {
+            key: key.clone(),
+            members: members.clone(),
+            left: *left,
+        }),
+        Command::ListPopMany { key, left, count } => v1::command::Kind::ListPopMany(v1::ListPopMany {
+            key: key.clone(),
+            left: *left,
+            count: *count as u64,
+        }),
         Command::SetRemove { key, member } => v1::command::Kind::SetRemove(v1::SetRemove {
             key: key.clone(),
             member: member.clone(),

@@ -1063,11 +1063,14 @@ pub fn execute_redis_command_with_state(
         "LPUSH" | "RPUSH" if args.len() >= 3 => {
             let key = name_arg(&args[1]);
             let left = command == "LPUSH";
+            // One command per run of elements, each pushed in order, so the list ends as the same
+            // number of single pushes leaves it. A command takes a bounded number of elements, so
+            // a longer call is several.
             let mut length = 0;
-            for member in args.iter().skip(2) {
-                match execute(Command::ListPush {
+            for members in args[2..].chunks(crate::types::MAX_LIST_ELEMENTS_PER_COMMAND) {
+                match execute(Command::ListPushMany {
                     key: key.clone(),
-                    member: member.clone(),
+                    members: members.to_vec(),
                     left,
                 }) {
                     Ok(CommandResponse::Integer { value }) => length = value,
@@ -1091,18 +1094,28 @@ pub fn execute_redis_command_with_state(
             } else {
                 None
             };
-            let mut popped = Vec::new();
-            let want = count.unwrap_or(1);
-            for _ in 0..want {
-                match execute(Command::ListPop {
+            // One command per run of elements, so a count of many is a few commands rather than one
+            // per element. A run that comes back short means the list is empty.
+            let mut popped: Vec<Vec<u8>> = Vec::new();
+            let mut remaining = usize::try_from(count.unwrap_or(1)).unwrap_or(usize::MAX);
+            while remaining > 0 {
+                let take = remaining.min(crate::types::MAX_LIST_ELEMENTS_PER_COMMAND);
+                match execute(Command::ListPopMany {
                     key: key.clone(),
                     left,
+                    count: take,
                 }) {
-                    Ok(CommandResponse::Bytes { value: Some(value) }) => popped.push(value),
-                    Ok(CommandResponse::Bytes { value: None }) => break,
+                    Ok(CommandResponse::Members { members }) => {
+                        let short = members.len() < take;
+                        popped.extend(members);
+                        if short {
+                            break;
+                        }
+                    }
                     Ok(_) => return RespValue::Error("ERR invalid lpop response".to_string()),
                     Err(err) => return RespValue::Error(format!("ERR {err}")),
                 }
+                remaining -= take;
             }
             match count {
                 None => match popped.pop() {

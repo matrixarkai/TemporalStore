@@ -164,6 +164,8 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::SetRemoveMany { key, .. }
         | Command::ListPush { key, .. }
         | Command::ListPop { key, .. }
+        | Command::ListPushMany { key, .. }
+        | Command::ListPopMany { key, .. }
         | Command::ListRange { key, .. }
         | Command::ListLen { key }
         | Command::ListSet { key, .. }
@@ -428,6 +430,8 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::SetRemoveMany { .. }
             | Command::ListPush { .. }
             | Command::ListPop { .. }
+            | Command::ListPushMany { .. }
+            | Command::ListPopMany { .. }
             | Command::ListSet { .. }
             | Command::ListRemove { .. }
             | Command::ListTrim { .. }
@@ -502,6 +506,8 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::SetRemoveMany { .. }
             | Command::ListPush { .. }
             | Command::ListPop { .. }
+            | Command::ListPushMany { .. }
+            | Command::ListPopMany { .. }
             | Command::ListSet { .. }
             | Command::ListRemove { .. }
             | Command::ListTrim { .. }
@@ -661,6 +667,30 @@ pub(super) fn validate_command_preconditions(
     command: &Command,
 ) -> Result<(), Status> {
     match command {
+        Command::ListPushMany { members, .. }
+            if members.is_empty() || members.len() > crate::types::MAX_LIST_ELEMENTS_PER_COMMAND =>
+        {
+            return Err(Status::error(
+                "invalid_argument",
+                format!(
+                    "a list push names between 1 and {} elements, not {}",
+                    crate::types::MAX_LIST_ELEMENTS_PER_COMMAND,
+                    members.len()
+                ),
+            ));
+        }
+        Command::ListPopMany { count, .. }
+            if *count == 0 || *count > crate::types::MAX_LIST_ELEMENTS_PER_COMMAND =>
+        {
+            return Err(Status::error(
+                "invalid_argument",
+                format!(
+                    "a list pop takes between 1 and {} elements, not {}",
+                    crate::types::MAX_LIST_ELEMENTS_PER_COMMAND,
+                    count
+                ),
+            ));
+        }
         Command::ZSetAddMany { members, .. }
             if members.is_empty() || members.len() > crate::types::MAX_ZSET_MEMBERS_PER_COMMAND =>
         {

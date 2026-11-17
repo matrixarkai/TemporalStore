@@ -299,6 +299,8 @@ message Command {
     SetRemoveMany set_remove_many = 77;
     ZSetAddMany zset_add_many = 78;
     ZSetRemoveMany zset_remove_many = 79;
+    ListPushMany list_push_many = 80;
+    ListPopMany list_pop_many = 81;
   }
 }
 
@@ -989,6 +991,19 @@ message ZSetAdd {
 message ZSetRemove {
   string key = 1;
   bytes member = 2;
+}
+
+// Several elements of one list in one command: the answer is the new length (push) or the elements popped (pop).
+message ListPushMany {
+  string key = 1;
+  repeated bytes members = 2;
+  bool left = 3;
+}
+
+message ListPopMany {
+  string key = 1;
+  bool left = 2;
+  uint64 count = 3;
 }
 
 // Several members of one sorted set in one command: the answer is how many were new (add) or present (remove).

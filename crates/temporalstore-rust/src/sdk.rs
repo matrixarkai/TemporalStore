@@ -337,6 +337,16 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             key: command.key,
             left: command.left,
         },
+        v1::command::Kind::ListPushMany(command) => types::Command::ListPushMany {
+            key: command.key,
+            members: command.members,
+            left: command.left,
+        },
+        v1::command::Kind::ListPopMany(command) => types::Command::ListPopMany {
+            key: command.key,
+            left: command.left,
+            count: usize::try_from(command.count).unwrap_or(usize::MAX),
+        },
         v1::command::Kind::SetRemove(command) => types::Command::SetRemove {
             key: command.key,
             member: command.member,
