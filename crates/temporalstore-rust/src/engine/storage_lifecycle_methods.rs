@@ -676,7 +676,10 @@ impl TemporalEngine {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let shared_store_cursors = shared_store_cursors.into_iter().collect::<Vec<_>>();
+        // Registered readers are merged here, in the one place every caller's plan is built, so
+        // the cycle, the loop's collection and the purge all honour them without each being told.
+        let mut shared_store_cursors = shared_store_cursors.into_iter().collect::<Vec<_>>();
+        shared_store_cursors.extend(self.registered_replay_cursors(shard_id));
         let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
         let delayed_destroy_reports = self
             .block_store
@@ -1197,6 +1200,7 @@ impl TemporalEngine {
             .map(|ids| ids.iter().copied().collect::<BTreeSet<_>>());
         // Direct lifecycle calls must honor the same retention owners as scheduled cycles.
         if !request.block_gc_shared_store_cursors.is_empty()
+            || self.has_registered_replay_readers(request.shard_id)
             || !request.block_gc_raft_snapshot_refs.is_empty()
             || request.block_gc_checkpoint_floor_slab_id.is_some()
             || request.block_gc_raft_install_floor_slab_id.is_some()

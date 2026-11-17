@@ -330,6 +330,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             // With none set it is skipped (it walks the shard), and the live set above is the
             // whole answer, as it always was.
             let names_retention_owner = !request.block_gc_shared_store_cursors.is_empty()
+                || inner.engine.has_registered_replay_readers(request.shard_id)
                 || !request.block_gc_raft_snapshot_refs.is_empty()
                 || request.block_gc_checkpoint_floor_slab_id.is_some()
                 || request.block_gc_raft_install_floor_slab_id.is_some();

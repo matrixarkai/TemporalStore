@@ -6050,6 +6050,67 @@ fn the_loop_publishes_how_many_retention_owner_inputs_it_was_given() {
     assert_eq!(runtime.stats().storage_manager_retention_owners_configured, 3);
 }
 
+/// A GC request names no owner in its fields, yet a reader registered with the engine still holds
+/// the slabs it needs.
+///
+/// The collection step builds the dependency plan only when some owner is named, so the registry
+/// has to count as one. Driven through the request directly: in the loop the purge restores a
+/// slab in the same round it was set aside, which hides a collection step that ignored the
+/// registry. The control is the same request after the lease is dropped, which must set the same
+/// slabs aside, so the first half cannot pass because nothing was ever collectable.
+#[test]
+fn a_gc_request_with_no_owner_fields_still_honours_a_registered_reader() {
+    let run = |hold: bool| {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        engine.block_store().install_slab(1, b"one").unwrap();
+        engine.block_store().install_slab(2, b"two").unwrap();
+        // Slab 2 is the newest and stays in either arm; slab 1 is the one that can be collected.
+        let lease = hold.then(|| {
+            engine.register_replay_reader(1, "follower-1", 0, std::time::Duration::from_secs(600))
+        });
+        let runtime = DataNodeRuntime::new(
+            engine.clone(),
+            DataNodeRuntimeOptions {
+                worker_threads: 1,
+                max_queue_depth: 8,
+                max_background_queue_depth: 8,
+            },
+        );
+        let submitted = runtime.submit_gc(
+            GcRequest {
+                shard_id: 1,
+                retain_wal_from_sequence: None,
+                retain_index_log_from_sequence: None,
+                retain_block_slabs_from_id: Some(3),
+                block_gc_delayed_destroy: false,
+                block_gc_invalidate_removed_slabs_only: false,
+                block_gc_max_destroy_slabs_per_round: 0,
+                block_gc_max_destroy_physical_bytes_per_round: 0,
+                block_gc_min_slab_garbage_basis_points: 0,
+                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_raft_snapshot_refs: Vec::new(),
+                block_gc_checkpoint_floor_slab_id: None,
+                block_gc_raft_install_floor_slab_id: None,
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        assert!(wait_for_job(&runtime, submitted.job_id).status.ok);
+        drop(lease);
+        engine.block_store().slab_ids().unwrap()
+    };
+    let held = run(true);
+    assert!(
+        held.contains(&1),
+        "a registered reader's slab was collected: {held:?}"
+    );
+    let free = run(false);
+    assert!(
+        !free.contains(&1),
+        "control: with no reader the slab was not collected, so the first half proves nothing: {free:?}"
+    );
+}
+
 /// With the index stage off, the loop still destroys a quarantined slab once its grace has passed.
 ///
 /// The purge ran only inside the index stage, so a server that turned that stage off quarantined
@@ -6116,6 +6177,73 @@ fn the_loop_destroys_a_quarantined_slab_with_the_index_stage_off() {
     assert!(
         run_arm(true),
         "control arm: with the index stage on nothing was destroyed, so the arm above proves nothing"
+    );
+}
+
+/// A reader registered with the engine holds its slabs against the periodic loop, with no option
+/// set, and releasing the lease lets the next round collect them.
+///
+/// The loop's options are static, so a reader whose position moves cannot be expressed there. The
+/// engine's own registry is read by the dependency plan every caller shares. The control is the
+/// same runtime after the lease is dropped: the slabs that were held must then be quarantined, which
+/// keeps the first half from passing because no slab ever went stale.
+#[test]
+fn a_registered_reader_holds_its_slabs_against_the_periodic_loop_until_it_is_dropped() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    // The purge is part of the index stage and would restore a slab in the same round it was
+    // set aside, which leaves nothing for the check below to see. With it off, the only thing
+    // between a stale slab and quarantine is the collection step this test is about.
+    let no_purge = StorageManagerOptions {
+        enable_index_gc: false,
+        ..StorageManagerOptions::default()
+    };
+    let lease = runtime.engine().register_replay_reader(
+        1,
+        "follower-1",
+        0,
+        std::time::Duration::from_secs(600),
+    );
+    let quarantined = |runtime: &DataNodeRuntime| {
+        runtime
+            .engine()
+            .block_store()
+            .delayed_destroy_slab_ids()
+            .unwrap_or_default()
+    };
+    let mut written = 0usize;
+    for _ in 0..6 {
+        let engine = runtime.engine();
+        for index in 0..400usize {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("reader-{:06}", (written + index) % 100),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += 400;
+        runtime.run_storage_manager_once(1, no_purge.clone());
+    }
+    assert!(
+        quarantined(&runtime).is_empty(),
+        "the loop quarantined slabs a registered reader holds: {:?}",
+        quarantined(&runtime)
+    );
+    drop(lease);
+    runtime.run_storage_manager_once(1, no_purge.clone());
+    assert!(
+        !quarantined(&runtime).is_empty(),
+        "control: with the lease dropped nothing was quarantined, so the first half proves nothing"
     );
 }
 
