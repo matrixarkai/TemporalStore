@@ -5,6 +5,12 @@
 use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::*;
 
+#[path = "compaction_slices.rs"]
+mod compaction_slices;
+pub(crate) use compaction_slices::PassSlot;
+#[allow(unused_imports)]
+pub(crate) use compaction_slices::{SliceProgress, COMPACTION_SLICE_KEYS};
+
 #[cfg(test)]
 #[path = "compaction_execution_tests.rs"]
 mod compaction_execution_tests;
@@ -12,6 +18,10 @@ mod compaction_execution_tests;
 #[cfg(test)]
 #[path = "compaction_retention_tests.rs"]
 mod compaction_retention_tests;
+
+#[cfg(test)]
+#[path = "compaction_slice_tests.rs"]
+mod compaction_slice_tests;
 
 /// OBSERVATION SEAM: was the shard-table write guard still held when a round PUBLISHED its
 /// durable index?
@@ -1672,6 +1682,371 @@ fn expiry_scan_budget(limit: usize) -> usize {
         ).map(|_| ())
     }
 
+    /// The arms that visit only the keys `on_drain` names: strings and the four containers. Each
+    /// moves the blocks of one key at a time, so a caller can bound the work by naming fewer keys.
+    fn relocate_keyed_blocks(
+        &self,
+        shard_id: ShardId,
+        shard: &mut ShardState,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+        on_drain: &dyn Fn(&str) -> bool,
+        rewrite_stats: &mut CompactionRewriteStats,
+    ) -> Result<(), Status> {
+        // EVERY ARM PAIRS AN ADDRESS WITH ITS KEY'S BUCKET *AND* WITH THE KEY, and the arms that
+        // iterated `values_mut()` iterate `iter_mut()` to get both. Nothing new is computed per
+        // BLOCK: a bucket is one FNV-1a over the key, and the keyed arms compute it once per key for
+        // however many blocks that key owns. The key is LENT rather than copied -- `Cow::Borrowed`
+        // everywhere but the entity arm, which composes its key and so owns it -- and it is the same
+        // string the bucket beside it was derived from, which is the property that matters: a read
+        // that named a different string would look for a block in a bucket nothing filed it under.
+        let bucket_of = |key: &str| {
+            block_routing_bucket(key, start_routing_bucket, end_routing_bucket)
+        };
+        // THE STRING ARM STAGES ITS ADDRESSES, because the row is a slot and the address is
+        // DERIVED from the record's words rather than stored beside them -- so there is no
+        // `&mut ElementEntry` inside it to lend out. The addresses are materialised, rewritten by
+        // the same helper over the same iterator shape, and written back through `set_address`.
+        //
+        // THE WRITE-BACK MUST GO THROUGH THE SETTER AND NOT BUILD A FRESH ROW. `set_address`
+        // rewrites the block word, the block size and the two block flags and touches nothing else,
+        // so the deadline, the model id and the dirty bit survive a relocation. A fresh row would
+        // drop them, and would not fail today because those fields are still unfilled --
+        // `compacting_a_record_keeps_everything_that_is_not_the_address` is the arm that says so.
+        let mut staged: Vec<(crate::engine::state::ModelKey, crate::block_store::ElementEntry)> =
+            shard
+                .strings()
+                .iter()
+                .filter(|(key, _)| on_drain(key))
+                .map(|(key, slot)| (std::sync::Arc::clone(key), slot.address()))
+                .collect();
+        compact_block_addresses(
+            &self.block_store,
+            &self.cache,
+            shard_id,
+            "string",
+            staged
+                .iter_mut()
+                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
+            rewrite_stats,
+        )?;
+        for (key, address) in &staged {
+            if let Some(slot) = shard.strings_mut().get_mut(&**key) {
+                slot.set_address(address);
+            }
+        }
+        // THE FOUR CONTAINER ARMS BATCH, and each hands over the element's KEY BYTES rather than
+        // its element name: `container_blocks::element_name_from_element_key` renders the element name from
+        // them, so the four inline renderings the write sites spell out are not copied here. That is
+        // the second copy `read_block_bytes_for_compaction` documented as the reason these arms
+        // could not name their elements at all, and it no longer has to exist.
+        //
+        // `iter_mut()` and not `values_mut()`, because the map's KEY is the element and it is what
+        // the frame has to carry -- and it is also what the read's element name is rendered from, so
+        // these arms now name the block they read instead of asking for the whole of it.
+        //
+        // THE OBJECT KEY GOES IN ONCE PER ARM rather than once per item. `compact_block_addresses`
+        // pairs a key with every address because its string arm walks a map of many objects; each of
+        // these four arms is already standing on exactly one, so it says so once.
+        for (key, mut addresses) in shard.bucket_index.hashes.element_values_mut() {
+            if !on_drain(key) {
+                continue;
+            }
+            let routing_bucket = bucket_of(key);
+            compact_container_blocks_batched(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "hash",
+                key,
+                routing_bucket,
+                addresses.iter_mut().map(|(field, address)| ContainerElementRef::bytes(
+                    // A hash field's element name IS the field name, so its key bytes are the name's.
+                    field.as_bytes(),
+                    address,
+                )),
+                rewrite_stats,
+            )?;
+        }
+        for (key, mut members) in shard.bucket_index.zsets.element_values_mut() {
+            if !on_drain(key) {
+                continue;
+            }
+            let routing_bucket = bucket_of(key);
+            compact_container_blocks_batched(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "zset",
+                key,
+                routing_bucket,
+                members.iter_mut().map(|(member, entry)| {
+                    // The biased score big-endian, then the member: the two halves the element name
+                    // spells as sixteen hex characters and then the member's hex.
+                    ContainerElementRef::prefixed(entry.0.to_be_bytes(), member, &mut entry.1)
+                }),
+                rewrite_stats,
+            )?;
+        }
+        for (key, mut elements) in shard.bucket_index.lists.element_values_mut() {
+            if !on_drain(key) {
+                continue;
+            }
+            let routing_bucket = bucket_of(key);
+            compact_container_blocks_batched(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "list",
+                key,
+                routing_bucket,
+                elements.iter_mut().map(|(sequence, address)| ContainerElementRef::inline(
+                    // The same two's-complement bias `ListPush` renders as sixteen hex characters,
+                    // as the eight bytes underneath that rendering.
+                    (*sequence as u64)
+                        .wrapping_sub(i64::MIN as u64)
+                        .to_be_bytes(),
+                    address,
+                )),
+                rewrite_stats,
+            )?;
+        }
+        for (key, mut addresses) in shard.bucket_index.sets.element_values_mut() {
+            if !on_drain(key) {
+                continue;
+            }
+            let routing_bucket = bucket_of(key);
+            compact_container_blocks_batched(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "set",
+                key,
+                routing_bucket,
+                addresses.iter_mut().map(|(member, address)| ContainerElementRef::bytes(
+                    // A set member's element name renders the member and nothing else, in whichever
+                    // spelling it was filed under, so the member IS the key.
+                    member,
+                    address,
+                )),
+                rewrite_stats,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The arms that visit every key of their model whatever the drain set names: features, control
+    /// state and the context series. A block of those models moves only when it sits on a drain slab, but
+    /// the walk is over the whole map.
+    fn relocate_unkeyed_blocks(
+        &self,
+        shard_id: ShardId,
+        shard: &mut ShardState,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+        rewrite_stats: &mut CompactionRewriteStats,
+    ) -> Result<(), Status> {
+        let bucket_of = |key: &str| {
+            block_routing_bucket(key, start_routing_bucket, end_routing_bucket)
+        };
+        for (key, series) in shard.features_mut().iter_mut() {
+            let routing_bucket = bucket_of(key);
+            compact_feature_block_addresses(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "feature",
+                &key[..],
+                series,
+                rewrite_stats,
+                routing_bucket,
+            )?;
+        }
+        // A TWO-PASS, BECAUSE THE SHARED SIGNATURE IS DELIBERATELY LEFT ALONE.
+        //
+        // `compact_block_addresses` rewrites addresses through `&mut ElementEntry`, and this map's
+        // value is a record now, which holds its address decomposed. Teaching that function to
+        // speak records is the obvious fix and is REFUSED: it has four call sites and one of them
+        // is the `string` arm, which another lane is mid-flight in. A changed signature there
+        // turns its rebase from mechanical into painful, and buys nothing this call site needs.
+        //
+        // So addresses are staged out, rewritten by the unchanged function, and written back
+        // through `set_address`, which touches the address word, the block size and the two bits
+        // that are part of what an address MEANS -- and cannot reach the deadline, the state bits
+        // or the model id. Building a fresh record from the rewritten address would drop those,
+        // and would not fail today because they are unused; the guard against that is
+        // `compacting_a_record_keeps_everything_that_is_not_the_address`.
+        let mut staged: Vec<(u32, String, ElementEntry)> = shard
+            .control_state_blocks()
+            .iter()
+            .map(|(key, record)| (bucket_of(key), key.to_string(), record.address()))
+            .collect();
+        compact_block_addresses(
+            &self.block_store,
+            &self.cache,
+            shard_id,
+            "control_state",
+            staged.iter_mut().map(|(routing_bucket, key, address)| {
+                (*routing_bucket, std::borrow::Cow::Borrowed(key.as_str()), address)
+            }),
+            rewrite_stats,
+        )?;
+        for (_, key, address) in &staged {
+            shard.with_control_state_block_mut(key.as_str(), |record| {
+                record.set_address(address);
+            });
+        }
+        compact_block_addresses(
+            &self.block_store,
+            &self.cache,
+            shard_id,
+            "context_node",
+            shard
+                .context_nodes_mut()
+                .iter_mut()
+                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
+            rewrite_stats,
+        )?;
+        // A PLAIN `iter_mut`, where a live mirror needed a whole-map closure that re-mirrored on
+        // exit. This rewrites an address in every series of every key, so under a mirror it is the
+        // widest divergence window there is: every address stale in the copy a reader might be
+        // served, for the whole duration of a compaction round.
+        for (key, series) in shard.context_events_mut().iter_mut() {
+            let routing_bucket = bucket_of(key);
+            compact_feature_block_addresses(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "context_event",
+                &**key,
+                series,
+                rewrite_stats,
+                routing_bucket,
+            )?;
+        }
+        for (key, series) in shard.context_indexes_mut().iter_mut() {
+            let routing_bucket = bucket_of(key);
+            compact_feature_block_addresses(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "context_index",
+                &key[..],
+                series,
+                rewrite_stats,
+                routing_bucket,
+            )?;
+        }
+        for (key, series) in shard.context_audits_mut().iter_mut() {
+            let routing_bucket = bucket_of(key);
+            compact_feature_block_addresses(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "context_audit",
+                &key[..],
+                series,
+                rewrite_stats,
+                routing_bucket,
+            )?;
+        }
+        for (key, series) in shard.context_children_mut().iter_mut() {
+            let routing_bucket = bucket_of(key);
+            compact_feature_block_addresses(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "context_child",
+                &key[..],
+                series,
+                rewrite_stats,
+                routing_bucket,
+            )?;
+        }
+        for (key, series) in shard.context_summaries_mut().iter_mut() {
+            let routing_bucket = bucket_of(key);
+            compact_feature_block_addresses(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "context_summary",
+                &key[..],
+                series,
+                rewrite_stats,
+                routing_bucket,
+            )?;
+        }
+        for (key, series) in shard.context_compressions_mut().iter_mut() {
+            let routing_bucket = bucket_of(key);
+            compact_feature_block_addresses(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "context_compression",
+                &key[..],
+                series,
+                rewrite_stats,
+                routing_bucket,
+            )?;
+        }
+        // THE ENTITY ARM DERIVES ITS BUCKET FROM THE PER-ENTITY KEY, not from the collection key
+        // this map is keyed by: `ContextUpsertEntity` files the block under
+        // `context_entity_key(..)`, which is the collection key with the entity hash appended, and
+        // that is the string the bucket comes from. Composing it per entity is what the model-map
+        // walk does for the same reason.
+        compact_block_addresses(
+            &self.block_store,
+            &self.cache,
+            shard_id,
+            "context_entity",
+            shard.context_entities_mut().iter_mut().flat_map(|(key, series)| {
+                series.points_mut().map(move |(entity_hash, address)| {
+                    // COMPOSED ONCE AND USED TWICE, which is the point of hoisting it into a
+                    // binding: the bucket is derived from this string and the identity names it, and
+                    // if the two ever came from different spellings the read would look for the page
+                    // in a bucket nothing filed it under. The `format!` is not new -- this arm has
+                    // always built it to derive the bucket -- it is simply no longer thrown away,
+                    // which is what `Cow::Owned` carries out of here.
+                    let entity_key = format!("{key}:{entity_hash}");
+                    (
+                        block_routing_bucket(
+                            &entity_key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        std::borrow::Cow::Owned(entity_key),
+                        address,
+                    )
+                })
+            }),
+            rewrite_stats,
+        )?;
+        Ok(())
+    }
+
+    /// A round whose walk finished is still a failure if any block would not read.
+    fn unreadable_blocks_failure(rewrite_stats: &CompactionRewriteStats) -> Result<(), Status> {
+        // THE WALK FINISHED, AND THE ROUND IS STILL A FAILURE if any block would not read.
+        //
+        // An unreadable block used to end the walk where it stood, so every key after it in
+        // walk order was never reached -- and since blocks already moved are skipped, the next
+        // round arrived at the same block first and stopped there again. Now the block is left
+        // where it is and the walk continues, so the blocks behind it still move. The error is
+        // raised HERE, after the walk, so the failure stays loud and the handler below still
+        // commits the consistent partial index and keeps the round open.
+        if rewrite_stats.skipped_unreadable > 0 {
+            return Err(Status::error(
+                    "block_compaction_failed",
+                    format!(
+                        "{} block(s) could not be read during compaction and were left in place",
+                        rewrite_stats.skipped_unreadable
+                    ),
+                ));
+            }
+
+        Ok(())
+    }
+
     fn compact_shard_blocks_relocating_inner(
         &self,
         shard_id: ShardId,
@@ -1683,6 +2058,12 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // CAPTURED BEFORE ANYTHING IS REWRITTEN, so a successful round can open the write-
         // amplification window at this point and count its own relocation as the window's first
         // writes. Reading it after the rewrite would open the window at 0 bytes and report 0.000x.
+        if self.sliced_pass_active(shard_id) {
+            return Err(Status::error(
+                "compaction_pass_in_progress",
+                "a sliced compaction pass owns this shard; a whole round would roll a second slab",
+            ));
+        }
         let bytes_written_before_relocation = self.block_store.stats().bytes_written;
         let (start_routing_bucket, end_routing_bucket) = self
             .infos
@@ -1819,335 +2200,14 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // consistent partial state instead of leaving the volatile index half-advanced but
         // unpersisted -- see the `if let Err(err)` handler after this block for why.
         let relocation_result: Result<(), Status> = (|| {
-        // EVERY ARM PAIRS AN ADDRESS WITH ITS KEY'S BUCKET *AND* WITH THE KEY, and the arms that
-        // iterated `values_mut()` iterate `iter_mut()` to get both. Nothing new is computed per
-        // BLOCK: a bucket is one FNV-1a over the key, and the keyed arms compute it once per key for
-        // however many blocks that key owns. The key is LENT rather than copied -- `Cow::Borrowed`
-        // everywhere but the entity arm, which composes its key and so owns it -- and it is the same
-        // string the bucket beside it was derived from, which is the property that matters: a read
-        // that named a different string would look for a block in a bucket nothing filed it under.
-        let bucket_of = |key: &str| {
-            block_routing_bucket(key, start_routing_bucket, end_routing_bucket)
-        };
-        // THE STRING ARM STAGES ITS ADDRESSES, because the row is a slot and the address is
-        // DERIVED from the record's words rather than stored beside them -- so there is no
-        // `&mut ElementEntry` inside it to lend out. The addresses are materialised, rewritten by
-        // the same helper over the same iterator shape, and written back through `set_address`.
-        //
-        // THE WRITE-BACK MUST GO THROUGH THE SETTER AND NOT BUILD A FRESH ROW. `set_address`
-        // rewrites the block word, the block size and the two block flags and touches nothing else,
-        // so the deadline, the model id and the dirty bit survive a relocation. A fresh row would
-        // drop them, and would not fail today because those fields are still unfilled --
-        // `compacting_a_record_keeps_everything_that_is_not_the_address` is the arm that says so.
-        let mut staged: Vec<(crate::engine::state::ModelKey, crate::block_store::ElementEntry)> =
-            shard
-                .strings()
-                .iter()
-                .filter(|(key, _)| on_drain(key))
-                .map(|(key, slot)| (std::sync::Arc::clone(key), slot.address()))
-                .collect();
-        compact_block_addresses(
-            &self.block_store,
-            &self.cache,
-            shard_id,
-            "string",
-            staged
-                .iter_mut()
-                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
-            &mut rewrite_stats,
-        )?;
-        for (key, address) in &staged {
-            if let Some(slot) = shard.strings_mut().get_mut(&**key) {
-                slot.set_address(address);
-            }
-        }
-        // THE FOUR CONTAINER ARMS BATCH, and each hands over the element's KEY BYTES rather than
-        // its element name: `container_blocks::element_name_from_element_key` renders the element name from
-        // them, so the four inline renderings the write sites spell out are not copied here. That is
-        // the second copy `read_block_bytes_for_compaction` documented as the reason these arms
-        // could not name their elements at all, and it no longer has to exist.
-        //
-        // `iter_mut()` and not `values_mut()`, because the map's KEY is the element and it is what
-        // the frame has to carry -- and it is also what the read's element name is rendered from, so
-        // these arms now name the block they read instead of asking for the whole of it.
-        //
-        // THE OBJECT KEY GOES IN ONCE PER ARM rather than once per item. `compact_block_addresses`
-        // pairs a key with every address because its string arm walks a map of many objects; each of
-        // these four arms is already standing on exactly one, so it says so once.
-        for (key, mut addresses) in shard.bucket_index.hashes.element_values_mut() {
-            if !on_drain(key) {
-                continue;
-            }
-            let routing_bucket = bucket_of(key);
-            compact_container_blocks_batched(
-                &self.block_store,
-                &self.cache,
-                shard_id,
-                "hash",
-                key,
-                routing_bucket,
-                addresses.iter_mut().map(|(field, address)| ContainerElementRef::bytes(
-                    // A hash field's element name IS the field name, so its key bytes are the name's.
-                    field.as_bytes(),
-                    address,
-                )),
+            self.relocate_keyed_blocks(
+                shard_id, shard, start_routing_bucket, end_routing_bucket, &on_drain,
                 &mut rewrite_stats,
             )?;
-        }
-        for (key, mut members) in shard.bucket_index.zsets.element_values_mut() {
-            if !on_drain(key) {
-                continue;
-            }
-            let routing_bucket = bucket_of(key);
-            compact_container_blocks_batched(
-                &self.block_store,
-                &self.cache,
-                shard_id,
-                "zset",
-                key,
-                routing_bucket,
-                members.iter_mut().map(|(member, entry)| {
-                    // The biased score big-endian, then the member: the two halves the element name
-                    // spells as sixteen hex characters and then the member's hex.
-                    ContainerElementRef::prefixed(entry.0.to_be_bytes(), member, &mut entry.1)
-                }),
-                &mut rewrite_stats,
+            self.relocate_unkeyed_blocks(
+                shard_id, shard, start_routing_bucket, end_routing_bucket, &mut rewrite_stats,
             )?;
-        }
-        for (key, mut elements) in shard.bucket_index.lists.element_values_mut() {
-            if !on_drain(key) {
-                continue;
-            }
-            let routing_bucket = bucket_of(key);
-            compact_container_blocks_batched(
-                &self.block_store,
-                &self.cache,
-                shard_id,
-                "list",
-                key,
-                routing_bucket,
-                elements.iter_mut().map(|(sequence, address)| ContainerElementRef::inline(
-                    // The same two's-complement bias `ListPush` renders as sixteen hex characters,
-                    // as the eight bytes underneath that rendering.
-                    (*sequence as u64)
-                        .wrapping_sub(i64::MIN as u64)
-                        .to_be_bytes(),
-                    address,
-                )),
-                &mut rewrite_stats,
-            )?;
-        }
-        for (key, mut addresses) in shard.bucket_index.sets.element_values_mut() {
-            if !on_drain(key) {
-                continue;
-            }
-            let routing_bucket = bucket_of(key);
-            compact_container_blocks_batched(
-                &self.block_store,
-                &self.cache,
-                shard_id,
-                "set",
-                key,
-                routing_bucket,
-                addresses.iter_mut().map(|(member, address)| ContainerElementRef::bytes(
-                    // A set member's element name renders the member and nothing else, in whichever
-                    // spelling it was filed under, so the member IS the key.
-                    member,
-                    address,
-                )),
-                &mut rewrite_stats,
-            )?;
-        }
-        for (key, series) in shard.features_mut().iter_mut() {
-            let routing_bucket = bucket_of(key);
-            compact_feature_block_addresses(
-                &self.block_store,
-                &self.cache,
-                shard_id,
-                "feature",
-                &key[..],
-                series,
-                &mut rewrite_stats,
-                routing_bucket,
-            )?;
-        }
-        // A TWO-PASS, BECAUSE THE SHARED SIGNATURE IS DELIBERATELY LEFT ALONE.
-        //
-        // `compact_block_addresses` rewrites addresses through `&mut ElementEntry`, and this map's
-        // value is a record now, which holds its address decomposed. Teaching that function to
-        // speak records is the obvious fix and is REFUSED: it has four call sites and one of them
-        // is the `string` arm, which another lane is mid-flight in. A changed signature there
-        // turns its rebase from mechanical into painful, and buys nothing this call site needs.
-        //
-        // So addresses are staged out, rewritten by the unchanged function, and written back
-        // through `set_address`, which touches the address word, the block size and the two bits
-        // that are part of what an address MEANS -- and cannot reach the deadline, the state bits
-        // or the model id. Building a fresh record from the rewritten address would drop those,
-        // and would not fail today because they are unused; the guard against that is
-        // `compacting_a_record_keeps_everything_that_is_not_the_address`.
-        let mut staged: Vec<(u32, String, ElementEntry)> = shard
-            .control_state_blocks()
-            .iter()
-            .map(|(key, record)| (bucket_of(key), key.to_string(), record.address()))
-            .collect();
-        compact_block_addresses(
-            &self.block_store,
-            &self.cache,
-            shard_id,
-            "control_state",
-            staged.iter_mut().map(|(routing_bucket, key, address)| {
-                (*routing_bucket, std::borrow::Cow::Borrowed(key.as_str()), address)
-            }),
-            &mut rewrite_stats,
-        )?;
-        for (_, key, address) in &staged {
-            shard.with_control_state_block_mut(key.as_str(), |record| {
-                record.set_address(address);
-            });
-        }
-        compact_block_addresses(
-            &self.block_store,
-            &self.cache,
-            shard_id,
-            "context_node",
-            shard
-                .context_nodes_mut()
-                .iter_mut()
-                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
-            &mut rewrite_stats,
-        )?;
-        // A PLAIN `iter_mut`, where a live mirror needed a whole-map closure that re-mirrored on
-        // exit. This rewrites an address in every series of every key, so under a mirror it is the
-        // widest divergence window there is: every address stale in the copy a reader might be
-        // served, for the whole duration of a compaction round.
-        for (key, series) in shard.context_events_mut().iter_mut() {
-            let routing_bucket = bucket_of(key);
-            compact_feature_block_addresses(
-                &self.block_store,
-                &self.cache,
-                shard_id,
-                "context_event",
-                &**key,
-                series,
-                &mut rewrite_stats,
-                routing_bucket,
-            )?;
-        }
-        for (key, series) in shard.context_indexes_mut().iter_mut() {
-            let routing_bucket = bucket_of(key);
-            compact_feature_block_addresses(
-                &self.block_store,
-                &self.cache,
-                shard_id,
-                "context_index",
-                &key[..],
-                series,
-                &mut rewrite_stats,
-                routing_bucket,
-            )?;
-        }
-        for (key, series) in shard.context_audits_mut().iter_mut() {
-            let routing_bucket = bucket_of(key);
-            compact_feature_block_addresses(
-                &self.block_store,
-                &self.cache,
-                shard_id,
-                "context_audit",
-                &key[..],
-                series,
-                &mut rewrite_stats,
-                routing_bucket,
-            )?;
-        }
-        for (key, series) in shard.context_children_mut().iter_mut() {
-            let routing_bucket = bucket_of(key);
-            compact_feature_block_addresses(
-                &self.block_store,
-                &self.cache,
-                shard_id,
-                "context_child",
-                &key[..],
-                series,
-                &mut rewrite_stats,
-                routing_bucket,
-            )?;
-        }
-        for (key, series) in shard.context_summaries_mut().iter_mut() {
-            let routing_bucket = bucket_of(key);
-            compact_feature_block_addresses(
-                &self.block_store,
-                &self.cache,
-                shard_id,
-                "context_summary",
-                &key[..],
-                series,
-                &mut rewrite_stats,
-                routing_bucket,
-            )?;
-        }
-        for (key, series) in shard.context_compressions_mut().iter_mut() {
-            let routing_bucket = bucket_of(key);
-            compact_feature_block_addresses(
-                &self.block_store,
-                &self.cache,
-                shard_id,
-                "context_compression",
-                &key[..],
-                series,
-                &mut rewrite_stats,
-                routing_bucket,
-            )?;
-        }
-        // THE ENTITY ARM DERIVES ITS BUCKET FROM THE PER-ENTITY KEY, not from the collection key
-        // this map is keyed by: `ContextUpsertEntity` files the block under
-        // `context_entity_key(..)`, which is the collection key with the entity hash appended, and
-        // that is the string the bucket comes from. Composing it per entity is what the model-map
-        // walk does for the same reason.
-        compact_block_addresses(
-            &self.block_store,
-            &self.cache,
-            shard_id,
-            "context_entity",
-            shard.context_entities_mut().iter_mut().flat_map(|(key, series)| {
-                series.points_mut().map(move |(entity_hash, address)| {
-                    // COMPOSED ONCE AND USED TWICE, which is the point of hoisting it into a
-                    // binding: the bucket is derived from this string and the identity names it, and
-                    // if the two ever came from different spellings the read would look for the page
-                    // in a bucket nothing filed it under. The `format!` is not new -- this arm has
-                    // always built it to derive the bucket -- it is simply no longer thrown away,
-                    // which is what `Cow::Owned` carries out of here.
-                    let entity_key = format!("{key}:{entity_hash}");
-                    (
-                        block_routing_bucket(
-                            &entity_key,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        ),
-                        std::borrow::Cow::Owned(entity_key),
-                        address,
-                    )
-                })
-            }),
-            &mut rewrite_stats,
-        )?;
-            // THE WALK FINISHED, AND THE ROUND IS STILL A FAILURE if any block would not read.
-            //
-            // An unreadable block used to end the walk where it stood, so every key after it in
-            // walk order was never reached -- and since blocks already moved are skipped, the next
-            // round arrived at the same block first and stopped there again. Now the block is left
-            // where it is and the walk continues, so the blocks behind it still move. The error is
-            // raised HERE, after the walk, so the failure stays loud and the handler below still
-            // commits the consistent partial index and keeps the round open.
-            if rewrite_stats.skipped_unreadable > 0 {
-                return Err(Status::error(
-                    "block_compaction_failed",
-                    format!(
-                        "{} block(s) could not be read during compaction and were left in place",
-                        rewrite_stats.skipped_unreadable
-                    ),
-                ));
-            }
-            Ok(())
+            Self::unreadable_blocks_failure(&rewrite_stats)
         })();
         if let Err(err) = relocation_result {
             // A relocation failed partway. The in-memory index is now a CONSISTENT partial
