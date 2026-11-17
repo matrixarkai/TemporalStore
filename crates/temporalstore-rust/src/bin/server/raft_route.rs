@@ -553,6 +553,8 @@ fn is_raft_read_command(command: &Command) -> bool {
         Command::CommonTtl { .. }
             | Command::CommonExists { .. }
             | Command::StringGet { .. }
+            | Command::StringLen { .. }
+            | Command::StringGetRange { .. }
             | Command::HashGet { .. }
             | Command::HashMultiGet { .. }
             | Command::HashGetAll { .. }

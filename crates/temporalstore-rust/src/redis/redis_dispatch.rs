@@ -437,15 +437,9 @@ pub fn execute_redis_command_with_state(
         "PTTL" if args.len() == 2 => integer_response(execute(Command::CommonTtl {
             key: name_arg(&args[1]),
         })),
-        "STRLEN" if args.len() == 2 => match execute(Command::StringGet {
+        "STRLEN" if args.len() == 2 => integer_response(execute(Command::StringLen {
             key: name_arg(&args[1]),
-        }) {
-            Ok(CommandResponse::Bytes { value }) => {
-                RespValue::Integer(value.map(|value| value.len() as i64).unwrap_or_default())
-            }
-            Ok(_) => RespValue::Error("ERR invalid strlen response".to_string()),
-            Err(err) => RespValue::Error(format!("ERR {err}")),
-        },
+        })),
         "GETRANGE" if args.len() == 4 => string_getrange_response(&args, &mut execute),
         "SETRANGE" if args.len() == 4 => {
             let response = string_setrange_response(&args, &mut execute);

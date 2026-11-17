@@ -607,3 +607,5 @@ mod a_delta_manifest_is_never_read_as_a_whole_image;
 mod a_feature_series_at_its_cap_files_only_what_changed;
 #[path = "tests/a_dump_manifest_lists_the_shard_once.rs"]
 mod a_dump_manifest_lists_the_shard_once;
+#[path = "tests/a_string_length_and_range_do_not_copy_the_value.rs"]
+mod a_string_length_and_range_do_not_copy_the_value;
