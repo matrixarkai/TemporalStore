@@ -949,6 +949,64 @@ fn the_expire_and_evict_counts_are_each_stages_own_runs() {
     );
 }
 
+/// A round drains what is due within its time budget, and the budget still bounds it.
+///
+/// 1,000 keys are made due against a per-slice bound of 100. With the key bound alone a round
+/// removed 100 however many were due, so deadlines passing faster than that left a backlog that
+/// grew every round (measured: 1,000 made due per round, 100 removed per round, 90,000 overdue
+/// after 100 rounds). With a time budget the round repeats the slice and removes all 1,000. Three
+/// arms: a generous budget drains everything; a budget of zero takes one slice, the old behaviour;
+/// a budget of one microsecond lets the first slice run and then stops, so a long backlog is not
+/// drained in one unbounded round.
+#[test]
+fn a_round_drains_what_is_due_within_its_time_budget_and_no_further() {
+    fn make_due(runtime: &DataNodeRuntime, count: usize) {
+        let engine = runtime.engine();
+        for index in 0..count {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSetEx {
+                    key: format!("backlog-{index:05}"),
+                    value: vec![b'v'; 16],
+                    ttl_ms: 1,
+                },
+            });
+            assert!(response.status.ok, "{:?}", response.status);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let with_budget = |micros: u64| StorageManagerOptions {
+        max_expire_hot_buckets_per_round: 100,
+        expire_round_budget_micros: micros,
+        ..StorageManagerOptions::default()
+    };
+
+    // Generous budget: everything due goes in one round.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 10);
+    make_due(&runtime, 1_000);
+    let drained = runtime.run_storage_manager_once(1, with_budget(30_000_000));
+    assert_eq!(drained.expired_records_removed, 1_000, "the round left a backlog behind");
+
+    // Budget zero: one slice, the key bound alone.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 10);
+    make_due(&runtime, 1_000);
+    let one_slice = runtime.run_storage_manager_once(1, with_budget(0));
+    assert_eq!(one_slice.expired_records_removed, 100);
+
+    // One microsecond: the first slice always runs, then the budget has elapsed.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 10);
+    make_due(&runtime, 1_000);
+    let bounded = runtime.run_storage_manager_once(1, with_budget(1));
+    assert!(
+        bounded.expired_records_removed >= 100 && bounded.expired_records_removed < 1_000,
+        "a one-microsecond budget removed {}, expected one slice and no drain",
+        bounded.expired_records_removed
+    );
+}
+
 /// Measurement harness, not a gate: `--ignored --nocapture`, one test thread, `LOOP_KEYS=<n>`,
 /// `LOOP_WRITES=<writes per round>`. A shard that takes writes between rounds is dirty at every
 /// round, so this prices what a round pays then, stage by stage and by the call site that walked.

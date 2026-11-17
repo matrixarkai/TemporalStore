@@ -860,6 +860,7 @@ impl DataNodeRuntime {
                 shard_id,
                 options.max_expire_hot_buckets_per_round,
                 options.max_expire_cold_buckets_per_round,
+                options.expire_round_budget_micros,
             );
             self.inner
                 .stats
@@ -2303,22 +2304,41 @@ impl DataNodeRuntime {
         shard_id: ShardId,
         hot_limit: usize,
         cold_limit: usize,
+        budget_micros: u64,
     ) -> usize {
         // THIS SHARD ONLY. The storage manager runs one round per shard, and this used to sweep
         // every loaded shard from each of them: with S shards a tick took S sweeps of the whole
         // table, each under the shard-table write guard, and the removals of the other shards
         // were counted in this shard's report.
-        let removed = self
-            .inner
-            .engine
-            .sweep_expired_records_with_request(crate::engine::reports::ShardExpirySweepRequest {
-                shard_id,
-                max_hot_buckets_per_round: hot_limit,
-                max_cold_buckets_per_round: cold_limit,
-                load_cold_buckets: true,
-            })
-            .map(|report| report.expired_records_removed)
-            .unwrap_or(0);
+        //
+        // SLICES, BOUNDED IN TIME. One slice takes at most `hot_limit` hot and `cold_limit` cold
+        // keys. A round repeats the slice while the last one removed something and the time budget
+        // has not elapsed, so it keeps up with deadlines that pass faster than one slice removes
+        // and still stops: each slice takes and releases the shard write guard on its own, so a
+        // reader or writer waits for one slice and not for the round. A budget of 0 takes one
+        // slice. The first slice always runs.
+        let started = std::time::Instant::now();
+        let budget = std::time::Duration::from_micros(budget_micros);
+        let mut removed = 0usize;
+        loop {
+            let slice = self
+                .inner
+                .engine
+                .sweep_expired_records_with_request(
+                    crate::engine::reports::ShardExpirySweepRequest {
+                        shard_id,
+                        max_hot_buckets_per_round: hot_limit,
+                        max_cold_buckets_per_round: cold_limit,
+                        load_cold_buckets: true,
+                    },
+                )
+                .map(|report| report.expired_records_removed)
+                .unwrap_or(0);
+            removed = removed.saturating_add(slice);
+            if slice == 0 || budget.is_zero() || started.elapsed() >= budget {
+                break;
+            }
+        }
         let mut stats = self
             .inner
             .stats

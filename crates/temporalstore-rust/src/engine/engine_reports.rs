@@ -3537,6 +3537,11 @@ pub const DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS: u64 = 5_000;
 /// being followed scans 5 on-store slots against 100 in-memory ones.
 pub const DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND: usize = 100;
 pub const DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND: usize = 5;
+/// How long the loop's expire stage keeps taking slices of due keys in one round. A slice is the
+/// per-round key bound above; the stage repeats it while keys remain due and this budget has not
+/// elapsed, so a round's work is bounded in TIME and not in keys. Each slice takes and releases the
+/// shard write guard on its own.
+pub const DEFAULT_EXPIRE_ROUND_BUDGET_MICROS: u64 = 50_000;
 /// Buckets evicted per round once the cache is over its memory pressure threshold.
 pub const DEFAULT_EVICTION_BATCH_LIMIT: usize = 10;
 
