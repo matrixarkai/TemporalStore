@@ -638,20 +638,22 @@ impl DataNodeRuntime {
         let unchanged_since_nothing_to_reclaim = memo_hit.is_some();
         // A SHARD WITH DIRTY BUCKETS IS NOT IDLE, so it waits for the byte gate like any other. The
         // probe is the idle shard's question and costs a walk of every live block.
-        let probe_safe = (options.enable_wal_reclaim
+        //
+        // THE PLAN IS KEPT. Building it walks every live block, and the stage below asks the same
+        // question again with the same inputs; when nothing between the two moved the shard, the
+        // second answer is the first one.
+        let probe_plan = (options.enable_wal_reclaim
             && !dump_pressure
             && pressure.dirty_bucket_count == 0
             && !unchanged_since_nothing_to_reclaim)
             .then(|| {
-                self.inner
-                    .engine
-                    .storage_wal_reclaim_plan(
-                        shard_id,
-                        options.follower_replay_cursors.clone(),
-                        options.raft_snapshot_refs.clone(),
-                    )
-                    .safe_to_reclaim
+                self.inner.engine.storage_wal_reclaim_plan(
+                    shard_id,
+                    options.follower_replay_cursors.clone(),
+                    options.raft_snapshot_refs.clone(),
+                )
             });
+        let probe_safe = probe_plan.as_ref().map(|plan| plan.safe_to_reclaim);
         if probe_safe == Some(false) {
             if let Some(key) = quiet_key_before.clone() {
                 self.inner
@@ -762,11 +764,19 @@ impl DataNodeRuntime {
             // This is the call whose answer is APPLIED -- `gc_before_sequence` below it is what
             // unlinks segments -- so it is the one that must see the cursors. The probe further up
             // only decides whether the stage runs.
-            let wal_reclaim_plan = self.inner.engine.storage_wal_reclaim_plan(
-                shard_id,
-                options.follower_replay_cursors.clone(),
-                options.raft_snapshot_refs.clone(),
-            );
+            //
+            // REUSED FROM THE PROBE when the round dumped nothing and moved no block: a plan reads
+            // the dirty claims, the dump manifests and the buckets' generations, and none of those
+            // moved. A dump rewrites the first two and a materialised block changes the third, so
+            // either rebuilds it.
+            let wal_reclaim_plan = match probe_plan {
+                Some(plan) if !dumped && moved_blocks == 0 => plan,
+                _ => self.inner.engine.storage_wal_reclaim_plan(
+                    shard_id,
+                    options.follower_replay_cursors.clone(),
+                    options.raft_snapshot_refs.clone(),
+                ),
+            };
             let wal_reclaim = self.inner.engine.apply_storage_wal_reclaim(wal_reclaim_plan);
             if wal_reclaim.applied {
                 tracing::debug!(

@@ -254,3 +254,46 @@ fn a_hot_bucket_dirtied_every_round_keeps_the_log_near_the_gate() {
         "the log holds {records} of {written} written records after 60 rounds with one hot          dirty bucket, so the byte gate is not reclaiming it"
     );
 }
+
+/// AN IDLE ROUND THAT RECLAIMS THE LOG BUILDS ITS PLAN ONCE.
+///
+/// The stage asks whether the log is reclaimable (a plan, which walks every live block) and then
+/// asks again, with the same inputs, to apply the answer. When the round dumped nothing and moved no
+/// block the second plan is the first one, so the stage walks the shard once for the plan and no
+/// more. Counted in live-block entries visited, as multiples of the shard.
+#[test]
+fn an_idle_round_that_reclaims_the_log_does_not_plan_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded(dir.path(), 200);
+    let live_blocks: usize = runtime
+        .inner
+        .engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.block_ref_count as usize)
+        .sum();
+    assert!(live_blocks > 0, "the fixture stored no live blocks");
+    let shipped = StorageManagerOptions::default();
+    let mut best_ran = None;
+    for _ in 0..6 {
+        let report = runtime.run_storage_manager_once(1, shipped.clone());
+        let span = report
+            .stage_spans
+            .iter()
+            .find(|span| span.stage == "reclaim_wal")
+            .expect("every round reports the stage");
+        if span.executed && span.walk.live_block_entries > 0 {
+            best_ran = Some(span.walk.live_block_entries as usize);
+            break;
+        }
+    }
+    // NON-VACUITY: some round ran the stage and walked, or this measures nothing.
+    let walked = best_ran.expect("no round ran the WAL reclaim stage over a walked shard");
+    // The probe's plan, the lifecycle apply and nothing else. Two plans was five walks in total at
+    // this fixture; one plan is four.
+    assert!(
+        walked <= 4 * live_blocks,
+        "the reclaim stage walked {walked} entries over {live_blocks} live blocks          ({:.1}x): a second plan was built where the first was still good",
+        walked as f64 / live_blocks as f64
+    );
+}
