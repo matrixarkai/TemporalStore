@@ -2092,7 +2092,7 @@ pub(crate) fn execute_on_shard(
             // THE LENGTH IS TAKEN FROM THE CACHE'S SHARED BYTES, NOT FROM A COPY OF THEM. A string
             // block is the whole value, so its length is the value's.
             CommandResponse::Integer {
-                value: read_bucket_index_value_shared(
+                value: read_bucket_index_value(
                     cache,
                     block_store,
                     shard_id,
@@ -2116,7 +2116,7 @@ pub(crate) fn execute_on_shard(
             // ONLY THE SLICE IS COPIED. The whole value used to be copied out of the cache and the
             // door then copied the range out of that copy.
             CommandResponse::Bytes {
-                value: read_bucket_index_value_shared(
+                value: read_bucket_index_value(
                     cache,
                     block_store,
                     shard_id,
