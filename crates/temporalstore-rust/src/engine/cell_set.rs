@@ -572,7 +572,15 @@ fn dim_from_tag(tag: u64) -> Option<DimType> {
     })
 }
 
+#[inline(always)]
 fn read_varint(bytes: &[u8], cursor: &mut usize) -> Result<u64, String> {
+    // A one-byte varint is what nearly every length, tag and small value is.
+    if let Some(&byte) = bytes.get(*cursor) {
+        if byte < 0x80 {
+            *cursor += 1;
+            return Ok(u64::from(byte));
+        }
+    }
     decode_varint(bytes, cursor).ok_or_else(|| "truncated or overlong varint".to_string())
 }
 
@@ -1105,6 +1113,17 @@ fn field_len(len: usize) -> usize {
 fn count_cells(bytes: &[u8]) -> usize {
     let (mut cursor, mut count) = (0, 0);
     while cursor < bytes.len() {
+        // A cell as the encoder writes it: the tag byte, a one-byte length, the record.
+        if bytes[cursor] == 0x0a {
+            if let Some(&len) = bytes.get(cursor + 1) {
+                let end = cursor + 2 + usize::from(len);
+                if len < 0x80 && end <= bytes.len() {
+                    cursor = end;
+                    count += 1;
+                    continue;
+                }
+            }
+        }
         let Ok((field, wire)) = read_tag(bytes, &mut cursor) else { break };
         let step = match (field, wire) {
             (1, 2) => read_bytes(bytes, &mut cursor).map(|_| count += 1),
@@ -1135,6 +1154,89 @@ fn unpack_into<T>(
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Cells read through the fast path in this thread, which a test reads to know the path ran.
+    pub(crate) static FAST_RECORDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Appends a packed run of varints, at most `limit` of them. `false`, with nothing it pushed taken
+/// back, when there are more, or one is damaged: the caller then reads the cell field by field and
+/// says what is wrong.
+#[inline(always)]
+fn unpack_within<T>(packed: &[u8], limit: usize, out: &mut Vec<T>, convert: impl Fn(u64) -> T) -> bool {
+    let (mut cursor, mut count) = (0usize, 0usize);
+    while cursor < packed.len() {
+        if count == limit {
+            return false;
+        }
+        let Ok(value) = read_varint(packed, &mut cursor) else { return false };
+        out.push(convert(value));
+        count += 1;
+    }
+    true
+}
+
+/// Reads one cell written as the encoder writes it -- the member as a varint (tag 8), then the
+/// packed labels (tag 26) if it has any, then the packed lanes (tag 34) if it has any, and nothing
+/// else -- and appends it. `false`, with `out` and `previous` as they were, for any other shape (a
+/// bytes member, a field out of order or repeated, a count over the header's, a damaged varint),
+/// which the caller reads field by field, so every refusal is worded where it always was.
+#[inline(always)]
+fn read_canonical_record(
+    record: &[u8],
+    delta: bool,
+    previous: &mut u64,
+    labels_per_cell: usize,
+    lanes_per_cell: usize,
+    out: &mut FlatCells,
+) -> bool {
+    if record.first() != Some(&0x08) {
+        return false;
+    }
+    let mut at = 1usize;
+    let Ok(raw) = read_varint(record, &mut at) else { return false };
+    let member = if delta {
+        match previous.checked_add(raw) {
+            Some(value) => value,
+            None => return false,
+        }
+    } else {
+        raw
+    };
+    let mut labels: &[u8] = &[];
+    if record.get(at) == Some(&0x1a) {
+        at += 1;
+        let Ok(packed) = read_bytes(record, &mut at) else { return false };
+        labels = packed;
+    }
+    let mut lanes: &[u8] = &[];
+    if record.get(at) == Some(&0x22) {
+        at += 1;
+        let Ok(packed) = read_bytes(record, &mut at) else { return false };
+        lanes = packed;
+    }
+    if at != record.len() {
+        return false;
+    }
+    let (labels_at, lanes_at) = (out.labels.len(), out.lanes.len());
+    if !unpack_within(labels, labels_per_cell, &mut out.labels, |v| v) {
+        out.labels.truncate(labels_at);
+        return false;
+    }
+    if !unpack_within(lanes, lanes_per_cell, &mut out.lanes, unzigzag) {
+        out.labels.truncate(labels_at);
+        out.lanes.truncate(lanes_at);
+        return false;
+    }
+    // Values the cell did not carry (a sample written under an earlier header) read as zero.
+    out.labels.resize(labels_at + labels_per_cell, 0);
+    out.lanes.resize(lanes_at + lanes_per_cell, 0);
+    out.members.push(FlatMember::U64(member));
+    *previous = member;
+    true
+}
+
 impl FlatCells {
     /// No cells, with room for `room` of them.
     pub(crate) fn empty(header: &CellHeader, room: usize) -> FlatCells {
@@ -1157,6 +1259,18 @@ impl FlatCells {
     /// Reads what [`decode_sample`] reads, under the same limits, with room for `room` more
     /// cells than `bytes` holds so a merge into it does not have to grow it.
     pub(crate) fn decode(header: &CellHeader, bytes: &[u8], room: usize) -> Result<FlatCells, String> {
+        FlatCells::decode_with(header, bytes, room, true)
+    }
+
+    /// [`FlatCells::decode`] reading every cell field by field, never through the fast path for a
+    /// cell written as the encoder writes it. The answer is the same by construction and the tests
+    /// compare the two over every shape and every damage they can make.
+    #[cfg(test)]
+    pub(crate) fn decode_by_fields(header: &CellHeader, bytes: &[u8], room: usize) -> Result<FlatCells, String> {
+        FlatCells::decode_with(header, bytes, room, false)
+    }
+
+    fn decode_with(header: &CellHeader, bytes: &[u8], room: usize, fast: bool) -> Result<FlatCells, String> {
         let mut out = FlatCells::empty(header, count_cells(bytes).saturating_add(room));
         let (labels_per_cell, lanes_per_cell) = (out.labels_per_cell, out.lanes_per_cell);
         let mut cursor = 0;
@@ -1177,8 +1291,15 @@ impl FlatCells {
             if (field, wire) != (1, 2) {
                 return Err(format!("unknown sample field {field}/{wire}"));
             }
-            validate_cells_in_sample(out.members.len() + 1)?;
+            if out.members.len() >= MAX_CELLS_PER_SAMPLE {
+                validate_cells_in_sample(out.members.len() + 1)?;
+            }
             let record = read_bytes(bytes, &mut cursor)?;
+            if fast && read_canonical_record(record, delta, &mut previous, labels_per_cell, lanes_per_cell, &mut out) {
+                #[cfg(test)]
+                FAST_RECORDS.with(|n| n.set(n.get() + 1));
+                continue;
+            }
             let (labels_at, lanes_at, arena_at) = (out.labels.len(), out.lanes.len(), out.arena.len());
             let mut at = 0;
             let mut member = None;
@@ -2597,3 +2718,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "cell_set_decode_fast_tests.rs"]
+mod decode_fast_tests;
