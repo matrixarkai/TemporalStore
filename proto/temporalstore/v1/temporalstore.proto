@@ -297,6 +297,8 @@ message Command {
     WindowReduceRemove window_reduce_remove = 75;
     SetAddMany set_add_many = 76;
     SetRemoveMany set_remove_many = 77;
+    ZSetAddMany zset_add_many = 78;
+    ZSetRemoveMany zset_remove_many = 79;
   }
 }
 
@@ -987,6 +989,22 @@ message ZSetAdd {
 message ZSetRemove {
   string key = 1;
   bytes member = 2;
+}
+
+// Several members of one sorted set in one command: the answer is how many were new (add) or present (remove).
+message ZSetScoredMember {
+  bytes member = 1;
+  double score = 2;
+}
+
+message ZSetAddMany {
+  string key = 1;
+  repeated ZSetScoredMember members = 2;
+}
+
+message ZSetRemoveMany {
+  string key = 1;
+  repeated bytes members = 2;
 }
 
 message ZSetIncrBy {

@@ -5556,6 +5556,17 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                 member: member.clone(),
             })
         }
+        Command::ZSetAddMany { key, members } => v1::command::Kind::ZsetAddMany(v1::ZSetAddMany {
+            key: key.clone(),
+            members: members
+                .iter()
+                .map(|member| v1::ZSetScoredMember { member: member.member.clone(), score: member.score })
+                .collect(),
+        }),
+        Command::ZSetRemoveMany { key, members } => v1::command::Kind::ZsetRemoveMany(v1::ZSetRemoveMany {
+            key: key.clone(),
+            members: members.clone(),
+        }),
         Command::ZSetIncrBy { key, member, increment } => {
             v1::command::Kind::ZsetIncrBy(v1::ZSetIncrBy {
                 key: key.clone(),

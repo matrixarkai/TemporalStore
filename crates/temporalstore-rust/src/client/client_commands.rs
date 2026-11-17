@@ -77,8 +77,10 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ListRemove { key, .. }
         | Command::ListTrim { key, .. }
         | Command::ZSetAdd { key, .. }
+        | Command::ZSetAddMany { key, .. }
         | Command::ZSetScore { key, .. }
         | Command::ZSetRemove { key, .. }
+        | Command::ZSetRemoveMany { key, .. }
         | Command::ZSetCard { key }
         | Command::ZSetRange { key, .. }
         | Command::ZSetRangeByScore { key, .. }

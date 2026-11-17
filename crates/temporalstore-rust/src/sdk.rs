@@ -354,6 +354,18 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             key: command.key,
             member: command.member,
         },
+        v1::command::Kind::ZsetAddMany(command) => types::Command::ZSetAddMany {
+            key: command.key,
+            members: command
+                .members
+                .into_iter()
+                .map(|member| types::ZSetScoredMember { member: member.member, score: member.score })
+                .collect(),
+        },
+        v1::command::Kind::ZsetRemoveMany(command) => types::Command::ZSetRemoveMany {
+            key: command.key,
+            members: command.members,
+        },
         v1::command::Kind::ZsetIncrBy(command) => types::Command::ZSetIncrBy {
             key: command.key,
             member: command.member,
