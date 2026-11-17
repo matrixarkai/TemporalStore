@@ -170,6 +170,8 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::ListRemove { key, .. }
         | Command::ListTrim { key, .. }
         | Command::ZSetAdd { key, .. }
+        | Command::ZSetAddMany { key, .. }
+        | Command::ZSetRemoveMany { key, .. }
         | Command::ZSetScore { key, .. }
         | Command::ZSetRemove { key, .. }
         | Command::ZSetCard { key }
@@ -430,6 +432,8 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::ListRemove { .. }
             | Command::ListTrim { .. }
             | Command::ZSetAdd { .. }
+            | Command::ZSetAddMany { .. }
+            | Command::ZSetRemoveMany { .. }
             | Command::ZSetRemove { .. }
             | Command::ZSetIncrBy { .. }
             | Command::ZSetCountAdjust { .. }
@@ -502,6 +506,8 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ListRemove { .. }
             | Command::ListTrim { .. }
             | Command::ZSetAdd { .. }
+            | Command::ZSetAddMany { .. }
+            | Command::ZSetRemoveMany { .. }
             | Command::ZSetRemove { .. }
             | Command::ZSetIncrBy { .. }
             | Command::ZSetCountAdjust { .. }
@@ -655,6 +661,30 @@ pub(super) fn validate_command_preconditions(
     command: &Command,
 ) -> Result<(), Status> {
     match command {
+        Command::ZSetAddMany { members, .. }
+            if members.is_empty() || members.len() > crate::types::MAX_ZSET_MEMBERS_PER_COMMAND =>
+        {
+            return Err(Status::error(
+                "invalid_argument",
+                format!(
+                    "a sorted set command names between 1 and {} members, not {}",
+                    crate::types::MAX_ZSET_MEMBERS_PER_COMMAND,
+                    members.len()
+                ),
+            ));
+        }
+        Command::ZSetRemoveMany { members, .. }
+            if members.is_empty() || members.len() > crate::types::MAX_ZSET_MEMBERS_PER_COMMAND =>
+        {
+            return Err(Status::error(
+                "invalid_argument",
+                format!(
+                    "a sorted set command names between 1 and {} members, not {}",
+                    crate::types::MAX_ZSET_MEMBERS_PER_COMMAND,
+                    members.len()
+                ),
+            ));
+        }
         Command::SetAddMany { members, .. } | Command::SetRemoveMany { members, .. }
             if members.is_empty() || members.len() > crate::types::MAX_SET_MEMBERS_PER_COMMAND =>
         {

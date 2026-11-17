@@ -4032,6 +4032,14 @@ fn command_upsert_element_names(
             key.clone(),
             Some(crate::engine::execute_on_shard::zset_element_name(member)),
         )]),
+        // Every member the command names, once each: a member named twice writes one element name.
+        Command::ZSetAddMany { key, members } => {
+            let names: std::collections::BTreeSet<String> = members
+                .iter()
+                .map(|member| crate::engine::execute_on_shard::zset_element_name(&member.member))
+                .collect();
+            Some(names.into_iter().map(|name| ("zset", key.clone(), Some(name))).collect())
+        }
         Command::ZSetCountAdjust { key, member, .. }
             if shard.bucket_index.zsets.get(key).is_some_and(|members| members.contains_key(member)) =>
         {
@@ -4242,6 +4250,8 @@ fn command_removed_element_name(command: &Command) -> Option<(&'static str, Opti
             "zset",
             Some(crate::engine::execute_on_shard::zset_element_name(member)),
         )),
+        // Several elements, so no one name: stated as a removal that names none, as a list's pops are.
+        Command::ZSetRemoveMany { .. } => Some(("zset", Some(String::new()))),
         Command::ListPop { .. } | Command::ListRemove { .. } | Command::ListTrim { .. } => {
             Some(("list", Some(String::new())))
         }
@@ -4630,6 +4640,13 @@ fn command_touched_container_elements(
             key: key.clone(),
             member: member.clone(),
         }],
+        Command::ZSetAddMany { key, members } => members
+            .iter()
+            .map(|member| TouchedContainerElement::ZSet {
+                key: key.clone(),
+                member: member.member.clone(),
+            })
+            .collect(),
         Command::HashSet { key, field, .. } | Command::HashIncrBy { key, field, .. } => {
             vec![TouchedContainerElement::Hash {
                 key: key.clone(),

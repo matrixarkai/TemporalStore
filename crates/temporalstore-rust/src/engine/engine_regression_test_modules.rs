@@ -44,6 +44,8 @@ mod claim_stamp_hold;
 mod a_resp_hash_write_asks_the_field_map;
 #[path = "tests/a_set_command_can_name_many_members.rs"]
 mod a_set_command_can_name_many_members;
+#[path = "tests/a_sorted_set_command_can_name_many_members.rs"]
+mod a_sorted_set_command_can_name_many_members;
 #[path = "tests/command_surface.rs"]
 mod command_surface;
 #[path = "tests/expiry_command_boundaries.rs"]

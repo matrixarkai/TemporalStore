@@ -2691,6 +2691,43 @@ pub(crate) fn execute_on_shard(
             }
             CommandResponse::Integer { value: added }
         }
+        Command::ZSetAddMany { key, members } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            // Each member goes through `ZSetAdd`, so what it writes is what the same number of
+            // `ZSetAdd` commands written one at a time would write, in the same order.
+            let run = |shard: &mut ShardState, command: Command| {
+                execute_on_shard(
+                    cache,
+                    block_store,
+                    feature_max_size,
+                    async_storage,
+                    control_rollup_enabled,
+                    control_coalesce_persist,
+                    control_state_max_size,
+                    control_distinct_sketch,
+                    trim_boundary_record,
+                    set_listing_from_map,
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                )
+            };
+            let mut added = 0i64;
+            for member in members {
+                let outcome = run(
+                    shard,
+                    Command::ZSetAdd { key: key.clone(), member: member.member, score: member.score },
+                );
+                mutated |= outcome.mutated;
+                if let CommandResponse::Integer { value } = outcome.response {
+                    added += value;
+                }
+            }
+            CommandResponse::Integer { value: added }
+        }
         Command::ZSetAdd { key, member, score } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let biased = zset_score_bits(score);
@@ -2794,6 +2831,38 @@ pub(crate) fn execute_on_shard(
                     .and_then(|members| members.get(&member))
                     .map(|(biased, _)| zset_score_string(*biased).into_bytes()),
             }
+        }
+        Command::ZSetRemoveMany { key, members } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let run = |shard: &mut ShardState, command: Command| {
+                execute_on_shard(
+                    cache,
+                    block_store,
+                    feature_max_size,
+                    async_storage,
+                    control_rollup_enabled,
+                    control_coalesce_persist,
+                    control_state_max_size,
+                    control_distinct_sketch,
+                    trim_boundary_record,
+                    set_listing_from_map,
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                )
+            };
+            let mut removed = 0i64;
+            for member in members {
+                let outcome = run(shard, Command::ZSetRemove { key: key.clone(), member });
+                mutated |= outcome.mutated;
+                if let CommandResponse::Integer { value } = outcome.response {
+                    removed += value;
+                }
+            }
+            CommandResponse::Integer { value: removed }
         }
         Command::ZSetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);

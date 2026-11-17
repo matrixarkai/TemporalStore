@@ -1700,6 +1700,18 @@ impl ContextWire for ContextCompressionEvent {
     }
 }
 
+/// Members one `ZSetAddMany` or `ZSetRemoveMany` may name. A command over it is refused whole, before it
+/// writes anything; one at it is accepted.
+pub const MAX_ZSET_MEMBERS_PER_COMMAND: usize = 1024;
+
+/// A member of a sorted set and the score it is to hold.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ZSetScoredMember {
+    #[serde(with = "crate::bytes_serde")]
+    pub member: Vec<u8>,
+    pub score: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
@@ -1872,6 +1884,13 @@ pub enum Command {
         member: Vec<u8>,
         score: f64,
     },
+    /// Upsert several members in one command. Answers how many were new. Each member is added in
+    /// order, as the same number of `ZSetAdd` commands would, so a member named twice counts once
+    /// and holds the later score. At most `MAX_ZSET_MEMBERS_PER_COMMAND` members, and at least one.
+    ZSetAddMany {
+        key: String,
+        members: Vec<ZSetScoredMember>,
+    },
     /// The member's score as its shortest string form, or nil when absent.
     ZSetScore {
         key: String,
@@ -1882,6 +1901,14 @@ pub enum Command {
         key: String,
         #[serde(with = "crate::bytes_serde")]
         member: Vec<u8>,
+    },
+    /// Remove several members in one command. Answers how many were in the set. Each member is
+    /// removed in order, as the same number of `ZSetRemove` commands would. At most
+    /// `MAX_ZSET_MEMBERS_PER_COMMAND` members, and at least one.
+    ZSetRemoveMany {
+        key: String,
+        #[serde(with = "crate::bytes_serde::list")]
+        members: Vec<Vec<u8>>,
     },
     ZSetCard {
         key: String,

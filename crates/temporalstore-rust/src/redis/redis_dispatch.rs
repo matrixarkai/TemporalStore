@@ -744,13 +744,19 @@ pub fn execute_redis_command_with_state(
                     Err(err) => return RespValue::Error(err),
                 }
             }
+            // One command per run of members, each added in order, so the answer counts what
+            // the same number of single adds would. A command takes a bounded number of members,
+            // so a longer call is several.
             let mut added = 0;
-            for (score, member) in pairs {
-                match execute(Command::ZSetAdd {
-                    key: key.clone(),
-                    member,
-                    score,
-                }) {
+            for run in pairs.chunks(crate::types::MAX_ZSET_MEMBERS_PER_COMMAND) {
+                let members = run
+                    .iter()
+                    .map(|(score, member)| crate::types::ZSetScoredMember {
+                        member: member.clone(),
+                        score: *score,
+                    })
+                    .collect();
+                match execute(Command::ZSetAddMany { key: key.clone(), members }) {
                     Ok(CommandResponse::Integer { value }) => added += value,
                     Ok(_) => return RespValue::Error("ERR invalid zadd response".to_string()),
                     Err(err) => return RespValue::Error(format!("ERR {err}")),
@@ -770,10 +776,10 @@ pub fn execute_redis_command_with_state(
         "ZREM" if args.len() >= 3 => {
             let key = name_arg(&args[1]);
             let mut removed = 0;
-            for member in args.iter().skip(2) {
-                match execute(Command::ZSetRemove {
+            for members in args[2..].chunks(crate::types::MAX_ZSET_MEMBERS_PER_COMMAND) {
+                match execute(Command::ZSetRemoveMany {
                     key: key.clone(),
-                    member: member.clone(),
+                    members: members.to_vec(),
                 }) {
                     Ok(CommandResponse::Integer { value }) => removed += value,
                     Ok(_) => return RespValue::Error("ERR invalid zrem response".to_string()),
