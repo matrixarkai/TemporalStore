@@ -1036,6 +1036,28 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
             eprintln!("      site {site:<60} {entries:>8} entries ({:.1}x)", entries as f64 / keys as f64);
         }
     }
+    // THE IDLE PHASE: rounds with no client writes after the write rounds, which is where a server
+    // spends the time between loads. `LOOP_IDLE_ROUNDS=<n>` sets how many (default 4). One line per
+    // round with the index stage's own time, walk and encodes, because that stage is what idles.
+    let idle_rounds = std::env::var("LOOP_IDLE_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(4usize);
+    for round in 0..idle_rounds {
+        let report = runtime.run_storage_manager_once(1, shipped.clone());
+        let index = report
+            .stage_spans
+            .iter()
+            .find(|span| span.stage == "reclaim_index")
+            .expect("every round reports the reclaim_index stage");
+        eprintln!(
+            "I round {round}: {} us whole round, reclaim_index {} us walk={} encodes={}",
+            report.duration_us,
+            index.duration_us,
+            index.walk.live_block_entries,
+            index.walk.index_encodes
+        );
+    }
 }
 
 /// A DIRTY ROUND READS THE LIVE BLOCKS OF THE SHARD NO MORE THAN `DIRTY_ROUND_WALK_BOUND` TIMES.
