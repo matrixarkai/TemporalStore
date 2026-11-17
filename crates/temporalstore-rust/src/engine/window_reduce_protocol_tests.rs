@@ -385,11 +385,29 @@ fn the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_an
 }
 
 #[test]
-fn a_mode_or_window_that_is_not_built_yet_is_refused_and_says_so() {
+fn a_newest_rows_window_counts_rows_and_its_bounds_are_exact() {
+    let max = crate::engine::window_reduce_rank::MAX_WINDOW_ROWS as i64;
     let profile = pair_profile();
-    let w = Window { kind: WindowKind::NewestRows as i32, span: 1, start_us: 0 };
-    let err = translate_query(&profile, &query(w, selector(RankMode::FirstLane))).unwrap_err();
-    assert!(err.message.contains("not translated yet"), "{err:?}");
+    let rows = |span: i64| Window { kind: WindowKind::NewestRows as i32, span, start_us: 0 };
+    let plan = |span: i64| translate_query(&profile, &query(rows(span), selector(RankMode::FirstLane)));
+
+    // `span` is a count of rows, whatever its size, and the read is anchored at the request.
+    let planned = plan(250).unwrap();
+    assert_eq!(WindowReduceWindow::NewestRows { n: 250 }, planned.spec.window);
+    assert_eq!(WindowReduceAnchor::Request, planned.spec.anchor);
+    assert_eq!(WindowReduceWindow::NewestRows { n: 1 }, plan(1).unwrap().spec.window);
+    // The recent read takes the same window.
+    let recent = translate_query(&profile, &query(rows(5), selector(RankMode::Recent))).unwrap();
+    assert_eq!(WindowReduceWindow::NewestRows { n: 5 }, recent.spec.window);
+    assert_eq!(WindowReduceScore::Recent, recent.spec.score);
+
+    // No rows and a negative count are refused, and the bound is accepted at the limit and refused
+    // one past it, in the words every other bound uses.
+    assert!(plan(0).unwrap_err().message.contains("0 rows"));
+    assert!(plan(-1).unwrap_err().message.contains("negative"));
+    assert_eq!(WindowReduceWindow::NewestRows { n: max as usize }, plan(max).unwrap().spec.window);
+    let over = plan(max + 1).unwrap_err();
+    assert!(over.message.contains("rows in the window"), "{over:?}");
 }
 
 #[test]

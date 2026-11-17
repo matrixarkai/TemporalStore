@@ -81,7 +81,14 @@ status. Bounded by the number of queries.
 
 **Windows.** `TRAILING_FROM_NOW` is `[now - span, now]`. `TRAILING_FROM_NEWEST` is the trailing span
 ending at the newest stored sample of the key. `FROM_START` is `[start, start + span)`.
-`NEWEST_ROWS` counts stored (timestamp, member) rows, not samples.
+`NEWEST_ROWS` counts stored (timestamp, member) rows, not samples: `span` is the number of rows, the
+newest `span` cells the key holds, taken whole sample by whole sample from the newest back. The
+sample that crosses `span` keeps only the cells it needs, its largest members (the newest rows in
+(timestamp, member) order). A key that holds fewer rows is read whole. Rows are counted before the
+label predicate and the member sets apply, as a sample is chosen before either does. At most 262,144
+rows, and the rows may not reach back over more than 512 samples (refused, not cut short). The
+window applies to each key of a merged read. It takes the request clock for no purpose, so it has
+no anchor.
 
 **Rank modes.** FIRST_LANE and SECOND_LANE order members by their reduced lane 0 or 1; NAMED_LANE by
 the lane at `sort_lane` (zero when absent); RATIO by lane 0 over lane 1; MEMBER by member;
@@ -102,8 +109,7 @@ that member's samples are reduced.
 **Anchored windows.** `TRAILING_FROM_NEWEST` and `TRAILING_FROM_NEWEST_OF_KIND` are the trailing
 `span` ending at the newest sample the key holds, so a key whose writes stopped reads the same
 whenever it is read. The window is `[newest + 1 - span, newest]` in milliseconds: a span of S ms covers
-exactly S stamps (`TRAILING_FROM_NOW` is one stamp wider). `NEWEST_ROWS` counts stored rows, not
-samples, and is not translated.
+exactly S stamps (`TRAILING_FROM_NOW` is one stamp wider). `NEWEST_ROWS` has no anchor.
 
 **Quota.** `quota_lanes[i]` is a lane position (named through the profile) and `quota_counts[i]` how
 many members in the answer must have a non-zero value in it; the answer never holds more than `limit`
@@ -183,8 +189,8 @@ asked", with or without their presence flags, and read as if absent.
 Observations per request, entries per request (existing 1024 cells), queries per batch (64),
 members in a member list (1024 each side), quota lanes (16) and quota total (within the top-k cap of
 1000), weighted lanes (8), lanes (16), table name bytes (64), top-k (1000), more entities (63, so 64
-keys in a merged read), half-life (1 ms to ten years). Each is refused one past the limit and accepted
-at it.
+keys in a merged read), half-life (1 ms to ten years), rows of a `NEWEST_ROWS` window (262,144, and
+within 512 samples). Each is refused one past the limit and accepted at it.
 
 ## Translated reads, summarised
 
@@ -246,5 +252,4 @@ samples inside the window, and `cells_removed`. On the wire they are the additiv
 
 ## Owned elsewhere
 
-Rolling old samples up in tiers is built by its own change and is not translated here; `NEWEST_ROWS`
-has no command to map to yet.
+Rolling old samples up in tiers is built by its own change and is not translated here.

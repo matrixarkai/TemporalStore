@@ -30,14 +30,14 @@
 //! key, or a key with no samples, is an empty answer with `refused` empty: nothing to rank.
 
 use super::window_reduce_fan_in::{validate_chosen, validate_keys};
-use super::window_reduce_rank::{FlatView, Plan, MAX_WINDOW_SAMPLES};
-use super::cell_set::{check_header, split_value, CellHeader, FlatCells};
+use super::window_reduce_rank::{CutView, Plan, MAX_WINDOW_SAMPLES};
+use super::cell_set::{check_header, split_value, within, CellHeader, FlatCells};
 use super::object_record::ObjectSlot;
-use super::window::window_samples;
+use super::window::{window_samples, RowsWindow};
 use super::*;
 use crate::block_store::ElementEntry;
 use crate::engine::timestamped_series::TimestampedSeries as _;
-use crate::types::{WindowReduceRankSpec, RankedCells};
+use crate::types::{WindowReduceRankSpec, WindowReduceWindow, RankedCells};
 
 /// The samples a read decoded, oldest first, each in the flat form: a fixed handful of
 /// allocations per sample however many cells it holds.
@@ -123,10 +123,96 @@ fn decode_named(
     Ok(samples)
 }
 
-fn views(samples: &Decoded) -> Vec<FlatView<'_>> {
+/// Reads the newest samples of a rows window, one at a time from the newest back, until the cells
+/// they hold reach `rows`. The sample that crosses the count is kept whole, with the number of its
+/// first cells that fall outside the window beside it, so no cell is copied to cut it. A window
+/// whose rows reach back over more samples than the window bound is refused, not cut short.
+/// Returns the samples oldest first and, in the same order, how many of each one's first cells to
+/// leave out.
+#[allow(clippy::too_many_arguments)]
+fn decode_newest_rows(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    key: &str,
+    routing_bucket: Option<u32>,
+    page_keys: &mut PageKeys,
+    named: Vec<(u64, &ElementEntry)>,
+    header: &CellHeader,
+    rows: usize,
+) -> Result<(Decoded, Vec<usize>), String> {
+    let mut window = RowsWindow::new(rows);
+    let mut samples: Decoded = Vec::new();
+    let mut skips: Vec<usize> = Vec::new();
+    for (timestamp_ms, address) in named {
+        let decoded = read_feature_value_with(
+            cache,
+            block_store,
+            shard_id,
+            timestamp_ms,
+            address,
+            BlockIdentity::of(shard_id, "feature", key, None),
+            routing_bucket,
+            page_keys,
+            |bytes| -> Result<FlatCells, String> {
+                let (own, packed) = split_value(bytes)?;
+                if own != *header {
+                    check_header(&own, header)?;
+                }
+                FlatCells::decode(header, packed, 0)
+            },
+        );
+        let cells = match decoded {
+            Some(Ok(cells)) => cells,
+            Some(Err(why)) => return Err(format!("the sample at {timestamp_ms}: {why}")),
+            None => return Err(format!("the sample at {timestamp_ms} cannot be read")),
+        };
+        let (skip, full) = window.take(cells.len());
+        samples.push((timestamp_ms, cells));
+        skips.push(skip);
+        within("samples in the window", samples.len(), MAX_WINDOW_SAMPLES)?;
+        if full {
+            break;
+        }
+    }
+    samples.reverse();
+    skips.reverse();
+    Ok((samples, skips))
+}
+
+/// The samples `window` names, decoded: oldest first, each with the number of its first cells that
+/// fall outside the window (zero for every window but a rows window's edge sample).
+#[allow(clippy::too_many_arguments)]
+fn decode_window(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    key: &str,
+    routing_bucket: Option<u32>,
+    page_keys: &mut PageKeys,
+    named: Vec<(u64, &ElementEntry)>,
+    header: &CellHeader,
+    window: &WindowReduceWindow,
+) -> Result<(Decoded, Vec<usize>), String> {
+    match window {
+        WindowReduceWindow::NewestRows { n } => {
+            decode_newest_rows(cache, block_store, shard_id, key, routing_bucket, page_keys, named, header, *n)
+        }
+        _ => decode_named(cache, block_store, shard_id, key, routing_bucket, page_keys, named, header)
+            .map(|samples| (samples, Vec::new())),
+    }
+}
+
+/// The decoded samples as the plan reads them. `skips` is empty, or holds one count per sample.
+fn views<'a>(samples: &'a Decoded, skips: &[usize]) -> Vec<CutView<'a>> {
     samples
         .iter()
-        .map(|(timestamp_ms, cells)| FlatView { timestamp_ms: *timestamp_ms, cells })
+        .enumerate()
+        .map(|(at, (timestamp_ms, cells))| CutView {
+            timestamp_ms: *timestamp_ms,
+            cells,
+            skip: skips.get(at).copied().unwrap_or(0),
+        })
         .collect()
 }
 
@@ -160,12 +246,21 @@ pub(super) fn serve(
     };
 
     let named = named_samples(series, spec, now_ms);
-    let samples =
-        match decode_named(cache, block_store, shard_id, key, routing_bucket, &mut page_keys, named, &header) {
-            Ok(samples) => samples,
-            Err(why) => return refused(why),
-        };
-    plan.run(now_ms, &views(&samples)).unwrap_or_else(refused)
+    let (samples, skips) = match decode_window(
+        cache,
+        block_store,
+        shard_id,
+        key,
+        routing_bucket,
+        &mut page_keys,
+        named,
+        &header,
+        &spec.window,
+    ) {
+        Ok(decoded) => decoded,
+        Err(why) => return refused(why),
+    };
+    plan.run(now_ms, &views(&samples, &skips)).unwrap_or_else(refused)
 }
 
 /// The header a request over several keys reads under: `a` when it equals or extends `b`, `b` when
@@ -238,30 +333,55 @@ pub(super) fn serve_many(
 
     // The samples, key by key, with the request's ceilings checked as they are read.
     let mut decoded: Vec<Decoded> = Vec::with_capacity(keys.len());
+    let mut skipped: Vec<Vec<usize>> = Vec::with_capacity(keys.len());
     let (mut sample_count, mut cell_count) = (0usize, 0usize);
+    // A rows window names the samples it reaches only by reading them, so its samples are counted
+    // after each key is read rather than from the list the walk hands back.
+    let rows_window = matches!(spec.window, WindowReduceWindow::NewestRows { .. });
     for (position, (key, series)) in keys.iter().zip(&held).enumerate() {
         let Some((series, routing_bucket)) = series else {
             decoded.push(Vec::new());
+            skipped.push(Vec::new());
             continue;
         };
         let named = named_samples(series, spec, now_ms);
-        sample_count += named.len();
-        if let Err(why) = validate_chosen(sample_count, cell_count) {
-            return refused(why);
+        if !rows_window {
+            sample_count += named.len();
+            if let Err(why) = validate_chosen(sample_count, cell_count) {
+                return refused(why);
+            }
         }
-        match decode_named(cache, block_store, shard_id, key, *routing_bucket, &mut page_keys, named, &header) {
-            Ok(samples) => {
-                cell_count += samples.iter().map(|(_, cells)| cells.len()).sum::<usize>();
+        match decode_window(
+            cache,
+            block_store,
+            shard_id,
+            key,
+            *routing_bucket,
+            &mut page_keys,
+            named,
+            &header,
+            &spec.window,
+        ) {
+            Ok((samples, skips)) => {
+                if rows_window {
+                    sample_count += samples.len();
+                }
+                cell_count += samples
+                    .iter()
+                    .enumerate()
+                    .map(|(at, (_, cells))| cells.len().saturating_sub(skips.get(at).copied().unwrap_or(0)))
+                    .sum::<usize>();
                 if let Err(why) = validate_chosen(sample_count, cell_count) {
                     return refused(why);
                 }
                 decoded.push(samples);
+                skipped.push(skips);
             }
             Err(why) => return refused(format!("key {position}: {why}")),
         }
     }
 
-    let owned: Vec<Vec<FlatView<'_>>> = decoded.iter().map(views).collect();
-    let slices: Vec<&[FlatView<'_>]> = owned.iter().map(Vec::as_slice).collect();
+    let owned: Vec<Vec<CutView<'_>>> = decoded.iter().zip(&skipped).map(|(samples, skips)| views(samples, skips)).collect();
+    let slices: Vec<&[CutView<'_>]> = owned.iter().map(Vec::as_slice).collect();
     plan.run_fan_in(now_ms, &slices).unwrap_or_else(refused)
 }

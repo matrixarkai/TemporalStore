@@ -847,7 +847,15 @@ jobs:
             engine::window_reduce_protocol::tests::the_accepted_timestamp_range_is_open_at_both_ends \
             engine::window_reduce_protocol::tests::each_translated_rank_mode_becomes_the_score_it_names \
             engine::window_reduce_protocol::tests::the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_and_kind \
-            engine::window_reduce_protocol::tests::a_mode_or_window_that_is_not_built_yet_is_refused_and_says_so \
+            engine::tests::a_newest_rows_window_reads_stored_rows::a_recent_read_over_a_rows_window_returns_exactly_the_stored_cells_the_window_holds \
+            engine::tests::a_newest_rows_window_reads_stored_rows::a_rows_window_applies_to_each_key_of_a_merged_read \
+            engine::tests::a_newest_rows_window_reads_stored_rows::a_rows_window_is_bounded_at_admission_and_by_the_samples_it_reaches_and_each_bound_is_exact \
+            engine::tests::a_newest_rows_window_reads_stored_rows::a_rows_window_reads_the_newest_stored_rows_and_cuts_the_sample_that_crosses_its_count \
+            engine::tests::a_newest_rows_window_reads_stored_rows::the_rows_window_is_one_new_spelling_and_the_other_windows_keep_their_own \
+            engine::window::tests::a_rows_window_hands_back_samples_up_to_the_cap_and_never_asks_for_the_newest_instant \
+            engine::window::tests::a_rows_window_takes_whole_samples_and_cuts_only_the_one_that_crosses_its_count \
+            engine::window_reduce_protocol::tests::a_newest_rows_window_counts_rows_and_its_bounds_are_exact \
+            engine::window_reduce_rank::flat_tests::a_sample_read_without_its_first_cells_ranks_as_the_plain_sample_without_them \
             engine::window_reduce_protocol::tests::recent_is_the_stored_cell_read_with_the_selectors_label_and_limit \
             engine::window_reduce_protocol::tests::match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_say \
             engine::window_reduce_protocol::tests::a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_sample \
