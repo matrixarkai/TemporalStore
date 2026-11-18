@@ -35,6 +35,16 @@ impl RowPages {
         self.len
     }
 
+    pub(super) fn row(&self, position: usize) -> &[i8] {
+        let start = (position % ROWS_PER_PAGE) * self.dimensions;
+        &self.pages[position / ROWS_PER_PAGE][start..start + self.dimensions]
+    }
+
+    pub(super) fn row_mut(&mut self, position: usize) -> &mut [i8] {
+        let start = (position % ROWS_PER_PAGE) * self.dimensions;
+        &mut self.pages[position / ROWS_PER_PAGE][start..start + self.dimensions]
+    }
+
     #[cfg(test)]
     pub(super) fn capacity(&self) -> usize {
         self.pages.iter().map(Vec::capacity).sum()
@@ -197,8 +207,9 @@ mod tests {
                 &pages[row * 5..(row + 1) * 5],
                 &plain[row * 5..(row + 1) * 5]
             );
+            assert_eq!(pages.row(row), &plain[row * 5..(row + 1) * 5]);
         }
-        pages[65 * 5..66 * 5].fill(-9);
+        pages.row_mut(65).fill(-9);
         plain[65 * 5..66 * 5].fill(-9);
         for rows in [255, 128, 127, 65, 64, 63, 7, 1, 0] {
             pages.truncate(rows * 5);
@@ -207,10 +218,7 @@ mod tests {
             assert_eq!(pages.len(), plain.len());
             assert!(pages.capacity() <= 4 * pages.len());
             for row in 0..rows {
-                assert_eq!(
-                    &pages[row * 5..(row + 1) * 5],
-                    &plain[row * 5..(row + 1) * 5]
-                );
+                assert_eq!(pages.row(row), &plain[row * 5..(row + 1) * 5]);
             }
         }
     }

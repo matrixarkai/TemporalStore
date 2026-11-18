@@ -728,11 +728,10 @@ impl EmbeddingIndex {
         let (inserted, updated) = if let Some(&position) = rows.positions.get(&identity) {
             let old_signature = rows.signature_at(self.config.dimensions, position);
             rows.scales[position] = scale;
-            let start = position * self.config.dimensions;
             quantize_into(
                 input.values,
                 quantization_multiplier,
-                &mut rows.vectors[start..start + self.config.dimensions],
+                rows.vectors.row_mut(position),
             );
             rows.refresh_signature_routing(self.config.dimensions, position, old_signature);
             (0, 1)
@@ -882,8 +881,7 @@ impl EmbeddingIndex {
                 if let Some(&position) = rows.positions.get(&identity) {
                     let old_signature = rows.signature_at(self.config.dimensions, position);
                     rows.scales[position] = scale;
-                    let start = position * self.config.dimensions;
-                    rows.vectors[start..start + self.config.dimensions].copy_from_slice(vector);
+                    rows.vectors.row_mut(position).copy_from_slice(vector);
                     rows.refresh_signature_routing(
                         self.config.dimensions,
                         position,
@@ -1325,8 +1323,7 @@ impl EmbeddingIndex {
         position: usize,
         heap: &mut BinaryHeap<Reverse<HeapHit>>,
     ) {
-        let start = position * self.config.dimensions;
-        let row = &rows.vectors[start..start + self.config.dimensions];
+        let row = rows.vectors.row(position);
         let score =
             (dot.dot(row, query) * rows.scales[position] * query_inverse_norm).clamp(-1.0, 1.0);
         let candidate = HeapHit { score, position };
@@ -1483,8 +1480,7 @@ impl EmbeddingIndex {
             let Some(&position) = rows.positions.get(&(0, item_id)) else {
                 continue;
             };
-            let start = position * self.config.dimensions;
-            let row = &rows.vectors[start..start + self.config.dimensions];
+            let row = rows.vectors.row(position);
             visit(EmbeddingHit {
                 key: EmbeddingKey {
                     tenant_id,
