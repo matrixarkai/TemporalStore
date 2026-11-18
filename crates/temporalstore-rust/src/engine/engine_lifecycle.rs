@@ -542,6 +542,7 @@ impl TemporalEngine {
         let index_log_store = LocalIndexLogStore::new(index_dir.join("indexlogs"));
         Self {
             shards: Arc::default(),
+            serving_admission: Arc::default(),
             checkpoint_publications: Arc::default(),
             retention_registry: Arc::default(),
             cache,
@@ -3214,7 +3215,10 @@ impl TemporalEngine {
                 // an error, not an empty shard: a durably acknowledged write reported as absent,
                 // which is the quietest way a store can lose data. Registering here, where the log
                 // id is still in hand, makes a replayed record as addressable as a written one.
-                if !record.staged_blocks.is_empty() {
+                let deferred_hash_log = (!record.staged_blocks.is_empty() && !record.outcomes.is_empty()
+                    && record.outcomes.iter().all(|item| item.kind == "hash" || item.resolved_address().is_none()))
+                    .then(|| log_id_by_sequence.get(&record.sequence).copied()).flatten();
+                if !record.staged_blocks.is_empty() && deferred_hash_log.is_none() {
                     if let Some(&log_id) = log_id_by_sequence.get(&record.sequence) {
                         let locations = super::block_in_wal::register_record_with_outcomes(
                             &self.block_store,
@@ -3301,6 +3305,25 @@ impl TemporalEngine {
                                     element_name
                                 ),
                             ));
+                        }
+                    }
+                    if let Some(log_id) = deferred_hash_log {
+                        let mut shards = self.shards.write().expect("engine lock poisoned");
+                        let shard = shards.get_mut(&shard_id).ok_or_else(|| Status::error(
+                            "shard_not_loaded", "replaying shard disappeared before frame publication"))?;
+                        for (folded, placement) in wal_resident_updates.drain() {
+                            shard.wal_resident_blocks.insert(folded, placement);
+                        }
+                        let locations = super::block_in_wal::register_shared_hash_record(
+                            &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,
+                            log_id, record.sequence, &self.wal_store, &[], shard,
+                        );
+                        #[cfg(test)]
+                        super::replay_scratch::observe_placements(locations.len(), locations.capacity());
+                        for folded in locations {
+                            shard.wal_resident_blocks.insert(folded, crate::engine::state::WalResidentBlock {
+                                log_id, sequence: record.sequence,
+                            });
                         }
                     }
                     self.replay_installs.fetch_add(

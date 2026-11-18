@@ -253,6 +253,46 @@ fn a_pass_with_nothing_on_the_drain_slabs_does_nothing() {
     assert_eq!(engine.block_store.slab_ids().unwrap(), slabs, "a pass with nothing to move rolled a slab");
 }
 
+#[test]
+fn a_keyed_slice_does_not_rebuild_every_buckets_object_index() {
+    use super::super::storage_bucket_internals::{bucket_visit_sites, refresh_bucket_runtime_flags};
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let (expected, drain) = seed(&engine, 900);
+    assert_eq!(
+        engine.compact_shard_blocks_slice(1, &drain, 16).unwrap(),
+        super::SliceProgress::More,
+    );
+    bucket_visit_sites::reset();
+    {
+        let mut shards = engine.shards_write_marked();
+        refresh_bucket_runtime_flags(shards.get_mut(&1).unwrap());
+    }
+    let complete_layout_visits = bucket_visit_sites::snapshot().0;
+    assert!(complete_layout_visits >= expected.len() as u64);
+    bucket_visit_sites::reset();
+    assert_eq!(
+        engine.compact_shard_blocks_slice(1, &drain, 16).unwrap(),
+        super::SliceProgress::More,
+    );
+    assert_eq!(bucket_visit_sites::snapshot().0, 0);
+    assert!(bucket_visit_sites::flag_folds() < complete_layout_visits / 2);
+    eprintln!(
+        "COMPACTION_SLICE_INDEX complete_layout={complete_layout_visits} selected_layout={} selected_flags={}",
+        bucket_visit_sites::snapshot().0,
+        bucket_visit_sites::flag_folds(),
+    );
+    assert_every_key_reads(&engine, &expected, "after targeted refresh");
+    assert_index_agrees(&engine, "after targeted refresh");
+    engine.compact_shard_blocks_draining_sliced(1, drain, 16).unwrap();
+    assert_index_agrees(&engine, "after publication");
+    drop(engine);
+    let reopened = open(dir.path());
+    assert_every_key_reads(&reopened, &expected, "after restart");
+    assert_index_agrees(&reopened, "after restart");
+}
+
 /// The point of slicing: a writer waits for a slice, not for the pass.
 #[test]
 fn a_writer_waits_less_for_a_sliced_pass_than_for_a_whole_round() {

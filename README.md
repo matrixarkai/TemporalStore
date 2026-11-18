@@ -57,6 +57,9 @@ is an online store and materialization target, not an offline training store.
 | `update` / `teardown` | Schemaless updates and tracked cleanup; exact teardown requires key tracking before materialization. |
 
 Feast async calls change client scheduling, not the node's persistence policy.
+Eligible latest-only materialization uses interleaved atomic row groups by
+default, with a final synchronous durability fence and older-node fallback.
+Set `interleave_materialization: false` to keep the original atomic batch route.
 See [latency, amplification, and allocation choices](integrations/feast/feast_temporalstore_command/README.md#latency-amplification-and-allocations)
 before comparing latest-only serving, history queries, or another backend. Provider
 vector-search hooks and offline point-in-time retrieval are not implemented here.
@@ -110,6 +113,40 @@ online values; Feast's configured offline source and materialization engine
 remain responsible for loading them. Async API calls do not relax the node's
 durability policy. See the [provider configuration and API guide](integrations/feast/feast_temporalstore_command/README.md)
 for history, aggregates, async calls, older-node behavior, and cleanup limits.
+
+### Read features with Feast
+
+After registering and materializing a feature view, use Feast's public APIs.
+Replace `driver_stats:trips` and `driver_id` with a registered feature and its
+entity join key in your repository:
+
+```python
+import asyncio
+from feast import FeatureStore
+
+store = FeatureStore(repo_path=".")
+request = {
+    "features": ["driver_stats:trips"],
+    "entity_rows": [{"driver_id": 1001}, {"driver_id": 1002}],
+}
+
+values = store.get_online_features(**request).to_dict()
+print(values)
+
+async def read_features():
+    response = await store.get_online_features_async(**request)
+    return response.to_dict()
+
+async_values = asyncio.run(read_features())
+print(async_values)
+```
+
+In an existing async application, await `read_features()` on its running event
+loop instead of calling `asyncio.run`. An entity with no materialized value
+returns a missing feature, not a numeric zero. Both APIs serve the latest online
+values; enabling history does not turn them into point-in-time training queries.
+See the [provider API coverage](integrations/feast/feast_temporalstore_command/README.md#what-of-feasts-onlinestore-contract-is-covered)
+for supported hooks and the separate history and aggregate extensions.
 
 ### Choose a Feast materialization path
 

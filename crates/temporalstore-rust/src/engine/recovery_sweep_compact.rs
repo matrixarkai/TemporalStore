@@ -1726,7 +1726,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         ).map(|_| ())
     }
 
-    /// The arms that visit only the keys `on_drain` names: strings and the four containers. Each
+    /// The arms that visit only the selected keys: strings and the four containers. Each
     /// moves the blocks of one key at a time, so a caller can bound the work by naming fewer keys.
     fn relocate_keyed_blocks(
         &self,
@@ -1734,7 +1734,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         shard: &mut ShardState,
         start_routing_bucket: u32,
         end_routing_bucket: u32,
-        on_drain: &dyn Fn(&str) -> bool,
+        selected_keys: Option<&std::collections::HashSet<crate::engine::state::ModelKey>>,
         rewrite_stats: &mut CompactionRewriteStats,
     ) -> Result<(), Status> {
         // EVERY ARM PAIRS AN ADDRESS WITH ITS KEY'S BUCKET *AND* WITH THE KEY, and the arms that
@@ -1758,12 +1758,18 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // drop them, and would not fail today because those fields are still unfilled --
         // `compacting_a_record_keeps_everything_that_is_not_the_address` is the arm that says so.
         let mut staged: Vec<(crate::engine::state::ModelKey, crate::block_store::ElementEntry)> =
-            shard
+            match selected_keys {
+                Some(keys) => keys
+                    .iter()
+                    .filter_map(|key| shard.strings().get(&**key)
+                        .map(|slot| (std::sync::Arc::clone(key), slot.address())))
+                    .collect(),
+                None => shard
                 .strings()
                 .iter()
-                .filter(|(key, _)| on_drain(key))
                 .map(|(key, slot)| (std::sync::Arc::clone(key), slot.address()))
-                .collect();
+                .collect(),
+            };
         compact_block_addresses(
             &self.block_store,
             &self.cache,
@@ -1792,10 +1798,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // THE OBJECT KEY GOES IN ONCE PER ARM rather than once per item. `compact_block_addresses`
         // pairs a key with every address because its string arm walks a map of many objects; each of
         // these four arms is already standing on exactly one, so it says so once.
-        for (key, mut addresses) in shard.bucket_index.hashes.element_values_mut() {
-            if !on_drain(key) {
-                continue;
-            }
+        shard.bucket_index.hashes.try_visit_element_values_mut(selected_keys, |key, mut addresses| {
             let routing_bucket = bucket_of(key);
             compact_container_blocks_batched(
                 &self.block_store,
@@ -1810,12 +1813,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     address,
                 )),
                 rewrite_stats,
-            )?;
-        }
-        for (key, mut members) in shard.bucket_index.zsets.element_values_mut() {
-            if !on_drain(key) {
-                continue;
-            }
+            )
+        })?;
+        shard.bucket_index.zsets.try_visit_element_values_mut(selected_keys, |key, mut members| {
             let routing_bucket = bucket_of(key);
             compact_container_blocks_batched(
                 &self.block_store,
@@ -1830,12 +1830,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     ContainerElementRef::prefixed(entry.0.to_be_bytes(), member, &mut entry.1)
                 }),
                 rewrite_stats,
-            )?;
-        }
-        for (key, mut elements) in shard.bucket_index.lists.element_values_mut() {
-            if !on_drain(key) {
-                continue;
-            }
+            )
+        })?;
+        shard.bucket_index.lists.try_visit_element_values_mut(selected_keys, |key, mut elements| {
             let routing_bucket = bucket_of(key);
             compact_container_blocks_batched(
                 &self.block_store,
@@ -1853,12 +1850,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     address,
                 )),
                 rewrite_stats,
-            )?;
-        }
-        for (key, mut addresses) in shard.bucket_index.sets.element_values_mut() {
-            if !on_drain(key) {
-                continue;
-            }
+            )
+        })?;
+        shard.bucket_index.sets.try_visit_element_values_mut(selected_keys, |key, mut addresses| {
             let routing_bucket = bucket_of(key);
             compact_container_blocks_batched(
                 &self.block_store,
@@ -1874,8 +1868,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     address,
                 )),
                 rewrite_stats,
-            )?;
-        }
+            )
+        })?;
         Ok(())
     }
 
@@ -2226,9 +2220,6 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 .map(|(_, count)| *count)
                 .sum::<usize>(),
         );
-        let on_drain = |key: &str| {
-            drain_object_keys.as_ref().map_or(true, |keys| keys.contains(key))
-        };
         // THE BUCKET INDEX MUST NAME EVERY LIVE BLOCK BEFORE ANY BLOCK MOVES. The update after the
         // arms replaces the entry of each block a round moved, so an entry the index never held has
         // nothing to replace and would stay missing from the image the round publishes. The whole
@@ -2245,7 +2236,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // unpersisted -- see the `if let Err(err)` handler after this block for why.
         let relocation_result: Result<(), Status> = (|| {
             self.relocate_keyed_blocks(
-                shard_id, shard, start_routing_bucket, end_routing_bucket, &on_drain,
+                shard_id, shard, start_routing_bucket, end_routing_bucket, drain_object_keys.as_ref(),
                 &mut rewrite_stats,
             )?;
             self.relocate_unkeyed_blocks(
@@ -2270,6 +2261,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // complete (a later run retries the not-yet-moved blocks).
             update_compacted_bucket_views(
                 shard_id, shard, start_routing_bucket, end_routing_bucket, &rewrite_stats.moved,
+                CompactionIndexRefresh::Complete,
             );
             if let Err(barrier) = self.compaction_barrier() {
                 self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
@@ -2323,6 +2315,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         update_compacted_bucket_views(
             shard_id, shard, start_routing_bucket, end_routing_bucket, &rewrite_stats.moved,
+            CompactionIndexRefresh::Complete,
         );
         // Durability barrier BEFORE publishing the base index that names the relocated blocks.
         // Under deferred-fsync modes (bulk / block_wal_single_barrier -> append.rs
@@ -2490,17 +2483,27 @@ fn expiry_scan_budget(limit: usize) -> usize {
 /// model maps instead, which is always correct: the ownership rebuild clears and refiles every
 /// bucket and carries over what the maps cannot re-derive (tombstone rows) and what a rebuild must
 /// not reset (each bucket's dirty generation).
+enum CompactionIndexRefresh {
+    Complete,
+    ChangedBuckets,
+}
+
 fn update_compacted_bucket_views(
     shard_id: ShardId,
     shard: &mut ShardState,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
     moved: &[super::compaction::MovedBlock],
+    refresh: CompactionIndexRefresh,
 ) {
     let in_place = apply_relocations_in_place(shard, moved);
     #[cfg(test)]
     LAST_ROUND_INDEX_UPDATE.with(|cell| cell.set(if in_place { 1 } else { 2 }));
-    refresh_bucket_runtime_flags(shard);
+    if in_place && matches!(refresh, CompactionIndexRefresh::ChangedBuckets) {
+        storage_bucket_internals::refresh_pending_bucket_runtime_flags(shard);
+    } else {
+        refresh_bucket_runtime_flags(shard);
+    }
     if !in_place {
         rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
     }

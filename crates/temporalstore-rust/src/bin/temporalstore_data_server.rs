@@ -1140,14 +1140,18 @@ fn main() {
                 }
             }
             ("POST", "/batch_hash_timestamp_set_msgpack")
-            | ("POST", "/batch_hash_timestamp_set_ttl_msgpack") => {
+            | ("POST", "/batch_hash_timestamp_set_ttl_msgpack")
+            | ("POST", "/batch_hash_timestamp_set_interleaved_msgpack") => {
                 match parse_msgpack_borrowed::<BorrowedHashTimestampRequest<'_>>(&request.body) {
                     Ok(req)
                         if req.rows.len() <= 4096
                             && req.fields.len() <= 4096
                             && req.rows.len().saturating_mul(req.fields.len()) <= 1_000_000 =>
                     {
-                        msgpack_response(200, &runtime.batch_hash_timestamp_set_borrowed(req))
+                        let response = if request.path == "/batch_hash_timestamp_set_interleaved_msgpack" {
+                            runtime.batch_hash_timestamp_set_borrowed_interleaved(req)
+                        } else { runtime.batch_hash_timestamp_set_borrowed(req) };
+                        msgpack_response(200, &response)
                     }
                     Ok(_) => json_response(
                         400,

@@ -31,13 +31,14 @@ pub(super) fn storage_object_lifecycle_report_for_buckets(
     selected_buckets: &BTreeSet<u32>,
     routing_bucket_for_key: impl Fn(&str) -> u32,
 ) -> StorageObjectLifecycleReport {
-    object_lifecycle_report_from_entries(
-        shard_id,
-        shard,
-        collect_live_block_entries(shard),
-        selected_buckets,
-        routing_bucket_for_key,
-    )
+    let mut report = ObjectLifecycleAccumulator::default();
+    visit_live_block_entries(shard, |entry| {
+        let bucket = entry.filed_bucket().unwrap_or_else(|| routing_bucket_for_key(&entry.object_key));
+        if selected_buckets.is_empty() || selected_buckets.contains(&bucket) {
+            report.observe(shard_id, &entry);
+        }
+    });
+    report.finish(shard, selected_buckets, routing_bucket_for_key)
 }
 
 /// WHERE THE INDEX BESIDE THESE MAPS FILES EACH KEY, so a model-map walk can be scoped by bucket.
@@ -91,6 +92,83 @@ pub(super) fn storage_object_lifecycle_report_for_buckets_from_model_maps(
     )
 }
 
+#[derive(Default)]
+pub(super) struct ObjectLifecycleAccumulator {
+    owners: BTreeMap<u64, u64>,
+    reused: BTreeSet<u64>,
+    live_block_refs: u64,
+}
+
+impl ObjectLifecycleAccumulator {
+    pub(super) fn observe(&mut self, shard_id: ShardId, entry: &LiveBlockEntry) {
+        let object_id = expected_live_block_object_id(shard_id, entry);
+        let term = stable_object_hash(&format!("{}:{}", entry.kind.as_str(), entry.object_key));
+        self.observe_identity(object_id, term);
+    }
+
+    fn observe_identity(&mut self, object_id: u64, term: u64) {
+        self.live_block_refs += 1;
+        // One term plus a conflict bit is enough to answer whether an id has multiple owners.
+        // Preserve the existing second hash and sorted conflict output without a tree per object.
+        if *self.owners.entry(object_id).or_insert(term) != term {
+            self.reused.insert(object_id);
+        }
+    }
+
+    pub(super) fn finish(
+        self,
+        shard: &ShardState,
+        selected_buckets: &BTreeSet<u32>,
+        routing_bucket_for_key: impl Fn(&str) -> u32,
+    ) -> StorageObjectLifecycleReport {
+        let delete_marked_object_keys = shard
+            .dirty_objects
+            .iter()
+            .filter(|key| {
+                let routing_bucket = routing_bucket_for_key(key);
+                (selected_buckets.is_empty() || selected_buckets.contains(&routing_bucket))
+                    && !record_exists(shard, key)
+            })
+            .map(String::from)
+            .collect::<Vec<_>>();
+
+        StorageObjectLifecycleReport {
+            live_object_ids: self.owners.len() as u64,
+            live_block_refs: self.live_block_refs,
+            stale_object_ids: 0,
+            delete_marked_object_ids: delete_marked_object_keys.len() as u64,
+            reused_object_id_conflicts: self.reused.len() as u64,
+            // An address has no independent owner stamp; bucket validation remains separate.
+            missing_owner_block_refs: 0,
+            owner_mismatch_block_refs: 0,
+            reused_object_ids: self.reused.into_iter().collect(),
+            delete_marked_object_keys,
+        }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_accumulator_tests {
+    use super::*;
+
+    #[test]
+    fn compact_owner_terms_preserve_repeated_owners_collisions_and_order() {
+        let terms = [(9, 1), (3, 4), (9, 1), (3, 5), (9, 2), (4, 1), (3, 4)];
+        let mut old = BTreeMap::<u64, BTreeSet<u64>>::new();
+        let mut report = ObjectLifecycleAccumulator::default();
+        for (object, term) in terms {
+            old.entry(object).or_default().insert(term);
+            report.observe_identity(object, term);
+        }
+        let report = report.finish(&ShardState::default(), &BTreeSet::new(), |_| 0);
+        let conflicts = old.iter().filter_map(|(id, terms)| (terms.len() > 1).then_some(*id)).collect::<Vec<_>>();
+        assert_eq!(report.live_object_ids, old.len() as u64);
+        assert_eq!(report.live_block_refs, terms.len() as u64);
+        assert_eq!(report.reused_object_ids, conflicts);
+        assert_eq!(report.reused_object_id_conflicts, 2);
+    }
+}
+
 pub(super) fn object_lifecycle_report_from_entries(
     shard_id: ShardId,
     shard: &ShardState,
@@ -98,86 +176,15 @@ pub(super) fn object_lifecycle_report_from_entries(
     selected_buckets: &BTreeSet<u32>,
     routing_bucket_for_key: impl Fn(&str) -> u32,
 ) -> StorageObjectLifecycleReport {
-    // THE FILING FIRST, THE DERIVATION AS THE FALLBACK, and `selected_buckets` is why. That set
-    // comes from OUTSIDE this shard -- a dump manifest's bucket ids, an eviction round's victims --
-    // so the bucket each entry is tested against has to be the bucket the entry's own CONTAINER
-    // files it under. Deriving it from the key over the reader's range answers a different question
-    // whenever the two ranges differ, which on a cross-range manifest install matched nothing at
-    // all. The fallback is for an entry from a model-map walk, where there is no filing to read.
-    let entries = entries
-        .into_iter()
-        .filter(|entry| {
-            let routing_bucket = entry
-                .filed_bucket()
-                .unwrap_or_else(|| routing_bucket_for_key(&entry.object_key));
-            selected_buckets.is_empty() || selected_buckets.contains(&routing_bucket)
-        })
-        .collect::<Vec<_>>();
-    let mut expected_object_ids = BTreeSet::new();
-    let mut actual_object_owners = BTreeMap::<u64, BTreeSet<u64>>::new();
-    let mut missing_owner_block_refs = 0u64;
-    let mut owner_mismatch_block_refs = 0u64;
-
-    for entry in &entries {
-        let expected_object_id = expected_live_block_object_id(shard_id, entry);
-        expected_object_ids.insert(expected_object_id);
-        // THE OBJECT ID IS THE WHOLE OF "OWNER" NOW. This counted a block whose address named
-        // neither its object nor its bucket, and the bucket half has stopped being answerable HERE:
-        // a bucket-index walk knows the filing for every block, so the term would be vacuous, and a
-        // MODEL-MAP walk knows it for none, so the term would be universal. Either way it reports a
-        // property of the walk rather than of the block -- and the two derivations this report is
-        // compared against are one of each, so keeping it made a consistent dump refuse to install.
-        //
-        // AND THE OTHER HALF HAS STOPPED BEING ANSWERABLE HERE TOO, for the same reason one level
-        // down: it asked whether the address NAMED its object, and an address names nothing now. Both
-        // `missing_owner_block_refs` and `owner_mismatch_block_refs` had that as their only
-        // remaining term, so both are structurally zero from THIS report. They are left in the
-        // shape because the aggregate in `reports.rs` also sums the validation path, which still
-        // has a term that fires -- `!bucket_block_present`. What is gone is this report's
-        // contribution, and it is gone because it could only have compared a value with itself.
-        //
-        // REUSE IS STILL A REAL QUESTION AND IS NOW ASKED OF THE DERIVATION. Two DISTINCT (kind,
-        // key) pairs hashing to one id is a collision the store would serve wrong, and it is
-        // detectable without a second stored copy: derive per pair and look for an id reached by
-        // more than one pair. That is a check that can fire, which the one it replaces could not.
-        actual_object_owners
-            .entry(expected_object_id)
-            .or_default()
-            .insert(stable_object_hash(&format!(
-                "{}:{}",
-                entry.kind.as_str(),
-                entry.object_key
-            )));
+    let mut report = ObjectLifecycleAccumulator::default();
+    for entry in entries {
+        // Use the container's filing, not the reading process's routing range.
+        let bucket = entry.filed_bucket().unwrap_or_else(|| routing_bucket_for_key(&entry.object_key));
+        if selected_buckets.is_empty() || selected_buckets.contains(&bucket) {
+            report.observe(shard_id, &entry);
+        }
     }
-
-    let reused_object_ids = actual_object_owners
-        .into_iter()
-        .filter_map(|(object_id, distinct_terms)| {
-            (distinct_terms.len() > 1).then_some(object_id)
-        })
-        .collect::<Vec<_>>();
-    let delete_marked_object_keys = shard
-        .dirty_objects
-        .iter()
-        .filter(|key| {
-            let routing_bucket = routing_bucket_for_key(key);
-            (selected_buckets.is_empty() || selected_buckets.contains(&routing_bucket))
-                && !record_exists(shard, key)
-        })
-        .map(String::from)
-        .collect::<Vec<_>>();
-
-    StorageObjectLifecycleReport {
-        live_object_ids: expected_object_ids.len() as u64,
-        live_block_refs: entries.len() as u64,
-        stale_object_ids: 0,
-        delete_marked_object_ids: delete_marked_object_keys.len() as u64,
-        reused_object_id_conflicts: reused_object_ids.len() as u64,
-        missing_owner_block_refs,
-        owner_mismatch_block_refs,
-        reused_object_ids,
-        delete_marked_object_keys,
-    }
+    report.finish(shard, selected_buckets, routing_bucket_for_key)
 }
 
 pub(super) fn bucket_dump_entries_by_key(
@@ -344,12 +351,8 @@ pub(super) fn bucket_storage_summaries(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) -> Vec<BucketStorageSummary> {
-    bucket_storage_summaries_from_entries(
-        shard,
-        start_routing_bucket,
-        end_routing_bucket,
-        &collect_live_block_entries(shard),
-    )
+    bucket_storage_summaries_from_visit(shard, start_routing_bucket, end_routing_bucket,
+        |consume| visit_live_block_entries(shard, |entry| consume(&entry)))
 }
 
 /// The summaries and, when asked, the live digests, off ONE listing of the shard's live blocks.
@@ -388,9 +391,19 @@ pub(super) fn bucket_storage_summaries_from_entries(
     end_routing_bucket: u32,
     entries: &[LiveBlockEntry],
 ) -> Vec<BucketStorageSummary> {
+    bucket_storage_summaries_from_visit(shard, start_routing_bucket, end_routing_bucket,
+        |consume| entries.iter().for_each(consume))
+}
+
+pub(super) fn bucket_storage_summaries_from_visit(
+    shard: &ShardState,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    visit: impl FnOnce(&mut dyn FnMut(&LiveBlockEntry)),
+) -> Vec<BucketStorageSummary> {
     let mut buckets = BTreeMap::<u32, BucketStorageSummary>::new();
     let mut block_slabs_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
-    for entry in entries {
+    visit(&mut |entry| {
         // The shard's OWN routing range, which is what every other consumer of this fallback
         // uses -- `rebuild_bucket_first_index`, `refresh_pending_bucket_runtime_flags` and the
         // dirty-key loop at the foot of this function all reach for
@@ -443,7 +456,7 @@ pub(super) fn bucket_storage_summaries_from_entries(
                     .map_or(stored_slab_id, |current| current.max(stored_slab_id)),
             );
         }
-    }
+    });
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
         // object_count and the base dirty_generation are durable-generation IDENTITY
         // fields (compared by bucket_dump_summary_matches_current_generation to anchor

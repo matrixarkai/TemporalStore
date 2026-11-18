@@ -73,6 +73,7 @@ from feast.repo_config import FeastConfigBaseModel
 from feast.types import Int32, Int64
 
 from .client import TemporalStoreClient, decode_bytes
+from .projected_response import populate_projected_response
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,9 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
 
     max_write_batch_commands: int = 4096
     """Maximum commands per HTTP batch during materialization writes."""
+
+    interleave_materialization: bool = True
+    """Let readers run between atomic row groups; await the configured durability."""
 
     max_batch_request_bytes: int = 4 * 1024 * 1024
     """Approximate encoded command bytes per HTTP batch."""
@@ -531,15 +535,24 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 + sum(prepared_row_shape_bytes)
                 + 33 * len(prepared_rows)
             )
+            conditional_write = client.batch_hash_timestamp_set
+            if (
+                online_config.interleave_materialization
+                and getattr(client, "_interleaved_conditional_write_supported", None)
+                is not False
+            ):
+                conditional_write = getattr(
+                    client, "batch_hash_timestamp_set_interleaved", conditional_write
+                )
             if ttl_ms is None:
-                conditional_result = client.batch_hash_timestamp_set(
+                conditional_result = conditional_write(
                     list(shared_fields),
                     ts_field,
                     prepared_rows,
                     request_upper_bound,
                 )
             else:
-                conditional_result = client.batch_hash_timestamp_set(
+                conditional_result = conditional_write(
                     list(shared_fields),
                     ts_field,
                     prepared_rows,
@@ -955,7 +968,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             hash_keys = [self._entity_hash_key(config, key) for key in entity_keys]
             projection: List[str] = []
             projection_index: Dict[str, int] = {}
-            layouts: List[Tuple[List[str], List[str], List[int]]] = []
+            layouts: List[Tuple[List[str], List[int]]] = []
             for table, requested_features, *_rest in specs:
                 view_name = self._view_name(table, config)
                 fields = [
@@ -969,26 +982,16 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                         projection_index[field] = position
                         projection.append(field)
                     positions.append(position)
-                layouts.append((requested_features, fields, positions))
+                layouts.append((requested_features, positions))
 
             rows = client.batch_hash_multi_get(hash_keys, projection)
             for spec, layout in zip(specs, layouts):
                 table, requested_features, row_indexes, output_len, _keys = spec
-                feature_names, fields, positions = layout
-                decoded_rows = [
-                    self._decode_online_response(
-                        [
-                            row[position] if position < len(row) else None
-                            for position in positions
-                        ],
-                        fields,
-                        feature_names,
-                    )
-                    for row in rows
-                ]
-                utils._populate_response_from_feature_data(
-                    requested_features,
-                    decoded_rows,
+                feature_names, positions = layout
+                populate_projected_response(
+                    rows,
+                    positions,
+                    feature_names,
                     row_indexes,
                     online_features_response,
                     full_feature_names,

@@ -252,6 +252,7 @@ use crate::engine::timestamped_series::TimestampedSeries as _;
 #[derive(Debug, Clone)]
 pub struct TemporalEngine {
     shards: Arc<RwLock<HashMap<ShardId, ShardState>>>,
+    serving_admission: Arc<parking_lot::FairMutex<()>>,
     cache: MultiLayerCache,
     block_store: BlockStore,
     wal_store: LocalWriteAheadLogStore,
@@ -8809,12 +8810,7 @@ fn read_block_frame_bytes(
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
-    let cache_key = CacheKey::page_with_slot(
-        shard_id,
-        address.block_slab_id(),
-        address.offset(),
-        address.length(),
-        routing_bucket);
+    let cache_key = read_page_key(shard_id, address, routing_bucket);
     read_block_frame_bytes_keyed(cache, block_store, shard_id, address, identity, cache_key)
 }
 
@@ -8862,13 +8858,7 @@ fn read_block_frame_shared(
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<std::sync::Arc<[u8]>> {
-    let cache_key = CacheKey::page_with_slot(
-        shard_id,
-        address.block_slab_id(),
-        address.offset(),
-        address.length(),
-        routing_bucket,
-    );
+    let cache_key = read_page_key(shard_id, address, routing_bucket);
     let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
         cache.get_shared(&cache_key)
     });
@@ -9061,11 +9051,11 @@ fn read_block_bytes_after_cache_miss(
 /// constructor builds it from the block's position; a test compares every key this makes with
 /// `page_with_slot`'s, field for field, because a changed byte is a silent cache miss.
 pub(crate) struct PageKeys {
-    slab: Option<(u64, std::sync::Arc<str>)>,
+    slab: Option<((ShardId, u64), std::sync::Arc<str>)>,
 }
 
 impl PageKeys {
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self { slab: None }
     }
 
@@ -9077,11 +9067,11 @@ impl PageKeys {
     ) -> CacheKey {
         let slab = address.block_slab_id();
         let record_key = match &self.slab {
-            Some((held, record_key)) if *held == slab => std::sync::Arc::clone(record_key),
+            Some((held, record_key)) if *held == (shard_id, slab) => std::sync::Arc::clone(record_key),
             _ => {
                 let record_key =
                     CacheKey::page_with_slot(shard_id, slab, 0, 0, None).record_key;
-                self.slab = Some((slab, std::sync::Arc::clone(&record_key)));
+                self.slab = Some(((shard_id, slab), std::sync::Arc::clone(&record_key)));
                 record_key
             }
         };
@@ -9105,6 +9095,21 @@ impl PageKeys {
             selector: std::borrow::Cow::Owned(selector),
         }
     }
+}
+
+thread_local! {
+    // One prefix per active thread, not one entry per slab or retained payload.
+    static READ_PAGE_KEYS: std::cell::RefCell<PageKeys> = const {
+        std::cell::RefCell::new(PageKeys::new())
+    };
+}
+
+fn read_page_key(
+    shard_id: ShardId,
+    address: &ElementEntry,
+    routing_bucket: Option<u32>,
+) -> CacheKey {
+    READ_PAGE_KEYS.with(|keys| keys.borrow_mut().key(shard_id, address, routing_bucket))
 }
 
 /// Select one element name from bytes already fetched by the caller.
@@ -9173,12 +9178,7 @@ fn read_block_shared(
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<std::sync::Arc<[u8]>> {
-    let cache_key = CacheKey::page_with_slot(
-        shard_id,
-        address.block_slab_id(),
-        address.offset(),
-        address.length(),
-        routing_bucket);
+    let cache_key = read_page_key(shard_id, address, routing_bucket);
     read_block_shared_keyed(cache, block_store, shard_id, address, identity, cache_key)
 }
 

@@ -1161,6 +1161,67 @@ impl<K: RecordedKind> RecordedMap<K> {
             .iter_mut()
             .map(|(object_key, elements)| (&**object_key, ElementValuesMut { elements }))
     }
+
+    /// Visit address values without lending membership mutation. A selected visit uses direct
+    /// object lookups and invalidates only those objects' cached ordinals.
+    pub(super) fn try_visit_element_values_mut<E>(
+        &mut self,
+        selected: Option<&HashSet<ModelKey>>,
+        mut visit: impl FnMut(&str, ElementValuesMut<'_, K>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if let Some(keys) = selected {
+            for key in keys {
+                self.ordinals.invalidate(key);
+                if let Some(elements) = self.entries.get_mut(&**key) {
+                    visit(key, ElementValuesMut { elements })?;
+                }
+            }
+        } else {
+            for (key, elements) in self.element_values_mut() {
+                visit(key, elements)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod selected_compaction_visits {
+    use super::*;
+
+    #[test]
+    fn selected_visits_skip_absent_keys_and_keep_the_complete_traversal() {
+        let mut map: RecordedMap<HashKind> = RecordedMap::default();
+        for i in 0..1000 {
+            map.insert_element_for_test(
+                &format!("object-{i}"),
+                std::sync::Arc::from("field"),
+                crate::block_store::ElementEntry::default(),
+            );
+        }
+        let selected: HashSet<ModelKey> = ["object-7", "object-900", "absent"]
+            .into_iter().map(std::sync::Arc::from).collect();
+        let mut seen = HashSet::new();
+        map.try_visit_element_values_mut(Some(&selected), |key, mut values| {
+            assert_eq!(values.iter_mut().count(), 1);
+            seen.insert(key.to_owned());
+            Ok::<_, ()>(())
+        }).unwrap();
+        assert_eq!(seen, HashSet::from(["object-7".to_owned(), "object-900".to_owned()]));
+        let mut complete = 0;
+        map.try_visit_element_values_mut(None, |_, _| {
+            complete += 1;
+            Ok::<_, ()>(())
+        }).unwrap();
+        assert_eq!(complete, 1000);
+        let mut stopped = 0;
+        let error = map.try_visit_element_values_mut(Some(&selected), |_, _| {
+            stopped += 1;
+            Err("stop")
+        });
+        assert_eq!(error, Err("stop"));
+        assert_eq!(stopped, 1);
+    }
 }
 
 /// PER-KIND EXCEPTION, hash only.
