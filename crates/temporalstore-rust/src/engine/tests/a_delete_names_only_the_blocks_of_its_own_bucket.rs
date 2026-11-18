@@ -154,3 +154,23 @@ fn the_owners_record_every_object_that_holds_a_ref() {
     );
     shard.bucket_index.assert_bucket_owners_cover_every_ref();
 }
+
+/// The footprint of the owners, per object, on a shard of 20,000 string keys. Run by hand:
+/// `cargo test --release --lib the_owners_footprint -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a guard"]
+fn the_owners_footprint_per_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path(), 40);
+    fill(&engine, 20_000);
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+    let owners = shard.bucket_index.bucket_owners.get().expect("owners are built");
+    let objects: usize = shard.bucket_index.objects.values().map(|table| table.len()).sum();
+    println!(
+        "  owners: {} entries over {objects} objects, {} reserved bytes = {:.1} B per object",
+        owners.entries(),
+        owners.reserved_bytes(),
+        owners.reserved_bytes() as f64 / objects as f64
+    );
+}

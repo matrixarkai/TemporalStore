@@ -105,10 +105,12 @@ impl BucketOwners {
     }
 
     /// How many (bucket, object) entries are held.
+    #[cfg(test)]
     pub(super) fn entries(&self) -> usize {
         self.by_bucket.values().map(|list| list.keys.len()).sum()
     }
 
+    #[cfg(test)]
     /// The bytes the vectors have reserved, for the footprint figure: capacity and not length, so
     /// growth slack is counted.
     pub(super) fn reserved_bytes(&self) -> usize {
