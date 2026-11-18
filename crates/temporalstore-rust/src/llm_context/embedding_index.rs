@@ -286,7 +286,7 @@ struct TenantRows {
     positions: IdentityPositions,
     scales: Vec<f32>,
     vectors: Vec<i8>,
-    signature_routing: Option<SignatureRouting>,
+    signature_routing: Option<Box<SignatureRouting>>,
 }
 
 #[derive(Debug)]
@@ -364,6 +364,7 @@ struct SignatureRouting {
 struct SignatureTable {
     heads: Box<[u32]>,
     next: Vec<u32>,
+    previous: Vec<u32>,
 }
 
 const NO_SIGNATURE_POSITION: u32 = u32::MAX;
@@ -402,10 +403,10 @@ impl SeenPositions {
 }
 
 impl SignatureRouting {
-    fn build(rows: &TenantRows, dimensions: usize) -> Self {
-        let mut routing = Self {
+    fn build(rows: &TenantRows, dimensions: usize) -> Box<Self> {
+        let mut routing = Box::new(Self {
             tables: std::array::from_fn(|_| SignatureTable::new(rows.item_ids.len())),
-        };
+        });
         for position in 0..rows.item_ids.len() {
             let start = position * dimensions;
             let signature = embedding_signature_i8(&rows.vectors[start..start + dimensions]);
@@ -435,6 +436,7 @@ impl SignatureRouting {
     fn truncate(&mut self, rows: usize) {
         for table in &mut self.tables {
             table.next.truncate(rows);
+            table.previous.truncate(rows);
         }
     }
 
@@ -524,6 +526,7 @@ impl SignatureTable {
         Self {
             heads: vec![NO_SIGNATURE_POSITION; SIGNATURE_ROUTING_BUCKETS].into_boxed_slice(),
             next: vec![NO_SIGNATURE_POSITION; rows],
+            previous: vec![NO_SIGNATURE_POSITION; rows],
         }
     }
 
@@ -532,9 +535,15 @@ impl SignatureTable {
         if position_index >= self.next.len() {
             self.next
                 .resize(position_index.saturating_add(1), NO_SIGNATURE_POSITION);
+            self.previous
+                .resize(position_index.saturating_add(1), NO_SIGNATURE_POSITION);
         }
         let head = &mut self.heads[bucket as usize];
         self.next[position_index] = *head;
+        self.previous[position_index] = NO_SIGNATURE_POSITION;
+        if *head != NO_SIGNATURE_POSITION {
+            self.previous[*head as usize] = position;
+        }
         *head = position;
     }
 
@@ -544,23 +553,21 @@ impl SignatureTable {
         if position_index >= self.next.len() {
             return;
         }
+        // Callers supply the row's current bucket. Unlink without walking collisions.
+        let previous = self.previous[position_index];
+        let next = self.next[position_index];
         if self.heads[bucket] == position {
-            self.heads[bucket] = self.next[position_index];
-            self.next[position_index] = NO_SIGNATURE_POSITION;
+            self.heads[bucket] = next;
+        } else if previous != NO_SIGNATURE_POSITION {
+            self.next[previous as usize] = next;
+        } else {
             return;
         }
-
-        let mut previous = self.heads[bucket];
-        while previous != NO_SIGNATURE_POSITION {
-            let previous_index = previous as usize;
-            let current = self.next[previous_index];
-            if current == position {
-                self.next[previous_index] = self.next[position_index];
-                self.next[position_index] = NO_SIGNATURE_POSITION;
-                return;
-            }
-            previous = current;
+        if next != NO_SIGNATURE_POSITION {
+            self.previous[next as usize] = previous;
         }
+        self.next[position_index] = NO_SIGNATURE_POSITION;
+        self.previous[position_index] = NO_SIGNATURE_POSITION;
     }
 
     fn visit(&self, bucket: u16, mut visit: impl FnMut(u32) -> bool) -> bool {
@@ -1719,6 +1726,10 @@ unsafe fn dot_i8_f32_avx2(left: &[i8], right: &[f32]) -> f32 {
     }
     sum
 }
+
+#[cfg(test)]
+#[path = "signature_update_tests.rs"]
+mod signature_update_tests;
 
 #[cfg(test)]
 mod tests {

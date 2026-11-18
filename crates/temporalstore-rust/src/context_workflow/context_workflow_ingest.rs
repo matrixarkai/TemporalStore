@@ -15,6 +15,10 @@ pub(super) const CONTEXT_MODEL_SOURCE_WINDOW: usize = 64;
 #[path = "explicit_ingest_tests.rs"]
 mod explicit_ingest_tests;
 
+#[cfg(test)]
+#[path = "ingest_scratch_tests.rs"]
+mod ingest_scratch_tests;
+
 fn persist_prepared_context_batch(
     engine: &TemporalEngine,
     shard_id: ShardId,
@@ -158,6 +162,9 @@ fn process_context_source_window(
     for (provider, source_indexes) in provider_groups {
         let limits = context_embedding_batch_limits(&provider);
         let mut chunk_start = 0usize;
+        // Reuse per-source scratch across the bounded provider window.
+        let mut source_inputs = Vec::with_capacity(2);
+        let mut new_texts = std::collections::HashSet::with_capacity(2);
         while chunk_start < source_indexes.len() {
             let mut chunk_end = chunk_start;
             // Provider limits apply to distinct encoder inputs, not the number of source owners.
@@ -187,8 +194,8 @@ fn process_context_source_window(
                     summaries.l0.as_str()
                 };
                 let event_text = source.body.as_str();
-                let mut source_inputs =
-                    Vec::with_capacity(2usize.saturating_add(summaries.entities.len()));
+                source_inputs.clear();
+                source_inputs.reserve(2usize.saturating_add(summaries.entities.len()));
                 source_inputs.push(("node_text", *node_hash, 1, node_embedding_text));
                 source_inputs.push(("event_text", *event_id_hash, 3, event_text));
                 source_inputs.extend(summaries.entities.iter().map(|entity| {
@@ -199,7 +206,8 @@ fn process_context_source_window(
                         entity.value.as_str(),
                     )
                 }));
-                let mut new_texts = std::collections::HashSet::with_capacity(source_inputs.len());
+                new_texts.clear();
+                new_texts.reserve(source_inputs.len());
                 for (_, _, _, text) in &source_inputs {
                     if !unique_by_text.contains_key(text) {
                         new_texts.insert(*text);
@@ -219,7 +227,7 @@ fn process_context_source_window(
                 }
                 let row_offset = input_rows.len();
                 let logical_row_count = source_inputs.len();
-                for input in source_inputs {
+                for input in source_inputs.iter().copied() {
                     let row = if let Some(row) = unique_by_text.get(input.3).copied() {
                         row
                     } else {

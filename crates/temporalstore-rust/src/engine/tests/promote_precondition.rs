@@ -106,6 +106,87 @@ fn bucket_of(index: u64) -> u32 {
     crate::engine::hashing::block_routing_bucket(&key_of(index), 0, END)
 }
 
+#[test]
+fn bucket_hint_preserves_block_ownership_answers() {
+    let shard = shard_with(64, Some(3));
+    for index in 0..64 {
+        for model in ["string", "set", "unknown"] {
+            for element in [None, Some("field")] {
+                for address in [address_at(index), address_at(index + 1_000)] {
+                    let expected = shard.bucket_index.contains_object_block_address(
+                        model,
+                        &key_of(index),
+                        element,
+                        &address,
+                    );
+                    for hint in [bucket_of(index), END + 1] {
+                        assert_eq!(
+                            shard
+                                .bucket_index
+                                .contains_object_block_address_with_bucket_hint(
+                                    model,
+                                    &key_of(index),
+                                    element,
+                                    &address,
+                                    hint,
+                                ),
+                            expected,
+                            "index={index} model={model} element={element:?} hint={hint}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn bucket_hint_finds_each_block_of_a_large_object() {
+    let mut shard = ShardState::default();
+    shard.set_routing_range(0, END);
+    let key = "many-blocks";
+    let bucket = crate::engine::hashing::block_routing_bucket(key, 0, END);
+    for index in 0..1_024 {
+        upsert_bucket_index_block(
+            &mut shard,
+            SHARD,
+            "set",
+            key,
+            None,
+            address_at(index),
+            false,
+        );
+    }
+    assert_eq!(
+        shard
+            .bucket_index
+            .block_refs_for("set", key, None)
+            .unwrap()
+            .len(),
+        1_024
+    );
+    for index in 0..1_025 {
+        let address = address_at(index);
+        let expected = index < 1_024;
+        assert_eq!(
+            shard
+                .bucket_index
+                .contains_object_block_address("set", key, None, &address),
+            expected
+        );
+        for hint in [bucket, END + 1] {
+            assert_eq!(
+                shard
+                    .bucket_index
+                    .contains_object_block_address_with_bucket_hint(
+                        "set", key, None, &address, hint,
+                    ),
+                expected,
+            );
+        }
+    }
+}
+
 /// A shard holding `count` string blocks in the model map, and in the bucket index too -- except
 /// for blocks routing to `unfiled_bucket`, which are left in the map alone.
 ///

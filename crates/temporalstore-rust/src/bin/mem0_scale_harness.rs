@@ -16,6 +16,9 @@ use temporalstore_rust::http::{get_json_with_options, post_json_with_options, Ht
 #[path = "mem0_scale/crud.rs"]
 mod crud;
 
+#[path = "mem0_scale/growth.rs"]
+mod growth;
+
 #[derive(Debug)]
 struct Options {
     infer: bool,
@@ -25,6 +28,7 @@ struct Options {
     tenant_shards: usize,
     users: usize,
     searches: usize,
+    checkpoints: Vec<usize>,
     metadata_updates: usize,
     crud_rounds: usize,
     payload_bytes: usize,
@@ -74,6 +78,8 @@ struct Report {
     stored_bytes_after_metadata_updates: Option<u64>,
     storage_amplification: Option<f64>,
     api: BTreeMap<String, ApiMetric>,
+    search_validation: &'static str,
+    checkpoints: Vec<growth::Checkpoint>,
     harness_process: ProcessMetric,
     service_processes: Vec<ProcessMetric>,
     provider: String,
@@ -166,6 +172,9 @@ fn main() {
     let mut ingested_records = 0usize;
     let mut acknowledged_source_records = 0usize;
     let mut payload_bytes = 0u64;
+    let mut checkpoints = Vec::new();
+    let mut next_checkpoint = 0;
+    let mut checkpoint_elapsed = Duration::ZERO;
 
     let reset = post(&options.addr, "/memories/reset", &scope_body(&tenant_id));
     if let Err(error) = reset {
@@ -212,13 +221,33 @@ fn main() {
             }
             Err(error) => failures.push(format!("add batch {batch_start}: {error}")),
         }
+        if options.checkpoints.get(next_checkpoint).is_some_and(|target| *target <= batch_end) {
+            let checkpoint_started = Instant::now();
+            let mut checkpoint_timings = Timings::default();
+            growth::search(
+                &options, &tenant_id, batch_end, ingested_records,
+                acknowledged_source_records, &mut checkpoint_timings, &mut failures,
+            );
+            checkpoints.push(growth::Checkpoint {
+                attempted_sources: batch_end,
+                acknowledged_sources: acknowledged_source_records,
+                memory_records: ingested_records,
+                elapsed_ms: started.elapsed().as_millis(),
+                api: checkpoint_timings.finish(),
+                cumulative_service_processes: service_samplers.iter().map(ProcessSampler::snapshot).collect(),
+            });
+            while options.checkpoints.get(next_checkpoint).is_some_and(|target| *target <= batch_end) {
+                next_checkpoint += 1;
+            }
+            checkpoint_elapsed += checkpoint_started.elapsed();
+        }
         if progress_at.elapsed() >= Duration::from_secs(30) || batch_end == options.records {
             eprintln!("mem0-scale phase=ingest infer={} acknowledged={} requested={} failed_batches={}",
                 options.infer, acknowledged_source_records, options.records, failures.len());
             progress_at = Instant::now();
         }
     }
-    let ingest_elapsed = ingest_started.elapsed();
+    let ingest_elapsed = ingest_started.elapsed().saturating_sub(checkpoint_elapsed);
     if options.infer && acknowledged_source_records > 0 && ingested_records == 0 {
         failures.push("inferred fixture produced no fact memories; serving benchmark is incomplete".into());
     }
@@ -226,33 +255,8 @@ fn main() {
     let mut stored_bytes_before_metadata_updates = None;
     let mut stored_bytes_after_metadata_updates = None;
 
-    for query_index in 0..options.searches {
-        let record_index = query_record_index(options.records, options.batch_size, query_index);
-        let query_tenant = corpus_tenant(
-            &tenant_id,
-            (record_index / options.batch_size) % options.tenant_shards,
-        );
-        let mut body = scope_body(&query_tenant);
-        body["query"] = json!(format!("topic {:08} retrieval marker", record_index));
-        body["limit"] = json!(10);
-        if let Some(provider) = &options.provider {
-            body["provider"] = provider.clone();
-        }
-        measure_post_checked(
-            &mut timings,
-            &mut failures,
-            "search",
-            &options.addr,
-            "/memories/search",
-            &body,
-            |response| {
-                if options.infer && ingested_records == 0 && acknowledged_source_records == options.records {
-                    if response["results"].as_array().is_some_and(Vec::is_empty) { Ok(()) }
-                    else { Err("search returned memories when extraction produced no facts".into()) }
-                } else { require_search_candidates(response, 10) }
-            },
-        );
-    }
+    growth::search(&options, &tenant_id, options.records, ingested_records,
+        acknowledged_source_records, &mut timings, &mut failures);
 
     let mut list = scope_body(&tenant_id);
     list["limit"] = json!(100);
@@ -436,6 +440,8 @@ fn main() {
         stored_bytes_after_metadata_updates,
         storage_amplification: stored_bytes.map(|bytes| bytes as f64 / payload_bytes.max(1) as f64),
         api: timings.finish(),
+        search_validation: if options.infer { "candidate_structure_only" } else { "exact_source_marker" },
+        checkpoints,
         harness_process: harness_sampler.finish(),
         service_processes: service_samplers
             .into_iter()
@@ -460,7 +466,9 @@ fn main() {
     }
     fs::write(&options.out, &encoded).expect("write report");
     println!("{}", String::from_utf8_lossy(&encoded));
-    if !report.failures.is_empty() || report.ingested_records != report.requested_records {
+    if !report.failures.is_empty() || !growth::complete_corpus(
+        report.infer, report.requested_records, report.acknowledged_source_records, report.ingested_records,
+    ) {
         std::process::exit(1);
     }
 }
@@ -690,7 +698,7 @@ struct ProcessSampler {
     start_cpu_ticks: u64,
     peak_rss_bytes: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
-    thread: thread::JoinHandle<()>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl ProcessSampler {
@@ -713,13 +721,19 @@ impl ProcessSampler {
             start_cpu_ticks,
             peak_rss_bytes,
             stop,
-            thread,
+            thread: Some(thread),
         }
     }
 
-    fn finish(self) -> ProcessMetric {
+    fn finish(mut self) -> ProcessMetric {
         self.stop.store(true, Ordering::Relaxed);
-        let _ = self.thread.join();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        self.snapshot()
+    }
+
+    fn snapshot(&self) -> ProcessMetric {
         let end_rss_bytes = process_rss_bytes(self.pid);
         ProcessMetric {
             pid: self.pid,
@@ -796,6 +810,8 @@ fn parse_options() -> Options {
         tenant_shards: number("--tenant-shards", 1).max(1),
         users: number("--users", 1_000).max(1),
         searches: number("--searches", 100).max(1),
+        checkpoints: growth::parse_checkpoints(value("--checkpoints").as_deref(), number("--records", 100_000).max(1))
+            .expect("--checkpoints must contain at most 32 unique positive corpus sizes no larger than --records"),
         metadata_updates: number("--metadata-updates", 0).min(100_000),
         crud_rounds: number("--crud-rounds", 0).min(10_000),
         payload_bytes: number("--payload-bytes", 512).max(64),
