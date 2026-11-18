@@ -126,6 +126,21 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: Atomic WAL batch cache checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe wal::atomic_batch_cache_tests:: \
+            -- --test-threads=1 2>&1 | tee /tmp/atomic-wal-batch-cache.log
+          grep -q 'test result: ok\. 6 passed; 0 failed;' /tmp/atomic-wal-batch-cache.log
+          for test in \
+            wal::tests::no_append_ever_shortens_the_piece_it_is_appending_to \
+            wal::tests::a_batch_append_after_a_crash_mid_roll_does_not_reuse_addresses; do
+            cargo test --locked -p temporalstore-rust --lib --features alloc-probe "$test" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/atomic-wal-batch-durability.log
+            grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/atomic-wal-batch-durability.log
+          done
+
       - name: Ollama extraction source isolation checks
         timeout-minutes: 30
         run: |
