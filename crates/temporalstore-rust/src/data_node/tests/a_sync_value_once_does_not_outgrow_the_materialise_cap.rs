@@ -13,10 +13,9 @@ const ROUNDS: usize = 10;
 const PER_ROUND: usize = 400;
 const CAP: usize = 20;
 
-// Ignored until the loop drains log-resident values at the write rate (or the cap is lifted). It is
-// the condition for turning `TS_SYNC_VALUE_ONCE` on by default; run it with `-- --ignored`.
+// The condition for turning `TS_SYNC_VALUE_ONCE` on by default: the log-resident set must stay
+// bounded when writes outrun the per-round cap. A round keeps at most `CAP` resident, so this holds.
 #[test]
-#[ignore = "the condition for default-on: the log-resident set must stay bounded under sustained writes"]
 fn log_resident_values_stay_bounded_when_writes_outrun_the_per_round_cap() {
     let _on = crate::engine::value_once_in_test(true);
     let dir = tempfile::tempdir().unwrap();
