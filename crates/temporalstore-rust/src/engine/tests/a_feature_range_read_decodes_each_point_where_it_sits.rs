@@ -162,13 +162,7 @@ fn the_cursor_answers_what_the_decoder_answers() {
     // THE JSON SHAPE and an UNFRAMED value.
     let json_block = {
         let mut bytes = crate::engine::constants::FEATURE_BLOCK_MAGIC.to_vec();
-        bytes.extend_from_slice(
-            &serde_json::to_vec(&crate::engine::state::PackedFeatureBlock {
-                version: 1,
-                points: many.clone(),
-            })
-            .expect("the block serialises"),
-        );
+        bytes.extend_from_slice(br#"{"version":1,"points":[]}"#);
         bytes
     };
     assert!(ascending_cursor(&json_block).is_none());

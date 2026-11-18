@@ -80,6 +80,45 @@ pub fn block_store_file_read_counts() -> (u64, u64) {
     )
 }
 
+/// The store's read counters, kept OUTSIDE the store mutex.
+///
+/// A read used to take the mutex for its whole length -- file open, positioned read, checksum and
+/// decompression -- because it had two things to reach inside it: the root directory and these
+/// four counters. The root never changes after the store opens, and the counters are sums, so
+/// both can live beside the mutex: reads add to atomics and [`BlockStore::stats`] folds them into
+/// the figure it returns. Nothing else is read from the mutex by a read, which is the whole
+/// reason a read no longer waits on whatever holds it.
+#[derive(Debug, Default)]
+pub(crate) struct ReadCounters {
+    reads: AtomicU64,
+    bytes_read: AtomicU64,
+    logical_bytes_read: AtomicU64,
+    compressed_records_read: AtomicU64,
+}
+
+impl ReadCounters {
+    /// What a decoded record or range delivered, once it has been decoded.
+    pub(crate) fn add_logical(&self, logical_bytes: u64, compressed_records: u64) {
+        self.logical_bytes_read.fetch_add(logical_bytes, Ordering::Relaxed);
+        self.compressed_records_read
+            .fetch_add(compressed_records, Ordering::Relaxed);
+    }
+
+    /// Fold these counters into a copy of the store's own figures.
+    pub(crate) fn merge_into(&self, stats: &mut BlockStoreStats) {
+        stats.reads = stats.reads.saturating_add(self.reads.load(Ordering::Relaxed));
+        stats.bytes_read = stats
+            .bytes_read
+            .saturating_add(self.bytes_read.load(Ordering::Relaxed));
+        stats.logical_bytes_read = stats
+            .logical_bytes_read
+            .saturating_add(self.logical_bytes_read.load(Ordering::Relaxed));
+        stats.compressed_records_read = stats
+            .compressed_records_read
+            .saturating_add(self.compressed_records_read.load(Ordering::Relaxed));
+    }
+}
+
 /// What one span of reading against block-store files cost, published when it goes out of scope.
 ///
 /// Borrowed mutably by the [`CountedSlabRead`] it is passed to, so the read cannot outlive it and
@@ -173,9 +212,9 @@ impl<'a> CountedSlabRead<'a> {
     ///
     /// `bytes_read` is charged the PHYSICAL bytes this read pulled off disk, which is what it
     /// means beside `logical_bytes_read`.
-    pub(crate) fn charge(self, stats: &mut BlockStoreStats) -> Vec<u8> {
-        stats.reads = stats.reads.saturating_add(1);
-        stats.bytes_read = stats.bytes_read.saturating_add(self.physical_bytes);
+    pub(crate) fn charge(self, counters: &ReadCounters) -> Vec<u8> {
+        counters.reads.fetch_add(1, Ordering::Relaxed);
+        counters.bytes_read.fetch_add(self.physical_bytes, Ordering::Relaxed);
         self.bytes
     }
 
@@ -189,6 +228,36 @@ impl<'a> CountedSlabRead<'a> {
     pub(crate) fn into_bytes_charged_to_the_process_only(self) -> Vec<u8> {
         self.bytes
     }
+}
+
+/// A positioned read: it names its own offset instead of moving the descriptor's, so it needs
+/// nothing from a shared cursor and two of them on one file cannot disturb each other.
+#[cfg(unix)]
+fn read_exact_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt as _;
+    file.read_exact_at(buf, offset)
+}
+
+#[cfg(not(unix))]
+fn read_exact_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut file = file.try_clone()?;
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(buf)
+}
+
+#[cfg(unix)]
+fn read_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    use std::os::unix::fs::FileExt as _;
+    file.read_at(buf, offset)
+}
+
+#[cfg(not(unix))]
+fn read_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut file = file.try_clone()?;
+    file.seek(SeekFrom::Start(offset))?;
+    file.read(buf)
 }
 
 /// One slab's worth of storage, addressed by the id the block store already uses.
@@ -329,11 +398,9 @@ impl SlabBackend for LocalSlabBackend<'_> {
         length: u64,
         tally: &'a mut BlockStoreReadTally,
     ) -> io::Result<CountedSlabRead<'a>> {
-        use std::io::{Read as _, Seek as _, SeekFrom};
-        let mut file = std::fs::File::open(self.path(slab_id))?;
-        file.seek(SeekFrom::Start(offset))?;
+        let file = std::fs::File::open(self.path(slab_id))?;
         let mut bytes = vec![0_u8; length as usize];
-        file.read_exact(&mut bytes)?;
+        read_exact_at(&file, &mut bytes, offset)?;
         Ok(CountedSlabRead::of(bytes, tally))
     }
 
@@ -344,11 +411,9 @@ impl SlabBackend for LocalSlabBackend<'_> {
         length: u64,
         tally: &'a mut BlockStoreReadTally,
     ) -> io::Result<CountedSlabRead<'a>> {
-        use std::io::{Read as _, Seek as _, SeekFrom};
-        let mut file = std::fs::File::open(self.path(slab_id))?;
-        file.seek(SeekFrom::Start(offset))?;
+        let file = std::fs::File::open(self.path(slab_id))?;
         let mut bytes = vec![0_u8; length as usize];
-        let read = file.read(&mut bytes)?;
+        let read = read_at(&file, &mut bytes, offset)?;
         bytes.truncate(read);
         Ok(CountedSlabRead::of(bytes, tally))
     }
@@ -414,7 +479,7 @@ mod tests {
             backend
                 .read_range(0, second, b"second-record".len() as u64, &mut BlockStoreReadTally::start())
                 .expect("read")
-                .charge(&mut BlockStoreStats::default()),
+                .charge(&ReadCounters::default()),
             b"second-record",
         );
         assert_eq!(
@@ -436,7 +501,7 @@ mod tests {
             backend
                 .read_all(1, &mut BlockStoreReadTally::start())
                 .expect("read")
-                .charge(&mut BlockStoreStats::default()),
+                .charge(&ReadCounters::default()),
             b"keep",
         );
     }

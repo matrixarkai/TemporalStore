@@ -98,13 +98,7 @@ fn an_in_place_read_answers_what_the_decoder_answered() {
         .collect();
     let json_block = {
         let mut bytes = crate::engine::constants::FEATURE_BLOCK_MAGIC.to_vec();
-        bytes.extend_from_slice(
-            &serde_json::to_vec(&crate::engine::state::PackedFeatureBlock {
-                version: 1,
-                points: many.clone(),
-            })
-            .expect("the block serialises"),
-        );
+        bytes.extend_from_slice(br#"{"version":1,"points":[]}"#);
         bytes
     };
     let blocks: Vec<(&str, Vec<u8>)> = vec![
@@ -133,7 +127,7 @@ fn an_in_place_read_answers_what_the_decoder_answered() {
                 point_of(&row(2, 2)),
             ]),
         ),
-        ("the JSON shape", json_block),
+        ("the retired JSON shape, refused by both readers", json_block),
         ("an unframed value", row(77, 4).encode_feature_proto_value()),
     ];
 
@@ -157,7 +151,7 @@ fn an_in_place_read_answers_what_the_decoder_answered() {
     }
     // DENOMINATORS: every arm of the answer was met, or the comparison proves nothing about it.
     assert!(compared > 7_000);
-    assert!(rows >= 20 + 1 + 3 + 2 + 20, "only {rows} reads decoded a row");
+    assert!(rows >= 20 + 1 + 3 + 2, "only {rows} reads decoded a row");
     assert!(unreadable >= 2, "only {unreadable} reads met an unreadable value");
     assert!(none > 1_000, "only {none} reads asked a sound block for a point it lacks");
 

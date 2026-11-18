@@ -185,7 +185,8 @@ impl BlockStore {
         let slabs = inner.slabs.clone();
         let root = inner.root.clone();
         let options = inner.options;
-        let stats = inner.stats;
+        let mut stats = inner.stats;
+        self.read_view.counters.merge_into(&mut stats);
         let slab_manifest_reconciled_on_open = inner.slab_manifest_reconciled_on_open;
         drop(inner);
 
