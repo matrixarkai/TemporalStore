@@ -5842,7 +5842,7 @@ pub(super) fn file_series_blocks_after_write(
 ///
 /// Returns false, having removed nothing it was not asked to, when a block is not filed where its
 /// identity says: the caller restates the live set then.
-fn retire_object_blocks(
+pub(super) fn retire_object_blocks(
     shard: &mut ShardState,
     shard_id: ShardId,
     kind: &str,
