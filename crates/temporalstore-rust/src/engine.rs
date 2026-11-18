@@ -6455,7 +6455,7 @@ impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
 /// the map holds. The two impls above say the same thing for the owned-array maps; this says it for
 /// the slot map.
 ///
-/// It does not overlap the blanket `impl<V> KeyedState<V> for HashMap<ModelKey, V>`: that one gives
+/// It does not overlap the blanket `impl<V> KeyedState<V> for BTreeMap<ModelKey, V>`: that one gives
 /// this map `KeyedState<ObjectSlot>`, and this gives it `KeyedState<BTreeMap<..>>`. Different type
 /// parameter, same `Self`, so a call site names which one it means -- and the migrated maps' folds
 /// do, with a turbofish.
@@ -6463,7 +6463,7 @@ impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
 /// BUILT THROUGH THE WRITE TRAIT RATHER THAN A `From`, so the slot's array keeps the invariant its
 /// own door keeps: sorted by instant, because every reader binary-searches it.
 impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
-    for std::collections::HashMap<state::ModelKey, object_record::ObjectSlot>
+    for std::collections::BTreeMap<state::ModelKey, object_record::ObjectSlot>
 {
     fn insert_entry(&mut self, key: &str, value: std::collections::BTreeMap<u64, ElementEntry>) {
         let mut slot = object_record::ObjectSlot::default();

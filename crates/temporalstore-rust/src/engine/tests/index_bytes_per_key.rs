@@ -10333,7 +10333,9 @@ fn the_amplification_set_at_two_arms_four_times_apart() {
             clone_resident: deep_heap_bytes(shard),
             arc_bytes,
             buckets: shard.bucket_index.bucket_map.len(),
-            capacity: shard.strings().capacity(),
+            // The string table is an ordered tree now and has no bucket capacity, so the phase
+            // match below holds by construction: a tree has no growth sawtooth to be in phase with.
+            capacity: shard.strings().len(),
         }
     };
 

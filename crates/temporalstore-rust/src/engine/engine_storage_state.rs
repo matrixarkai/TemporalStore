@@ -129,6 +129,22 @@ const _: () = assert!(std::mem::size_of::<WalResidentBlock>() == 16);
 /// asserting it, so this carries no index format stamp.
 pub(super) type ModelKey = Arc<str>;
 
+/// THE TABLE OF ONE KIND'S OBJECTS: an ORDERED TREE, not a hash table.
+///
+/// A hash table doubles when it fills, and a doubling rehashes every row at once. That ran under the
+/// engine's write guard: at 458,753 and 917,505 rows the insert that triggered it held every writer
+/// for 0.2-2 s (an isolated `HashMap<Arc<str>, 48 B>` at those counts: 182-824 ms and 343-2,152 ms;
+/// the same inserts into a `BTreeMap`: 2-9 ms), growing with the table. An ordered tree grows one
+/// node per insert, so no insert does work proportional to the table. Its order is also what a
+/// resumable maintenance cursor (`range(after..)`) needs, and it makes the serialized form of the table
+/// reproducible.
+///
+/// A lookup is O(log n) string comparisons instead of one hash: measured about +1-2 us on a cold
+/// random lookup in a 1.1M-row table, against a write that costs hundreds of us of CPU.
+///
+/// ONE NAME FOR IT so that the type is changed in one place.
+pub(super) type ObjectTable = BTreeMap<ModelKey, super::object_record::ObjectSlot>;
+
 /// Move one map's key onto the canonical allocation, if it is holding its own equal copy.
 ///
 /// Factored out of `adopt_context_event_key` rather than copied per map: the body is identical for
@@ -892,7 +908,7 @@ pub(super) struct CoreIndex {
     /// carries the reasoning and the condition for deleting it.
     pub(super) objects: BTreeMap<
         super::storage_bucket_internals::StoredModelKind,
-        HashMap<ModelKey, super::object_record::ObjectSlot>,
+        ObjectTable,
     >,
     /// Per-slab live block refs and live bytes, maintained by every mutation of the map above.
     ///
@@ -1225,7 +1241,7 @@ impl<'de> Deserialize<'de> for CoreIndex {
                 let mut stored_objects: Option<
                     BTreeMap<
                         super::storage_bucket_internals::StoredModelKind,
-                        HashMap<ModelKey, super::object_record::ObjectSlot>,
+                        ObjectTable,
                     >,
                 > = None;
                 while let Some(key) = map.next_key::<CoreIndexField>()? {
@@ -1633,7 +1649,7 @@ impl<'a> BlockKeysByPosition<'a> {
     pub(super) fn from_parts(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
-            HashMap<ModelKey, super::object_record::ObjectSlot>,
+            ObjectTable,
         >,
         lookup: &'a ObjectBlockLookup,
     ) -> Self {
@@ -1649,7 +1665,7 @@ impl<'a> BlockKeysByPosition<'a> {
     pub(super) fn from_parts_for_bucket(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
-            HashMap<ModelKey, super::object_record::ObjectSlot>,
+            ObjectTable,
         >,
         lookup: &'a ObjectBlockLookup,
         routing_bucket: u32,
@@ -1660,7 +1676,7 @@ impl<'a> BlockKeysByPosition<'a> {
     fn from_parts_filtered<const WITH_HANDLES: bool>(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
-            HashMap<ModelKey, super::object_record::ObjectSlot>,
+            ObjectTable,
         >,
         lookup: &'a ObjectBlockLookup,
         routing_bucket: Option<u32>,
@@ -1806,7 +1822,7 @@ impl<'a> BlockKeysByPosition<'a> {
     pub(super) fn from_parts_for_keys<'k>(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
-            HashMap<ModelKey, super::object_record::ObjectSlot>,
+            ObjectTable,
         >,
         lookup: &'a ObjectBlockLookup,
         keys: impl IntoIterator<Item = &'k str>,
@@ -10339,6 +10355,37 @@ fn adopt_canonical_key_allocations_in_hashed<V>(
     adopted
 }
 
+/// THE SAME ADOPTION FOR AN ORDERED TABLE, and it leaves the table PACKED.
+///
+/// A tree has no tombstone to reuse, so swapping keys one entry at a time (remove, insert) would
+/// churn nodes for every row. The whole table is rebuilt once instead: the entries are moved, in key
+/// order, into a fresh tree built bottom-up by `collect`, which fills every leaf. A decode fills the
+/// table by ascending insertion, the one order that leaves the left half of each split empty, so
+/// this one pass is both the re-key and the repack the decode owes the table.
+fn adopt_canonical_key_allocations_in_ordered<V>(
+    map: &mut BTreeMap<ModelKey, V>,
+    lookup: &ObjectBlockLookup,
+) -> usize {
+    let mut adopted = 0usize;
+    let taken = std::mem::take(map);
+    *map = taken
+        .into_iter()
+        .map(|(held, value)| {
+            match lookup
+                .any_shared_object_key(&held)
+                .filter(|canonical| !Arc::ptr_eq(&held, canonical))
+            {
+                Some(canonical) => {
+                    adopted += 1;
+                    (canonical, value)
+                }
+                None => (held, value),
+            }
+        })
+        .collect();
+    adopted
+}
+
 fn adopt_canonical_key_allocations(
     expires_at_ms: &mut BTreeMap<Arc<str>, u64>,
     // THE WHOLE INDEX AND NOT THE LOOKUP, because the canonical holder moved. A string key lives
@@ -10505,7 +10552,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         .get_mut(&super::storage_bucket_internals::StoredModelKind::String)
     {
         _adopted_hashed +=
-            adopt_canonical_key_allocations_in_hashed(table, &bucket_index.object_block_lookup);
+            adopt_canonical_key_allocations_in_ordered(table, &bucket_index.object_block_lookup);
     }
     // THE FEATURE SERIES ARE IN `objects` NOW, so the pass reaches them through the kind's
     // inner table rather than through a field. Dropping this term instead would have cost
@@ -10521,7 +10568,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         .get_mut(&super::storage_bucket_internals::StoredModelKind::Feature)
     {
         _adopted_hashed +=
-            adopt_canonical_key_allocations_in_hashed(table, &bucket_index.object_block_lookup);
+            adopt_canonical_key_allocations_in_ordered(table, &bucket_index.object_block_lookup);
     }
     // THE CONTROL-STATE COUNTERS ARE IN `counter_series` NOW, so this pass reaches them
     // through the domain's table rather than through a field. Dropping the term would
@@ -10533,6 +10580,19 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
             adopt_canonical_key_allocations_in_hashed(table, &bucket_index.object_block_lookup);
     }
     REPACK_ADOPTED_HASHED.fetch_add(_adopted_hashed, std::sync::atomic::Ordering::Relaxed);
+    // THE OBJECT TABLES ARE ORDERED TREES, and a decode filled each by ascending insertion. The two
+    // kinds above were rebuilt (and so packed) by their adoption; every other kind is packed here, so
+    // a reloaded shard does not carry half-empty leaves in a table the engine now keeps as a tree.
+    // Reaches only tables that exist: it may not bring one into being.
+    for (kind, table) in bucket_index.objects.iter_mut() {
+        if !matches!(
+            kind,
+            super::storage_bucket_internals::StoredModelKind::String
+                | super::storage_bucket_internals::StoredModelKind::Feature
+        ) {
+            repack_btree_map(table);
+        }
+    }
     // AND THE HASH FIELD NAMES. The wire shape is a map of owned names, so the decode minted a
     // handle per field with the pool taking no part; without this a reloaded shard holds the
     // duplication the conversion removed and nothing fails, because the names are equal.
@@ -11142,7 +11202,7 @@ static NO_ROLLUPS_IN_THIS_DOMAIN: std::sync::OnceLock<
     HashMap<String, super::control_rollup::RollupEntry>,
 > = std::sync::OnceLock::new();
 
-static NO_OBJECTS_OF_THIS_KIND: std::sync::OnceLock<HashMap<ModelKey, super::object_record::ObjectSlot>> =
+static NO_OBJECTS_OF_THIS_KIND: std::sync::OnceLock<ObjectTable> =
     std::sync::OnceLock::new();
 
 impl ShardState {
@@ -11153,7 +11213,7 @@ impl ShardState {
     /// not a distinction any of them should have to carry.
     /// The control-state counter series.
     /// Redis-style string values, one address per key.
-    pub(super) fn strings(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+    pub(super) fn strings(&self) -> &ObjectTable {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::String)
     }
 
@@ -11165,7 +11225,7 @@ impl ShardState {
     /// row has somewhere to put a deadline and a dirty bit, which a bare address does not.
     pub(super) fn strings_mut(
         &mut self,
-    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &mut ObjectTable {
         self.objects_of_kind_mut(super::storage_bucket_internals::StoredModelKind::String)
     }
 
@@ -11521,18 +11581,18 @@ impl ShardState {
     pub(super) fn objects_of_kind_mut(
         &mut self,
         kind: super::storage_bucket_internals::StoredModelKind,
-    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &mut ObjectTable {
         self.bucket_index.objects.entry(kind).or_default()
     }
 
     pub(super) fn objects_of_kind(
         &self,
         kind: super::storage_bucket_internals::StoredModelKind,
-    ) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &ObjectTable {
         self.bucket_index
             .objects
             .get(&kind)
-            .unwrap_or_else(|| NO_OBJECTS_OF_THIS_KIND.get_or_init(HashMap::new))
+            .unwrap_or_else(|| NO_OBJECTS_OF_THIS_KIND.get_or_init(ObjectTable::new))
     }
 
     /// The context pack audits, read from the consolidated map.
@@ -11550,28 +11610,28 @@ impl ShardState {
     /// `repack_decoded_btrees`, which reaches this kind's table through `bucket_index.objects` --
     /// the map left `ShardState`'s destructure when it became a field of `CoreIndex`, so the pass
     /// no longer has a binding for it at all.
-    pub(super) fn features(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+    pub(super) fn features(&self) -> &ObjectTable {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::Feature)
     }
 
     /// The feature series, for writing. Creates the kind's inner table on first use.
     pub(super) fn features_mut(
         &mut self,
-    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &mut ObjectTable {
         self.bucket_index
             .objects
             .entry(super::storage_bucket_internals::StoredModelKind::Feature)
             .or_default()
     }
 
-    pub(super) fn context_audits(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+    pub(super) fn context_audits(&self) -> &ObjectTable {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextAudit)
     }
 
     /// The context pack audits, for writing. Creates the kind's inner table on first use.
     pub(super) fn context_audits_mut(
         &mut self,
-    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &mut ObjectTable {
         self.bucket_index
             .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextAudit)
@@ -11587,14 +11647,14 @@ impl ShardState {
     /// The value is an `ObjectSlot` rather than an `OwnedTimestampedSeries`, and both implement
     /// `TimestampedSeries` -- so every site reaching this map through a helper generic over
     /// `S: TimestampedSeries` is untouched by the move.
-    pub(super) fn context_summaries(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+    pub(super) fn context_summaries(&self) -> &ObjectTable {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextSummary)
     }
 
     /// The context summaries, for writing. Creates the kind's inner table on first use.
     pub(super) fn context_summaries_mut(
         &mut self,
-    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &mut ObjectTable {
         self.bucket_index
             .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextSummary)
@@ -11610,14 +11670,14 @@ impl ShardState {
     /// The value is an `ObjectSlot` rather than an `OwnedTimestampedSeries`, and both implement
     /// `TimestampedSeries` -- so every site reaching this map through a helper generic over
     /// `S: TimestampedSeries` is untouched by the move.
-    pub(super) fn context_compressions(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+    pub(super) fn context_compressions(&self) -> &ObjectTable {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextCompression)
     }
 
     /// The context compression events, for writing. Creates the kind's inner table on first use.
     pub(super) fn context_compressions_mut(
         &mut self,
-    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &mut ObjectTable {
         self.bucket_index
             .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextCompression)
@@ -11641,14 +11701,14 @@ impl ShardState {
     /// had to move to the slot's.
     pub(super) fn context_children(
         &self,
-    ) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &ObjectTable {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextChild)
     }
 
     /// The context child refs, for writing. Creates the kind's inner table on first use.
     pub(super) fn context_children_mut(
         &mut self,
-    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &mut ObjectTable {
         self.bucket_index
             .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextChild)
@@ -11668,7 +11728,7 @@ impl ShardState {
     /// kind once.
     pub(super) fn control_state_blocks(
         &self,
-    ) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &ObjectTable {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ControlState)
     }
 
@@ -11788,20 +11848,20 @@ impl ShardState {
     /// than merging into it.
     pub(super) fn set_all_control_state_blocks(
         &mut self,
-        blocks: HashMap<ModelKey, super::object_record::ObjectSlot>,
+        blocks: ObjectTable,
     ) {
         // MERGED INTO THE TABLE, NOT ASSIGNED OVER IT: the row carries this key's block refs, and a
         // fresh table of address-only rows left every control-state block named by nothing after a
         // reload. The incoming map stays the authority on WHICH keys exist (an absent key is
         // dropped); for a key it carries, only the address is written onto the row already there.
-        let mut incoming = blocks;
+        let incoming = blocks;
         let table = self
             .bucket_index
             .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ControlState)
             .or_default();
         table.retain(|key, _| incoming.contains_key(key));
-        for (key, fresh) in incoming.drain() {
+        for (key, fresh) in incoming {
             match table.get_mut(&key) {
                 Some(row) => row.set_address(&fresh.address()),
                 None => {
@@ -11895,14 +11955,14 @@ impl ShardState {
     /// write going through the read accessor in this very change. A name grep does not find a
     /// four-line delegating helper; the compiler does.
     /// The per-object index series.
-    pub(super) fn context_indexes(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+    pub(super) fn context_indexes(&self) -> &ObjectTable {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextIndex)
     }
 
     /// The index series, for writing. Creates the kind's inner table on first use.
     pub(super) fn context_indexes_mut(
         &mut self,
-    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &mut ObjectTable {
         self.bucket_index
             .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextIndex)
@@ -11917,21 +11977,21 @@ impl ShardState {
     /// `(u64, ElementEntry)` is the same shape a slot already stores, so nothing about the
     /// representation strains; what differs is what the `u64` MEANS, and a reader who takes the
     /// `TimestampedSeries` vocabulary literally for this kind will read it wrong.
-    pub(super) fn context_entities(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+    pub(super) fn context_entities(&self) -> &ObjectTable {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextEntity)
     }
 
     /// A node's entities, for writing. Creates the kind's inner table on first use.
     pub(super) fn context_entities_mut(
         &mut self,
-    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &mut ObjectTable {
         self.bucket_index
             .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextEntity)
             .or_default()
     }
 
-    pub(super) fn context_events(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+    pub(super) fn context_events(&self) -> &ObjectTable {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextEvent)
     }
 
@@ -11945,7 +12005,7 @@ impl ShardState {
     /// helpers over `TimestampedSeriesWrite` can be handed this map directly.
     pub(super) fn context_events_mut(
         &mut self,
-    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+    ) -> &mut ObjectTable {
         self.bucket_index
             .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextEvent)
@@ -11989,14 +12049,14 @@ impl ShardState {
         let mut moved = false;
         // The event pair moves together or not at all: they are keyed by one handle by
         // construction, so moving one and not the other restores the second allocation.
-        moved |= adopt_key_in(self.context_events_mut(), object_key, &canonical);
+        moved |= adopt_key_in_ordered(self.context_events_mut(), object_key, &canonical);
         moved |= adopt_key_in(&mut self.context_event_timeline, object_key, &canonical);
-        moved |= adopt_key_in(self.context_indexes_mut(), object_key, &canonical);
-        moved |= adopt_key_in(self.context_audits_mut(), object_key, &canonical);
-        moved |= adopt_key_in(self.context_children_mut(), object_key, &canonical);
-        moved |= adopt_key_in(self.context_summaries_mut(), object_key, &canonical);
-        moved |= adopt_key_in(self.context_compressions_mut(), object_key, &canonical);
-        moved |= adopt_key_in(self.context_entities_mut(), object_key, &canonical);
+        moved |= adopt_key_in_ordered(self.context_indexes_mut(), object_key, &canonical);
+        moved |= adopt_key_in_ordered(self.context_audits_mut(), object_key, &canonical);
+        moved |= adopt_key_in_ordered(self.context_children_mut(), object_key, &canonical);
+        moved |= adopt_key_in_ordered(self.context_summaries_mut(), object_key, &canonical);
+        moved |= adopt_key_in_ordered(self.context_compressions_mut(), object_key, &canonical);
+        moved |= adopt_key_in_ordered(self.context_entities_mut(), object_key, &canonical);
         // `context_nodes` was ALREADY `ModelKey`-keyed before this change and was still
         // missing from this list, which is the failure the note above describes: a map that
         // CAN share and is not listed here keeps its own equal copy and nothing fails.
@@ -12017,7 +12077,7 @@ impl ShardState {
         // handle at its own write site, which runs BEFORE the block index holds one -- so it
         // minted, while the maps adopted here later converged on the block index's
         // allocation. Three holders, two allocations, and no byte probe would have said so.
-        moved |= adopt_key_in(&mut self.strings_mut(), object_key, &canonical);
+        moved |= adopt_key_in_ordered(&mut self.strings_mut(), object_key, &canonical);
         // `control_state` TOO, for its RAW-keyed half. The counter commands file the raw object
         // key, so it is a fourth holder of characters `strings`, `features` and
         // `control_state_selection` already agreed on -- measured at 8 of 8 keys, four holders
@@ -12039,7 +12099,7 @@ impl ShardState {
         // THREE allocations before these two joined -- each was holding its own copy.
         moved |= adopt_key_in(&mut self.seen, object_key, &canonical);
         moved |= adopt_key_in(&mut self.buckets, object_key, &canonical);
-        moved |= adopt_key_in(self.features_mut(), object_key, &canonical);
+        moved |= adopt_key_in_ordered(self.features_mut(), object_key, &canonical);
         moved |= adopt_key_in(&mut self.control_state_selection, object_key, &canonical);
         // `control_state_changes` TOO. Seven holders of one raw key text reported TWO
         // allocations before this line, at 8 of 8 keys, with this map owning the second --

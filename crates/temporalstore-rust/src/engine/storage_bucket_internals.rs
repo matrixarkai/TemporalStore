@@ -4531,7 +4531,7 @@ pub(super) fn visit_model_live_blocks(
 /// `context_entities` COMPOSES its key from the collection key and the entity hash, so the key it
 /// emits exists nowhere to be borrowed from.
 fn visit_timestamped_series<S>(
-    map: &HashMap<ModelKey, S>,
+    map: &BTreeMap<ModelKey, S>,
     kind: ModelKind,
     accept: &impl Fn(&str, &ElementEntry) -> bool,
     emit: &mut impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
