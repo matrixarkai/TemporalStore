@@ -42,12 +42,7 @@ impl DataNodeRuntime {
         let queue_depth = queue.queued_total;
         let queued_shard_count = queue.by_shard.len();
         let running_shard_count = queue.running_shards.len();
-        let dirty_shard_count = dirty
-            .by_key
-            .keys()
-            .map(|(shard_id, _)| *shard_id)
-            .collect::<BTreeSet<_>>()
-            .len();
+        let dirty_shard_count = dirty.by_shard.len();
         DataNodeRuntimeStats {
             worker_threads: self.inner.options.worker_threads,
             max_queue_depth: self.inner.options.max_queue_depth,
@@ -463,11 +458,13 @@ impl DataNodeRuntime {
     }
 
     pub fn shard_serving_states(&self) -> Vec<ServerShardServingState> {
-        let dirty_objects = self.dirty_objects();
-        let mut dirty_by_shard = HashMap::<ShardId, usize>::new();
-        for dirty in dirty_objects {
-            *dirty_by_shard.entry(dirty.shard_id).or_default() += 1;
-        }
+        let dirty_by_shard = self
+            .inner
+            .dirty
+            .lock()
+            .expect("dirty tracker lock poisoned")
+            .by_shard
+            .clone();
         let queue = self
             .inner
             .queue

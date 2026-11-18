@@ -2517,6 +2517,8 @@ impl ShardTaskQueues {
 struct DirtyTracker {
     next_object_id: u64,
     by_key: HashMap<(ShardId, String), DirtyObjectState>,
+    // Maintained with by_key under the same tracker lock.
+    by_shard: HashMap<ShardId, usize>,
 }
 
 #[derive(Debug)]
