@@ -2447,6 +2447,72 @@ class OnlineStoreTest(unittest.TestCase):
                 self.store._entity_key_hex(self.config, integer_key)
                 self.assertEqual(encode.call_count, 1)
 
+    def test_single_view_plan_skips_cross_view_identity_serialization(self):
+        entity_keys = [object(), object()]
+        indexes = [[2, 0], [1]]
+        with mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_unique_entities",
+            return_value=(["entities"], indexes, 3),
+        ), mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
+            return_value=entity_keys,
+        ), mock.patch.object(self.store, "_entity_hash_key", side_effect=["row1", "row2"]) as hash_key:
+            plans = list(self.store._grouped_read_plans(
+                self.config, [(self.view, ["trips", "trips", "other"])], {}, {}
+            ))
+        self.assertEqual(hash_key.call_count, 2)
+        self.assertEqual(len(plans), 1)
+        keys, fields, specs, layouts = plans[0]
+        self.assertEqual(keys, ["row1", "row2"])
+        self.assertEqual(fields, ["stats:trips", "stats:other", "_ts:stats"])
+        self.assertEqual(layouts, [(["trips", "trips", "other"], [0, 0, 1, 2])])
+        self.assertIs(specs[0][2], indexes)
+        self.assertEqual(specs[0][3], 3)
+        self.assertIs(specs[0][4], entity_keys)
+
+    def test_projection_cache_preserves_order_and_bounds_admission(self):
+        from feast_temporalstore_command.online_store import _cached_view_projection, _view_projection
+
+        _cached_view_projection.cache_clear()
+        self.addCleanup(_cached_view_projection.cache_clear)
+        first = _view_projection("stats@1", ("f", "f", "g"))
+        self.assertEqual(first, (("stats@1:f", "stats@1:g", "_ts:stats@1"), (0, 0, 1, 2)))
+        self.assertIs(_view_projection("stats@1", ("f", "f", "g")), first)
+        self.assertNotEqual(_view_projection("stats@2", ("f", "f", "g")), first)
+        self.assertNotEqual(_view_projection("stats@1", ("g", "f")), first)
+        before = _cached_view_projection.cache_info().currsize
+        for view, features in (("stats", tuple(str(i) for i in range(129))),
+                               ("stats", ("f" * 4096,)), ("s" * 4096, ("f",))):
+            fields, positions = _view_projection(view, features)
+            self.assertEqual(len(positions), len(features) + 1)
+            self.assertEqual(fields[-1], "_ts:" + view)
+            self.assertEqual(_cached_view_projection.cache_info().currsize, before)
+        for index in range(140):
+            _view_projection("stats@" + str(index), ("f",))
+        self.assertEqual(_cached_view_projection.cache_info().currsize, 128)
+
+    def test_single_view_plans_own_projection_lists_and_refresh_entities(self):
+        requested = ["trips"]
+        with mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_unique_entities",
+            return_value=(["entities"], [[0]], 1),
+        ), mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
+            side_effect=[[self._entity_key(1)], [self._entity_key(2)], [self._entity_key(3)]],
+        ), mock.patch.object(self.store, "_view_name", return_value="stats@1") as view_name:
+            first = list(self.store._grouped_read_plans(self.config, [(self.view, requested)], {}, {}))[0]
+            first[1][0] = "changed"
+            first[3][0][1][0] = 99
+            second = list(self.store._grouped_read_plans(self.config, [(self.view, requested)], {}, {}))[0]
+            self.assertEqual(second[1], ["stats@1:trips", "_ts:stats@1"])
+            self.assertEqual(second[3][0][1], [0, 1])
+            self.assertNotEqual(first[0], second[0])
+            requested[:] = ["other"]
+            view_name.return_value = "stats@2"
+            third = list(self.store._grouped_read_plans(self.config, [(self.view, requested)], {}, {}))[0]
+            self.assertEqual(third[1], ["stats@2:other", "_ts:stats@2"])
+            self.assertEqual(second[2][0][1], ["trips"])
+
     def test_feature_views_with_the_same_entities_share_one_projection(self):
         from feast import FeatureView, Field
         from feast.protos.feast.serving.ServingService_pb2 import FieldStatus, GetOnlineFeaturesResponse
