@@ -447,6 +447,8 @@ jobs:
             engine::tests::a_set_door_asks_one_member_not_the_set::the_door_never_lists_the_set \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_answers_what_the_sorted_listing_answered \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_reads_a_prefix_and_never_lists \
+            engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_pop_takes_the_first_or_last_members_in_order_and_leaves_the_rest \
+            engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_range_of_the_first_members_answers_what_the_full_sort_answered \
             engine::storage_bucket_internals::set_batch_work_tests::a_repeat_write_to_a_marked_collection_visits_no_block_at_any_size \
             engine::tests::set_install_census::every_command_that_installs_a_set_member_reports_a_touched_element \
             shared_store::tests::a_string_increment_and_an_append_are_framed_as_protobuf_and_round_trip \
