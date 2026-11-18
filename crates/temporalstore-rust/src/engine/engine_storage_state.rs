@@ -8903,6 +8903,44 @@ impl CoreIndex {
         removed
     }
 
+    pub(super) fn contains_object_block_address_with_bucket_hint(
+        &self,
+        model_id: &str,
+        object_key: &str,
+        element_name: Option<&str>,
+        address: &ElementEntry,
+        routing_bucket: u32,
+    ) -> bool {
+        if element_name.is_none() {
+            if let Some(kind) =
+                crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(model_id)
+            {
+                let candidate = BlockIndex::new(kind, address.clone(), false, false);
+                let block_ref = BlockLookupRef {
+                    routing_bucket,
+                    block_ref_key: block_index_handle(object_key, &candidate),
+                };
+                if self
+                    .block_refs_for(model_id, object_key, element_name)
+                    .is_some_and(|refs| refs.binary_search(&block_ref).is_ok())
+                    && self
+                        .bucket_map
+                        .get(&routing_bucket)
+                        .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
+                        .is_some_and(|block| {
+                            !block.deleted()
+                                && block.model_id().as_str() == model_id
+                                && same_block_address(&block.address, address)
+                        })
+                {
+                    return true;
+                }
+            }
+        }
+        // Hints and derived handles are accelerators, not ownership authority.
+        self.contains_object_block_address(model_id, object_key, element_name, address)
+    }
+
     pub(super) fn contains_object_block_address(
         &self,
         model_id: &str,
