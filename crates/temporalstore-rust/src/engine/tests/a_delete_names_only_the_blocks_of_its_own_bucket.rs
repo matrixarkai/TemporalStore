@@ -27,21 +27,21 @@
 #![allow(clippy::all)]
 use super::*;
 
-fn engine_on(dir: &std::path::Path) -> Arc<TemporalEngine> {
+fn engine_on(dir: &std::path::Path, buckets: u32) -> Arc<TemporalEngine> {
     let engine = Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
         dir.join("blocks"),
         dir.join("indexes"),
     ));
-    // FOUR BUCKETS, so each holds hundreds of blocks and a delete is past the small-bucket projection.
+    // A BUCKET COUNT THE CALLER SETS, so each bucket holds hundreds of blocks (past the small-bucket projection) at every shard size.
     engine.load_shard_with(LoadShardRequest {
         shard_id: 1,
         load_version: 0,
         local_node_id: None,
         shard_uri: String::new(),
         start_routing_bucket: 0,
-        end_routing_bucket: 3,
+        end_routing_bucket: buckets - 1,
         readonly: false,
         table_name: String::new(),
     });
@@ -70,8 +70,10 @@ fn fill(engine: &TemporalEngine, keys: usize) {
 
 /// Objects visited per delete, for `deletes` keys removed from a shard of `keys` string keys.
 fn visits_per_delete(keys: usize, deletes: usize, owners_disabled: bool) -> f64 {
+    // 500 keys a bucket at every size, so what grows with the shard is the bucket count and not the bucket.
+    let buckets = (keys / 500) as u32;
     let dir = tempfile::tempdir().unwrap();
-    let engine = engine_on(dir.path());
+    let engine = engine_on(dir.path(), buckets);
     fill(&engine, keys);
     crate::engine::state::disable_bucket_owners_for_test(owners_disabled);
     let (_, visits) = crate::engine::state::measure_block_identity_visits_for_test(|| {
@@ -122,7 +124,7 @@ fn a_delete_visits_the_objects_of_its_bucket_and_not_of_the_shard() {
 #[test]
 fn the_owners_record_every_object_that_holds_a_ref() {
     let dir = tempfile::tempdir().unwrap();
-    let engine = engine_on(dir.path());
+    let engine = engine_on(dir.path(), 2);
     fill(&engine, 600);
     // Overwrites, deletes and a container, so refs move and leave.
     for index in 0..600 {
