@@ -1932,7 +1932,7 @@ impl TemporalEngine {
         // stopped all writes on the shard for as many reads as the value had fields. See
         // `FastPathRead` for why releasing first is safe and what the one scope still buys.
         let hold_guard_across_reads = shard_write_guard::serving_holds_guard_across_reads();
-        let (plan, _held_across_reads) = {
+        let (plan, _held_across_reads, _wal_snapshot) = {
             let shards = self.shards_read_marked();
             let Some(shard) = shards.get(&request.shard_id) else {
                 return Some(ExecuteResponse {
@@ -2070,6 +2070,7 @@ impl TemporalEngine {
                 }
                 _ => return None,
             };
+            let wal_snapshot = plan.pin_log_locations(&self.block_store, request.shard_id);
             // The measurement's control arm carries the guard out of this block so the reads
             // below still happen inside the region. `None` in every shipped build, which is what
             // makes the guard drop here.
@@ -2078,8 +2079,13 @@ impl TemporalEngine {
             } else {
                 None
             };
-            (plan, held)
+            (plan, held, wal_snapshot)
         };
+
+        #[cfg(test)]
+        if let Some(after) = AFTER_FAST_READ_PLAN.with(|slot| slot.borrow_mut().take()) {
+            after();
+        }
 
         match plan {
             FastPathRead::String {
@@ -2146,7 +2152,7 @@ impl TemporalEngine {
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::Bytes {
-                        value: read_block_bytes(
+                        value: Some(read_block_bytes(
                             &self.cache,
                             &self.block_store,
                             request.shard_id,
@@ -2154,7 +2160,7 @@ impl TemporalEngine {
                             // A string block IS its whole object, so the element is `None`.
                             BlockIdentity::of(request.shard_id, "string", key, None),
                             Some(routing_bucket),
-                        ),
+                        )?),
                     },
                 })
             }
@@ -2176,16 +2182,17 @@ impl TemporalEngine {
             } => {
                 self.note_fast_read_recency(request.shard_id, routing_bucket);
                 // The shard has already said whether the key is there; an absent key reads nothing.
-                let bytes = address.and_then(|address| {
-                    read_block_shared(
+                let bytes = match address {
+                    Some(address) => Some(read_block_shared(
                         &self.cache,
                         &self.block_store,
                         request.shard_id,
                         &address,
                         BlockIdentity::of(request.shard_id, "string", key, None),
                         Some(routing_bucket),
-                    )
-                });
+                    )?),
+                    None => None,
+                };
                 let response = match range {
                     None => CommandResponse::Integer {
                         value: bytes.map_or(0, |bytes| bytes.len() as i64),
@@ -2209,20 +2216,20 @@ impl TemporalEngine {
                 routing_bucket,
             } => {
                 self.note_fast_read_recency(request.shard_id, routing_bucket);
+                let value = match address {
+                    Some(address) => Some(read_block_bytes(
+                        &self.cache,
+                        &self.block_store,
+                        request.shard_id,
+                        &address,
+                        BlockIdentity::of(request.shard_id, "hash", key, Some(field)),
+                        Some(routing_bucket),
+                    )?),
+                    None => None,
+                };
                 Some(ExecuteResponse {
                     status: Status::ok(),
-                    response: CommandResponse::Bytes {
-                        value: address.and_then(|address| {
-                            read_block_bytes(
-                                &self.cache,
-                                &self.block_store,
-                                request.shard_id,
-                                &address,
-                                BlockIdentity::of(request.shard_id, "hash", key, Some(field)),
-                                Some(routing_bucket),
-                            )
-                        }),
-                    },
+                    response: CommandResponse::Bytes { value },
                 })
             }
             FastPathRead::Hash {
@@ -2235,22 +2242,19 @@ impl TemporalEngine {
                 // share their record key: building each from scratch spent three allocations a
                 // field, two of them spelling the same slab name again.
                 let mut page_keys = PageKeys::new();
-                let mut entries = fields
-                    .iter()
-                    .filter_map(|(field, address)| {
-                        let cache_key =
-                            page_keys.key(request.shard_id, address, Some(routing_bucket));
-                        read_block_value_keyed(
-                            &self.cache,
-                            &self.block_store,
-                            request.shard_id,
-                            address,
-                            BlockIdentity::of(request.shard_id, "hash", key, Some(&field[..])),
-                            cache_key,
-                        )
-                        .map(|value| (field.to_string(), value))
-                    })
-                    .collect::<Vec<_>>();
+                let mut entries = Vec::with_capacity(fields.len());
+                for (field, address) in &fields {
+                    let cache_key = page_keys.key(request.shard_id, address, Some(routing_bucket));
+                    let value = read_block_value_keyed(
+                        &self.cache,
+                        &self.block_store,
+                        request.shard_id,
+                        address,
+                        BlockIdentity::of(request.shard_id, "hash", key, Some(&field[..])),
+                        cache_key,
+                    )?;
+                    entries.push((field.to_string(), value));
+                }
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
                 Some(ExecuteResponse {
                     status: Status::ok(),
@@ -3505,10 +3509,10 @@ pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 32;
 /// invalidate it into something wrong: compaction relocates a block by APPENDING the new copy and
 /// repointing the index, leaving the old bytes where they were, and slab ids are handed out
 /// strictly monotonically, so a stale address never resolves to a DIFFERENT record. The one path
-/// that destroys bytes quarantines the slab for `DELAYED_DESTROY_MIN_AGE_MS` first -- an hour,
-/// documented as covering exactly "a reader holding a stale address" -- and a read that somehow
-/// lost even that race fails the record's block-id and checksum check and answers ABSENT, which is
-/// what a concurrently deleted key answers anyway.
+/// that destroys bytes quarantines the slab for `DELAYED_DESTROY_MIN_AGE_MS` first. WAL-backed
+/// addresses also capture their locators under the index guard, since an overwrite can retire a
+/// locator before the bytes are loaded. If reclaim still makes a captured record unavailable,
+/// the fast path declines and the ordinary guarded path reads the current index.
 ///
 /// What the single guard scope still buys, and what must not be narrowed away: a `HashGetAll`
 /// snapshots EVERY field's address at one instant. Taking the guard once per field instead would
@@ -3558,6 +3562,52 @@ enum FastPathRead<'a> {
     },
     /// An integer answered from the index alone, with nothing to read afterwards.
     Answer { value: i64, routing_bucket: u32 },
+}
+
+impl FastPathRead<'_> {
+    fn pin_log_locations(
+        &self,
+        blocks: &BlockStore,
+        shard: ShardId,
+    ) -> Option<block_in_wal::ReadSnapshotGuard> {
+        match self {
+            Self::String { key, address, .. } | Self::StringShared { key, address, .. } => {
+                let address = address.as_ref().filter(|address| {
+                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                })?;
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                guard.pin(blocks, stable_block_object_id(shard, "string", key), None, address);
+                Some(guard)
+            }
+            Self::HashField { key, field, address, .. } => {
+                let address = address.as_ref().filter(|address| {
+                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                })?;
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                guard.pin(blocks, stable_block_object_id(shard, "hash", key), Some(*field), address);
+                Some(guard)
+            }
+            Self::Hash { key, fields, .. } if fields.iter().any(|(_, address)| {
+                crate::wal_record::is_wal_resident(address.block_slab_id())
+            }) => {
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                let object = stable_block_object_id(shard, "hash", key);
+                for (field, address) in fields {
+                    if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                        guard.pin(blocks, object, Some(&field[..]), address);
+                    }
+                }
+                Some(guard)
+            }
+            Self::Hash { .. } | Self::Answer { .. } => None,
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_FAST_READ_PLAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// What the served-index encode did while this thread held the shard-table WRITE guard.
