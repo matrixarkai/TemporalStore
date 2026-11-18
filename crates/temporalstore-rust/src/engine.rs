@@ -1918,6 +1918,7 @@ impl TemporalEngine {
                 | Command::HashFieldExists { .. }
                 | Command::FeatureQuery { .. }
                 | Command::FeatureQueryFiltered { .. }
+                | Command::WindowReduceRank { .. }
         );
         if !read_command {
             return None;
@@ -2117,6 +2118,38 @@ impl TemporalEngine {
                         filters: Some(filters.as_slice()),
                     }
                 }
+                Command::WindowReduceRank { key, spec } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    // A spec admission would refuse is answered by the ordinary path, with its
+                    // status; this one only serves what the ordinary path would have served.
+                    if crate::engine::window_reduce_rank::validate_spec(spec).is_err() {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    let now_ms = resolve_now_ms();
+                    // THE ENTRIES ARE COPIED OUT UNDER THE GUARD and every block is read after it
+                    // drops, as a feature range read does: a ranked read decodes up to a window
+                    // bound of samples, and holding the guard across that stopped every writer.
+                    FastPathRead::WindowReduceRank {
+                        key: key.as_str(),
+                        spec,
+                        held: shard
+                            .features()
+                            .get(key.as_str())
+                            .map(|series| window_reduce_rank_read::snapshot(series, spec, now_ms))
+                            .unwrap_or_default(),
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        now_ms,
+                    }
+                }
                 Command::HashLen { key } | Command::HashFieldExists { key, .. } => {
                     if shard
                         .expires_at_ms()
@@ -2293,6 +2326,34 @@ impl TemporalEngine {
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::FeaturePoints { points },
+                })
+            }
+            FastPathRead::WindowReduceRank {
+                key,
+                spec,
+                held,
+                start_routing_bucket,
+                end_routing_bucket,
+                now_ms,
+            } => {
+                self.note_fast_read_recency(
+                    request.shard_id,
+                    block_routing_bucket(key, start_routing_bucket, end_routing_bucket),
+                );
+                let ranked = window_reduce_rank_read::serve_snapshot(
+                    &self.cache,
+                    &self.block_store,
+                    request.shard_id,
+                    key,
+                    spec,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    now_ms,
+                    held,
+                );
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::WindowReduceRanking { ranked },
                 })
             }
             FastPathRead::Answer {
@@ -3701,10 +3762,30 @@ enum FastPathRead<'a> {
         /// `Some` for the filtered read, which keeps the points whose row every filter holds for.
         filters: Option<&'a [crate::types::FeatureFilter]>,
     },
+    /// A ranked cell read: the entries it opens, taken under the guard; the samples are read after
+    /// it drops.
+    WindowReduceRank {
+        key: &'a str,
+        spec: &'a crate::types::WindowReduceRankSpec,
+        held: window_reduce_rank_read::RankSnapshot,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+        now_ms: u64,
+    },
 }
 
 impl FastPathRead<'_> {
     fn pin_feature_slabs(&self, blocks: &BlockStore) -> Option<crate::block_store::BlockStoreReadSnapshot> {
+        if let Self::WindowReduceRank { held, .. } = self {
+            let mut snapshot = None;
+            for address in held.entries() {
+                if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                    snapshot.get_or_insert_with(|| crate::block_store::BlockStoreReadSnapshot::new(blocks))
+                        .pin(address.block_slab_id());
+                }
+            }
+            return snapshot;
+        }
         let Self::FeatureRange { window, .. } = self else { return None; };
         let mut snapshot = None;
         for (_, address) in window {
@@ -3757,6 +3838,18 @@ impl FastPathRead<'_> {
                     if crate::wal_record::is_wal_resident(address.block_slab_id()) {
                         snapshot.get_or_insert_with(|| {
                             block_in_wal::ReadSnapshotGuard::retained_batch(blocks, shard, window.len())
+                        }).pin(blocks, object, None, address);
+                    }
+                }
+                snapshot
+            }
+            Self::WindowReduceRank { key, held, .. } => {
+                let mut snapshot = None;
+                let object = stable_block_object_id(shard, "feature", key);
+                for address in held.entries() {
+                    if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                        snapshot.get_or_insert_with(|| {
+                            block_in_wal::ReadSnapshotGuard::retained_batch(blocks, shard, held.entries().count())
                         }).pin(blocks, object, None, address);
                     }
                 }
