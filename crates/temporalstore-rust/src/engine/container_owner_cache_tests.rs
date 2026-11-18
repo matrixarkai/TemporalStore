@@ -153,7 +153,7 @@ fn cache_does_not_change_wire_clone_or_reloaded_membership() {
 }
 
 #[test]
-fn oversized_container_uses_exact_scan_for_shared_and_unshared_frames() {
+fn oversized_container_keeps_cached_counts_and_exact_fallback_for_omitted_frames() {
     let mut map = RecordedMap::<SetKind>::default();
     for index in 0..8300u64 {
         map.install_into(
@@ -165,9 +165,60 @@ fn oversized_container_uses_exact_scan_for_shared_and_unshared_frames() {
     let first = 0u64.to_be_bytes().to_vec();
     let alias = b"alias".to_vec();
     assert!(vacated(&map, &first));
+    assert_eq!(
+        map.ordinals
+            .shared(&ModelKey::from("object"), &address(0, 0), || {
+                panic!("the bounded capture must retain its exact count for the first frame")
+            }),
+        Some(false)
+    );
     map.install_into("object", alias.clone(), address(0, 60000));
     assert!(!vacated(&map, &first));
     assert!(!vacated(&map, &alias));
     map.replay_remove_element("object", &alias);
     assert!(vacated(&map, &first));
+    let last = 8299u64.to_be_bytes().to_vec();
+    assert!(vacated(&map, &last));
+    map.install_into("object", alias.clone(), address(8299 * 64, 60000));
+    assert!(!vacated(&map, &last));
+    assert!(!vacated(&map, &alias));
+    assert!(map.remove_element(RecordedElementRemoval::<SetKind> {
+        object_key: "object".into(),
+        element: alias,
+    }));
+    assert!(vacated(&map, &last));
+}
+
+#[test]
+fn deletion_walk_recaptures_current_members_after_exhausting_the_bounded_subset() {
+    let mut map = RecordedMap::<SetKind>::default();
+    for index in 0..8300u64 {
+        map.install_into(
+            "object",
+            index.to_be_bytes().to_vec(),
+            address(index * 64, index),
+        );
+    }
+    for index in 0..8192u64 {
+        let member = index.to_be_bytes().to_vec();
+        assert!(vacated(&map, &member));
+        assert!(map.remove_element(RecordedElementRemoval::<SetKind> {
+            object_key: "object".into(),
+            element: member,
+        }));
+    }
+    let first_remaining = 8192u64.to_be_bytes().to_vec();
+    assert!(vacated(&map, &first_remaining));
+    assert_eq!(
+        map.ordinals.shared(
+            &ModelKey::from("object"),
+            &address(8192 * 64, 8192),
+            || panic!("the exhausted summary must be rebuilt from current members"),
+        ),
+        Some(false)
+    );
+    let alias = b"alias".to_vec();
+    map.install_into("object", alias.clone(), address(8192 * 64, 60000));
+    assert!(!vacated(&map, &first_remaining));
+    assert!(!vacated(&map, &alias));
 }
