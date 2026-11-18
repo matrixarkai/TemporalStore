@@ -22,6 +22,8 @@ use crate::meta::{
 };
 #[path = "client/client_routing.rs"]
 mod client_routing;
+#[path = "client/response_json.rs"]
+mod response_json;
 #[path = "client/client_meta_sync.rs"]
 mod client_meta_sync;
 #[path = "client/client_commands.rs"]

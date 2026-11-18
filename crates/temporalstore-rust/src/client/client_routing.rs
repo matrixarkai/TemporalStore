@@ -2,11 +2,17 @@
 // Copyright 2026 MatrixArkAI
 
 //! TemporalStoreClient execute + route-resolution + backend-failure methods, split from client.rs.
+use super::response_json::{post_batch_json, post_execute_json};
 use super::*;
 
 impl TemporalStoreClient {
     pub fn execute(&self, request: ExecuteRequest) -> Result<ExecuteResponse, HttpError> {
-        post_json(&self.inner.options.proxy_addr, "/execute", &request)
+        post_execute_json(
+            &self.inner.options.proxy_addr,
+            "/execute",
+            &request,
+            HttpRequestOptions::default(),
+        )
     }
 
     pub fn execute_with_options(
@@ -22,7 +28,12 @@ impl TemporalStoreClient {
         &self,
         request: BatchExecuteRequest,
     ) -> Result<BatchExecuteResponse, HttpError> {
-        post_json(&self.inner.options.proxy_addr, "/batch_execute", &request)
+        post_batch_json(
+            &self.inner.options.proxy_addr,
+            "/batch_execute",
+            &request,
+            HttpRequestOptions::default(),
+        )
     }
 
     pub fn batch_execute_with_options(
@@ -34,7 +45,7 @@ impl TemporalStoreClient {
         let http_options = self.inner.options.http_options();
         if self.inner.options.meta_addr.is_some() {
             let server_addr = self.resolve_route(request.shard_id, false, None)?;
-            return post_json_with_options(&server_addr, "/batch_execute", &request, http_options)
+            return post_batch_json(&server_addr, "/batch_execute", &request, http_options)
                 .or_else(|err| {
                     let became_continuous = self.record_backend_failure(
                         &server_addr,
@@ -58,7 +69,7 @@ impl TemporalStoreClient {
                         return Err(ClientError::WriteOutcomeUnknown(err.to_string()));
                     }
                     let refreshed = self.resolve_route(request.shard_id, true, None)?;
-                    Ok(post_json_with_options(
+                    Ok(post_batch_json(
                         &refreshed,
                         "/batch_execute",
                         &request,
@@ -66,7 +77,7 @@ impl TemporalStoreClient {
                     )?)
                 });
         }
-        Ok(post_json_with_options(
+        Ok(post_batch_json(
             &self.inner.options.proxy_addr,
             "/batch_execute",
             &request,
@@ -164,7 +175,7 @@ impl TemporalStoreClient {
         http_options: HttpRequestOptions,
     ) -> Result<ExecuteResponse, HttpError> {
         if load_version == 0 {
-            return post_json_with_options(server_addr, "/execute", request, http_options);
+            return post_execute_json(server_addr, "/execute", request, http_options);
         }
         let checked = crate::control::CheckedExecuteRequest {
             shard_id: request.shard_id,
@@ -258,7 +269,7 @@ impl TemporalStoreClient {
         }
 
         let _ = force_primary;
-        Ok(post_json_with_options(
+        Ok(post_execute_json(
             &self.inner.options.proxy_addr,
             "/execute",
             &request,
@@ -303,7 +314,7 @@ impl TemporalStoreClient {
                 replica_read_policy,
                 preferred_location,
             )?;
-            return post_json_with_options(&server_addr, "/batch_execute", &request, http_options)
+            return post_batch_json(&server_addr, "/batch_execute", &request, http_options)
                 .or_else(|err| {
                     let became_continuous = self.record_backend_failure(
                         &server_addr,
@@ -340,7 +351,7 @@ impl TemporalStoreClient {
                         replica_read_policy,
                         preferred_location,
                     )?;
-                    let response = post_json_with_options(
+                    let response = post_batch_json(
                         &refreshed,
                         "/batch_execute",
                         &request,
@@ -355,7 +366,7 @@ impl TemporalStoreClient {
                     Ok(response)
                 });
         }
-        Ok(post_json_with_options(
+        Ok(post_batch_json(
             &self.inner.options.proxy_addr,
             "/batch_execute",
             &request,
