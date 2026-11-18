@@ -1460,19 +1460,46 @@ pub(super) fn mark_object_dirty_at_bucket(
     mark_object_dirty_at_bucket_with_policy::<true>(shard, object_key, routing_bucket);
 }
 
+/// Marks the object dirty and answers whether its existing blocks still need the push: false when
+/// the object was already marked under this bucket, in which case an earlier mark already reached
+/// every block it had.
 pub(super) fn mark_object_dirty_at_bucket_deferred(
     shard: &mut ShardState,
     object_key: &str,
     routing_bucket: u32,
-) {
-    mark_object_dirty_at_bucket_with_policy::<false>(shard, object_key, routing_bucket);
+) -> bool {
+    mark_object_dirty_at_bucket_with_policy::<false>(shard, object_key, routing_bucket)
 }
 
 fn mark_object_dirty_at_bucket_with_policy<const PROPAGATE: bool>(
     shard: &mut ShardState,
     object_key: &str,
     routing_bucket: u32,
-) {
+) -> bool {
+    // A MARK ON AN OBJECT THAT IS ALREADY MARKED HAS NOTHING LEFT TO PUSH.
+    //
+    // The push below visits every block the object has, so a write to a collection of N elements
+    // cost N bucket and block lookups to set a flag that was already set: measured with callgrind
+    // at 53% of the instructions of a run of single-element writes into sets of 10,000, and the
+    // reason a write took 140 microseconds at 100 elements and 5,500 at 100,000.
+    //
+    // It is skipped only when the object is in the dirty index under THIS bucket, and that is
+    // enough because the two ways a block stops being dirty both remove the object from the index
+    // in the same step (the dump clears the blocks of each bucket it cleared and then drains
+    // exactly those buckets; the per-object clear drops the key and then clears its blocks), and a
+    // block filed after the mark is filed dirty by the writer that files it. The first mark after
+    // either of those finds the object absent and pushes, as before.
+    //
+    // WHAT A BLOCK'S OWN BIT STILL MEANS INSIDE A MARKED OBJECT. A block filed or re-filed after the
+    // mark (a rebuild of the ownership, a compaction move) may be clean while its object is marked.
+    // That changes no answer, because the dirty index is what keeps the bucket dirty: the flag
+    // refresh combines it with the blocks, and `clear_published_object_dirty_state`, which used to
+    // assign from the blocks alone, now does too. This mark also sets the bucket dirty below.
+    //
+    // The deferred form is used only inside a batch, which pushes once at its end while it still
+    // holds the shard, so the dirty index never holds an object whose push is outstanding when a
+    // single write looks at it.
+    let already_marked = shard.dirty_objects.is_marked_at(object_key, routing_bucket);
     // Recorded WITH the bucket that was just computed for it. Every consumer that asks which
     // bucket a dirty object belongs to used to recompute this hash for itself.
     // ONE COPY OF THE CHARACTERS -- see `DirtyObjectIndex::insert_shared`. The handle is read out
@@ -1485,7 +1512,7 @@ fn mark_object_dirty_at_bucket_with_policy<const PROPAGATE: bool>(
     // PUSHED, NOT PULLED -- see `push_object_dirty_onto_its_existing_blocks`. This is the second of
     // exactly two sites that mark an object dirty, and the invariant the tests pin is that BOTH
     // push: a mark that does not reach its blocks leaves the bucket reading clean.
-    if PROPAGATE {
+    if PROPAGATE && !already_marked {
         super::push_object_dirty_onto_its_existing_blocks(shard, object_key);
     }
     let mut bucket = shard
@@ -1501,6 +1528,7 @@ fn mark_object_dirty_at_bucket_with_policy<const PROPAGATE: bool>(
     bucket.dirty_generation = bucket.dirty_generation.saturating_add(1).max(1);
     drop(bucket);
     note_bucket_flags_stale(shard, routing_bucket);
+    !already_marked
 }
 
 fn collect_rebuild_tombstones<const INDEXED: bool>(shard: &ShardState)
@@ -5403,7 +5431,11 @@ fn upsert_bucket_index_block_inner(
         element_name: None,
         log_backed: address.block_id().is_none(),
         address,
-        dirty,
+        // A BLOCK FILED INTO AN OBJECT THAT IS ALREADY MARKED DIRTY IS FILED DIRTY. The mark of a
+        // repeat write skips the walk over the object's blocks (see
+        // `mark_object_dirty_at_bucket_with_policy`), which holds only if no block of a marked
+        // object is clean; this is the door every single-block writer files through.
+        dirty: dirty || shard.dirty_objects.contains(object_key),
         deleted: false,
         // Where this upsert is about to file it, computed ten lines up.
         filed_routing_bucket: routing_bucket,
@@ -6139,7 +6171,9 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             element_name: None,
             log_backed: address.block_id().is_none(),
             address,
-            dirty,
+            // Filed dirty into an object that is already marked dirty, as `upsert_bucket_index_block_inner`
+            // does: a repeat mark skips the walk over the object's blocks.
+            dirty: dirty || shard.dirty_objects.contains(object_key),
             deleted: false,
             // Where this publish is about to file it, computed five lines up.
             filed_routing_bucket: routing_bucket,
@@ -7213,7 +7247,10 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
                 // `any(block.dirty)` alone; the keys were just dropped from the dirty set and
                 // this object's blocks were just cleared, so the two halves agree by construction.
                 .any(|block| block.dirty());
-            bucket.set_dirty(any_block_dirty);
+            // A BUCKET THAT STILL HOLDS A DIRTY OBJECT STAYS DIRTY, WHATEVER ITS BLOCKS SAY. A repeat
+            // mark of an already-marked object does not walk that object's blocks, so the dirty index
+            // is what keeps its bucket dirty; this assignment used to read the blocks alone.
+            bucket.set_dirty(any_block_dirty || shard.dirty_objects.has_bucket(routing_bucket));
             match shard_id {
                 Some(shard_id) => update_bucket_layout(shard_id, &mut bucket, &keys),
                 None => classify_bucket_layout_in_place(&mut bucket),

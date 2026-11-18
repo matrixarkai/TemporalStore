@@ -1639,11 +1639,6 @@ impl TemporalEngine {
                     config.feature_max_size,
                 );
             let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
-            let hash_was_dirty = match &command {
-                Command::HashMultiSet { key, .. }
-                | Command::HashMultiSetIfTimestampOlder { key, .. } => shard.dirty_objects.contains(key),
-                _ => false,
-            };
             let (outcome, returned_post_write, hash_index_filed) = match command {
                 Command::HashMultiSet { key, entries } if reuse_consumed_metadata => {
                     let (outcome, metadata, filed) =
@@ -1850,12 +1845,10 @@ impl TemporalEngine {
                         let routing_bucket = shared_row_routing_bucket.unwrap_or_else(|| {
                             block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
                         });
-                        crate::engine::storage_bucket_internals::mark_object_dirty_at_bucket_deferred(
+                        // An object that was already marked had its blocks pushed by that mark.
+                        if crate::engine::storage_bucket_internals::mark_object_dirty_at_bucket_deferred(
                             shard, object_key, routing_bucket,
-                        );
-                        // Keep an earlier cold mark pending even if a later write
-                        // to this key already sees it in the dirty-object index.
-                        if hash_index_filed.is_none() || !hash_was_dirty {
+                        ) {
                             dirty_propagation_keys.insert(object_key.to_string());
                         }
                     }
