@@ -376,6 +376,8 @@ jobs:
               wal::registration_records::tests::uniform_expectations_stay_inline_and_conflicts_release_their_storage \
               engine::block_in_wal::physical::registration_summary_tests::summaries_combine_domains_and_follow_replacement_retirement_and_clear \
               engine::block_in_wal::physical::registration_summary_tests::summary_queries_complete_while_both_locator_registries_are_locked \
+              engine::storage_lifecycle_methods::planning_order_tests::claim_ranks_match_manifest_augmented_summaries \
+              engine::storage_lifecycle_methods::lifecycle_report_work_tests::execution_plan_uses_dirty_metadata_without_block_summaries \
               wal::read_retention_tests::acquiring_and_releasing_a_read_lease_does_not_wait_for_wal_io \
               block_store::read_retention::tests::nested_readers_protect_only_named_slabs_until_last_release \
               block_store::read_retention::tests::read_pins_survive_quarantine_plans_and_restore_before_purge \

@@ -158,6 +158,36 @@ fn operational_and_detailed_lifecycle_both_dump_invalidate_warm_and_recover() {
 }
 
 #[test]
+fn execution_plan_uses_dirty_metadata_without_block_summaries() {
+    for count in [32, 512] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path());
+        seed(&engine, count);
+        for threshold in [u64::MAX, 1] {
+            let request = StorageLifecycleRequest {
+                shard_id: 1,
+                min_undumped_wal_records: threshold,
+                min_undumped_wal_bytes: u64::MAX,
+                max_dump_buckets_per_round: 4,
+                ..Default::default()
+            };
+            let (execution, short_builds) = crate::engine::state::measure_block_identity_builds_for_test(|| {
+                engine.storage_lifecycle_plan_with_report_details(request.clone(), false)
+            });
+            let (mut detailed, full_builds) = crate::engine::state::measure_block_identity_builds_for_test(|| {
+                engine.storage_lifecycle_plan(request)
+            });
+            assert!(!execution.dirty_buckets.is_empty());
+            assert!(execution.bucket_summaries.is_none());
+            assert!(detailed.bucket_summaries.is_some());
+            detailed.bucket_summaries = None;
+            assert_eq!(execution, detailed);
+            assert!(full_builds > short_builds, "full={full_builds} execution={short_builds}");
+        }
+    }
+}
+
+#[test]
 fn operational_dump_keeps_follower_and_snapshot_index_gc_fences() {
     for (follower_sequence, snapshot_sequence) in [(1, 7), (7, 1)] {
         let dir = tempfile::tempdir().unwrap();

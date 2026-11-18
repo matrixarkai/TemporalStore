@@ -214,13 +214,35 @@ fn oldest_dirty_buckets(
     summaries: &[BucketStorageSummary],
     claims: &BTreeMap<u32, (u64, u64)>,
 ) -> Vec<u32> {
-    let mut ranked = Vec::with_capacity(summaries.len().min(claims.len()));
-    for summary in summaries {
+    rank_dirty_buckets(summaries.iter().map(|summary| {
+        (summary.routing_bucket, summary.last_dump_sequence)
+    }), claims)
+}
+
+fn oldest_dirty_bucket_claims(
+    claims: &BTreeMap<u32, (u64, u64)>,
+    manifest: Option<&BucketDumpManifest>,
+) -> Vec<u32> {
+    let covered = manifest.map(|manifest| {
+        manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>()
+    }).unwrap_or_default();
+    let sequence = manifest.map_or(0, |manifest| manifest.index_log_sequence);
+    rank_dirty_buckets(claims.keys().map(|&bucket| {
+        (bucket, if covered.contains(&bucket) { sequence } else { 0 })
+    }), claims)
+}
+
+fn rank_dirty_buckets(
+    candidates: impl Iterator<Item = (u32, u64)>,
+    claims: &BTreeMap<u32, (u64, u64)>,
+) -> Vec<u32> {
+    let mut ranked = Vec::with_capacity(candidates.size_hint().0.min(claims.len()));
+    for (bucket, last_dump_sequence) in candidates {
         #[cfg(test)]
         DUMP_RANK_LOOKUPS.with(|count| count.set(count.get() + 1));
-        if let Some(&(wal, _)) = claims.get(&summary.routing_bucket) {
+        if let Some(&(wal, _)) = claims.get(&bucket) {
             let oldest = if wal == 0 { u64::MAX } else { wal };
-            ranked.push((oldest, summary.last_dump_sequence, summary.routing_bucket));
+            ranked.push((oldest, last_dump_sequence, bucket));
         }
     }
     // Bucket ID is the final key, so equal ranks have identical output IDs. No stable sort
@@ -259,6 +281,14 @@ mod planning_order_tests;
 
 impl TemporalEngine {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
+        self.storage_lifecycle_plan_with_report_details(request, true)
+    }
+
+    pub(super) fn storage_lifecycle_plan_with_report_details(
+        &self,
+        request: StorageLifecycleRequest,
+        detailed_report: bool,
+    ) -> StorageLifecyclePlan {
         LIFECYCLE_PLAN_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // DO NOT WALK THE SHARD TO FIND OUT THERE IS NOTHING TO DO.
         //
@@ -291,17 +321,22 @@ impl TemporalEngine {
         // were materialised at all -- with no summaries the filter selects nothing either way.
         // THE ITEM COUNTS COME OUT OF THE SAME LOCK ACQUISITION as the dirty state. Taking a
         // second read lock to answer one ratio would be two acquisitions for one decision.
-        let (shard_has_dirty_objects, dirty_claims, durable_items, live_items) = self
+        let (shard_has_dirty_objects, dirty_claims, durable_items, live_items, claims_are_summarized) = self
             .shards
             .read()
             .expect("engine lock poisoned")
             .get(&request.shard_id)
             .map(|shard| {
+                let claims = crate::engine::storage_reporting::dirty_bucket_claims(shard);
+                let claims_are_summarized = detailed_report || claims.keys().all(|bucket| {
+                    shard.bucket_index.bucket_map.get(bucket).is_some_and(|node| node.dirty())
+                });
                 (
                     !shard.dirty_objects.is_empty(),
-                    crate::engine::storage_reporting::dirty_bucket_claims(shard),
+                    claims,
                     shard.durable_items(),
                     shard.live_item_count(),
+                    claims_are_summarized,
                 )
             })
             .unwrap_or_default();
@@ -319,7 +354,10 @@ impl TemporalEngine {
             > 0
             && live_items > 0
             && item_amplification_ppm >= request.item_amplification_full_dump_ppm;
-        let mut bucket_summaries: Option<Vec<BucketStorageSummary>> = shard_has_dirty_objects
+        // Checked dirty nodes always appear in detailed summaries, so internal execution
+        // can rank their claims without reconstructing every live block's report.
+        let mut bucket_summaries: Option<Vec<BucketStorageSummary>> = (shard_has_dirty_objects
+            && (detailed_report || !claims_are_summarized))
             .then(|| self.bucket_storage_summaries(request.shard_id));
         // Select the least-recently-dumped (most overdue) dirty buckets first, matching the
         // WAL-reclaim routine's oldest-first-dirty ordering (dirty buckets are consumed
@@ -350,9 +388,7 @@ impl TemporalEngine {
         // Left as it is rather than repointed at the node: this is a TIEBREAKER behind
         // `first_dirty_rank` below, which is the key that decides the order for every bucket that
         // can name its oldest undumped write.
-        // Empty EXACTLY when the dirty index is empty, which is the case that skipped the walk
-        // above -- so this selects the same buckets it always did, without a fallback that could
-        // mistake "did not look" for "looked and found none".
+        // Execution plans may leave these unmeasured and rank the checked claims below.
         let dirty_bucket_source: &[BucketStorageSummary] = bucket_summaries.as_deref().unwrap_or(&[]);
         // THE BUCKET'S OWN FLAG DECIDES WHETHER IT IS DUMPED. The error this can make is the SAFE
         // one: a bucket reading dirty that holds nothing is a bucket dumped for no reason, where
@@ -376,9 +412,13 @@ impl TemporalEngine {
         // Read off the dirty claims the plan already took under its one lock acquisition. This was
         // a second lock and a `HashMap` over every bucket, consulted only for the dirty summaries
         // selected above -- which are exactly the buckets `dirty_claims` names.
-        let dirty_buckets = oldest_dirty_buckets(dirty_bucket_source, &dirty_claims);
         let latest_bucket_dump_manifest =
             latest_bucket_dump_manifest_shared_at(&self.index_dir, request.shard_id);
+        let dirty_buckets = if shard_has_dirty_objects && bucket_summaries.is_none() {
+            oldest_dirty_bucket_claims(&dirty_claims, latest_bucket_dump_manifest.as_deref())
+        } else {
+            oldest_dirty_buckets(dirty_bucket_source, &dirty_claims)
+        };
         let latest_dump_wal_sequence = latest_bucket_dump_manifest
             .as_ref()
             .map(|manifest| manifest.wal_sequence)
@@ -1004,7 +1044,7 @@ impl TemporalEngine {
         request: StorageLifecycleRequest,
         detailed_report: bool,
     ) -> StorageLifecycleReport {
-        let plan = self.storage_lifecycle_plan(request.clone());
+        let plan = self.storage_lifecycle_plan_with_report_details(request.clone(), detailed_report);
         let dump_manifest = if plan.selected_dump_buckets.is_empty() {
             None
         } else {

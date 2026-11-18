@@ -95,3 +95,24 @@ fn dump_rank_lookups_are_linear_in_candidate_count() {
         eprintln!("DUMP_ORDER candidates={count} selected={} lookups={lookups} previous_lookups={previous_lookups}", actual.len());
     }
 }
+
+#[test]
+fn claim_ranks_match_manifest_augmented_summaries() {
+    for count in [0, 1, 31, 257, 4096] {
+        for seed in [1, 7, 0x9e3779b97f4a7c15] {
+            let (mut summaries, claims) = fixture(count, seed);
+            for summary in &mut summaries {
+                summary.last_dump_sequence = 0;
+            }
+            assert_eq!(oldest_dirty_bucket_claims(&claims, None), oldest_dirty_buckets(&summaries, &claims));
+            let manifest = BucketDumpManifest {
+                index_log_sequence: 19,
+                bucket_ids: summaries.iter().filter(|summary| summary.routing_bucket % 3 == 0)
+                    .map(|summary| summary.routing_bucket).collect(),
+                ..Default::default()
+            };
+            let summaries = storage_reporting::merge_last_dump_sequence(summaries, &manifest);
+            assert_eq!(oldest_dirty_bucket_claims(&claims, Some(&manifest)), oldest_dirty_buckets(&summaries, &claims));
+        }
+    }
+}
