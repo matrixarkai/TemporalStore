@@ -386,3 +386,382 @@ fn the_window_reduce_amplification_table() {
     ring_axis();
     read_and_maintenance_axis();
 }
+
+/// Allocations spent by `op`, or 0 when the counting allocator is not installed (the column is
+/// then printed as `n/a` by the caller, which asks `allocations_counted()`).
+#[cfg(feature = "alloc-probe")]
+fn allocations_of(op: impl FnOnce()) -> u64 {
+    let probe = crate::alloc_probe::Probe::start();
+    op();
+    probe.stop().allocs
+}
+
+#[cfg(not(feature = "alloc-probe"))]
+fn allocations_of(op: impl FnOnce()) -> u64 {
+    op();
+    0
+}
+
+fn allocations_counted() -> bool {
+    cfg!(feature = "alloc-probe")
+}
+
+/// A sample of `total` cells, built by merge writes of at most 1,024 cells each (the most a
+/// request may carry), over disjoint members.
+fn grow_sample(engine: &TemporalEngine, key: &str, timestamp_ms: u64, total: usize) {
+    let mut start = 0usize;
+    while start < total {
+        let count = (total - start).min(1024);
+        let members: Vec<Cell> = (start as u64..(start + count) as u64)
+            .map(|m| Cell { member: Member::U64(m), labels: vec![m % 7], lanes: vec![(m % 13) as i64 + 1, (m % 29) as i64 + 1] })
+            .collect();
+        merge(engine, key, timestamp_ms, encode_value(&header(), &members).unwrap(), None);
+        start += count;
+    }
+}
+
+/// One cell merged into an existing sample of 64, 1,024 and 4,096 cells: the durable bytes a write
+/// of one cell costs, and its allocations, as the sample it lands in grows.
+fn one_cell_axis() {
+    for cell_count in [64usize, 1024, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path(), None);
+        let key = stored_key(1);
+        grow_sample(&engine, &key, 100, cell_count);
+        let request = |salt: u64| value_of(1, salt);
+        let one = request(2).len() as u64;
+        // Ten writes of one cell each, the request encoded before the measurement starts.
+        let requests: Vec<Vec<u8>> = (0..10u64).map(|i| request(2 + i)).collect();
+        let before = Bytes::now(&engine, dir.path());
+        let allocs = allocations_of(|| {
+            for value in requests {
+                merge(&engine, &key, 100, value, None);
+            }
+        });
+        let d = Bytes::now(&engine, dir.path()).since(before);
+        let per = |x: u64| x as f64 / 10.0;
+        let allocs = if allocations_counted() { format!("{:.1}", allocs as f64 / 10.0) } else { "n/a".to_string() };
+        eprintln!(
+            "AMP one_cell_write       sample_cells={cell_count:<5} payload={:>5.0} wal={:>7.0} index={:>6.0} block={:>7.0} written={:>7.0} allocs={allocs}",
+            per(one),
+            per(d.wal_w),
+            per(d.idx_w),
+            per(d.blk_w),
+            per(d.written()),
+        );
+    }
+}
+
+/// A warm ranked read over 16, 64 and 256 samples of 64 cells: its allocations.
+fn rank_allocations_axis() {
+    for samples in [16usize, 64, 256] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path(), None);
+        let key = stored_key(1);
+        seed_samples(&engine, &key, samples, 64);
+        let read = || {
+            let response = exec(&engine, Command::WindowReduceRank { key: key.clone(), spec: rank_spec() });
+            assert!(response.status.ok);
+        };
+        read();
+        let allocs = allocations_of(|| {
+            for _ in 0..5 {
+                read();
+            }
+        });
+        let allocs = if allocations_counted() { format!("{:.1}", allocs as f64 / 5.0) } else { "n/a".to_string() };
+        eprintln!("AMP rank_allocations     samples={samples:<4} cells=64    allocs={allocs}");
+    }
+}
+
+#[test]
+#[ignore = "measurement: run with --ignored --nocapture (add --features alloc-probe for the allocation columns)"]
+fn the_window_reduce_one_cell_write_table() {
+    one_cell_axis();
+    rank_allocations_axis();
+}
+
+// ------------------------------------------------------------------------------------------
+// Latency
+// ------------------------------------------------------------------------------------------
+
+/// Microseconds of each of `n` runs of `op`, after two untimed runs.
+fn micros(n: usize, mut op: impl FnMut(usize)) -> Vec<f64> {
+    op(usize::MAX - 1);
+    op(usize::MAX);
+    (0..n)
+        .map(|i| {
+            let started = std::time::Instant::now();
+            op(i);
+            started.elapsed().as_nanos() as f64 / 1_000.0
+        })
+        .collect()
+}
+
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    let at = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted[at.min(sorted.len() - 1)]
+}
+
+fn latency_row(name: &str, params: &str, mut runs: Vec<f64>) {
+    runs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    eprintln!(
+        "LAT {name:<18} {params:<34} n={:<4} p50={:>10.1}us p99={:>10.1}us",
+        runs.len(),
+        percentile(&runs, 0.5),
+        percentile(&runs, 0.99)
+    );
+}
+
+/// `retained` samples under one key: the newest, at `100 * retained`, holds `cells` cells; the
+/// older ones hold 4 each.
+fn key_with_samples(engine: &TemporalEngine, key: &str, retained: usize, cells: usize) {
+    if retained > 1 {
+        seed_samples(engine, key, retained - 1, 4);
+    }
+    grow_sample(engine, key, 100 * retained as u64, cells);
+}
+
+fn latency_merge() {
+    for retained in [1usize, 64, 256] {
+        for cells in [64usize, 1024, 4096] {
+            let dir = tempfile::tempdir().unwrap();
+            let engine = open(dir.path(), None);
+            let key = stored_key(1);
+            key_with_samples(&engine, &key, retained, cells);
+            let newest = 100 * retained as u64;
+            let requests: Vec<Vec<u8>> = (0..202u64).map(|i| value_of(1, 2 + i)).collect();
+            let runs = micros(200, |i| {
+                merge(&engine, &key, newest, requests[i.min(201)].clone(), None);
+            });
+            latency_row("merge_1_cell", &format!("retained={retained} sample_cells={cells}"), runs);
+        }
+    }
+    for cells in [64usize, 1024] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path(), None);
+        let key = stored_key(1);
+        grow_sample(&engine, &key, 100, cells);
+        let requests: Vec<Vec<u8>> = (0..102u64).map(|i| value_of(cells, 2 + i)).collect();
+        let runs = micros(100, |i| merge(&engine, &key, 100, requests[i.min(101)].clone(), None));
+        latency_row("merge_all_cells", &format!("retained=1 sample_cells={cells}"), runs);
+    }
+}
+
+fn latency_reads() {
+    for cells in [64usize, 1024, 4096] {
+        for samples in [16usize, 64, 256] {
+            let dir = tempfile::tempdir().unwrap();
+            let engine = open(dir.path(), None);
+            let key = stored_key(1);
+            seed_samples(&engine, &key, samples, cells);
+            let n = if cells * samples > 200_000 { 20 } else { 100 };
+            let runs = micros(n, |_| {
+                let response = exec(&engine, Command::WindowReduceRank { key: key.clone(), spec: rank_spec() });
+                assert!(response.status.ok);
+            });
+            latency_row("rank_read", &format!("samples={samples} cells={cells}"), runs);
+        }
+    }
+    for cells in [64usize, 1024] {
+        for samples in [16usize, 64] {
+            let dir = tempfile::tempdir().unwrap();
+            let engine = open(dir.path(), None);
+            let keys: Vec<String> = (0..8u64).map(|k| stored_key(k + 1)).collect();
+            for key in &keys {
+                seed_samples(&engine, key, samples, cells);
+            }
+            let runs = micros(50, |_| {
+                let response = exec(&engine, Command::WindowReduceFanInRank { keys: keys.clone(), spec: rank_spec() });
+                assert!(response.status.ok);
+            });
+            latency_row("fan_in_8_keys", &format!("samples={samples} cells={cells}"), runs);
+            let queries: Vec<crate::types::WindowReduceRankBatchItem> = keys
+                .iter()
+                .map(|key| crate::types::WindowReduceRankBatchItem { key: key.clone(), spec: rank_spec() })
+                .collect();
+            let runs = micros(50, |_| {
+                let response = exec(&engine, Command::WindowReduceRankBatch { queries: queries.clone() });
+                assert!(response.status.ok);
+            });
+            latency_row("batch_8_reads", &format!("samples={samples} cells={cells}"), runs);
+        }
+    }
+}
+
+/// Maintenance and lifecycle: each run is on a key of its own, so none runs on a key a previous
+/// run already changed.
+fn latency_maintenance() {
+    const KEYS: usize = 20;
+    for (samples, cells) in [(64usize, 64usize), (64, 1024), (256, 64)] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path(), None);
+        for k in 0..(3 * KEYS + 6) as u64 {
+            seed_samples(&engine, &stored_key(k + 1), samples, cells);
+        }
+        let span = 100 * (samples as u64 + 1);
+        let runs = micros(KEYS, |i| {
+            let key = stored_key(i.min(KEYS + 1) as u64 + 1);
+            let response = exec(
+                &engine,
+                Command::WindowReduceRollup {
+                    key,
+                    spec: WindowReduceRollupSpec {
+                        older_than_ms: span,
+                        bucket_ms: span / 8,
+                        cap: None,
+                        anchor: Default::default(),
+                        coarser_tiers: Vec::new(),
+                        truncate: None,
+                    },
+                },
+            );
+            assert!(response.status.ok, "{:?}", response.status);
+        });
+        latency_row("rollup_8_buckets", &format!("samples={samples} cells={cells}"), runs);
+        let runs = micros(KEYS, |i| {
+            let key = stored_key((KEYS + 2 + i.min(KEYS + 1)) as u64 + 1);
+            let response = exec(
+                &engine,
+                Command::WindowReduceRemove {
+                    key,
+                    spec: WindowReduceRemoveSpec {
+                        start_ms: None,
+                        end_ms: None,
+                        members: CellMemberFilter {
+                            include: Some((0..(cells as u64 / 2)).map(CellMemberId::U64).collect()),
+                            exclude: Vec::new(),
+                        },
+                        filters: Vec::new(),
+                    },
+                },
+            );
+            assert!(response.status.ok, "{:?}", response.status);
+        });
+        latency_row("remove_half_cells", &format!("samples={samples} cells={cells}"), runs);
+        let runs = micros(KEYS, |i| {
+            let key = stored_key((2 * KEYS + 4 + i.min(KEYS + 1)) as u64 + 1);
+            let response = exec(&engine, Command::FeatureDelete { key });
+            assert!(response.status.ok, "{:?}", response.status);
+        });
+        latency_row("delete_key", &format!("samples={samples} cells={cells}"), runs);
+    }
+    for (keys, samples, cells) in [(8usize, 64usize, 64usize), (8, 64, 1024)] {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let engine = open(dir.path(), None);
+            for k in 0..keys as u64 {
+                seed_samples(&engine, &stored_key(k + 1), samples, cells);
+            }
+        }
+        let runs = micros(5, |_| {
+            let reopened = open(dir.path(), None);
+            drop(reopened);
+        });
+        latency_row("load", &format!("keys={keys} samples={samples} cells={cells}"), runs);
+    }
+}
+
+#[test]
+#[ignore = "measurement: run in release with --ignored --nocapture"]
+fn the_window_reduce_latency_table() {
+    latency_merge();
+    latency_reads();
+    latency_maintenance();
+}
+
+// ------------------------------------------------------------------------------------------
+// Throughput
+// ------------------------------------------------------------------------------------------
+
+/// Operations per second of `threads` threads each running `op(thread, iteration)` in a loop for
+/// `seconds`, on the one engine. `op` returns when the operation has completed.
+fn throughput(threads: usize, seconds: f64, op: &(dyn Fn(usize, usize) + Sync)) -> f64 {
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let done = std::sync::atomic::AtomicU64::new(0);
+    let started = std::time::Instant::now();
+    std::thread::scope(|scope| {
+        for t in 0..threads {
+            let (stop, done) = (&stop, &done);
+            scope.spawn(move || {
+                let mut i = 0usize;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    op(t, i);
+                    done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    i += 1;
+                }
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_secs_f64(seconds));
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    done.load(std::sync::atomic::Ordering::Relaxed) as f64 / started.elapsed().as_secs_f64()
+}
+
+fn throughput_row(name: &str, params: &str, per_thread_keys: bool, rates: Vec<(usize, f64)>) {
+    let cells: Vec<String> = rates.iter().map(|(c, r)| format!("c{c}={r:>9.0}/s")).collect();
+    eprintln!(
+        "QPS {name:<18} {params:<34} keys={} {}",
+        if per_thread_keys { "per-thread" } else { "shared" },
+        cells.join(" ")
+    );
+}
+
+fn throughput_writes() {
+    for (cells, retained) in [(64usize, 1usize), (1024, 1), (1024, 64)] {
+        for per_thread_keys in [true, false] {
+            let mut rates = Vec::new();
+            for threads in [1usize, 4, 16] {
+                let dir = tempfile::tempdir().unwrap();
+                let engine = open(dir.path(), None);
+                let keys: Vec<String> = (0..threads as u64).map(|t| stored_key(t + 1)).collect();
+                for t in 0..threads {
+                    let key = if per_thread_keys { &keys[t] } else { &keys[0] };
+                    if per_thread_keys || t == 0 {
+                        key_with_samples(&engine, key, retained, cells);
+                    }
+                }
+                let newest = 100 * retained as u64;
+                let value = value_of(1, 2);
+                let rate = throughput(threads, 2.0, &|t, _| {
+                    let key = if per_thread_keys { &keys[t] } else { &keys[0] };
+                    merge(&engine, key, newest, value.clone(), None);
+                });
+                rates.push((threads, rate));
+            }
+            throughput_row("write_1_cell", &format!("retained={retained} sample_cells={cells}"), per_thread_keys, rates);
+        }
+    }
+}
+
+fn throughput_reads() {
+    for (cells, samples) in [(64usize, 16usize), (1024, 16), (64, 256)] {
+        for per_thread_keys in [true, false] {
+            let mut rates = Vec::new();
+            for threads in [1usize, 4, 16] {
+                let dir = tempfile::tempdir().unwrap();
+                let engine = open(dir.path(), None);
+                let keys: Vec<String> = (0..threads as u64).map(|t| stored_key(t + 1)).collect();
+                for t in 0..threads {
+                    if per_thread_keys || t == 0 {
+                        seed_samples(&engine, &keys[if per_thread_keys { t } else { 0 }], samples, cells);
+                    }
+                }
+                let rate = throughput(threads, 2.0, &|t, _| {
+                    let key = if per_thread_keys { &keys[t] } else { &keys[0] };
+                    let response = exec(&engine, Command::WindowReduceRank { key: key.clone(), spec: rank_spec() });
+                    assert!(response.status.ok);
+                });
+                rates.push((threads, rate));
+            }
+            throughput_row("rank_read", &format!("samples={samples} cells={cells}"), per_thread_keys, rates);
+        }
+    }
+}
+
+#[test]
+#[ignore = "measurement: run in release with --ignored --nocapture"]
+fn the_window_reduce_throughput_table() {
+    throughput_writes();
+    throughput_reads();
+}
