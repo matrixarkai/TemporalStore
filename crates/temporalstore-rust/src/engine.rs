@@ -1025,6 +1025,9 @@ impl TemporalEngine {
         async_storage_override: Option<bool>,
         mut carried_blocks: Vec<crate::wal::StagedBlock>,
     ) -> ExecuteResponse {
+        // The flags every write asks about are read from the environment once for this operation:
+        // see `env_flag::OperationEnv`.
+        let _env = crate::env_flag::OperationEnv::begin();
         // Charged before anything else, including the read-only fast path -- a read served without
         // taking the shard lock still costs the shard, and a limit the cheapest reads slip past is
         // not a limit.
@@ -1895,7 +1898,13 @@ impl TemporalEngine {
     fn execute_read_only_fast_path(&self, request: &ExecuteRequest) -> Option<ExecuteResponse> {
         let read_command = matches!(
             request.command,
-            Command::StringGet { .. } | Command::HashGetAll { .. }
+            Command::StringGet { .. }
+                | Command::HashGetAll { .. }
+                | Command::StringLen { .. }
+                | Command::StringGetRange { .. }
+                | Command::HashGet { .. }
+                | Command::HashLen { .. }
+                | Command::HashFieldExists { .. }
         );
         if !read_command {
             return None;
@@ -1974,6 +1983,84 @@ impl TemporalEngine {
                                     .collect::<Vec<_>>()
                             })
                             .unwrap_or_default(),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                Command::StringLen { key } | Command::StringGetRange { key, .. } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::StringShared {
+                        key: key.as_str(),
+                        address: shard.string_address(key.as_str()),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        range: match &request.command {
+                            Command::StringGetRange { start, end, .. } => Some((*start, *end)),
+                            _ => None,
+                        },
+                    }
+                }
+                Command::HashGet { key, field } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::HashField {
+                        key: key.as_str(),
+                        field: field.as_str(),
+                        address: shard
+                            .bucket_index
+                            .hashes
+                            .get(key)
+                            .and_then(|fields| fields.get(field))
+                            .cloned(),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                Command::HashLen { key } | Command::HashFieldExists { key, .. } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    let fields = shard.bucket_index.hashes.get(key);
+                    // ANSWERED UNDER THE GUARD: both are one lookup in the field map, with no block
+                    // to read afterwards.
+                    let value = match &request.command {
+                        Command::HashFieldExists { field, .. } => {
+                            i64::from(fields.is_some_and(|fields| fields.contains_key(field)))
+                        }
+                        _ => fields.map(|fields| fields.len()).unwrap_or(0) as i64,
+                    };
+                    FastPathRead::Answer {
+                        value,
                         routing_bucket: block_routing_bucket(
                             key,
                             start_routing_bucket,
@@ -2068,6 +2155,73 @@ impl TemporalEngine {
                             BlockIdentity::of(request.shard_id, "string", key, None),
                             Some(routing_bucket),
                         ),
+                    },
+                })
+            }
+            FastPathRead::Answer {
+                value,
+                routing_bucket,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Integer { value },
+                })
+            }
+            FastPathRead::StringShared {
+                key,
+                address,
+                routing_bucket,
+                range,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                // The shard has already said whether the key is there; an absent key reads nothing.
+                let bytes = address.and_then(|address| {
+                    read_block_shared(
+                        &self.cache,
+                        &self.block_store,
+                        request.shard_id,
+                        &address,
+                        BlockIdentity::of(request.shard_id, "string", key, None),
+                        Some(routing_bucket),
+                    )
+                });
+                let response = match range {
+                    None => CommandResponse::Integer {
+                        value: bytes.map_or(0, |bytes| bytes.len() as i64),
+                    },
+                    Some((start, end)) => CommandResponse::Bytes {
+                        value: bytes.map(|bytes| {
+                            let (from, to) = crate::redis::normalize_range(start, end, bytes.len());
+                            bytes[from..to].to_vec()
+                        }),
+                    },
+                };
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response,
+                })
+            }
+            FastPathRead::HashField {
+                key,
+                field,
+                address,
+                routing_bucket,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Bytes {
+                        value: address.and_then(|address| {
+                            read_block_bytes(
+                                &self.cache,
+                                &self.block_store,
+                                request.shard_id,
+                                &address,
+                                BlockIdentity::of(request.shard_id, "hash", key, Some(field)),
+                                Some(routing_bucket),
+                            )
+                        }),
                     },
                 })
             }
@@ -2904,14 +3058,9 @@ pub(crate) fn timestamp_range_bounds(
 /// themselves and gate their own half of the same decision; a copy that drifted would leave one
 /// subsystem in bulk mode and the rest on the live path.
 pub(crate) fn bulk_ingest_mode() -> bool {
-    matches!(
-        std::env::var("MATRIXARK_BULK_INGEST")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    crate::env_flag::cached_flag(crate::env_flag::Slot::BulkIngest, || {
+        crate::env_flag::is_on_word(std::env::var("MATRIXARK_BULK_INGEST").ok().as_deref())
+    })
 }
 
 /// Whether the per-command model-map -> bucket-index promotion and first-index
@@ -3392,6 +3541,23 @@ enum FastPathRead<'a> {
         fields: Vec<(crate::engine::hash_field_map::FieldName, ElementEntry)>,
         routing_bucket: u32,
     },
+    /// A string's length, or a range of it: read as the cache's shared bytes, so only the answer
+    /// is copied.
+    StringShared {
+        key: &'a str,
+        address: Option<ElementEntry>,
+        routing_bucket: u32,
+        range: Option<(i64, i64)>,
+    },
+    /// One hash field's value: the field's address is taken under the guard, the block read after.
+    HashField {
+        key: &'a str,
+        field: &'a str,
+        address: Option<ElementEntry>,
+        routing_bucket: u32,
+    },
+    /// An integer answered from the index alone, with nothing to read afterwards.
+    Answer { value: i64, routing_bucket: u32 },
 }
 
 /// What the served-index encode did while this thread held the shard-table WRITE guard.

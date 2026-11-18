@@ -6,6 +6,9 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
+#[path = "prefetch_ranking_tests.rs"]
+mod prefetch_ranking_tests;
+
 #[path = "scoped_retrieval_tests.rs"]
 mod scoped_retrieval_tests;
 
