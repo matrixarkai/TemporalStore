@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use super::ModelKey;
+use super::{BlockOwners, ElementEntry, ModelKey, OwnershipCache};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -77,7 +77,7 @@ impl OrdinalSummary {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct OrdinalCache(Mutex<HashMap<ModelKey, OrdinalSummary>>);
+pub(super) struct OrdinalCache(Mutex<HashMap<ModelKey, OrdinalSummary>>, OwnershipCache);
 
 impl OrdinalCache {
     pub(super) fn highest(
@@ -105,13 +105,37 @@ impl OrdinalCache {
     }
 
     pub(super) fn contains(&mut self, key: &str) -> bool {
-        self.0
-            .get_mut()
-            .expect("ordinal cache poisoned")
-            .contains_key(key)
+        self.1.contains(key)
+            || self
+                .0
+                .get_mut()
+                .expect("ordinal cache poisoned")
+                .contains_key(key)
     }
 
-    pub(super) fn replace(&mut self, key: &str, previous: Option<u64>, next: Option<u64>) {
+    pub(super) fn shared(
+        &self,
+        key: &ModelKey,
+        address: &ElementEntry,
+        scan: impl FnOnce() -> BlockOwners,
+    ) -> Option<bool> {
+        self.1
+            .shared(key, super::super::live_block_key(address), scan)
+    }
+
+    pub(super) fn replace(
+        &mut self,
+        key: &str,
+        previous: Option<&ElementEntry>,
+        next: Option<&ElementEntry>,
+    ) {
+        self.1.replace(
+            key,
+            previous.map(super::super::live_block_key),
+            next.map(super::super::live_block_key),
+        );
+        let previous = previous.and_then(ElementEntry::block_id);
+        let next = next.and_then(ElementEntry::block_id);
         if previous == next {
             return;
         }
@@ -128,6 +152,7 @@ impl OrdinalCache {
     }
 
     pub(super) fn invalidate(&mut self, key: &str) {
+        self.1.invalidate(key);
         self.0
             .get_mut()
             .expect("ordinal cache poisoned")
@@ -135,10 +160,12 @@ impl OrdinalCache {
     }
 
     pub(super) fn clear(&mut self) {
+        self.1.clear();
         self.0.get_mut().expect("ordinal cache poisoned").clear();
     }
 
     pub(super) fn adopt_key(&mut self, key: &ModelKey) {
+        self.1.adopt_key(key);
         let entries = self.0.get_mut().expect("ordinal cache poisoned");
         if let Some(summary) = entries.remove(key.as_ref()) {
             entries.insert(key.clone(), summary);
