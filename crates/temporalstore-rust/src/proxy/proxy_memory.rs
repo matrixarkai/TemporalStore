@@ -369,25 +369,32 @@ fn memory_write_ack(response: &BatchExecuteResponse, expected: usize) -> Result<
     Ok(())
 }
 
-fn memory_delete_cleanup_commands(tenant: u64, record: &MemoryRecord, now: u64) -> Vec<Command> {
-    let mut commands = vec![
-        memory_node_lookup_remove(tenant, memory_record_lookup_hash(tenant, record)),
-        Command::HashSet {
-            key: memory_history_key(tenant, &record.id), field: history_field(now, 0),
-            value: MemoryHistoryEntry {
-                id: record.id.clone(), event: "DELETE".into(), at_ms: now,
-                memory: None, metadata: None, feedback: None, feedback_reason: None,
-            }.encode(),
-        },
-        Command::SetRemove {
-            key: memory_order_key(tenant), member: memory_order_member(record.updated_at_ms, &record.id),
-        },
-        Command::ZSetCountAdjust {
-            key: memory_identity_key(tenant), member: MEMORY_TOTAL_MEMBER.to_vec(), increment: -1,
-        },
-    ];
-    commands.extend(memory_identity_members(record).into_iter().map(|member| Command::ZSetCountAdjust {
-        key: memory_identity_key(tenant), member, increment: -1,
+fn memory_delete_cleanup_commands(tenant: u64, records: &[MemoryRecord], now: u64) -> Vec<Command> {
+    let mut commands = Vec::with_capacity(records.len() * 3);
+    let mut decrements = BTreeMap::<Vec<u8>, i64>::new();
+    for record in records {
+        commands.extend([
+            memory_node_lookup_remove(tenant, memory_record_lookup_hash(tenant, record)),
+            Command::HashSet {
+                key: memory_history_key(tenant, &record.id), field: history_field(now, 0),
+                value: MemoryHistoryEntry {
+                    id: record.id.clone(), event: "DELETE".into(), at_ms: now,
+                    memory: None, metadata: None, feedback: None, feedback_reason: None,
+                }.encode(),
+            },
+            Command::SetRemove {
+                key: memory_order_key(tenant), member: memory_order_member(record.updated_at_ms, &record.id),
+            },
+        ]);
+        *decrements.entry(MEMORY_TOTAL_MEMBER.to_vec()).or_default() -= 1;
+        for member in memory_identity_members(record) {
+            *decrements.entry(member).or_default() -= 1;
+        }
+    }
+    // Counts are observed after the shard batch, not between its record removals.
+    let key = memory_identity_key(tenant);
+    commands.extend(decrements.into_iter().map(|(member, increment)| Command::ZSetCountAdjust {
+        key: key.clone(), member, increment,
     }));
     commands
 }
@@ -1356,7 +1363,7 @@ impl ProxyService {
         ) {
             return crate::http::json_response(200, &json!({"deleted": false, "id": memory_id}));
         }
-        let commands = memory_delete_cleanup_commands(tenant_hash, &record, now);
+        let commands = memory_delete_cleanup_commands(tenant_hash, std::slice::from_ref(&record), now);
         let expected = commands.len();
         let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
         // The catalog removal was acknowledged; a cleanup failure must not recreate it.
@@ -1980,10 +1987,7 @@ impl ProxyService {
                     continue;
                 }
                 let now = now_ms().max(1);
-                let mut commands = Vec::with_capacity(confirmed.len() * 7);
-                for record in &confirmed {
-                    commands.extend(memory_delete_cleanup_commands(tenant, record, now));
-                }
+                let commands = memory_delete_cleanup_commands(tenant, &confirmed, now);
                 let expected = commands.len();
                 let cleanup = self.batch_execute(BatchExecuteRequest { shard_id, commands });
                 // Never compensate an acknowledged removal, even if cleanup was uncertain.
