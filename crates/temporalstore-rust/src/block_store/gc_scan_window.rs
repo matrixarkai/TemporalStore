@@ -110,3 +110,29 @@ fn the_reclaim_gate_is_due_below_the_threshold_and_never_closed_by_an_unknown() 
     let reported = gate(7, 9, true, T);
     assert_eq!((reported.live_bytes, reported.logical_bytes, reported.ready), (7, 9, true));
 }
+
+#[test]
+fn the_store_gate_reads_published_live_bytes_against_slab_logical_bytes() {
+    let (_dir, store) = store_with_stale_slabs(4);
+    // Nothing published: an unknown, so due, and never a reason to skip a round.
+    let unknown = store.reclaim_gate(DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
+    assert!(!unknown.ready && unknown.due);
+    assert!(unknown.logical_bytes > 0, "slab descriptors carry logical bytes");
+
+    let publish = |fraction_percent: u64| {
+        let mut live = BTreeMap::new();
+        for slab in 0..=4_u64 {
+            let logical = store.slab_live_fractions().unwrap().iter()
+                .find(|row| row.block_slab_id == slab).map(|row| row.logical_bytes).unwrap_or(0);
+            live.insert(slab, BlockStoreSlabLive { live_block_refs: 1, live_bytes: logical * fraction_percent / 100 });
+        }
+        store.publish_live_block_bytes(live);
+    };
+    publish(10);
+    let mostly_garbage = store.reclaim_gate(DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
+    assert!(mostly_garbage.ready && mostly_garbage.due, "{mostly_garbage:?}");
+    publish(90);
+    let mostly_live = store.reclaim_gate(DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
+    assert!(mostly_live.ready && !mostly_live.due, "{mostly_live:?}");
+    assert_eq!(mostly_live.logical_bytes, unknown.logical_bytes);
+}

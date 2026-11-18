@@ -30,6 +30,29 @@ impl BlockStore {
             .clone()
     }
 
+    /// Whether the collector is worth running now: the live fraction over every slab the store holds
+    /// against `threshold_basis_points`. O(slabs), one lock, no file is opened and no block read.
+    ///
+    /// The denominator is each slab descriptor's `logical_bytes` and the numerator the published
+    /// per-slab live tally. Nothing published is `ready == false`, which the evaluator reads as due:
+    /// an unknown is never a reason to skip a round.
+    pub fn reclaim_gate(&self, threshold_basis_points: u64) -> ReclaimGate {
+        let inner = self.inner.lock().expect("block store lock poisoned");
+        let logical: u64 = inner
+            .slabs
+            .values()
+            .fold(0_u64, |sum, slab| sum.saturating_add(slab.logical_bytes));
+        match inner.live_block_bytes.as_ref() {
+            Some(published) => {
+                let live: u64 = published
+                    .values()
+                    .fold(0_u64, |sum, slab| sum.saturating_add(slab.live_bytes));
+                evaluate_reclaim_gate(live, logical, true, threshold_basis_points)
+            }
+            None => evaluate_reclaim_gate(0, logical, false, threshold_basis_points),
+        }
+    }
+
     /// How much of each slab is still live, for EVERY slab -- not just the collectable ones.
     ///
     /// This is the answer to "does `utility_basis_points` stop being uniformly zero", and it has
