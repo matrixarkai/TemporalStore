@@ -116,7 +116,7 @@ fn replay_compaction_and_object_replacement_invalidate_ownership() {
 fn durable_fold_and_reconcile_rebuild_ownership_from_current_members() {
     let mut map = hash();
     let a = std::sync::Arc::from("a");
-    let b = std::sync::Arc::from("b");
+    let b: ModelKey = std::sync::Arc::from("b");
     assert!(!vacated(&map, &a));
     let live = HashSet::from([
         super::super::live_block_key(&address(0, 1)),
