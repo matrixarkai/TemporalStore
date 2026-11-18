@@ -483,11 +483,11 @@ impl TemporalEngine {
                     return;
                 }
                 let covered = delta_record_covered_keys(&record);
-                fold_delta_block_items(
+                fold_planned_index_delta(
                     &mut shard.bucket_index,
                     &covered,
                     &record.items,
-                    record.upsert,
+                    &record.upsert,
                 );
                 apply_key_states(shard, &record.key_states);
                 // The carried container elements are COLLECTED here and applied once the fold has
