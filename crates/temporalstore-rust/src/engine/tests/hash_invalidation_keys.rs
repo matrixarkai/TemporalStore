@@ -7,6 +7,9 @@ use crate::types::BatchHashMultiSetValue;
 #[path = "lazy_expiry_cache.rs"]
 mod lazy_expiry_cache;
 
+#[path = "record_delete_cache.rs"]
+mod record_delete_cache;
+
 #[test]
 fn indexed_feature_invalidation_refreshes_warm_queries_for_single_and_batch_writes() {
     for batched in [false, true] {
