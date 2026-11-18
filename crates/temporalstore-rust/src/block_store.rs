@@ -1190,6 +1190,19 @@ pub struct BlockStoreGcReport {
     pub retained_live_bytes_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub retained_live_bytes_physical_bytes: u64,
+    /// Candidate slabs the scan behind this round examined.
+    #[serde(default)]
+    pub scan_examined_slabs: usize,
+    /// The highest candidate slab id it examined, when it examined any.
+    #[serde(default)]
+    pub scan_last_block_slab_id: Option<u64>,
+    /// Every candidate above the starting point was examined.
+    #[serde(default = "scan_complete_by_default")]
+    pub scan_complete: bool,
+}
+
+fn scan_complete_by_default() -> bool {
+    true
 }
 
 /// Live blocks on ONE slab, as the INDEX counts them.

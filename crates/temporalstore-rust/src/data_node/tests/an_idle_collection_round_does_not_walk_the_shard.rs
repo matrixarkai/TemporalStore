@@ -90,6 +90,8 @@ fn collect_with(runtime: &DataNodeRuntime, retain_from: u64, include_lifecycle_p
             block_gc_raft_snapshot_refs: Vec::new(),
             block_gc_checkpoint_floor_slab_id: None,
             block_gc_raft_install_floor_slab_id: None,
+            block_gc_max_scan_slabs_per_round: 0,
+            block_gc_scan_after_slab_id: None,
             include_lifecycle_plan,
         },
     );

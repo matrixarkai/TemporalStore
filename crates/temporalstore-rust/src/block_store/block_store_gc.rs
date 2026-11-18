@@ -177,12 +177,15 @@ impl BlockStore {
         allowed_block_slab_ids: Option<BTreeSet<u64>>,
     ) -> Result<BlockStoreGcReport, BlockStoreError> {
         let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
-        let selected = self
-            .gc_policy_plan(
-                retain_from_block_slab_id,
-                live_block_slab_ids.iter().copied(),
-                &policy,
-            )?
+        let plan = self.gc_policy_plan(
+            retain_from_block_slab_id,
+            live_block_slab_ids.iter().copied(),
+            &policy,
+        )?;
+        let scan_examined_slabs = plan.candidate_count;
+        let scan_last_block_slab_id = plan.scan_last_block_slab_id;
+        let scan_complete = plan.scan_complete;
+        let selected = plan
             .selected_block_slab_ids
             .into_iter()
             .filter(|block_slab_id| {
@@ -192,12 +195,16 @@ impl BlockStore {
                     .unwrap_or(true)
             })
             .collect::<BTreeSet<_>>();
-        self.gc_slabs_before_with_live_refs_selected(
+        let mut report = self.gc_slabs_before_with_live_refs_selected(
             retain_from_block_slab_id,
             live_block_slab_ids,
             delayed_destroy,
             Some(selected),
-        )
+        )?;
+        report.scan_examined_slabs = scan_examined_slabs;
+        report.scan_last_block_slab_id = scan_last_block_slab_id;
+        report.scan_complete = scan_complete;
+        Ok(report)
     }
 
     pub fn gc_policy_plan(
@@ -688,6 +695,9 @@ impl BlockStore {
             retained_current_physical_bytes,
             retained_live_bytes_block_slab_ids: retained_live_bytes,
             retained_live_bytes_physical_bytes,
+            scan_examined_slabs: 0,
+            scan_last_block_slab_id: None,
+            scan_complete: true,
         })
     }
 }

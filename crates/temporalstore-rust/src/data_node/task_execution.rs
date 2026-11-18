@@ -239,9 +239,15 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             index_log_gc_clamped_by_durable_index: false,
             // No plan: building one reads the same half-reconstructed index this is refusing
             // to act on, so a plan here would be a measurement of the partial state.
+            block_gc_scan_examined_slabs: 0,
+            block_gc_scan_last_block_slab_id: None,
+            block_gc_scan_complete: true,
             lifecycle_plan: None,
         };
     }
+    let mut block_gc_scan_examined_slabs = 0usize;
+    let mut block_gc_scan_last_block_slab_id = None;
+    let mut block_gc_scan_complete = true;
     // GC must NOT touch the dirty-scheduling tracker. GC (block/index reclaim) never
     // clears dirty buckets -- a bucket leaves the dirty set only via a completed
     // dump/replay that clears its dirty flag. Clearing it here (at task start, before
@@ -403,8 +409,8 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             // because `gc_slabs_before_with_live_refs_selected` re-checks liveness, currency and
             // the live-bytes tally itself immediately before each irreversible step.
             let gc_policy = crate::block_store::BlockStoreGcPolicy {
-                max_scan_slabs: 0,
-                scan_after_slab_id: None,
+                max_scan_slabs: request.block_gc_max_scan_slabs_per_round,
+                scan_after_slab_id: request.block_gc_scan_after_slab_id,
                 max_destroy_slabs: request.block_gc_max_destroy_slabs_per_round,
                 max_destroy_physical_bytes: request.block_gc_max_destroy_physical_bytes_per_round,
                 max_utility_score: None,
@@ -425,11 +431,14 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
                 inner
                     .engine
                     .block_store()
-                    .gc_utility_candidates(
+                    .gc_utility_candidates_window(
                         retain_from_block_slab_id,
                         live_block_slab_ids.iter().copied(),
+                        request.block_gc_scan_after_slab_id,
+                        request.block_gc_max_scan_slabs_per_round,
                     )
-                    .map(|candidates| {
+                    .map(|window| {
+                        let candidates = window.candidates;
                         inner
                             .engine
                             .storage_block_gc_dependency_plan(
@@ -496,6 +505,9 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
                     block_slabs_retained_live = report.retained_live_block_slab_ids.len();
                     block_slabs_retained_live_physical_bytes =
                         report.retained_live_physical_bytes;
+                    block_gc_scan_examined_slabs = report.scan_examined_slabs;
+                    block_gc_scan_last_block_slab_id = report.scan_last_block_slab_id;
+                    block_gc_scan_complete = report.scan_complete;
                 }
                 Err(err) => {
                     status = Status::error("block_store_gc_failed", &err.to_string());
@@ -565,6 +577,9 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
         gc_durable_index_backed,
         wal_gc_clamped_by_durable_index,
         index_log_gc_clamped_by_durable_index,
+        block_gc_scan_examined_slabs,
+        block_gc_scan_last_block_slab_id,
+        block_gc_scan_complete,
         lifecycle_plan,
     }
 }

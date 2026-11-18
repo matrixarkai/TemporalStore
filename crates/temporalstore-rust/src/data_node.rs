@@ -987,6 +987,13 @@ pub struct GcRequest {
     pub block_gc_checkpoint_floor_slab_id: Option<u64>,
     #[serde(default)]
     pub block_gc_raft_install_floor_slab_id: Option<u64>,
+    /// Candidate slabs this collection examines before it yields. 0 examines every candidate.
+    #[serde(default)]
+    pub block_gc_max_scan_slabs_per_round: usize,
+    /// Examine only candidates with a slab id above this one: where the previous bounded
+    /// collection stopped.
+    #[serde(default)]
+    pub block_gc_scan_after_slab_id: Option<u64>,
     /// Build the shard's lifecycle plan after the reclaim and return it in the response.
     ///
     /// Off by default. The plan is a survey of the whole shard, and building it at the end of every
@@ -1067,6 +1074,16 @@ pub struct GcResponse {
     /// addresses a served index is rebuilt from, so a premature drop loses where data lives.
     #[serde(default)]
     pub index_log_gc_clamped_by_durable_index: bool,
+    /// Candidate slabs this collection examined.
+    #[serde(default)]
+    pub block_gc_scan_examined_slabs: usize,
+    /// The highest candidate slab id it examined, when it examined any.
+    #[serde(default)]
+    pub block_gc_scan_last_block_slab_id: Option<u64>,
+    /// Every candidate above the starting point was examined. False means a bounded
+    /// collection stopped with more to look at.
+    #[serde(default = "default_true")]
+    pub block_gc_scan_complete: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_plan: Option<StorageLifecyclePlan>,
 }
@@ -1354,6 +1371,13 @@ pub struct StorageManagerOptions {
     /// Garbage floor for the block-GC stage, in basis points. 0 collects every eligible slab.
     #[serde(default = "default_storage_manager_block_gc_min_slab_garbage_basis_points")]
     pub block_gc_min_slab_garbage_basis_points: u64,
+    /// Candidate slabs one periodic block-GC round examines before it yields; the next round
+    /// resumes behind it. 0 examines every candidate in one round.
+    #[serde(default = "default_storage_manager_block_gc_max_scan_slabs_per_round")]
+    pub block_gc_max_scan_slabs_per_round: usize,
+    /// Set by the stage for the one round it is about to run; never configured.
+    #[serde(skip)]
+    pub block_gc_scan_window: Option<BlockGcScanWindow>,
     /// Shared-store readers whose replay position still names block slabs. A slab at or above a
     /// cursor's `retain_from_block_slab_id` is neither set aside nor destroyed by the loop. Empty
     /// means no such reader, which is the behaviour before this field existed.
@@ -1564,6 +1588,9 @@ impl Default for StorageManagerOptions {
                 crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND,
             block_gc_min_slab_garbage_basis_points:
                 crate::engine::reports::DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
+            block_gc_max_scan_slabs_per_round:
+                crate::engine::reports::DEFAULT_BLOCK_GC_MAX_SCAN_SLABS_PER_ROUND,
+            block_gc_scan_window: None,
             block_gc_shared_store_cursors: Vec::new(),
             block_gc_checkpoint_floor_slab_id: None,
             block_gc_raft_install_floor_slab_id: None,
@@ -1620,6 +1647,17 @@ fn default_storage_manager_block_gc_max_destroy_slabs_per_round() -> usize {
 
 fn default_storage_manager_block_gc_max_destroy_physical_bytes_per_round() -> u64 {
     crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND
+}
+
+fn default_storage_manager_block_gc_max_scan_slabs_per_round() -> usize {
+    crate::engine::reports::DEFAULT_BLOCK_GC_MAX_SCAN_SLABS_PER_ROUND
+}
+
+/// The candidate window one bounded block-GC round examines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BlockGcScanWindow {
+    pub after_block_slab_id: Option<u64>,
+    pub max_slabs: usize,
 }
 
 fn default_storage_manager_block_gc_min_slab_garbage_basis_points() -> u64 {
@@ -3837,3 +3875,7 @@ pub fn validate_multi_process_lifecycle_reports(
 #[cfg(test)]
 #[path = "data_node/data_node_regression_tests.rs"]
 mod tests;
+
+fn default_true() -> bool {
+    true
+}
