@@ -70,6 +70,24 @@ fn added_ids(response: Value, expected: usize) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
+fn seeded_ids(response: Value, sources: usize, infer: bool, minimum: usize) -> Result<Vec<String>, String> {
+    let ids = memory_add_ids(&response, sources, infer)?;
+    if ids.len() < minimum {
+        return Err(format!("CRUD fixture needs at least {minimum} acknowledged memories"));
+    }
+    Ok(ids)
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct FixtureCounts {
+    round: usize,
+    source_messages: usize,
+    seeded_memories: usize,
+    batch_target_memories: usize,
+    expected_remaining_memories: usize,
+    reset_seeded_memories: Option<usize>,
+}
+
 fn body(options: &Options, tenant: &str, user: &str, round: usize, records: usize) -> Value {
     let mut value = scope_body(tenant);
     value["user_id"] = json!(user);
@@ -94,7 +112,8 @@ pub(super) fn run(
     tenant: &str,
     timings: &mut Timings,
     failures: &mut Vec<String>,
-) {
+) -> Vec<FixtureCounts> {
+    let mut fixtures = Vec::new();
     for round in 0..options.crud_rounds {
         let tenant = corpus_tenant(tenant, round % options.tenant_shards);
         let user = format!("crud-user-{round:08}");
@@ -104,10 +123,21 @@ pub(super) fn run(
             failures,
             "crud_add",
             || post(&options.addr, "/memories", &seed),
-            |value| added_ids(value, 20),
+            |value| seeded_ids(value, 20, options.infer, 2),
         ) else {
             continue;
         };
+        let batch_count = (ids.len() - 1).min(16);
+        let remaining_count = ids.len() - 1 - batch_count;
+        let fixture_index = fixtures.len();
+        fixtures.push(FixtureCounts {
+            round,
+            source_messages: 20,
+            seeded_memories: ids.len(),
+            batch_target_memories: batch_count,
+            expected_remaining_memories: remaining_count,
+            reset_seeded_memories: None,
+        });
         let id = &ids[0];
         let text = format!("updated CRUD decision {round}");
         let mut update = json!({"data":text});
@@ -192,14 +222,14 @@ pub(super) fn run(
 
         let mut query = scope_body(&tenant);
         query["user_id"] = json!(user);
-        query["limit"] = json!(20);
+        query["limit"] = json!(ids.len());
         measured(
             timings,
             failures,
             "crud_list",
             || post(&options.addr, "/memories/list", &query),
             |value| {
-                let returned = added_ids(value, 20)?;
+                let returned = added_ids(value, ids.len())?;
                 if returned.iter().collect::<HashSet<_>>() == ids.iter().collect::<HashSet<_>>() {
                     Ok(())
                 } else {
@@ -215,7 +245,7 @@ pub(super) fn run(
             |value| {
                 if value["results"].as_array().is_some_and(|rows| {
                     !rows.is_empty()
-                        && rows.len() <= 20
+                        && rows.len() <= ids.len()
                         && rows.iter().all(|row| {
                             matches!(row["type"].as_str(), Some("user" | "agent" | "run"))
                                 && row["name"].as_str().is_some_and(|name| !name.is_empty())
@@ -228,7 +258,7 @@ pub(super) fn run(
             },
         );
 
-        let batch_ids = &ids[1..17];
+        let batch_ids = &ids[1..1 + batch_count];
         let batch_text = format!("batch updated CRUD decision {round}");
         let mut batch = json!({"memories":batch_ids.iter().map(|id| json!({
             "memory_id":id,"text":batch_text
@@ -239,7 +269,7 @@ pub(super) fn run(
             failures,
             "crud_batch_update",
             || post(&options.addr, "/memories/batch/update", &batch),
-            |value| count(&value, "updated", 16),
+            |value| count(&value, "updated", batch_count),
         );
         measured(
             timings,
@@ -273,7 +303,7 @@ pub(super) fn run(
                     &json!({"memories":batch_ids}),
                 )
             },
-            |value| count(&value, "deleted", 16),
+            |value| count(&value, "deleted", batch_count),
         );
         measured(
             timings,
@@ -288,13 +318,13 @@ pub(super) fn run(
                 }
             },
         );
-        // Three seeded rows remain after the single and sixteen-item deletes.
+        // Count fact memories, not source messages, when extraction emitted a different count.
         measured(
             timings,
             failures,
             "crud_delete_all",
             || post(&options.addr, "/memories/delete_all", &query),
-            |value| count(&value, "deleted", 3),
+            |value| count(&value, "deleted", remaining_count),
         );
         measured(
             timings,
@@ -306,17 +336,21 @@ pub(super) fn run(
 
         let reset_tenant = format!("{tenant}-crud-reset");
         let reset_seed = body(options, &reset_tenant, "reset-user", round, 2);
-        let seeded =
-            post(&options.addr, "/memories", &reset_seed).and_then(|value| added_ids(value, 2));
-        if seeded.is_err() {
-            failures.push("crud reset fixture could not be seeded".into());
-        }
+        let reset_count = match post(&options.addr, "/memories", &reset_seed)
+            .and_then(|value| seeded_ids(value, 2, options.infer, 1)) {
+            Ok(ids) => ids.len(),
+            Err(error) => {
+                failures.push(format!("crud reset fixture could not be seeded: {error}"));
+                continue;
+            }
+        };
+        fixtures[fixture_index].reset_seeded_memories = Some(reset_count);
         measured(
             timings,
             failures,
             "crud_reset",
             || post(&options.addr, "/memories/reset", &scope_body(&reset_tenant)),
-            |value| count(&value, "deleted", 2),
+            |value| count(&value, "deleted", reset_count),
         );
         measured(
             timings,
@@ -327,6 +361,7 @@ pub(super) fn run(
         );
     }
     check_coverage(timings, options.crud_rounds, failures);
+    fixtures
 }
 
 fn check_coverage(timings: &Timings, rounds: usize, failures: &mut Vec<String>) {
@@ -351,6 +386,23 @@ fn empty_results(value: Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inferred_crud_counts_come_from_memories_not_source_messages() {
+        let response = |count: usize| json!({"results":(0..count)
+            .map(|id| json!({"id":id.to_string(),"memory":format!("fact {id}")}))
+            .collect::<Vec<_>>()});
+        for memories in [2, 8, 20, 160] {
+            assert_eq!(seeded_ids(response(memories), 20, true, 2).unwrap().len(), memories);
+        }
+        assert!(seeded_ids(response(161), 20, true, 2).is_err());
+        assert!(seeded_ids(response(1), 20, true, 2).is_err());
+        assert!(seeded_ids(response(0), 20, true, 2).is_err());
+        assert!(seeded_ids(response(2), 20, false, 2).is_err());
+        assert_eq!(seeded_ids(response(20), 20, false, 2).unwrap().len(), 20);
+        assert_eq!(seeded_ids(response(1), 2, true, 1).unwrap().len(), 1);
+        assert_eq!(seeded_ids(response(16), 2, true, 1).unwrap().len(), 16);
+    }
 
     #[test]
     fn missing_samples_cannot_pass_as_complete_coverage() {
