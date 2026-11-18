@@ -590,11 +590,8 @@ impl DataNodeRuntime {
             .expect("runtime stats lock poisoned")
             .storage_manager_retention_owners_configured =
             options.retention_owner_input_count() as u64;
-        let stale_block_pressure = pressure.stale_block_slab_count
-            >= options.stale_block_slab_pressure.max(1)
-            || pressure.reclaim_candidate_count >= options.stale_block_slab_pressure.max(1)
-            || pressure.reclaimable_physical_bytes
-                >= options.reclaimable_physical_bytes_pressure.max(1);
+        let stale_block_pressure =
+            super::compaction_stage::stale_block_pressure(&pressure, &options);
 
         // A shard with no writer has no dump pressure, and for that reason alone this stage
         // used to vanish from `executed_stages` after the first round and never come back --
@@ -2042,6 +2039,9 @@ impl DataNodeRuntime {
             stats.expired_records_removed += removed as u64;
         }
         let slot = state.due_slot(std::time::Instant::now())?;
+        if slot == HeavySlot::Compaction {
+            return Some((slot, self.run_compaction_step(shard_id, options, state, period)));
+        }
         let started = std::time::Instant::now();
         let report = self.run_storage_manager_once_with_report_details(
             shard_id,

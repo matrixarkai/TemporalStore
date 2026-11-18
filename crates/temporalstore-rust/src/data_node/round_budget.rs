@@ -128,7 +128,9 @@ pub(crate) struct RoundPlan {
 /// The resume positions of the stages that have adopted [`BoundedStage`]. Each stage's owner adds
 /// one field here, of that stage's cursor type, and nothing else in this module.
 #[derive(Default)]
-pub(crate) struct StageCursors {}
+pub(crate) struct StageCursors {
+    pub(crate) compaction: super::compaction_stage::CompactionCursor,
+}
 
 /// One heavy unit of the loop. Each is a whole stage, or the group of cheap stages that share the
 /// plan the loop builds before any stage runs.
@@ -183,7 +185,9 @@ pub(crate) fn options_for_slot(
         }
         HeavySlot::PageGc => options.enable_block_gc = base.enable_block_gc,
         HeavySlot::IndexGc => options.enable_index_gc = base.enable_index_gc,
-        HeavySlot::Compaction => options.enable_block_compaction = base.enable_block_compaction,
+        // Compaction is a BoundedStage (`compaction_stage.rs`) and runs no legacy whole pass: the
+        // tick calls its step, so there is nothing to switch on here.
+        HeavySlot::Compaction => {}
     }
     options
 }
@@ -217,6 +221,11 @@ impl ShardRoundState {
             .into_iter()
             .filter(|slot| self.next_due[slot.ordinal()] <= now)
             .min_by_key(|slot| self.next_due[slot.ordinal()])
+    }
+
+    /// The slot ran a step and has more to do: it stays due, so the next tick resumes it.
+    pub(crate) fn resume_next_tick(&mut self, slot: HeavySlot, now: Instant) {
+        self.next_due[slot.ordinal()] = now;
     }
 
     /// The slot ran and ended at `now`: its next turn is a period later.
@@ -301,6 +310,8 @@ mod tests {
             let count = on.iter().filter(|flag| **flag).count();
             let expected = match slot {
                 HeavySlot::Memory => 1 + base.enable_evict as usize + 1,
+                // A bounded stage: no legacy flag is on for it.
+                HeavySlot::Compaction => 0,
                 _ => 1,
             };
             assert_eq!(count, expected, "{slot:?} left {on:?} switched on");
