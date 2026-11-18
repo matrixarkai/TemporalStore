@@ -582,7 +582,32 @@ impl SignatureTable {
     }
 }
 
+fn trim_sparse_buffer<T>(buffer: &mut Vec<T>) {
+    if buffer.capacity() > buffer.len().saturating_mul(4) {
+        // Leave growth room; another shrink requires deleting most of the remaining rows.
+        buffer.shrink_to(buffer.len().saturating_mul(2));
+    }
+}
+
 impl TenantRows {
+    fn trim_sparse_capacity(&mut self) {
+        trim_sparse_buffer(&mut self.vectors);
+        trim_sparse_buffer(&mut self.scales);
+        trim_sparse_buffer(&mut self.owner_ids);
+        trim_sparse_buffer(&mut self.item_ids);
+        if let IdentityPositions::Small(positions) = &mut self.positions {
+            if positions.capacity() > positions.len().saturating_mul(4) {
+                positions.shrink_to(positions.len().saturating_mul(2));
+            }
+        }
+        if let Some(routing) = self.signature_routing.as_mut() {
+            for table in &mut routing.tables {
+                trim_sparse_buffer(&mut table.next);
+                trim_sparse_buffer(&mut table.previous);
+            }
+        }
+    }
+
     fn reserve_vector_rows(&mut self, additional_rows: usize, dimensions: usize) {
         let required = self
             .vectors
@@ -1014,6 +1039,8 @@ impl EmbeddingIndex {
         self.total_entries -= 1;
         if rows.item_ids.is_empty() {
             self.tenants.remove(&key.tenant_id);
+        } else {
+            rows.trim_sparse_capacity();
         }
         true
     }
@@ -1730,6 +1757,10 @@ unsafe fn dot_i8_f32_avx2(left: &[i8], right: &[f32]) -> f32 {
 #[cfg(test)]
 #[path = "signature_update_tests.rs"]
 mod signature_update_tests;
+
+#[cfg(test)]
+#[path = "retained_capacity_tests.rs"]
+mod retained_capacity_tests;
 
 #[cfg(test)]
 mod tests {
