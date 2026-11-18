@@ -17,9 +17,9 @@ classifiers = [
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
 ]
-# HTTP uses the standard library; MessagePack keeps long feature responses as
-# byte strings instead of expanding them through JSON base64.
-dependencies = ["feast>=0.40", "msgpack>=1.0"]
+# Blocking HTTP uses the standard library; asynchronous reads use pooled aiohttp
+# sessions. MessagePack preserves binary feature payloads.
+dependencies = ["feast>=0.40", "msgpack>=1.0", "aiohttp>=3.9,<4"]
 
 [project.urls]
 Homepage = "https://github.com/matrixarkai/TemporalStore"

@@ -35,7 +35,7 @@ an online store, which is the normal arrangement; nothing here replaces
 ## Install and configure
 
 ```bash
-pip install feast msgpack
+pip install feast msgpack 'aiohttp>=3.9,<4'
 export PYTHONPATH="$PWD/integrations/feast${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
@@ -160,6 +160,33 @@ faster than another store. Work under qualification is not a shipped guarantee.
 
 ## Reads
 
+`get_online_features_async` and `online_read_async` use pooled native async HTTP
+on supported shared-field read routes. The blocking and async paths share request
+planning, wire encoders, result decoders, and response construction. Reads do not
+occupy one worker thread per socket. Older nodes and source checkouts without
+`aiohttp` retain the blocking-worker fallback; async writes still use workers.
+Response construction above 256 output cells or 256 KiB of projected payload,
+and MessagePack decoding above 1 MiB, run in workers so large replies do not
+monopolize the event loop. Duplicate output positions count toward that budget.
+The configured socket timeout remains a connection/read-inactivity timeout,
+not a new total-duration limit on a progressing large response.
+
+Each event loop owns its connection pool, with at most 32 acquired connections.
+Admission across a client is bounded to 256 outstanding native async reads and
+an encoded-body budget of `max(64 MiB, max_batch_request_bytes)`.
+Local admission failures use `async_read_overloaded`. These limits do
+not bound response size or process memory. Cancellation releases admission and
+does not retry the read. Only the two shared-field read routes use this transport;
+writes are never routed through its bounded read-retry policy.
+
+In an async serving lifecycle, await the provider's `aclose()` before stopping
+its event loops. Synchronous `close()` still closes blocking connections and
+initiates async cleanup on the owning loops; it does not wait for that cleanup.
+`asyncio.run()` also closes registered session lifetimes during async-generator
+shutdown. Applications managing loops manually must call
+`loop.shutdown_asyncgens()` before `loop.close()`, including when a client is
+reused across loops. Stopping a loop without normal async shutdown is unsupported.
+
 Feature views with matching entities and join-key aliases reuse one entity
 deduplication and protobuf plan within each serving request. Different alias
 maps remain separate. The plan is discarded after the request, so later calls
@@ -187,8 +214,8 @@ empty values.
 Known read-only requests reconnect once if a pooled connection closes, reusing
 the same encoded request. A truncated response is released before the retry
 starts, so recovery does not retain that partial body alongside the new response.
-This also covers history and numeric aggregate reads
-and the older command-batch routes. Timeouts, malformed responses, and server
+The blocking retry path also covers history and numeric aggregate reads
+and the older command-batch routes. Timeouts, invalid decoded payloads, and server
 refusals are not retried. Writes, mixed read/write batches, and unknown command
 kinds are never automatically resent: a lost write response does not prove the
 write was not applied. A retried read can observe a newer concurrent update;
@@ -378,7 +405,8 @@ Partial is written as partial below. Nothing here is rounded up.
 | `teardown` | **abstract** | **partial** — exact only with `track_keys_for_teardown`, which spreads keys over 1,024 deterministic sets and is off by default because it adds one write per row. Async commit is supported. With tracking off, teardown logs that it cannot enumerate instead of claiming success |
 | `online_read_async` | optional, **base raises** | **implemented** — without it `get_online_features_async` fails outright |
 | `online_write_batch_async` | optional, **base raises** | **implemented** |
-| `close` | optional, base is `pass` | **implemented** — the base no-op leaks a keep-alive connection per thread |
+| `close` | optional, base is `pass` | **implemented** — closes blocking connections and initiates async cleanup |
+| `aclose` | provider extension | **implemented** — awaits loop-owned async pool cleanup |
 | `plan` | optional, base returns `[]` | **inherited, and correct** — a schemaless surface needs no infra objects |
 | `initialize` | optional, base is `pass` | inherited; nothing to initialise |
 | `retrieve_online_documents`, `retrieve_online_documents_v2` | optional, **base raises** | **not implemented — vector search is not supported by this provider** |
@@ -524,9 +552,10 @@ python integrations/feast/run_tests.py
 cd integrations/feast && PYTHONPATH="$PWD" python feast_temporalstore_command/tests/test_online_store.py
 ```
 
-With Feast and MessagePack installed, the offline run executes **120 checks:**
-113 command-provider checks plus 7 wire checks. Most use a recording transport;
-the closed-connection check also exercises a local HTTP socket. The five-case
+With Feast, MessagePack, and aiohttp installed, the offline run executes **150 checks:**
+143 client/provider checks plus 7 wire checks. The 28 native async HTTP checks
+exercise local sockets, cancellation, fallback, admission, and loop shutdown.
+Most other checks use a recording transport. The five-case
 public Feast API conformance tier additionally needs a live data node. Set
 `FEAST_CONFORMANCE_REQUIRED=1` to fail rather than accept an unavailable live
 tier. Without optional dependencies, the runner reports the actual executed

@@ -3283,6 +3283,36 @@ class AdvertisedCapabilityTest(unittest.TestCase):
 # `skipUnless` either way, so a count of collected tests cannot tell a run with
 # Feast from a run without it, and cannot tell either from a run where the whole
 # Feast tier silently stopped executing.
+@unittest.skipUnless(FEAST_AVAILABLE, "Feast is required for response scheduling checks")
+class AsyncResponseWorkTests(unittest.IsolatedAsyncioTestCase):
+    def test_response_work_budget_accounts_for_output_cells_and_payload_size(self):
+        from feast_temporalstore_command import TemporalStoreCommandOnlineStore
+        needs_worker = TemporalStoreCommandOnlineStore._read_response_needs_worker
+        self.assertFalse(needs_worker([[None, b"value"]], 256))
+        self.assertTrue(needs_worker([[b"value"]], 257))
+        self.assertFalse(needs_worker([[b"x" * (256 * 1024)]], 1))
+        self.assertTrue(needs_worker([[b"x" * (256 * 1024 + 1)]], 1))
+
+    async def test_large_duplicate_expansion_uses_a_worker_but_point_rows_do_not(self):
+        import threading
+        from feast_temporalstore_command import TemporalStoreCommandOnlineStore
+        store = TemporalStoreCommandOnlineStore()
+        owner = threading.get_ident()
+        for output_len, value, offload in ((1, b"value", False), (1000, b"value", True),
+                                           (1, b"x" * (256 * 1024 + 1), True)):
+            seen, response = [], []
+            def populate(rows, specs, layouts, target, *args):
+                seen.append(threading.get_ident())
+                target.append(rows)
+            specs = [(None, ["f"], [[0]], output_len, [])]
+            with mock.patch.object(store, "_populate_grouped_response", side_effect=populate):
+                await store._populate_grouped_response_async([[value]], specs, [(["f"], [0])], response, False, False)
+            self.assertEqual(response, [[[value]]])
+            self.assertEqual(seen[0] != owner, offload)
+
+
+from feast_temporalstore_command.tests.test_async_transport import AsyncReadTransportTests
+
 MINIMUM_EXECUTED_WITHOUT_FEAST = 12
 MINIMUM_EXECUTED_WITH_FEAST = 29
 
