@@ -1397,6 +1397,262 @@ async fn collect_files(
     Ok(())
 }
 
+// ---- How a node reaches MatrixObject over the network ----------------------------------
+
+/// The two ways a TemporalStore node can reach a MatrixObject cluster.
+///
+/// `Gateway` speaks S3 to a gateway (`MatrixObjectHttpStore`). `Direct` talks to the metadata
+/// group and the chunk servers itself, with no gateway in between. Both are meant to give the
+/// same TemporalStore behaviour and the same durable bytes; the mode only chooses the path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatrixObjectMode {
+    Gateway,
+    Direct,
+}
+
+/// A networked MatrixObject configuration that cannot be used as written.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum MatrixObjectModeError {
+    #[error("TS_MATRIXOBJECT_MODE={0:?} is not a mode; use \"gateway\" or \"direct\"")]
+    UnknownMode(String),
+    #[error("gateway mode needs TS_SHARED_STORE_URI=matrixobject://host:port")]
+    GatewayNeedsUri,
+    #[error("direct mode needs TS_MATRIXOBJECT_META, the metadata group's endpoints")]
+    DirectNeedsMeta,
+    #[error(
+        "both a gateway (TS_SHARED_STORE_URI) and a direct metadata group \
+         (TS_MATRIXOBJECT_META) are configured; set TS_MATRIXOBJECT_MODE or remove one, \
+         because choosing silently would send the writes to a place the operator did not mean"
+    )]
+    Ambiguous,
+    #[error("TS_MATRIXOBJECT_MODE={mode} conflicts with {conflicting}, which is also set")]
+    Conflicting {
+        mode: &'static str,
+        conflicting: &'static str,
+    },
+}
+
+/// Pick the mode from the three settings that name it, or refuse. Pure, so every outcome is
+/// testable without touching the process environment. An empty or blank value is unset.
+///
+/// * `mode`: `TS_MATRIXOBJECT_MODE`.
+/// * `gateway_uri`: `TS_SHARED_STORE_URI`, which counts only when it names `matrixobject://`.
+/// * `direct_meta`: `TS_MATRIXOBJECT_META`.
+///
+/// `Ok(None)` means no networked MatrixObject is configured at all.
+pub fn resolve_matrixobject_mode(
+    mode: Option<&str>,
+    gateway_uri: Option<&str>,
+    direct_meta: Option<&str>,
+) -> Result<Option<MatrixObjectMode>, MatrixObjectModeError> {
+    fn set(value: Option<&str>) -> Option<&str> {
+        value.map(str::trim).filter(|value| !value.is_empty())
+    }
+    let gateway = set(gateway_uri).filter(|uri| uri.starts_with("matrixobject://"));
+    let direct = set(direct_meta);
+    match set(mode).map(str::to_ascii_lowercase).as_deref() {
+        Some("gateway") => match (gateway, direct) {
+            (None, _) => Err(MatrixObjectModeError::GatewayNeedsUri),
+            (Some(_), Some(_)) => Err(MatrixObjectModeError::Conflicting {
+                mode: "gateway",
+                conflicting: "TS_MATRIXOBJECT_META",
+            }),
+            (Some(_), None) => Ok(Some(MatrixObjectMode::Gateway)),
+        },
+        Some("direct") => match (direct, gateway) {
+            (None, _) => Err(MatrixObjectModeError::DirectNeedsMeta),
+            (Some(_), Some(_)) => Err(MatrixObjectModeError::Conflicting {
+                mode: "direct",
+                conflicting: "TS_SHARED_STORE_URI",
+            }),
+            (Some(_), None) => Ok(Some(MatrixObjectMode::Direct)),
+        },
+        Some(other) => Err(MatrixObjectModeError::UnknownMode(other.to_string())),
+        None => match (gateway, direct) {
+            (Some(_), Some(_)) => Err(MatrixObjectModeError::Ambiguous),
+            (Some(_), None) => Ok(Some(MatrixObjectMode::Gateway)),
+            (None, Some(_)) => Ok(Some(MatrixObjectMode::Direct)),
+            (None, None) => Ok(None),
+        },
+    }
+}
+
+/// A synchronous whole-object read, for the callers that cannot be async (the lazy slab
+/// source is consulted from inside a block store's read path).
+pub trait BlockingObjectRead: Send + Sync {
+    fn get_blocking(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
+}
+
+impl BlockingObjectRead for MatrixObjectHttpStore {
+    fn get_blocking(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        MatrixObjectHttpStore::get_blocking(self, key)
+    }
+}
+
+/// The networked MatrixObject store a node holds, whichever way it reaches the cluster.
+///
+/// Only `Gateway` exists today; `Direct` joins it when the SDK client does. The enum is here
+/// first so everything that holds a networked store holds this, and adding the second path is
+/// then a change to this file and not to every caller.
+///
+/// Every `ObjectStore` method is forwarded, the defaulted ones included: a wrapper that omits
+/// `append_blob` or `compare_and_swap` compiles and then refuses at run time. The guard test
+/// in `shared_store` reads the trait and checks this impl for each method.
+#[derive(Debug, Clone)]
+pub enum NetworkedMatrixObjectStore {
+    Gateway(MatrixObjectHttpStore),
+}
+
+impl NetworkedMatrixObjectStore {
+    /// Connect in the given mode. `target` is the gateway URI for `Gateway`.
+    pub fn connect(mode: MatrixObjectMode, target: &str) -> Result<Self, ObjectStoreError> {
+        match mode {
+            MatrixObjectMode::Gateway => Ok(Self::Gateway(MatrixObjectHttpStore::new(target)?)),
+            MatrixObjectMode::Direct => Err(ObjectStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "direct MatrixObject mode is not built into this binary",
+            ))),
+        }
+    }
+
+    pub fn mode(&self) -> MatrixObjectMode {
+        match self {
+            Self::Gateway(_) => MatrixObjectMode::Gateway,
+        }
+    }
+
+    pub fn bucket(&self) -> &str {
+        match self {
+            Self::Gateway(store) => store.bucket(),
+        }
+    }
+
+    pub fn requests_issued(&self) -> u64 {
+        match self {
+            Self::Gateway(store) => store.requests_issued(),
+        }
+    }
+
+    pub fn wire_bytes_sent(&self) -> u64 {
+        match self {
+            Self::Gateway(store) => store.wire_bytes_sent(),
+        }
+    }
+
+    pub fn wire_bytes_received(&self) -> u64 {
+        match self {
+            Self::Gateway(store) => store.wire_bytes_received(),
+        }
+    }
+
+    pub fn connections_opened(&self) -> u64 {
+        match self {
+            Self::Gateway(store) => store.connections_opened(),
+        }
+    }
+}
+
+impl BlockingObjectRead for NetworkedMatrixObjectStore {
+    fn get_blocking(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => BlockingObjectRead::get_blocking(store, key),
+        }
+    }
+}
+
+#[async_trait]
+impl ObjectStore for NetworkedMatrixObjectStore {
+    async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.put(key, bytes).await,
+        }
+    }
+
+    async fn append_blob(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<AppendBlobReceipt, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.append_blob(key, bytes).await,
+        }
+    }
+
+    async fn put_many(&self, objects: &[(String, Bytes)]) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.put_many(objects).await,
+        }
+    }
+
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: Option<Bytes>,
+        new: Bytes,
+    ) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.compare_and_swap(key, expected, new).await,
+        }
+    }
+
+    async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.get(key).await,
+        }
+    }
+
+    async fn get_range(
+        &self,
+        key: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<Bytes, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.get_range(key, offset, length).await,
+        }
+    }
+
+    async fn get_range_from(
+        &self,
+        key: &str,
+        offset: u64,
+    ) -> Result<Option<Bytes>, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.get_range_from(key, offset).await,
+        }
+    }
+
+    async fn get_many(&self, keys: &[String]) -> Result<Vec<(String, Bytes)>, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.get_many(keys).await,
+        }
+    }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.list(prefix).await,
+        }
+    }
+
+    async fn list_after(&self, prefix: &str, after: &str) -> Result<Vec<String>, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.list_after(prefix, after).await,
+        }
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.delete(key).await,
+        }
+    }
+
+    fn uri(&self, key: &str) -> String {
+        match self {
+            Self::Gateway(store) => store.uri(key),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1757,5 +2013,70 @@ mod tests {
         let state = state.lock().unwrap();
         assert_eq!(state.puts, 1, "an append of unknown outcome is never sent again");
         assert_eq!(state.data, b"record-one");
+    }
+
+    // ---- The networked store and its mode ----
+
+    #[test]
+    fn the_mode_follows_the_settings_and_an_ambiguous_one_is_refused() {
+        let gw = Some("matrixobject://host:9000");
+        let meta = Some("m1:7000,m2:7000");
+        let r = resolve_matrixobject_mode;
+        // Nothing set: no networked store, which is today's behaviour byte for byte.
+        assert_eq!(r(None, None, None), Ok(None));
+        assert_eq!(r(Some(" "), Some(""), Some("  ")), Ok(None));
+        // A URI of another scheme is not a gateway.
+        assert_eq!(r(None, Some("s3://bucket"), None), Ok(None));
+        // One side set picks that side.
+        assert_eq!(r(None, gw, None), Ok(Some(MatrixObjectMode::Gateway)));
+        assert_eq!(r(None, None, meta), Ok(Some(MatrixObjectMode::Direct)));
+        // Both set and no mode: refused, never a silent pick.
+        assert_eq!(r(None, gw, meta), Err(MatrixObjectModeError::Ambiguous));
+        // An explicit mode must have what it needs and nothing that contradicts it.
+        assert_eq!(r(Some("Gateway"), gw, None), Ok(Some(MatrixObjectMode::Gateway)));
+        assert_eq!(r(Some("direct"), None, meta), Ok(Some(MatrixObjectMode::Direct)));
+        assert_eq!(r(Some("gateway"), None, meta), Err(MatrixObjectModeError::GatewayNeedsUri));
+        assert_eq!(r(Some("direct"), gw, None), Err(MatrixObjectModeError::DirectNeedsMeta));
+        assert!(matches!(
+            r(Some("gateway"), gw, meta),
+            Err(MatrixObjectModeError::Conflicting { mode: "gateway", .. })
+        ));
+        assert!(matches!(
+            r(Some("direct"), gw, meta),
+            Err(MatrixObjectModeError::Conflicting { mode: "direct", .. })
+        ));
+        assert!(matches!(
+            r(Some("both"), gw, None),
+            Err(MatrixObjectModeError::UnknownMode(_))
+        ));
+    }
+
+    #[test]
+    fn direct_mode_is_refused_loudly_until_the_client_is_built_in() {
+        let error = NetworkedMatrixObjectStore::connect(MatrixObjectMode::Direct, "m1:7000")
+            .expect_err("no direct client yet");
+        assert!(error.to_string().contains("not built into this binary"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn the_networked_store_forwards_every_method_to_the_gateway_store() {
+        let (uri, state) = scripted_server(Fault::None, false);
+        let store = NetworkedMatrixObjectStore::connect(MatrixObjectMode::Gateway, &uri).unwrap();
+        assert_eq!(store.mode(), MatrixObjectMode::Gateway);
+        // The defaulted methods: an append and a ranged tail read reach the server and answer
+        // as the inner store would, rather than falling back to the trait's refusing default.
+        let receipt = store.append_blob("wal", Bytes::from_static(b"abcdef")).await.unwrap();
+        assert_eq!((receipt.start_offset, receipt.end_offset), (0, 6));
+        assert_eq!(store.get_range_from("wal", 2).await.unwrap().unwrap().as_ref(), b"cdef");
+        assert_eq!(store.get_range("wal", 1, 3).await.unwrap().as_ref(), b"bcd");
+        assert_eq!(BlockingObjectRead::get_blocking(&store, "wal").unwrap().as_ref(), b"abcdef");
+        assert_eq!(state.lock().unwrap().data, b"abcdef");
+        // compare_and_swap is the one the trait refuses by default; a forwarding wrapper must
+        // report the inner store's answer, which for the gateway store is also a refusal -- so
+        // check it is the INNER message, not the trait default's.
+        let inner = MatrixObjectHttpStore::new(&uri).unwrap();
+        let direct = inner.compare_and_swap("k", None, Bytes::from_static(b"x")).await;
+        let wrapped = store.compare_and_swap("k", None, Bytes::from_static(b"x")).await;
+        assert_eq!(format!("{direct:?}"), format!("{wrapped:?}"));
     }
 }

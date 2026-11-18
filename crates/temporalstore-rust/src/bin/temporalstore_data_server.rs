@@ -60,7 +60,9 @@ use temporalstore_rust::{
     BucketDumpManifest, StorageCacheInvalidateBucketRequest, StorageLifecycleRequest,
     StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
 };
-use temporalstore_snapshot::object_store::{MatrixObjectHttpStore, ObjectStore};
+use temporalstore_snapshot::object_store::{
+    resolve_matrixobject_mode, MatrixObjectMode, NetworkedMatrixObjectStore, ObjectStore,
+};
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 use bytes::Bytes;
 use tracing::{debug, error, info, warn};
@@ -201,7 +203,7 @@ fn main() {
     // then loads (observing it), then replays the shared WAL tail on top. Every other
     // startup — no shared URI, or a node with intact local state, or join-empty
     // placement — loads here exactly as before, so default behavior is unchanged.
-    let networked_uri = matrixobject_networked_uri();
+    let networked_uri = matrixobject_networked_target();
     let defer_startup_load_to_networked_restore =
         !join_empty && networked_uri.is_some() && !local_state_present;
     if !join_empty && !defer_startup_load_to_networked_restore {
@@ -350,8 +352,9 @@ fn main() {
     // shard data follows shards across nodes. This path compiles under default
     // features (`MatrixObjectHttpStore` needs no enterprise crate). Absent the URI
     // it is a complete no-op and behavior is byte-identical.
-    let _matrixobject_networked_durability = networked_uri.as_ref().and_then(|uri| {
+    let _matrixobject_networked_durability = networked_uri.as_ref().and_then(|(mode, uri)| {
         wire_matrixobject_networked_durability(
+            *mode,
             uri,
             &storage_backend,
             &engine,
@@ -2412,11 +2415,33 @@ fn wire_matrixobject_durability(
 /// `TS_SHARED_STORE_URI=matrixobject://host:port` opts a datanode into networked
 /// cross-node lazy data-follow. Absent (or a non-matrixobject scheme) leaves the
 /// datanode on its existing behavior, byte-identical.
-fn matrixobject_networked_uri() -> Option<String> {
-    std::env::var("TS_SHARED_STORE_URI")
-        .ok()
-        .map(|uri| uri.trim().to_string())
-        .filter(|uri| uri.starts_with("matrixobject://"))
+///
+/// `TS_MATRIXOBJECT_MODE=gateway|direct` chooses how the node reaches the cluster; with no
+/// mode, whichever of `TS_SHARED_STORE_URI` (gateway) and `TS_MATRIXOBJECT_META` (direct) is
+/// set decides. A configuration that names both, or that contradicts its mode, is a startup
+/// error: the node refuses to run rather than choose where its writes go.
+fn matrixobject_networked_target() -> Option<(MatrixObjectMode, String)> {
+    let env = |name: &str| std::env::var(name).ok();
+    let uri = env("TS_SHARED_STORE_URI");
+    let meta = env("TS_MATRIXOBJECT_META");
+    match resolve_matrixobject_mode(
+        env("TS_MATRIXOBJECT_MODE").as_deref(),
+        uri.as_deref(),
+        meta.as_deref(),
+    ) {
+        Ok(None) => None,
+        Ok(Some(mode)) => {
+            let target = match mode {
+                MatrixObjectMode::Gateway => uri,
+                MatrixObjectMode::Direct => meta,
+            };
+            target.map(|target| (mode, target.trim().to_string()))
+        }
+        Err(err) => {
+            eprintln!("invalid networked matrixobject configuration: {err}");
+            std::process::exit(2);
+        }
+    }
 }
 
 /// Durable shared-storage sink backed by a NETWORKED matrixobject WAL writer.
@@ -2426,7 +2451,7 @@ fn matrixobject_networked_uri() -> Option<String> {
 /// no enterprise crate.
 struct MatrixObjectNetworkedWalSink {
     handle: tokio::runtime::Handle,
-    writer: Arc<temporalstore_rust::SharedStoreStorageWriter<MatrixObjectHttpStore>>,
+    writer: Arc<temporalstore_rust::SharedStoreStorageWriter<NetworkedMatrixObjectStore>>,
 }
 
 impl std::fmt::Debug for MatrixObjectNetworkedWalSink {
@@ -2457,7 +2482,7 @@ impl temporalstore_rust::SharedWalSink for MatrixObjectNetworkedWalSink {
 /// drop; keeping the runtime alive is all that is required.
 struct MatrixObjectNetworkedDurability {
     _rt: tokio::runtime::Runtime,
-    _writer: Arc<temporalstore_rust::SharedStoreStorageWriter<MatrixObjectHttpStore>>,
+    _writer: Arc<temporalstore_rust::SharedStoreStorageWriter<NetworkedMatrixObjectStore>>,
 }
 
 /// Wire the NETWORKED matrixobject shared store into the running node so shard data
@@ -2471,6 +2496,7 @@ struct MatrixObjectNetworkedDurability {
 /// `matrixobject://` URI is configured; returns `None` on a bad URI or runtime
 /// failure so the node still serves from local durability.
 fn wire_matrixobject_networked_durability(
+    mode: MatrixObjectMode,
     uri: &str,
     storage_backend: &StorageBackend,
     engine: &TemporalEngine,
@@ -2480,10 +2506,10 @@ fn wire_matrixobject_networked_durability(
     local_state_present: bool,
     auto_load: bool,
 ) -> Option<MatrixObjectNetworkedDurability> {
-    let store = match MatrixObjectHttpStore::new(uri) {
+    let store = match NetworkedMatrixObjectStore::connect(mode, uri) {
         Ok(store) => store,
         Err(err) => {
-            error!(%err, uri, "invalid TS_SHARED_STORE_URI; networked matrixobject durability disabled");
+            error!(%err, uri, ?mode, "cannot reach the networked matrixobject store; its durability is disabled");
             return None;
         }
     };
