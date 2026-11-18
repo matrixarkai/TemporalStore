@@ -6,6 +6,10 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 
 use thiserror::Error;
 
+#[path = "embedding_row_pages.rs"]
+mod row_pages;
+use row_pages::RowPages;
+
 const MAX_EMBEDDING_DIMENSIONS: usize = 4096;
 const SIGNATURE_ROUTING_MIN_DIMENSIONS: usize = 384;
 const SIGNATURE_ROUTING_MIN_ROWS: usize = 8192;
@@ -285,7 +289,7 @@ struct TenantRows {
     item_ids: Vec<u64>,
     positions: IdentityPositions,
     scales: Vec<f32>,
-    vectors: Vec<i8>,
+    vectors: RowPages,
     signature_routing: Option<Box<SignatureRouting>>,
 }
 
@@ -591,7 +595,7 @@ fn trim_sparse_buffer<T>(buffer: &mut Vec<T>) {
 
 impl TenantRows {
     fn trim_sparse_capacity(&mut self) {
-        trim_sparse_buffer(&mut self.vectors);
+        self.vectors.trim_sparse_capacity();
         trim_sparse_buffer(&mut self.scales);
         trim_sparse_buffer(&mut self.owner_ids);
         trim_sparse_buffer(&mut self.item_ids);
@@ -609,19 +613,7 @@ impl TenantRows {
     }
 
     fn reserve_vector_rows(&mut self, additional_rows: usize, dimensions: usize) {
-        let required = self
-            .vectors
-            .len()
-            .saturating_add(additional_rows.saturating_mul(dimensions));
-        let capacity = self.vectors.capacity();
-        if required <= capacity {
-            return;
-        }
-        // Small buffers grow geometrically; large tenants retain bounded growth headroom.
-        let growth = capacity.max(dimensions).min(MAX_VECTOR_GROWTH_BYTES);
-        let target = required.max(capacity.saturating_add(growth));
-        self.vectors
-            .reserve_exact(target.saturating_sub(self.vectors.len()));
+        self.vectors.reserve_rows(additional_rows, dimensions);
     }
 
     fn signature_at(&self, dimensions: usize, position: usize) -> Option<u64> {
@@ -2232,7 +2224,7 @@ mod tests {
             item_ids: (0..row_count as u64).collect(),
             positions: IdentityPositions::default(),
             scales: vec![1.0 / 127.0; row_count],
-            vectors: vec![1; row_count * dimensions],
+            vectors: RowPages::from_flat(dimensions, vec![1; row_count * dimensions]),
             signature_routing: None,
         };
         rows.signature_routing = Some(SignatureRouting::build(&rows, dimensions));
