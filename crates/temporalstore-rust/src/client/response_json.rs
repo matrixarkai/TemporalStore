@@ -7,8 +7,8 @@ use serde_json::value::RawValue;
 
 use crate::http::{post_json_with_options, HttpError, HttpRequestOptions};
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, CommandResponse, ExecuteRequest, ExecuteResponse,
-    Status,
+    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
+    ExecuteResponse, Status,
 };
 
 // Keep this adapter on the HTTP boundary, not on the public response type:
@@ -76,6 +76,9 @@ pub(super) fn post_execute_json(
     request: &ExecuteRequest,
     options: HttpRequestOptions,
 ) -> Result<ExecuteResponse, HttpError> {
+    if !matches!(&request.command, Command::HashGetAll { .. }) {
+        return post_json_with_options(addr, path, request, options);
+    }
     post_json_with_options::<_, ExecuteJson>(addr, path, request, options).map(Into::into)
 }
 
@@ -85,6 +88,13 @@ pub(super) fn post_batch_json(
     request: &BatchExecuteRequest,
     options: HttpRequestOptions,
 ) -> Result<BatchExecuteResponse, HttpError> {
+    if !request
+        .commands
+        .iter()
+        .any(|command| matches!(command, Command::HashGetAll { .. }))
+    {
+        return post_json_with_options(addr, path, request, options);
+    }
     post_json_with_options::<_, BatchJson>(addr, path, request, options).map(Into::into)
 }
 
