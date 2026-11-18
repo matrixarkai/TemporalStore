@@ -2096,7 +2096,7 @@ impl TemporalEngine {
         // an unsafe WAL/index frontier: those counts are the diagnosis for why the frontier is
         // stuck. The two below are the cases where nobody is asking for a number -- the feature is
         // off, or the log is too small to be worth collecting.
-        let quick_bytes = self.index_log_store.log_len_bytes(request.shard_id);
+        let quick_bytes = self.index_log_store.log_len_bytes_cached(request.shard_id);
         let quick_threshold_missed = request.index_gc_index_log_bytes_threshold != 0
             && quick_bytes < request.index_gc_index_log_bytes_threshold;
         let quick_skip_reason = if !request.enable_index_gc {
@@ -2145,7 +2145,7 @@ impl TemporalEngine {
         // measure the log the same way instead of two ways that happen to agree.
         let gate = self
             .index_log_store
-            .gate_summary(request.shard_id, wal_plan.retain_from_index_log_sequence);
+            .gate_summary_cached(request.shard_id, wal_plan.retain_from_index_log_sequence);
         let records_before = gate.records;
         let bytes_before = gate.bytes;
         let removable_bytes_before = gate.removable_bytes;

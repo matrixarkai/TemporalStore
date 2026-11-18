@@ -70,7 +70,7 @@ impl DataNodeRuntime {
             // The log's LENGTH, not its last sequence: the sequence is read by scanning the active
             // piece, while the length is one directory listing and a stat per piece. An append, a
             // truncate and a collect each change it, so the key keeps what it needs.
-            index_log_bytes: self.inner.engine.index_log_store().log_len_bytes(shard_id),
+            index_log_bytes: self.inner.engine.index_log_store().log_len_bytes_cached(shard_id),
             resident_blocks: self.inner.engine.wal_resident_block_count(shard_id),
             dirty_buckets,
             undumped_wal_records,
@@ -1422,7 +1422,7 @@ impl DataNodeRuntime {
                 .inner
                 .engine
                 .index_log_store()
-                .log_len_bytes(shard_id)
+                .log_len_bytes_cached(shard_id)
                 < index_log_floor;
         let index_gc_has_no_work = index_gc_idle_apart_from_quarantine
             && (lifecycle_plan.delayed_destroy_block_slab_ids.is_empty() || index_quarantine_waits);
@@ -1483,7 +1483,7 @@ impl DataNodeRuntime {
                 .engine
                 .latest_bucket_dump_image_bytes(shard_id);
             let index_log_over_floor = index_log_forces_dump(
-                self.inner.engine.index_log_store().log_len_bytes(shard_id),
+                self.inner.engine.index_log_store().log_len_bytes_cached(shard_id),
                 index_log_floor,
                 last_image_bytes,
             );
