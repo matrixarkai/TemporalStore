@@ -4802,7 +4802,7 @@ fn single_block_element_names_are_held_inline() {
         // single-block object spill its refs to a vector, or stay inline.
         match entry {
             BlockRefs::One(_) => inline += 1,
-            BlockRefs::Many(_) => spilled += 1,
+            BlockRefs::Many(_) | BlockRefs::Large(_) => spilled += 1,
         }
     }
     assert!(inline + spilled > 0, "no object slots were recorded; nothing was measured");
@@ -4821,8 +4821,8 @@ fn single_block_element_names_are_held_inline() {
     assert!(refs.insert(second.clone()), "a second ref is an addition");
     assert_eq!(refs.len(), 2);
     assert_eq!(
-        refs.as_slice(),
-        &[second, first],
+        refs.iter().cloned().collect::<Vec<_>>(),
+        vec![second, first],
         "promotion must land sorted -- removal binary-searches these"
     );
 }

@@ -110,13 +110,21 @@ fn record(items: Vec<IndexItem>) -> IndexDeltaRecord {
         }),
         applied_wal_sequence: Some(0),
         key_states: vec![serde_json::json!({"ttl": [1, 2, 3]}), serde_json::json!("x")],
-        upsert: true,
+        upsert: true.into(),
         shared_object_key: Some(String::new()),
     }
 }
 
 fn round_trip(record: &IndexDeltaRecord) -> IndexDeltaRecord {
     decode_delta_record(&encode_delta_record(record).expect("encode")).expect("decode")
+}
+
+#[test]
+fn legacy_protobuf_encoder_rejects_keyed_snapshots() {
+    let mut original = record(Vec::new());
+    original.upsert = crate::index_log::IndexDeltaApplyMode::keyed_snapshots(vec!["empty".into()]).unwrap();
+    assert!(encode_delta_record(&original).is_err());
+    assert!(crate::index_log::delta_record_carries_content_of(&original));
 }
 
 /// CLAIM 1: THE ROUND TRIP IS EXACT, field for field, for every shape.
@@ -132,7 +140,7 @@ fn the_delta_record_survives_the_protobuf_schema_exactly() {
             key_states: Vec::new(),
             applied_wal_sequence: None,
             shared_object_key: None,
-            upsert: false,
+            upsert: false.into(),
             ..original.clone()
         };
         assert_eq!(round_trip(&alone), alone, "item {position} did not round-trip");
@@ -314,7 +322,7 @@ fn what_the_schema_costs_against_the_positional_row() {
         meta: None,
         applied_wal_sequence: Some(5_000),
         key_states: Vec::new(),
-        upsert: true,
+        upsert: true.into(),
         shared_object_key: Some("feature:series:42".to_string()),
     };
     let positional = encode_index_payload(&record, INDEX_LOG_SHAPE_DELTA).expect("encode").len();

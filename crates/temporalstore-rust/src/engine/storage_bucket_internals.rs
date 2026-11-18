@@ -5513,7 +5513,7 @@ fn upsert_bucket_index_block_inner(
             shard
                 .bucket_index
                 .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
-                .map(<[crate::engine::state::BlockLookupRef]>::to_vec)
+                .map(|refs| refs.iter().cloned().collect::<Vec<_>>())
         } else {
             None
         };
@@ -5550,7 +5550,11 @@ fn upsert_bucket_index_block_inner(
                 .bucket_index
                 .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
                 .map(|refs| {
-                    affected_bucket_survivors::find(&block_refs, refs, |at| at.routing_bucket)
+                    affected_bucket_survivors::find_by(
+                        &block_refs,
+                        |at| at.routing_bucket,
+                        |bucket| refs.has_routing_bucket(bucket),
+                    )
                 })
                 .unwrap_or_default()
         } else {

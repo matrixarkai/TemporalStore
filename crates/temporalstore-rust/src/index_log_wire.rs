@@ -402,6 +402,8 @@ impl ProtoMetaItem {
 
 impl ProtoIndexLog {
     pub fn from_record<K: serde::Serialize>(record: &IndexDeltaRecord<K>) -> Result<Self, String> {
+        let upsert = record.upsert.legacy_upsert()
+            .ok_or("legacy protobuf index codec cannot encode keyed snapshots")?;
         let mut key_states = Vec::with_capacity(record.key_states.len());
         for state in &record.key_states {
             key_states.push(serde_json::to_vec(state).map_err(|error| error.to_string())?);
@@ -413,7 +415,7 @@ impl ProtoIndexLog {
             sequence: record.sequence,
             wal_sequence: record.applied_wal_sequence,
             shard_id: record.shard_id,
-            upsert: record.upsert,
+            upsert,
             shared_object_key: record.shared_object_key.clone(),
             key_states,
             ..ProtoIndexLog::default()
@@ -436,7 +438,7 @@ impl ProtoIndexLog {
             meta: self.meta_item.map(ProtoMetaItem::into_meta).transpose()?,
             applied_wal_sequence: self.wal_sequence,
             key_states,
-            upsert: self.upsert,
+            upsert: self.upsert.into(),
             shared_object_key: self.shared_object_key,
         })
     }

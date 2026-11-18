@@ -15,6 +15,9 @@ use crate::types::ShardId;
 
 #[path = "index_log_compression_policy.rs"]
 mod compression_policy;
+#[path = "index_log/apply_mode.rs"]
+mod apply_mode;
+pub use apply_mode::IndexDeltaApplyMode;
 
 /// Counters for the scale probes, tests only.
 ///
@@ -459,7 +462,7 @@ fn index_log_compression_policy() -> compression_policy::CompressionPolicy {
 /// msgpack it replaces -- about 8% more -- because a tag costs a byte per present field and a
 /// position costs nothing. The measurement and that reasoning are recorded at the positional
 /// encoder below. Turning this on is a deliberate size cost, not a tuning knob.
-fn index_log_protobuf_enabled() -> bool {
+pub(crate) fn index_log_protobuf_enabled() -> bool {
     #[cfg(test)]
     if PROTOBUF_WRITER_ON_THIS_THREAD.with(|flag| flag.get()) {
         return true;
@@ -2089,15 +2092,16 @@ pub struct IndexDeltaRecord<K = serde_json::Value> {
     /// blocks the deltas already pin at their original addresses).
     #[serde(rename = "aw", default)]
     pub applied_wal_sequence: Option<u64>,
-    /// When true, this record's items are the exact blocks the write produced: replay replaces
+    /// A legacy true flag means items are the exact blocks the write produced: replay replaces
     /// each item's (kind, object, element name) predecessor and inserts, WITHOUT the covered-key
     /// wipe -- mirroring the write path's upsert_bucket_index_block. When false (the default,
     /// and every record written before this field existed), the record snapshots each covered
     /// object's whole block set and replay wipes-then-restores. The snapshot shape is what made
     /// every append O(store): a batch touching the grow-with-the-store index hashes logged
-    /// every block of each of them, every time.
+    /// every block of each of them, every time. Keyed mode replaces only its named keys,
+    /// then applies the remaining block updates in the same framed record.
     #[serde(rename = "u", default)]
-    pub upsert: bool,
+    pub upsert: IndexDeltaApplyMode,
     /// Opaque per-touched-key state blobs (one JSON object per key) carrying the
     /// authoritative post-write value of the maps that are NOT reconstructable from a
     /// single block-index entry -- packed timestamped series (feature membership survives
@@ -3139,7 +3143,7 @@ impl LocalIndexLogStore {
         key_states: Vec<KeyState>,
         applied_wal_sequence: Option<u64>,
         meta: Option<MetaItem>,
-        upsert: bool,
+        upsert: impl Into<IndexDeltaApplyMode>,
         durable: bool,
     ) -> Result<u64, IndexLogError> {
         // The single and the batch write paths are two live callers of this, which is exactly the
@@ -3154,7 +3158,7 @@ impl LocalIndexLogStore {
                 key_states,
                 applied_wal_sequence,
                 meta,
-                upsert,
+                upsert.into(),
                 durable,
             )
         })
@@ -3168,7 +3172,7 @@ impl LocalIndexLogStore {
         key_states: Vec<KeyState>,
         applied_wal_sequence: Option<u64>,
         meta: Option<MetaItem>,
-        upsert: bool,
+        upsert: IndexDeltaApplyMode,
         durable: bool,
     ) -> Result<u64, IndexLogError> {
         if bulk_ingest_mode() || !indexlog_enabled() {
@@ -3569,6 +3573,7 @@ impl LocalIndexLogStore {
                 if record.items.is_empty()
                     && record.meta.is_none()
                     && record.key_states.is_empty()
+                    && record.upsert.replacement_keys().is_none()
                     && record.applied_wal_sequence.is_none()
                 {
                     continue;
@@ -4929,7 +4934,10 @@ fn delta_record_carries_content(payload: &[u8]) -> Result<bool, IndexLogError> {
 /// reads raw payloads and the fold reads records, and "what the fold would apply" has to mean
 /// the same thing to both or the two drift about which records matter.
 pub(crate) fn delta_record_carries_content_of<K>(record: &IndexDeltaRecord<K>) -> bool {
-    !record.items.is_empty() || record.meta.is_some() || !record.key_states.is_empty()
+    !record.items.is_empty()
+        || record.meta.is_some()
+        || !record.key_states.is_empty()
+        || record.upsert.replacement_keys().is_some()
 }
 
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
@@ -5470,7 +5478,7 @@ mod tests {
                 },
                 meta: if *meta { Some(MetaItem::default()) } else { None },
                 applied_wal_sequence: *anchor,
-                upsert: false,
+                upsert: false.into(),
                 key_states: if *key_states {
                     vec![serde_json::json!({ "key": "tenant/1/object/0" })]
                 } else {
@@ -5549,7 +5557,7 @@ mod tests {
         assert_eq!(original.shard_id, 7);
         assert_eq!(original.sequence, 3);
         assert_eq!(original.applied_wal_sequence, Some(11));
-        assert!(original.upsert);
+        assert_eq!(original.upsert.legacy_upsert(), Some(true));
         assert_eq!(original.key_states.len(), 1);
         for (short, long) in [
             ("s", "shard_id"),
@@ -5567,9 +5575,9 @@ mod tests {
                         record.shard_id,
                         record.sequence,
                         record.applied_wal_sequence,
-                        record.upsert,
+                        record.upsert.legacy_upsert(),
                         record.key_states.len(),
-                    ) != (7, 3, Some(11), true, 1)
+                    ) != (7, 3, Some(11), Some(true), 1)
                 }),
                 "a delta record with `{short}` spelled `{long}` loaded as the same record: the alias is back"
             );
@@ -5586,7 +5594,7 @@ mod tests {
             items: vec![block_item(1, "a", false)],
             meta: None,
             applied_wal_sequence: Some(2),
-            upsert: true,
+            upsert: true.into(),
             key_states: Vec::new(),
             shared_object_key: None,
         };
@@ -5600,6 +5608,42 @@ mod tests {
         let back: IndexDeltaRecord = serde_json::from_str(&encoded).unwrap();
         assert_eq!(back.shard_id, 7);
         assert_eq!(back.applied_wal_sequence, Some(2));
+    }
+
+    #[test]
+    fn malformed_keyed_mode_in_complete_frame_is_not_skipped_or_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store.append_delta(7, vec![block_item(1, "a", false)], Vec::new(), Some(1), None, true, true).unwrap();
+        drop(store);
+        let malformed = serde_json::json!({
+            "s": 7, "q": 2, "items": [], "u": {"replace_keys": []}
+        });
+        let payload = encode_as_map(&malformed, INDEX_LOG_SHAPE_DELTA);
+        let path = index_log_path(dir.path(), 7);
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(&crate::log_framing::encode_record(&payload)).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let before = std::fs::read(&path).unwrap();
+        let reopened = LocalIndexLogStore::new(dir.path());
+        assert!(reopened.read_delta_records(7, 0).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before,
+            "a complete framed record with invalid apply semantics is not a torn tail");
+    }
+
+    #[test]
+    fn keyed_snapshot_with_no_items_survives_log_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        let mode = IndexDeltaApplyMode::keyed_snapshots(vec!["empty".into()]).unwrap();
+        store.append_delta(7, Vec::new(), Vec::new(), None, None, mode.clone(), true).unwrap();
+        drop(store);
+        let reopened = LocalIndexLogStore::new(dir.path());
+        let records = reopened.read_delta_records(7, 0).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].upsert, mode);
+        assert!(delta_record_carries_content_of(&records[0]));
     }
 
     #[test]
@@ -7086,7 +7130,7 @@ mod tests {
             items: vec![item],
             meta: None,
             applied_wal_sequence: Some(1),
-            upsert: true,
+            upsert: true.into(),
             key_states: Vec::new(),
             shared_object_key,
         };
@@ -7154,7 +7198,7 @@ mod tests {
                 items,
                 meta: None,
                 applied_wal_sequence: Some(1),
-                upsert: true,
+                upsert: true.into(),
                 key_states: Vec::new(),
                 shared_object_key: None,
             },
@@ -7169,7 +7213,7 @@ mod tests {
                 items: hoisted,
                 meta: None,
                 applied_wal_sequence: Some(1),
-                upsert: true,
+                upsert: true.into(),
                 key_states: Vec::new(),
                 shared_object_key: Some(shared.to_string()),
             },
@@ -7912,7 +7956,7 @@ mod tests {
             items: vec![block_item(1, "a", false)],
             meta: None,
             applied_wal_sequence: Some(1),
-            upsert: false,
+            upsert: false.into(),
             key_states: Vec::new(),
             shared_object_key: None,
         };
@@ -7968,7 +8012,7 @@ mod tests {
             items: vec![block_item(5, "c", false)],
             meta: None,
             applied_wal_sequence: Some(31),
-            upsert: true,
+            upsert: true.into(),
             key_states: Vec::new(),
             shared_object_key: None,
         };
@@ -9492,7 +9536,7 @@ flag exists to say",
                 items,
                 meta: None,
                 applied_wal_sequence: Some(1),
-                upsert: true,
+                upsert: true.into(),
                 key_states: Vec::new(),
                 shared_object_key: None,
             };
@@ -10029,7 +10073,7 @@ flag exists to say",
             items: vec![block_item(2, "second", false)],
             meta: None,
             applied_wal_sequence: Some(2),
-            upsert: true,
+            upsert: true.into(),
             key_states: Vec::new(),
             shared_object_key: None,
         };
@@ -10068,7 +10112,7 @@ flag exists to say",
             items: vec![block_item(2, "second", false)],
             meta: None,
             applied_wal_sequence: Some(2),
-            upsert: true,
+            upsert: true.into(),
             key_states: vec![serde_json::json!({"k": 1})],
             shared_object_key: None,
         };
@@ -10173,7 +10217,7 @@ flag exists to say",
             items: Vec::new(),
             meta: None,
             applied_wal_sequence: None,
-            upsert: false,
+            upsert: false.into(),
             key_states: Vec::new(),
             shared_object_key: None,
         };
@@ -10209,7 +10253,7 @@ flag exists to say",
             items: vec![block_item(2, "b", false)],
             meta: None,
             applied_wal_sequence: Some(2),
-            upsert: true,
+            upsert: true.into(),
             key_states: Vec::new(),
             shared_object_key: None,
         };
@@ -10243,7 +10287,7 @@ flag exists to say",
             items: vec![block_item(2, "b", false)],
             meta: None,
             applied_wal_sequence: Some(2),
-            upsert: true,
+            upsert: true.into(),
             key_states: Vec::new(),
             shared_object_key: None,
         };
@@ -10281,7 +10325,7 @@ flag exists to say",
             items: vec![block_item(2, "b", false)],
             meta: None,
             applied_wal_sequence: Some(2),
-            upsert: true,
+            upsert: true.into(),
             key_states: Vec::new(),
             shared_object_key: None,
         };
@@ -11268,7 +11312,7 @@ flag exists to say",
             items: vec![item],
             meta: None,
             applied_wal_sequence: Some(1),
-            upsert: true,
+            upsert: true.into(),
             key_states: Vec::new(),
             shared_object_key: None,
         };

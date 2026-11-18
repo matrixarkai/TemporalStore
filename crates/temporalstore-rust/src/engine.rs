@@ -25,6 +25,10 @@ mod execute_on_shard;
 #[path = "engine/engine_context.rs"]
 mod context;
 mod context_embedding_index;
+mod index_delta_plan;
+use index_delta_plan::{BatchIndexDeltaPlan, fold_planned_index_delta};
+#[cfg(test)]
+mod series_state_identity_tests;
 #[path = "engine/engine_lifecycle.rs"]
 mod lifecycle;
 mod object_manager;
@@ -1283,8 +1287,10 @@ impl TemporalEngine {
             (command, None)
         };
 
-        let hash_was_dirty = match &execution_command {
-            Command::HashMultiSet { key, .. } => shard.dirty_objects.contains(key),
+        let writer_was_dirty = match &execution_command {
+            Command::HashMultiSet { key, .. } | Command::SetAdd { key, .. } => {
+                shard.dirty_objects.contains(key)
+            }
             _ => false,
         };
         // Preserve the writer's proof so maintenance does not file its fields twice.
@@ -1395,7 +1401,9 @@ impl TemporalEngine {
                     // did, which is why a synchronous write leaves as much pending as an async one
                     // (measured: 64 of 64 either way). Writing through is still to be built; this
                     // removes the branch that suggested it already had been.
-                    if hash_index_filed.is_some() && hash_was_dirty {
+                    if (hash_index_filed.is_some() || matches!(&command, Command::SetAdd { .. }))
+                        && writer_was_dirty
+                    {
                         // Older blocks already carry the mark; the writer dirtied its
                         // new/replaced blocks. Keep the bucket generation without a walk.
                         let routing_bucket = block_routing_bucket(
@@ -3737,10 +3745,27 @@ impl FastPathRead<'_> {
                 }
                 Some(guard)
             }
+            Self::FeatureRange { key, window, .. } => {
+                let mut addresses = window.iter().map(|(_, address)| address).filter(|address| {
+                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                });
+                let first = addresses.next()?;
+                let object = stable_block_object_id(shard, "feature", key);
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                guard.pin(blocks, object, None, first);
+                for address in addresses {
+                    guard.pin(blocks, object, None, address);
+                }
+                Some(guard)
+            }
             Self::Hash { .. } | Self::Answer { .. } => None,
         }
     }
 }
+
+#[cfg(test)]
+#[path = "engine/feature_wal_pin_tests.rs"]
+mod feature_wal_pin_tests;
 
 #[cfg(test)]
 thread_local! {
@@ -5787,21 +5812,30 @@ impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
 /// parameter, same `Self`, so a call site names which one it means -- and the migrated maps' folds
 /// do, with a turbofish.
 ///
-/// BUILT THROUGH THE WRITE TRAIT RATHER THAN A `From`, so the slot's array keeps the invariant its
-/// own door keeps: sorted by instant, because every reader binary-searches it.
+/// The stored B-tree converts to a sorted array, preserving the record and block identities
+/// already filed by the block fold. Series membership does not own that structural state.
 impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
     for std::collections::HashMap<state::ModelKey, object_record::ObjectSlot>
 {
     fn insert_entry(&mut self, key: &str, value: std::collections::BTreeMap<u64, ElementEntry>) {
-        let mut slot = object_record::ObjectSlot::default();
-        for (at, address) in value {
-            timestamped_series::TimestampedSeriesWrite::set(&mut slot, at, address);
+        let mut restored = object_record::ObjectSlot::from(value);
+        if let Some(existing) = self.get_mut(key) {
+            *restored.record_mut() = existing.record();
+            restored.replace_refs(existing.take_refs());
+            *existing = restored;
+        } else {
+            self.insert(key.into(), restored);
         }
-        self.insert(key.into(), slot);
     }
 
     fn remove_entry(&mut self, key: &str) {
-        self.remove(key);
+        if self.get(key).is_some_and(|slot| slot.refs().is_some()) {
+            <Self as KeyedState<std::collections::BTreeMap<u64, ElementEntry>>>::insert_entry(
+                self, key, std::collections::BTreeMap::new(),
+            );
+        } else {
+            self.remove(key);
+        }
     }
 }
 
@@ -6069,6 +6103,9 @@ fn delta_record_covered_keys(record: &crate::index_log::IndexDeltaRecord) -> BTr
         .filter_map(|blob| blob.get("key").and_then(|value| value.as_str()))
         .map(str::to_string)
         .collect();
+    if let Some(replacements) = record.upsert.replacement_keys() {
+        keys.extend(replacements.iter().cloned());
+    }
     // Fall back to the items' own object keys if a record carried block items but no blobs.
     for item in &record.items {
         keys.insert(item.object_key.to_string());

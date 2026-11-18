@@ -123,8 +123,84 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
+      - name: Mem0 model-free launcher checks
+        timeout-minutes: 2
+        run: |
+          set -o pipefail
+          bash scripts/tests/mem0_scale_heuristic_test.sh | tee /tmp/mem0-heuristic-launcher.log
+          grep -q '^heuristic launcher: 6 checks passed$' /tmp/mem0-heuristic-launcher.log
+
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
+
+      - name: Large block reference checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for spec in state::block_refs::tests:::7 large_block_refs_tests:::2 rebuilt_ref_filing_tests:::3 feature_wal_pin_tests:::3; do
+            filter=${spec%:*}
+            expected=${spec##*:}
+            cargo test --locked -p temporalstore-rust --lib --features alloc-probe "$filter" \
+              -- --test-threads=1 2>&1 | tee /tmp/large-block-refs-gate.log
+            grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/large-block-refs-gate.log \
+              || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
+          done
+
+      - name: Container physical ownership checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for spec in recorded_map::owners::tests:::9 container_owner_cache_tests:::7 recorded_map::ordinals::tests:::3 recorded_ordinal_tests:::4 block_owner_query_tests:::3; do
+            filter=${spec%:*}
+            expected=${spec##*:}
+            cargo test --locked -p temporalstore-rust --lib --features alloc-probe "$filter" \
+              -- --test-threads=1 2>&1 | tee /tmp/container-ownership-gate.log
+            grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/container-ownership-gate.log \
+              || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
+          done
+
+      - name: Mem0 pre-mutation read checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for spec in read_receipts::tests:::4 growth::tests:::5 memory_add_tests:::2 crud::tests:::6; do
+            filter=${spec%:*}
+            expected=${spec##*:}
+            cargo test --locked -p temporalstore-rust --features alloc-probe --bin mem0_scale_harness "$filter" \
+              -- --test-threads=1 2>&1 | tee /tmp/mem0-read-baseline.log
+            grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/mem0-read-baseline.log
+          done
+
+      - name: Mixed index delta recovery checks
+        timeout-minutes: 30
+        env:
+          TS_INDEX_LOG_PROTOBUF_ENABLED: 'false'
+        run: |
+          set -o pipefail
+          for spec in series_state_identity_tests:3 index_delta_plan::tests:::3 index_log::apply_mode::tests:::3 malformed_keyed_mode_in_complete_frame:1 keyed_snapshot_with_no_items:1 legacy_protobuf_encoder_rejects_keyed_snapshots:1 zset_count_adjust:5; do
+            filter=${spec%:*}
+            expected=${spec##*:}
+            cargo test --locked -p temporalstore-rust --lib --features alloc-probe "$filter" \
+              -- --test-threads=1 2>&1 | tee /tmp/mixed-index-delta-gate.log
+            grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/mixed-index-delta-gate.log \
+              || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
+          done
+
+      - name: Storage tick isolation checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe data_node::round_budget::tests:: \
+            -- --test-threads=1 2>&1 | tee /tmp/storage-tick-isolation.log
+          grep -q 'test result: ok\. 6 passed; 0 failed;' /tmp/storage-tick-isolation.log
+
+      - name: Set append dirty-work checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe set_batch_work_tests \
+            -- --test-threads=1 2>&1 | tee /tmp/set-append-dirty-work.log
+          grep -q 'test result: ok\. 9 passed; 0 failed;' /tmp/set-append-dirty-work.log
 
       - name: Ollama extraction source isolation checks
         timeout-minutes: 30
@@ -133,6 +209,17 @@ jobs:
           cargo test --locked -p temporalstore-rust --lib --features alloc-probe llm_context::ollama::tests:: \
             -- --test-threads=1 2>&1 | tee /tmp/ollama-source-isolation.log
           grep -q 'test result: ok\. 10 passed; 0 failed;' /tmp/ollama-source-isolation.log
+
+      - name: Embedding retained-capacity checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe retained_capacity_tests \
+            -- --test-threads=1 2>&1 | tee /tmp/embedding-retention-gate.log
+          grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/embedding-retention-gate.log
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe row_pages::tests:: \
+            -- --test-threads=1 2>&1 | tee /tmp/embedding-row-pages-gate.log
+          grep -q 'test result: ok\. 3 passed; 0 failed;' /tmp/embedding-row-pages-gate.log
 
       - name: Resource chunk content checks
         timeout-minutes: 30
@@ -212,7 +299,7 @@ jobs:
           set -o pipefail
           cargo test -p temporalstore-rust --bin mem0_scale_harness crud::tests \
             -- --test-threads=1 2>&1 | tee /tmp/memory-crud-gate.log
-          grep -q 'test result: ok\. 5 passed; 0 failed;' /tmp/memory-crud-gate.log
+          grep -q 'test result: ok\. 6 passed; 0 failed;' /tmp/memory-crud-gate.log
 
       - name: Batch deletion acknowledgment checks
         timeout-minutes: 30
@@ -228,7 +315,7 @@ jobs:
           set -o pipefail
           cargo test -p temporalstore-rust --lib --features alloc-probe affected_bucket_survivors \
             -- --test-threads=1 --nocapture 2>&1 | tee /tmp/affected-bucket-gate.log
-          grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/affected-bucket-gate.log
+          grep -q 'test result: ok\. 5 passed; 0 failed;' /tmp/affected-bucket-gate.log
 
       - name: Retention and block ownership checks
         timeout-minutes: 30

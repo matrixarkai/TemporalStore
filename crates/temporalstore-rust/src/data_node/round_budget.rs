@@ -170,6 +170,8 @@ pub(crate) fn options_for_slot(
     options.enable_wal_reclaim = false;
     options.enable_memory_reclaim = false;
     options.enable_evict = false;
+    // The resident bound enables eviction independently of the wide eviction flag.
+    options.index_resident_limit_bytes = 0;
     options.enable_block_gc = false;
     options.enable_index_gc = false;
     options.enable_block_compaction = false;
@@ -179,6 +181,7 @@ pub(crate) fn options_for_slot(
         HeavySlot::Memory => {
             options.enable_memory_reclaim = base.enable_memory_reclaim;
             options.enable_evict = base.enable_evict;
+            options.index_resident_limit_bytes = base.index_resident_limit_bytes;
             options.enable_metrics_reap = base.enable_metrics_reap;
         }
         HeavySlot::PageGc => options.enable_block_gc = base.enable_block_gc,
@@ -309,6 +312,35 @@ mod tests {
         off.enable_wal_reclaim = false;
         let options = options_for_slot(&off, HeavySlot::WalReclaim);
         assert!(!options.enable_wal_reclaim, "a stage the base had off stays off");
+    }
+
+    #[test]
+    fn resident_bound_belongs_only_to_the_memory_slot() {
+        for bound in [0, 1, 64 * 1024 * 1024] {
+            for enable_evict in [false, true] {
+                let base = StorageManagerOptions {
+                    index_resident_limit_bytes: bound,
+                    enable_evict,
+                    ..Default::default()
+                };
+                for slot in HeavySlot::ALL {
+                    let options = options_for_slot(&base, slot);
+                    let memory = slot == HeavySlot::Memory;
+                    assert_eq!(
+                        options.index_resident_limit_bytes,
+                        if memory { bound } else { 0 },
+                        "resident bound leaked into {slot:?}"
+                    );
+                    assert_eq!(options.enable_evict, memory && enable_evict);
+                    let bound_opens = options.index_resident_limit_bytes > 0
+                        && options.index_resident_limit_bytes
+                            > options.eviction_memory_pressure_threshold;
+                    assert!(memory || !(bound_opens || options.enable_evict));
+                }
+                assert_eq!(base.index_resident_limit_bytes, bound);
+                assert_eq!(base.enable_evict, enable_evict);
+            }
+        }
     }
 
     /// A tick runs the cheap work and at most ONE heavy stage, and over the five ticks the five

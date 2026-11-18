@@ -281,7 +281,7 @@ fn repeated_dirty_hash_writes_preserve_block_marks_and_checkpoint_generation() {
         let generation = shard
             .bucket_index
             .bucket_map
-            .get(&refs[0].routing_bucket)
+            .get(&refs.iter().next().unwrap().routing_bucket)
             .unwrap()
             .dirty_generation;
         (shard.dirty_objects.contains("row"), marks, generation)
