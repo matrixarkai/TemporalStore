@@ -13,12 +13,14 @@ const MAX_CAPACITY: usize = MAX_BLOCKS * 2;
 #[derive(Debug)]
 pub(super) struct BlockOwners {
     counts: Option<HashMap<PhysicalBlock, usize>>,
+    complete: bool,
 }
 
 impl Default for BlockOwners {
     fn default() -> Self {
         Self {
             counts: Some(HashMap::new()),
+            complete: true,
         }
     }
 }
@@ -29,7 +31,8 @@ impl BlockOwners {
             return;
         };
         if counts.len() == MAX_BLOCKS && !counts.contains_key(&block) {
-            self.counts = None;
+            // Keep counting retained addresses through the remainder of the capture.
+            self.complete = false;
             return;
         }
         let count = counts.entry(block).or_default();
@@ -65,17 +68,22 @@ impl BlockOwners {
             return;
         };
         if let Some(previous) = previous {
-            let Some(count) = counts.get_mut(&previous).filter(|count| **count > 0) else {
+            if let Some(count) = counts.get_mut(&previous).filter(|count| **count > 0) {
+                *count -= 1;
+                if *count == 0 {
+                    counts.remove(&previous);
+                }
+            } else if self.complete {
                 self.counts = None;
                 return;
-            };
-            *count -= 1;
-            if *count == 0 {
-                counts.remove(&previous);
             }
         }
         if let Some(next) = next {
-            self.observe(next);
+            // An omitted address may already have owners. Do not invent its initial count,
+            // even if a removal has opened a slot in an incomplete capture.
+            if self.complete || counts.contains_key(&next) {
+                self.observe(next);
+            }
         }
     }
 }
@@ -92,7 +100,17 @@ impl OwnershipCache {
     ) -> Option<bool> {
         let mut entries = self.0.lock().expect("block owner cache poisoned");
         if let Some(owners) = entries.get(key) {
-            return owners.shared(block);
+            if owners.complete
+                || owners
+                    .counts
+                    .as_ref()
+                    .is_none_or(|counts| !counts.is_empty())
+            {
+                return owners.shared(block);
+            }
+            // A deletion walk exhausted the retained subset. Recapture current membership
+            // rather than making every remaining address fall back for the object's lifetime.
+            entries.remove(key);
         }
         let mut owners = scan();
         if owners.capacity() > MAX_CAPACITY {
@@ -240,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_is_bounded_and_oversized_objects_keep_scan_fallback() {
+    fn capacity_is_bounded_and_oversized_objects_keep_partial_counts() {
         let mut cache = OwnershipCache::default();
         for index in 0..16u64 {
             let key = ModelKey::from(format!("object-{index}"));
@@ -260,11 +278,11 @@ mod tests {
             cache.shared(&key, (0, 0, 1), || summarize(
                 (0..=MAX_BLOCKS as u64).map(|offset| (0, offset, 1))
             )),
-            None
+            Some(false)
         );
         assert_eq!(
-            cache.shared(&key, (0, 0, 1), || panic!(
-                "negative entry must not rebuild"
+            cache.shared(&key, (0, MAX_BLOCKS as u64, 1), || panic!(
+                "an uncached address must retain the scan fallback without rebuilding"
             )),
             None
         );
@@ -313,8 +331,81 @@ mod tests {
         );
         let mut owners = BlockOwners {
             counts: Some(HashMap::from([((1, 0, 1), usize::MAX)])),
+            complete: true,
         };
         owners.observe((1, 0, 1));
         assert_eq!(owners.shared((1, 0, 1)), None);
+    }
+
+    #[test]
+    fn oversized_capture_counts_late_owners_of_retained_addresses() {
+        let target = (1, 0, 64);
+        let mut owners = summarize((0..MAX_BLOCKS as u64).map(|offset| (1, offset, 64)));
+        owners.observe((2, 0, 64));
+        owners.observe(target);
+        assert!(!owners.complete);
+        assert_eq!(owners.len(), MAX_BLOCKS);
+        assert_eq!(owners.shared(target), Some(true));
+        assert_eq!(owners.shared((2, 0, 64)), None);
+        owners.replace(Some(target), None);
+        assert_eq!(owners.shared(target), Some(false));
+    }
+
+    #[test]
+    fn partial_mutations_never_guess_counts_for_an_omitted_address() {
+        let kept = (1, 0, 64);
+        let omitted = (2, 0, 64);
+        let mut owners = summarize(
+            (0..MAX_BLOCKS as u64)
+                .map(|offset| (1, offset, 64))
+                .chain([omitted, omitted]),
+        );
+        // The untracked frame still has an owner after this removal. Its newly available
+        // slot must not let a later insertion claim that the frame is a singleton.
+        owners.replace(Some(kept), None);
+        owners.replace(Some(omitted), None);
+        owners.replace(None, Some(omitted));
+        assert_eq!(owners.shared(omitted), None);
+        let other = (1, 1, 64);
+        owners.replace(Some(omitted), Some(other));
+        assert_eq!(owners.shared(other), Some(true));
+        owners.replace(Some(other), None);
+        assert_eq!(owners.shared(other), Some(false));
+    }
+
+    #[test]
+    fn distinct_64k_blocks_keep_bounded_exact_proofs_instead_of_discarding_them_all() {
+        let mut cache = OwnershipCache::default();
+        let key = ModelKey::from("distinct-order");
+        let scans = std::cell::Cell::new(0);
+        let visited = std::cell::Cell::new(0usize);
+        let mut hits = 0;
+        let mut fallbacks = 0;
+        for member in 0..65_536u64 {
+            let block = (1, member * 64, 64);
+            let proof = cache.shared(&key, block, || {
+                scans.set(scans.get() + 1);
+                summarize((member..65_536u64).map(|i| {
+                    visited.set(visited.get() + 1);
+                    (1, i * 64, 64)
+                }))
+            });
+            match proof {
+                Some(shared) => {
+                    assert!(!shared);
+                    hits += 1;
+                }
+                None => fallbacks += 1,
+            }
+            cache.replace(&key, Some(block), None);
+        }
+        assert_eq!(scans.get(), 8);
+        assert_eq!(hits, 65_536);
+        assert_eq!(fallbacks, 0);
+        assert_eq!(visited.get(), 294_912);
+        let entries = cache.0.lock().unwrap();
+        assert!(entries.values().map(BlockOwners::capacity).sum::<usize>() <= MAX_CAPACITY);
+        assert_eq!(entries[&key].len(), 0);
+        println!("distinct_blocks=65536 capture_scans={} member_visits={} cache_hits={hits} fallbacks={fallbacks}", scans.get(), visited.get());
     }
 }
