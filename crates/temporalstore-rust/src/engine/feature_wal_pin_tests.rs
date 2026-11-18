@@ -69,7 +69,17 @@ fn feature_window_pins_the_old_wal_locator_across_overwrite() {
         .pin_log_locations(&engine.block_store, 1)
         .expect("WAL window must capture a locator");
     append(&engine, 9);
+    // Feature locators retire at durable publication, not at the timestamp overwrite.
+    engine.create_bucket_dump_manifest(1, []).unwrap();
     engine.cache.invalidate_shard(1).unwrap();
+    {
+        let nested = block_in_wal::ReadSnapshotGuard::new(&engine.block_store, 1);
+        assert!(
+            block_in_wal::read_block_at(&engine.block_store, 1, object, None, &old).is_none(),
+            "checkpoint publication must actually retire the uncaptured old locator"
+        );
+        drop(nested);
+    }
     assert_eq!(
         Some(expected),
         block_in_wal::read_block_at(&engine.block_store, 1, object, None, &old)
@@ -77,8 +87,55 @@ fn feature_window_pins_the_old_wal_locator_across_overwrite() {
     drop(guard);
     assert!(
         block_in_wal::read_block_at(&engine.block_store, 1, object, None, &old).is_none(),
-        "the write must actually retire the old locator for this regression to exercise pinning"
+        "dropping the captured scope must not restore the retired locator"
     );
+}
+
+#[test]
+fn feature_query_keeps_its_captured_window_during_checkpoint_retirement() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    append(&engine, 1);
+    engine.cache.invalidate_shard(1).unwrap();
+    let writer = engine.clone();
+    AFTER_FAST_READ_PLAN.with(|slot| {
+        assert!(slot.borrow().is_none());
+        *slot.borrow_mut() = Some(Box::new(move || {
+            assert!(writer.shards.try_write().is_ok());
+            std::thread::spawn(move || {
+                append(&writer, 9);
+                writer.create_bucket_dump_manifest(1, []).unwrap();
+                writer.cache.invalidate_shard(1).unwrap();
+            })
+            .join()
+            .unwrap();
+        }));
+    });
+    let query = || {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: "series".into(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: Some(10),
+            },
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+        match response.response {
+            CommandResponse::FeaturePoints { points } => points,
+            other => panic!("expected feature points, got {other:?}"),
+        }
+    };
+    let captured = query();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].timestamp_ms, 7);
+    assert_eq!(captured[0].value, vec![1; 48]);
+    AFTER_FAST_READ_PLAN.with(|slot| assert!(slot.borrow().is_none()));
+    let current = query();
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0].timestamp_ms, 7);
+    assert_eq!(current[0].value, vec![9; 48]);
 }
 
 #[test]
