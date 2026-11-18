@@ -222,6 +222,14 @@ jobs:
             -- --test-threads=1 2>&1 | tee /tmp/memory-delete-ack-gate.log
           grep -q 'test result: ok\. 5 passed; 0 failed;' /tmp/memory-delete-ack-gate.log
 
+      - name: WAL coordinate wire checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe wal_resident_wire \
+            -- --test-threads=1 --nocapture 2>&1 | tee /tmp/wal-coordinate-gate.log
+          grep -q 'test result: ok\. 5 passed; 0 failed;' /tmp/wal-coordinate-gate.log
+
       - name: Affected bucket update checks
         timeout-minutes: 30
         run: |
