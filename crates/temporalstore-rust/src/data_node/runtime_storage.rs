@@ -1616,7 +1616,7 @@ impl DataNodeRuntime {
         //
         // The question below is answered PER OBJECT: does any object still hold a block on a slab
         // someone wants emptied? A slab holding nothing but dead space answers no -- no object has
-        // a page there, nothing can be relocated off it, and destroying it is `reclaim_page`'s
+        // a block there, nothing can be relocated off it, and destroying it is `reclaim_page`'s
         // job, not this stage's. That is the distinction three shard-wide predicates could not
         // make, which is why they were each refused by the suite (#1550, #1553): they asked about
         // the shard's staleness, and the shard is stale either way.

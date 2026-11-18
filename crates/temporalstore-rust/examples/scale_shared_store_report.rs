@@ -845,7 +845,7 @@ async fn main() {
     println!("    It is MatrixObject's per-mutation bookkeeping, not this log's shape: begin/end of a");
     println!("    chunk mutation batch builds a replica status whose `physical_bytes` and");
     println!("    `discarded_bytes` fold over EVERY block the replica holds, and begin exports an undo");
-    println!("    whose page map is now filled one page per first touch -- that copy is gone -- but");
+    println!("    whose block map is now filled one block per first touch -- that copy is gone -- but");
     println!("    whose CHUNK map is still copied whole, and a chunk record is a deep value with two");
     println!("    range vectors. Raising the chunk tier to 64 MiB changes it by 2.7%, so it");
     println!("    is block-count and not chunk-count; raising the block tier to 1 MiB makes it 16x worse,");

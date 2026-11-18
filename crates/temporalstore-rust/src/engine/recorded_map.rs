@@ -1338,7 +1338,7 @@ pub(super) trait AddressedElementMap: ElementMap {
     /// The address this map currently holds for `element`, if it holds the element at all.
     fn element_address(&self, element: &Self::Element) -> Option<&ElementEntry>;
 
-    /// Whether any element OTHER THAN `skip` currently sits on the page `page` names.
+    /// Whether any element OTHER THAN `skip` currently sits on the block `page` names.
     ///
     /// Compared by BLOCK KEY -- slab, offset and length -- and not by the whole address, because
     /// that triple is what an index entry's identity is under the gate.

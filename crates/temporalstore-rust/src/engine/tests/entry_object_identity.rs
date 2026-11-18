@@ -474,7 +474,7 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
     let other_handle = crate::engine::state::block_index_handle(&other_object_key, &other);
     assert_ne!(
         handle, other_handle,
-        "two pages differing only in their object key hash to one handle {handle}. \
+        "two blocks differing only in their object key hash to one handle {handle}. \
          `block_index_handle`'s contract is to hash exactly the fields `block_index_written_key` \
          renders, and those handles are written to disk inside the lookup's refs"
     );

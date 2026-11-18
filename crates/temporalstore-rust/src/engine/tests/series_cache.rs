@@ -128,14 +128,14 @@ fn cached_series_keep_existing_scalar_and_byte_response_decoders() {
 }
 
 #[test]
-fn read_page_keys_keep_the_canonical_bytes_at_address_and_routing_boundaries() {
+fn read_block_keys_keep_the_canonical_bytes_at_address_and_routing_boundaries() {
     for shard in [1, 7] {
         for slab in [0, crate::engine::HOT_BLOCK_SLAB_ID, crate::wal_record::WAL_LOG_SLAB_ID, u64::from(u32::MAX) - 2] {
             for offset in [0, 1, 10, u64::from(u32::MAX)] {
                 for length in [0, 1, 4096, u64::from(u32::MAX)] {
                     let address = crate::block_store::ElementEntry::from_parts(slab, offset, length, None, None);
                     for bucket in [None, Some(0), Some(u32::MAX)] {
-                        assert_eq!(crate::engine::read_page_key(shard, &address, bucket),
+                        assert_eq!(crate::engine::read_block_key(shard, &address, bucket),
                             CacheKey::page_with_slot(shard, address.block_slab_id(), address.offset(), address.length(), bucket));
                     }
                 }
@@ -145,11 +145,11 @@ fn read_page_keys_keep_the_canonical_bytes_at_address_and_routing_boundaries() {
 }
 
 #[test]
-fn read_page_keys_share_one_prefix_without_reusing_selectors() {
+fn read_block_keys_share_one_prefix_without_reusing_selectors() {
     let first = crate::block_store::ElementEntry::from_parts(44, 10, 48, None, None);
     let second = crate::block_store::ElementEntry::from_parts(44, 11, 49, None, None);
-    let a = crate::engine::read_page_key(1, &first, Some(3));
-    let b = crate::engine::read_page_key(1, &second, Some(4));
+    let a = crate::engine::read_block_key(1, &first, Some(3));
+    let b = crate::engine::read_block_key(1, &second, Some(4));
     assert!(std::sync::Arc::ptr_eq(&a.record_key, &b.record_key));
     assert_ne!(a.selector, b.selector);
     assert_eq!(a, CacheKey::page_with_slot(1, 44, 10, 48, Some(3)));
@@ -157,15 +157,15 @@ fn read_page_keys_share_one_prefix_without_reusing_selectors() {
 }
 
 #[test]
-fn read_page_keys_keep_shards_separate_and_only_retain_the_last_prefix() {
+fn read_block_keys_keep_shards_separate_and_only_retain_the_last_prefix() {
     let address = crate::block_store::ElementEntry::from_parts(19, 20, 21, None, None);
-    let first = crate::engine::read_page_key(1, &address, None);
+    let first = crate::engine::read_block_key(1, &address, None);
     for shard in [7, 1, 99] {
-        assert_eq!(crate::engine::read_page_key(shard, &address, None),
+        assert_eq!(crate::engine::read_block_key(shard, &address, None),
             CacheKey::page_with_slot(shard, 19, 20, 21, None));
     }
     assert_eq!(first, CacheKey::page_with_slot(1, 19, 20, 21, None));
-    crate::engine::READ_PAGE_KEYS.with(|keys| {
+    crate::engine::READ_BLOCK_KEYS.with(|keys| {
         assert_eq!(keys.borrow().slab.as_ref().unwrap().0, (99, 19));
     });
 }
@@ -173,15 +173,15 @@ fn read_page_keys_keep_shards_separate_and_only_retain_the_last_prefix() {
 #[cfg(feature = "alloc-probe")]
 #[test]
 #[ignore = "isolated allocation measurement"]
-fn measure_read_page_key_allocations() {
+fn measure_read_block_key_allocations() {
     let slab = crate::engine::HOT_BLOCK_SLAB_ID;
     let address = crate::block_store::ElementEntry::from_parts(slab, 12, 48, None, None);
-    let _ = crate::engine::read_page_key(1, &address, Some(3));
+    let _ = crate::engine::read_block_key(1, &address, Some(3));
     let mut measured = Vec::new();
     for reuse in [false, true] {
         let span = crate::alloc_probe::Probe::start();
         for _ in 0..256 {
-            let key = if reuse { crate::engine::read_page_key(1, &address, Some(3)) }
+            let key = if reuse { crate::engine::read_block_key(1, &address, Some(3)) }
                 else { CacheKey::page_with_slot(1, slab, 12, 48, Some(3)) };
             std::hint::black_box(key);
         }
@@ -191,7 +191,7 @@ fn measure_read_page_key_allocations() {
     assert!(measured[1].allocs < measured[0].allocs);
     assert!(measured[1].alloc_bytes < measured[0].alloc_bytes);
     for (reuse, result) in [false, true].into_iter().zip(measured) {
-        println!("PAGE_READ_KEY_COST reuse={reuse} calls=256 allocs={} bytes={}", result.allocs, result.alloc_bytes);
+        println!("BLOCK_READ_KEY_COST reuse={reuse} calls=256 allocs={} bytes={}", result.allocs, result.alloc_bytes);
     }
 }
 

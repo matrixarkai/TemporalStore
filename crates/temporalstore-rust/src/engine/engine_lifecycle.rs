@@ -595,7 +595,7 @@ impl TemporalEngine {
         }
     }
 
-    /// Warm this engine's page cache in the BACKGROUND rather than during `load_shard`, so a
+    /// Warm this engine's block cache in the BACKGROUND rather than during `load_shard`, so a
     /// restart publishes serving state before the promotion pass finishes.
     ///
     /// A caller that holds the engine says this to the engine. The proxy used to say it to the
@@ -2256,7 +2256,7 @@ impl TemporalEngine {
                 );
                 true
             }
-            // set: the PAGE spells the member, and the page's key IS the member.
+            // set: the BLOCK spells the member, and the block's key IS the member.
             //
             // THE SAME MOVE AS THE HASH ARM AND ONE DEGREE MORE DIRECT. For
             // `ElementKeySpelling::Name`, and for `Hex` before it on blocks written earlier, the
@@ -2294,7 +2294,7 @@ impl TemporalEngine {
                 }
                 true
             }
-            // list: the PAGE spells the sequence, as sixteen hex digits of a biased word so the
+            // list: the BLOCK spells the sequence, as sixteen hex digits of a biased word so the
             // text sorts in list order.
             "list" => {
                 let (Some(address), Some(positions)) =
@@ -2332,10 +2332,10 @@ impl TemporalEngine {
             // old does not exist, because this replay arm and the writer that feeds it moved in
             // the same change, and a value-less zset insert outcome is therefore always a replay
             // this arm cannot recover -- refuse rather than install a wrong score.
-            // zset: the PAGE spells the member. THE SCORE STILL COMES FROM THE OUTCOME, and that
+            // zset: the BLOCK spells the member. THE SCORE STILL COMES FROM THE OUTCOME, and that
             // is deliberate rather than an oversight.
             //
-            // The page's key for this spelling is eight bytes of biased score followed by the
+            // The block's key for this spelling is eight bytes of biased score followed by the
             // member, so the score IS in the block -- but `element_name_from_element_key` drops those
             // eight bytes, because the element name stopped spelling a score when zset collapsed to
             // one entry a block. Reading the score back out of the key would mean this arm decoding

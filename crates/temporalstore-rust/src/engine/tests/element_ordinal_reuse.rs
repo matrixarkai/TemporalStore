@@ -1295,7 +1295,7 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
     // ONE ELEMENT'S ELEMENT NAME SPELLING, READ FROM THE PAGE THAT SPELLS IT.
     //
     // RE-ATTRIBUTED. This read `blocks_of(...)[0].0` -- the element name off the index entry -- and
-    // `unwrap_or_else(|| panic!("{kind}/{key} holds a page with no element_name"))` is exactly what it
+    // `unwrap_or_else(|| panic!("{kind}/{key} holds a block with no element_name"))` is exactly what it
     // did, because an entry has no element-name field to hold one. The four spellings this arm is
     // about did NOT go anywhere: a container block states its own elements in its payload, which is
     // what `container_blocks::ElementKeySpelling` renders and what makes several pages foldable into

@@ -764,7 +764,7 @@ impl TemporalEngine {
         self.execute_with_storage_override(request, None, Vec::new())
     }
 
-    /// Apply `request`, attaching `pages` to its log record instead of whatever this node
+    /// Apply `request`, attaching `blocks` to its log record instead of whatever this node
     /// would derive for it.
     ///
     /// For replaying a write that was already acked somewhere else. A block can be derived
@@ -773,7 +773,7 @@ impl TemporalEngine {
     /// original bytes travelled with the command, they are the truth, and re-deriving would
     /// quietly substitute a reconstruction for what was actually acknowledged.
     ///
-    /// An empty `pages` is exactly [`execute`](Self::execute).
+    /// An empty `blocks` is exactly [`execute`](Self::execute).
     pub fn execute_with_carried_blocks(
         &self,
         request: ExecuteRequest,
@@ -2481,13 +2481,13 @@ impl TemporalEngine {
                 routing_bucket,
             } => {
                 self.note_fast_read_recency(request.shard_id, routing_bucket);
-                // THE FIELDS OF ONE HASH SIT IN FEW SLABS, so the page keys of a whole-hash read
+                // THE FIELDS OF ONE HASH SIT IN FEW SLABS, so the block keys of a whole-hash read
                 // share their record key: building each from scratch spent three allocations a
                 // field, two of them spelling the same slab name again.
-                let mut page_keys = PageKeys::new();
+                let mut block_keys = BlockKeys::new();
                 let mut entries = Vec::with_capacity(fields.len());
                 for (field, address) in &fields {
-                    let cache_key = page_keys.key(request.shard_id, address, Some(routing_bucket));
+                    let cache_key = block_keys.key(request.shard_id, address, Some(routing_bucket));
                     let value = read_block_value_keyed(
                         &self.cache,
                         &self.block_store,
@@ -3767,7 +3767,7 @@ enum FastPathRead<'a> {
     String {
         key: &'a str,
         address: Option<ElementEntry>,
-        /// The bucket the page cache is keyed by, resolved while the shard guard is HELD.
+        /// The bucket the block cache is keyed by, resolved while the shard guard is HELD.
         ///
         /// It has to be: the bucket is `block_routing_bucket(key, ..)` over the range the shard is
         /// stamped with, and the whole point of this plan is that the reads below happen after the
@@ -4817,7 +4817,7 @@ fn collect_upsert_index_items(
             });
         // THE AUTHORITY, CALLED RATHER THAN COPIED. `block_ref_key_from_parts` says of itself:
         // "One definition, called from the block index's serialization and from the replay log, so
-        // the two cannot drift into different spellings of the same page." This site was a hand
+        // the two cannot drift into different spellings of the same block." This site was a hand
         // rolled second copy of exactly those eight parts in exactly that order -- which is how a
         // derivation drifts, and this one did: when `generation` stopped being
         // `block_id.or(object_id)` the two copies began disagreeing for WAL-resident blocks, and
@@ -8221,7 +8221,7 @@ fn append_string_value(
 /// being tidier: that function stamps the record header and the returned address from the SAME
 /// value. Assigning the ordinal on the index's copy afterwards would leave the header saying 0 and
 /// the address saying N, and `decode_block_record` compares exactly those two and refuses the block
-/// with "page id mismatch" -- the one cross-check on a read that can actually fire. So the ordinal
+/// with "block id mismatch" -- the one cross-check on a read that can actually fire. So the ordinal
 /// has to be an argument to the append, not a field set after it.
 ///
 /// `append_value` above is this with an ordinal of 0, which is what
@@ -8727,7 +8727,7 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
     //
     //   * `!bucket_map.is_empty()` -- satisfied by buckets holding NO blocks. Six of ten reaches
     //     over a 107-name set were this: nothing to mark, nothing lost.
-    //   * "has pages" -- satisfied by TOMBSTONES, which a mark must not dirty. The two
+    //   * "has blocks" -- satisfied by TOMBSTONES, which a mark must not dirty. The two
     //     non-fixture reaches were this.
     //   * "has a LIVE block" -- the actual question. Two reaches of 97 verdicts, both hand-built
     //     fixtures, each installing a block into `bucket_map` directly with NO filing anywhere in
@@ -8741,7 +8741,7 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
     // `sync_bucket_index_object_blocks_with_mode`, `rebuild_bucket_first_index` (twice),
     // `reload_released_bucket`, and `fold_delta_block_items`. The only doors that do not file are
     // `FromIterator<(Arc<str>, BlockIndex)> for BlockIndexMap`, which has ZERO callers anywhere,
-    // and the two serde doors that drop a decoded node's page keys -- `impl Deserialize for
+    // and the two serde doors that drop a decoded node's block keys -- `impl Deserialize for
     // BucketNode` and `BlockIndexMap`'s `serde(from = ..)` -- which compile out of `--lib` with
     // zero errors, measured against a control in the same probe form that yields one.
     //
@@ -9129,7 +9129,7 @@ fn invalidate_record_all(
 /// repeating the walk. `a_key_the_shard_has_dropped_is_never_still_answered_out_of_the_cache` is
 /// what holds that.
 ///
-/// Record-scoped indexes visit only the requested hash and feature selectors. Payload pages
+/// Record-scoped indexes visit only the requested hash and feature selectors. Payload blocks
 /// retain their physical keys and are neither copied nor scanned by this invalidation pass.
 /// GENERIC OVER THE KEY TYPE, and only because its two call sites hold their round's keys in
 /// different containers: `delete_drop` collects `Arc<str>` object keys off the live block entries,
@@ -9215,13 +9215,13 @@ fn read_block_frame_bytes(
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
-    let cache_key = read_page_key(shard_id, address, routing_bucket);
+    let cache_key = read_block_key(shard_id, address, routing_bucket);
     read_block_frame_bytes_keyed(cache, block_store, shard_id, address, identity, cache_key)
 }
 
-/// [`read_block_frame_bytes`] with the page key already built.
+/// [`read_block_frame_bytes`] with the block key already built.
 ///
-/// A caller that reads many blocks builds their keys itself, through [`PageKeys`], so that blocks
+/// A caller that reads many blocks builds their keys itself, through [`BlockKeys`], so that blocks
 /// of one slab share one record-key allocation instead of each minting its own.
 #[allow(clippy::too_many_arguments)]
 fn read_block_frame_bytes_keyed(
@@ -9263,7 +9263,7 @@ fn read_block_frame_shared(
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<std::sync::Arc<[u8]>> {
-    let cache_key = read_page_key(shard_id, address, routing_bucket);
+    let cache_key = read_block_key(shard_id, address, routing_bucket);
     let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
         cache.get_shared(&cache_key)
     });
@@ -9391,8 +9391,8 @@ fn read_block_bytes(
     select_container_value(&bytes, element_name)
 }
 
-/// One element's value, for a caller that reads many elements and built their page keys itself
-/// (see [`PageKeys`]).
+/// One element's value, for a caller that reads many elements and built their block keys itself
+/// (see [`BlockKeys`]).
 ///
 /// A warm read selects the element out of the frame the cache already holds, shared, so the frame
 /// is not copied into a `Vec` only to have one value copied out of it and the frame dropped. That
@@ -9442,7 +9442,7 @@ fn read_block_bytes_after_cache_miss(
     select_container_value(&bytes, element_name)
 }
 
-/// Builds the physical page key for a run of reads, sharing the record key between blocks of one
+/// Builds the physical block key for a run of reads, sharing the record key between blocks of one
 /// slab.
 ///
 /// `CacheKey::page_with_slot` allocates three times per call: the record-key `String`, the `Arc`
@@ -9455,11 +9455,11 @@ fn read_block_bytes_after_cache_miss(
 /// so its spelling has one home. The selector is the one piece restated here, because the
 /// constructor builds it from the block's position; a test compares every key this makes with
 /// `page_with_slot`'s, field for field, because a changed byte is a silent cache miss.
-pub(crate) struct PageKeys {
+pub(crate) struct BlockKeys {
     slab: Option<((ShardId, u64), std::sync::Arc<str>)>,
 }
 
-impl PageKeys {
+impl BlockKeys {
     pub(crate) const fn new() -> Self {
         Self { slab: None }
     }
@@ -9504,17 +9504,17 @@ impl PageKeys {
 
 thread_local! {
     // One prefix per active thread, not one entry per slab or retained payload.
-    static READ_PAGE_KEYS: std::cell::RefCell<PageKeys> = const {
-        std::cell::RefCell::new(PageKeys::new())
+    static READ_BLOCK_KEYS: std::cell::RefCell<BlockKeys> = const {
+        std::cell::RefCell::new(BlockKeys::new())
     };
 }
 
-fn read_page_key(
+fn read_block_key(
     shard_id: ShardId,
     address: &ElementEntry,
     routing_bucket: Option<u32>,
 ) -> CacheKey {
-    READ_PAGE_KEYS.with(|keys| keys.borrow_mut().key(shard_id, address, routing_bucket))
+    READ_BLOCK_KEYS.with(|keys| keys.borrow_mut().key(shard_id, address, routing_bucket))
 }
 
 /// Select one element name from bytes already fetched by the caller.
@@ -9583,11 +9583,11 @@ fn read_block_shared(
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<std::sync::Arc<[u8]>> {
-    let cache_key = read_page_key(shard_id, address, routing_bucket);
+    let cache_key = read_block_key(shard_id, address, routing_bucket);
     read_block_shared_keyed(cache, block_store, shard_id, address, identity, cache_key)
 }
 
-/// [`read_block_shared`] with the page key already built (see [`PageKeys`]).
+/// [`read_block_shared`] with the block key already built (see [`BlockKeys`]).
 #[allow(clippy::too_many_arguments)]
 fn read_block_shared_keyed(
     cache: &MultiLayerCache,
@@ -9627,12 +9627,12 @@ fn read_blocks_shared(
     shard_id: ShardId,
     reads: &[SharedBlockRead<'_>],
 ) -> Vec<Option<std::sync::Arc<[u8]>>> {
-    let mut page_prefixes = HashMap::with_capacity(reads.len().min(64));
+    let mut block_prefixes = HashMap::with_capacity(reads.len().min(64));
     let cache_keys = reads
         .iter()
         .map(|read| {
             let block_slab_id = read.address.block_slab_id();
-            page_prefixes
+            block_prefixes
                 .entry(block_slab_id)
                 .or_insert_with(|| PageCacheKeyPrefix::new(shard_id, block_slab_id))
                 .key_with_slot(

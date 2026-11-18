@@ -5,7 +5,7 @@
 //!
 //! # THE STATE THIS IS ABOUT
 //!
-//! Under `TS_CONTAINER_ONE_ENTRY_A_PAGE` a removal still appends a tombstone page, and that page
+//! Under `TS_CONTAINER_ONE_ENTRY_A_PAGE` a removal still appends a tombstone block, and that block
 //! still names the element in its payload -- step six established both. Then
 //! `mark_bucket_index_block_deleted_recording` goes looking for the entry to tombstone **by
 //! element name**, and a block-named entry has none. Nothing is selected, nothing is filed, and the

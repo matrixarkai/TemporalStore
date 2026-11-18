@@ -7,14 +7,14 @@
 //!
 //! `wal_cost_scale_harness` reports `log_bytes_on_disk` by summing a directory, which is the right
 //! SHAPE, but it sums only the write-ahead log. A durable write here also lands blocks and an
-//! index, and a comparison whose other half sums a storage pool holding its log and its pages
+//! index, and a comparison whose other half sums a storage pool holding its log and its blocks
 //! together would then differ by WHAT EACH SIDE INCLUDES rather than by what either side costs.
 //! That is the denominator trap, and it is the easiest way to publish a ratio that measures
 //! bookkeeping.
 //!
 //! So this sums every file under the whole data directory — cache, blocks, indexes and log — and
 //! differences it across a fixed number of operations. Sum of file LENGTHS, never resident size:
-//! a resident-set delta follows allocator high-water marks and page reuse, and one taken on this
+//! a resident-set delta follows allocator high-water marks and block reuse, and one taken on this
 //! path went non-monotonic across a sweep and had to be withdrawn.
 //!
 //! # WHAT IT PROVES BEFORE IT REPORTS

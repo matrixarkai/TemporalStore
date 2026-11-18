@@ -238,7 +238,7 @@ fn swap_across_index_files(indexes: &std::path::Path, from: &str, to: &str) -> u
 /// # THE CONTROL, UNCHANGED
 ///
 /// A zset member's element name is swapped in the same pass, and that member still answers because
-/// `zset_index_serde` persisted it beside the page and `fill_absent_elements` keeps what the derived
+/// `zset_index_serde` persisted it beside the block and `fill_absent_elements` keeps what the derived
 /// view could not produce. An arm that moved and an arm that did not, from one swap pass, is what
 /// makes this a measurement rather than a demonstration that editing an index breaks things.
 ///

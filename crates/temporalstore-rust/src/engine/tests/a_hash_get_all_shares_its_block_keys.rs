@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! A READ OF A WHOLE HASH BUILDS ITS PAGE KEYS FROM ONE RECORD KEY PER SLAB, NOT THREE STRINGS PER FIELD.
+//! A READ OF A WHOLE HASH BUILDS ITS BLOCK KEYS FROM ONE RECORD KEY PER SLAB, NOT THREE STRINGS PER FIELD.
 //!
 //! Every field of a hash is its own block, and reading a block starts with the key it is cached
 //! under. That key was built from scratch for each field: the slab's record-key string, an `Arc`
@@ -174,7 +174,7 @@ mod probe {
     /// Allocations per FIELD, as the slope between two hash sizes.
     ///
     /// Before this change the slope was 8.03 (812 allocations at 100 fields), three of them the
-    /// page key. The bound sits between the two, and the control is the planted run: with the
+    /// block key. The bound sits between the two, and the control is the planted run: with the
     /// keys built per field again, the slope must exceed it.
     #[test]
     #[ignore = "measurement: run with --features alloc-probe --ignored"]

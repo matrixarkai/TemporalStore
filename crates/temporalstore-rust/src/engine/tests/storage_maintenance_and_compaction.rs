@@ -2493,7 +2493,7 @@ fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_mem
         let shard = shards.get(&1).expect("loaded shard");
         let address = shard.string_address("cold-key").expect("indexed block address");
         assert_ne!(address.block_slab_id(), HOT_BLOCK_SLAB_ID);
-        // THE SAME DERIVATION THE READ PATH USES: the page cache key's slot is the KEY's bucket
+        // THE SAME DERIVATION THE READ PATH USES: the block cache key's slot is the KEY's bucket
         // over the range the shard is stamped with, not a field on the address.
         let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(

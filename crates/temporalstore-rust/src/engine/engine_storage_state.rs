@@ -5313,7 +5313,7 @@ pub(super) fn block_index_written_key(object_key: &str, block: &BlockIndex) -> S
     crate::index_log::block_ref_key_from_parts(
         block.model_id().as_str(),
         object_key,
-        // `None`, WHICH IS WHAT THIS ALREADY PASSED. The STORED spelling of a page's key is built
+        // `None`, WHICH IS WHAT THIS ALREADY PASSED. The STORED spelling of a block's key is built
         // here, so the value must not move: every entry's element name was `None` before the field was
         // removed, and passing the constant keeps every written key character-for-character what it
         // was. That is why removing the field costs no `SHARD_INDEX_FORMAT_VERSION` step -- the
@@ -5482,7 +5482,7 @@ pub(super) struct ObjectBlockLookup {
 ///
 ///      `insert_object_block_lookup` files into the slot when the object has a row and here when
 ///      it does not. That alone would have saved NOTHING on the corpus the published figure uses:
-///      `where_an_objects_refs_could_live::whether_a_slot_row_exists_when_its_page_is_filed`
+///      `where_an_objects_refs_could_live::whether_a_slot_row_exists_when_its_block_is_filed`
 ///      measures that a first write has no row yet -- the row holds the object's ADDRESS and the
 ///      address IS where the block landed, so a first write cannot install the row before filing
 ///      the block. Every single-block object would have stayed here while every test passed. The
@@ -8287,7 +8287,7 @@ impl CoreIndex {
         // which kinds that puts where.
         //
         // AND THE FIRST BLOCK OF AN OBJECT ARRIVES BEFORE ITS ROW DOES, measured by
-        // `whether_a_slot_row_exists_when_its_page_is_filed`: a first `StringSet` files its page
+        // `whether_a_slot_row_exists_when_its_block_is_filed`: a first `StringSet` files its block
         // and only then installs the address, because the address IS where the block landed. So
         // this route alone would leave every single-block object in the lookup -- which is why the
         // door that creates a row ADOPTS what the lookup holds for it. See
@@ -8388,7 +8388,7 @@ impl CoreIndex {
     /// # WHY THE FOLD DOES NOT WORK WITHOUT THIS
     ///
     /// `insert_object_block_lookup` files into the slot when the object HAS a row and into the
-    /// lookup when it does not -- and `whether_a_slot_row_exists_when_its_page_is_filed` measures
+    /// lookup when it does not -- and `whether_a_slot_row_exists_when_its_block_is_filed` measures
     /// that a first write has no row yet: 8 of 16 string filings found none, and every
     /// control-state filing found none. That is not an ordering to swap. The row holds the
     /// object's ADDRESS, and the address IS where the block landed, so a first write cannot install
@@ -8735,7 +8735,7 @@ impl CoreIndex {
         // dropped, which is what makes merging safe: a block that moved leaves a carried ref behind
         // at its old position, and a stale position could otherwise be served as another object's
         // identity by `BlockKeysByPosition`.
-        self.prune_refs_to_the_pages_the_index_holds();
+        self.prune_refs_to_the_blocks_the_index_holds();
     }
 
     /// DROP EVERY REF THAT NAMES A BLOCK THIS INDEX DOES NOT HOLD.
@@ -8749,7 +8749,7 @@ impl CoreIndex {
     /// reason `ObjectSlot::refs` gives: `block_refs_for` answering `Some(&[])` where a caller
     /// distinguishes "names nothing" by `None` sends the re-add after a removal down the wrong
     /// branch.
-    fn prune_refs_to_the_pages_the_index_holds(&mut self) {
+    fn prune_refs_to_the_blocks_the_index_holds(&mut self) {
         let holds = |block_ref: &BlockLookupRef| -> bool {
             self.bucket_map
                 .get(&block_ref.routing_bucket)
@@ -12085,7 +12085,7 @@ mod a_records_blocks_can_live_on_the_shard_beside_the_record {
             ObjectRecord::from_object_rows_with_layout(&address, 9, Some(1_700), true, reserved)
                 .expect("the layout arm refused an entry it is documented to hold");
         assert!(
-            matches!(record.page_address(), BlockAddress::Many(_)),
+            matches!(record.block_address(), BlockAddress::Many(_)),
             "the record should carry a handle rather than an inline address"
         );
 

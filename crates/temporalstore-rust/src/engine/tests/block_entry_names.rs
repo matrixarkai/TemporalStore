@@ -1233,7 +1233,7 @@ fn an_index_written_before_this_change_loads_block_for_block() {
     // fixture, in both of the places the name appears in a stored row.
     assert!(
         OLD_STORE_BLOCKS.iter().any(|block| block.2.is_some()),
-        "no row of the stored page table carries an element name, so dropping it in the \
+        "no row of the stored block table carries an element name, so dropping it in the \
          derivation above changes nothing and this arm tests no shed key"
     );
     assert!(
@@ -1539,7 +1539,7 @@ fn an_old_store_whose_generation_disagrees_is_refused_before_the_decode() {
         "the refusal must name what disagreed, got: {text}"
     );
     assert!(
-        text.contains("recompute every page handle"),
+        text.contains("recompute every block handle"),
         "and say why that matters, got: {text}"
     );
 

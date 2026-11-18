@@ -12,7 +12,7 @@ use super::state::PackedFeatureBlockDecode;
 use super::hashing::BlockIdentity;
 use super::{
     append_value, read_block_bytes, read_block_bytes_cold, read_block_shared_keyed,
-    stable_block_object_id, PageKeys,
+    stable_block_object_id, BlockKeys,
 };
 use crate::storage_config::context_block_target_bytes;
 pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
@@ -541,7 +541,7 @@ pub(super) fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<
     // computed and never read -- and computing it is a FULL `serde_json` serialisation of the
     // point, the same work `encode_feature_block` is about to do again on the way to the block.
     //
-    // A page carries its value as a `Vec<u8>`, which serde_json writes as an array of decimal
+    // A block carries its value as a `Vec<u8>`, which serde_json writes as an array of decimal
     // numbers, so that measurement costs several times the value it measures. Every context write
     // path -- summary, event, index, audit, child, compression -- passes exactly one point.
     if points.len() == 1 {
@@ -866,7 +866,7 @@ pub(super) fn feature_point_in_place<R>(
 }
 
 /// The value of one feature point, read in place: the shared cache bytes are inspected, not copied,
-/// and the page key reuses the record key of the slab it shares with the previous point.
+/// and the block key reuses the record key of the slab it shares with the previous point.
 ///
 /// Same answer as [`read_feature_point`], see [`with_feature_point_value`].
 #[allow(clippy::too_many_arguments)]
@@ -878,7 +878,7 @@ pub(super) fn read_feature_value_with<R>(
     address: &ElementEntry,
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
-    keys: &mut PageKeys,
+    keys: &mut BlockKeys,
     with: impl FnOnce(&[u8]) -> R,
 ) -> Option<R> {
     let cache_key = keys.key(shard_id, address, routing_bucket);
@@ -989,14 +989,14 @@ struct HeldFeatureBlock {
 ///
 /// The last block read is held, so the points of one block read it from the cache once.
 pub(super) struct FeatureRangeReader {
-    keys: PageKeys,
+    keys: BlockKeys,
     held: Option<HeldFeatureBlock>,
 }
 
 impl FeatureRangeReader {
     pub(super) fn new() -> Self {
         Self {
-            keys: PageKeys::new(),
+            keys: BlockKeys::new(),
             held: None,
         }
     }

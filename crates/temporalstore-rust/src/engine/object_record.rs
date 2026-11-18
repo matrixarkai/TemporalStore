@@ -306,7 +306,7 @@ impl ObjectRecord {
 
 
     /// The address, decided by its tag bit and not by its value.
-    pub(super) fn page_address(&self) -> BlockAddress {
+    pub(super) fn block_address(&self) -> BlockAddress {
         if self.flags.get(RecordFlags::ADDRESS_IS_POINTER) {
             BlockAddress::Many(BlockLayoutHandle::from_stored(self.address))
         } else {
@@ -416,7 +416,7 @@ impl ObjectRecord {
 
     /// The same, as a `Result`, for a caller that cannot assume the inline arm.
     pub(super) fn try_address(&self) -> Result<ElementEntry, ObjectRecordRefusal> {
-        let word = match self.page_address() {
+        let word = match self.block_address() {
             BlockAddress::One(word) => word,
             BlockAddress::Many(handle) => {
                 return Err(ObjectRecordRefusal::LayoutHandleWithNoLayout { handle })
@@ -466,7 +466,7 @@ impl ObjectRecord {
         // saturated length reads as broken; a truncated one reads as a valid shorter block.
         self.block_size = u32::try_from(address.length()).unwrap_or_else(|_| {
             panic!(
-                "an address length of {} does not fit the record's page size, which cannot happen \
+                "an address length of {} does not fit the record's block size, which cannot happen \
                  while `ElementEntry` holds its length in a u32",
                 address.length()
             )
@@ -615,7 +615,7 @@ impl ObjectRecord {
         &self,
         layout: Option<&BlockLayout>,
     ) -> Result<(ElementEntry, u8), ObjectRecordRefusal> {
-        let (word, length, block_id, has_generation) = match self.page_address() {
+        let (word, length, block_id, has_generation) = match self.block_address() {
             // THE INLINE ARM'S ORDINAL IS ZERO WHEN IT IS PRESENT AT ALL, and `BLOCK_IN_LOG`
             // carries that presence: set means no ordinal, clear means ordinal zero. See
             // `from_object_rows` for the measurement that settled this.
@@ -1838,7 +1838,7 @@ mod the_handle_arm_now_has_something_to_point_into {
             ObjectRecord::from_object_rows_with_layout(&address, 9, Some(1_700), true, reserved)
                 .expect("the layout arm refused an entry it is documented to hold");
         assert!(
-            matches!(record.page_address(), BlockAddress::Many(_)),
+            matches!(record.block_address(), BlockAddress::Many(_)),
             "the record should carry a handle, not an inline address"
         );
 

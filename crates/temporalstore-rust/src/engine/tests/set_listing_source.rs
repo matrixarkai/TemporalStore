@@ -489,7 +489,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
     let listed = listed_members(&engine, "listing/one-name-gone");
     assert!(
         listed.is_empty(),
-        "the listing returned {} member(s) with no live entry naming their page, while those \
+        "the listing returned {} member(s) with no live entry naming their block, while those \
          blocks still state all {MEMBERS}. A reader enumerating the payload answers exactly that \
          way, which is the defect this arm exists for and the reason identity stays with the \
          entries",

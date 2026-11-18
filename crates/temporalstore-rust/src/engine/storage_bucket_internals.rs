@@ -4857,7 +4857,7 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
         })
         .unwrap_or_default();
     // AND THE BUCKETS HOLDING ONLY A TOMBSTONE OF IT, which no ref can name. The old walk set
-    // `holds_a_page_of_the_object` from deleted pages as well as live ones, and filed the object's
+    // `holds_a_page_of_the_object` from deleted blocks as well as live ones, and filed the object's
     // id in that bucket's tombstone list for either -- so a bucket whose only block of the object
     // was already deleted still got the id. The rows are what state that now.
     let tombstoned: Vec<u32> = shard

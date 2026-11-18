@@ -182,7 +182,7 @@ fn where_each_kinds_refs_end_up() {
 ///
 /// rust-internal: measures this crate's own encoder, no product behaviour
 #[test]
-fn the_index_encoder_refuses_a_page_whose_refs_are_not_in_its_own_field() {
+fn the_index_encoder_refuses_a_block_whose_refs_are_not_in_its_own_field() {
     use crate::engine::state::{
         block_index_handle, BlockIndex, BlockSlabLiveIndex, BucketNode, CoreIndex,
     };
@@ -254,7 +254,7 @@ fn the_index_encoder_refuses_a_page_whose_refs_are_not_in_its_own_field() {
 /// someone reorders the write path such that the row comes first -- at which point the adoption
 /// becomes dead code and should be removed deliberately rather than left to rot.
 #[test]
-fn whether_a_slot_row_exists_when_its_page_is_filed() {
+fn whether_a_slot_row_exists_when_its_block_is_filed() {
     use crate::engine::state::FILING_ROW_CENSUS;
     use crate::types::{Command, ExecuteRequest};
 

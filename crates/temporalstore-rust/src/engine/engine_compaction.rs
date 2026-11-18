@@ -1525,7 +1525,7 @@ pub(super) fn compaction_relocation_hint_per_object(
 
 /// The same count, off the reclaim plan the maintenance round has already built.
 ///
-/// `live_page_refs` on a candidate is the tally of live page addresses that landed on that slab,
+/// `live_page_refs` on a candidate is the tally of live block addresses that landed on that slab,
 /// summed over the same live block set `compaction_relocation_hint_per_object` walks -- so summing
 /// it over the drain set is the per-object answer, aggregated, for no extra walk of the shard.
 /// The round runs eight of those already; a ninth to ask whether it should run is not a trade
@@ -1585,7 +1585,7 @@ mod compaction_selection_tests {
     /// selection was ordered, a round spread its budget across every holed slab and finished
     /// NONE of them, so nothing was reclaimed at all; this slab is not something that used to
     /// be collected and now is not. And a WARM slab climbs out on its own: its live refs only
-    /// FALL as its pages are overwritten onto newer slabs, so its ratio rises until it is
+    /// FALL as its blocks are overwritten onto newer slabs, so its ratio rises until it is
     /// selected. The uncovered case is specifically the slab that is both cold and partly dead.
     ///
     /// WHY AN ARM AND NOT A COMMENT. A comment cannot fail. If ageing is ever added -- forcing

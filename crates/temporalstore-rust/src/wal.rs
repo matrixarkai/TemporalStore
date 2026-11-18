@@ -2200,7 +2200,7 @@ impl LocalWriteAheadLogStore {
                     // Commands remain present. The last record also captures the full
                     // batch's outcomes so its carried frames have exact addresses.
                     command: Some(command),
-                    // The final record commits the entire batch. Carry derived pages
+                    // The final record commits the entire batch. Carry derived blocks
                     // there even when replay uses commands rather than outcomes.
                     staged_blocks: if index + 1 == batch_size as usize {
                         std::mem::take(&mut staged_blocks)
