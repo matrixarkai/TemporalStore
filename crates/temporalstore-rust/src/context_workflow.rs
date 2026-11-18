@@ -3050,6 +3050,8 @@ fn retrieve_context_candidates(
         include_debug.then(|| Vec::with_capacity(summary_candidate_count));
     let mut serving_summary_scores =
         (!include_debug).then(|| BinaryHeap::with_capacity(summary_node_limit));
+    // Metadata is already bounded by the prefetch budget. Apply every available
+    // ranking signal before the smaller summary heap can discard its source.
     for node_hash in &node_hashes {
         let (mut best_score, found) = summary_scores_by_node
             .get(node_hash)
@@ -3072,11 +3074,34 @@ fn retrieve_context_candidates(
                 ));
             }
         }
+        let (summary_score, freshness_ms, agent_scope_boost) =
+            if let Some(node) = prefetched_nodes.get(node_hash) {
+                scoring_text.clear();
+                scoring_text.push_str(&node.l0);
+                scoring_text.push(' ');
+                scoring_text.push_str(&node.l1_ref);
+                let summary_score = context_relevance_score_plan(&query_plan, &scoring_text);
+                let agent_scope_boost = if request.prefer_current_agent
+                    && context_record_scope_matches(
+                        &node.raw_metadata_ref,
+                        &request.current_agent_scope_key,
+                    ) {
+                    125_000i64
+                } else {
+                    0i64
+                };
+                (summary_score, node.last_event_time_ms, agent_scope_boost)
+            } else {
+                (0, 0, 0)
+            };
+        best_score = best_score
+            .saturating_add((summary_score as i64).saturating_mul(1_000))
+            .saturating_add(agent_scope_boost);
         let candidate = (
             Reverse(best_score),
             Reverse(found),
-            Reverse(0u32),
-            Reverse(0u64),
+            Reverse(summary_score),
+            Reverse(freshness_ms),
             *node_hash,
         );
         if let Some(summary_scores) = debug_summary_scores.as_mut() {
@@ -3102,39 +3127,6 @@ fn retrieve_context_candidates(
         .max(1)
         .min(summary_node_limit.max(1))
         .min(query_aware_event_limit);
-    let rerank_node_limit = summary_node_limit.min(summary_scores.len());
-    // Rerank the exact node versions whose vectors produced the first score. Besides avoiding a
-    // second decode, this keeps a concurrent update from mixing two node versions in one ranking.
-    // The candidates are already the sorted prefix, so mutate that prefix directly instead of
-    // allocating their hashes and searching the same vector once per candidate.
-    for (Reverse(score), _, Reverse(summary_score_slot), Reverse(freshness_slot), node_hash) in
-        summary_scores.iter_mut().take(rerank_node_limit)
-    {
-        let Some(node) = prefetched_nodes.get(node_hash) else {
-            continue;
-        };
-        scoring_text.clear();
-        scoring_text.push_str(&node.l0);
-        scoring_text.push(' ');
-        scoring_text.push_str(&node.l1_ref);
-        let summary_score = context_relevance_score_plan(&query_plan, &scoring_text);
-        let freshness_ms = node.last_event_time_ms;
-        let agent_scope_boost = if request.prefer_current_agent
-            && context_record_scope_matches(
-                &node.raw_metadata_ref,
-                &request.current_agent_scope_key,
-            ) {
-            125_000i64
-        } else {
-            0i64
-        };
-        *score = score
-            .saturating_add((summary_score as i64).saturating_mul(1_000))
-            .saturating_add(agent_scope_boost);
-        *summary_score_slot = summary_score;
-        *freshness_slot = freshness_ms;
-    }
-    summary_scores.sort_unstable();
     node_hashes = summary_scores
         .iter()
         .take(summary_node_limit)
