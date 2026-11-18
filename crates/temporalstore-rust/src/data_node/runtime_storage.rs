@@ -2975,7 +2975,7 @@ impl PageGcStage<'_> {
         let (progress, work_done, status) = match report.gc_report.as_ref() {
             None => {
                 *cursor = PageCursor::default();
-                (StageProgress::Idle, 0, Status::default())
+                (StageProgress::Idle, 0, Status::ok())
             }
             Some(gc) => {
                 let examined = gc.block_gc_scan_examined_slabs as u64;
