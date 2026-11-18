@@ -29,6 +29,7 @@ mod context_embedding_index;
 mod lifecycle;
 mod object_manager;
 mod packed_blocks;
+mod string_chain;
 mod product_model;
 mod cell_merge_append;
 // The per-key retry ring of a merge-reduce append.
