@@ -460,14 +460,14 @@ mod wal_resident_env_name_tests {
         );
         assert_ne!(
             super::wal_resident_block_limit(), default_limit,
-            "a value read from the previous name must differ from the default, or this proves              nothing"
+            "a value read from the previous name must differ from the default, or this proves nothing"
         );
 
         std::env::set_var("TS_WAL_RESIDENT_BLOCKS", "128");
         assert_eq!(
             super::wal_resident_block_limit(),
             128,
-            "the current spelling must win when both are set, or a deployment mid-migration gets              whichever the lookup tried first"
+            "the current spelling must win when both are set, or a deployment mid-migration gets whichever the lookup tried first"
         );
 
         for key in keys {

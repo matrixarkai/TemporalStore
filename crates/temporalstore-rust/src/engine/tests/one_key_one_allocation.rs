@@ -601,7 +601,7 @@ fn every_adopted_context_map_holds_the_block_index_own_key() {
         .expect("named above");
     assert_eq!(
         0, watermark.keys,
-        "`context_compression_watermark` now holds {} keys without the environment flag that          gates its only writer, so the reason it is excused has stopped being true. Move it into          the checked set.",
+        "`context_compression_watermark` now holds {} keys without the environment flag that gates its only writer, so the reason it is excused has stopped being true. Move it into the checked set.",
         watermark.keys
     );
 

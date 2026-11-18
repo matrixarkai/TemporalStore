@@ -941,7 +941,7 @@ fn what_a_store_reads_in_total_for_the_same_work_under_each_cadence() {
                     .maybe_trigger_snapshot()
                     .expect("maybe_trigger_snapshot must succeed")
                     .triggered,
-                "the priming snapshot for the {label} arm did not fire, so its rounds below                  would not all be routine ones"
+                "the priming snapshot for the {label} arm did not fire, so its rounds below would not all be routine ones"
             );
         }
         set_cadence(&cluster, cadence, INTEGRAL_FLOOR);
@@ -1228,18 +1228,18 @@ fn an_independent_residual_recovers_a_planted_marker() {
     let (_, index_bytes, _) = installed_image(&cluster);
     let predicted = index_bytes * counts.engine_rebuilds;
     println!(
-        "  attribution: {} rebuilt engines x {index_bytes} B of served index = {predicted} B,          against a residual of {residual} B ({:.3}x)",
+        "  attribution: {} rebuilt engines x {index_bytes} B of served index = {predicted} B, against a residual of {residual} B ({:.3}x)",
         counts.engine_rebuilds,
         residual as f64 / predicted.max(1) as f64
     );
     assert!(
         counts.engine_rebuilds > 1 && index_bytes > 0,
-        "the attribution divides by {} rebuilds and {index_bytes} index bytes, so it would be an          identity rather than a prediction",
+        "the attribution divides by {} rebuilds and {index_bytes} index bytes, so it would be an identity rather than a prediction",
         counts.engine_rebuilds
     );
     assert!(
         residual > predicted * 7 / 10 && residual < predicted * 3 / 2,
-        "the residual is {residual} B against a predicted {predicted} B -- one served-index read          per rebuilt engine. Outside that band the residual is something else, and in particular          a residual near {} B would be a SECOND walk of the corpus that none of the counters in          this file can see",
+        "the residual is {residual} B against a predicted {predicted} B -- one served-index read per rebuilt engine. Outside that band the residual is something else, and in particular a residual near {} B would be a SECOND walk of the corpus that none of the counters in this file can see",
         predicted + counted
     );
 }

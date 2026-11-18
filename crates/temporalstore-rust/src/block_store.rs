@@ -3326,7 +3326,7 @@ mod address_size_tests {
         assert_eq!(word_covered, 8, "one 64-bit word: the slab in the high half, the offset in the low");
         assert_eq!(
             word_padding, 0,
-            "a single eight-byte field in an eight-aligned struct leaves no slack to reclaim,              which is why there is no narrowing left to try here"
+            "a single eight-byte field in an eight-aligned struct leaves no slack to reclaim, which is why there is no narrowing left to try here"
         );
         assert_eq!(word_total, 8);
 
@@ -3367,7 +3367,7 @@ mod address_size_tests {
         );
         assert_eq!(
             total, 16,
-            "and sixteen is what the address cost on its own before the three moved out, so this              is a relocation and not a saving -- see              `engine::tests::address_footprint::the_priced_shapes_for_an_address_and_its_siblings`              for the same zero measured at every holder in the engine"
+            "and sixteen is what the address cost on its own before the three moved out, so this is a relocation and not a saving -- see `engine::tests::address_footprint::the_priced_shapes_for_an_address_and_its_siblings` for the same zero measured at every holder in the engine"
         );
 
         let mut sorted = fields.clone();
@@ -5206,7 +5206,7 @@ const RETIRED_NAMES: &[&str] = &[
         assert_ne!(
             hex::encode(field),
             record::sha256_hex(payload),
-            "if this ever matches, the envelope holds a full digest and the index copy could              genuinely be relocated rather than dropped"
+            "if this ever matches, the envelope holds a full digest and the index copy could genuinely be relocated rather than dropped"
         );
         assert_eq!(
             field,

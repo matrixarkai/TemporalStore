@@ -155,7 +155,7 @@ fn every_command_that_installs_a_set_member_reports_a_touched_element() {
     // and have someone "fix" this test by expecting nothing.
     assert!(
         execute.contains("install_element::<super::recorded_map::SetKind>("),
-        "the recorded set install is not findable by name in `execute_on_shard.rs`, so the census          below would report zero installs for the wrong reason"
+        "the recorded set install is not findable by name in `execute_on_shard.rs`, so the census below would report zero installs for the wrong reason"
     );
     assert_eq!(
         installs,

@@ -558,7 +558,7 @@ fn marking_an_object_dirty_reaches_blocks_its_row_holds_the_refs_for() {
             .object_block_lookup
             .get("string", KEY)
             .is_none(),
-        "denominator: the lookup still names this object, so a lookup-only walk would reach its          blocks and this arm would pass without ever asking the row"
+        "denominator: the lookup still names this object, so a lookup-only walk would reach its blocks and this arm would pass without ever asking the row"
     );
     assert!(
         shard
@@ -566,17 +566,17 @@ fn marking_an_object_dirty_reaches_blocks_its_row_holds_the_refs_for() {
             .get(KEY)
             .and_then(|slot| slot.refs())
             .is_some(),
-        "denominator: the row carries no refs, so the row arm has nothing to find and this arm          would pass however the walk is written"
+        "denominator: the row carries no refs, so the row arm has nothing to find and this arm would pass however the walk is written"
     );
     assert!(
         !any_block_dirty(&shard, routing_bucket),
-        "the fixture block must start clean, or `dirty afterwards` is true of a fixture that was          dirty all along"
+        "the fixture block must start clean, or `dirty afterwards` is true of a fixture that was dirty all along"
     );
 
     mark_object_dirty(&mut shard, KEY, 0, WHOLE_RANGE_END);
 
     assert!(
         any_block_dirty(&shard, routing_bucket),
-        "the mark must reach a block whose ref lives on the object's ROW: since the fold that is          where every kind with slot rows keeps them, and a walk asking only `object_block_lookup`          leaves the object dirty while its blocks stay clean"
+        "the mark must reach a block whose ref lives on the object's ROW: since the fold that is where every kind with slot rows keeps them, and a walk asking only `object_block_lookup` leaves the object dirty while its blocks stay clean"
     );
 }

@@ -858,7 +858,7 @@ fn reading_a_lists_next_sequence_cannot_create_the_list() {
     let planted = "let list = shard.bucket_index.lists.entry(key.clone()).or_default();";
     assert!(
         planted.contains(".lists.entry(") && planted.contains("or_default()"),
-        "the needles this test asserts the ABSENCE of do not match the shape they were written          for, so their absence from the arm proves nothing"
+        "the needles this test asserts the ABSENCE of do not match the shape they were written for, so their absence from the arm proves nothing"
     );
 
     // CONTROL on the strip: the comment WAS there, so the filter is doing work rather than

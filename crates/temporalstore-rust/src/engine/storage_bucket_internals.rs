@@ -2159,7 +2159,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     );
     if resurrections_refused > 0 {
         eprintln!(
-            "rebuild_unserialized_model_maps: {resurrections_refused} persisted hash field(s) named              a block the bucket index does not hold and were not restored"
+            "rebuild_unserialized_model_maps: {resurrections_refused} persisted hash field(s) named a block the bucket index does not hold and were not restored"
         );
     }
 }
@@ -5039,7 +5039,7 @@ pub(super) fn insert_container_tombstone_entry(
     // being a deleted one, the filing above was removed deliberately and has to come back.
     debug_assert!(
         block.deleted(),
-        "a tombstone block is no longer `deleted`, so the object-lookup filing removed here is          needed again: a non-deleted block DOES belong in the lookup"
+        "a tombstone block is no longer `deleted`, so the object-lookup filing removed here is needed again: a non-deleted block DOES belong in the lookup"
     );
     shard.buckets_pending_flag_refresh.insert(routing_bucket);
 }
@@ -9839,7 +9839,7 @@ pub(super) mod model_kind_registry_guards {
         assert_eq!(
             shard.string_address("s").as_ref(),
             Some(&at),
-            "the string map did not hand back the address this fixture filed: the row narrowed it,              so every kind below is being compared against an address the store does not hold",
+            "the string map did not hand back the address this fixture filed: the row narrowed it, so every kind below is being compared against an address the store does not hold",
         );
         shard
             .bucket_index.hashes

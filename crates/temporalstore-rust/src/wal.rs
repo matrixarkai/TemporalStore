@@ -9318,7 +9318,7 @@ mod tests {
         // above what the record itself needs and far below anything with a hidden buffer in it.
         assert!(
             per_write < 2_000.0,
-            "a 256-byte write allocated {per_write:.0} B: something is allocating a buffer per              append again"
+            "a 256-byte write allocated {per_write:.0} B: something is allocating a buffer per append again"
         );
     }
 
@@ -9373,7 +9373,7 @@ mod tests {
         assert_eq!(
             read.len(),
             512,
-            "the batch wrote 512 records and the log reads back {}; a carried physical length              that missed a growth puts records at the wrong offset",
+            "the batch wrote 512 records and the log reads back {}; a carried physical length that missed a growth puts records at the wrong offset",
             read.len()
         );
 
@@ -9435,11 +9435,11 @@ mod tests {
 
         assert!(
             one_at_a_time >= 64,
-            "the control opened {one_at_a_time} times for 64 single appends, so the counter is              not counting opens and the batch figure below means nothing"
+            "the control opened {one_at_a_time} times for 64 single appends, so the counter is not counting opens and the batch figure below means nothing"
         );
         assert_eq!(
             batched, 1,
-            "a batch of 64 records opened the piece {batched} times; it holds the append lock and              the inner lock across the whole loop and rolls only afterwards, so one open covers it"
+            "a batch of 64 records opened the piece {batched} times; it holds the append lock and the inner lock across the whole loop and rolls only afterwards, so one open covers it"
         );
 
         // The same argument covers the physical length. Under preallocation each record asked the
@@ -9448,7 +9448,7 @@ mod tests {
         // copy when it grows the file.
         assert!(
             one_at_a_time_stats >= 1,
-            "the control never asked for the physical length ({one_at_a_time_stats}), so the              batch figure below is not measuring anything"
+            "the control never asked for the physical length ({one_at_a_time_stats}), so the batch figure below is not measuring anything"
         );
         assert_eq!(
             batched_stats, 1,
@@ -9745,11 +9745,11 @@ mod tests {
         let (never_keep_most, _, _, _) = run(Some(0), 0.10);
         let (default_keep_most, _, _, _) = run(None, 0.10);
         println!(
-            "  keeping most: never rolling copied {never_keep_most} B, at the default              {default_keep_most} B"
+            "  keeping most: never rolling copied {never_keep_most} B, at the default {default_keep_most} B"
         );
         assert!(
             default_keep_most * 4 < never_keep_most,
-            "rolling should confine the rewrite to the boundary piece: {default_keep_most} vs              {never_keep_most}"
+            "rolling should confine the rewrite to the boundary piece: {default_keep_most} vs {never_keep_most}"
         );
     }
 
@@ -9949,7 +9949,7 @@ mod tests {
             let envelope = per_record - value_len as f64;
             assert!(
                 envelope < 80.0,
-                "envelope is {envelope:.0} B at {value_len}B: that is the text fallback's shape,                  not the binary one -- has a default flipped?"
+                "envelope is {envelope:.0} B at {value_len}B: that is the text fallback's shape, not the binary one -- has a default flipped?"
             );
         }
     }
@@ -11708,7 +11708,7 @@ mod tests {
         let overhead = encoded.len() as f64 / block.len() as f64;
         assert!(
             overhead < 1.6,
-            "a staged block should cost about a third over its contents, got {overhead:.2}x              ({} bytes of record for {} bytes of block)",
+            "a staged block should cost about a third over its contents, got {overhead:.2}x ({} bytes of record for {} bytes of block)",
             encoded.len(),
             block.len()
         );

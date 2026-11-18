@@ -529,7 +529,7 @@ async fn main() {
             // like a fast store rather than an unwired instrument.
             assert!(
                 n.cache_misses > 0 && n.fetched_bytes > 0,
-                "{} at {} entries fetched {} bytes over {} misses -- a replay that fetched                  nothing is being served from a cache it should not have",
+                "{} at {} entries fetched {} bytes over {} misses -- a replay that fetched nothing is being served from a cache it should not have",
                 n.node,
                 r.entries,
                 n.fetched_bytes,
@@ -540,7 +540,7 @@ async fn main() {
             // read columns back to describing cache hits.
             assert_eq!(
                 n.cache_misses, n.chunk_reads,
-                "{} at {} entries served {} of its {} lookups from cache, and a replay that                  starts with a cleared cache has nothing to hit",
+                "{} at {} entries served {} of its {} lookups from cache, and a replay that starts with a cleared cache has nothing to hit",
                 n.node,
                 r.entries,
                 n.chunk_reads - n.cache_misses,
@@ -568,7 +568,7 @@ async fn main() {
         let now = fetched_per_entry(r);
         assert!(
             now <= first_fetched * 1.5,
-            "a replay fetched {now:.1} bytes per entry at {} entries against {first_fetched:.1}              at {}, so what a read costs grows with the corpus",
+            "a replay fetched {now:.1} bytes per entry at {} entries against {first_fetched:.1} at {}, so what a read costs grows with the corpus",
             r.entries,
             rounds[0].entries
         );

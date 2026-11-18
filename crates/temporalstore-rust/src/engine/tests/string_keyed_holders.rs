@@ -266,18 +266,18 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
     assert_eq!(
         KEYS,
         raw.len(),
-        "the fixture wrote {KEYS} raw keys but {} undecorated texts are resident, so the families          are not keying by the text this measures",
+        "the fixture wrote {KEYS} raw keys but {} undecorated texts are resident, so the families are not keying by the text this measures",
         raw.len()
     );
     assert_eq!(
         KEYS,
         decorated.len(),
-        "expected one decorated control-state key per raw key; found {}. If that moved, a saving          quoted per entry and one quoted per raw key are no longer the same ratio",
+        "expected one decorated control-state key per raw key; found {}. If that moved, a saving quoted per entry and one quoted per raw key are no longer the same ratio",
         decorated.len()
     );
     assert!(
         decorated.iter().all(|text| held[*text].len() == 1),
-        "a decorated control-state key gained a second holder, so it CAN now share and this          measurement's conclusion that only the raw half matters is stale"
+        "a decorated control-state key gained a second holder, so it CAN now share and this measurement's conclusion that only the raw half matters is stale"
     );
     // EXACTLY FOUR OF THE EIGHT HOLDERS ARE REACHABLE ON THE SHIPPED DEFAULT, and that is the
     // finding rather than a shortcoming of the fixture. This assert pins the four by name,

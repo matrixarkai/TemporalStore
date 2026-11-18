@@ -2917,7 +2917,7 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
     assert_eq!(
         PINNED_DEADLINES,
         shard.expires_at_ms().len(),
-        "the fixture seeded {PINNED_DEADLINES} deadlines and the shard holds {}; the bracket's          whole reason for carrying them is that this map is not empty",
+        "the fixture seeded {PINNED_DEADLINES} deadlines and the shard holds {}; the bracket's whole reason for carrying them is that this map is not empty",
         shard.expires_at_ms().len()
     );
 
@@ -3284,7 +3284,7 @@ fn which_resident_maps_hold_their_own_key_characters() {
     assert_eq!(RECORDS, strings_total, "strings should hold one key per record");
     assert_eq!(
         strings_total, strings_shared,
-        "{strings_shared} of `strings`' {strings_total} key allocations are the same allocation          the bucket index holds, and EVERY ONE SHOULD BE. Five of its six insert sites used to          spell `key.as_str().into()`, allocating a second copy of characters the page index          already held; `ShardState::adopt_strings_key`, called once the page IS filed, closes          that. A shortfall here means the adoption stopped running and the duplicate is back --          and it will NOT show up in the per-key total, because a clone-based probe cannot see an          `Arc` payload."
+        "{strings_shared} of `strings`' {strings_total} key allocations are the same allocation the bucket index holds, and EVERY ONE SHOULD BE. Five of its six insert sites used to spell `key.as_str().into()`, allocating a second copy of characters the page index already held; `ShardState::adopt_strings_key`, called once the page IS filed, closes that. A shortfall here means the adoption stopped running and the duplicate is back -- and it will NOT show up in the per-key total, because a clone-based probe cannot see an `Arc` payload."
     );
 }
 
@@ -3506,11 +3506,11 @@ fn how_many_times_a_context_keys_characters_exist() {
     // change cannot carry a verdict about this one.
     assert_eq!(
         timeline_total, shared_with_bucket,
-        "{shared_with_bucket} of the time index's {timeline_total} key allocations are the same          allocation the BLOCK INDEX holds, and every one should be. The pair files its maps during          execution, when the lookup does not yet hold the key, so the adoption after the bucket          index is filed is what closes it. A shortfall means that adoption stopped running or          moved to a point before the handle exists -- which is how it failed the first time, on          400 of 400 writes."
+        "{shared_with_bucket} of the time index's {timeline_total} key allocations are the same allocation the BLOCK INDEX holds, and every one should be. The pair files its maps during execution, when the lookup does not yet hold the key, so the adoption after the bucket index is filed is what closes it. A shortfall means that adoption stopped running or moved to a point before the handle exists -- which is how it failed the first time, on 400 of 400 writes."
     );
     assert_eq!(
         0, lookup_distinct,
-        "{lookup_distinct} of the keys the block index holds are a DISTINCT allocation from the          one the event maps hold, and none should be. This is the assertion that a passing          pair-sharing check cannot make: the pair shared one allocation while a second equal copy          sat in the lookup, and only comparing against the lookup finds it."
+        "{lookup_distinct} of the keys the block index holds are a DISTINCT allocation from the one the event maps hold, and none should be. This is the assertion that a passing pair-sharing check cannot make: the pair shared one allocation while a second equal copy sat in the lookup, and only comparing against the lookup finds it."
     );
     assert_eq!(
         timeline_total, shared_with_series,
@@ -3541,7 +3541,7 @@ fn how_many_times_a_context_keys_characters_exist() {
     unshareable_duplicates.sort();
     assert!(
         unshareable_duplicates.is_empty(),
-        "{} key texts are held by several maps where at least one CANNOT share, so those          characters exist more than once: {:?}. Either the new holder takes a `ModelKey` and joins          `adopt_object_key_allocations`, or it should not be keyed by the object key at all.",
+        "{} key texts are held by several maps where at least one CANNOT share, so those characters exist more than once: {:?}. Either the new holder takes a `ModelKey` and joins `adopt_object_key_allocations`, or it should not be keyed by the object key at all.",
         unshareable_duplicates.len(),
         &unshareable_duplicates[..unshareable_duplicates.len().min(4)]
     );
@@ -3788,7 +3788,7 @@ fn what_a_per_shard_resident_bound_recovers() {
 
     assert!(
         total1 < total0,
-        "the whole-index total did not fall ({total0} -> {total1}), so the per-term recoveries          above did not add up to anything at the index level"
+        "the whole-index total did not fall ({total0} -> {total1}), so the per-term recoveries above did not add up to anything at the index level"
     );
 
     // --- CORRECTNESS, NOT NEGOTIABLE. ---
@@ -4295,7 +4295,7 @@ fn what_the_default_configuration_does_to_a_forty_thousand_key_shard() {
     let after = total(&engine);
     println!("    verdict                            : {:?}", report.skipped_reason);
     println!(
-        "    index total                        : {before} -> {after} B   ({:.1} -> {:.1} B/key)",
+        "    index total : {before} -> {after} B   ({:.1} -> {:.1} B/key)",
         before as f64 / KEYS as f64,
         after as f64 / KEYS as f64
     );
@@ -4519,7 +4519,7 @@ fn why_there_are_many_per_key_maps_and_not_one() {
     );
     assert!(
         duplicated.is_empty(),
-        "{} key texts are stored more than once -- the holders report different addresses for the          same characters: {:?}. A map holding a key another map already holds must take a          `ModelKey` and join `adopt_object_key_allocations`.",
+        "{} key texts are stored more than once -- the holders report different addresses for the same characters: {:?}. A map holding a key another map already holds must take a `ModelKey` and join `adopt_object_key_allocations`.",
         duplicated.len(),
         &duplicated[..duplicated.len().min(3)]
     );
@@ -6445,7 +6445,7 @@ fn what_choosing_the_next_block_ordinal_costs() {
             .unwrap_or_default();
         assert!(
             !refs.is_empty(),
-            "the lookup holds no block ref for the {blocks}-block object this arm seeded, so there              is nothing for the ordinal allocator to find and any cost it reports is the cost of              answering about an object that is not there"
+            "the lookup holds no block ref for the {blocks}-block object this arm seeded, so there is nothing for the ordinal allocator to find and any cost it reports is the cost of answering about an object that is not there"
         );
         let routing_bucket = refs[0].routing_bucket;
         // Warmed once outside the window, so what is measured is the steady-state answer and not
@@ -8812,7 +8812,7 @@ fn what_persisting_the_event_and_index_series_costs_the_stored_index() {
             .sum();
         assert!(
             event_points > 0 && index_points > 0,
-            "the fixture wrote {event_points} event points and {index_points} index points; a              zero on either side makes the difference below a measurement of nothing"
+            "the fixture wrote {event_points} event points and {index_points} index points; a zero on either side makes the difference below a measurement of nothing"
         );
 
         let with_bytes = crate::engine::encode_index_bytes(shard).len();
@@ -8858,7 +8858,7 @@ fn what_persisting_the_event_and_index_series_costs_the_stored_index() {
     // change would have shipped silently.
     assert!(
         added > 0,
-        "the stored index is no larger with the two kinds than without ({with_bytes} against          {without_bytes}), so they are not being persisted and the durability this change claims          does not exist"
+        "the stored index is no larger with the two kinds than without ({with_bytes} against {without_bytes}), so they are not being persisted and the durability this change claims does not exist"
     );
 }
 
@@ -12616,7 +12616,7 @@ fn the_published_string_table_figure_follows_from_the_slot_width() {
     let at_1800_bytes = 4096 * bucket + 16;
     assert_eq!(
         at_1792_bytes, 133_136,
-        "the modelled string-table size no longer matches what the allocator probe weighed at          1,792 keys; re-run where_the_resident_index_bytes_go_on_both_routing_ranges with          --features alloc-probe -- --ignored and reconcile the model before trusting any figure          derived from it"
+        "the modelled string-table size no longer matches what the allocator probe weighed at 1,792 keys; re-run where_the_resident_index_bytes_go_on_both_routing_ranges with --features alloc-probe -- --ignored and reconcile the model before trusting any figure derived from it"
     );
     assert_eq!(at_1800_bytes, 266_256, "likewise at 1,800 keys");
 
@@ -12633,7 +12633,7 @@ fn the_published_string_table_figure_follows_from_the_slot_width() {
         let text = format!("{value:.1}");
         assert!(
             readme.contains(&text),
-            "the README does not publish {text} B/key, which is what the current slot width              gives (bucket {bucket} B). The published string-table figures are stale: re-measure              with --features alloc-probe -- --ignored and update the README paragraph."
+            "the README does not publish {text} B/key, which is what the current slot width gives (bucket {bucket} B). The published string-table figures are stale: re-measure with --features alloc-probe -- --ignored and update the README paragraph."
         );
     }
 

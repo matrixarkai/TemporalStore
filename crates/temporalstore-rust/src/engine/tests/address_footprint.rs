@@ -786,7 +786,7 @@ fn only_one_of_the_two_address_cross_checks_on_a_read_can_fire() {
     assert_eq!(
         Some(3),
         good.block_id(),
-        "denominator: the block under test must not be block zero, or the presence half below          cannot tell a skipped check from one that defaults the absent field to zero"
+        "denominator: the block under test must not be block zero, or the presence half below cannot tell a skipped check from one that defaults the absent field to zero"
     );
 
     // DENOMINATOR: the honest address reads back, and really carries all three fields under test.
@@ -2052,7 +2052,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
                 .map(|beside| std::sync::Arc::clone(beside.object_key))
                 .unwrap_or_else(|| {
                     panic!(
-                        "the block at handle {handle} is named by nothing beside it, so this                          footprint report has no object to attribute it to"
+                        "the block at handle {handle} is named by nothing beside it, so this footprint report has no object to attribute it to"
                     )
                 });
             *blocks_per_object.entry(block.object_id(1, &named_key)).or_default() += 1;

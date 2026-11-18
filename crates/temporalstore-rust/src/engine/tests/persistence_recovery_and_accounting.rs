@@ -4445,7 +4445,7 @@ fn batch_bucket_maintenance_does_not_grow_with_the_store() {
 
     assert!(
         large <= small * 1.5 + 1.0,
-        "per-batch bucket maintenance grew with the store: {small:.1} -> {large:.1}          visits/batch for 200 -> 800 objects"
+        "per-batch bucket maintenance grew with the store: {small:.1} -> {large:.1} visits/batch for 200 -> 800 objects"
     );
 }
 
@@ -5119,7 +5119,7 @@ fn how_many_times_one_object_key_is_stored() {
             .bucket_map
             .values()
             .any(|bucket| !bucket.block_index.is_empty()),
-        "the store holds no block at all, so the block index's absence from the holder list above          says nothing about where this key is held"
+        "the store holds no block at all, so the block index's absence from the holder list above says nothing about where this key is held"
     );
 
     let key_bytes: usize = shard.strings().keys().map(|key| key.len()).sum();
@@ -5276,7 +5276,7 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
     assert!(checked > 0, "no block was matched to a lookup entry; nothing was measured");
     assert_eq!(
         shared, checked,
-        "{shared} of {checked} blocks are handed an object key that is the lookup's own          allocation; for the rest the read path made a COPY of the text, which is the duplication          this change removed reappearing one level out"
+        "{shared} of {checked} blocks are handed an object key that is the lookup's own allocation; for the rest the read path made a COPY of the text, which is the duplication this change removed reappearing one level out"
     );
 }
 
@@ -5401,7 +5401,7 @@ fn deleting_an_object_does_not_allocate_per_block_scanned() {
     let growth = wide.saturating_sub(narrow);
     assert!(
         growth < 180,
-        "deleting scanned 180 more blocks and allocated {growth} more times          ({narrow} at 20 fields, {wide} at 200) -- that is per-block allocation"
+        "deleting scanned 180 more blocks and allocated {growth} more times ({narrow} at 20 fields, {wide} at 200) -- that is per-block allocation"
     );
 }
 
@@ -5867,12 +5867,12 @@ fn does_delete_scale_with_the_store() {
     let growth = large / small;
     assert!(
         growth < 1.5,
-        "a delete cost {small:.1} allocations at 200 resident keys and {large:.1} at 3,200          ({growth:.1}x) -- it is scaling with the store again"
+        "a delete cost {small:.1} allocations at 200 resident keys and {large:.1} at 3,200 ({growth:.1}x) -- it is scaling with the store again"
     );
     let byte_growth = large_bytes / small_bytes;
     assert!(
         byte_growth < 1.6,
-        "a delete allocated {small_bytes:.0} bytes at 200 keys and {large_bytes:.0} at 3,200          ({byte_growth:.1}x)"
+        "a delete allocated {small_bytes:.0} bytes at 200 keys and {large_bytes:.0} at 3,200 ({byte_growth:.1}x)"
     );
 }
 
@@ -6123,7 +6123,7 @@ fn does_writing_scale_with_the_store() {
     // 800 at 100 fields, because the per-write sync re-filed every field the object had.
     assert!(
         wide_large / wide_small < 1.3,
-        "a write cost {wide_small:.1} allocations at 100 fields and {wide_large:.1} at 1,600          ({:.1}x) -- the write is scaling with the object again",
+        "a write cost {wide_small:.1} allocations at 100 fields and {wide_large:.1} at 1,600 ({:.1}x) -- the write is scaling with the object again",
         wide_large / wide_small
     );
 }
@@ -8036,7 +8036,7 @@ fn per_record_structure_census() {
     // wrong. This says the text IS held, and says it of the structure that now holds it.
     assert!(
         block_lookup_bytes > 0,
-        "the object lookup holds no key text over {RECORDS} records, so the zero in the block-index          row below cannot be read as a saving"
+        "the object lookup holds no key text over {RECORDS} records, so the zero in the block-index row below cannot be read as a saving"
     );
     let total_string_bytes =
         key_bytes + block_index_bytes + block_lookup_bytes + dirty_bytes;
@@ -8260,7 +8260,7 @@ fn maintained_element_name_block_ref_total_matches_the_walk() {
     assert!(walked > 0, "workload produced no element name block refs to compare");
     assert_eq!(
         maintained, walked,
-        "maintained element name block-ref total drifted from the walk it replaces:          {maintained} vs {walked}"
+        "maintained element name block-ref total drifted from the walk it replaces: {maintained} vs {walked}"
     );
     println!("
   element name block refs: maintained {maintained} == walked {walked}
@@ -8631,7 +8631,7 @@ fn bucket_maintenance_per_write_does_not_grow_with_the_store() {
     // bucket-fill effects; a linear-in-corpus path shows up here as ~4x and fails loudly.
     assert!(
         large_each <= small_each * 1.5 + 1.0,
-        "per-write bucket maintenance grew with the store: {small_each:.1} -> {large_each:.1}          visits/write for 200 -> 800 objects"
+        "per-write bucket maintenance grew with the store: {small_each:.1} -> {large_each:.1} visits/write for 200 -> 800 objects"
     );
 }
 
@@ -10479,7 +10479,7 @@ fn the_storage_cycle_records_how_long_its_stages_take() {
     let total: u64 = cycle.stages.iter().map(|stage| stage.duration_ms).sum();
     assert!(
         total <= wall_ms + 50,
-        "stage durations total {total} ms but the whole call took {wall_ms} ms -- they should tile          the cycle, not overlap it"
+        "stage durations total {total} ms but the whole call took {wall_ms} ms -- they should tile the cycle, not overlap it"
     );
     assert!(
         cycle.duration_ms >= total,
@@ -10565,7 +10565,7 @@ fn the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible() 
 
     assert!(
         cycle.duration_us >= total_us,
-        "the microsecond rows must tile the round the way the millisecond rows do: they sum to          {total_us} us on a round that took {} us, so one interval is charged to two stages",
+        "the microsecond rows must tile the round the way the millisecond rows do: they sum to {total_us} us on a round that took {} us, so one interval is charged to two stages",
         cycle.duration_us
     );
     assert!(
@@ -10574,7 +10574,7 @@ fn the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible() 
     );
     assert!(
         cycle.stages.iter().any(|stage| stage.duration_us > 0),
-        "every one of the {} stage rows reports 0 us. The millisecond rows sum to {total_ms} ms on          this round, which is exactly the case this field exists for: if the round took measurable          time, at least one stage must be able to say so",
+        "every one of the {} stage rows reports 0 us. The millisecond rows sum to {total_ms} ms on this round, which is exactly the case this field exists for: if the round took measurable time, at least one stage must be able to say so",
         cycle.stages.len()
     );
 
@@ -10599,7 +10599,7 @@ fn the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible() 
         }
         assert_eq!(
             stage.walk.live_block_entries, 0,
-            "stage `{}` walked {} live-block entries on a round with nothing to reclaim. Only the              lifecycle plan and the two stages built on it survey the shard; a stage that starts              doing so turns an idle round into another whole-shard pass",
+            "stage `{}` walked {} live-block entries on a round with nothing to reclaim. Only the lifecycle plan and the two stages built on it survey the shard; a stage that starts doing so turns an idle round into another whole-shard pass",
             stage.stage, stage.walk.live_block_entries
         );
     }
@@ -10723,7 +10723,7 @@ fn a_cold_reload_rebuilds_the_shard_from_what_the_writes_recorded() {
     let installed = recovered.replay_installs_for_test();
     assert!(
         installed >= recorded as u64,
-        "recovery installed {installed} outcomes for {recorded} records that carried them, so it          fell back to replaying commands and this test proves nothing"
+        "recovery installed {installed} outcomes for {recorded} records that carried them, so it fell back to replaying commands and this test proves nothing"
     );
 
     assert_eq!(
@@ -11066,7 +11066,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
 
     assert!(
         incomplete.is_empty(),
-        "these commands recorded SOMETHING but not EVERYTHING, so a recovered shard would be          quietly wrong rather than obviously broken: {incomplete:#?}"
+        "these commands recorded SOMETHING but not EVERYTHING, so a recovered shard would be quietly wrong rather than obviously broken: {incomplete:#?}"
     );
 }
 
@@ -16421,7 +16421,7 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     assert_eq!(
         index_before,
         block_rows(&engine),
-        "a batched no-block command changed the block index, so skipping the rebuild after it          leaves the index stale"
+        "a batched no-block command changed the block index, so skipping the rebuild after it leaves the index stale"
     );
 
     // The positive control, and it is not optional: both assertions below are `== 0`, and zero is
@@ -16440,7 +16440,7 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     assert!(control.status.ok, "{:?}", control.status);
     assert!(
         control_visits > 0,
-        "the block-visit counter reported nothing for a command that does rebuild, so the zeroes          below would mean nothing"
+        "the block-visit counter reported nothing for a command that does rebuild, so the zeroes below would mean nothing"
     );
 
     assert_eq!(
@@ -16449,7 +16449,7 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     );
     assert_eq!(
         batch_visits, 0,
-        "a no-block command rebuilt the whole index because it arrived in a batch: {batch_visits}          block visits against {alone_visits} for the same command sent alone"
+        "a no-block command rebuilt the whole index because it arrived in a batch: {batch_visits} block visits against {alone_visits} for the same command sent alone"
     );
 }
 
@@ -16530,7 +16530,7 @@ fn the_cache_namespaces_a_record_can_actually_use() {
     let sets = in_namespace("set");
     assert!(
         sets.iter().all(|entry| entry.ends_with("/members")),
-        "a set cached an entry under a selector other than `members`, so naming one key no          longer covers the record: {sets:?}"
+        "a set cached an entry under a selector other than `members`, so naming one key no longer covers the record: {sets:?}"
     );
 
     // And the narrowed call really does remove it.
@@ -16719,7 +16719,7 @@ fn a_wide_parent_keeps_its_newest_children_for_scoring() {
 
     assert!(
         found_newest.contains(&newest),
-        "the newest child was not reachable: a cap of {CAP} over {CHILDREN} children scored          {found_newest:?}, so the most recently written content is invisible to retrieval"
+        "the newest child was not reachable: a cap of {CAP} over {CHILDREN} children scored {found_newest:?}, so the most recently written content is invisible to retrieval"
     );
     assert_eq!(
         dropped,
@@ -16732,7 +16732,7 @@ fn a_wide_parent_keeps_its_newest_children_for_scoring() {
     // would not be binding and the test would prove nothing about which end is kept.
     assert!(
         !traverse(oldest).contains(&oldest),
-        "both the newest and oldest children were reachable, so the cap did not bind and this          test says nothing about which end the cut keeps"
+        "both the newest and oldest children were reachable, so the cap did not bind and this test says nothing about which end the cut keeps"
     );
 }
 
@@ -16810,7 +16810,7 @@ fn a_context_write_leaves_the_record_namespaces_empty() {
 
     assert!(
         record_namespace(&engine).is_empty(),
-        "a context write cached something in a record namespace, so dropping those sweeps would          leave it stale: {:?}",
+        "a context write cached something in a record namespace, so dropping those sweeps would leave it stale: {:?}",
         record_namespace(&engine)
     );
 
@@ -16837,7 +16837,7 @@ fn a_context_write_leaves_the_record_namespaces_empty() {
         record_namespace(&engine)
             .iter()
             .any(|entry| entry.contains("a-real-hash")),
-        "a hash record did not appear in the record namespaces, so the assertion above passes          whether or not context writes cache there"
+        "a hash record did not appear in the record namespaces, so the assertion above passes whether or not context writes cache there"
     );
 }
 
@@ -16964,7 +16964,7 @@ fn the_counter_coalesce_cure_is_inert_under_default_config() {
     let config = Config::default();
     assert!(
         !config.async_storage,
-        "async_storage must default false -- if this flips, the coalesce escape becomes live for          default deployments and the quadratic-write path stops being the default"
+        "async_storage must default false -- if this flips, the coalesce escape becomes live for default deployments and the quadratic-write path stops being the default"
     );
     assert!(
         config.control_coalesce_persist_enabled(),
@@ -16973,7 +16973,7 @@ fn the_counter_coalesce_cure_is_inert_under_default_config() {
     let escape_taken = config.async_storage && config.control_coalesce_persist_enabled();
     assert!(
         !escape_taken,
-        "the coalesce escape must be INERT under default config: it needs BOTH halves, and          async_storage is off, so a default deployment takes the whole-series rewrite"
+        "the coalesce escape must be INERT under default config: it needs BOTH halves, and async_storage is off, so a default deployment takes the whole-series rewrite"
     );
 }
 
@@ -17067,7 +17067,7 @@ fn a_counter_series_is_bounded_by_a_write_and_not_by_a_reload() {
     assert_eq!(
         retained(&original),
         POINTS as i64,
-        "an unbounded cap must retain every point, and the count must see them: a lower number          here means the writes and the read disagree about the key, not that a trim ran"
+        "an unbounded cap must retain every point, and the count must see them: a lower number here means the writes and the read disagree about the key, not that a trim ran"
     );
 
     // PHASE 2 -- lower the cap below what is already stored, then reload from disk.
@@ -17083,7 +17083,7 @@ fn a_counter_series_is_bounded_by_a_write_and_not_by_a_reload() {
     assert_eq!(
         retained(&restarted),
         POINTS as i64,
-        "A RELOAD MUST NOT TRIM. The cap is {CAP} and {POINTS} points are on disk; a reload that          returned {CAP} would have silently deleted durable points that a node configured higher          still answers from. The two load paths must reinstate what is stored, untouched"
+        "A RELOAD MUST NOT TRIM. The cap is {CAP} and {POINTS} points are on disk; a reload that returned {CAP} would have silently deleted durable points that a node configured higher still answers from. The two load paths must reinstate what is stored, untouched"
     );
 
     // PHASE 3 -- one write, at the bound.
@@ -17091,7 +17091,7 @@ fn a_counter_series_is_bounded_by_a_write_and_not_by_a_reload() {
     assert_eq!(
         retained(&restarted),
         CAP as i64,
-        "the WRITE bound: one increment past the cap must leave exactly {CAP} points, oldest          first out, which is what keeps the whole-series rewrite from costing an unbounded history"
+        "the WRITE bound: one increment past the cap must leave exactly {CAP} points, oldest first out, which is what keeps the whole-series rewrite from costing an unbounded history"
     );
 }
 
@@ -18004,7 +18004,7 @@ fn does_a_counter_write_cost_more_after_many_writes() {
         // got reported in the first place.
         assert!(
             count > 0,
-            "{family}: read back 0 from {read_key}, so the measured cost belongs to a path this              probe cannot confirm wrote anything"
+            "{family}: read back 0 from {read_key}, so the measured cost belongs to a path this probe cannot confirm wrote anything"
         );
         (bytes, count)
     };
@@ -18022,7 +18022,7 @@ fn does_a_counter_write_cost_more_after_many_writes() {
         // process has done more writes. Printing a ratio nobody asserts on cannot fail.
         assert!(
             ratio < 1.5,
-            "{family} cost {ratio:.2}x more after 16x the writes at an UNCHANGED {SERIES}-point              series ({small} -> {large} bytes), so its cost now tracks writes rather than data"
+            "{family} cost {ratio:.2}x more after 16x the writes at an UNCHANGED {SERIES}-point series ({small} -> {large} bytes), so its cost now tracks writes rather than data"
         );
     }
     println!("  A ratio near 1 => cost depends on the DATA, and the soak's rise is something else.");
@@ -18116,7 +18116,7 @@ fn what_one_entry_costs_in_each_structure() {
         let spread = (average - marginal).abs() / marginal;
         assert!(
             spread < 0.20,
-            "{kind}: marginal {marginal:.1} and average {average:.1} B/entry differ by {:.0}%, so              {N} entries is too small a sample and the average is still charging each entry for              the fixed structures around it",
+            "{kind}: marginal {marginal:.1} and average {average:.1} B/entry differ by {:.0}%, so {N} entries is too small a sample and the average is still charging each entry for the fixed structures around it",
             spread * 100.0
         );
     }
@@ -18688,7 +18688,7 @@ fn an_entity_upsert_does_not_report_its_block_uncovered() {
         .collect();
     assert!(
         stray.is_empty(),
-        "an entity upsert reported its own block uncovered, so every entity write rebuilds the          whole bucket index: {stray:?}"
+        "an entity upsert reported its own block uncovered, so every entity write rebuilds the whole bucket index: {stray:?}"
     );
 }
 

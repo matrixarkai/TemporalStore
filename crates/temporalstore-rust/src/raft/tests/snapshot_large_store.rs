@@ -431,16 +431,16 @@ fn a_snapshot_reads_the_whole_store_however_little_log_it_discards() {
         inc_small.work_entries, inc_large.work_entries
     );
     println!(
-        "  slab bytes read                = {} -> {}  (ratio {:.3})",
+        "  slab bytes read = {} -> {}  (ratio {:.3})",
         inc_small.counts.slab_read_bytes,
         inc_large.counts.slab_read_bytes,
         inc_large.counts.slab_read_bytes as f64 / inc_small.counts.slab_read_bytes.max(1) as f64
     );
     println!(
-        "  per record of STORE            = {inc_small_per_store:.3} -> {inc_large_per_store:.3}"
+        "  per record of STORE = {inc_small_per_store:.3} -> {inc_large_per_store:.3}"
     );
     println!(
-        "  per record of WORK             = {inc_small_per_work:.3} -> {inc_large_per_work:.3}"
+        "  per record of WORK = {inc_small_per_work:.3} -> {inc_large_per_work:.3}"
     );
 
     assert!(
@@ -919,7 +919,7 @@ fn a_further_behind_peer_costs_no_more_to_help_than_a_barely_behind_one() {
             counts.engine_publishes
         );
         println!(
-            "           slab bytes per ENTRY OF LAG = {:.3}",
+            " slab bytes per ENTRY OF LAG = {:.3}",
             counts.slab_read_bytes as f64 / lag as f64
         );
         rows.push((lag, counts));

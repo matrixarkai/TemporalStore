@@ -7402,7 +7402,7 @@ mod tests {
             let tolerance = piece + scanned_removable_bytes / 20;
             assert!(
                 gate.removable_bytes.abs_diff(scanned_removable_bytes) <= tolerance,
-                "removable bytes from the names ({}) must agree with the records read one by one                  ({scanned_removable_bytes}) to within {tolerance} B",
+                "removable bytes from the names ({}) must agree with the records read one by one ({scanned_removable_bytes}) to within {tolerance} B",
                 gate.removable_bytes
             );
 

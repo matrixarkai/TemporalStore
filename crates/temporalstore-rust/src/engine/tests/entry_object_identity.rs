@@ -175,7 +175,7 @@ fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
             }
             let Some((_, named)) = keys.live_identity(bucket.routing_bucket, *handle) else {
                 panic!(
-                    "a live block at handle {handle} is named by nothing beside it, so this                      denominator would be short by one"
+                    "a live block at handle {handle} is named by nothing beside it, so this denominator would be short by one"
                 )
             };
             by_key

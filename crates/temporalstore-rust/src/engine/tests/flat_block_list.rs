@@ -990,7 +990,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
                         .map(|(handle, block)| {
                             let key = named.get(handle).unwrap_or_else(|| {
                                 panic!(
-                                    "the block at handle {handle} is named by nothing beside it,                                      so this fixture cannot hand it on"
+                                    "the block at handle {handle} is named by nothing beside it, so this fixture cannot hand it on"
                                 )
                             });
                             (std::sync::Arc::clone(key), block.clone())

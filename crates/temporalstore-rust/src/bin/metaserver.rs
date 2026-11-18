@@ -342,7 +342,7 @@ fn main() {
             }
             MetaBackend::Raft(_) => {
                 warn!(
-                    "TS_RAFT_AUTO_FAILOVER ignored: this setting drives failover for datanode                      raft shard groups, which the raft backend does not do -- a frozen datanode                      leaves its groups without a trigger and writes to them stall"
+                    "TS_RAFT_AUTO_FAILOVER ignored: this setting drives failover for datanode raft shard groups, which the raft backend does not do -- a frozen datanode leaves its groups without a trigger and writes to them stall"
                 );
                 None
             }

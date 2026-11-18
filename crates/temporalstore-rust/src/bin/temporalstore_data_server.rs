@@ -3598,14 +3598,14 @@ mod tests {
         );
         assert_ne!(
             block_store_dir_from_env(), default_dir,
-            "a value read from the previous name must differ from the default, or this proves              nothing"
+            "a value read from the previous name must differ from the default, or this proves nothing"
         );
 
         std::env::set_var("TS_BLOCK_STORE_DIR", "/tmp/current-spelling");
         assert_eq!(
             block_store_dir_from_env(),
             "/tmp/current-spelling",
-            "the current spelling must win when both are set, or a deployment mid-migration gets              whichever the lookup tried first"
+            "the current spelling must win when both are set, or a deployment mid-migration gets whichever the lookup tried first"
         );
 
         for key in keys {

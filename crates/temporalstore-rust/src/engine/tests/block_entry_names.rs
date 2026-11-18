@@ -1339,7 +1339,7 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
     let stored_map_key_count = canonical.matches("\"page_index\":").count();
     assert_eq!(
         1, stored_map_key_count,
-        "the fixture must carry exactly one stored block-map key, or the canonicalisation below is          not reporting what happens to it"
+        "the fixture must carry exactly one stored block-map key, or the canonicalisation below is not reporting what happens to it"
     );
     let canonical = canonical.replace("\"page_index\":", "\"block_index\":");
     assert_eq!(

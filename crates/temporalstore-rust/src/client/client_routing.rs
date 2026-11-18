@@ -610,7 +610,7 @@ mod batch_routing_tests {
 
         assert_ne!(
             single, batch,
-            "the two paths disagree by construction -- if they ever agree, one of them changed              and the comment above needs to change with it"
+            "the two paths disagree by construction -- if they ever agree, one of them changed and the comment above needs to change with it"
         );
     }
 

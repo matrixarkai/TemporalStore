@@ -593,13 +593,13 @@ impl ObjectStore for MatrixObjectHttpStore {
                         .and_then(|value| value.trim().parse::<u64>().ok())
                         .ok_or_else(|| {
                             ObjectStoreError::Http(format!(
-                                "{key}: the append gave no usable x-amz-object-size, so where                                  the bytes landed is unknown"
+                                "{key}: the append gave no usable x-amz-object-size, so where the bytes landed is unknown"
                             ))
                         })?;
                     let end_offset = start_offset.saturating_add(bytes_written);
                     if object_length != end_offset {
                         return Err(ObjectStoreError::Http(format!(
-                            "{key}: appended {bytes_written} bytes at {start_offset}, so the                              object should be {end_offset} bytes and the server reports                              {object_length}"
+                            "{key}: appended {bytes_written} bytes at {start_offset}, so the object should be {end_offset} bytes and the server reports {object_length}"
                         )));
                     }
                     self.remember_length(key, object_length);

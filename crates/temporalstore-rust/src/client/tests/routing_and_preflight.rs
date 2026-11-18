@@ -724,7 +724,7 @@ fn the_execute_counters_survive_the_move_off_the_stats_lock() {
     assert_eq!(
         client.stats().execute_requests,
         2,
-        "two executes must be reported -- zero here means the atomic is no longer folded into          the stats the report reads"
+        "two executes must be reported -- zero here means the atomic is no longer folded into the stats the report reads"
     );
 
     let _ = table.batch_execute(vec![Command::StringGet {
@@ -788,7 +788,7 @@ fn a_split_table_routes_keys_over_its_new_shard_count() {
         .collect();
     assert!(
         after.iter().any(|shard| *shard >= 104),
-        "after the split some key must route into the new shards -- none here means this handle          is still hashing over the four it was opened with: {after:?}"
+        "after the split some key must route into the new shards -- none here means this handle is still hashing over the four it was opened with: {after:?}"
     );
 }
 
@@ -809,7 +809,7 @@ fn a_table_opened_after_a_lookup_is_still_found() {
     let _second = client.open_table("ns", "b", TableOptions::default());
     assert!(
         client.cached_table("ns", "b").is_some(),
-        "a table opened after this thread cached a snapshot must still be found -- a miss here          means the open did not move the version"
+        "a table opened after this thread cached a snapshot must still be found -- a miss here means the open did not move the version"
     );
 
     // And closing must reach it too, or a closed table keeps being served from a stale snapshot.
@@ -841,7 +841,7 @@ fn the_backend_failure_count_tracks_the_map_it_stands_in_for() {
     assert_eq!(
         client.backend_failure_entries_for_test(),
         1,
-        "an inserted failure must be visible to the fast path, or the lookup skips a check it          should have made"
+        "an inserted failure must be visible to the fast path, or the lookup skips a check it should have made"
     );
 
     client.insert_backend_failure_for_test("10.0.0.2:7", 50, 10, 1);
