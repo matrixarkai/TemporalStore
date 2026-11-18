@@ -126,6 +126,32 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: Large block reference checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for spec in state::block_refs::tests:::7 large_block_refs_tests:::2 rebuilt_ref_filing_tests:::3 feature_wal_pin_tests:::3; do
+            filter=${spec%:*}
+            expected=${spec##*:}
+            cargo test --locked -p temporalstore-rust --lib --features alloc-probe "$filter" \
+              -- --test-threads=1 2>&1 | tee /tmp/large-block-refs-gate.log
+            grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/large-block-refs-gate.log \
+              || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
+          done
+
+      - name: Container physical ownership checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for spec in recorded_map::owners::tests:::6 container_owner_cache_tests:::6 recorded_map::ordinals::tests:::3 recorded_ordinal_tests:::4 block_owner_query_tests:::3; do
+            filter=${spec%:*}
+            expected=${spec##*:}
+            cargo test --locked -p temporalstore-rust --lib --features alloc-probe "$filter" \
+              -- --test-threads=1 2>&1 | tee /tmp/container-ownership-gate.log
+            grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/container-ownership-gate.log \
+              || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
+          done
+
       - name: Ollama extraction source isolation checks
         timeout-minutes: 30
         run: |
@@ -228,7 +254,7 @@ jobs:
           set -o pipefail
           cargo test -p temporalstore-rust --lib --features alloc-probe affected_bucket_survivors \
             -- --test-threads=1 --nocapture 2>&1 | tee /tmp/affected-bucket-gate.log
-          grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/affected-bucket-gate.log
+          grep -q 'test result: ok\. 5 passed; 0 failed;' /tmp/affected-bucket-gate.log
 
       - name: Retention and block ownership checks
         timeout-minutes: 30

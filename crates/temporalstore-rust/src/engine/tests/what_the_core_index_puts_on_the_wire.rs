@@ -769,7 +769,7 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
         "a deleted block must not reach the lookup, or the tombstone row is not the only source"
     );
     assert_eq!(
-        live_handle, refs[0].block_ref_key,
+        live_handle, refs.iter().next().unwrap().block_ref_key,
         "the one ref must be the LIVE block's"
     );
 

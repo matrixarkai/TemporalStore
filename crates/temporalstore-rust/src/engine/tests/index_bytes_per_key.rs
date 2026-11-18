@@ -894,16 +894,17 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         // nothing -- while `Many` needed a second element name. So it read `[0, n, 0]` by
         // construction for every corpus. The `ref_arms` census beside it is the one with content,
         // and it now reads the object's own slot.
-        let mut ref_arms = [0usize; 2];
+        let mut ref_arms = [0usize; 3];
         for (_model, _key, refs) in shard.bucket_index.object_block_lookup.iter() {
             ref_arms[match refs {
                 BlockRefs::One(_) => 0,
                 BlockRefs::Many(_) => 1,
+                BlockRefs::Large(_) => 2,
             }] += 1;
         }
         println!(
             "  arms Empty/One/Many: block_index {block_arms:?} over {} buckets; object_index \
-             {object_arms:?}; lookup refs One/Many {ref_arms:?}",
+             {object_arms:?}; lookup refs One/Many/Large {ref_arms:?}",
             shard.bucket_index.bucket_map.len()
         );
 
@@ -6441,7 +6442,7 @@ fn what_choosing_the_next_block_ordinal_costs() {
         let refs = shard
             .bucket_index
             .object_block_refs("feature", &key)
-            .map(|refs| refs.as_slice().to_vec())
+            .map(|refs| refs.iter().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
         assert!(
             !refs.is_empty(),

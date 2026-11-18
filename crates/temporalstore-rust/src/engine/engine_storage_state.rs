@@ -5654,12 +5654,17 @@ fn intern_up_to(
 /// representable rather than being asserted away.
 ///
 /// Serializes as a sequence exactly as the vector did, so the on-disk index is unchanged.
-#[derive(Debug, Clone, Eq, Serialize, Deserialize)]
-#[serde(from = "Vec<BlockLookupRef>", into = "Vec<BlockLookupRef>")]
-pub(super) enum BlockRefs {
-    One(BlockLookupRef),
-    Many(Vec<BlockLookupRef>),
-}
+/// Large sets use a boxed ordered tree; small sets keep the inline/vector layout. Readers borrow
+/// an iterator over either representation rather than flattening the tree on each lookup.
+#[path = "block_refs.rs"]
+mod block_refs;
+#[cfg(test)]
+pub(super) use block_refs::measure_block_ref_vector_shifts_for_test;
+pub(super) use block_refs::{BlockLookupRef, BlockRefs};
+
+#[cfg(test)]
+#[path = "large_block_refs_tests.rs"]
+mod large_block_refs_tests;
 
 /// THE LOOKUP'S PER-OBJECT VALUE, AND WHAT IT REPLACED.
 ///
@@ -5714,145 +5719,6 @@ const _: () = assert!(
 /// a subtraction: the element name was 16 bytes and held a constant `None`.
 const _: () = assert!(std::mem::size_of::<Option<Arc<str>>>() == 16);
 
-#[cfg(test)]
-thread_local! {
-    static BLOCK_REF_VECTOR_SHIFTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-pub(super) fn measure_block_ref_vector_shifts_for_test<T>(work: impl FnOnce() -> T) -> (T, usize) {
-    BLOCK_REF_VECTOR_SHIFTS.with(|count| count.set(0));
-    let result = work();
-    (result, BLOCK_REF_VECTOR_SHIFTS.with(std::cell::Cell::get))
-}
-
-impl BlockRefs {
-    pub(super) fn as_slice(&self) -> &[BlockLookupRef] {
-        match self {
-            Self::One(value) => std::slice::from_ref(value),
-            Self::Many(values) => values.as_slice(),
-        }
-    }
-
-    pub(super) fn len(&self) -> usize {
-        match self {
-            Self::One(_) => 1,
-            Self::Many(values) => values.len(),
-        }
-    }
-
-    pub(super) fn iter(&self) -> std::slice::Iter<'_, BlockLookupRef> {
-        self.as_slice().iter()
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Remove ONE ref, reporting whether it was there -- the counterpart of [`BlockRefs::insert`],
-    /// and the counter is kept from the same answer for the same reason.
-    ///
-    /// # WHY THE INLINE ARM BECOMES AN EMPTY SPILLED ONE
-    ///
-    /// `One` cannot represent zero refs. Removing the only ref therefore has to change the arm, and
-    /// it becomes `Many(vec![])` rather than panicking or leaving the ref behind. That state is
-    /// transient by contract: the holder drops the slot when this leaves it empty, and
-    /// [`CoreIndex::remove_object_block_lookup_ref`] is the only caller precisely so that contract
-    /// has one holder.
-    /// Representing it anyway is what keeps the transition from being a panic.
-    ///
-    /// SINCE THE SECOND LEVEL COLLAPSED THE EMPTY STATE IS NOT EVEN REPRESENTABLE ABOVE. The slot
-    /// is the object's presence in `ObjectBlockLookup`, so the remover drops the object in the same
-    /// breath that sees the refs empty -- there is no longer a slot that could be left holding this.
-    pub(super) fn remove(&mut self, value: &BlockLookupRef) -> bool {
-        match self {
-            Self::One(existing) => {
-                if existing == value {
-                    *self = Self::Many(Vec::new());
-                    true
-                } else {
-                    false
-                }
-            }
-            // Sorted by `insert`, so the search that finds it is the search that put it there.
-            Self::Many(values) => match values.binary_search(value) {
-                Ok(at) => {
-                    values.remove(at);
-                    true
-                }
-                Err(_) => false,
-            },
-        }
-    }
-
-    /// Insert keeping the refs sorted and free of duplicates, which is what the set this replaced
-    /// did. Reports whether anything was added, which is what the ref counter is kept from.
-    pub(super) fn insert(&mut self, value: BlockLookupRef) -> bool {
-        match self {
-            Self::One(existing) => match value.cmp(existing) {
-                std::cmp::Ordering::Equal => false,
-                std::cmp::Ordering::Less => {
-                    *self = Self::Many(vec![value, existing.clone()]);
-                    true
-                }
-                std::cmp::Ordering::Greater => {
-                    *self = Self::Many(vec![existing.clone(), value]);
-                    true
-                }
-            },
-            Self::Many(values) => match values.binary_search(&value) {
-                Ok(_) => false,
-                Err(at) => {
-                    #[cfg(test)]
-                    BLOCK_REF_VECTOR_SHIFTS.with(|count| count.set(count.get() + values.len() - at));
-                    values.insert(at, value);
-                    true
-                }
-            },
-        }
-    }
-}
-
-impl Default for BlockRefs {
-    fn default() -> Self {
-        Self::Many(Vec::new())
-    }
-}
-
-/// Compared by contents, so a one-element spilled arm and an inline one are the same refs. Without
-/// this, a value read back from an index written before this change could compare unequal to the
-/// identical value built in memory.
-impl PartialEq for BlockRefs {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_slice() == other.as_slice()
-    }
-}
-
-impl From<Vec<BlockLookupRef>> for BlockRefs {
-    fn from(mut refs: Vec<BlockLookupRef>) -> Self {
-        if refs.len() == 1 {
-            Self::One(refs.pop().expect("length just checked"))
-        } else {
-            Self::Many(refs)
-        }
-    }
-}
-
-impl From<BlockRefs> for Vec<BlockLookupRef> {
-    fn from(refs: BlockRefs) -> Self {
-        match refs {
-            BlockRefs::One(value) => vec![value],
-            BlockRefs::Many(values) => values,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(super) struct BlockLookupRef {
-    #[serde(rename = "routing_slot")]
-    pub(super) routing_bucket: u32,
-    pub(super) block_ref_key: u64,
-}
 
 /// TWELVE BYTES OF FIELD IN SIXTEEN. This one is alignment, not width: a `u32` beside a `u64`
 /// pads to the `u64`'s alignment, and narrowing either field moves nothing. It is pinned so the
@@ -8725,12 +8591,11 @@ impl CoreIndex {
         model_id: &str,
         object_key: &str,
         element_name: Option<&str>,
-    ) -> Option<&[BlockLookupRef]> {
+    ) -> Option<&BlockRefs> {
         if !names_the_only_slot(element_name) {
             return None;
         }
         self.object_block_refs(model_id, object_key)
-            .map(BlockRefs::as_slice)
     }
 
     /// Every block ref of this object, whatever its element name.
@@ -8922,7 +8787,7 @@ impl CoreIndex {
                 };
                 if self
                     .block_refs_for(model_id, object_key, element_name)
-                    .is_some_and(|refs| refs.binary_search(&block_ref).is_ok())
+                    .is_some_and(|refs| refs.contains(&block_ref))
                     && self
                         .bucket_map
                         .get(&routing_bucket)
@@ -9033,9 +8898,8 @@ pub(super) fn next_block_index_for_object(
     // THE ANSWER IS THE SAME ONE, reached from the object's own two neighbours.
     let live_highest = bucket_index
         .object_block_refs(model_id, object_key)
-        .map(BlockRefs::as_slice)
-        .unwrap_or_default()
-        .iter()
+        .into_iter()
+        .flat_map(BlockRefs::iter)
         // The refs span whatever buckets the object is filed in; this asks about one bucket, as
         // the walk it replaces did -- it only ever saw `bucket.block_index`.
         .filter(|block_ref| block_ref.routing_bucket == routing_bucket)
@@ -9519,7 +9383,7 @@ mod element_name_lookup_tests {
     fn refs_under_the_only_slot(index: &CoreIndex, object: &str) -> usize {
         index
             .block_refs_for("hash", object, None)
-            .map_or(0, <[BlockLookupRef]>::len)
+            .map_or(0, BlockRefs::len)
     }
 
     /// THE HALF OF THE TRIPWIRE THAT HAS A DISCRIMINATOR, and it can still fail.
@@ -9600,7 +9464,7 @@ mod element_name_lookup_tests {
             "the fixture filed {} refs of {BLOCKS}, so the order claim below has too little to              range over",
             refs.len()
         );
-        let held = refs.as_slice();
+        let held = refs.iter().collect::<Vec<_>>();
         assert!(
             held.windows(2).all(|pair| pair[0] < pair[1]),
             "the refs in the slot are not strictly ascending, so `BlockRefs::remove`'s binary              search can miss a ref that is present: {held:?}"
@@ -9613,7 +9477,7 @@ mod element_name_lookup_tests {
         };
         assert_eq!(
             Some(&lowest),
-            held.first(),
+            held.first().copied(),
             "the lowest ref went in last and is not at the front, so the insert is not placing by              order: {held:?}"
         );
 
@@ -9659,7 +9523,7 @@ mod element_name_lookup_tests {
             2,
             index
                 .block_refs_for("hash", "k", None)
-                .map_or(0, <[BlockLookupRef]>::len),
+                .map_or(0, BlockRefs::len),
             "the unnamed lookup stopped resolving, so the assertion above passed over an empty \
              lookup rather than over a refused query"
         );
@@ -9816,7 +9680,10 @@ mod element_name_lookup_tests {
                 block_ref_key: 1
             }])
             .as_deref(),
-            index.block_refs_for("hash", "k", None),
+            index
+                .block_refs_for("hash", "k", None)
+                .map(|refs| refs.iter().cloned().collect::<Vec<_>>())
+                .as_deref(),
             "the slot's other ref did not survive its sibling's removal"
         );
         assert_eq!(

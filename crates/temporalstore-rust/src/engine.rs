@@ -3737,10 +3737,27 @@ impl FastPathRead<'_> {
                 }
                 Some(guard)
             }
+            Self::FeatureRange { key, window, .. } => {
+                let mut addresses = window.iter().map(|(_, address)| address).filter(|address| {
+                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                });
+                let first = addresses.next()?;
+                let object = stable_block_object_id(shard, "feature", key);
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                guard.pin(blocks, object, None, first);
+                for address in addresses {
+                    guard.pin(blocks, object, None, address);
+                }
+                Some(guard)
+            }
             Self::Hash { .. } | Self::Answer { .. } => None,
         }
     }
 }
+
+#[cfg(test)]
+#[path = "engine/feature_wal_pin_tests.rs"]
+mod feature_wal_pin_tests;
 
 #[cfg(test)]
 thread_local! {

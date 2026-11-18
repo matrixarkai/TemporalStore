@@ -112,8 +112,16 @@ fn ordered_filings_keep_both_homes_counts_duplicates_and_deleted_skips() {
         assert!(actual.object_block_lookup.get("string", "row").is_none());
         assert!(actual.object_block_refs("hash", "deleted").is_none());
         assert_eq!(new_shifts, 0);
-        if count >= 64 {
+        if count == 64 {
             assert!(old_shifts > count * count / 4);
+        }
+        if count >= 4096 {
+            assert!(old_shifts > 0);
+            assert!(old_shifts <= 2 * 256 * 257 / 2);
+            for kind in ["hash", "set"] {
+                assert!(matches!(expected.object_block_refs(kind, "wide"), Some(BlockRefs::Large(_))));
+                assert!(matches!(actual.object_block_refs(kind, "wide"), Some(BlockRefs::Large(_))));
+            }
         }
         println!("wide_fields={count} scalar_shifted_refs={old_shifts} ordered_shifted_refs={new_shifts}");
     }
