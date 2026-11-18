@@ -70,7 +70,7 @@ Start the data node with the [quick start](#quick-start). From this checkout,
 install Feast and enable the native provider on Python's import path:
 
 ```bash
-pip install feast msgpack
+pip install feast msgpack 'aiohttp>=3.9,<4'
 export PYTHONPATH="$PWD/integrations/feast${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
@@ -145,6 +145,10 @@ In an existing async application, await `read_features()` on its running event
 loop instead of calling `asyncio.run`. An entity with no materialized value
 returns a missing feature, not a numeric zero. Both APIs serve the latest online
 values; enabling history does not turn them into point-in-time training queries.
+Async reads reuse loop-owned HTTP pools. Reuse the store during serving and await
+`store._get_provider().online_store.aclose()` once at application shutdown;
+applications managing loops manually must shut down async generators before
+closing those loops. Async writes retain their blocking-worker path.
 See the [provider API coverage](integrations/feast/feast_temporalstore_command/README.md#what-of-feasts-onlinestore-contract-is-covered)
 for supported hooks and the separate history and aggregate extensions.
 

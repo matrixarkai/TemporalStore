@@ -194,12 +194,15 @@ class TemporalStoreClient:
         # `threading.local` is the right place to KEEP a connection and the
         # wrong place to find one from another thread, so `close()` could only
         # ever release the socket belonging to whoever happened to call it.
-        # Under the async methods the work runs on an executor's threads, so
-        # the caller closing the store is never the thread holding the
-        # connections, and every one of them would leak. This registry is what
+        # Worker-backed methods may open sockets on executor threads, so the
+        # caller closing the store need not be the thread holding the
+        # connections. This registry is what
         # makes `close()` mean closed.
         self._all_connections: List[http.client.HTTPConnection] = []
         self._registry_lock = threading.Lock()
+        self._async_lock = threading.Lock()
+        self._async_read_transport = None
+        self._async_read_available: Optional[bool] = None
         self._batch_write_supported: Optional[bool] = None
         self._binary_batch_supported: Optional[bool] = False if msgpack is None else None
         self._binary_write_supported: Optional[bool] = False if msgpack is None else None
@@ -271,12 +274,13 @@ class TemporalStoreClient:
             self._local.conn = None
 
     def close(self) -> None:
-        """Close every connection this client opened, on any thread.
+        """Close blocking connections and initiate async pool shutdown.
 
         Idempotent, and safe to call from a thread that never issued a request.
         Clearing the thread-local registry makes the next call open a fresh
         connection. Known read-only requests also reconnect once when a pooled
         socket closes; writes are never automatically resent.
+        Await aclose() instead when async shutdown must complete before returning.
         """
         with self._registry_lock:
             connections = list(self._all_connections)
@@ -287,6 +291,34 @@ class TemporalStoreClient:
             except Exception:
                 pass
         self._local = threading.local()
+
+        with self._async_lock:
+            transport, self._async_read_transport = self._async_read_transport, None
+        if transport is not None:
+            transport.close()
+
+    async def aclose(self) -> None:
+        """Release blocking connections and await all loop-owned read pools."""
+        with self._async_lock:
+            transport = self._async_read_transport
+        self.close()
+        if transport is not None:
+            await transport.aclose()
+
+    def _get_async_read_transport(self):
+        from .async_transport import AsyncReadTransport
+
+        with self._async_lock:
+            if self._async_read_available is None:
+                self._async_read_available = AsyncReadTransport.available()
+            if not self._async_read_available:
+                return None
+            if self._async_read_transport is None:
+                self._async_read_transport = AsyncReadTransport(
+                    self.host, self.port, self.timeout_seconds,
+                    max_pending_bytes=max(64 * 1024 * 1024, self.max_batch_request_bytes),
+                )
+            return self._async_read_transport
 
     def _request_encoded(
         self, path: str, body: bytes, content_type: str = "application/json"
@@ -468,6 +500,54 @@ class TemporalStoreClient:
                 ]
             )
         ]
+
+    async def batch_hash_multi_get_async(self, keys: List[str], fields: List[str]) -> List[List[Any]]:
+        """Read shared projections without occupying one worker per socket."""
+        import asyncio
+        from .async_transport import AsyncReadClosedError, AsyncReadHttpError, AsyncReadLimitError
+
+        if not keys:
+            return []
+        transport = self._get_async_read_transport() if msgpack is not None else None
+        if transport is None:
+            return await asyncio.to_thread(self.batch_hash_multi_get, keys, fields)
+        routes = (
+            ("/batch_hash_multi_get_compact_msgpack", "_compact_shared_field_read_supported", True),
+            ("/batch_hash_multi_get_msgpack", "_shared_field_read_supported", False),
+        )
+        for path, supported, compact in routes:
+            if getattr(self, supported) is False:
+                continue
+            results: List[List[Any]] = []
+            try:
+                for chunk, body in self._shared_field_read_batches(keys, fields):
+                    raw = await transport.read(path, body)
+                    if len(raw) > 1024 * 1024:
+                        decoded = await asyncio.to_thread(self._decode_async_hash_payload, raw, chunk, compact)
+                    else:
+                        decoded = self._decode_async_hash_payload(raw, chunk, compact)
+                    results.extend(decoded)
+            except AsyncReadHttpError as error:
+                if error.status != 404 or results:
+                    raise TemporalStoreCommandError(f"http_{error.status}", str(error)) from error
+                setattr(self, supported, False)
+            except AsyncReadLimitError as error:
+                raise TemporalStoreCommandError("async_read_overloaded", str(error)) from error
+            except AsyncReadClosedError as error:
+                raise TemporalStoreCommandError("client_closed", str(error)) from error
+            except (ValueError, msgpack.UnpackException) as error:
+                raise TemporalStoreCommandError("invalid_binary_response", str(error)) from error
+            else:
+                setattr(self, supported, True)
+                return results
+        return await asyncio.to_thread(self.batch_hash_multi_get, keys, fields)
+
+    def _decode_async_hash_payload(self, raw: bytes, chunk: List[str], compact: bool) -> List[List[Any]]:
+        envelope = msgpack.unpackb(raw, raw=False)
+        if compact:
+            return self._decode_compact_hash_read_envelope(envelope, len(chunk))
+        return [(response.get("values") or [])
+                for response in self._decode_batch_envelope(envelope, chunk)]
 
     @staticmethod
     def _decode_compact_hash_read_envelope(

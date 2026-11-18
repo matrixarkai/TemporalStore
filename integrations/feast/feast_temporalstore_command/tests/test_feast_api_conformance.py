@@ -197,14 +197,23 @@ class FeastPublicApiConformanceTest(unittest.TestCase):
         store.write_to_online_store("driver_stats", self._rows(count))
 
         async def ask():
-            return (
+            answer = (
                 await store.get_online_features_async(
                     features=["driver_stats:trips"],
                     entity_rows=[{"driver_id": i} for i in range(count)],
                 )
             ).to_dict()
+            from feast_temporalstore_command.async_transport import AsyncReadTransport
+            if AsyncReadTransport.available():
+                client = store._get_provider().online_store._client
+                self.assertIsNotNone(client._async_read_transport)
+                self.assertIn(asyncio.get_running_loop(), client._async_read_transport._sessions)
+            return answer
 
         answer = asyncio.run(ask())
+        client = store._get_provider().online_store._client
+        if client._async_read_transport is not None:
+            self.assertFalse(client._async_read_transport._sessions)
         self.assertEqual(len(answer["trips"]), count)
         served = sum(1 for v in answer["trips"] if v is not None)
         self.assertEqual(served, count, f"async served {served} of {count}")
