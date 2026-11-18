@@ -11,7 +11,8 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use temporalstore_snapshot::object_store::{
-    AppendBlobReceipt, FileObjectStore, MatrixObjectHttpStore, ObjectStore, ObjectStoreError,
+    AppendBlobReceipt, BlockingObjectRead, FileObjectStore, MatrixObjectHttpStore,
+    NetworkedMatrixObjectStore, ObjectStore, ObjectStoreError,
 };
 use thiserror::Error;
 
@@ -3202,14 +3203,21 @@ impl SharedSlabSource for SharedPathSlabSource {
 /// caches it. Old (pre-checkpoint) blocks therefore *follow the shard across
 /// nodes*: fetched on demand, over the network, at most once each, only when a
 /// read actually needs them — never eagerly at recovery time.
-#[derive(Debug)]
 pub struct MatrixObjectSlabSource {
-    object_store: Arc<MatrixObjectHttpStore>,
+    object_store: Arc<dyn BlockingObjectRead>,
     slabs: BTreeMap<u64, SharedSlabAddress>,
 }
 
+impl std::fmt::Debug for MatrixObjectSlabSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MatrixObjectSlabSource")
+            .field("slabs", &self.slabs.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl MatrixObjectSlabSource {
-    fn new(object_store: Arc<MatrixObjectHttpStore>, slabs: BTreeMap<u64, SharedSlabAddress>) -> Self {
+    fn new(object_store: Arc<dyn BlockingObjectRead>, slabs: BTreeMap<u64, SharedSlabAddress>) -> Self {
         Self {
             object_store,
             slabs,
@@ -3691,6 +3699,22 @@ impl SharedStoreReplicator<MatrixObjectHttpStore> {
     /// data follows the shard across nodes without an eager full download. See
     /// [`restore_index_and_block_addresses_with`](Self::restore_index_and_block_addresses_with)
     /// for the shared logic.
+    pub async fn restore_index_and_block_addresses(
+        &self,
+        shard_id: ShardId,
+        engine: &TemporalEngine,
+        block_store: &BlockStore,
+    ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
+        self.restore_index_and_block_addresses_with(shard_id, engine, block_store, |store, slabs| {
+            Arc::new(MatrixObjectSlabSource::new(store, slabs)) as Arc<dyn SharedSlabSource>
+        })
+        .await
+    }
+}
+
+impl SharedStoreReplicator<NetworkedMatrixObjectStore> {
+    /// The same lazy restore for the networked store a node actually holds, whichever way
+    /// it reaches the cluster. See the impl for [`MatrixObjectHttpStore`].
     pub async fn restore_index_and_block_addresses(
         &self,
         shard_id: ShardId,
@@ -6344,6 +6368,41 @@ mod tests {
              compare_and_swap REFUSE -- so the wrapper reports a capability the inner \
              store may well have as missing. Forward them.",
             missing.len()
+        );
+
+        // The networked store a node holds is a second forwarding wrapper, and the same
+        // omission would make it refuse a capability its inner store has.
+        let impl_at = trait_src
+            .find("impl ObjectStore for NetworkedMatrixObjectStore {")
+            .expect("the networked store's ObjectStore impl");
+        let rest = &trait_src[impl_at..];
+        let mut depth = 0usize;
+        let mut end = rest.len();
+        for (i, ch) in rest.char_indices() {
+            if ch == '{' {
+                depth += 1;
+            } else if ch == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    end = i + 1;
+                    break;
+                }
+            }
+        }
+        let block = &rest[..end];
+        assert!(
+            block.len() > 500,
+            "the networked store's impl block scanned to {} bytes -- the brace match failed",
+            block.len()
+        );
+        let missing: Vec<&String> = defaulted
+            .iter()
+            .chain(required.iter())
+            .filter(|m| !block.contains(&format!("fn {m}(")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "NetworkedMatrixObjectStore drops ObjectStore method(s): {missing:?}. A forwarding              wrapper must forward every method, or it answers with the trait default instead of              the store underneath."
         );
     }
 
