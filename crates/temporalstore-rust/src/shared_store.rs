@@ -3592,11 +3592,13 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             start_ms,
             end_ms,
             aggregator,
+            precision_ms,
         } => v1::command::Kind::ControlStateQuery(v1::ControlStateQuery {
             key: key.clone(),
             family: aggregator.clone(),
             start_ms: *start_ms,
             end_ms: *end_ms,
+            precision_ms: precision_ms.unwrap_or(0),
         }),
         _ => return None,
     };

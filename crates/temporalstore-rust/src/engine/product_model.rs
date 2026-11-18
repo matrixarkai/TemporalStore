@@ -176,6 +176,17 @@ pub(super) fn count_control_state_changes(shard: &ShardState, key: &str, start_m
     super::hll::count_changes(shard, key, start_ms, end_ms)
 }
 
+/// Distinct count for a caller that names a precision, covered with that precision's ladder.
+pub(super) fn count_control_state_changes_at_precision(
+    shard: &ShardState,
+    key: &str,
+    precision_ms: u64,
+    start_ms: u64,
+    end_ms: u64,
+) -> i64 {
+    super::hll::count_changes_at_precision(shard, key, precision_ms, start_ms, end_ms)
+}
+
 pub(super) fn control_state_family_key(family: ControlStateFamily, key: &str) -> String {
     format!("control_state:{}:{key}", control_state_family_name(family))
 }
@@ -280,6 +291,46 @@ pub(super) fn control_state_bucket_key(timestamp_ms: u64, precision_ms: Option<u
 /// one, has to go through this: a packed key read as a timestamp is an instant in the year 10889.
 pub(super) fn control_state_bucket_start_ms(bucket_key: u64) -> u64 {
     bucket_key & CONTROL_STATE_BUCKET_MASK
+}
+
+/// The precisions a DISTINCT write is stored at: its own, and one coarser.
+///
+/// # WHY A DISTINCT WRITE FANS OUT AND A COUNTER WRITE DOES NOT
+///
+/// A counter over a wide window is the SUM of the fine buckets inside it, so one stored level is
+/// enough -- adding them up is cheap and exact, and `control_rollup` keeps a derived ladder in
+/// memory to make it cheaper still.
+///
+/// A distinct count is not a sum. The number of distinct members in an hour is not the sum of the
+/// distinct members of its sixty minutes, because a member appearing in two minutes must be
+/// counted once. So a long window has to MERGE every fine bucket it covers: a day at minute
+/// precision is 1,440 sketch merges, and a week is 10,080. Storing the member at a coarser level
+/// as it arrives turns that into 7 reads of a day-level sketch.
+///
+/// # WHY STORING IT TWICE IS SAFE HERE AND WOULD BE WRONG FOR A COUNTER
+///
+/// Set union is IDEMPOTENT. A member recorded into both its minute bucket and its hour bucket is
+/// still one distinct member in each, so no read can double-count it however it combines the
+/// levels -- including a read that covers both. The same fan-out applied to a counter would
+/// double every amount, which is exactly why the counter path writes one field and this one does
+/// not.
+///
+/// The pairs below are the format's own ladder. Each step is a factor of sixty or twenty-four, and
+/// the coarsest precision has no coarser partner to fan out to.
+pub(super) fn control_state_precision_levels(precision_ms: u64) -> &'static [u64] {
+    match precision_ms {
+        1_000 => &[1_000, 60_000],
+        5_000 => &[5_000, 300_000],
+        10_000 => &[10_000, 600_000],
+        60_000 => &[60_000, 3_600_000],
+        300_000 => &[300_000, 3_600_000],
+        600_000 => &[600_000, 3_600_000],
+        3_600_000 => &[3_600_000, 86_400_000],
+        86_400_000 => &[86_400_000],
+        // Not a precision the format defines, so it has no ladder and keeps the single untagged
+        // bucket it has always had. Returning an empty slice here would stop the write entirely.
+        _ => &[],
+    }
 }
 
 /// The bucket keys a window covers at ONE precision -- the format's own read shape, where a query

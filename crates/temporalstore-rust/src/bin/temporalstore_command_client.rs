@@ -212,11 +212,14 @@ fn main() {
             start_ms: args[3].parse().expect("start must be u64"),
             end_ms: args[4].parse().expect("end must be u64"),
         },
-        "control_statequery" if args.len() == 6 => Command::ControlStateQuery {
+        "control_statequery" if args.len() == 6 || args.len() == 7 => Command::ControlStateQuery {
             key: args[2].clone(),
             start_ms: args[3].parse().expect("start must be u64"),
             end_ms: args[4].parse().expect("end must be u64"),
             aggregator: args[5].clone(),
+            precision_ms: args
+                .get(6)
+                .map(|value| value.parse().expect("precision must be u64")),
         },
         "control_statedetail" if args.len() == 5 || args.len() == 6 => Command::ControlStateDetail {
             key: args[2].clone(),

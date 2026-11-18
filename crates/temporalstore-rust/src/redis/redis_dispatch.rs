@@ -1613,7 +1613,9 @@ pub fn execute_redis_command_with_state(
                 end_ms,
             }))
         }
-        "CONTROLSTATEQUERY" if args.len() == 5 => {
+        // The precision is an OPTIONAL trailing argument, as the count is on
+        // CONTROLSTATEDETAIL below: four-argument callers are unchanged.
+        "CONTROLSTATEQUERY" if args.len() == 5 || args.len() == 6 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1622,11 +1624,20 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
+            let precision_ms = if args.len() == 6 {
+                match parse_u64(&args[5], "precision_ms") {
+                    Ok(value) => Some(value),
+                    Err(err) => return RespValue::Error(err),
+                }
+            } else {
+                None
+            };
             integer_response(execute(Command::ControlStateQuery {
                 key: string_arg(&args[1]),
                 start_ms,
                 end_ms,
                 aggregator: string_arg(&args[4]),
+                precision_ms,
             }))
         }
         "CONTROLSTATEDETAIL" if args.len() == 4 || args.len() == 5 => {
