@@ -448,6 +448,14 @@ mod tests {
         );
         run(
             &engine,
+            Command::HashSet {
+                key: "armed".into(),
+                field: "old".into(),
+                value: vec![7],
+            },
+        );
+        run(
+            &engine,
             Command::FeatureAppend {
                 key: "series".into(),
                 points: (1..=2)
@@ -474,9 +482,18 @@ mod tests {
                         value: vec![9],
                     }],
                 },
-                Command::StringSet {
+                Command::StringSetConditional {
                     key: "deadline".into(),
                     value: b"fresh".to_vec(),
+                    ttl_ms: None,
+                    condition: crate::types::StringSetCondition::Always,
+                    return_old: false,
+                    keep_ttl: false,
+                },
+                Command::HashMultiSetWithTtl {
+                    key: "armed".into(),
+                    entries: vec![("new".into(), vec![9])],
+                    ttl_ms: 3_600_000,
                 },
                 Command::HashSet {
                     key: "catalog".into(),
@@ -490,9 +507,22 @@ mod tests {
         let records = engine.index_log_store.read_delta_records(1, 0).unwrap();
         let mixed = records.last().unwrap();
         let sequence = mixed.sequence;
+        {
+            let state = engine.shards.read().unwrap();
+            let shard = state.get(&1).unwrap();
+            assert!(
+                !shard.expires_at_ms().contains_key("deadline"),
+                "the fixture must actually clear the deadline before testing recovery"
+            );
+            assert!(
+                shard.expires_at_ms().contains_key("armed"),
+                "the later hash upsert must actually arm a deadline"
+            );
+        }
         assert_eq!(
             mixed.upsert.replacement_keys().unwrap(),
             &[
+                "armed".to_string(),
                 "deadline".to_string(),
                 "order".to_string(),
                 "series".to_string()
@@ -512,6 +542,7 @@ mod tests {
         let recovered = open();
         let control = recovered.load_index_base_only(1, false).unwrap();
         assert!(control.expires_at_ms().contains_key("deadline"));
+        assert!(!control.expires_at_ms().contains_key("armed"));
         assert!(control
             .bucket_index
             .sets
@@ -534,6 +565,10 @@ mod tests {
             let folded = recovered.load_index_checked(1, false).unwrap().unwrap();
             assert!(crate::index_log::probe::applied().contains(&(1, sequence)));
             assert!(!folded.expires_at_ms().contains_key("deadline"));
+            assert!(folded.expires_at_ms().contains_key("armed"));
+            let armed = folded.bucket_index.hashes.get("armed").unwrap();
+            assert!(armed.contains_key("old"));
+            assert!(armed.contains_key("new"));
             assert!(folded
                 .bucket_index
                 .sets
@@ -643,6 +678,7 @@ mod tests {
             }
         );
         let state = reopened.shards.read().unwrap();
+        assert!(state.get(&1).unwrap().expires_at_ms().contains_key("armed"));
         assert!(!state
             .get(&1)
             .unwrap()
