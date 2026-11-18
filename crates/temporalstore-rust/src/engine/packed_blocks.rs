@@ -8,7 +8,7 @@ use crate::types::{FeaturePoint, ShardId};
 use matrixcache::{CacheKey, MultiLayerCache};
 
 use super::constants::{FEATURE_BLOCK_BINARY_MAGIC, FEATURE_BLOCK_MAGIC};
-use super::state::{PackedFeatureBlock, PackedFeatureBlockDecode};
+use super::state::PackedFeatureBlockDecode;
 use super::hashing::BlockIdentity;
 use super::{
     append_value, read_block_bytes, read_block_bytes_cold, read_block_shared_keyed,
@@ -30,8 +30,7 @@ pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<Featur
 }
 
 /// Borrows the points instead of owning them, so the block can be serialised without first
-/// copying every value. Mirrors `PackedFeatureBlock` field for field -- same names, same order,
-/// same types -- and neither carries a serde attribute, so the two produce identical bytes.
+/// copying every value.
 #[derive(serde::Serialize)]
 struct PackedFeatureBlockRef<'a> {
     version: u8,
@@ -588,19 +587,11 @@ pub(super) fn decode_feature_block_strict(bytes: &[u8]) -> PackedFeatureBlockDec
     if let Some(payload) = bytes.strip_prefix(FEATURE_BLOCK_BINARY_MAGIC) {
         return decode_binary_feature_block(payload);
     }
-    if let Some(payload) = bytes.strip_prefix(FEATURE_BLOCK_MAGIC) {
-        // A block written before the byte format. Kept so a store that already exists keeps
-        // reading; nothing writes this shape any more, and this arm goes when those stores do.
-        return match serde_json::from_slice::<PackedFeatureBlock>(payload) {
-            Ok(block) if block.version == 1 => PackedFeatureBlockDecode::Packed(block.points),
-            Ok(block) => PackedFeatureBlockDecode::Corrupt(format!(
-                "unsupported packed feature block version {}",
-                block.version
-            )),
-            Err(err) => PackedFeatureBlockDecode::Corrupt(format!(
-                "invalid packed feature page payload: {err}"
-            )),
-        };
+    if bytes.starts_with(FEATURE_BLOCK_MAGIC) {
+        // The JSON shape of a packed block. Nothing writes it and nothing reads it: it is refused.
+        return PackedFeatureBlockDecode::Corrupt(
+            "packed feature block is in a retired JSON shape".to_string(),
+        );
     }
     PackedFeatureBlockDecode::Legacy
 }
@@ -1053,84 +1044,6 @@ mod block_encoding_tests {
     use super::*;
     use crate::types::FeaturePoint;
 
-    /// What the block format costs to write and to read, measured on the code that ships.
-    ///
-    /// A block was JSON, and a value is a `Vec<u8>`, which JSON writes as an array of decimal
-    /// numbers. That is paid twice per block -- once encoding, once decoding -- on every write and
-    /// every read that misses the cache, and it is the half of this change that compression cannot
-    /// give back: bytes the encoder never writes are bytes the compressor never reads.
-    ///
-    /// Reports rather than asserts a threshold: a timing assertion on shared hardware is a flake
-    /// generator, and the correctness of both paths is pinned by the tests above.
-    #[test]
-    fn what_the_block_format_costs() {
-        use std::time::Instant;
-
-        let value: Vec<u8> = (0..400u32).map(|i| (i % 251) as u8).collect();
-        let points = vec![FeaturePoint { timestamp_ms: 1_789_007_622_131, value }];
-        let rounds = 20_000;
-
-        // Warm both paths so the first does not pay for what the second reuses.
-        let _ = encode_feature_block(&points);
-        let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
-        let _ = serde_json::to_vec(&owned).expect("serialises");
-
-        let started = Instant::now();
-        let mut json_bytes = 0usize;
-        for _ in 0..rounds {
-            let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
-            let mut block = FEATURE_BLOCK_MAGIC.to_vec();
-            block.append(&mut serde_json::to_vec(&owned).expect("serialises"));
-            json_bytes = block.len();
-        }
-        let json_encode_ns = started.elapsed().as_nanos();
-
-        let started = Instant::now();
-        let mut binary_bytes = 0usize;
-        for _ in 0..rounds {
-            binary_bytes = encode_feature_block(&points).len();
-        }
-        let binary_encode_ns = started.elapsed().as_nanos();
-
-        let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
-        let mut json_block = FEATURE_BLOCK_MAGIC.to_vec();
-        json_block.append(&mut serde_json::to_vec(&owned).expect("serialises"));
-        let binary_block = encode_feature_block(&points);
-
-        let started = Instant::now();
-        for _ in 0..rounds {
-            assert!(matches!(
-                decode_feature_block_strict(&json_block),
-                PackedFeatureBlockDecode::Packed(_)
-            ));
-        }
-        let json_decode_ns = started.elapsed().as_nanos();
-
-        let started = Instant::now();
-        for _ in 0..rounds {
-            assert!(matches!(
-                decode_feature_block_strict(&binary_block),
-                PackedFeatureBlockDecode::Packed(_)
-            ));
-        }
-        let binary_decode_ns = started.elapsed().as_nanos();
-
-        let saved = |before: u128, after: u128| {
-            if before == 0 { 0.0 } else { (before as f64 - after as f64) / before as f64 * 100.0 }
-        };
-        println!(
-            "  block of one 400 B point: {json_bytes} B as JSON, {binary_bytes} B as bytes"
-        );
-        println!(
-            "  encode x{rounds}: json {json_encode_ns} ns, bytes {binary_encode_ns} ns, {:.1}% saved",
-            saved(json_encode_ns, binary_encode_ns)
-        );
-        println!(
-            "  decode x{rounds}: json {json_decode_ns} ns, bytes {binary_decode_ns} ns, {:.1}% saved",
-            saved(json_decode_ns, binary_decode_ns)
-        );
-    }
-
     fn fixtures() -> Vec<Vec<FeaturePoint>> {
         vec![
             vec![],
@@ -1153,25 +1066,6 @@ mod block_encoding_tests {
                 decode_feature_block(&encoded).as_deref(),
                 Some(points.as_slice()),
                 "a block of {} point(s) did not decode back",
-                points.len()
-            );
-        }
-    }
-
-    /// A block written before the byte format still reads.
-    ///
-    /// Stores exist that were written as JSON. Nothing writes that shape now, and this is what
-    /// lets those stores keep serving until they are gone.
-    #[test]
-    fn a_block_written_as_json_still_reads() {
-        for points in fixtures() {
-            let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
-            let mut json_block = FEATURE_BLOCK_MAGIC.to_vec();
-            json_block.append(&mut serde_json::to_vec(&owned).expect("owned block serialises"));
-            assert_eq!(
-                decode_feature_block(&json_block).as_deref(),
-                Some(points.as_slice()),
-                "a JSON block of {} point(s) stopped reading",
                 points.len()
             );
         }
@@ -1232,20 +1126,6 @@ mod block_encoding_tests {
                 overhead,
                 FEATURE_BLOCK_HEADER_BYTES + FEATURE_POINT_HEADER_BYTES,
                 "a {payload_len} B payload should cost a fixed header, not a multiple"
-            );
-
-            // Against what it used to cost, so the comparison is in the test rather than a note.
-            let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
-            let json_len = FEATURE_BLOCK_MAGIC.len()
-                + serde_json::to_vec(&owned).expect("serialises").len();
-            // At least halved. A small payload saves less than a large one because the
-            // header is the same 23 bytes either way: 48 B costs 71 B against 168 B as JSON,
-            // while 4 KiB costs 4,119 B against roughly four times that.
-            assert!(
-                encoded.len() * 2 < json_len,
-                "{payload_len} B payload: {} B now against {json_len} B as JSON, which is not the \
-                 saving this change exists for",
-                encoded.len()
             );
         }
     }

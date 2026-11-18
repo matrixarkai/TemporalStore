@@ -31,7 +31,7 @@ use super::*;
 use crate::engine::packed_blocks::{
     decode_feature_block_strict, encode_feature_block, with_feature_point_value,
 };
-use crate::engine::state::{PackedFeatureBlock, PackedFeatureBlockDecode};
+use crate::engine::state::PackedFeatureBlockDecode;
 use crate::types::FeaturePoint;
 
 fn point(timestamp_ms: u64, value: &[u8]) -> FeaturePoint {
@@ -126,21 +126,14 @@ fn with_feature_point_value_answers_what_the_decoder_answers() {
     assert_eq!(None, decoded_answer(&forged, 1_000));
     assert_eq!(None, in_place_answer(&forged, 1_000));
 
-    // THE JSON SHAPE and an UNFRAMED value, which keep the allocating reader.
+    // THE RETIRED JSON SHAPE is refused by both readers; an UNFRAMED value keeps the allocating one.
     let json_block = {
         let mut bytes = crate::engine::constants::FEATURE_BLOCK_MAGIC.to_vec();
-        bytes.extend_from_slice(
-            &serde_json::to_vec(&PackedFeatureBlock {
-                version: 1,
-                points: many.clone(),
-            })
-            .expect("the block serialises"),
-        );
+        bytes.extend_from_slice(br#"{"version":1,"points":[]}"#);
         bytes
     };
-    assert_eq!(Some(b"-7".to_vec()), decoded_answer(&json_block, 1_000));
-    assert_eq!(Some(b"-7".to_vec()), in_place_answer(&json_block, 1_000));
-    assert_eq!(None, in_place_answer(&json_block, 4));
+    assert_eq!(None, decoded_answer(&json_block, 1_000));
+    assert_eq!(None, in_place_answer(&json_block, 1_000));
     assert_eq!(Some(b"123".to_vec()), in_place_answer(b"123", 77));
     assert_eq!(decoded_answer(b"123", 77), in_place_answer(b"123", 77));
 }

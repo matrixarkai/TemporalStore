@@ -9324,12 +9324,6 @@ pub(super) struct ExecuteOutcome {
     pub(super) mutated: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct PackedFeatureBlock {
-    pub(super) version: u8,
-    pub(super) points: Vec<FeaturePoint>,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum PackedFeatureBlockDecode {
     Legacy,
