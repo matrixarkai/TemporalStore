@@ -165,7 +165,7 @@ fn oversized_container_uses_exact_scan_for_shared_and_unshared_frames() {
     let first = 0u64.to_be_bytes().to_vec();
     let alias = b"alias".to_vec();
     assert!(vacated(&map, &first));
-    map.install_into("object", alias.clone(), address(0, 99999));
+    map.install_into("object", alias.clone(), address(0, 60000));
     assert!(!vacated(&map, &first));
     assert!(!vacated(&map, &alias));
     map.replay_remove_element("object", &alias);
