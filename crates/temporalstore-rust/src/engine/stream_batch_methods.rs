@@ -1629,6 +1629,11 @@ impl TemporalEngine {
                     config.feature_max_size,
                 );
             let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
+            let hash_was_dirty = match &command {
+                Command::HashMultiSet { key, .. }
+                | Command::HashMultiSetIfTimestampOlder { key, .. } => shard.dirty_objects.contains(key),
+                _ => false,
+            };
             let (outcome, returned_post_write, hash_index_filed) = match command {
                 Command::HashMultiSet { key, entries } if reuse_consumed_metadata => {
                     let (outcome, metadata, filed) =
@@ -1838,7 +1843,11 @@ impl TemporalEngine {
                         crate::engine::storage_bucket_internals::mark_object_dirty_at_bucket_deferred(
                             shard, object_key, routing_bucket,
                         );
-                        dirty_propagation_keys.insert(object_key.to_string());
+                        // Keep an earlier cold mark pending even if a later write
+                        // to this key already sees it in the dirty-object index.
+                        if hash_index_filed.is_none() || !hash_was_dirty {
+                            dirty_propagation_keys.insert(object_key.to_string());
+                        }
                     }
                 }
                 // The same maintenance the single-command path does. An ingest's writes are

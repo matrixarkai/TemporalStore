@@ -24,6 +24,11 @@ pub(super) fn note_set_write_scan(dirty: bool) {
 #[cfg(test)]
 #[path = "set_batch_work_tests.rs"]
 mod set_batch_work_tests;
+
+#[cfg(test)]
+pub(super) fn dirty_propagation_visits() -> u64 {
+    SET_WRITE_SCANS.with(|counts| counts.get().1)
+}
 use crate::engine::reports::StageWalkCharges;
 use std::sync::Arc;
 
@@ -2043,19 +2048,19 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
                 // release would find every released block "missing" from the index and rebuild the
                 // whole shard -- which is a correct index and a release that never survives one
                 // execute.
-                let released = shard.bucket_index.released_buckets.contains(
-                    &block_routing_bucket(
-                        object_key.as_str(),
-                        start_routing_bucket,
-                        end_routing_bucket,
-                    ),
+                let routing_bucket = block_routing_bucket(
+                    object_key.as_str(),
+                    start_routing_bucket,
+                    end_routing_bucket,
                 );
+                let released = shard.bucket_index.released_buckets.contains(&routing_bucket);
                 if !released
-                    && !shard.bucket_index.contains_object_block_address(
+                    && !shard.bucket_index.contains_object_block_address_with_bucket_hint(
                         kind.as_str(),
                         object_key.as_str(),
                         element_name,
                         address,
+                        routing_bucket,
                     )
                 {
                     missing_entry = true;
