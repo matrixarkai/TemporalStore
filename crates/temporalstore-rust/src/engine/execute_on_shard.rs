@@ -2728,14 +2728,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            CommandResponse::Bytes {
-                value: shard
-                    .bucket_index
-                    .zsets
-                    .get(&key)
-                    .and_then(|members| members.get(&member))
-                    .map(|(biased, _)| zset_score_string(*biased).into_bytes()),
-            }
+            zset_score_answer(shard, &key, &member)
         }
         Command::ZSetRemoveMany { key, members } => {
             // A key past its deadline reads as absent before anything is asked of it.
@@ -2813,9 +2806,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            CommandResponse::Integer {
-                value: shard.bucket_index.zsets.get(&key).map_or(0, BTreeMap::len) as i64,
-            }
+            zset_card_answer(shard, &key)
         }
         Command::ZSetRange {
             key,
@@ -2884,32 +2875,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let members = shard
-                .bucket_index
-                .zsets
-                .get(&key)
-                .map(|members| {
-                    if after.is_empty() {
-                        members
-                            .iter()
-                            .take(limit)
-                            .flat_map(|(member, (biased, _))| {
-                                [member.clone(), zset_score_string(*biased).into_bytes()]
-                            })
-                            .collect::<Vec<_>>()
-                    } else {
-                        use std::ops::Bound::{Excluded, Unbounded};
-                        members
-                            .range::<[u8], _>((Excluded(after.as_slice()), Unbounded))
-                            .take(limit)
-                            .flat_map(|(member, (biased, _))| {
-                                [member.clone(), zset_score_string(*biased).into_bytes()]
-                            })
-                            .collect::<Vec<_>>()
-                    }
-                })
-                .unwrap_or_default();
-            CommandResponse::Members { members }
+            zset_scan_answer(shard, &key, &after, limit)
         }
         Command::SeenCheck {
             key,
@@ -3772,9 +3738,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            CommandResponse::Integer {
-                value: shard.bucket_index.lists.get(&key).map_or(0, BTreeMap::len) as i64,
-            }
+            list_len_answer(shard, &key)
         }
         Command::SetMembers { key } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
@@ -3897,16 +3861,8 @@ pub(crate) fn execute_on_shard(
             }
             // THE LENGTH OF THE MAP THE MEMBERS LIVE IN. The listing this replaces cloned every
             // member into a vector (and into the cache) to take its length.
-            if shard.set_listing_from_map {
-                if let Some(members) = shard.bucket_index.sets.get(&key) {
-                    SET_POINT_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return ExecuteOutcome {
-                        response: CommandResponse::Integer {
-                            value: members.len() as i64,
-                        },
-                        mutated,
-                    };
-                }
+            if let Some(response) = set_card_answer(shard, &key) {
+                return ExecuteOutcome { response, mutated };
             }
             // No resident entry, or the map is switched off for listings: the listing decides,
             // so a key whose blocks say otherwise is counted from them exactly as it is listed.
@@ -3944,16 +3900,8 @@ pub(crate) fn execute_on_shard(
                 };
             }
             // ONE LOOKUP IN THE ORDERED MAP, keyed by member bytes.
-            if shard.set_listing_from_map {
-                if let Some(members) = shard.bucket_index.sets.get(&key) {
-                    SET_POINT_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return ExecuteOutcome {
-                        response: CommandResponse::Integer {
-                            value: i64::from(members.contains_key(member.as_slice())),
-                        },
-                        mutated,
-                    };
-                }
+            if let Some(response) = set_is_member_answer(shard, &key, &member) {
+                return ExecuteOutcome { response, mutated };
             }
             let listed = execute_on_shard(
                 cache,
@@ -3991,24 +3939,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let members = shard
-                .bucket_index
-                .sets
-                .get(&key)
-                .map(|members| {
-                    if after.is_empty() {
-                        members.keys().take(limit).cloned().collect::<Vec<_>>()
-                    } else {
-                        use std::ops::Bound::{Excluded, Unbounded};
-                        members
-                            .range::<[u8], _>((Excluded(after.as_slice()), Unbounded))
-                            .take(limit)
-                            .map(|(member, _)| member.clone())
-                            .collect::<Vec<_>>()
-                    }
-                })
-                .unwrap_or_default();
-            CommandResponse::Members { members }
+            set_scan_answer(shard, &key, &after, limit)
         }
         Command::SetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
@@ -7562,6 +7493,111 @@ pub(super) fn zset_score_from_bits(biased: u64) -> f64 {
     } else {
         f64::from_bits(!biased)
     }
+}
+
+/// The answers of the reads the resident maps alone can give. ONE copy: the exclusive-lock arms
+/// above call these after their expiry check, and the shared-lock path in `engine.rs` calls the
+/// same functions, so the two cannot answer differently.
+pub(super) fn zset_score_answer(shard: &ShardState, key: &str, member: &[u8]) -> CommandResponse {
+    CommandResponse::Bytes {
+        value: shard
+            .bucket_index
+            .zsets
+            .get(key)
+            .and_then(|members| members.get(member))
+            .map(|(biased, _)| zset_score_string(*biased).into_bytes()),
+    }
+}
+
+pub(super) fn zset_card_answer(shard: &ShardState, key: &str) -> CommandResponse {
+    CommandResponse::Integer {
+        value: shard.bucket_index.zsets.get(key).map_or(0, BTreeMap::len) as i64,
+    }
+}
+
+pub(super) fn list_len_answer(shard: &ShardState, key: &str) -> CommandResponse {
+    CommandResponse::Integer {
+        value: shard.bucket_index.lists.get(key).map_or(0, BTreeMap::len) as i64,
+    }
+}
+
+/// A set's length from the member map, where the shard lets the map answer and holds the key;
+/// `None` leaves the question to the listing. Counted, so a test can tell the map from the fold.
+pub(super) fn set_card_answer(shard: &ShardState, key: &str) -> Option<CommandResponse> {
+    if !shard.set_listing_from_map {
+        return None;
+    }
+    let members = shard.bucket_index.sets.get(key)?;
+    SET_POINT_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Some(CommandResponse::Integer {
+        value: members.len() as i64,
+    })
+}
+
+/// One member's presence, under the same rule as [`set_card_answer`].
+pub(super) fn set_is_member_answer(
+    shard: &ShardState,
+    key: &str,
+    member: &[u8],
+) -> Option<CommandResponse> {
+    if !shard.set_listing_from_map {
+        return None;
+    }
+    let members = shard.bucket_index.sets.get(key)?;
+    SET_POINT_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Some(CommandResponse::Integer {
+        value: i64::from(members.contains_key(member)),
+    })
+}
+
+pub(super) fn zset_scan_answer(
+    shard: &ShardState,
+    key: &str,
+    after: &[u8],
+    limit: usize,
+) -> CommandResponse {
+    use std::ops::Bound::{Excluded, Unbounded};
+    let members = shard
+        .bucket_index
+        .zsets
+        .get(key)
+        .map(|members| {
+            let from = if after.is_empty() {
+                members.range::<[u8], _>(..)
+            } else {
+                members.range::<[u8], _>((Excluded(after), Unbounded))
+            };
+            from.take(limit)
+                .flat_map(|(member, (biased, _))| {
+                    [member.clone(), zset_score_string(*biased).into_bytes()]
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    CommandResponse::Members { members }
+}
+
+pub(super) fn set_scan_answer(
+    shard: &ShardState,
+    key: &str,
+    after: &[u8],
+    limit: usize,
+) -> CommandResponse {
+    use std::ops::Bound::{Excluded, Unbounded};
+    let members = shard
+        .bucket_index
+        .sets
+        .get(key)
+        .map(|members| {
+            let from = if after.is_empty() {
+                members.range::<[u8], _>(..)
+            } else {
+                members.range::<[u8], _>((Excluded(after), Unbounded))
+            };
+            from.take(limit).map(|(member, _)| member.clone()).collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    CommandResponse::Members { members }
 }
 
 pub(super) fn zset_score_string(biased: u64) -> String {
