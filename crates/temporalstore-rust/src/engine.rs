@@ -1916,8 +1916,6 @@ impl TemporalEngine {
                 | Command::HashGet { .. }
                 | Command::HashLen { .. }
                 | Command::HashFieldExists { .. }
-                | Command::FeatureQuery { .. }
-                | Command::FeatureQueryFiltered { .. }
         );
         if !read_command {
             return None;
