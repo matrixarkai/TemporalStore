@@ -7333,6 +7333,11 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             // Moved below the prune, which touches `object_index` and never this field. Nothing
             // between them reads it.
             bucket.deleted_object_index.extend(deleted_object_ids);
+            // THE OBJECT HAS LEFT THIS BUCKET. Forgetting is not needed for correctness (a stale
+            // owner names nothing) but keeps the lists to the objects that are there.
+            if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
+                owners.forget_key(routing_bucket, key);
+            }
         }
     }
     if removed {
