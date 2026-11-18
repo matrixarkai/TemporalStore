@@ -19,6 +19,9 @@ mod crud;
 #[path = "mem0_scale/growth.rs"]
 mod growth;
 
+#[path = "mem0_scale/read_receipts.rs"]
+mod read_receipts;
+
 #[derive(Debug)]
 struct Options {
     infer: bool,
@@ -79,6 +82,7 @@ struct Report {
     storage_amplification: Option<f64>,
     api: BTreeMap<String, ApiMetric>,
     search_validation: &'static str,
+    pre_mutation_read_state: &'static str,
     checkpoints: Vec<growth::Checkpoint>,
     harness_process: ProcessMetric,
     service_processes: Vec<ProcessMetric>,
@@ -169,6 +173,7 @@ fn main() {
     let mut timings = Timings::default();
     let mut failures = Vec::new();
     let mut sampled_ids = Vec::new();
+    let mut read_probes = Vec::new();
     let mut ingested_records = 0usize;
     let mut acknowledged_source_records = 0usize;
     let mut payload_bytes = 0u64;
@@ -176,7 +181,14 @@ fn main() {
     let mut next_checkpoint = 0;
     let mut checkpoint_elapsed = Duration::ZERO;
 
-    let reset = post(&options.addr, "/memories/reset", &scope_body(&tenant_id));
+    let reset = post(&options.addr, "/memories/reset", &scope_body(&tenant_id)).and_then(|response| {
+        if read_receipts::valid_reset_receipt(&response) {
+            Ok(())
+        } else {
+            Err("initial reset acknowledgment is missing".to_string())
+        }
+    });
+    let reset_acknowledged = reset.is_ok();
     if let Err(error) = reset {
         failures.push(format!("initial reset: {error}"));
     }
@@ -209,8 +221,11 @@ fn main() {
             body["provider"] = provider.clone();
         }
         let call_started = Instant::now();
-        let result = post(&options.addr, "/memories", &body)
-            .and_then(|response| memory_add_ids(response, batch_end - batch_start, options.infer));
+        let result = post(&options.addr, "/memories", &body).and_then(|response| {
+            let ids = memory_add_ids(&response, batch_end - batch_start, options.infer)?;
+            read_receipts::remember(&mut read_probes, &response);
+            Ok(ids)
+        });
         timings.observe("add", call_started, &result);
         match result {
             Ok(ids) => {
@@ -228,11 +243,19 @@ fn main() {
                 &options, &tenant_id, batch_end, ingested_records,
                 acknowledged_source_records, &mut checkpoint_timings, &mut failures,
             );
+            let read_state = read_receipts::baseline_state(
+                reset_acknowledged && acknowledged_source_records == batch_end, &read_probes,
+            );
+            let read_probe_count = growth::read_baseline(
+                &options.addr, read_state, &read_probes, &mut checkpoint_timings, &mut failures,
+            );
             checkpoints.push(growth::Checkpoint {
                 attempted_sources: batch_end,
                 acknowledged_sources: acknowledged_source_records,
                 memory_records: ingested_records,
                 elapsed_ms: started.elapsed().as_millis(),
+                pre_mutation_read_state: read_state,
+                read_probe_count,
                 api: checkpoint_timings.finish(),
                 cumulative_service_processes: service_samplers.iter().map(ProcessSampler::snapshot).collect(),
             });
@@ -257,6 +280,12 @@ fn main() {
 
     growth::search(&options, &tenant_id, options.records, ingested_records,
         acknowledged_source_records, &mut timings, &mut failures);
+    let pre_mutation_read_state = read_receipts::baseline_state(
+        reset_acknowledged && acknowledged_source_records == options.records, &read_probes,
+    );
+    growth::read_baseline(
+        &options.addr, pre_mutation_read_state, &read_probes, &mut timings, &mut failures,
+    );
 
     let mut list = scope_body(&tenant_id);
     list["limit"] = json!(100);
@@ -441,6 +470,7 @@ fn main() {
         storage_amplification: stored_bytes.map(|bytes| bytes as f64 / payload_bytes.max(1) as f64),
         api: timings.finish(),
         search_validation: if options.infer { "candidate_structure_only" } else { "exact_source_marker" },
+        pre_mutation_read_state,
         checkpoints,
         harness_process: harness_sampler.finish(),
         service_processes: service_samplers
@@ -535,7 +565,7 @@ fn request_options() -> HttpRequestOptions {
     }
 }
 
-fn memory_add_ids(response: Value, requested: usize, infer: bool) -> Result<Vec<String>, String> {
+fn memory_add_ids(response: &Value, requested: usize, infer: bool) -> Result<Vec<String>, String> {
     let rows = response["results"].as_array().ok_or("add response has no results array")?;
     if (!infer && rows.len() != requested) || (infer && rows.len() > requested.saturating_mul(8)) {
         return Err("add response has an invalid memory count".into());

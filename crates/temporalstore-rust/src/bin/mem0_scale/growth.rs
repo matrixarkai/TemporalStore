@@ -23,6 +23,8 @@ pub(super) struct Checkpoint {
     pub acknowledged_sources: usize,
     pub memory_records: usize,
     pub elapsed_ms: u128,
+    pub pre_mutation_read_state: &'static str,
+    pub read_probe_count: usize,
     pub api: BTreeMap<String, ApiMetric>,
     pub cumulative_service_processes: Vec<ProcessMetric>,
 }
@@ -46,6 +48,38 @@ pub(super) fn parse_checkpoints(raw: Option<&str>, records: usize) -> Result<Vec
         return Err(());
     }
     Ok(values)
+}
+
+pub(super) fn read_baseline(
+    addr: &str,
+    state: &str,
+    probes: &[read_receipts::ReadProbe],
+    timings: &mut Timings,
+    failures: &mut Vec<String>,
+) -> usize {
+    if state != "acknowledged_ingestion" {
+        return 0;
+    }
+    for probe in probes {
+        for (name, suffix) in [("baseline_get", ""), ("baseline_history", "/history")] {
+            let started = Instant::now();
+            let result = get_json_with_options::<Value>(
+                addr, &format!("/memories/{}{suffix}", probe.id), request_options(),
+            )
+            .map_err(|error| error.to_string())
+            .and_then(validate_response)
+            .and_then(|value| if suffix.is_empty() {
+                probe.check_get(&value)
+            } else {
+                probe.check_history(&value)
+            });
+            timings.observe(name, started, &result);
+            if let Err(error) = result {
+                failures.push(format!("{name}: {error}"));
+            }
+        }
+    }
+    probes.len()
 }
 
 pub(super) fn search(
@@ -118,6 +152,56 @@ fn validate_search(response: &Value, record_index: usize, infer: bool) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uncertain_or_absent_receipts_never_start_baseline_requests() {
+        let mut probes = Vec::new();
+        read_receipts::remember(&mut probes, &json!({"results":[{"id":"a","memory":"source"}]}));
+        let mut timings = Timings::default();
+        let mut failures = Vec::new();
+        for state in ["unknown_ingestion_outcome", "no_acknowledged_memory"] {
+            assert_eq!(read_baseline("127.0.0.1:0", state, &probes, &mut timings, &mut failures), 0);
+        }
+        assert_eq!(read_baseline("127.0.0.1:0", "acknowledged_ingestion", &[], &mut timings, &mut failures), 0);
+        assert!(timings.values.is_empty());
+        assert!(failures.is_empty());
+    }
+
+    #[test]
+    fn baseline_requests_validate_content_and_history_without_mutations_or_retries() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        std::thread::spawn(move || {
+            temporalstore_rust::http::serve_listener(listener, move |request| {
+                assert_eq!(request.method, "GET");
+                let call = observed.fetch_add(1, Ordering::Relaxed);
+                let id = if call < 2 { "a" } else { "wrong" };
+                let response = match request.path.as_str() {
+                    "/memories/a" => json!({"id":id,"memory":"source"}),
+                    "/memories/a/history" => json!({"results":[{"id":id,"event":"ADD"}]}),
+                    _ => panic!("unexpected baseline path"),
+                };
+                temporalstore_rust::http::json_response(200, &response)
+            }).unwrap();
+        });
+        let mut probes = Vec::new();
+        read_receipts::remember(&mut probes, &json!({"results":[{"id":"a","memory":"source"}]}));
+        let mut timings = Timings::default();
+        let mut failures = Vec::new();
+        assert_eq!(read_baseline(&addr, "acknowledged_ingestion", &probes, &mut timings, &mut failures), 1);
+        assert!(failures.is_empty());
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert_eq!(read_baseline(&addr, "acknowledged_ingestion", &probes, &mut timings, &mut failures), 1);
+        assert_eq!(failures.len(), 2);
+        assert_eq!(calls.load(Ordering::Relaxed), 4);
+        for api in ["baseline_get", "baseline_history"] {
+            assert_eq!(timings.values[api].len(), 2);
+            assert_eq!(timings.errors[api], 1);
+        }
+    }
 
     #[test]
     fn inferred_fact_counts_are_not_source_acknowledgements() {
