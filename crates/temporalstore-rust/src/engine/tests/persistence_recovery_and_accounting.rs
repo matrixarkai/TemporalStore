@@ -13144,6 +13144,9 @@ fn what_eight_records_per_ingest_cost() {
 /// deletion policy. Every value written is read back after the sweeps have run.
 #[test]
 fn registrations_plateau_instead_of_tracking_writes() {
+    let _env = crate::engine::WAL_RESIDENT_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let previous = std::env::var("TS_WAL_RESIDENT_BLOCKS").ok();
     std::env::set_var("TS_WAL_RESIDENT_BLOCKS", "64");
     let before_sweeps = crate::engine::RESIDENT_SWEEPS.load(std::sync::atomic::Ordering::Relaxed);

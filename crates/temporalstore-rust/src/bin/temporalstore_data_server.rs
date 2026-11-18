@@ -3612,8 +3612,16 @@ mod tests {
     /// a name again turns every deployment that still exports the old one into one that quietly
     /// runs on a directory or a compression policy it was not given. Each value set below
     /// differs from the default, so "ignored" cannot be confused with "read and equal".
+    /// Both tests below set and clear the process-wide block-store variables, and the test harness
+    /// runs them on separate threads of one process. Each holds this lock for its whole body, so one
+    /// never reads the defaults while the other has a variable set.
+    static BLOCK_STORE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn a_retired_block_store_env_spelling_is_not_read() {
+        let _env = BLOCK_STORE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let retired = [
             "TS_PAGE_STORE_DIR",
             "TS_PAGE_STORE_COMPRESSION_ENABLED",
@@ -3663,6 +3671,9 @@ mod tests {
 
     #[test]
     fn block_store_options_read_compression_policy_env() {
+        let _env = BLOCK_STORE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let keys = [
             "TS_BLOCK_STORE_COMPRESSION_ENABLED",
             "TS_BLOCK_STORE_COMPRESSION_MIN_BYTES",

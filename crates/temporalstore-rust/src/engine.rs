@@ -448,6 +448,12 @@ fn wal_resident_block_limit() -> usize {
     crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS"], 0)
 }
 
+/// Two tests set and clear `TS_WAL_RESIDENT_BLOCKS` for the whole process while the harness runs
+/// tests on parallel threads. Each holds this lock for its whole body, so neither reads the other's
+/// value or clears it from under it.
+#[cfg(test)]
+pub(crate) static WAL_RESIDENT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod wal_resident_env_name_tests {
     /// THE ONE SPELLING BOUNDS THE SET, AND A RETIRED ONE DOES NOT.
@@ -458,6 +464,9 @@ mod wal_resident_env_name_tests {
     /// so "ignored" cannot be confused with "read and equal".
     #[test]
     fn only_the_current_wal_resident_env_name_bounds_the_set() {
+        let _env = super::WAL_RESIDENT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let keys = ["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"];
         for key in keys {
             std::env::remove_var(key);
