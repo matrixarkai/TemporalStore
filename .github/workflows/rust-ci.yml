@@ -123,6 +123,13 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
+      - name: Mem0 model-free launcher checks
+        timeout-minutes: 2
+        run: |
+          set -o pipefail
+          bash scripts/tests/mem0_scale_heuristic_test.sh | tee /tmp/mem0-heuristic-launcher.log
+          grep -q '^heuristic launcher: 6 checks passed$' /tmp/mem0-heuristic-launcher.log
+
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
