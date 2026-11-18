@@ -2969,6 +2969,19 @@ impl PageGcStage<'_> {
             after_block_slab_id: cursor.after_slab_id,
             max_slabs: window,
         });
+        // A round that starts a fresh pass asks the gate first: refresh the per-slab tally, then ask
+        // whether the live fraction over every slab is under the threshold. Both are O(slabs) with
+        // no file opened. A pass already underway finishes; an unpublished tally reads as due.
+        if cursor.after_slab_id.is_none() {
+            let engine = &self.runtime.inner.engine;
+            engine.publish_block_slab_live_bytes();
+            let gate = engine
+                .block_store()
+                .reclaim_gate(crate::block_store::DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
+            if !gate.due {
+                options.enable_block_gc = false;
+            }
+        }
         let report = self
             .runtime
             .run_storage_manager_once_with_report_details(shard, options, false);
