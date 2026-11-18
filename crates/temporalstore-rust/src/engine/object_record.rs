@@ -1395,6 +1395,14 @@ impl ObjectSlot {
         &mut self.record
     }
 
+    /// Give up the owned array: back to the one-state "no points" spelling, `None`.
+    ///
+    /// For a string this is how a whole-value write drops the chain of tail segments it replaces; a
+    /// segment left listed under a new base would be read back onto a value it was never part of.
+    pub(super) fn clear_owned_elements(&mut self) {
+        self.many = None;
+    }
+
     /// How many elements the owned array holds. Zero when there is no array, which is NOT the same
     /// statement as "the object has no elements": an object whose elements fit the record's inline
     /// arms carries them there and has no array at all. This counts the array.

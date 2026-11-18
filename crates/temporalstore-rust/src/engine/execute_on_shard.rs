@@ -1702,7 +1702,7 @@ pub(crate) fn execute_on_shard(
                     .bucket_index
                     .any_shared_object_key(key.as_str())
                     .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
-                shard.set_string_address(stored_key, &address);
+                shard.replace_string_value_address(stored_key, &address);
                 // THE WRITER'S OWN LENGTH, which is the only place it is known. `address`
                 // carries the STORED length, so a denominator taken from the index would be
                 // compressed bytes; this is what the caller handed us, before the codec.
@@ -1743,7 +1743,7 @@ pub(crate) fn execute_on_shard(
                     .bucket_index
                     .any_shared_object_key(key.as_str())
                     .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
-                shard.set_string_address(stored_key, &address);
+                shard.replace_string_value_address(stored_key, &address);
                 // THE WRITER'S OWN LENGTH, which is the only place it is known. `address`
                 // carries the STORED length, so a denominator taken from the index would be
                 // compressed bytes; this is what the caller handed us, before the codec.
@@ -1855,7 +1855,7 @@ pub(crate) fn execute_on_shard(
                         .bucket_index
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
-                    shard.set_string_address(stored_key, &address);
+                    shard.replace_string_value_address(stored_key, &address);
                     // THE WRITER'S OWN LENGTH, which is the only place it is known. `address`
                     // carries the STORED length, so a denominator taken from the index would be
                     // compressed bytes; this is what the caller handed us, before the codec.

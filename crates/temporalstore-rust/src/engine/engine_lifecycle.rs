@@ -2218,7 +2218,8 @@ impl TemporalEngine {
                     .bucket_index
                     .any_shared_object_key(item.object_key.as_str())
                     .unwrap_or_else(|| std::sync::Arc::from(item.object_key.as_str()));
-                shard.set_string_address(stored_key, &address);
+                // A replayed whole-value write replaces the value, and any chain with it.
+                shard.replace_string_value_address(stored_key, &address);
                 true
             }
             // The element name is what the map is keyed by, encoded. Each of these mirrors the

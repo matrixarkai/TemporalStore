@@ -11068,6 +11068,26 @@ impl ShardState {
         None
     }
 
+    /// Install a string key's address for a WHOLE-VALUE WRITE: the same as
+    /// [`ShardState::set_string_address`], and the key's chain of tail segments, if it has one, is
+    /// dropped with the value it belonged to.
+    ///
+    /// THE RELOCATING WRITERS DO NOT CALL THIS. Materialising a log-resident value, publishing a
+    /// deferred checkpoint and compaction all move the SAME value to a new place, so they keep the
+    /// chain and go on calling `set_string_address`.
+    pub(super) fn replace_string_value_address(
+        &mut self,
+        key: ModelKey,
+        address: &ElementEntry,
+    ) -> Option<ElementEntry> {
+        let name = std::sync::Arc::clone(&key);
+        let previous = self.set_string_address(key, address);
+        if let Some(slot) = self.strings_mut().get_mut(&*name) {
+            slot.clear_owned_elements();
+        }
+        previous
+    }
+
     /// Drop one string key's row, handing back the address it held.
     /// Record one string key's UNCOMPRESSED size and keep the live total in step.
     ///

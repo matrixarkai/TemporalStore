@@ -499,6 +499,10 @@ mod wal_resident_env_name_tests {
 mod log_backed_string_tests;
 
 #[cfg(test)]
+#[path = "engine/string_chain_tests.rs"]
+mod string_chain_tests;
+
+#[cfg(test)]
 #[path = "engine/expiry_residency_tests.rs"]
 mod expiry_residency_tests;
 
