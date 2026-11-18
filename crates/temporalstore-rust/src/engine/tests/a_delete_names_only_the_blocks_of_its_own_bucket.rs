@@ -34,7 +34,17 @@ fn engine_on(dir: &std::path::Path) -> Arc<TemporalEngine> {
         dir.join("blocks"),
         dir.join("indexes"),
     ));
-    engine.load_shard(1);
+    // FOUR BUCKETS, so each holds hundreds of blocks and a delete is past the small-bucket projection.
+    engine.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: 3,
+        readonly: false,
+        table_name: String::new(),
+    });
     engine
 }
 
