@@ -978,6 +978,12 @@ pub(super) struct CoreIndex {
     ///
     /// Not serialized in either direction; the decoder below names no arm for it.
     pub(super) released_buckets: BTreeSet<u32>,
+    /// Per bucket, the objects that hold a block ref in it. See `bucket_owners`.
+    ///
+    /// Derived and not persisted, built when a shard is installed, kept current by the one door that
+    /// files a ref, and OPTIONAL: while absent every caller names a bucket's blocks by walking the
+    /// shard. It is what makes naming one bucket's blocks cost the bucket and not the shard.
+    pub(super) bucket_owners: super::bucket_owners::OwnersCell,
     // ---- THE FOUR CONTAINER MODEL MAPS, MOVED IN FROM `ShardState`'s TOP LEVEL. ----
     //
     // WHY THEY ARE HERE AND NOT THERE, which is the same reason `objects` moved in: the
@@ -1106,6 +1112,7 @@ impl Default for CoreIndex {
             kind_pool: std::collections::HashSet::default(),
             object_element_name_block_refs: Some(0),
             released_buckets: BTreeSet::default(),
+            bucket_owners: super::bucket_owners::OwnersCell::default(),
         }
     }
 }
@@ -1460,6 +1467,22 @@ pub fn keyed_block_inversions() -> u64 {
 #[cfg(test)]
 thread_local! {
     static BLOCK_IDENTITY_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Objects this thread visited while naming a bucket's blocks, by the owner path or the walk.
+    static BLOCK_IDENTITY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Test switch: behave as if the owners were absent, so the walk runs.
+    static BUCKET_OWNERS_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) fn measure_block_identity_visits_for_test<T>(work: impl FnOnce() -> T) -> (T, usize) {
+    BLOCK_IDENTITY_VISITS.with(|count| count.set(0));
+    let result = work();
+    (result, BLOCK_IDENTITY_VISITS.with(|count| count.get()))
+}
+
+#[cfg(test)]
+pub(super) fn disable_bucket_owners_for_test(disabled: bool) {
+    BUCKET_OWNERS_DISABLED.with(|flag| flag.set(disabled));
 }
 
 #[cfg(test)]
@@ -1536,6 +1559,8 @@ impl<'a> BlockKeysByPosition<'a> {
         // THE SLOT HOME FIRST. `as_str` on the kind is `&'static str`, which outlives `'a`.
         for (kind, table) in objects {
             for (object_key, slot) in table {
+                #[cfg(test)]
+                BLOCK_IDENTITY_VISITS.with(|count| count.set(count.get() + 1));
                 if let Some(refs) = slot.refs() {
                     file(kind.as_str(), object_key, refs);
                 }
@@ -1543,12 +1568,82 @@ impl<'a> BlockKeysByPosition<'a> {
         }
         // THEN THE LOOKUP, for the kinds whose objects hold no slot row.
         for (model_id, object_key, refs) in lookup.iter() {
+            #[cfg(test)]
+            BLOCK_IDENTITY_VISITS.with(|count| count.set(count.get() + 1));
             file(model_id.as_ref(), object_key, refs);
         }
         Self {
             by_position,
             by_handle,
             restricted: routing_bucket.is_some(),
+        }
+    }
+
+    /// THE SAME INVERSION AS [`Self::from_parts_for_bucket`], FROM THE BUCKET'S OWN OBJECTS.
+    ///
+    /// `from_parts_for_bucket` visits every object of every kind and keeps the refs that sit in the
+    /// bucket, so naming one bucket's blocks costs the shard. With the per-bucket owners this asks
+    /// each recorded owner of the bucket for its refs and keeps the ones in the bucket: the cost is
+    /// the bucket's objects. The answer is the same, and when the owners are absent it IS the
+    /// walk, so a caller without them is still right.
+    pub(super) fn from_owned_bucket(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        owners: Option<&super::bucket_owners::BucketOwners>,
+        routing_bucket: u32,
+    ) -> Self {
+        #[cfg(test)]
+        let owners = if BUCKET_OWNERS_DISABLED.with(std::cell::Cell::get) {
+            None
+        } else {
+            owners
+        };
+        let Some(owners) = owners else {
+            return Self::from_parts_for_bucket(objects, lookup, routing_bucket);
+        };
+        #[cfg(test)]
+        BLOCK_IDENTITY_BUILDS.with(|count| count.set(count.get() + 1));
+        let mut by_position = std::collections::HashMap::new();
+        let mut file = |model_id: &'a str, object_key: &'a Arc<str>, refs: &'a BlockRefs| {
+            for block_ref in refs.iter() {
+                if block_ref.routing_bucket != routing_bucket {
+                    continue;
+                }
+                by_position.insert(
+                    (block_ref.routing_bucket, block_ref.block_ref_key),
+                    (model_id, object_key),
+                );
+            }
+        };
+        if let Some(recorded) = owners.owners_of(routing_bucket) {
+            for (kind, key) in recorded {
+                #[cfg(test)]
+                BLOCK_IDENTITY_VISITS.with(|count| count.set(count.get() + 1));
+                // THE SLOT HOME FIRST, then the lookup, as in the whole-shard walk.
+                if let Some((object_key, slot)) = objects
+                    .get(kind)
+                    .and_then(|table| table.get_key_value(&**key))
+                {
+                    if let Some(refs) = slot.refs() {
+                        file(kind.as_str(), object_key, refs);
+                    }
+                }
+                if let Some((object_key, refs)) = lookup
+                    .by_model
+                    .get(kind.as_str())
+                    .and_then(|table| table.get_key_value(&**key))
+                {
+                    file(kind.as_str(), object_key, refs);
+                }
+            }
+        }
+        Self {
+            by_position,
+            by_handle: std::collections::HashMap::new(),
+            restricted: true,
         }
     }
 
@@ -8222,6 +8317,11 @@ impl CoreIndex {
             // the removers still comes from callers and is still sometimes `Some`.
             self.object_block_lookup.file(&kind, object_key, value)
         };
+        // THE OWNER IS RECORDED WHEN THE REF IS, whichever home took it, and whether or not it was new:
+        // adding is idempotent and a missing owner would leave a block unnamed.
+        if let Some(owners) = self.bucket_owners.get_mut() {
+            owners.add(routing_bucket, block.model_id(), object_key);
+        }
         if added {
             if let Some(total) = self.object_element_name_block_refs.as_mut() {
                 *total = total.saturating_add(1);
@@ -8380,6 +8480,62 @@ impl CoreIndex {
         for table in self.objects.values_mut() {
             for slot in table.values_mut() {
                 slot.take_refs();
+            }
+        }
+        // The refs are about to be re-filed, and each filing records its owner.
+        if self.bucket_owners.get().is_some() {
+            self.bucket_owners.set(super::bucket_owners::BucketOwners::default());
+        }
+    }
+
+    /// THE PER-BUCKET OWNERS, DERIVED FROM THE OBJECTS' REFS in both homes.
+    pub(super) fn derive_bucket_owners(&self) -> super::bucket_owners::BucketOwners {
+        let mut owners = super::bucket_owners::BucketOwners::default();
+        for (kind, table) in &self.objects {
+            for (object_key, slot) in table {
+                if let Some(refs) = slot.refs() {
+                    for block_ref in refs.iter() {
+                        owners.add(block_ref.routing_bucket, *kind, object_key);
+                    }
+                }
+            }
+        }
+        for (model_id, object_key, refs) in self.object_block_lookup.iter() {
+            if let Some(kind) =
+                super::storage_bucket_internals::StoredModelKind::from_stored_name(model_id)
+            {
+                for block_ref in refs.iter() {
+                    owners.add(block_ref.routing_bucket, kind, object_key);
+                }
+            }
+        }
+        owners
+    }
+
+    /// Build the owners if they are absent. O(objects) once; a no-op after.
+    pub(super) fn ensure_bucket_owners(&mut self) {
+        if self.bucket_owners.get().is_none() {
+            let owners = self.derive_bucket_owners();
+            self.bucket_owners.set(owners);
+        }
+    }
+
+    /// TEST ONLY: every ref's owner is recorded. The recorded set may hold EXTRA entries (stale ones
+    /// are harmless) but never fewer than the refs say, which is the property naming relies on.
+    #[cfg(test)]
+    pub(super) fn assert_bucket_owners_cover_every_ref(&self) {
+        let Some(recorded) = self.bucket_owners.get() else {
+            return;
+        };
+        let truth = self.derive_bucket_owners();
+        for (bucket, expected) in truth.iter() {
+            let have = recorded.owners_of(*bucket);
+            for owner in expected {
+                assert!(
+                    have.is_some_and(|set| set.contains(owner)),
+                    "bucket {bucket}: object {:?} holds a ref there and is not recorded as an owner",
+                    owner
+                );
             }
         }
     }

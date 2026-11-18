@@ -89,6 +89,7 @@ mod storage_reports;
 mod prometheus_metrics;
 mod stream_batch_methods;
 mod recovery_sweep_compact;
+mod bucket_owners;
 #[path = "engine/engine_persistence.rs"]
 mod persistence;
 pub(crate) mod bucket_dump_codec;
@@ -3065,6 +3066,9 @@ impl TemporalEngine {
         // The id it is being INSERTED UNDER, so the shard and the key the served map routes it by
         // can never be two different numbers.
         state.set_shard_id(shard_id);
+        // THE PER-BUCKET OWNERS, built while the state is still private to this thread, for the
+        // same reason as the deadline view below. Absent, every caller falls back to the walk.
+        state.bucket_index.ensure_bucket_owners();
         // BUILT HERE, BEFORE THE TABLE LOCK, so the first sweep after a load or a manifest
         // install does not pay for it. `expiry_by_deadline` is `serde(skip)`, so every state that
         // arrives from disk has it empty, and `ensure_expiry_order` rebuilt it on the first
@@ -7226,6 +7230,11 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     let Some(shard_id) = shard.shard_id() else {
         return false;
     };
+    // A state that was cloned or swapped in has no owners until something builds them; build them
+    // here, once, so the bucket below is named from its own objects and not from the shard.
+    shard.bucket_index.ensure_bucket_owners();
+    #[cfg(test)]
+    shard.bucket_index.assert_bucket_owners_cover_every_ref();
     // A RELEASED bucket holds no block entries, so the walk below finds nothing to remove and the
     // object id would stay claimed until some later reload re-derived the set. Settle it here,
     // while the model map this reads the address out of still holds the block.
@@ -7263,11 +7272,13 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             .map(|keys| crate::engine::state::block_identities_in(&bucket, keys))
             .filter(|names| names.len() == bucket.block_index.len())
             .unwrap_or_else(|| {
+                // THE BUCKET'S OWN OBJECTS, not every object of the shard.
                 crate::engine::state::block_identities_in(
                     &bucket,
-                    &crate::engine::state::BlockKeysByPosition::from_parts_for_bucket(
+                    &crate::engine::state::BlockKeysByPosition::from_owned_bucket(
                         &shard.bucket_index.objects,
                         &shard.bucket_index.object_block_lookup,
+                        shard.bucket_index.bucket_owners.get(),
                         routing_bucket,
                     ),
                 )

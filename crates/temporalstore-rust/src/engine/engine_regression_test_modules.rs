@@ -140,6 +140,8 @@ mod a_timestamped_point_names_itself_once;
 mod a_hash_write_files_only_what_it_wrote;
 #[path = "tests/a_write_names_only_the_blocks_of_the_objects_it_touched.rs"]
 mod a_write_names_only_the_blocks_of_the_objects_it_touched;
+#[path = "tests/a_delete_names_only_the_blocks_of_its_own_bucket.rs"]
+mod a_delete_names_only_the_blocks_of_its_own_bucket;
 #[path = "tests/a_plan_learns_a_log_tail_from_its_appenders.rs"]
 mod a_plan_learns_a_log_tail_from_its_appenders;
 #[path = "tests/a_removal_states_no_block_rows.rs"]
