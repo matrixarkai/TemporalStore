@@ -12,7 +12,7 @@ fn address(offset: u64) -> ElementEntry {
 }
 
 fn slot_with_filed_blocks() -> object_record::ObjectSlot {
-    let mut record = object_record::ObjectRecord::empty();
+    let mut record = object_record::ObjectRecord::default();
     record.set_block_size(123);
     let mut slot = object_record::ObjectSlot::from_record(record);
     slot.set(1, address(16));
