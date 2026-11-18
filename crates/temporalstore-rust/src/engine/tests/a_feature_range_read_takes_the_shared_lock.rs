@@ -96,11 +96,21 @@ fn reads() -> Vec<(&'static str, Command)> {
     vec![
         (
             "FeatureQuery",
-            Command::FeatureQuery { key: "s".into(), start_ms: 0, end_ms: u64::MAX, count: None },
+            Command::FeatureQuery {
+                key: "s".into(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: None,
+            },
         ),
         (
             "FeatureQuery capped",
-            Command::FeatureQuery { key: "s".into(), start_ms: 0, end_ms: u64::MAX, count: Some(5) },
+            Command::FeatureQuery {
+                key: "s".into(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: Some(5),
+            },
         ),
         (
             "FeatureQueryFiltered",
@@ -118,7 +128,12 @@ fn reads() -> Vec<(&'static str, Command)> {
         ),
         (
             "FeatureQuery of an absent key",
-            Command::FeatureQuery { key: "nope".into(), start_ms: 0, end_ms: u64::MAX, count: None },
+            Command::FeatureQuery {
+                key: "nope".into(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: None,
+            },
         ),
     ]
 }
@@ -141,10 +156,108 @@ fn each_range_read_answers_while_the_shared_lock_is_held() {
         let got = receiver.recv_timeout(Duration::from_secs(5));
         drop(held);
         worker.join().expect("the read thread");
-        assert!(got.is_ok(), "{label}: no answer while the shared lock was held");
+        assert!(
+            got.is_ok(),
+            "{label}: no answer while the shared lock was held"
+        );
         answered += 1;
     }
     assert_eq!(reads().len(), answered);
+}
+
+#[test]
+fn a_captured_feature_window_survives_delete_and_reclaim() {
+    for filtered in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_on(dir.path(), 100_000);
+        assert!(
+            engine
+                .set_config(crate::control::SetConfigRequest {
+                    shard_id: 1,
+                    config: crate::control::Config {
+                        version: 3,
+                        async_storage: true,
+                        feature_max_size: 100_000,
+                        ..Default::default()
+                    },
+                })
+                .ok
+        );
+        let expected = (0..12)
+            .map(|index| row_point(index, index))
+            .collect::<Vec<_>>();
+        append(&engine, expected.clone());
+        {
+            let shards = engine.shards.read().unwrap();
+            let window = shards[&1]
+                .features()
+                .get("s")
+                .unwrap()
+                .range(0..=u64::MAX)
+                .collect::<Vec<_>>();
+            assert_eq!(window.len(), expected.len());
+            assert!(window.iter().all(|(_, address)| {
+                crate::wal_record::is_wal_resident(address.block_slab_id())
+            }));
+        }
+        engine.cache.invalidate_shard(1).unwrap();
+        let writer = Arc::clone(&engine);
+        crate::engine::AFTER_FAST_READ_PLAN.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(move || {
+                assert!(writer.shards.try_write().is_ok());
+                std::thread::spawn(move || {
+                    run(&writer, Command::CommonDelete { key: "s".into() });
+                    writer.cache.invalidate_shard(1).unwrap();
+                    let last = writer.wal_store.stats(1).last_sequence;
+                    writer.wal_store.clear_block_retention_floor(1);
+                    let reclaimed = writer
+                        .wal_store
+                        .gc_before_sequence_unchecked(1, last)
+                        .unwrap();
+                    assert!(reclaimed.clamped_by_block_retention);
+                })
+                .join()
+                .unwrap();
+            }));
+        });
+        let command = if filtered {
+            Command::FeatureQueryFiltered {
+                key: "s".into(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: None,
+                filters: vec![FeatureFilter {
+                    field: "action_type".into(),
+                    op: FeatureFilterOp::Equal,
+                    value: 1,
+                }],
+            }
+        } else {
+            Command::FeatureQuery {
+                key: "s".into(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: None,
+            }
+        };
+        let wanted = expected
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| !filtered || index % 5 == 0)
+            .map(|(_, point)| point)
+            .collect::<Vec<_>>();
+        assert_eq!(points_of(run(&engine, command.clone())), wanted);
+        crate::engine::AFTER_FAST_READ_PLAN.with(|slot| assert!(slot.borrow().is_none()));
+        assert_eq!(engine.wal_store.block_retention_floor(1), None);
+        let released = engine
+            .wal_store
+            .gc_before_sequence_unchecked(1, engine.wal_store.stats(1).last_sequence)
+            .unwrap();
+        assert!(!released.clamped_by_block_retention);
+        assert!(released.records_after < released.records_before);
+        assert!(points_of(run(&engine, command)).is_empty());
+    }
 }
 
 #[test]
@@ -189,16 +302,28 @@ fn a_range_read_answers_what_was_appended() {
             };
             let got = points_of(run(
                 &engine,
-                Command::FeatureQuery { key: "s".into(), start_ms: start, end_ms: end, count },
+                Command::FeatureQuery {
+                    key: "s".into(),
+                    start_ms: start,
+                    end_ms: end,
+                    count,
+                },
             ));
-            assert_eq!(expected, got, "bound {bound}: [{start}, {end}] count {count:?}");
+            assert_eq!(
+                expected, got,
+                "bound {bound}: [{start}, {end}] count {count:?}"
+            );
             compared += 1;
             // the filtered read caps the window BEFORE it filters
             let limit = count.unwrap_or(bound).min(bound);
             let window: Vec<FeaturePoint> = if start > end {
                 Vec::new()
             } else {
-                model.range(start..=end).take(limit).map(|(_, p)| p.clone()).collect()
+                model
+                    .range(start..=end)
+                    .take(limit)
+                    .map(|(_, p)| p.clone())
+                    .collect()
             };
             let expected_filtered: Vec<FeaturePoint> = window
                 .into_iter()
@@ -229,11 +354,22 @@ fn a_range_read_answers_what_was_appended() {
         }
         // A LAPSED KEY answers empty, through the ordinary path that drops it.
         if bound == 100_000 {
-            run(&engine, Command::CommonExpire { key: "s".into(), ttl_ms: 1 });
+            run(
+                &engine,
+                Command::CommonExpire {
+                    key: "s".into(),
+                    ttl_ms: 1,
+                },
+            );
             std::thread::sleep(Duration::from_millis(30));
             assert!(points_of(run(
                 &engine,
-                Command::FeatureQuery { key: "s".into(), start_ms: 0, end_ms: u64::MAX, count: None },
+                Command::FeatureQuery {
+                    key: "s".into(),
+                    start_ms: 0,
+                    end_ms: u64::MAX,
+                    count: None
+                },
             ))
             .is_empty());
         }

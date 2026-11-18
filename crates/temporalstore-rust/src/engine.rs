@@ -1945,7 +1945,7 @@ impl TemporalEngine {
         // stopped all writes on the shard for as many reads as the value had fields. See
         // `FastPathRead` for why releasing first is safe and what the one scope still buys.
         let hold_guard_across_reads = shard_write_guard::serving_holds_guard_across_reads();
-        let (plan, _held_across_reads, _wal_snapshot) = {
+        let (plan, _held_across_reads, _wal_snapshot, _slab_snapshot) = {
             let shards = self.shards_read_marked();
             let Some(shard) = shards.get(&request.shard_id) else {
                 return Some(ExecuteResponse {
@@ -2148,6 +2148,7 @@ impl TemporalEngine {
                 _ => return None,
             };
             let wal_snapshot = plan.pin_log_locations(&self.block_store, request.shard_id);
+            let slab_snapshot = plan.pin_feature_slabs(&self.block_store);
             // The measurement's control arm carries the guard out of this block so the reads
             // below still happen inside the region. `None` in every shipped build, which is what
             // makes the guard drop here.
@@ -2156,7 +2157,7 @@ impl TemporalEngine {
             } else {
                 None
             };
-            (plan, held, wal_snapshot)
+            (plan, held, wal_snapshot, slab_snapshot)
         };
 
         #[cfg(test)]
@@ -3703,6 +3704,18 @@ enum FastPathRead<'a> {
 }
 
 impl FastPathRead<'_> {
+    fn pin_feature_slabs(&self, blocks: &BlockStore) -> Option<crate::block_store::BlockStoreReadSnapshot> {
+        let Self::FeatureRange { window, .. } = self else { return None; };
+        let mut snapshot = None;
+        for (_, address) in window {
+            if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                snapshot.get_or_insert_with(|| crate::block_store::BlockStoreReadSnapshot::new(blocks))
+                    .pin(address.block_slab_id());
+            }
+        }
+        snapshot
+    }
+
     fn pin_log_locations(
         &self,
         blocks: &BlockStore,
@@ -3736,6 +3749,18 @@ impl FastPathRead<'_> {
                     }
                 }
                 Some(guard)
+            }
+            Self::FeatureRange { key, window, .. } => {
+                let mut snapshot = None;
+                let object = stable_block_object_id(shard, "feature", key);
+                for (_, address) in window {
+                    if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                        snapshot.get_or_insert_with(|| {
+                            block_in_wal::ReadSnapshotGuard::retained_batch(blocks, shard, window.len())
+                        }).pin(blocks, object, None, address);
+                    }
+                }
+                snapshot
             }
             Self::Hash { .. } | Self::Answer { .. } => None,
         }

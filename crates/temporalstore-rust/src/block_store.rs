@@ -23,6 +23,8 @@ mod append;
 mod read;
 #[path = "block_store/block_store_gc.rs"]
 mod gc;
+mod read_retention;
+pub(crate) use read_retention::BlockStoreReadSnapshot;
 mod slab_ids;
 mod slab_backend;
 pub use slab_backend::block_store_file_read_counts;
@@ -1857,6 +1859,7 @@ impl BlockStore {
 #[derive(Debug)]
 struct BlockStoreInner {
     _identity: BlockStoreIdentity,
+    read_pins: BTreeMap<u64, usize>,
     root: PathBuf,
     root_created: bool,
     active_append_file: Option<std::fs::File>,
@@ -2092,6 +2095,7 @@ impl BlockStore {
             read_view,
             inner: Arc::new(Mutex::new(BlockStoreInner {
                 _identity: identity,
+                read_pins: BTreeMap::new(),
                 root,
                 root_created,
                 active_append_file: None,
@@ -2569,8 +2573,9 @@ impl BlockStore {
         selected_block_slab_ids: Option<BTreeSet<u64>>,
         max_slabs_per_round: usize,
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
-        let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
+        let mut live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
+        live_block_slab_ids.extend(inner.read_pins.keys().copied());
         let trash_dir = delayed_destroy_dir(&inner.root);
         let mut purged = Vec::new();
         let mut purged_physical_bytes = 0;
