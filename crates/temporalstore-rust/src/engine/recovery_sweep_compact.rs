@@ -933,6 +933,26 @@ impl TemporalEngine {
         ready_shards
     }
 
+    /// Live block bytes summed over every loaded shard, and whether every shard's tally is
+    /// derived. O(shards): one read of each shard's running total, no walk of any slab map.
+    ///
+    /// The sum is additive across shards even where two shards' blocks share a slab, because each
+    /// shard's total is the sum of its own charges. `ready` is false when any shard has not
+    /// derived its tally; a caller must then treat the figure as unknown, never as zero.
+    pub fn block_slab_live_total(&self) -> (u64, bool) {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let mut total = 0_u64;
+        let mut ready = true;
+        for shard in shards.values() {
+            if !shard.bucket_index.block_slab_live.is_ready() {
+                ready = false;
+                continue;
+            }
+            total = total.saturating_add(shard.bucket_index.block_slab_live.total_live_bytes());
+        }
+        (total, ready)
+    }
+
     /// FORGET THE RECORDED STALE RANGES FOR SLABS THE COLLECTOR HAS TAKEN. The prune.
     ///
     /// THIS IS WHAT BOUNDS THE RECORD BY SOMETHING REAL. The per-slab range list is capped and its
