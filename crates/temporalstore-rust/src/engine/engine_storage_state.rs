@@ -8669,6 +8669,8 @@ impl CoreIndex {
             kind_pool,
             object_element_name_block_refs,
             released_buckets,
+            // Derived from the refs, which this rebuild re-homes: dropped here and rebuilt on demand.
+            bucket_owners: _,
             // ---- CARRIED: durable, and the reconstruct has no way to derive it. ----
             // CARRIED TOO, AND FOR THE SAME REASON `objects` IS: these four are the DURABLE
             // authority for which container objects exist and what elements they hold. A
@@ -8711,6 +8713,7 @@ impl CoreIndex {
         self.kind_pool = kind_pool;
         self.object_element_name_block_refs = object_element_name_block_refs;
         self.released_buckets = released_buckets;
+        self.bucket_owners = super::bucket_owners::OwnersCell::default();
         // THE RECONSTRUCT'S OWN FILINGS MOVE INTO THE ROWS THEY BELONG TO. Without this the fold
         // is undone by every rebuild: the rows would be back but every ref would sit in the
         // lookup, so the figure would regress on any shard that has ever been reconstructed and
