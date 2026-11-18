@@ -403,6 +403,8 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             // because `gc_slabs_before_with_live_refs_selected` re-checks liveness, currency and
             // the live-bytes tally itself immediately before each irreversible step.
             let gc_policy = crate::block_store::BlockStoreGcPolicy {
+                max_scan_slabs: 0,
+                scan_after_slab_id: None,
                 max_destroy_slabs: request.block_gc_max_destroy_slabs_per_round,
                 max_destroy_physical_bytes: request.block_gc_max_destroy_physical_bytes_per_round,
                 max_utility_score: None,

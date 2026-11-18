@@ -206,8 +206,15 @@ impl BlockStore {
         live_block_slab_ids: impl IntoIterator<Item = u64>,
         policy: &BlockStoreGcPolicy,
     ) -> Result<BlockStoreGcPolicyPlan, BlockStoreError> {
-        let candidates =
-            self.gc_utility_candidates(retain_from_block_slab_id, live_block_slab_ids)?;
+        let window = self.gc_utility_candidates_window(
+            retain_from_block_slab_id,
+            live_block_slab_ids,
+            policy.scan_after_slab_id,
+            policy.max_scan_slabs,
+        )?;
+        let scan_last_block_slab_id = window.last_examined_block_slab_id;
+        let scan_complete = window.scan_complete;
+        let candidates = window.candidates;
         let mut selected_block_slab_ids = Vec::new();
         let mut selected_physical_bytes = 0_u64;
         let candidate_physical_bytes = candidates.iter().map(|candidate| candidate.bytes).sum();
@@ -300,6 +307,8 @@ impl BlockStore {
             skipped_by_policy_physical_bytes,
             skipped_by_budget_count,
             skipped_by_budget_physical_bytes,
+            scan_last_block_slab_id,
+            scan_complete,
             candidates,
         })
     }
@@ -309,6 +318,20 @@ impl BlockStore {
         retain_from_block_slab_id: u64,
         live_block_slab_ids: impl IntoIterator<Item = u64>,
     ) -> Result<Vec<BlockStoreGcUtilityCandidate>, BlockStoreError> {
+        self.gc_utility_candidates_window(retain_from_block_slab_id, live_block_slab_ids, None, 0)
+            .map(|window| window.candidates)
+    }
+
+    /// The candidates of one bounded scan. Candidates are examined in slab-id order starting
+    /// above `scan_after_slab_id`, at most `max_scan_slabs` of them (0 examines all). The
+    /// highest-garbage-first ordering applies within what was examined.
+    pub fn gc_utility_candidates_window(
+        &self,
+        retain_from_block_slab_id: u64,
+        live_block_slab_ids: impl IntoIterator<Item = u64>,
+        scan_after_slab_id: Option<u64>,
+        max_scan_slabs: usize,
+    ) -> Result<BlockStoreCandidateWindow, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
         let current_block_slab_id = inner.block_slab_id;
         let published_live = inner.live_block_bytes.clone();
@@ -316,7 +339,9 @@ impl BlockStore {
         let slab_ids = slab_ids_at(&inner.root)?;
         let mut slab_total_bytes = BTreeMap::<u64, u64>::new();
         let mut slab_used_bytes = BTreeMap::<u64, u64>::new();
-        for block_slab_id in &slab_ids {
+        // The sizes gathered here feed only the no-tally branch below. With a published tally
+        // they are never read, so the stat of every slab file is skipped.
+        for block_slab_id in slab_ids.iter().filter(|_| published_live.is_none()) {
             let bytes = slab_path(&inner.root, *block_slab_id)
                 .metadata()
                 .map(|metadata| metadata.len())
@@ -345,12 +370,24 @@ impl BlockStore {
         }
         let mut candidates = Vec::new();
         let now = now_unix_ms();
+        let mut examined = 0usize;
+        let mut last_examined = None;
+        let mut scan_complete = true;
         for block_slab_id in slab_ids {
+            if scan_after_slab_id.is_some_and(|after| block_slab_id <= after) {
+                continue;
+            }
             let below_retention_floor = block_slab_id < retain_from_block_slab_id;
             let is_current = block_slab_id == current_block_slab_id;
             let is_live = live_block_slab_ids.contains(&block_slab_id)
                 || inner.read_pins.contains_key(&block_slab_id);
             if below_retention_floor && !is_current && !is_live {
+                if max_scan_slabs > 0 && examined >= max_scan_slabs {
+                    scan_complete = false;
+                    break;
+                }
+                examined += 1;
+                last_examined = Some(block_slab_id);
                 let bytes = slab_path(&inner.root, block_slab_id)
                     .metadata()
                     .map(|metadata| metadata.len())
@@ -442,7 +479,11 @@ impl BlockStore {
                 })
                 .then_with(|| left.block_slab_id.cmp(&right.block_slab_id))
         });
-        Ok(candidates)
+        Ok(BlockStoreCandidateWindow {
+            candidates,
+            last_examined_block_slab_id: last_examined,
+            scan_complete,
+        })
     }
 
     pub(super) fn gc_slabs_before_with_live_refs_mode(

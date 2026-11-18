@@ -12522,6 +12522,8 @@ fn the_block_gc_budget_reaches_the_periodic_loop() {
             u64::MAX,
             live.iter().copied(),
             &crate::block_store::BlockStoreGcPolicy {
+                max_scan_slabs: 0,
+                scan_after_slab_id: None,
                 max_destroy_slabs: 0,
                 max_destroy_physical_bytes: 0,
                 max_utility_score: None,
