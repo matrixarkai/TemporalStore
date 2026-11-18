@@ -72,6 +72,7 @@ struct Report {
     metadata_update_rounds: usize,
     crud_rounds: usize,
     tenant_shards: usize,
+    crud_fixture_counts: Vec<crud::FixtureCounts>,
     payload_bytes: u64,
     elapsed_ms: u128,
     ingest_records_per_sec: f64,
@@ -350,7 +351,7 @@ fn main() {
         }
     }
 
-    crud::run(&options, &tenant_id, &mut timings, &mut failures);
+    let crud_fixture_counts = crud::run(&options, &tenant_id, &mut timings, &mut failures);
 
     if let Some(id) = sampled_ids.first() {
         measure_get(
@@ -459,6 +460,7 @@ fn main() {
         metadata_update_rounds: options.metadata_updates,
         crud_rounds: options.crud_rounds,
         tenant_shards: options.tenant_shards,
+        crud_fixture_counts,
         payload_bytes,
         elapsed_ms: started.elapsed().as_millis(),
         ingest_records_per_sec: ingested_records as f64
