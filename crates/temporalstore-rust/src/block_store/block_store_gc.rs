@@ -333,7 +333,8 @@ impl BlockStore {
                 .saturating_add(bytes);
             let below_retention_floor = *block_slab_id < retain_from_block_slab_id;
             let is_current = *block_slab_id == current_block_slab_id;
-            let is_live = live_block_slab_ids.contains(block_slab_id);
+            let is_live = live_block_slab_ids.contains(block_slab_id)
+                || inner.read_pins.contains_key(block_slab_id);
             if !below_retention_floor || is_current || is_live {
                 *slab_used_bytes.entry(stored_slab_id).or_default() = slab_used_bytes
                     .get(&stored_slab_id)
@@ -347,7 +348,8 @@ impl BlockStore {
         for block_slab_id in slab_ids {
             let below_retention_floor = block_slab_id < retain_from_block_slab_id;
             let is_current = block_slab_id == current_block_slab_id;
-            let is_live = live_block_slab_ids.contains(&block_slab_id);
+            let is_live = live_block_slab_ids.contains(&block_slab_id)
+                || inner.read_pins.contains_key(&block_slab_id);
             if below_retention_floor && !is_current && !is_live {
                 let bytes = slab_path(&inner.root, block_slab_id)
                     .metadata()
@@ -490,7 +492,8 @@ impl BlockStore {
                 .unwrap_or_default();
             let below_retention_floor = block_slab_id < retain_from_block_slab_id;
             let is_current = block_slab_id == current_block_slab_id;
-            let is_live = live_block_slab_ids.contains(&block_slab_id);
+            let is_live = live_block_slab_ids.contains(&block_slab_id)
+                || inner.read_pins.contains_key(&block_slab_id);
             let is_selected = selected_block_slab_ids
                 .as_ref()
                 .map(|selected| selected.contains(&block_slab_id))

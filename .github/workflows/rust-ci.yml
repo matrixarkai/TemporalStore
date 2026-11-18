@@ -372,6 +372,20 @@ jobs:
           # One invocation per guard, because `cargo test` takes a single positional filter and a
           # second one is silently an error rather than a second filter.
           for t in \
+              wal::read_retention_tests::acquiring_and_releasing_a_read_lease_does_not_wait_for_wal_io \
+              block_store::read_retention::tests::nested_readers_protect_only_named_slabs_until_last_release \
+              block_store::read_retention::tests::read_pins_survive_quarantine_plans_and_restore_before_purge \
+              wal::read_retention_tests::read_leases_scope_floors_and_reuse_slots_without_retaining_the_owner \
+              wal::read_retention_tests::reclaim_preserves_a_leased_record_and_advances_after_release \
+              engine::execute_on_shard::prepared_hash_reads::tests::point_plan_has_no_row_vector_and_preserves_error_order \
+              engine::execute_on_shard::prepared_hash_reads::tests::cached_payload_budget_counts_complete_frames \
+              engine::execute_on_shard::prepared_hash_reads::tests::membership_masks_preserve_missing_slots_beyond_one_word \
+              engine::stream_batch_methods::projected_read_snapshot_tests::serialization_releases_guard_and_preserves_owned_and_shared_snapshots \
+              engine::stream_batch_methods::projected_read_snapshot_tests::snapshot_preserves_missing_duplicate_and_empty_projections \
+              engine::stream_batch_methods::projected_read_snapshot_tests::oversized_projection_streams_after_releasing_the_guard \
+              engine::stream_batch_methods::projected_read_snapshot_tests::unloaded_shard_never_delivers_snapshot_rows \
+              engine::stream_batch_methods::projected_read_snapshot_tests::wal_snapshot_survives_overwrite_delete_and_reclaim_before_payload_loading \
+              engine::stream_batch_methods::projected_read_snapshot_tests::slab_snapshot_survives_overwrite_delete_and_reclaim_before_payload_loading \
             engine::block_in_wal::read_snapshot::tests::captured_locators_survive_pruning_and_nested_scope_cleanup \
             engine::block_in_wal::read_snapshot::tests::fast_wal_reads_keep_complete_snapshots_after_concurrent_overwrite \
             raft::tests::part5::only_the_majority_check_refuses_a_read_on_a_node_that_lost_its_peers \

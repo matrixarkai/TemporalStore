@@ -1197,6 +1197,7 @@ thread_local! {
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
     inner: Arc<Mutex<WriteAheadLogInner>>,
+    read_retention: Arc<Mutex<ReadRetentions>>,
     // Group-commit coordinators, one per shard, so writers for one shard share a durability
     // barrier without serializing an unrelated shard's fsync behind it. Always consulted --
     // `group_commit_configured` returns true, and `TS_GROUP_COMMIT`, which this comment used to
@@ -1217,6 +1218,61 @@ pub struct LocalWriteAheadLogStore {
 pub(crate) struct WriteAheadLogIdentity {
     inner: std::sync::Weak<Mutex<WriteAheadLogInner>>,
 }
+
+/// Keeps an in-flight snapshot's records readable without retaining the log owner.
+#[derive(Debug)]
+pub(crate) struct WriteAheadLogReadLease {
+    identity: WriteAheadLogIdentity,
+    retention: std::sync::Weak<Mutex<ReadRetentions>>,
+    slot: usize,
+    shard: ShardId,
+    sequence: u64,
+}
+
+#[derive(Debug, Default)]
+struct ReadRetentions {
+    slots: Vec<Option<(ShardId, u64)>>,
+}
+
+impl WriteAheadLogReadLease {
+    pub(crate) fn same_log(&self, store: &LocalWriteAheadLogStore) -> bool {
+        self.identity.same_log(store)
+    }
+
+    pub(crate) fn retain_earlier(&mut self, sequence: u64) {
+        if sequence >= self.sequence {
+            return;
+        }
+        if let Some(owner) = self.retention.upgrade() {
+            let mut retention = owner.lock().expect("read retention lock poisoned");
+            debug_assert_eq!(retention.slots[self.slot], Some((self.shard, self.sequence)));
+            retention.slots[self.slot] = Some((self.shard, sequence));
+            self.sequence = sequence;
+        }
+    }
+}
+
+impl Drop for WriteAheadLogReadLease {
+    fn drop(&mut self) {
+        if let Some(owner) = self.retention.upgrade() {
+            if let Ok(mut retention) = owner.lock() {
+                debug_assert_eq!(retention.slots[self.slot], Some((self.shard, self.sequence)));
+                retention.slots[self.slot] = None;
+            };
+        }
+    }
+}
+
+fn retained_block_floor(inner: &WriteAheadLogInner, readers: &ReadRetentions, shard: ShardId) -> Option<u64> {
+    inner.block_retention_floor_by_shard.get(&shard).copied().into_iter()
+        .chain(readers.slots.iter().filter_map(|slot| {
+            slot.filter(|(held, _)| *held == shard).map(|(_, sequence)| sequence)
+        })).min()
+}
+
+#[cfg(test)]
+#[path = "wal/read_retention_tests.rs"]
+mod read_retention_tests;
 
 impl WriteAheadLogIdentity {
     pub(crate) fn same_log(&self, store: &LocalWriteAheadLogStore) -> bool {
@@ -1533,6 +1589,7 @@ impl LocalWriteAheadLogStore {
                 group_writes: 0,
                 group_records: 0,
             })),
+            read_retention: Arc::new(Mutex::new(ReadRetentions::default())),
             sync_coord: Arc::new(Mutex::new(HashMap::new())),
             flat_append: Arc::new(AtomicBool::new(true)),
             flusher_started: Arc::new(AtomicBool::new(false)),
@@ -2439,6 +2496,7 @@ impl LocalWriteAheadLogStore {
             return;
         }
         let inner = Arc::downgrade(&self.inner);
+        let retention = Arc::downgrade(&self.read_retention);
         let coord = Arc::downgrade(&self.sync_coord);
         let flat = Arc::downgrade(&self.flat_append);
         let started = Arc::downgrade(&self.flusher_started);
@@ -2446,12 +2504,12 @@ impl LocalWriteAheadLogStore {
             .name("wal-loop-flush".to_string())
             .spawn(move || loop {
                 std::thread::sleep(wal_group_loop_interval());
-                let (Some(inner), Some(sync_coord), Some(flat_append), Some(flusher_started)) =
-                    (inner.upgrade(), coord.upgrade(), flat.upgrade(), started.upgrade())
+                let (Some(inner), Some(read_retention), Some(sync_coord), Some(flat_append), Some(flusher_started)) =
+                    (inner.upgrade(), retention.upgrade(), coord.upgrade(), flat.upgrade(), started.upgrade())
                 else {
                     return;
                 };
-                let store = LocalWriteAheadLogStore { inner, sync_coord, flat_append, flusher_started };
+                let store = LocalWriteAheadLogStore { inner, read_retention, sync_coord, flat_append, flusher_started };
                 let shards: Vec<ShardId> = {
                     let guard = store.lock_inner_raw();
                     guard
@@ -3217,7 +3275,23 @@ impl LocalWriteAheadLogStore {
     /// The shard's block-retention floor, if one is registered.
     pub fn block_retention_floor(&self, shard_id: ShardId) -> Option<u64> {
         let inner = self.lock_inner_raw();
-        inner.block_retention_floor_by_shard.get(&shard_id).copied()
+        let readers = self.read_retention.lock().expect("read retention lock poisoned");
+        retained_block_floor(&inner, &readers, shard_id)
+    }
+
+    /// Called before releasing the index scope whose live floor already protects this sequence.
+    pub(crate) fn retain_read_sequence(&self, shard_id: ShardId, sequence: u64) -> WriteAheadLogReadLease {
+        let mut readers = self.read_retention.lock().expect("read retention lock poisoned");
+        let slot = match readers.slots.iter().position(Option::is_none) {
+            Some(slot) => slot,
+            None => {
+                let slot = readers.slots.len();
+                readers.slots.push(None);
+                slot
+            }
+        };
+        readers.slots[slot] = Some((shard_id, sequence));
+        WriteAheadLogReadLease { identity: self.weak_identity(), retention: Arc::downgrade(&self.read_retention), slot, shard: shard_id, sequence }
     }
 
     /// Drop the shard's floor, letting GC reclaim freely again. Call this only once no block
@@ -3477,11 +3551,10 @@ impl LocalWriteAheadLogStore {
         // only copy of a block's bytes -- a block in the WAL has no copy in a slab until it is
         // dumped -- so removing it loses data that the served index still points at, and the
         // read fails at some later, unrelated moment.
-        let floor = inner
-            .block_retention_floor_by_shard
-            .get(&shard_id)
-            .copied()
-            .unwrap_or(u64::MAX);
+        let floor = {
+            let readers = self.read_retention.lock().expect("read retention lock poisoned");
+            retained_block_floor(&inner, &readers, shard_id).unwrap_or(u64::MAX)
+        };
         let clamped_by_block_retention = effective_retain > floor;
         let effective_retain = effective_retain.min(floor);
         // Whole pieces below the retain point go without being read or copied. This uses the

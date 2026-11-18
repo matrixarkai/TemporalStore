@@ -12,10 +12,6 @@ fn read_filled_hash_cache_enabled() -> bool {
         .map(|value| value != "0").unwrap_or(true))
 }
 
-#[path = "projected_batch_snapshot.rs"]
-mod projected_batch_snapshot;
-use projected_batch_snapshot::ProjectedBatchSnapshot;
-
 #[path = "interleaved_hash_rows.rs"]
 mod interleaved_hash_rows;
 
@@ -52,6 +48,8 @@ mod packed_hash_cache_reclaim_tests;
 #[cfg(test)]
 thread_local! {
     static HASH_BATCH_EXPANSIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static AFTER_PROJECTED_READ_PLAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -1014,7 +1012,9 @@ impl TemporalEngine {
         let enforce_foreground_limits = !raft_applying() && !replaying_wal();
         let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
         let mut projection_scratch = container_blocks::Utf8ProjectionScratch::new();
-        let mut snapshot = ProjectedBatchSnapshot::new(keys.len());
+        let mut snapshot = execute_on_shard::PreparedHashBatch::new(keys.len());
+        let mut wal_snapshot = None;
+        let mut slab_snapshot = None;
         let recency_now = now_ms();
         for (index, key) in keys.iter().enumerate() {
             let rejected = if enforce_foreground_limits
@@ -1040,31 +1040,41 @@ impl TemporalEngine {
                 None
             };
             if let Some(status) = rejected {
-                snapshot.push(index, Err(status), &mut visit);
+                snapshot.push(index, 0, Err(status));
                 continue;
             }
 
             let routing_bucket =
                 block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-            let values = execute_on_shard::execute_hash_multi_get_projected(
+            let plan = execute_on_shard::PreparedHashRead::prepare(
                 &self.cache,
-                &self.block_store,
                 shard_id,
-                routing_bucket,
                 shard,
                 key,
                 &fields,
                 &projection_plan,
                 &mut projection_scratch,
+                true,
+                snapshot.cache_budget(),
             );
+            plan.pin_records(&mut wal_snapshot, &mut slab_snapshot, &self.block_store, shard_id, key, &fields, keys.len());
             crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
                 shard.bucket_recency.insert(routing_bucket, recency_now);
             });
-            snapshot.push(index, Ok(values), &mut visit);
+            snapshot.push(index, routing_bucket, Ok(plan));
         }
         drop(shards);
         drop(admission);
-        snapshot.flush(&mut visit);
+        #[cfg(test)]
+        if let Some(after) = AFTER_PROJECTED_READ_PLAN.with(|slot| slot.borrow_mut().take()) {
+            after();
+        }
+        for (index, bucket, result) in snapshot.into_rows() {
+            visit(index, result.map(|plan| plan.load(&self.cache, &self.block_store, shard_id,
+                bucket, &keys[index], &fields, &projection_plan, &mut projection_scratch)));
+        }
+        drop(wal_snapshot);
+        drop(slab_snapshot);
         Ok(())
     }
 

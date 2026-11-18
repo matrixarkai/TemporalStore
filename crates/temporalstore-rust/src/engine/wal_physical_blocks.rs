@@ -165,13 +165,25 @@ pub(super) fn lookup(
     object: u64,
     address: crate::engine::LiveBlockKey,
 ) -> Option<Option<Registration>> {
+    lookup_retaining(blocks, shard, object, address, |_| {})
+}
+
+pub(super) fn lookup_retaining(
+    blocks: &crate::block_store::BlockStore,
+    shard: ShardId,
+    object: u64,
+    address: crate::engine::LiveBlockKey,
+    mut retain: impl FnMut(&Registration),
+) -> Option<Option<Registration>> {
     let table = table().lock().ok()?;
     let pages = table
         .get(&blocks.store_id())?
         .get(&shard)?
         .objects
         .get(&object)?;
-    Some(pages.get(&address).cloned())
+    let location = pages.get(&address).cloned();
+    if let Some(location) = &location { retain(location); }
+    Some(location)
 }
 
 pub(super) fn locations(

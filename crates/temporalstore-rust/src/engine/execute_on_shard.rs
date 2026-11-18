@@ -681,6 +681,10 @@ pub(super) fn execute_hash_multi_get(
     }
 }
 
+#[path = "prepared_hash_reads.rs"]
+mod prepared_hash_reads;
+pub(super) use prepared_hash_reads::{PreparedHashBatch, PreparedHashRead};
+
 pub(super) fn execute_hash_multi_get_projected(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -692,159 +696,9 @@ pub(super) fn execute_hash_multi_get_projected(
     projection_plan: &container_blocks::Utf8ProjectionPlan<'_>,
     projection_scratch: &mut container_blocks::Utf8ProjectionScratch,
 ) -> ProjectedHashValues {
-    if let [field] = fields {
-        if let Some(bytes) = shard.bucket_index.hashes.cached_timestamp_bytes(key, field) {
-            #[cfg(test)]
-            PROJECTED_FIELD_CACHE_HITS.with(|count| count.set(count.get().saturating_add(1)));
-            return ProjectedHashValues::Owned(vec![Some(bytes.to_vec())]);
-        }
-    }
-    let Some(hash_fields) = shard.bucket_index.hashes.get(key) else {
-        return ProjectedHashValues::Missing(fields.len());
-    };
-    // Point reads and conditional writes share this invalidated-under-lock field cache.
-    // An indexed field must still exist; negative, old or malformed cache entries do
-    // not replace the authoritative packed-row lookup.
-    if let [field] = fields {
-        if hash_fields.get(field).is_some() {
-            let cached = crate::alloc_probe::in_class(
-                crate::alloc_probe::AllocClass::CacheRead,
-                || cache.get_shared(&CacheKey::hash(shard_id, key, field)),
-            );
-            if let Ok(Some(frame)) = cached {
-                if let Some(Some(value)) =
-                    super::command_validation::decode_borrowed_cached_bytes(&frame)
-                {
-                    let range = if value.is_empty() {
-                        Some(0..0)
-                    } else {
-                        (value.as_ptr() as usize)
-                            .checked_sub(frame.as_ptr() as usize)
-                            .and_then(|start| {
-                                start.checked_add(value.len())
-                                    .filter(|end| *end <= frame.len())
-                                    .map(|end| start..end)
-                            })
-                    };
-                    if let Some(range) = range {
-                        #[cfg(test)]
-                        PROJECTED_FIELD_CACHE_HITS.with(|count| {
-                            count.set(count.get().saturating_add(1));
-                        });
-                        return ProjectedHashValues::Shared {
-                            frame,
-                            ranges: vec![Some(range)],
-                        };
-                    }
-                }
-            }
-        }
-    }
-    // A packed row gives every present field the same address. Detect that common case
-    // without allocating a per-command address map, fetch its frame once, and project all
-    // requested fields from the retained bytes. Distinct legacy/per-field addresses keep
-    // the established independent-read path. Both collections are sorted by field name, so
-    // merge them once and retain presence in reusable scratch instead of binary-searching the
-    // field map twice per requested slot.
-    let mut shared: Option<(&ElementEntry, &str)> = None;
-    let mut distinct_addresses = false;
-    projection_scratch.reset_index_presence(fields.len());
-    let mut stored = hash_fields.entries().peekable();
-    for &index in projection_plan.positions_by_name() {
-        let field = fields[index].as_str();
-        while stored.peek().is_some_and(|(name, _)| &name[..] < field) {
-            stored.next();
-        }
-        let Some(&(name, address)) = stored.peek() else {
-            break;
-        };
-        if &name[..] != field {
-            continue;
-        }
-        projection_scratch.mark_present_in_index(index);
-        match shared {
-            None => shared = Some((address, field)),
-            Some((held, _)) if held == address => {}
-            Some(_) => {
-                distinct_addresses = true;
-                break;
-            }
-        }
-    }
-    if !distinct_addresses {
-        if let Some((address, first_field)) = shared {
-            #[cfg(test)]
-            PROJECTED_FRAME_FETCHES.with(|count| count.set(count.get().saturating_add(1)));
-            let frame = read_block_frame_shared(
-                cache,
-                block_store,
-                shard_id,
-                address,
-                BlockIdentity::of(shard_id, "hash", key, Some(first_field)),
-                Some(routing_bucket),
-            );
-            let Some(frame) = frame else {
-                return ProjectedHashValues::Missing(fields.len());
-            };
-            match container_blocks::project_utf8_container_element_ranges_with_plan(
-                frame.as_ref(),
-                projection_plan,
-                projection_scratch,
-            ) {
-                container_blocks::Utf8ContainerRangeProjection::Values(mut ranges) => {
-                    for (index, range) in ranges.iter_mut().enumerate() {
-                        if !projection_scratch.is_present_in_index(index) {
-                            *range = None;
-                        }
-                    }
-                    ProjectedHashValues::Shared { frame, ranges }
-                }
-                container_blocks::Utf8ContainerRangeProjection::Corrupt(_) => {
-                    note_corrupt_container_block();
-                    ProjectedHashValues::Missing(fields.len())
-                }
-                container_blocks::Utf8ContainerRangeProjection::NotFramed
-                | container_blocks::Utf8ContainerRangeProjection::OtherSpelling => {
-                    ProjectedHashValues::Owned(
-                        fields
-                            .iter()
-                            .enumerate()
-                            .map(|(index, field)| {
-                                projection_scratch
-                                    .is_present_in_index(index)
-                                    .then(|| select_container_value(frame.as_ref(), field))
-                                    .flatten()
-                            })
-                            .collect(),
-                    )
-                }
-            }
-        } else {
-            ProjectedHashValues::Missing(fields.len())
-        }
-    } else {
-        ProjectedHashValues::Owned(
-            fields
-                .iter()
-                .map(|field| {
-                    hash_fields.get(field).and_then(|address| {
-                        #[cfg(test)]
-                        PROJECTED_FRAME_FETCHES.with(|count| {
-                            count.set(count.get().saturating_add(1));
-                        });
-                        read_block_bytes(
-                            cache,
-                            block_store,
-                            shard_id,
-                            address,
-                            BlockIdentity::of(shard_id, "hash", key, Some(field.as_str())),
-                            Some(routing_bucket),
-                        )
-                    })
-                })
-                .collect(),
-        )
-    }
+    PreparedHashRead::prepare(cache, shard_id, shard, key, fields, projection_plan,
+        projection_scratch, false, usize::MAX)
+        .load(cache, block_store, shard_id, routing_bucket, key, fields, projection_plan, projection_scratch)
 }
 
 fn deduplicate_hash_entries(mut entries: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
