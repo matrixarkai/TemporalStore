@@ -2153,7 +2153,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
             confidence: 1.0,
             importance: context_importance(&request.body),
             text: request.body.clone(),
-            source_ref: request.source_id.clone(),
+            source_ref: String::new(),
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
             vector: Vec::new(),

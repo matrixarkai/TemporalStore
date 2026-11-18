@@ -3379,7 +3379,11 @@ fn resource_ingest_uses_live_embeddings_and_summary_retrieval() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = thread::spawn(move || {
-        for expected_path in ["/v1/chat/completions", "/v1/embeddings", "/v1/embeddings"] {
+        for expected_path in [
+            "/v1/chat/completions",
+            "/v1/embeddings",
+            "/v1/embeddings",
+        ] {
             let (mut stream, _) = listener.accept().unwrap();
             let mut buffer = Vec::new();
             let mut chunk = [0u8; 4096];
@@ -3498,8 +3502,23 @@ fn resource_ingest_uses_live_embeddings_and_summary_retrieval() {
         vec!["resource-live".to_string()]
     );
     assert_eq!(report.embedding_evidence.vector_dimensions, vec![4]);
-    let traversal = &report
+    assert!(report
         .retrieval
+        .query_understanding_debug
+        .tree_traversal_summary
+        .query_embedding_provider
+        .is_empty());
+    assert!(report
+        .retrieval
+        .query_understanding_debug
+        .tree_traversal_summary
+        .summary_embeddings
+        .is_empty());
+    let mut debug_request = report.ingest.retrieve_request.clone();
+    debug_request.include_debug = true;
+    let debug_report = retrieve_context(&engine, debug_request);
+    assert!(debug_report.status.ok, "{:?}", debug_report.status);
+    let traversal = &debug_report
         .query_understanding_debug
         .tree_traversal_summary;
     assert_eq!(traversal.query_embedding_provider, "resource-live");
@@ -5574,13 +5593,15 @@ fn the_node_copy_ranks_exactly_as_the_summary_lookup_does() {
         "who rotates the storage credentials",
         "block cache eviction",
     ] {
+        // A finite horizon exercises the stored copy/lookup paths, not the
+        // current-state cache shortcut. All fixture writes precede this horizon.
         let copied = retrieve_context(
             &with_copy,
-            scoring_request(TENANT, &copied_nodes, query, u64::MAX),
+            scoring_request(TENANT, &copied_nodes, query, 2_000),
         );
         let looked_up = retrieve_context(
             &without_copy,
-            scoring_request(TENANT, &looked_up_nodes, query, u64::MAX),
+            scoring_request(TENANT, &looked_up_nodes, query, 2_000),
         );
         assert!(copied.status.ok && looked_up.status.ok);
         // Guard against the comparison passing for the wrong reason: if the second store were

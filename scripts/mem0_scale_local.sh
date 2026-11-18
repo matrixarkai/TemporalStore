@@ -41,7 +41,12 @@ if [[ -n $bin_dir ]]; then bin_dir=$(realpath -e -- "$bin_dir"); fi
 [[ $port_base =~ ^[0-9]+$ ]] && ((port_base >= 1024 && port_base <= 65533)) || {
   echo 'Port base must be between 1024 and 65533' >&2; exit 2;
 }
-for tool in cargo curl flock ss sha256sum; do command -v "$tool" >/dev/null; done
+for tool in curl flock ss sha256sum; do
+  command -v "$tool" >/dev/null || { echo "Missing required tool: $tool" >&2; exit 2; }
+done
+if (( ! skip_build )); then
+  command -v cargo >/dev/null || { echo 'Missing required tool: cargo' >&2; exit 2; }
+fi
 mkdir -p -- "$work_dir"
 work_dir=$(realpath -- "$work_dir")
 exec 9>"$work_dir/runner.lock"
