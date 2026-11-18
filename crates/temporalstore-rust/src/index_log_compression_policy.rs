@@ -163,7 +163,7 @@ mod tests {
                         .append_delta(
                             1,
                             Vec::new(),
-                            vec![small.clone()],
+                            vec![small.clone().into()],
                             Some(1),
                             None,
                             false,
@@ -174,7 +174,7 @@ mod tests {
                         .append_delta(
                             1,
                             Vec::new(),
-                            vec![large.clone()],
+                            vec![large.clone().into()],
                             Some(2),
                             None,
                             false,
@@ -195,7 +195,7 @@ mod tests {
                         .append_delta(
                             1,
                             Vec::new(),
-                            vec![serde_json::json!({"key":"next"})],
+                            vec![serde_json::json!({"key":"next"}).into()],
                             Some(3),
                             None,
                             false,
