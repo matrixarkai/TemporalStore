@@ -71,6 +71,11 @@ fn log_resident_values_stay_bounded_when_writes_outrun_the_per_round_cap() {
             runtime.inner.engine.write_ahead_log_store().block_retention_floor(1),
         );
         resident_after.push(resident);
+        // The invariant holds at the end of EVERY round, not only the last.
+        assert!(
+            resident <= CAP,
+            "round {round}: {resident} log-resident values after the round, more than the cap {CAP};              history {resident_after:?}"
+        );
     }
     // One round's writes plus one round's cap is the most a bounded design may hold at a round's end.
     let bound = PER_ROUND + CAP;

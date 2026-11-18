@@ -465,3 +465,76 @@ fn the_shipped_default_is_off_until_a_sustained_test_shows_the_log_bounded() {
          log-resident blocks per round, so a faster write rate pins the log floor without bound"
     );
 }
+
+/// What a round leaves resident, for any resident count. The old rule left `resident - cap`, which
+/// grows without bound when more than `cap` arrive per round.
+#[test]
+fn a_round_leaves_at_most_the_cap_resident_for_any_resident_count() {
+    use crate::engine::lifecycle::resident_keep_after_round as keep;
+    for cap in [1usize, 20, 200] {
+        for resident in [0usize, 1, cap - 1, cap, cap + 1, 2 * cap, 10 * cap, 1_000_000] {
+            assert!(keep(resident, cap) <= cap, "resident {resident} cap {cap}");
+            // It never keeps more than there is, and an idle shard (resident <= cap) drains fully.
+            assert!(keep(resident, cap) <= resident);
+            if resident <= cap {
+                assert_eq!(keep(resident, cap), 0, "resident {resident} cap {cap}");
+            }
+        }
+    }
+    // The old rule, for contrast: 4,000 resident with a cap of 20 kept 3,980.
+    assert_eq!(keep(4_000, 20), 20);
+    // No cap means move everything.
+    assert_eq!(keep(4_000, 0), 0);
+}
+
+/// A round at twenty times the cap in inflow brings the resident count back to the cap, and an
+/// exhausted time budget carries the rest to the next round without stalling progress: every
+/// budgeted round still moves at least `cap`, every key stays readable between rounds, and the
+/// count is back at the cap within ceil(backlog / cap) rounds. Planted fault: the old rule
+/// (`resident - cap` kept) leaves `resident - 20` and the count never returns.
+#[test]
+fn an_exhausted_round_budget_carries_the_rest_and_every_key_stays_readable() {
+    const CAP: usize = 20;
+    const KEYS: usize = CAP * 20;
+    let _on = value_once_in_test(true);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine.load_shard(SHARD);
+    for index in 0..KEYS {
+        set(&engine, &format!("k{index:04}"), &value_for(index));
+    }
+    assert!(engine.wal_resident_block_count(SHARD) >= KEYS);
+    let mut rounds = 0usize;
+    // A zero budget: the deadline has passed before the first block, so only the `cap` minimum moves.
+    while engine.wal_resident_block_count(SHARD) > CAP {
+        let before = engine.wal_resident_block_count(SHARD);
+        let moved = engine.materialize_resident_blocks_for_round_within(
+            SHARD,
+            CAP,
+            std::time::Duration::ZERO,
+        );
+        let after = engine.wal_resident_block_count(SHARD);
+        assert!(moved >= CAP, "round {rounds}: moved {moved}, a round must make at least cap progress");
+        assert_eq!(before - after, moved, "round {rounds}: the registry must agree with what moved");
+        rounds += 1;
+        engine.cache().invalidate_shard(SHARD).unwrap();
+        for index in 0..KEYS {
+            assert_eq!(
+                get(&engine, &format!("k{index:04}")),
+                Some(value_for(index)),
+                "round {rounds}: key {index} unreadable between rounds"
+            );
+        }
+        assert!(rounds <= KEYS / CAP + 1, "did not converge: {rounds} rounds, resident {after}");
+    }
+    assert!(engine.wal_resident_block_count(SHARD) <= CAP);
+    // And with a real budget the whole backlog goes in one round.
+    let engine2_dir = tempfile::tempdir().unwrap();
+    let engine2 = open(engine2_dir.path());
+    engine2.load_shard(SHARD);
+    for index in 0..KEYS {
+        set(&engine2, &format!("k{index:04}"), &value_for(index));
+    }
+    engine2.materialize_resident_blocks_for_round(SHARD, CAP);
+    assert!(engine2.wal_resident_block_count(SHARD) <= CAP);
+}
