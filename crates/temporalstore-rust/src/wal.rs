@@ -1232,6 +1232,7 @@ pub(crate) struct WriteAheadLogReadLease {
 #[derive(Debug, Default)]
 struct ReadRetentions {
     slots: Vec<Option<(ShardId, u64)>>,
+    registrations: registration_records::RegistrationRecords,
 }
 
 impl WriteAheadLogReadLease {
@@ -1273,6 +1274,9 @@ fn retained_block_floor(inner: &WriteAheadLogInner, readers: &ReadRetentions, sh
 #[cfg(test)]
 #[path = "wal/read_retention_tests.rs"]
 mod read_retention_tests;
+
+#[path = "wal/registration_records.rs"]
+mod registration_records;
 
 impl WriteAheadLogIdentity {
     pub(crate) fn same_log(&self, store: &LocalWriteAheadLogStore) -> bool {

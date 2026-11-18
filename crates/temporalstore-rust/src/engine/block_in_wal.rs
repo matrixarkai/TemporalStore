@@ -210,6 +210,15 @@ pub(super) fn take_staged() -> Vec<StagedBlock> {
 // The final count is zero when an index-only registration has not read its carrying record.
 type Registration = std::sync::Arc<(LocalWriteAheadLogStore, u64, u64, usize, Option<usize>)>;
 
+fn track_location(owner: usize, shard: ShardId, location: &Registration, previous: Option<&Registration>) {
+    location.0.replace_block_location(owner, shard, location.2, location.3,
+        previous.map(|old| (&old.0, old.2, old.3)));
+}
+
+fn untrack_location(owner: usize, shard: ShardId, location: &Registration) {
+    location.0.remove_block_location(owner, shard, location.2, location.3);
+}
+
 fn packed_objects(outcomes: &[crate::wal::WalOutcomeItem]) -> std::collections::HashSet<u64> {
     inspect_registration_outcomes(outcomes, true)
 }
@@ -399,6 +408,8 @@ pub(super) fn wal_resident_key(object_id: u64, element_name: Option<&str>) -> u6
 // Hash randomization is process-local; persisted block identities keep their stable hash.
 #[derive(Default)]
 struct ShardRegistrations {
+    owner: usize,
+    shard: ShardId,
     entries: HashMap<BlockKey, Registration, ahash::RandomState>,
     folded_counts: Option<HashMap<u64, usize, ahash::RandomState>>,
 }
@@ -410,6 +421,9 @@ impl std::ops::Deref for ShardRegistrations {
 }
 
 impl ShardRegistrations {
+    fn new(owner: usize, shard: ShardId) -> Self {
+        Self { owner, shard, entries: HashMap::default(), folded_counts: None }
+    }
     fn enable_fold_tracking(&mut self) {
         if self.folded_counts.is_none() {
             let mut counts = HashMap::<_, _, ahash::RandomState>::default();
@@ -432,6 +446,7 @@ impl ShardRegistrations {
     }
 
     fn insert(&mut self, key: BlockKey, location: Registration) -> Option<Registration> {
+        track_location(self.owner, self.shard, &location, self.entries.get(&key));
         match self.entries.entry(key) {
             std::collections::hash_map::Entry::Occupied(mut entry) => Some(entry.insert(location)),
             std::collections::hash_map::Entry::Vacant(entry) => {
@@ -447,6 +462,7 @@ impl ShardRegistrations {
 
     fn remove(&mut self, key: &BlockKey) -> Option<Registration> {
         let removed = self.entries.remove(key);
+        if let Some(location) = &removed { untrack_location(self.owner, self.shard, location); }
         if let (Some(_), Some(counts)) = (&removed, self.folded_counts.as_mut()) {
             let folded = wal_resident_key(key.0, key.1.as_deref());
             let count = counts.get_mut(&folded).expect("registered fold exists");
@@ -454,6 +470,12 @@ impl ShardRegistrations {
             if *count == 0 { counts.remove(&folded); }
         }
         removed
+    }
+}
+
+impl Drop for ShardRegistrations {
+    fn drop(&mut self) {
+        for location in self.entries.values() { untrack_location(self.owner, self.shard, location); }
     }
 }
 
@@ -468,7 +490,9 @@ impl RegistrationRegistry {
     }
 
     fn shard_mut(&mut self, owner: usize, shard: ShardId) -> &mut ShardRegistrations {
-        self.stores.entry(owner).or_default().entry(shard).or_default()
+        self.stores.entry(owner).or_default().entry(shard).or_insert_with(|| {
+            ShardRegistrations::new(owner, shard)
+        })
     }
 
     fn entries(&self, owner: usize, shard: ShardId)
@@ -794,13 +818,7 @@ pub(super) fn min_registered_sequence(
     shard_id: ShardId,
     store: &LocalWriteAheadLogStore,
 ) -> Option<u64> {
-    let map = registry().lock().ok()?;
-    let logical = map.entries(block_store.store_id(), shard_id)
-        .filter(|(_, location)| location.0.same_log(store))
-        .map(|(_, location)| location.2)
-        .min();
-    logical.into_iter().chain(physical::locations(block_store, shard_id).into_iter()
-        .filter(|location| location.0.same_log(store)).map(|location| location.2)).min()
+    store.registered_block_floor(block_store.store_id(), shard_id)
 }
 
 /// A necessary relocation-pressure signal, not permission to reclaim any record.
@@ -811,23 +829,7 @@ pub(super) fn registered_record_span_has_holes(
     shard_id: ShardId,
     store: &LocalWriteAheadLogStore,
 ) -> bool {
-    let Ok(map) = registry().lock() else { return false };
-    let mut records = std::collections::BTreeMap::<u64, (usize, usize)>::new();
-    let physical = physical::locations(block_store, shard_id);
-    for location in map.entries(block_store.store_id(), shard_id).map(|(_, location)| location).chain(physical.iter()) {
-        let (log, _, sequence, expected, _) = &**location;
-        if !log.same_log(store) {
-            continue;
-        }
-        let record = records.entry(*sequence).or_insert((0, *expected));
-        if record.1 != *expected { return true; }
-        record.0 += 1;
-    }
-    if records.values().any(|(live, expected)| *expected == 0 || live != expected) {
-        return true;
-    }
-    let (Some(first), Some(last)) = (records.keys().next(), records.keys().next_back()) else { return false };
-    (records.len() as u64) < last.saturating_sub(*first).saturating_add(1)
+    store.registered_block_span_has_holes(block_store.store_id(), shard_id)
 }
 
 /// How many registrations this shard is holding.

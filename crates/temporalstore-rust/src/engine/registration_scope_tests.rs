@@ -73,13 +73,13 @@ fn count_and_retention_queries_do_not_visit_other_namespaces() {
     }
     assert_eq!(visits(), 0, "counts must not walk registered blocks");
     assert_eq!(min_registered_sequence(&blocks, 1, &wal), Some(1));
-    assert_eq!(visits(), 3);
+    assert_eq!(visits(), 0);
     assert!(registered_record_span_has_holes(&blocks, 1, &wal));
-    assert_eq!(visits(), 6, "unknown cardinality still inspects only the requested shard");
+    assert_eq!(visits(), 0, "retention queries must not walk registered blocks");
     assert_eq!(oldest_registered_objects(&blocks, 1), vec![
         (1, (1, None)), (2, (2, None)), (3, (3, None)),
     ]);
-    assert_eq!(visits(), 9);
+    assert_eq!(visits(), 3);
 }
 
 #[test]
@@ -99,13 +99,13 @@ fn retention_visits_only_local_records_and_keeps_log_identity_checks() {
     }
     reset_visits();
     assert_eq!(min_registered_sequence(&blocks, 1, &wal), Some(5));
-    assert_eq!(visits(), 4);
+    assert_eq!(visits(), 0);
     assert_eq!(min_registered_sequence(&blocks, 1, &other_wal), Some(1));
     assert!(!registered_record_span_has_holes(&blocks, 1, &wal));
     assert_eq!(oldest_registered_objects(&blocks, 1), vec![
         (1, (99, None)), (5, (5, None)), (6, (6, None)), (7, (7, None)),
     ]);
-    assert_eq!(visits(), 16);
+    assert_eq!(visits(), 4);
     deregister(&blocks, 1, 6, None);
     assert!(registered_record_span_has_holes(&blocks, 1, &wal));
     assert!(!registered_record_span_has_holes(&blocks, 2, &wal));

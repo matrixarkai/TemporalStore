@@ -8,11 +8,27 @@ type Addresses = HashMap<crate::engine::LiveBlockKey, Registration, ahash::Rando
 type Objects = HashMap<u64, Addresses, ahash::RandomState>;
 #[derive(Default)]
 struct PhysicalShard {
+    owner: usize,
+    shard: ShardId,
     objects: Objects,
     len: usize,
     folded_counts: Option<HashMap<u64, usize, ahash::RandomState>>,
 }
+
+impl Drop for PhysicalShard {
+    fn drop(&mut self) {
+        for location in self.objects.values().flat_map(|pages| pages.values()) {
+            untrack_location(self.owner, self.shard, location);
+        }
+    }
+}
 type Stores = HashMap<usize, HashMap<ShardId, PhysicalShard>>;
+
+impl PhysicalShard {
+    fn new(owner: usize, shard: ShardId) -> Self {
+        Self { owner, shard, objects: HashMap::default(), len: 0, folded_counts: None }
+    }
+}
 
 fn table() -> &'static Mutex<Stores> {
     static TABLE: OnceLock<Mutex<Stores>> = OnceLock::new();
@@ -24,7 +40,9 @@ pub(super) fn enable_fold_tracking(blocks: &crate::block_store::BlockStore, shar
     let mut logical = registry().lock().expect("logical WAL locator lock poisoned");
     let mut physical = table().lock().expect("physical WAL locator lock poisoned");
     logical.shard_mut(blocks.store_id(), shard).enable_fold_tracking();
-    let state = physical.entry(blocks.store_id()).or_default().entry(shard).or_default();
+    let state = physical.entry(blocks.store_id()).or_default().entry(shard).or_insert_with(|| {
+        PhysicalShard::new(blocks.store_id(), shard)
+    });
     if state.folded_counts.is_none() {
         let mut counts = HashMap::<_, _, ahash::RandomState>::default();
         for (object, pages) in &state.objects {
@@ -139,8 +157,10 @@ pub(super) fn install_many(
         .entry(blocks.store_id())
         .or_default()
         .entry(shard)
-        .or_default();
+        .or_insert_with(|| PhysicalShard::new(blocks.store_id(), shard));
     for (key, location) in locations {
+        track_location(blocks.store_id(), shard, &location,
+            state.objects.get(&key.0).and_then(|pages| pages.get(&key.1)));
         let folded_key = folded(key);
         if state
             .objects
@@ -468,6 +488,7 @@ pub(super) fn prune_hash_frames(
             .collect();
         for (address, location) in dead {
             pages.remove(&address);
+            untrack_location(blocks.store_id(), shard, &location);
             physical.len -= 1;
             let key = folded((object, address));
             let count = physical
@@ -529,7 +550,8 @@ pub(super) fn retire(
         .get(address)
         .is_some_and(|held| Arc::ptr_eq(held, &retirement.location))
     {
-        pages.remove(address);
+        let removed = pages.remove(address).expect("retired physical location exists");
+        untrack_location(blocks.store_id(), shard, &removed);
         state.len -= 1;
         if let Some(counts) = state.folded_counts.as_mut() {
             let folded = folded((*object, *address));
@@ -575,6 +597,10 @@ mod retention_work_tests;
 #[cfg(test)]
 #[path = "wal_location_batch_tests.rs"]
 mod location_batch_tests;
+
+#[cfg(test)]
+#[path = "wal_registration_summary_tests.rs"]
+mod registration_summary_tests;
 
 #[cfg(test)]
 #[path = "wal_hash_frame_tests.rs"]
