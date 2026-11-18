@@ -3,6 +3,9 @@
 
 use super::*;
 
+#[path = "record_delete_projection.rs"]
+mod projection;
+
 #[test]
 fn record_delete_invalidates_each_model_without_evicting_siblings() {
     for batched in [false, true] {

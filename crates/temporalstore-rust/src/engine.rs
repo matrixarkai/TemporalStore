@@ -6796,6 +6796,8 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed
 }
 
+const MAX_DELETE_IDENTITY_PROJECTION_REFS: usize = 256;
+
 fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     // NO SHARD, NOTHING TO MARK. The ids this removes are derived from (shard, kind, key), and a
     // state with no shard id has no bucket index built under one either.
@@ -6814,20 +6816,40 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         crate::engine::storage_bucket_internals::settle_released_bucket_object_delete(shard, key);
     let mut removed = false;
     let target_buckets = bucket_index_target_buckets_for_object_key(shard, key);
+    let object_ref_count = storage_model_kinds()
+        .iter()
+        .filter_map(|kind| shard.bucket_index.object_block_refs(kind, key))
+        .fold(0usize, |count, refs| count.saturating_add(refs.len()));
+    let object_keys = (object_ref_count <= MAX_DELETE_IDENTITY_PROJECTION_REFS).then(|| {
+        crate::engine::state::BlockKeysByPosition::from_parts_for_keys(
+            &shard.bucket_index.objects,
+            &shard.bucket_index.object_block_lookup,
+            [key],
+        )
+    });
     for routing_bucket in target_buckets {
         let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
         let mut deleted_object_ids = BTreeSet::new();
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
-        let names = crate::engine::state::block_identities_in(
-            &bucket,
-            &crate::engine::state::BlockKeysByPosition::from_parts_for_bucket(
-                &shard.bucket_index.objects,
-                &shard.bucket_index.object_block_lookup,
-                routing_bucket,
-            ),
-        );
+        // Repair still needs every surviving identity. Use the small projection only
+        // when it names every block; mixed or incomplete buckets keep the full path.
+        let names = object_keys
+            .as_ref()
+            .filter(|_| bucket.block_index.len() <= MAX_DELETE_IDENTITY_PROJECTION_REFS)
+            .map(|keys| crate::engine::state::block_identities_in(&bucket, keys))
+            .filter(|names| names.len() == bucket.block_index.len())
+            .unwrap_or_else(|| {
+                crate::engine::state::block_identities_in(
+                    &bucket,
+                    &crate::engine::state::BlockKeysByPosition::from_parts_for_bucket(
+                        &shard.bucket_index.objects,
+                        &shard.bucket_index.object_block_lookup,
+                        routing_bucket,
+                    ),
+                )
+            });
         bucket.block_index.retain(
             &mut shard.bucket_index.block_slab_live,
             crate::engine::state::StaleCause::Removed,
