@@ -2443,6 +2443,20 @@ fn matrixobject_networked_target() -> Option<(MatrixObjectMode, String)> {
     }
 }
 
+/// The networked store for `mode`. Direct mode runs the gateway's request handling in this
+/// process against the metadata group named by `TS_MATRIXOBJECT_META`, and needs a binary built
+/// with the `matrixobject` feature.
+fn connect_networked_store(
+    mode: MatrixObjectMode,
+    target: &str,
+) -> Result<NetworkedMatrixObjectStore, String> {
+    #[cfg(feature = "matrixobject")]
+    if mode == MatrixObjectMode::Direct {
+        return temporalstore_rust::matrixobject_direct::DirectConfig::from_env(target)?.connect();
+    }
+    NetworkedMatrixObjectStore::connect(mode, target).map_err(|error| error.to_string())
+}
+
 /// Durable shared-storage sink backed by a NETWORKED matrixobject WAL writer.
 /// Mirrors every accepted write to the networked object store in sync mode (the
 /// local WAL+block are already durable before this runs, so this rides after the
@@ -2505,7 +2519,7 @@ fn wire_matrixobject_networked_durability(
     local_state_present: bool,
     auto_load: bool,
 ) -> Option<MatrixObjectNetworkedDurability> {
-    let store = match NetworkedMatrixObjectStore::connect(mode, uri) {
+    let store = match connect_networked_store(mode, uri) {
         Ok(store) => store,
         Err(err) => {
             error!(%err, uri, ?mode, "cannot reach the networked matrixobject store; its durability is disabled");

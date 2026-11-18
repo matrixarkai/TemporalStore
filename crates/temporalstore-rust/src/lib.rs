@@ -58,6 +58,8 @@ pub mod ingestion;
 pub mod llm_context;
 pub(crate) mod log_framing;
 #[cfg(feature = "matrixobject")]
+pub mod matrixobject_direct;
+#[cfg(feature = "matrixobject")]
 pub mod matrixobject_store;
 pub mod meta;
 pub mod partition_id;
