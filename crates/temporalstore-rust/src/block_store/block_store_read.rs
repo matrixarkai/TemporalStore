@@ -10,9 +10,12 @@ impl BlockStore {
         // On-demand lazy recovery: if this slab lives only in shared storage after a
         // metadata-only restore, fetch + cache it before serving the read.
         self.ensure_slab_present(address.block_slab_id())?;
+        // NO STORE LOCK ANYWHERE IN A READ. The root is fixed when the store opens and the
+        // counters are atomics, so the file open, the positioned read and the decode all run
+        // without the mutex that writers, rolls and collection hold -- a read no longer waits
+        // behind them, and they no longer wait behind a read's disk and decompression time.
         let mut tally = BlockStoreReadTally::start();
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let read = LocalSlabBackend::new(&inner.root).read_range(
+        let read = LocalSlabBackend::new(&self.read_view.root).read_range(
             address.block_slab_id(),
             address.offset(),
             address.length(),
@@ -21,7 +24,7 @@ impl BlockStore {
         // Charged before the decode, not after. A read that reached the disk cost the disk
         // whether or not the record on it decodes, and the old order left a failed decode
         // looking like a read that never happened.
-        let bytes = read.charge(&mut inner.stats);
+        let bytes = read.charge(&self.read_view.counters);
         let decoded = decode_block_record(&bytes, address)?;
         // `decode_block_record` just verified this payload against the CRC32C stored in the
         // record envelope, and cross-checked the record header's block id against this address.
@@ -32,10 +35,10 @@ impl BlockStore {
         // the stored-length check, not the CRC, that stand against an entry pointing at the wrong
         // block.
         let bytes = decoded.payload;
-        inner.stats.logical_bytes_read += decoded.logical_len as u64;
-        if decoded.compression == BlockRecordCompression::Zstd {
-            inner.stats.compressed_records_read += 1;
-        }
+        self.read_view.counters.add_logical(
+            decoded.logical_len as u64,
+            u64::from(decoded.compression == BlockRecordCompression::Zstd),
+        );
         Ok(bytes)
     }
 
@@ -49,14 +52,13 @@ impl BlockStore {
         // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
         self.ensure_slab_present(block_slab_id)?;
         let mut tally = BlockStoreReadTally::start();
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let read = LocalSlabBackend::new(&inner.root).read_range_at_most(
+        let read = LocalSlabBackend::new(&self.read_view.root).read_range_at_most(
             block_slab_id,
             offset,
             size,
             &mut tally,
         )?;
-        Ok(read.charge(&mut inner.stats))
+        Ok(read.charge(&self.read_view.counters))
     }
 
     pub fn read_logical_range(
@@ -69,16 +71,17 @@ impl BlockStore {
         // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
         self.ensure_slab_present(block_slab_id)?;
         let mut tally = BlockStoreReadTally::start();
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
         // `bytes_read` is charged the WHOLE slab, which is what this read pulls off disk to
         // answer a logical range. It used to be charged the length of the slice handed back --
         // the same number `logical_bytes_read` gets, which is the field that means that.
-        let read = LocalSlabBackend::new(&inner.root).read_all(block_slab_id, &mut tally)?;
-        let slab = read.charge(&mut inner.stats);
+        let read =
+            LocalSlabBackend::new(&self.read_view.root).read_all(block_slab_id, &mut tally)?;
+        let slab = read.charge(&self.read_view.counters);
         let range = logical_range_from_slab(&slab, block_slab_id, offset, size)?;
         let bytes = range.bytes;
-        inner.stats.logical_bytes_read += bytes.len() as u64;
-        inner.stats.compressed_records_read += range.compressed_records_read;
+        self.read_view
+            .counters
+            .add_logical(bytes.len() as u64, range.compressed_records_read);
         Ok(bytes)
     }
 
@@ -90,20 +93,14 @@ impl BlockStore {
     /// entry points beside it all charged. Going through the backend makes that impossible to
     /// repeat: `CountedSlabRead` does not give up its bytes without a `&mut BlockStoreStats`.
     ///
-    /// The store lock is still NOT held across the file read -- the root is cloned for the read
-    /// and the lock is taken again only to charge -- because a whole-slab read under the lock
-    /// would block every writer for the length of a slab.
+    /// No store lock is taken for any of it, because a whole-slab read under the lock would block
+    /// every writer for the length of a slab.
     pub fn read_slab(&self, block_slab_id: u64) -> Result<Vec<u8>, BlockStoreError> {
         self.ensure_slab_present(block_slab_id)?;
-        let root = self
-            .inner
-            .lock()
-            .expect("block store lock poisoned")
-            .root
-            .clone();
         let mut tally = BlockStoreReadTally::start();
-        let read = LocalSlabBackend::new(&root).read_all(block_slab_id, &mut tally)?;
-        let bytes = read.charge(&mut self.inner.lock().expect("block store lock poisoned").stats);
+        let read =
+            LocalSlabBackend::new(&self.read_view.root).read_all(block_slab_id, &mut tally)?;
+        let bytes = read.charge(&self.read_view.counters);
         #[cfg(test)]
         crate::snapshot_probe::note_slab_read(bytes.len() as u64);
         Ok(bytes)
