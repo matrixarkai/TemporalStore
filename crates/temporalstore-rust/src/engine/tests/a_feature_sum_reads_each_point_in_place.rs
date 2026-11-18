@@ -416,7 +416,7 @@ fn page_keys_equal_the_constructors_keys() {
 #[cfg(feature = "alloc-probe")]
 mod probe {
     use super::*;
-    use crate::alloc_probe::Probe;
+    use crate::alloc_probe::{owned_buffer_control_allocations, Probe};
 
     const OPS: usize = 20;
 
@@ -461,8 +461,9 @@ mod probe {
     ///
     /// The slope and not the quotient: the fixed cost of the command (the key, the response, the
     /// window bounds) divides out of a difference, and the claim is about what grows with the
-    /// series. The CONTROL is the range query over the same points, which still builds a point per
-    /// point: it must show a per-point cost, or the probe is blind to this dimension.
+    /// series. Calibrate with two owned buffers per point: range reads also improve over time and
+    /// cannot be required to keep an obsolete allocation cost just to validate the probe. Report
+    /// the current range-query cost separately without making it the sensitivity control.
     #[test]
     #[ignore = "measurement: run with --features alloc-probe --ignored"]
     fn a_feature_sum_does_not_allocate_per_point() {
@@ -472,13 +473,16 @@ mod probe {
         let query_short = per_op(10, query_command);
         let query_long = per_op(100, query_command);
         let query_slope = (query_long - query_short) / 90.0;
+        let control_slope = (owned_buffer_control_allocations(OPS, 100)
+            - owned_buffer_control_allocations(OPS, 10)) / 90.0;
         println!(
             "sum: {sum_short:.1} @10, {sum_long:.1} @100, {sum_slope:.2}/point; \
-             query (control): {query_short:.1} @10, {query_long:.1} @100, {query_slope:.2}/point"
+             query: {query_short:.1} @10, {query_long:.1} @100, {query_slope:.2}/point; \
+             owned-buffer control: {control_slope:.2}/point"
         );
         assert!(
-            query_slope >= 2.0,
-            "the control spent {query_slope:.2} allocations per point, so the probe cannot see \
+            control_slope >= 2.0,
+            "the control spent {control_slope:.2} allocations per point, so the probe cannot see \
              work that grows with the series"
         );
         assert!(
