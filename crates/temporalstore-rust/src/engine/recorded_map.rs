@@ -76,6 +76,9 @@ use super::{ElementMap, LiveBlockKey};
 #[path = "container_ordinal_cache.rs"]
 mod ordinals;
 use ordinals::{OrdinalCache, OrdinalSummary};
+#[path = "container_block_owners.rs"]
+mod owners;
+use owners::{BlockOwners, OwnershipCache};
 
 /// What distinguishes one model kind from another, and nothing else.
 pub(super) trait RecordedKind: Sized + 'static {
@@ -925,12 +928,12 @@ impl<K: RecordedKind> RecordedMap<K> {
     where
         K::Elements: AddressedElementMap,
     {
-        let elements = self.entries.get(object_key)?;
+        let (key, elements) = self.entries.get_key_value(object_key)?;
         let previous = elements.element_address(element)?;
         if super::live_block_key(previous) == super::live_block_key(landing) {
             return None;
         }
-        if elements.any_element_other_than_at(element, previous) {
+        if self.has_other_block_owner(key, elements, element, previous) {
             return None;
         }
         Some(previous.clone())
@@ -944,9 +947,26 @@ impl<K: RecordedKind> RecordedMap<K> {
     where
         K::Elements: AddressedElementMap,
     {
-        let elements = self.entries.get(object_key)?;
+        let (key, elements) = self.entries.get_key_value(object_key)?;
         let previous = elements.element_address(element)?;
-        (!elements.any_element_other_than_at(element, previous)).then(|| previous.clone())
+        (!self.has_other_block_owner(key, elements, element, previous)).then(|| previous.clone())
+    }
+
+    fn has_other_block_owner(
+        &self,
+        key: &ModelKey,
+        elements: &K::Elements,
+        element: &<K::Elements as ElementMap>::Element,
+        previous: &ElementEntry,
+    ) -> bool
+    where
+        K::Elements: AddressedElementMap,
+    {
+        self.ordinals.shared(key, previous, || {
+            let mut owners = BlockOwners::default();
+            elements.visit_addresses(|address| owners.observe(super::live_block_key(address)));
+            owners
+        }).unwrap_or_else(|| elements.any_element_other_than_at(element, previous))
     }
 }
 
@@ -988,9 +1008,8 @@ impl<K: RecordedKind> RecordedMap<K> {
     ) {
         if self.ordinals.contains(object_key) {
             let previous = self.entries.get(object_key)
-                .and_then(|elements| elements.element_address(&element))
-                .and_then(ElementEntry::block_id);
-            self.ordinals.replace(object_key, previous, super::CarriedValue::carried_address(&value).block_id());
+                .and_then(|elements| elements.element_address(&element));
+            self.ordinals.replace(object_key, previous, Some(super::CarriedValue::carried_address(&value)));
         }
         if let Some(elements) = self.entries.get_mut(object_key) {
             elements.insert_element(element, value);
@@ -1034,10 +1053,10 @@ impl<K: RecordedKind> RecordedMap<K> {
             return false;
         };
         let previous = self.ordinals.contains(&object_key)
-            .then(|| elements.element_address(&element).and_then(ElementEntry::block_id))
+            .then(|| elements.element_address(&element).cloned())
             .flatten();
         let removed = elements.remove_element(&element);
-        if removed { self.ordinals.replace(&object_key, previous, None); }
+        if removed { self.ordinals.replace(&object_key, previous.as_ref(), None); }
         if elements.is_empty_map() {
             self.entries.remove(&object_key[..]);
             self.ordinals.invalidate(&object_key);
@@ -1770,6 +1789,10 @@ mod shared_hash_fields_tests;
 #[cfg(test)]
 #[path = "recorded_ordinal_tests.rs"]
 mod recorded_ordinal_tests;
+
+#[cfg(test)]
+#[path = "container_owner_cache_tests.rs"]
+mod container_owner_cache_tests;
 
 #[cfg(test)]
 #[path = "resident_timestamp_hint_tests.rs"]

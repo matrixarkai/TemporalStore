@@ -1895,6 +1895,17 @@ impl TemporalEngine {
         }
     }
 
+    /// The read bound a feature range takes when the request names no count: the shard's configured
+    /// series bound, as the ordinary path reads it.
+    fn feature_read_bound(&self, shard_id: ShardId) -> usize {
+        self.configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .map(|config| config.feature_max_size)
+            .unwrap_or_else(|| Config::default().feature_max_size)
+    }
+
     fn execute_read_only_fast_path(&self, request: &ExecuteRequest) -> Option<ExecuteResponse> {
         let read_command = matches!(
             request.command,
@@ -1905,6 +1916,8 @@ impl TemporalEngine {
                 | Command::HashGet { .. }
                 | Command::HashLen { .. }
                 | Command::HashFieldExists { .. }
+                | Command::FeatureQuery { .. }
+                | Command::FeatureQueryFiltered { .. }
         );
         if !read_command {
             return None;
@@ -2040,6 +2053,70 @@ impl TemporalEngine {
                         ),
                     }
                 }
+                Command::FeatureQuery { key, start_ms, end_ms, count } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    let bound = self.feature_read_bound(request.shard_id);
+                    FastPathRead::FeatureRange {
+                        key: key.as_str(),
+                        window: shard
+                            .features()
+                            .get(key.as_str())
+                            .map(|series| {
+                                series
+                                    .range(timestamp_range_bounds(*start_ms, *end_ms))
+                                    .take(count.unwrap_or(bound))
+                                    .map(|(instant, address)| (instant, address.clone()))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default(),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        filters: None,
+                    }
+                }
+                Command::FeatureQueryFiltered { key, start_ms, end_ms, count, filters } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    let bound = self.feature_read_bound(request.shard_id);
+                    FastPathRead::FeatureRange {
+                        key: key.as_str(),
+                        window: shard
+                            .features()
+                            .get(key.as_str())
+                            .map(|series| {
+                                series
+                                    .range(timestamp_range_bounds(*start_ms, *end_ms))
+                                    .take(count.unwrap_or(bound).min(bound))
+                                    .map(|(instant, address)| (instant, address.clone()))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default(),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        filters: Some(filters.as_slice()),
+                    }
+                }
                 Command::HashLen { key } | Command::HashFieldExists { key, .. } => {
                     if shard
                         .expires_at_ms()
@@ -2162,6 +2239,59 @@ impl TemporalEngine {
                             Some(routing_bucket),
                         )?),
                     },
+                })
+            }
+            FastPathRead::FeatureRange {
+                key,
+                window,
+                routing_bucket,
+                filters,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                // NO RESPONSE-CACHE ENTRY IS READ OR WRITTEN HERE. A reader that fills the cache
+                // after the guard drops could store an answer older than a write that has already
+                // invalidated the key, and nothing in the entry says so. The window is read off
+                // the blocks each time, as the ordinary path does on a miss.
+                let identity = BlockIdentity::of(request.shard_id, "feature", key, None);
+                let mut reader = crate::engine::packed_blocks::FeatureRangeReader::new();
+                let points = window
+                    .iter()
+                    .filter_map(|(instant, address)| {
+                        let instant = *instant;
+                        reader
+                            .with_point(
+                                &self.cache,
+                                &self.block_store,
+                                request.shard_id,
+                                instant,
+                                address,
+                                identity,
+                                Some(routing_bucket),
+                                |value| match filters {
+                                    None => Some(FeaturePoint {
+                                        timestamp_ms: instant,
+                                        value: value.to_vec(),
+                                    }),
+                                    Some(filters) => {
+                                        let row = crate::engine::decode_or_count_sequence_row(
+                                            instant, value,
+                                        )?;
+                                        filters
+                                            .iter()
+                                            .all(|filter| sequence_filter_matches(&row, filter))
+                                            .then(|| FeaturePoint {
+                                                timestamp_ms: instant,
+                                                value: value.to_vec(),
+                                            })
+                                    }
+                                },
+                            )
+                            .flatten()
+                    })
+                    .collect::<Vec<_>>();
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::FeaturePoints { points },
                 })
             }
             FastPathRead::Answer {
@@ -3562,6 +3692,14 @@ enum FastPathRead<'a> {
     },
     /// An integer answered from the index alone, with nothing to read afterwards.
     Answer { value: i64, routing_bucket: u32 },
+    /// The addresses of a feature window, taken under the guard; the points are read after it drops.
+    FeatureRange {
+        key: &'a str,
+        window: Vec<(u64, ElementEntry)>,
+        routing_bucket: u32,
+        /// `Some` for the filtered read, which keeps the points whose row every filter holds for.
+        filters: Option<&'a [crate::types::FeatureFilter]>,
+    },
 }
 
 impl FastPathRead<'_> {
@@ -3599,10 +3737,27 @@ impl FastPathRead<'_> {
                 }
                 Some(guard)
             }
+            Self::FeatureRange { key, window, .. } => {
+                let mut addresses = window.iter().map(|(_, address)| address).filter(|address| {
+                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                });
+                let first = addresses.next()?;
+                let object = stable_block_object_id(shard, "feature", key);
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                guard.pin(blocks, object, None, first);
+                for address in addresses {
+                    guard.pin(blocks, object, None, address);
+                }
+                Some(guard)
+            }
             Self::Hash { .. } | Self::Answer { .. } => None,
         }
     }
 }
+
+#[cfg(test)]
+#[path = "engine/feature_wal_pin_tests.rs"]
+mod feature_wal_pin_tests;
 
 #[cfg(test)]
 thread_local! {

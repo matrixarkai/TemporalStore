@@ -133,6 +133,32 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: Large block reference checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for spec in state::block_refs::tests:::7 large_block_refs_tests:::2 rebuilt_ref_filing_tests:::3 feature_wal_pin_tests:::3; do
+            filter=${spec%:*}
+            expected=${spec##*:}
+            cargo test --locked -p temporalstore-rust --lib --features alloc-probe "$filter" \
+              -- --test-threads=1 2>&1 | tee /tmp/large-block-refs-gate.log
+            grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/large-block-refs-gate.log \
+              || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
+          done
+
+      - name: Container physical ownership checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for spec in recorded_map::owners::tests:::9 container_owner_cache_tests:::7 recorded_map::ordinals::tests:::3 recorded_ordinal_tests:::4 block_owner_query_tests:::3; do
+            filter=${spec%:*}
+            expected=${spec##*:}
+            cargo test --locked -p temporalstore-rust --lib --features alloc-probe "$filter" \
+              -- --test-threads=1 2>&1 | tee /tmp/container-ownership-gate.log
+            grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/container-ownership-gate.log \
+              || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
+          done
+
       - name: Mem0 pre-mutation read checks
         timeout-minutes: 30
         run: |
@@ -247,7 +273,7 @@ jobs:
           set -o pipefail
           cargo test -p temporalstore-rust --lib --features alloc-probe affected_bucket_survivors \
             -- --test-threads=1 --nocapture 2>&1 | tee /tmp/affected-bucket-gate.log
-          grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/affected-bucket-gate.log
+          grep -q 'test result: ok\. 5 passed; 0 failed;' /tmp/affected-bucket-gate.log
 
       - name: Retention and block ownership checks
         timeout-minutes: 30
@@ -451,6 +477,7 @@ jobs:
             engine::tests::a_set_door_asks_one_member_not_the_set::the_door_never_lists_the_set \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_answers_what_the_sorted_listing_answered \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_reads_a_prefix_and_never_lists \
+            engine::tests::set_install_census::every_command_that_installs_a_set_member_reports_a_touched_element \
             shared_store::tests::a_string_increment_and_an_append_are_framed_as_protobuf_and_round_trip \
             engine::tests::part4::what_each_command_recorded_describes_everything_it_changed \
             engine::tests::the_side_table_codec_resolves_shape_from_spelling::every_side_table_domain_round_trips_as_its_own_shape \
@@ -1274,6 +1301,8 @@ jobs:
             engine::tests::a_cached_feature_query_sees_a_sequence_add::a_cached_feature_query_sees_a_sequence_add_after_expiry \
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::an_in_place_read_answers_what_the_decoder_answered \
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::a_sequence_query_answers_the_rows_that_were_added \
+            engine::tests::a_feature_range_read_takes_the_shared_lock::each_range_read_answers_while_the_shared_lock_is_held \
+            engine::tests::a_feature_range_read_takes_the_shared_lock::a_range_read_answers_what_was_appended \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::each_point_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::the_fast_reads_answer_what_the_ordinary_reads_answer \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::length_and_range_answer_what_the_whole_read_answers \
