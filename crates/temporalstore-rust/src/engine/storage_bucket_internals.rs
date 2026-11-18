@@ -6036,9 +6036,19 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             continue;
         };
         // NAMED BEFORE THE MUTATION, for the reason at `state::block_identities_in`.
+        //
+        // THIS BUCKET'S BLOCKS ARE ALL IT NAMES. The projection below reads `(routing_bucket,
+        // handle)` for the blocks of ONE bucket, and an inversion restricted to that bucket holds
+        // exactly those positions, so the names are the same. Built over the whole shard it grew
+        // two hash maps to the shard's block count on every restating write and dropped them: at
+        // 2,000 context nodes one event write allocated about 606 KB for it.
         let names = crate::engine::state::block_identities_in(
             &bucket,
-            &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
+            &crate::engine::state::BlockKeysByPosition::from_parts_for_bucket(
+                &shard.bucket_index.objects,
+                &shard.bucket_index.object_block_lookup,
+                routing_bucket,
+            ),
         );
         let before = bucket.block_index.len();
         bucket.block_index.retain(

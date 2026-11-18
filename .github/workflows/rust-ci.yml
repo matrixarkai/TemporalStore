@@ -1275,6 +1275,7 @@ jobs:
             engine::tests::a_feature_range_read_takes_the_shared_lock::a_range_read_answers_what_was_appended \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::each_point_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::the_fast_reads_answer_what_the_ordinary_reads_answer \
+            engine::tests::a_restating_write_names_one_bucket_not_the_shard::a_bucket_projection_names_what_the_whole_shard_inversion_names \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::length_and_range_answer_what_the_whole_read_answers \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::a_lapsed_string_has_no_length_and_no_range \
             engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::an_outcome_kind_serializes_as_the_plain_string_for_every_kind_in_use \
@@ -1442,6 +1443,7 @@ jobs:
             engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::probe::a_write_does_not_pay_for_the_objects_it_did_not_touch \
             engine::tests::a_feature_sum_reads_each_point_in_place::probe::a_feature_sum_does_not_allocate_per_point \
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::probe::a_sequence_query_does_not_allocate_per_row \
+            engine::tests::a_restating_write_names_one_bucket_not_the_shard::probe::a_restating_write_does_not_allocate_with_the_shard \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::probe::a_length_and_a_range_do_not_allocate_per_byte \
             engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::probe::a_known_outcome_kind_allocates_nothing \
             engine::tests::a_hash_field_presence_is_read_from_its_row::probe::a_presence_check_does_not_copy_the_value \
