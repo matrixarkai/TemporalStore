@@ -224,7 +224,7 @@ jobs:
           set -o pipefail
           cargo test -p temporalstore-rust --bin mem0_scale_harness crud::tests \
             -- --test-threads=1 2>&1 | tee /tmp/memory-crud-gate.log
-          grep -q 'test result: ok\. 5 passed; 0 failed;' /tmp/memory-crud-gate.log
+          grep -q 'test result: ok\. 6 passed; 0 failed;' /tmp/memory-crud-gate.log
 
       - name: Batch deletion acknowledgment checks
         timeout-minutes: 30
