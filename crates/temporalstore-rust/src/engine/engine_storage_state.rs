@@ -9483,7 +9483,7 @@ mod element_name_lookup_tests {
         };
         assert_eq!(
             Some(&lowest),
-            held.first(),
+            held.first().copied(),
             "the lowest ref went in last and is not at the front, so the insert is not placing by              order: {held:?}"
         );
 

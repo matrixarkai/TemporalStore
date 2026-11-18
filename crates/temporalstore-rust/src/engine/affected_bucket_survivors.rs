@@ -1,12 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-pub(super) fn find<T>(affected: &[T], survivors: &[T], bucket: impl Fn(&T) -> u32) -> Vec<u32> {
+#[cfg(test)]
+pub(super) fn find<'a, T: 'a>(
+    affected: &[T],
+    survivors: impl IntoIterator<Item = &'a T> + Copy,
+    bucket: impl Fn(&T) -> u32,
+) -> Vec<u32> {
+    find_by(affected, &bucket, |wanted| {
+        survivors.into_iter().any(|row| bucket(row) == wanted)
+    })
+}
+
+pub(super) fn find_by<T>(
+    affected: &[T],
+    bucket: impl Fn(&T) -> u32,
+    has_survivor: impl Fn(u32) -> bool,
+) -> Vec<u32> {
     // Only affected buckets are queried by the caller; keep scratch bounded by that set.
     let mut buckets: Vec<_> = affected.iter().map(&bucket).collect();
     buckets.sort_unstable();
     buckets.dedup();
-    buckets.retain(|wanted| survivors.iter().any(|row| bucket(row) == *wanted));
+    buckets.retain(|wanted| has_survivor(*wanted));
     buckets
 }
 
@@ -78,5 +93,19 @@ mod tests {
         let affected = [(u32::MAX, 11_u64), (0, 22), (73, 33)];
         let survivors = [(u32::MAX, 44_u64), (0, 55), (91, 33)];
         assert_eq!(find(&affected, &survivors, |row| row.0), vec![0, u32::MAX]);
+    }
+
+    #[test]
+    fn borrowed_tree_survivors_keep_bounded_scratch_and_short_circuit() {
+        let survivors: std::collections::BTreeSet<_> = (7..16_391u32).collect();
+        let visits = Cell::new(0);
+        let result = find(&[7, 7], &survivors, |row| {
+            visits.set(visits.get() + 1);
+            *row
+        });
+        assert_eq!(result, vec![7]);
+        assert_eq!(visits.get(), 3);
+        assert!(result.capacity() <= 2);
+        assert_eq!(find(&[6, 8, 17_000], &survivors, |row| *row), vec![8]);
     }
 }

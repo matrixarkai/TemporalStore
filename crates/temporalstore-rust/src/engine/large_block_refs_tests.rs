@@ -93,8 +93,9 @@ fn large_set_reference_tree_survives_index_flush_and_wal_restart() {
 
 #[test]
 fn large_object_lookup_demotion_preserves_counts_order_and_last_ref_removal() {
-    use super::{BlockIndex, BlockLookupRef, StoredModelKind};
+    use super::{BlockIndex, BlockLookupRef};
     use crate::block_store::ElementEntry;
+    use crate::engine::storage_bucket_internals::StoredModelKind;
     let mut index = CoreIndex::default();
     let key = std::sync::Arc::<str>::from("large");
     index.object_element_name_block_refs = Some(0);

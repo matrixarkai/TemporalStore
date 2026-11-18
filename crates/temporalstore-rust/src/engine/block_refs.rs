@@ -114,6 +114,25 @@ impl BlockRefs {
         }
     }
 
+    pub(crate) fn has_routing_bucket(&self, routing_bucket: u32) -> bool {
+        match self {
+            Self::One(value) => value.routing_bucket == routing_bucket,
+            // Small live vectors are bounded; legacy noncanonical vectors retain scan semantics.
+            Self::Many(values) => values
+                .iter()
+                .any(|value| value.routing_bucket == routing_bucket),
+            Self::Large(values) => values
+                .range(
+                    BlockLookupRef {
+                        routing_bucket,
+                        block_ref_key: 0,
+                    }..,
+                )
+                .next()
+                .is_some_and(|value| value.routing_bucket == routing_bucket),
+        }
+    }
+
     pub(crate) fn remove(&mut self, value: &BlockLookupRef) -> bool {
         match self {
             Self::One(existing) => {
@@ -342,5 +361,40 @@ mod tests {
         assert!(matches!(refs, BlockRefs::Many(_)));
         assert_eq!(rmp_serde::to_vec_named(&refs).unwrap(), encoded);
         assert_eq!(Vec::from(refs), values);
+    }
+
+    #[test]
+    fn routing_bucket_presence_handles_tree_bounds_and_legacy_vectors() {
+        let mut refs = BlockRefs::default();
+        for key in 0..1024 {
+            refs.insert(row(key));
+        }
+        refs.insert(BlockLookupRef {
+            routing_bucket: u32::MAX,
+            block_ref_key: u64::MAX,
+        });
+        assert!(matches!(refs, BlockRefs::Large(_)));
+        for bucket in [0, 1, 6, u32::MAX] {
+            assert!(refs.has_routing_bucket(bucket));
+        }
+        for bucket in [7, 17, u32::MAX - 1] {
+            assert!(!refs.has_routing_bucket(bucket));
+        }
+        let legacy = BlockRefs::from(vec![
+            BlockLookupRef {
+                routing_bucket: 17,
+                block_ref_key: 0,
+            },
+            BlockLookupRef {
+                routing_bucket: 2,
+                block_ref_key: 0,
+            },
+        ]);
+        assert!(legacy.has_routing_bucket(2));
+        assert!(legacy.has_routing_bucket(17));
+        assert!(!legacy.has_routing_bucket(3));
+        assert!(!BlockRefs::default().has_routing_bucket(0));
+        assert!(BlockRefs::One(row(0)).has_routing_bucket(0));
+        assert!(!BlockRefs::One(row(0)).has_routing_bucket(1));
     }
 }
