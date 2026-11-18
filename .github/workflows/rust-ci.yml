@@ -132,7 +132,7 @@ jobs:
           TS_INDEX_LOG_PROTOBUF_ENABLED: 'false'
         run: |
           set -o pipefail
-          for spec in index_delta_plan::tests:::1 index_log::apply_mode::tests:::3 malformed_keyed_mode_in_complete_frame:1 keyed_snapshot_with_no_items:1 legacy_protobuf_encoder_rejects_keyed_snapshots:1 zset_count_adjust:5; do
+          for spec in index_delta_plan::tests:::3 index_log::apply_mode::tests:::3 malformed_keyed_mode_in_complete_frame:1 keyed_snapshot_with_no_items:1 legacy_protobuf_encoder_rejects_keyed_snapshots:1 zset_count_adjust:5; do
             filter=${spec%:*}
             expected=${spec##*:}
             cargo test --locked -p temporalstore-rust --lib --features alloc-probe "$filter" \
