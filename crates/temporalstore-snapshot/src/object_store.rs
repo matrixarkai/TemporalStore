@@ -1445,7 +1445,9 @@ pub fn resolve_matrixobject_mode(
     gateway_uri: Option<&str>,
     direct_meta: Option<&str>,
 ) -> Result<Option<MatrixObjectMode>, MatrixObjectModeError> {
-    let set = |value: Option<&str>| value.map(str::trim).filter(|value| !value.is_empty());
+    fn set(value: Option<&str>) -> Option<&str> {
+        value.map(str::trim).filter(|value| !value.is_empty())
+    }
     let gateway = set(gateway_uri).filter(|uri| uri.starts_with("matrixobject://"));
     let direct = set(direct_meta);
     match set(mode).map(str::to_ascii_lowercase).as_deref() {
