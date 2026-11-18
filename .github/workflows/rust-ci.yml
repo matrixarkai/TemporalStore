@@ -372,6 +372,8 @@ jobs:
           # One invocation per guard, because `cargo test` takes a single positional filter and a
           # second one is silently an error rather than a second filter.
           for t in \
+            engine::block_in_wal::read_snapshot::tests::captured_locators_survive_pruning_and_nested_scope_cleanup \
+            engine::block_in_wal::read_snapshot::tests::fast_wal_reads_keep_complete_snapshots_after_concurrent_overwrite \
             raft::tests::part5::only_the_majority_check_refuses_a_read_on_a_node_that_lost_its_peers \
             raft::tests::part5::the_sender_of_an_append_is_attributed_in_both_encodings \
             shared_store::tests::outcome_only_binary_frames_recover_in_every_supported_format \

@@ -48,6 +48,10 @@ use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedBlock};
 #[path = "wal_physical_blocks.rs"]
 mod physical;
 
+#[path = "wal_read_snapshot.rs"]
+mod read_snapshot;
+pub(super) use read_snapshot::ReadSnapshotGuard;
+
 #[cfg(test)]
 thread_local! {
     static OLDEST_REGISTERED_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -1144,6 +1148,11 @@ pub(super) fn read_block_at(
     element_name: Option<&str>,
     address: &crate::block_store::ElementEntry,
 ) -> Option<Vec<u8>> {
+    if let Some(value) = read_snapshot::try_read(
+        block_store, shard_id, object_id, element_name, address,
+    ) {
+        return value;
+    }
     match physical::lookup(block_store, shard_id, object_id, super::live_block_key(address)) {
         Some(Some(location)) => read_registration(&location, shard_id, object_id, element_name),
         Some(None) => read_logical_block_at(block_store, shard_id, object_id, element_name, address),
@@ -1164,7 +1173,17 @@ fn read_logical_block_at(
         entries.get(&block_key(object_id, element_name))
             .or_else(|| entries.get(&block_key(object_id, None)))?.clone()
     };
-    let (store, log_id, sequence, _, selected) = &*location;
+    read_logical_registration_at(&location, shard_id, object_id, element_name, address)
+}
+
+fn read_logical_registration_at(
+    location: &Registration,
+    shard_id: ShardId,
+    object_id: u64,
+    element_name: Option<&str>,
+    address: &crate::block_store::ElementEntry,
+) -> Option<Vec<u8>> {
+    let (store, log_id, sequence, _, selected) = &**location;
     let bytes = store.read_frame_at_log_id(shard_id, *log_id).ok()??;
     let record = decode_wal_line(&bytes).ok()?;
     if record.sequence != *sequence { return None; }
