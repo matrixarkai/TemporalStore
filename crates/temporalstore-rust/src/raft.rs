@@ -1360,13 +1360,10 @@ struct RaftWalEntryDelta {
     log_last_index: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct RaftWalSegmentRuntimeState {
-    #[serde(default)]
     released_segment_count: u64,
-    #[serde(default)]
     last_fsync_elapsed_ms: u64,
-    #[serde(default)]
     slow_fsync_backpressure_observed: bool,
 }
 
