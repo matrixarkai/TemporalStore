@@ -2144,7 +2144,7 @@ pub(crate) fn execute_on_shard(
                 true,
             );
             mutated |= delete_record(shard, &key);
-            let _ = cache.invalidate_record(shard_id, "string", &key);
+            invalidate_record_all(cache, shard_id, &key, &CACHE_SWEEP_COUNTS);
             CommandResponse::Empty
         }
         Command::HashSet { key, field, value } => {
