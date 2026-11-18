@@ -3952,6 +3952,10 @@ pub(super) struct BlockSlabLiveIndex {
     /// zero, and the fallback is the walk -- so a load path that forgets to seed it costs the old
     /// cost rather than reporting a store made entirely of garbage.
     ready: bool,
+    /// The sum of `bytes` over every slab in `by_slab`, kept as it goes so the block-GC gate can
+    /// read the shard's live bytes without walking the map. Charged and discharged in the same
+    /// two functions that move `by_slab`, and rebuilt by the two that replace it.
+    total_live_bytes: u64,
 }
 
 /// Every charge and discharge this process has made against a live tally.
@@ -4008,6 +4012,7 @@ impl BlockSlabLiveIndex {
         let tally = self.by_slab.entry(address.block_slab_id()).or_default();
         tally.block_refs = tally.block_refs.saturating_add(1);
         tally.bytes = tally.bytes.saturating_add(address.length());
+        self.total_live_bytes = self.total_live_bytes.saturating_add(address.length());
     }
 
     /// Discharge a block from the live tally AND record the range it retired.
@@ -4045,8 +4050,11 @@ impl BlockSlabLiveIndex {
         let Some(tally) = self.by_slab.get_mut(&address.block_slab_id()) else {
             return;
         };
+        // The tally gives up at most what it holds, and the total must give up the same.
+        let discharged = tally.bytes.min(address.length());
         tally.block_refs = tally.block_refs.saturating_sub(1);
         tally.bytes = tally.bytes.saturating_sub(address.length());
+        self.total_live_bytes = self.total_live_bytes.saturating_sub(discharged);
         if tally.block_refs == 0 && tally.bytes == 0 {
             // A slab nothing points at any more is ABSENT, not zero. Keeping the entry would grow
             // this map with every slab the store ever rolled, and the caller that wants a zero for
@@ -4238,6 +4246,11 @@ impl BlockSlabLiveIndex {
         self.by_slab.len()
     }
 
+    /// Live bytes summed over every slab, in O(1). Meaningful only while [`Self::is_ready`].
+    pub(super) fn total_live_bytes(&self) -> u64 {
+        self.total_live_bytes
+    }
+
     pub(super) fn total_block_refs(&self) -> u64 {
         self.by_slab
             .values()
@@ -4269,6 +4282,7 @@ impl BlockSlabLiveIndex {
     /// would recommend discarding bytes that are live.
     pub(super) fn clear(&mut self) {
         self.by_slab.clear();
+        self.total_live_bytes = 0;
         self.stale.clear();
         self.stale_bytes_by_cause = [0; 3];
         self.stale_slabs_pruned = 0;
@@ -4287,6 +4301,9 @@ impl BlockSlabLiveIndex {
     /// to it would delete true records every time the drift check ran. `clear` is how the retired
     /// set is emptied, and it is called where the index is actually replaced.
     pub(super) fn reset_from(&mut self, tallies: BTreeMap<u64, SlabLiveTally>) {
+        self.total_live_bytes = tallies
+            .values()
+            .fold(0_u64, |sum, tally| sum.saturating_add(tally.bytes));
         self.by_slab = tallies;
         self.ready = true;
     }

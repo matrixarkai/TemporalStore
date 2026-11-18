@@ -1360,6 +1360,54 @@ impl BlockStoreGcPolicy {
     }
 }
 
+/// The block-GC gate's answer: is any space worth collecting, decided from two running totals.
+///
+/// `due` is the only field a caller needs to branch on; the rest are the inputs it was decided
+/// from, so a closed gate can be shown in a report without a second read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReclaimGate {
+    pub due: bool,
+    pub live_bytes: u64,
+    pub logical_bytes: u64,
+    /// False when the totals could not be trusted. A gate that is not ready is always due.
+    pub ready: bool,
+}
+
+/// The overall space utility, in basis points, below which collection is worth running.
+pub const DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS: u64 = 5_000;
+
+/// Decide the gate from `live_bytes` and `logical_bytes` (both summed over the slabs that are
+/// not the current one) and a threshold in basis points.
+///
+/// Utility is live over logical. The gate is due when utility is strictly BELOW the threshold, so
+/// a store exactly at the threshold is left alone. A gate that is not `ready` is due: an unknown
+/// total must never turn collection off. No logical bytes means no slab to collect, so not due.
+/// A threshold of 0 switches the gate off, which means due, in line with every other bound here
+/// where 0 is "no limit".
+pub fn evaluate_reclaim_gate(
+    live_bytes: u64,
+    logical_bytes: u64,
+    ready: bool,
+    threshold_basis_points: u64,
+) -> ReclaimGate {
+    let due = if !ready || threshold_basis_points == 0 {
+        true
+    } else if logical_bytes == 0 {
+        false
+    } else {
+        // Live bytes above logical bytes are a counting artefact, not extra utility.
+        let live = u128::from(live_bytes.min(logical_bytes));
+        let utility_basis_points = live * 10_000 / u128::from(logical_bytes);
+        utility_basis_points < u128::from(threshold_basis_points)
+    };
+    ReclaimGate {
+        due,
+        live_bytes,
+        logical_bytes,
+        ready,
+    }
+}
+
 /// What one bounded candidate scan found, and where it stopped.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BlockStoreCandidateWindow {

@@ -73,3 +73,40 @@ fn a_resume_point_past_the_last_candidate_is_an_empty_complete_scan() {
     assert!(plan.scan_complete, "{plan:?}");
     assert_eq!(plan.scan_last_block_slab_id, None, "{plan:?}");
 }
+
+/// THE GATE IS DECIDED FROM TWO TOTALS AND ONLY EVER ERRS TOWARD COLLECTING.
+///
+/// Each arm is one way to be wrong that the others do not catch: a gate that treated an unknown
+/// total as "nothing to do" would switch collection off; one that used `<=` would collect a store
+/// sitting exactly at the threshold; one that trusted live bytes above logical bytes would call a
+/// counting artefact utility.
+#[test]
+fn the_reclaim_gate_is_due_below_the_threshold_and_never_closed_by_an_unknown() {
+    use super::{evaluate_reclaim_gate as gate, DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS as T};
+
+    // Not ready is due, whatever the totals say.
+    assert!(gate(1_000, 1_000, false, T).due, "an unknown total must never close the gate");
+    assert!(gate(0, 0, false, T).due);
+
+    // Ready with nothing logical has nothing to collect.
+    assert!(!gate(0, 0, true, T).due);
+
+    // Strictly below the threshold is due; at it is not.
+    assert!(gate(499, 1_000, true, 5_000).due, "49.9% live is below 50%");
+    assert!(!gate(500, 1_000, true, 5_000).due, "exactly at the threshold is left alone");
+    assert!(!gate(900, 1_000, true, 5_000).due);
+
+    // Live above logical is clamped, not counted as extra utility.
+    assert!(!gate(5_000, 1_000, true, 5_000).due);
+
+    // A zero threshold is the gate switched off, which is due.
+    assert!(gate(1_000, 1_000, true, 0).due);
+
+    // The totals are the widest the type holds: no overflow, no wrap.
+    assert!(!gate(u64::MAX, u64::MAX, true, 5_000).due);
+    assert!(gate(1, u64::MAX, true, 5_000).due);
+
+    // It reports the inputs it decided from.
+    let reported = gate(7, 9, true, T);
+    assert_eq!((reported.live_bytes, reported.logical_bytes, reported.ready), (7, 9, true));
+}
