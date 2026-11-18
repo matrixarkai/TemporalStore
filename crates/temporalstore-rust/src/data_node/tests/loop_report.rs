@@ -1044,19 +1044,42 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
         .and_then(|value| value.parse().ok())
         .unwrap_or(4usize);
     for round in 0..idle_rounds {
+        crate::engine::reset_live_block_scan_sites();
         let report = runtime.run_storage_manager_once(1, shipped.clone());
         let index = report
             .stage_spans
             .iter()
             .find(|span| span.stage == "reclaim_index")
             .expect("every round reports the reclaim_index stage");
+        let walked: u64 = report.stage_spans.iter().map(|s| s.walk.live_block_entries).sum();
+        let spans_us: u64 = report.stage_spans.iter().map(|s| s.duration_us).sum();
         eprintln!(
-            "I round {round}: {} us whole round, reclaim_index {} us walk={} encodes={}",
+            "I round {round}: {} us whole round, reclaim_index {} us walk={} encodes={}; round walk_entries={walked} (= {:.1} whole-shard walks of {keys}), stage spans sum {spans_us} us, outside every span {} us",
             report.duration_us,
             index.duration_us,
             index.walk.live_block_entries,
-            index.walk.index_encodes
+            index.walk.index_encodes,
+            walked as f64 / keys as f64,
+            report.duration_us.saturating_sub(spans_us)
         );
+        // EVERY span of the idle round, executed or skipped, so the owner of an idle round's time
+        // is in the data and not inferred from the one stage that happens to be cheap.
+        for span in &report.stage_spans {
+            eprintln!(
+                "      I{round} span {:<20} ran={} {:>10} us walk={} encodes={}",
+                span.stage,
+                span.executed,
+                span.duration_us,
+                span.walk.live_block_entries,
+                span.walk.index_encodes
+            );
+        }
+        for (site, entries) in crate::engine::live_block_scan_sites_snapshot() {
+            eprintln!(
+                "      I{round} site {site:<60} {entries:>8} entries ({:.1}x)",
+                entries as f64 / keys as f64
+            );
+        }
     }
 }
 
