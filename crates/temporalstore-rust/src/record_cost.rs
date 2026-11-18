@@ -483,7 +483,7 @@ fn one_delta_record(index: usize) -> crate::index_log::IndexDeltaRecord {
         meta: None,
         applied_wal_sequence: None,
         key_states: Vec::new(),
-        upsert: false,
+        upsert: false.into(),
         shared_object_key: None,
     }
 }
@@ -1203,7 +1203,7 @@ fn index_record_shapes() -> Vec<(String, crate::index_log::IndexDeltaRecord)> {
     }));
     shapes.push(("an upsert record with a shared key".to_string(), {
         let mut record = one_delta_record(6);
-        record.upsert = true;
+        record.upsert = true.into();
         record.shared_object_key = Some("tenant/1/object/00000006".to_string());
         record
     }));

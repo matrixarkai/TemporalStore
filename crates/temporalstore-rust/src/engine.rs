@@ -25,6 +25,8 @@ mod execute_on_shard;
 #[path = "engine/engine_context.rs"]
 mod context;
 mod context_embedding_index;
+mod index_delta_plan;
+use index_delta_plan::{BatchIndexDeltaPlan, fold_planned_index_delta};
 #[path = "engine/engine_lifecycle.rs"]
 mod lifecycle;
 mod object_manager;
@@ -5881,6 +5883,9 @@ fn delta_record_covered_keys(record: &crate::index_log::IndexDeltaRecord) -> BTr
         .filter_map(|blob| blob.get("key").and_then(|value| value.as_str()))
         .map(str::to_string)
         .collect();
+    if let Some(replacements) = record.upsert.replacement_keys() {
+        keys.extend(replacements.iter().cloned());
+    }
     // Fall back to the items' own object keys if a record carried block items but no blobs.
     for item in &record.items {
         keys.insert(item.object_key.to_string());

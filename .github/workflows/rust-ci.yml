@@ -126,6 +126,21 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: Mixed index delta recovery checks
+        timeout-minutes: 30
+        env:
+          TS_INDEX_LOG_PROTOBUF_ENABLED: 'false'
+        run: |
+          set -o pipefail
+          for spec in index_delta_plan::tests:::1 index_log::apply_mode::tests:::3 malformed_keyed_mode_in_complete_frame:1 keyed_snapshot_with_no_items:1 legacy_protobuf_encoder_rejects_keyed_snapshots:1 zset_count_adjust:5; do
+            filter=${spec%:*}
+            expected=${spec##*:}
+            cargo test --locked -p temporalstore-rust --lib --features alloc-probe "$filter" \
+              -- --test-threads=1 2>&1 | tee /tmp/mixed-index-delta-gate.log
+            grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/mixed-index-delta-gate.log \
+              || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
+          done
+
       - name: Ollama extraction source isolation checks
         timeout-minutes: 30
         run: |
