@@ -3039,7 +3039,8 @@ class OnlineStoreTest(unittest.TestCase):
                   Value(bool_val=False), Value(double_val=float("nan")), Value(int64_list_val={"val": [1, -2, 0]})]
         encoded = [value.SerializeToString() + b"\xa0\x06\x01" for value in values]
         for feature_names, positions in (([f"f{i}" for i in range(6)], [2, 0, 5, 1, 4, 3, 6]),
-                                         (["f", "other", "f"], [1, 0, 1, 6]), ([], [6])):
+                                         (["f", "other", "f"], [1, 0, 1, 6]),
+                                         (["f", "other", "f", "other", "f"], [1, 0, 1, 0, 1, 6]), ([], [6])):
             fields = feature_names + ["timestamp"]
             for legacy in (False, True):
                 rows = [encoded + [stamp], [None] * 7, [b""] * 7, encoded + [b""]]
@@ -3115,6 +3116,55 @@ class OnlineStoreTest(unittest.TestCase):
         payload[:] = b"\x00" * len(payload)
         self.assertEqual(response.results[0].values[1].bytes_val, b"original")
         self.assertEqual(response.results[0].event_timestamps[1].seconds, 10)
+
+    def test_projected_templates_do_not_share_mutable_column_messages(self):
+        from types import SimpleNamespace
+        from google.protobuf.timestamp_pb2 import Timestamp
+        from feast.protos.feast.serving.ServingService_pb2 import FieldStatus, GetOnlineFeaturesResponse
+        from feast.protos.feast.types.Value_pb2 import Value
+        from feast_temporalstore_command.projected_response import populate_projected_response
+
+        table = SimpleNamespace(name="stats", projection=SimpleNamespace(
+            name="stats", name_alias=None, name_to_use=lambda: "stats"))
+        payload = bytearray(Value(bytes_val=b"original").SerializeToString())
+        response = GetOnlineFeaturesResponse()
+        populate_projected_response([[payload] * 4 + [Timestamp(seconds=10).SerializeToString()]],
+            [0, 1, 2, 3, 4], ["a", "b", "c", "d"], [[0, 1]], response, False, table, 2)
+        response.results[0].values[0].bytes_val = b"changed"
+        response.results[0].event_timestamps[0].seconds = 20
+        response.results[0].statuses[0] = FieldStatus.NOT_FOUND
+        payload[:] = b"\x00" * len(payload)
+        for column in response.results[1:]:
+            self.assertEqual(column.values[0].bytes_val, b"original")
+            self.assertEqual(column.event_timestamps[0].seconds, 10)
+            self.assertEqual(column.statuses[0], FieldStatus.PRESENT)
+        self.assertEqual(response.results[0].values[1].bytes_val, b"original")
+        self.assertEqual(response.results[0].event_timestamps[1].seconds, 10)
+        self.assertEqual(response.results[0].statuses[1], FieldStatus.PRESENT)
+
+    def test_projected_templates_roll_back_late_column_failures(self):
+        from types import SimpleNamespace
+        from google.protobuf.message import DecodeError
+        from feast.protos.feast.serving.ServingService_pb2 import GetOnlineFeaturesResponse
+        from feast.protos.feast.types.Value_pb2 import Value
+        from feast_temporalstore_command.projected_response import populate_projected_response
+
+        table = SimpleNamespace(name="stats", current_version_number=2, projection=SimpleNamespace(
+            name="stats", name_alias=None, name_to_use=lambda: "stats"))
+        payload = Value(int64_val=7).SerializeToString()
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                response = GetOnlineFeaturesResponse()
+                if existing:
+                    response.metadata.feature_names.val.append("existing")
+                    response.results.add().values.add().int64_val = 99
+                before = response.SerializeToString(deterministic=True)
+                with mock.patch("feast.metrics.track_feature_statuses") as tracked:
+                    with self.assertRaises(DecodeError):
+                        populate_projected_response([[payload, payload, payload, b"\xff", b""]],
+                            [0, 1, 2, 3, 4], ["a", "b", "c", "d"], [[0]], response, False, table, 1, True)
+                    tracked.assert_not_called()
+                self.assertEqual(response.SerializeToString(deterministic=True), before)
 
     def test_the_async_read_answers_and_emits_the_same_one_round_trip(self):
         """Feast's async serving path calls this, and the base class raises.

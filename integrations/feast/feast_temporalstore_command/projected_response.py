@@ -5,7 +5,7 @@
 from typing import Any, Iterable, Sequence
 
 from google.protobuf.timestamp_pb2 import Timestamp
-from feast.protos.feast.serving.ServingService_pb2 import FieldStatus
+from feast.protos.feast.serving.ServingService_pb2 import FieldStatus, GetOnlineFeaturesResponse
 from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 
 from .client import decode_bytes
@@ -61,9 +61,23 @@ def populate_projected_response(
     start_versions = len(versions) if versions is not None else 0
     had_metadata = response.HasField("metadata")
     try:
+        # Amortize shared timestamp/status setup across wider projections.
+        template = GetOnlineFeaturesResponse.FeatureVector(
+            statuses=statuses, event_timestamps=timestamp_slots,
+        ) if len(feature_names) >= 4 else None
+        missing_template = None
         for feature_index, feature_name in enumerate(feature_names):
             vector = response.results.add()
             active = last_feature[feature_name] == feature_index
+            if template is not None:
+                if active:
+                    vector.CopyFrom(template)
+                else:
+                    if missing_template is None:
+                        missing_template = GetOnlineFeaturesResponse.FeatureVector(
+                            statuses=missing_statuses, event_timestamps=timestamp_slots,
+                        )
+                    vector.CopyFrom(missing_template)
             if active and has_values:
                 for values in value_slots:
                     value = vector.values.add()
@@ -71,8 +85,9 @@ def populate_projected_response(
                         value.ParseFromString(values[feature_index])
             else:
                 vector.values.extend(null_values)
-            vector.statuses.extend(statuses if active else missing_statuses)
-            vector.event_timestamps.extend(timestamp_slots)
+            if template is None:
+                vector.statuses.extend(statuses if active else missing_statuses)
+                vector.event_timestamps.extend(timestamp_slots)
         metadata.feature_names.val.extend(names)
         if add_version:
             entry = versions.add()
