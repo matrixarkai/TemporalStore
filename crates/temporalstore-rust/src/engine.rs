@@ -1024,6 +1024,9 @@ impl TemporalEngine {
         async_storage_override: Option<bool>,
         mut carried_blocks: Vec<crate::wal::StagedBlock>,
     ) -> ExecuteResponse {
+        // The flags every write asks about are read from the environment once for this operation:
+        // see `env_flag::OperationEnv`.
+        let _env = crate::env_flag::OperationEnv::begin();
         // Charged before anything else, including the read-only fast path -- a read served without
         // taking the shard lock still costs the shard, and a limit the cheapest reads slip past is
         // not a limit.
@@ -3054,14 +3057,9 @@ pub(crate) fn timestamp_range_bounds(
 /// themselves and gate their own half of the same decision; a copy that drifted would leave one
 /// subsystem in bulk mode and the rest on the live path.
 pub(crate) fn bulk_ingest_mode() -> bool {
-    matches!(
-        std::env::var("MATRIXARK_BULK_INGEST")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    crate::env_flag::cached_flag(crate::env_flag::Slot::BulkIngest, || {
+        crate::env_flag::is_on_word(std::env::var("MATRIXARK_BULK_INGEST").ok().as_deref())
+    })
 }
 
 /// Whether the per-command model-map -> bucket-index promotion and first-index
