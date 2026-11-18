@@ -1287,8 +1287,10 @@ impl TemporalEngine {
             (command, None)
         };
 
-        let hash_was_dirty = match &execution_command {
-            Command::HashMultiSet { key, .. } => shard.dirty_objects.contains(key),
+        let writer_was_dirty = match &execution_command {
+            Command::HashMultiSet { key, .. } | Command::SetAdd { key, .. } => {
+                shard.dirty_objects.contains(key)
+            }
             _ => false,
         };
         // Preserve the writer's proof so maintenance does not file its fields twice.
@@ -1399,7 +1401,9 @@ impl TemporalEngine {
                     // did, which is why a synchronous write leaves as much pending as an async one
                     // (measured: 64 of 64 either way). Writing through is still to be built; this
                     // removes the branch that suggested it already had been.
-                    if hash_index_filed.is_some() && hash_was_dirty {
+                    if (hash_index_filed.is_some() || matches!(&command, Command::SetAdd { .. }))
+                        && writer_was_dirty
+                    {
                         // Older blocks already carry the mark; the writer dirtied its
                         // new/replaced blocks. Keep the bucket generation without a walk.
                         let routing_bucket = block_routing_bucket(

@@ -186,6 +186,22 @@ jobs:
               || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
           done
 
+      - name: Storage tick isolation checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe data_node::round_budget::tests:: \
+            -- --test-threads=1 2>&1 | tee /tmp/storage-tick-isolation.log
+          grep -q 'test result: ok\. 6 passed; 0 failed;' /tmp/storage-tick-isolation.log
+
+      - name: Set append dirty-work checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe set_batch_work_tests \
+            -- --test-threads=1 2>&1 | tee /tmp/set-append-dirty-work.log
+          grep -q 'test result: ok\. 9 passed; 0 failed;' /tmp/set-append-dirty-work.log
+
       - name: Ollama extraction source isolation checks
         timeout-minutes: 30
         run: |

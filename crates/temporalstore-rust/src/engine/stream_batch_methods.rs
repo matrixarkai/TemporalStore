@@ -1626,9 +1626,10 @@ impl TemporalEngine {
                     config.feature_max_size,
                 );
             let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
-            let hash_was_dirty = match &command {
+            let writer_was_dirty = match &command {
                 Command::HashMultiSet { key, .. }
-                | Command::HashMultiSetIfTimestampOlder { key, .. } => shard.dirty_objects.contains(key),
+                | Command::HashMultiSetIfTimestampOlder { key, .. }
+                | Command::SetAdd { key, .. } => shard.dirty_objects.contains(key),
                 _ => false,
             };
             let (outcome, returned_post_write, hash_index_filed) = match command {
@@ -1842,7 +1843,10 @@ impl TemporalEngine {
                         );
                         // Keep an earlier cold mark pending even if a later write
                         // to this key already sees it in the dirty-object index.
-                        if hash_index_filed.is_none() || !hash_was_dirty {
+                        if (hash_index_filed.is_none()
+                            && !matches!(command_for_post_write_ref, Command::SetAdd { .. }))
+                            || !writer_was_dirty
+                        {
                             dirty_propagation_keys.insert(object_key.to_string());
                         }
                     }

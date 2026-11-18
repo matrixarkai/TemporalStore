@@ -81,11 +81,7 @@ fn fresh_set_batches_do_not_scan_preexisting_refs_per_member() {
             0,
             "the set writer already filed its blocks"
         );
-        assert_eq!(
-            dirty,
-            (existing + 128) as u64,
-            "propagate once per touched object"
-        );
+        assert_eq!(dirty, 0, "already-dirty set blocks need no second walk");
         assert_dirty(&engine, "order");
         println!("existing={existing} async={async_storage} supersede_visits={supersede} dirty_visits={dirty}");
     }
@@ -103,7 +99,7 @@ fn single_set_append_does_not_refile_the_whole_object() {
         command: append(128, 1).pop().unwrap(),
     });
     assert!(response.status.ok);
-    assert_eq!(counts(), (0, 129));
+    assert_eq!(counts(), (0, 0));
     assert_eq!(bucket_block_upserts() - before, 0);
     assert_dirty(&engine, "order");
 }
@@ -135,6 +131,78 @@ fn deferred_dirty_propagation_marks_previously_clean_blocks_and_recovers() {
     assert_eq!(members.len(), 160);
     assert!(members.contains(&b"member-00000000".to_vec()));
     assert!(members.contains(&b"member-00000159".to_vec()));
+}
+
+#[test]
+fn single_cold_append_marks_once_then_preserves_new_append_marks() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    write(&engine, append(0, 128));
+    engine.unload_shard(1);
+    engine.load_shard(1);
+    reset();
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: append(128, 1).pop().unwrap(),
+    });
+    assert!(response.status.ok);
+    assert_eq!(counts(), (0, 129));
+    assert_dirty(&engine, "order");
+    reset();
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: append(129, 1).pop().unwrap(),
+    });
+    assert!(response.status.ok);
+    assert_eq!(counts(), (0, 0));
+    assert_dirty(&engine, "order");
+}
+
+#[test]
+fn mixed_cold_and_hot_sets_keep_the_cold_walk_across_rejected_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    write(&engine, append(0, 16));
+    write(
+        &engine,
+        (0u64..16)
+            .map(|index| Command::SetAdd {
+                key: "cold".into(),
+                member: index.to_be_bytes().to_vec(),
+            })
+            .collect(),
+    );
+    engine.unload_shard(1);
+    engine.load_shard(1);
+    write(&engine, append(16, 1));
+    reset();
+    let response = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![
+            append(17, 1).pop().unwrap(),
+            Command::SetAdd {
+                key: "cold".into(),
+                member: 16u64.to_be_bytes().to_vec(),
+            },
+            Command::SetScan {
+                key: "cold".into(),
+                after: Vec::new(),
+                limit: 0,
+            },
+            Command::SetAdd {
+                key: "cold".into(),
+                member: 17u64.to_be_bytes().to_vec(),
+            },
+            append(18, 1).pop().unwrap(),
+        ],
+    });
+    assert_eq!(response.responses.len(), 5);
+    for (index, answer) in response.responses.iter().enumerate() {
+        assert_eq!(answer.status.ok, index != 2);
+    }
+    assert_eq!(counts(), (0, 18));
+    assert_dirty(&engine, "order");
+    assert_dirty(&engine, "cold");
 }
 
 #[test]
