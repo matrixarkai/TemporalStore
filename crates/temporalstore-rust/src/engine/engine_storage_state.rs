@@ -1579,21 +1579,22 @@ impl<'a> BlockKeysByPosition<'a> {
         }
     }
 
-    /// THE SAME INVERSION AS [`Self::from_parts_for_bucket`], FROM THE BUCKET'S OWN OBJECTS.
+    /// THE SAME INVERSION AS [`Self::from_parts_for_bucket`], FROM THE BUCKETS' OWN OBJECTS.
     ///
     /// `from_parts_for_bucket` visits every object of every kind and keeps the refs that sit in the
     /// bucket, so naming one bucket's blocks costs the shard. With the per-bucket owners this asks
-    /// each recorded owner of the bucket for its refs and keeps the ones in the bucket: the cost is
-    /// the bucket's objects. The answer is the same, and when the owners are absent it IS the
-    /// walk, so a caller without them is still right.
-    pub(super) fn from_owned_bucket(
+    /// each recorded owner of each named bucket for its refs and keeps the ones in those buckets:
+    /// the cost is the buckets' objects, and it is ONE inversion however many buckets are named.
+    /// The answer is the same, and when the owners are absent it IS the walk, so a caller without
+    /// them is still right.
+    pub(super) fn from_owned_buckets(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
             HashMap<ModelKey, super::object_record::ObjectSlot>,
         >,
         lookup: &'a ObjectBlockLookup,
         owners: Option<&super::bucket_owners::BucketOwners>,
-        routing_bucket: u32,
+        buckets: &[u32],
     ) -> Self {
         #[cfg(test)]
         let owners = if BUCKET_OWNERS_DISABLED.with(std::cell::Cell::get) {
@@ -1602,14 +1603,17 @@ impl<'a> BlockKeysByPosition<'a> {
             owners
         };
         let Some(owners) = owners else {
-            return Self::from_parts_for_bucket(objects, lookup, routing_bucket);
+            return match buckets {
+                [only] => Self::from_parts_for_bucket(objects, lookup, *only),
+                _ => Self::from_parts(objects, lookup),
+            };
         };
         #[cfg(test)]
         BLOCK_IDENTITY_BUILDS.with(|count| count.set(count.get() + 1));
         let mut by_position = std::collections::HashMap::new();
         let mut file = |model_id: &'a str, object_key: &'a Arc<str>, refs: &'a BlockRefs| {
             for block_ref in refs.iter() {
-                if block_ref.routing_bucket != routing_bucket {
+                if !buckets.contains(&block_ref.routing_bucket) {
                     continue;
                 }
                 by_position.insert(
@@ -1618,7 +1622,10 @@ impl<'a> BlockKeysByPosition<'a> {
                 );
             }
         };
-        if let Some(recorded) = owners.owners_of(routing_bucket) {
+        for &routing_bucket in buckets {
+            let Some(recorded) = owners.owners_of(routing_bucket) else {
+                continue;
+            };
             for (kind, key) in recorded.iter() {
                 #[cfg(test)]
                 BLOCK_IDENTITY_VISITS.with(|count| count.set(count.get() + 1));

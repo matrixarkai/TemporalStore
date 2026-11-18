@@ -2733,6 +2733,14 @@ pub(super) fn release_bucket_blocks(
         // Keep only owned candidate identities across mutations. A successful release removes
         // lookup rows local to that bucket, so it cannot change another candidate's identities.
         let names = names_by_bucket.get_or_insert_with(|| {
+            // ONE INVERSION FOR THE BATCH, from the owners of every wanted bucket.
+            let wanted_buckets: Vec<u32> = wanted.iter().copied().collect();
+            let keys = crate::engine::state::BlockKeysByPosition::from_owned_buckets(
+                &shard.bucket_index.objects,
+                &shard.bucket_index.object_block_lookup,
+                shard.bucket_index.bucket_owners.get(),
+                &wanted_buckets,
+            );
             wanted.iter().filter_map(|routing_bucket| {
                 shard.bucket_index.bucket_map.get(routing_bucket)
                     .filter(|node| {
@@ -2740,13 +2748,6 @@ pub(super) fn release_bucket_blocks(
                             && !node.deleted() && !node.block_index.is_empty()
                     })
                     .map(|node| {
-                        // EACH CANDIDATE NAMED FROM ITS OWN OBJECTS, not one inversion of the shard.
-                        let keys = crate::engine::state::BlockKeysByPosition::from_owned_bucket(
-                            &shard.bucket_index.objects,
-                            &shard.bucket_index.object_block_lookup,
-                            shard.bucket_index.bucket_owners.get(),
-                            *routing_bucket,
-                        );
                         (*routing_bucket, crate::engine::state::block_identities_in(node, &keys))
                     })
             }).collect::<BTreeMap<_, _>>()

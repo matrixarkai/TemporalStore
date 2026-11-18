@@ -7275,11 +7275,11 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
                 // THE BUCKET'S OWN OBJECTS, not every object of the shard.
                 crate::engine::state::block_identities_in(
                     &bucket,
-                    &crate::engine::state::BlockKeysByPosition::from_owned_bucket(
+                    &crate::engine::state::BlockKeysByPosition::from_owned_buckets(
                         &shard.bucket_index.objects,
                         &shard.bucket_index.object_block_lookup,
                         shard.bucket_index.bucket_owners.get(),
-                        routing_bucket,
+                        &[routing_bucket],
                     ),
                 )
             });
