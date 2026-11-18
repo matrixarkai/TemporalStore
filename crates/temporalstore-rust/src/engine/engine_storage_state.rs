@@ -1619,12 +1619,12 @@ impl<'a> BlockKeysByPosition<'a> {
             }
         };
         if let Some(recorded) = owners.owners_of(routing_bucket) {
-            for (kind, key) in recorded {
+            for (kind, key) in recorded.iter() {
                 #[cfg(test)]
                 BLOCK_IDENTITY_VISITS.with(|count| count.set(count.get() + 1));
                 // THE SLOT HOME FIRST, then the lookup, as in the whole-shard walk.
                 if let Some((object_key, slot)) = objects
-                    .get(kind)
+                    .get(&kind)
                     .and_then(|table| table.get_key_value(&**key))
                 {
                     if let Some(refs) = slot.refs() {
@@ -8319,8 +8319,20 @@ impl CoreIndex {
         };
         // THE OWNER IS RECORDED WHEN THE REF IS, whichever home took it, and whether or not it was new:
         // adding is idempotent and a missing owner would leave a block unnamed.
-        if let Some(owners) = self.bucket_owners.get_mut() {
-            owners.add(routing_bucket, block.model_id(), object_key);
+        if added && self.bucket_owners.get().is_some() {
+            let first_in_bucket = self
+                .refs_of_object(block.model_id(), object_key.as_ref())
+                .is_some_and(|refs| {
+                    refs.iter()
+                        .filter(|block_ref| block_ref.routing_bucket == routing_bucket)
+                        .count()
+                        == 1
+                });
+            if first_in_bucket {
+                if let Some(owners) = self.bucket_owners.get_mut() {
+                    owners.add(routing_bucket, block.model_id(), object_key);
+                }
+            }
         }
         if added {
             if let Some(total) = self.object_element_name_block_refs.as_mut() {
@@ -8490,13 +8502,29 @@ impl CoreIndex {
 
     /// THE PER-BUCKET OWNERS, DERIVED FROM THE OBJECTS' REFS in both homes.
     pub(super) fn derive_bucket_owners(&self) -> super::bucket_owners::BucketOwners {
+        // ONE OWNER PER (OBJECT, BUCKET): an object with several blocks in a bucket has several
+        // refs naming it, and is recorded once.
+        fn add_once(
+            owners: &mut super::bucket_owners::BucketOwners,
+            seen: &mut Vec<u32>,
+            kind: super::storage_bucket_internals::StoredModelKind,
+            object_key: &Arc<str>,
+            refs: &BlockRefs,
+        ) {
+            seen.clear();
+            for block_ref in refs.iter() {
+                if !seen.contains(&block_ref.routing_bucket) {
+                    seen.push(block_ref.routing_bucket);
+                    owners.add(block_ref.routing_bucket, kind, object_key);
+                }
+            }
+        }
         let mut owners = super::bucket_owners::BucketOwners::default();
+        let mut seen: Vec<u32> = Vec::new();
         for (kind, table) in &self.objects {
             for (object_key, slot) in table {
                 if let Some(refs) = slot.refs() {
-                    for block_ref in refs.iter() {
-                        owners.add(block_ref.routing_bucket, *kind, object_key);
-                    }
+                    add_once(&mut owners, &mut seen, *kind, object_key, refs);
                 }
             }
         }
@@ -8504,12 +8532,24 @@ impl CoreIndex {
             if let Some(kind) =
                 super::storage_bucket_internals::StoredModelKind::from_stored_name(model_id)
             {
-                for block_ref in refs.iter() {
-                    owners.add(block_ref.routing_bucket, kind, object_key);
-                }
+                add_once(&mut owners, &mut seen, kind, object_key, refs);
             }
         }
+        owners.shrink();
         owners
+    }
+
+    /// The refs an object holds, from whichever home has them.
+    fn refs_of_object(
+        &self,
+        kind: super::storage_bucket_internals::StoredModelKind,
+        object_key: &str,
+    ) -> Option<&BlockRefs> {
+        self.objects
+            .get(&kind)
+            .and_then(|table| table.get(object_key))
+            .and_then(|slot| slot.refs())
+            .or_else(|| self.object_block_lookup.get(kind.as_str(), object_key))
     }
 
     /// Build the owners if they are absent. O(objects) once; a no-op after.
@@ -8530,11 +8570,10 @@ impl CoreIndex {
         let truth = self.derive_bucket_owners();
         for (bucket, expected) in truth.iter() {
             let have = recorded.owners_of(*bucket);
-            for owner in expected {
+            for (kind, key) in expected.iter() {
                 assert!(
-                    have.is_some_and(|set| set.contains(owner)),
-                    "bucket {bucket}: object {:?} holds a ref there and is not recorded as an owner",
-                    owner
+                    have.is_some_and(|list| list.contains(kind, key)),
+                    "bucket {bucket}: object {key:?} of kind {kind:?} holds a ref there and is not recorded as an owner",
                 );
             }
         }
