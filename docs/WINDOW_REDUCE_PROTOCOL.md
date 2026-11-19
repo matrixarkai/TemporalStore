@@ -236,8 +236,10 @@ names a predicate may use are read from the key's own header.
 A cell is removed when its sample is inside the window, its member passes the member set (`include`
 names the members to take, `exclude` the members to spare, a member in both is spared) and every
 predicate (`=`, `!=`, `>`, `>=`, `<`, `<=` over a label, a lane or `member`, at most 8, ANDed) holds on
-it. A request that restricts nothing is refused with a message that says it would empty the key; a
-`DELETE` never deletes the key itself (`FeatureDelete` does). A sample left with no cell is removed,
+it. A `REMOVE` that restricts nothing is refused with a message that says it would empty the key. A
+`DELETE` that restricts nothing (a table with no label, and no member named) deletes the whole key in
+one log record, reading no sample, and its receipt counts samples but not cells; a `DELETE` of a key
+that holds no sample answers NO_DATA. A sample left with no cell is removed,
 so a removal can leave a key that holds no sample; it still reads as an empty answer and takes a
 write.
 

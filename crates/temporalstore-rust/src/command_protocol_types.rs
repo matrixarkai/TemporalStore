@@ -473,8 +473,8 @@ pub struct CellMergeSummary {
 
 /// Which cells of one key a removal takes out. A cell goes when its sample is stamped inside the
 /// time window AND its member passes `members` AND every predicate in `filters` holds on it; a
-/// field left open restricts nothing. At least one of the three must restrict something, so a
-/// request that would empty the key is refused (delete the key to do that).
+/// field left open restricts nothing. A request that leaves all three open takes every cell, which
+/// is the deletion of the key: one record, no sample read.
 ///
 /// * `start_ms`, `end_ms`: the samples stamped in `[start_ms, end_ms]`, both inclusive; an absent
 ///   end is open on that side, and `start_ms` after `end_ms` is refused.

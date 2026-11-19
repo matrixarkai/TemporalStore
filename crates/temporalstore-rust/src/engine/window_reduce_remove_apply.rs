@@ -53,6 +53,9 @@ pub(super) struct WindowReduceRemovePlan {
     pub(super) points: Vec<FeaturePoint>,
     /// Whether the series changes.
     pub(super) changed: bool,
+    /// The removal takes the whole key: the series is deleted in one record, nothing is read, and
+    /// the cell counts of the receipt are 0 (the cells were not counted).
+    pub(super) delete_key: bool,
     pub(super) samples_before: u64,
     pub(super) samples_after: u64,
     pub(super) cells_before: u64,
@@ -79,6 +82,7 @@ pub(super) fn plan_window_reduce_remove(
         replaced: Vec::new(),
         points: Vec::new(),
         changed: false,
+        delete_key: false,
         samples_before: samples,
         samples_after: samples,
         cells_before,
@@ -86,6 +90,22 @@ pub(super) fn plan_window_reduce_remove(
     };
     let Some(series) = series else { return Ok(nothing(0, 0)) };
     let total = series.len() as u64;
+    if super::window_reduce_remove::removes_the_whole_key(spec) {
+        // Every cell of every sample goes: the key is deleted, and nothing is read to say so.
+        if total == 0 {
+            return Ok(nothing(0, 0));
+        }
+        return Ok(WindowReduceRemovePlan {
+            replaced: Vec::new(),
+            points: Vec::new(),
+            changed: true,
+            delete_key: true,
+            samples_before: total,
+            samples_after: 0,
+            cells_before: 0,
+            cells_removed: 0,
+        });
+    }
     let Some((newest_ms, newest_address)) = series.range(..).next_back() else { return Ok(nothing(0, 0)) };
 
     let (from_ms, to_ms) = (spec.start_ms.unwrap_or(0), spec.end_ms.unwrap_or(u64::MAX));
@@ -172,6 +192,7 @@ pub(super) fn plan_window_reduce_remove(
         replaced,
         points,
         changed: true,
+        delete_key: false,
         samples_before: total,
         samples_after: total - emptied,
         cells_before,

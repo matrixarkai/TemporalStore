@@ -16,8 +16,9 @@
 //! * every named predicate over a label, a lane or `member` holds on the cell as its sample
 //!   stores it (the ranked read's own predicates, compiled by the same code).
 //!
-//! A request in which all three parts are open would empty the key and is refused: deleting the
-//! key is the command for that, and a removal that lost its arguments must not look like one.
+//! A request in which all three parts are open takes every cell, so it is the deletion of the key
+//! ([`removes_the_whole_key`]): one record, no sample read. (The wire `REMOVE` refuses it, so a
+//! removal that lost its arguments cannot look like a deletion; the wire `DELETE` sends it.)
 //!
 //! # WHAT COMES BACK
 //!
@@ -54,15 +55,14 @@ pub(crate) fn validate_spec(spec: &WindowReduceRemoveSpec) -> Result<(), String>
         }
     }
     // Compiling the member set is what bounds and checks it, and is the one place that does.
-    let members = CompiledMembers::compile(&spec.members)?;
-    if spec.start_ms.is_none() && spec.end_ms.is_none() && members.is_open() && spec.filters.is_empty() {
-        return Err(
-            "a removal names no window, member or predicate, so it would empty the key: \
-             delete the key to do that"
-                .to_string(),
-        );
-    }
+    CompiledMembers::compile(&spec.members)?;
     Ok(())
+}
+
+/// Whether `spec` leaves the window, the members and the predicates all open: such a removal takes
+/// every cell of every sample, so it is the deletion of the key, in one record, with no sample read.
+pub(crate) fn removes_the_whole_key(spec: &WindowReduceRemoveSpec) -> bool {
+    spec.start_ms.is_none() && spec.end_ms.is_none() && spec.members.is_open() && spec.filters.is_empty()
 }
 
 /// A spec resolved against a header.

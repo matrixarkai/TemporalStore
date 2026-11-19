@@ -426,6 +426,36 @@ fn removing_every_cell_leaves_an_empty_key_that_still_reads_and_still_takes_a_wr
 }
 
 #[test]
+fn a_removal_that_restricts_nothing_deletes_the_key_in_one_record_whatever_its_size_and_a_missing_key_reports_zero() {
+    // The deletion of a key is one log record, whatever the key held.
+    for samples_hint in [1usize, 12] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = engine_on(dir.path(), Some(roomy()));
+        let key = stored_key(8);
+        if samples_hint == 12 {
+            seed(&engine, &key);
+        } else {
+            append(&engine, &key, vec![point(100, &[cell(1, 1, [1, 1, 1, 1])])]);
+        }
+        let held = series(&engine, &key).len() as u64;
+        let writes = engine.write_ahead_log_store().stats(1).writes;
+        let landed = receipt(&remove(&engine, &key, WindowReduceRemoveSpec::default()));
+        // The cells are not counted, because none was read.
+        assert_eq!(landed, [held, 0, 0, 0]);
+        assert!(series(&engine, &key).is_empty());
+        assert_eq!(engine.write_ahead_log_store().stats(1).writes, writes + 1, "one log record");
+        // The key takes a write again as a new key.
+        append(&engine, &key, vec![point(50, &[cell(1, 1, [1, 1, 1, 1])])]);
+        assert_eq!(decoded(&engine, &key).len(), 1);
+    }
+
+    // A key that holds nothing reports zero samples, which is what a delete answers NO_DATA for.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path(), Some(roomy()));
+    assert_eq!(receipt(&remove(&engine, &stored_key(9), WindowReduceRemoveSpec::default())), [0, 0, 0, 0]);
+}
+
+#[test]
 fn a_request_the_key_cannot_serve_is_refused_and_writes_nothing() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path(), Some(roomy()));
@@ -441,7 +471,6 @@ fn a_request_the_key_cannot_serve_is_refused_and_writes_nothing() {
         assert_eq!(series(&engine, &key), stored, "a refused removal changed the series");
         assert_eq!(engine.write_ahead_log_store().stats(1).writes, writes, "a refused removal reached the log");
     };
-    refused(WindowReduceRemoveSpec::default(), "would empty the key");
     refused(WindowReduceRemoveSpec { filters: vec![on("views", FeatureFilterOp::Equal, 1)], ..Default::default() }, "views");
     refused(
         WindowReduceRemoveSpec { members: CellMemberFilter { include: Some(vec![]), exclude: vec![] }, ..Default::default() },
