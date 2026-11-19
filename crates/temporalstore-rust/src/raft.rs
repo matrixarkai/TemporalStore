@@ -48,6 +48,7 @@ mod production_runtime;
 mod local_wal;
 pub(crate) mod follower_pipeline;
 pub(crate) mod wal_proto;
+pub use wal_proto::{decode_snapshot_object, encode_snapshot_object};
 mod cluster_meta;
 mod cluster_meta_inner;
 mod cluster_inner;

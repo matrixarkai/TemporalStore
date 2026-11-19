@@ -157,7 +157,8 @@ fn main() {
 
     // The encoding the external-store publish path actually serialises with.
     let encode_started = Instant::now();
-    let encoded = serde_json::to_vec(&snapshot).expect("snapshot must encode");
+    let encoded = temporalstore_rust::raft::encode_snapshot_object(&snapshot)
+        .expect("snapshot must encode");
     let encode_ms = encode_started.elapsed().as_millis();
     println!("published_encoded_bytes {}", encoded.len());
     println!("encode_ms        {encode_ms}");
