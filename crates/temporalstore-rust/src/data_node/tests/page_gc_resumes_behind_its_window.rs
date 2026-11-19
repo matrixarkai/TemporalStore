@@ -26,9 +26,13 @@ const WINDOW: usize = 2;
 /// Repeated writes over a small keyspace with a maintenance round after each batch leave behind
 /// slabs no live block points at. Block collection is off while seeding so they accumulate.
 fn seeded() -> DataNodeRuntime {
+    seeded_over(100)
+}
+
+fn seeded_over(keyspace: usize) -> DataNodeRuntime {
     const BATCH: usize = 400;
     const ROUNDS: usize = 6;
-    const KEYSPACE: usize = 100;
+    let keyspace_len = keyspace;
     let engine = TemporalEngine::default();
     engine.load_shard(SHARD);
     let runtime = DataNodeRuntime::new_without_workers_with_options(
@@ -50,7 +54,7 @@ fn seeded() -> DataNodeRuntime {
             engine.execute(ExecuteRequest {
                 shard_id: SHARD,
                 command: Command::StringSet {
-                    key: format!("window-{:06}", (written + index) % KEYSPACE),
+                    key: format!("window-{:06}", (written + index) % keyspace_len),
                     value: vec![b'v'; 96],
                 },
             });
@@ -150,40 +154,31 @@ fn a_bounded_collection_resumes_and_removes_what_one_unbounded_pass_removes() {
     assert_eq!(cursor, PageCursor::default(), "a finished scan leaves no cursor behind");
 }
 
-/// A store whose slabs are all live has nothing to collect, and the stage must not even plan: the
-/// gate is closed, so the round reports no collection at all. The control is the gate itself: the
-/// same store must show a non-empty denominator and a closed gate, so a store with no slabs (which
-/// is also "nothing to do") cannot pass for the right reason.
+/// A store that is mostly live, with one stale slab, has collectable garbage but a utility above the
+/// threshold: the gate is closed and the stage must not plan a collection. The controls make that
+/// the reason and not an accident: the gate itself reads closed over a non-empty store, and the same
+/// round run WITHOUT the gate does collect (so there was something to collect and pressure to do it).
 #[test]
-fn a_store_that_is_all_live_closes_the_gate_and_the_stage_skips_collection() {
-    let engine = TemporalEngine::default();
-    engine.load_shard(SHARD);
-    let runtime = DataNodeRuntime::new_without_workers_with_options(
-        engine,
-        DataNodeRuntimeOptions { worker_threads: 0, max_queue_depth: 4, max_background_queue_depth: 2 },
-    );
-    for index in 0..400 {
-        runtime.engine().execute(ExecuteRequest {
-            shard_id: SHARD,
-            command: Command::StringSet { key: format!("live-{index:06}"), value: vec![b'v'; 96] },
-        });
-    }
-    let seed_options = StorageManagerOptions { enable_block_gc: false, ..StorageManagerOptions::default() };
-    runtime.run_storage_manager_once(SHARD, seed_options);
+fn a_mostly_live_store_with_a_stale_slab_closes_the_gate_and_the_stage_skips_collection() {
+    let runtime = seeded_over(2000);
     runtime.engine().publish_block_slab_live_bytes();
     let gate = runtime
         .engine()
         .block_store()
         .reclaim_gate(crate::block_store::DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
     assert!(gate.ready && gate.logical_bytes > 0, "CONTROL: the store must hold slabs: {gate:?}");
-    assert!(!gate.due, "CONTROL: an all-live store must close the gate: {gate:?}");
+    assert!(!gate.due, "CONTROL: a mostly-live store must close the gate: {gate:?}");
 
     let period = Duration::from_secs(1);
     let mut state = ShardRoundState::new(Instant::now() - Duration::from_secs(60), period);
+    let mut ran = false;
     for _ in 0..20 {
-        let Some((slot, report)) =
-            runtime.run_storage_manager_tick(SHARD, &StorageManagerOptions::default(), &mut state, period)
-        else {
+        let Some((slot, report)) = runtime.run_storage_manager_tick(
+            SHARD,
+            &StorageManagerOptions::default(),
+            &mut state,
+            period,
+        ) else {
             break;
         };
         if slot == HeavySlot::PageGc {
@@ -192,8 +187,23 @@ fn a_store_that_is_all_live_closes_the_gate_and_the_stage_skips_collection() {
                 "a closed gate must skip block collection: {:?}",
                 report.gc_report
             );
-            return;
+            ran = true;
+            break;
         }
     }
-    panic!("the page-collection slot never ran");
+    assert!(ran, "the page-collection slot never ran");
+
+    // CONTROL: the same collection round with no gate in front of it does plan a collection.
+    let ungated = runtime.run_storage_manager_once_with_report_details(
+        SHARD,
+        crate::data_node::round_budget::options_for_slot(
+            &StorageManagerOptions::default(),
+            HeavySlot::PageGc,
+        ),
+        false,
+    );
+    assert!(
+        ungated.gc_report.is_some(),
+        "CONTROL: without the gate the round must collect, or this test proves nothing"
+    );
 }
