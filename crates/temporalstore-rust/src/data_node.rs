@@ -1902,6 +1902,23 @@ pub struct StorageManagerLoopReport {
     /// sum never exceeds it; the remainder is the bookkeeping after the last stage.
     #[serde(default)]
     pub duration_us: u64,
+    /// What the WAL reclaim stage did this round, as the loop knew it. All zero when the stage did
+    /// not run or answered from the quiet-reclaim memo, which is the loop's own statement that a
+    /// previous round found nothing and nothing it reads has moved since.
+    #[serde(default)]
+    pub wal_reclaim_round: StorageManagerWalReclaimRound,
+}
+
+/// The three things a WAL reclaim round does, named so a round that stays busy on an idle shard
+/// says which of them keeps it busy.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageManagerWalReclaimRound {
+    /// The round took a bucket dump.
+    pub dumped: bool,
+    /// Blocks moved out of WAL records into the block store.
+    pub moved_blocks: usize,
+    /// WAL records the reclaim removed.
+    pub wal_records_removed: u64,
 }
 
 /// What one stage of the periodic loop cost: how long its work took and how much of the store
