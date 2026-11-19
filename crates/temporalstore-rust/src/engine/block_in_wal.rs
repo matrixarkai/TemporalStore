@@ -56,6 +56,8 @@ pub(super) use read_snapshot::ReadSnapshotGuard;
 thread_local! {
     static OLDEST_REGISTERED_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static REGISTRATION_QUERY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The most entries one registry-lock hold copied in a sliced walk, since the last reset.
+    static LARGEST_PART_COPY: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -406,28 +408,77 @@ pub(super) fn wal_resident_key(object_id: u64, element_name: Option<&str>) -> u6
 /// asked. It is not sufficient on its own -- the map resolves a record and the block is then chosen
 /// INSIDE that record -- which is why [`StagedBlock::element_name`] exists as well.
 // Hash randomization is process-local; persisted block identities keep their stable hash.
-#[derive(Default)]
+/// How many parts one shard's registrations are split into. A walk over the whole shard takes the
+/// registry lock once per part, so a registering writer waits for at most one part's worth of
+/// entries (a 64th of the shard) instead of for the whole walk.
+const REGISTRATION_PARTS: usize = 64;
+
+type RegistrationPart = HashMap<BlockKey, Registration, ahash::RandomState>;
+
 struct ShardRegistrations {
     owner: usize,
     shard: ShardId,
-    entries: HashMap<BlockKey, Registration, ahash::RandomState>,
+    parts: Vec<RegistrationPart>,
+    /// Picks a key's part. Fixed for the life of the shard so a key always lands in the same part.
+    split: ahash::RandomState,
+    len: usize,
     folded_counts: Option<HashMap<u64, usize, ahash::RandomState>>,
 }
 
-impl std::ops::Deref for ShardRegistrations {
-    type Target = HashMap<BlockKey, Registration, ahash::RandomState>;
-
-    fn deref(&self) -> &Self::Target { &self.entries }
+impl Default for ShardRegistrations {
+    fn default() -> Self { Self::new(0, 0) }
 }
 
 impl ShardRegistrations {
     fn new(owner: usize, shard: ShardId) -> Self {
-        Self { owner, shard, entries: HashMap::default(), folded_counts: None }
+        Self {
+            owner,
+            shard,
+            parts: (0..REGISTRATION_PARTS).map(|_| RegistrationPart::default()).collect(),
+            split: ahash::RandomState::new(),
+            len: 0,
+            folded_counts: None,
+        }
     }
+
+    fn part_of(&self, key: &BlockKey) -> usize {
+        use std::hash::BuildHasher;
+        (self.split.hash_one(key) >> 58) as usize % REGISTRATION_PARTS
+    }
+
+    fn len(&self) -> usize { self.len }
+
+    fn is_empty(&self) -> bool { self.len == 0 }
+
+    fn capacity(&self) -> usize { self.parts.iter().map(|part| part.capacity()).sum() }
+
+    fn get(&self, key: &BlockKey) -> Option<&Registration> {
+        self.parts[self.part_of(key)].get(key)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&BlockKey, &Registration)> {
+        self.parts.iter().flat_map(|part| part.iter())
+    }
+
+    /// One part's registrations, cloned, so the caller can drop the registry lock before doing
+    /// anything with them. The clone is one reference-count bump per entry.
+    fn part_snapshot(&self, part: usize) -> Vec<(BlockKey, Registration)> {
+        let part = &self.parts[part];
+        let mut out = Vec::with_capacity(part.len());
+        for (key, location) in part {
+            #[cfg(test)]
+            REGISTRATION_QUERY_VISITS.with(|count| count.set(count.get() + 1));
+            out.push((key.clone(), location.clone()));
+        }
+        #[cfg(test)]
+        LARGEST_PART_COPY.with(|largest| largest.set(largest.get().max(out.len())));
+        out
+    }
+
     fn enable_fold_tracking(&mut self) {
         if self.folded_counts.is_none() {
             let mut counts = HashMap::<_, _, ahash::RandomState>::default();
-            for key in self.entries.keys() {
+            for (key, _) in self.iter() {
                 *counts.entry(wal_resident_key(key.0, key.1.as_deref())).or_default() += 1;
             }
             self.folded_counts = Some(counts);
@@ -439,15 +490,16 @@ impl ShardRegistrations {
     }
 
     fn release_empty_capacity(&mut self) {
-        if self.entries.is_empty() {
-            self.entries.shrink_to_fit();
+        if self.is_empty() {
+            for part in &mut self.parts { part.shrink_to_fit(); }
             if let Some(counts) = self.folded_counts.as_mut() { counts.shrink_to_fit(); }
         }
     }
 
     fn insert(&mut self, key: BlockKey, location: Registration) -> Option<Registration> {
-        track_location(self.owner, self.shard, &location, self.entries.get(&key));
-        match self.entries.entry(key) {
+        let at = self.part_of(&key);
+        track_location(self.owner, self.shard, &location, self.parts[at].get(&key));
+        match self.parts[at].entry(key) {
             std::collections::hash_map::Entry::Occupied(mut entry) => Some(entry.insert(location)),
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let key = entry.key();
@@ -455,14 +507,19 @@ impl ShardRegistrations {
                     *counts.entry(wal_resident_key(key.0, key.1.as_deref())).or_default() += 1;
                 }
                 entry.insert(location);
+                self.len += 1;
                 None
             }
         }
     }
 
     fn remove(&mut self, key: &BlockKey) -> Option<Registration> {
-        let removed = self.entries.remove(key);
-        if let Some(location) = &removed { untrack_location(self.owner, self.shard, location); }
+        let at = self.part_of(key);
+        let removed = self.parts[at].remove(key);
+        if let Some(location) = &removed {
+            untrack_location(self.owner, self.shard, location);
+            self.len -= 1;
+        }
         if let (Some(_), Some(counts)) = (&removed, self.folded_counts.as_mut()) {
             let folded = wal_resident_key(key.0, key.1.as_deref());
             let count = counts.get_mut(&folded).expect("registered fold exists");
@@ -475,7 +532,9 @@ impl ShardRegistrations {
 
 impl Drop for ShardRegistrations {
     fn drop(&mut self) {
-        for location in self.entries.values() { untrack_location(self.owner, self.shard, location); }
+        for part in &self.parts {
+            for location in part.values() { untrack_location(self.owner, self.shard, location); }
+        }
     }
 }
 
@@ -534,6 +593,14 @@ fn registry() -> &'static Mutex<RegistrationRegistry> {
 #[cfg(test)]
 #[path = "registration_scope_tests.rs"]
 mod registration_scope_tests;
+
+#[cfg(test)]
+#[path = "a_registry_walk_copies_one_part_at_a_time.rs"]
+mod a_registry_walk_copies_one_part_at_a_time;
+
+#[cfg(test)]
+#[path = "registry_walk_measure.rs"]
+mod registry_walk_measure;
 
 #[cfg(test)]
 #[path = "registration_hash_tests.rs"]
@@ -852,14 +919,10 @@ pub(super) fn oldest_registered_objects(
 ) -> Vec<(u64, BlockKey)> {
     #[cfg(test)]
     OLDEST_REGISTERED_SCANS.with(|scans| scans.set(scans.get() + 1));
-    let Ok(map) = registry().lock() else {
-        return Vec::new();
-    };
-    let owner = block_store.store_id();
-    let mut entries: Vec<(u64, BlockKey)> = map
-        .entries(owner, shard_id)
-        .map(|(block, location)| (location.2, block.clone()))
-        .collect();
+    let mut entries: Vec<(u64, BlockKey)> = Vec::new();
+    for_each_registration_sliced(block_store.store_id(), shard_id, |block, location| {
+        entries.push((location.2, block));
+    });
     entries.sort_unstable();
     entries
 }
@@ -898,6 +961,28 @@ pub(super) fn unreferenced_physical_registrations(
     physical::retirements(block_store, shard_id, store, shard, retain_live_real_frames)
 }
 
+/// Visit every registration of a shard one part at a time, taking the registry lock for ONE part's
+/// copy and releasing it before `visit` sees any entry. A registering writer therefore waits for a
+/// 64th of the shard, not for the whole walk. Entries written or removed between parts may be seen
+/// or missed; every caller either re-checks identity before acting (`Arc::ptr_eq`) or acts under
+/// a guard that already refuses a shard that changed.
+fn for_each_registration_sliced(
+    owner: usize,
+    shard_id: ShardId,
+    mut visit: impl FnMut(BlockKey, Registration),
+) {
+    for part in 0..REGISTRATION_PARTS {
+        let slice = {
+            let Ok(map) = registry().lock() else { return };
+            let Some(entries) = map.shard(owner, shard_id) else { return };
+            entries.part_snapshot(part)
+        };
+        for (key, location) in slice { visit(key, location); }
+        // Let a waiting writer take the lock before the next part's copy.
+        std::thread::yield_now();
+    }
+}
+
 /// Propose removals; the caller must publish an image that no longer needs them first.
 pub(super) fn unreferenced_registrations(
     block_store: &crate::block_store::BlockStore,
@@ -905,27 +990,22 @@ pub(super) fn unreferenced_registrations(
     store: &LocalWriteAheadLogStore,
     retained_objects: &std::collections::HashSet<u64>,
 ) -> Vec<RegistrationRetirement> {
-    let Ok(map) = registry().lock() else { return Vec::new(); };
     let owner = block_store.store_id();
-    let mut candidates: Vec<_> = map.entries(owner, shard_id)
-        .filter_map(|(block, location)| {
-            let folded_key = wal_resident_key(block.0, block.1.as_deref());
-            if retained_objects.contains(&block.0) || !location.0.same_log(store)
-            {
-                return None;
-            }
-            Some(RegistrationRetirement {
+    let mut candidates = Vec::new();
+    // Folded placement keys are hashes. Preserve a collision with any retained object.
+    let mut protected = std::collections::HashSet::<u64>::new();
+    for_each_registration_sliced(owner, shard_id, |block, location| {
+        let folded_key = wal_resident_key(block.0, block.1.as_deref());
+        if retained_objects.contains(&block.0) {
+            protected.insert(folded_key);
+        } else if location.0.same_log(store) {
+            candidates.push(RegistrationRetirement {
                 folded_key, log_id: location.1, sequence: location.2,
-                block: RetirementKey::Logical(block.clone()), location: location.clone(),
-            })
-        })
-        .collect();
+                block: RetirementKey::Logical(block), location,
+            });
+        }
+    });
     if !candidates.is_empty() {
-        // Folded placement keys are hashes. Preserve a collision with any retained object.
-        let mut protected: std::collections::HashSet<_> = map.entries(owner, shard_id)
-            .filter(|((object_id, _), _)| retained_objects.contains(object_id))
-            .map(|((object_id, name), _)| wal_resident_key(*object_id, name.as_deref()))
-            .collect();
         protected.extend(physical::folded_keys(block_store, shard_id));
         candidates.retain(|candidate| !protected.contains(&candidate.folded_key));
     }

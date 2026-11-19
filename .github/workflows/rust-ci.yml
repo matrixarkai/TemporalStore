@@ -557,6 +557,9 @@ jobs:
             engine::tests::bucket_dump_binary_shape::no_json_path_is_left_for_a_manifest_or_a_marker \
             engine::tests::a_dump_manifest_lists_the_shard_once::the_summaries_in_a_manifest_are_the_live_shards_summaries \
             engine::tests::a_dump_manifest_lists_the_shard_once::a_manifest_lists_the_live_blocks_once \
+            engine::block_in_wal::a_registry_walk_copies_one_part_at_a_time::the_candidate_walk_copies_a_small_part_of_the_shard_under_one_lock_hold \
+            engine::block_in_wal::a_registry_walk_copies_one_part_at_a_time::the_oldest_first_walk_copies_a_small_part_of_the_shard_under_one_lock_hold \
+            engine::block_in_wal::a_registry_walk_copies_one_part_at_a_time::a_writer_registering_between_parts_is_neither_lost_nor_double_counted \
             engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::a_whole_manifest_gives_its_image_and_a_delta_is_refused \
             engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::the_reader_doors_refuse_a_delta \
             proxy::memory::memory_metadata_tests::a_metadata_document_round_trips_exactly \
