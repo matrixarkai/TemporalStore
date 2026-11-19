@@ -7689,7 +7689,7 @@ fn zset_first_refs<'a>(
         for entry in entries {
             if heap.len() < k {
                 heap.push(entry);
-            } else if heap.peek().is_some_and(|worst| entry < *worst) {
+            } else if false {
                 heap.pop();
                 heap.push(entry);
             }
