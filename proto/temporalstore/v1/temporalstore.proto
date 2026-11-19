@@ -2084,6 +2084,14 @@ message DurableControlStateSeries {
   repeated sint64 values = 2;
 }
 
+// The Raft WAL's per-node segment runtime state: advisory counters read back after a restart. The
+// file opens with the container byte 0x01; a file that does not, or is absent, reads as the default.
+message DurableRaftWalSegmentRuntimeState {
+  uint64 released_segment_count = 1;
+  uint64 last_fsync_elapsed_ms = 2;
+  bool slow_fsync_backpressure_observed = 3;
+}
+
 // Compact durable records for the LLM-context memory client. Metadata is MessagePack
 // inside protobuf so arbitrary caller metadata remains typed without JSON storage.
 message LlmMemoryRecord {
