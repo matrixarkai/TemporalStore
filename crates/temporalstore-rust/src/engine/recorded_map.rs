@@ -589,7 +589,7 @@ pub(super) fn install_packed_hash_block_at_bucket<'a>(
             shard, routing_bucket, object_key, |field| written.contains(field),
         );
     }
-    install_packed_hash_fields(shard, object_key, fields, address, filed, complete);
+    install_packed_hash_fields(shard, object_key, fields, address, filed, complete, shared);
 }
 
 fn install_packed_hash_fields<'a>(
@@ -599,6 +599,7 @@ fn install_packed_hash_fields<'a>(
     address: ElementEntry,
     _filed: BlockFiled,
     complete: bool,
+    shared: Option<&super::container_blocks::SharedHashFields>,
 ) {
     // Exact names were checked under this exclusive shard borrow before the block was filed.
     if complete {
@@ -608,6 +609,16 @@ fn install_packed_hash_fields<'a>(
             }
             return;
         }
+    }
+    if let Some(shared) = shared.filter(|_| !shard.bucket_index.hashes.contains_key(object_key)) {
+        let fields = super::hash_field_map::HashFieldMap::from_shared_fields(
+            shared, &mut shard.bucket_index.kind_pool, &address,
+        );
+        let resident = HashKind::resident(shard);
+        resident.ordinals.invalidate(object_key);
+        resident.timestamp_hints.remove(object_key);
+        resident.entries.insert(std::sync::Arc::from(object_key), fields);
+        return;
     }
     for field in fields {
         let handle = super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
@@ -1185,45 +1196,6 @@ impl<K: RecordedKind> RecordedMap<K> {
     }
 }
 
-#[cfg(test)]
-mod selected_compaction_visits {
-    use super::*;
-
-    #[test]
-    fn selected_visits_skip_absent_keys_and_keep_the_complete_traversal() {
-        let mut map: RecordedMap<HashKind> = RecordedMap::default();
-        for i in 0..1000 {
-            map.insert_element_for_test(
-                &format!("object-{i}"),
-                std::sync::Arc::from("field"),
-                crate::block_store::ElementEntry::default(),
-            );
-        }
-        let selected: HashSet<ModelKey> = ["object-7", "object-900", "absent"]
-            .into_iter().map(std::sync::Arc::from).collect();
-        let mut seen = HashSet::new();
-        map.try_visit_element_values_mut(Some(&selected), |key, mut values| {
-            assert_eq!(values.iter_mut().count(), 1);
-            seen.insert(key.to_owned());
-            Ok::<_, ()>(())
-        }).unwrap();
-        assert_eq!(seen, HashSet::from(["object-7".to_owned(), "object-900".to_owned()]));
-        let mut complete = 0;
-        map.try_visit_element_values_mut(None, |_, _| {
-            complete += 1;
-            Ok::<_, ()>(())
-        }).unwrap();
-        assert_eq!(complete, 1000);
-        let mut stopped = 0;
-        let error = map.try_visit_element_values_mut(Some(&selected), |_, _| {
-            stopped += 1;
-            Err("stop")
-        });
-        assert_eq!(error, Err("stop"));
-        assert_eq!(stopped, 1);
-    }
-}
-
 /// PER-KIND EXCEPTION, hash only.
 impl<K: ReplaysInstallsUnrecorded> RecordedMap<K> {
     /// Recovery installs an element and files NOTHING, because this kind has a replay arm that
@@ -1766,6 +1738,10 @@ impl<'de, K: RecordedKind> serde::Deserialize<'de> for RecordedMap<K> {
 #[cfg(test)]
 #[path = "tests/shared_hash_fields.rs"]
 mod shared_hash_fields_tests;
+
+#[cfg(test)]
+#[path = "recorded_selected_compaction_tests.rs"]
+mod selected_compaction_visits;
 
 #[cfg(test)]
 #[path = "recorded_ordinal_tests.rs"]
