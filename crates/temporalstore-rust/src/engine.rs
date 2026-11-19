@@ -437,25 +437,36 @@ pub struct TemporalEngine {
 pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Optional foreground relocation threshold. Both spellings remain supported; zero or an
-/// unset setting leaves log-backed values in their existing durable records.
+/// Optional foreground relocation threshold. Zero or an unset setting leaves log-backed values
+/// in their existing durable records.
 ///
 /// Registrations contain locations, not retained payloads. Their count follows indexed live
 /// identities, while the payload cache enforces its byte capacity independently. Moving every
 /// old location to a slab just because the index grew duplicates needed log data without
 /// freeing a reclaimable record. Maintenance handles relocation pressure separately.
 fn wal_resident_block_limit() -> usize {
-    crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"], 0)
+    crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS"], 0)
 }
+
+/// Two tests set and clear `TS_WAL_RESIDENT_BLOCKS` for the whole process while the harness runs
+/// tests on parallel threads. Each holds this lock for its whole body, so neither reads the other's
+/// value or clears it from under it.
+#[cfg(test)]
+pub(crate) static WAL_RESIDENT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod wal_resident_env_name_tests {
-    /// The previous spelling of this bound must keep configuring it.
+    /// THE ONE SPELLING BOUNDS THE SET, AND A RETIRED ONE DOES NOT.
     ///
-    /// An operator's explicit relocation policy must keep working under either spelling.
-    /// Unset is different from an explicit limit, and the current spelling wins over the alias.
+    /// The bound used to be read under an older spelling as well. A lookup list that gains that
+    /// name back would make every deployment still exporting it run with a relocation policy it
+    /// was not given, silently. The value set under the retired name differs from the default,
+    /// so "ignored" cannot be confused with "read and equal".
     #[test]
-    fn the_previous_wal_resident_env_name_still_bounds_the_set() {
+    fn only_the_current_wal_resident_env_name_bounds_the_set() {
+        let _env = super::WAL_RESIDENT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let keys = ["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"];
         for key in keys {
             std::env::remove_var(key);
@@ -466,20 +477,12 @@ mod wal_resident_env_name_tests {
         std::env::set_var("TS_WAL_RESIDENT_PAGES", "64");
         assert_eq!(
             super::wal_resident_block_limit(),
-            64,
-            "the previous spelling must still bound the resident set, not fall back to the default"
-        );
-        assert_ne!(
-            super::wal_resident_block_limit(), default_limit,
-            "a value read from the previous name must differ from the default, or this proves              nothing"
+            default_limit,
+            "a retired spelling bounded the resident set"
         );
 
         std::env::set_var("TS_WAL_RESIDENT_BLOCKS", "128");
-        assert_eq!(
-            super::wal_resident_block_limit(),
-            128,
-            "the current spelling must win when both are set, or a deployment mid-migration gets              whichever the lookup tried first"
-        );
+        assert_eq!(super::wal_resident_block_limit(), 128);
 
         for key in keys {
             std::env::remove_var(key);
