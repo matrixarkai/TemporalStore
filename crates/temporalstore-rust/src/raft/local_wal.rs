@@ -428,9 +428,17 @@ impl LocalRaftWal {
             && log_last_index >= cursor.persisted_last_index
             && log_first_index > 0
             && log_first_index <= cursor.persisted_last_index
-            && record.entries.iter().any(|entry| {
-                entry.index == cursor.persisted_last_index && entry.term == cursor.persisted_last_term
-            });
+            && {
+                // The log is ordered by index: find the entry last written by position, not by
+                // looking at every entry.
+                let at = record
+                    .entries
+                    .partition_point(|entry| entry.index < cursor.persisted_last_index);
+                record.entries.get(at).map_or(false, |entry| {
+                    entry.index == cursor.persisted_last_index
+                        && entry.term == cursor.persisted_last_term
+                })
+            };
 
         let encode = |as_delta: bool| -> io::Result<Vec<u8>> {
             let envelope = if as_delta {

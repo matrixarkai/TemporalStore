@@ -288,6 +288,23 @@ const DATA_RAFT_COMMAND_HEADER_LEN: usize = 40;
 /// voted_for, commit_index, the log, membership, snapshots, or the apply/storage fences still
 /// flips the fingerprint and forces a durable persist.
 fn raft_durable_fingerprint(record: &RaftWalRecord) -> u64 {
+    raft_durable_fingerprint_of(
+        record,
+        record.entries.len(),
+        record.entries.first().map(|entry| (entry.index, entry.term)),
+        record.entries.last().map(|entry| (entry.index, entry.term)),
+    )
+}
+
+/// The same fingerprint from a record that does not carry its log, and the three numbers that
+/// summarise the log: a caller that only wants to know whether anything changed need not copy
+/// every entry to find out.
+fn raft_durable_fingerprint_of(
+    record: &RaftWalRecord,
+    entry_count: usize,
+    first: Option<(u64, u64)>,
+    last: Option<(u64, u64)>,
+) -> u64 {
     // Everything Raft must persist participates, but the log is SUMMARISED rather than
     // serialised. Hashing every entry made this check -- which runs on every persist, for
     // every node -- cost O(log length), the very cost incremental WAL records exist to
@@ -310,10 +327,10 @@ fn raft_durable_fingerprint(record: &RaftWalRecord) -> u64 {
     let bytes = serde_json::to_vec(&reduced).unwrap_or_default();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::hash::Hasher::write(&mut hasher, &bytes);
-    std::hash::Hasher::write_u64(&mut hasher, record.entries.len() as u64);
-    for entry in [record.entries.first(), record.entries.last()].into_iter().flatten() {
-        std::hash::Hasher::write_u64(&mut hasher, entry.index);
-        std::hash::Hasher::write_u64(&mut hasher, entry.term);
+    std::hash::Hasher::write_u64(&mut hasher, entry_count as u64);
+    for (index, term) in [first, last].into_iter().flatten() {
+        std::hash::Hasher::write_u64(&mut hasher, index);
+        std::hash::Hasher::write_u64(&mut hasher, term);
     }
     std::hash::Hasher::finish(&hasher)
 }
@@ -5907,7 +5924,13 @@ fn append_entry(node: &mut RaftNode, entry: RaftLogEntry) {
     // truncating on index<=last (a stale/duplicate/reordered AppendEntries that is a
     // prefix of the committed log) would delete committed suffix entries, rewind
     // applied state, and double-execute non-idempotent commands on re-apply.
-    if let Some(existing) = node.log.iter().find(|existing| existing.index == entry.index) {
+    // A log is ordered by index, so an entry past the last one cannot already be in it: the
+    // common append, which a scan of the whole log used to confirm one entry at a time.
+    let existing = match node.log.last() {
+        Some(last) if last.index < entry.index => None,
+        _ => node.log.iter().find(|existing| existing.index == entry.index),
+    };
+    if let Some(existing) = existing {
         if existing.term == entry.term {
             return;
         }
