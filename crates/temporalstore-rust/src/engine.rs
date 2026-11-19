@@ -1922,13 +1922,6 @@ impl TemporalEngine {
                 | Command::FeatureQuery { .. }
                 | Command::FeatureQueryFiltered { .. }
                 | Command::WindowReduceRank { .. }
-                | Command::ZSetScore { .. }
-                | Command::ZSetCard { .. }
-                | Command::ZSetScan { .. }
-                | Command::ListLen { .. }
-                | Command::SetScan { .. }
-                | Command::SetCard { .. }
-                | Command::SetIsMember { .. }
         );
         if !read_command {
             return None;
