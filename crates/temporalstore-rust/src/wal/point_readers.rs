@@ -275,7 +275,8 @@ impl Cache {
         if let Some(index) = self
             .readers
             .iter()
-            .position(|old| old.shard == reader.shard && old.path == reader.path)
+            .position(|old| old.shard == reader.shard
+                && old.path.as_os_str() == reader.path.as_os_str())
         {
             let old = self.readers.remove(index).unwrap();
             self.reader_bytes -= old.path.capacity();

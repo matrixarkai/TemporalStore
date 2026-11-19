@@ -72,6 +72,41 @@ fn sealed_readers_reuse_the_descriptor_without_relisting_or_reopening() {
 
 #[cfg(unix)]
 #[test]
+fn returned_descriptors_replace_only_the_exact_stored_path() {
+    let _policy = RollPolicy::new(1);
+    let dir = tempfile::tempdir().unwrap();
+    let position = {
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append(&store, 7, 1)
+    };
+    let mut cache = Cache::default();
+    let first = cache.take(dir.path(), 7, position.1).unwrap().unwrap();
+    let second = cache.take(dir.path(), 7, position.1).unwrap().unwrap();
+    assert_eq!(first.path.as_os_str(), second.path.as_os_str());
+    cache.put(first);
+    cache.put(second);
+    assert_eq!(cache.readers.len(), 1);
+    let original_path = cache.readers[0].path.clone();
+    let original_bytes = cache.reader_bytes;
+    let original_extent = cache.open_file_bytes;
+    let first = cache.take(dir.path(), 7, position.1).unwrap().unwrap();
+    let mut other_spelling = cache.take(dir.path(), 7, position.1).unwrap().unwrap();
+    other_spelling.path = dir.path().join(".").join(original_path.file_name().unwrap());
+    assert_ne!(other_spelling.path.as_os_str(), original_path.as_os_str());
+    cache.put(first);
+    cache.put(other_spelling);
+    assert_eq!(cache.readers.len(), 2);
+    assert_eq!(cache.open_file_bytes, 2 * original_extent);
+    assert!(cache.reader_bytes >= 2 * original_bytes);
+    let selected = cache.take(dir.path(), 7, position.1).unwrap().unwrap();
+    assert!(selected.stamp.is_some() || !cfg!(unix));
+    cache.put(selected);
+    assert!(cache.readers.len() <= MAX_READERS);
+    assert!(cache.reader_bytes <= READER_BYTES && cache.open_file_bytes <= OPEN_FILE_BYTES);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_sealed_descriptor_serves_different_records_inside_its_extent() {
     let _policy = RollPolicy::new(0);
     let dir = tempfile::tempdir().unwrap();

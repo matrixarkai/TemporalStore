@@ -279,7 +279,41 @@ pub(crate) fn dump_gate_delays(
 #[path = "planning_order_tests.rs"]
 mod planning_order_tests;
 
+#[cfg(test)]
+#[path = "planning_live_slab_tests.rs"]
+mod planning_live_slab_tests;
+
 impl TemporalEngine {
+    fn planning_live_block_slab_ids(
+        &self,
+        shard_id: ShardId,
+        physical_slabs: Option<&[u64]>,
+        detailed_report: bool,
+    ) -> Vec<u64> {
+        if !detailed_report {
+            if let Some(physical_slabs) = physical_slabs {
+                let shards = self.shards.read().expect("engine lock poisoned");
+                if let Some(shard) = shards.get(&shard_id)
+                    .filter(|shard| shard.bucket_index.block_slab_live.is_ready())
+                {
+                    let mut live = shard.bucket_index.block_slab_live.live_slab_ids()
+                        .collect::<BTreeSet<_>>();
+                    if let Some(pinned) = self.unpublished_compaction_slabs
+                        .read().expect("unpublished compaction lock poisoned").get(&shard_id)
+                    {
+                        live.extend(pinned.iter().copied());
+                    }
+                    // A positive tally may postpone collection, never authorize deletion.
+                    // Any physical slab it omits requires the authoritative address walk.
+                    if physical_slabs.iter().all(|id| live.contains(id)) {
+                        return live.into_iter().collect();
+                    }
+                }
+            }
+        }
+        self.live_block_slab_ids(shard_id)
+    }
+
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
         self.storage_lifecycle_plan_with_report_details(request, true)
     }
@@ -485,15 +519,15 @@ impl TemporalEngine {
         {
             selected_dump_buckets.truncate(request.max_dump_buckets_per_round);
         }
-        let live_block_slab_ids = self.live_block_slab_ids(request.shard_id);
+        let physical_slab_ids = self.block_store.slab_ids();
+        let live_block_slab_ids = self.planning_live_block_slab_ids(
+            request.shard_id, physical_slab_ids.as_deref().ok(), detailed_report,
+        );
         let live_block_slab_set = live_block_slab_ids
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let stale_block_slab_ids = self
-            .block_store
-            .slab_ids()
-            .unwrap_or_default()
+        let stale_block_slab_ids = physical_slab_ids.unwrap_or_default()
             .into_iter()
             .filter(|id| !live_block_slab_set.contains(id))
             .collect::<Vec<_>>();

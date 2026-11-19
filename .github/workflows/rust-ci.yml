@@ -406,6 +406,12 @@ jobs:
               engine::hash_field_map::shared_field_tests::shared_field_rows_keep_the_map_wire_shape_and_mutation_behavior \
               engine::hash_field_map::shared_field_tests::shared_field_construction_avoids_wide_row_growth_slack \
               engine::recorded_map::shared_hash_fields_tests::shared_hash_fields_new_rows_are_exact_sized_and_survive_reload \
+              engine::storage_lifecycle_methods::planning_live_slab_tests::operational_wal_only_plan_does_not_walk_retained_fields \
+              engine::storage_lifecycle_methods::planning_live_slab_tests::a_missing_live_tally_entry_requires_the_authoritative_scan \
+              engine::storage_lifecycle_methods::planning_live_slab_tests::unknown_inventory_unready_tallies_and_detailed_requests_always_scan \
+              engine::storage_lifecycle_methods::planning_live_slab_tests::unpublished_compaction_slabs_remain_retained_and_retirement_rechecks_liveness \
+              engine::storage_lifecycle_methods::planning_live_slab_tests::an_overreporting_tally_only_defers_collection_until_reconciliation \
+              wal::point_readers::tests::returned_descriptors_replace_only_the_exact_stored_path \
               wal::point_reads::tests::leased_prepared_reads_survive_prefix_rewrite \
               wal_proto::indexed::tests::concurrent_directory_readers_share_one_bounded_entry \
               wal::read_retention_tests::acquiring_and_releasing_a_read_lease_does_not_wait_for_wal_io \
