@@ -117,6 +117,9 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     max_batch_commands: int = 512
     """Maximum commands per HTTP batch during reads."""
 
+    max_async_read_batches: int = 1
+    """Concurrent HTTP batches per async read, from 1 to 32; 1 keeps serial reads."""
+
     max_write_batch_commands: int = 4096
     """Maximum commands per HTTP batch during materialization writes."""
 
@@ -274,6 +277,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             online_config.max_batch_commands,
             online_config.max_batch_request_bytes,
             online_config.max_write_batch_commands,
+            online_config.max_async_read_batches,
         )
         # Rebuild on a config change rather than handing back a client pointed
         # at the previous node: a cached client that outlives its config reads

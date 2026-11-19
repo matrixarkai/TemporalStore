@@ -170,6 +170,7 @@ class TemporalStoreClient:
         max_batch_commands: int = 512,
         max_batch_request_bytes: int = 4 * 1024 * 1024,
         max_write_batch_commands: Optional[int] = None,
+        max_async_read_batches: int = 1,
     ) -> None:
         write_batch_commands = (
             max_batch_commands
@@ -182,6 +183,10 @@ class TemporalStoreClient:
             or max_batch_request_bytes < 1
         ):
             raise ValueError("batch limits must be positive")
+        if (isinstance(max_async_read_batches, bool)
+                or not isinstance(max_async_read_batches, int)
+                or not 1 <= max_async_read_batches <= 32):
+            raise ValueError("async read batch concurrency must be between 1 and 32")
         self.host = host
         self.port = port
         self.shard_id = shard_id
@@ -189,6 +194,7 @@ class TemporalStoreClient:
         self.max_batch_commands = max_batch_commands
         self.max_write_batch_commands = write_batch_commands
         self.max_batch_request_bytes = max_batch_request_bytes
+        self.max_async_read_batches = max_async_read_batches
         self._local = threading.local()
         # EVERY connection this client ever opened, not just this thread's.
         # `threading.local` is the right place to KEEP a connection and the
@@ -519,16 +525,32 @@ class TemporalStoreClient:
             if getattr(self, supported) is False:
                 continue
             results: List[List[Any]] = []
+            progress = None
             try:
-                for chunk, body in self._shared_field_read_batches(keys, fields):
+                batches = iter(self._shared_field_read_batches(keys, fields))
+                first = next(batches, None)
+                if first is None:
+                    return []
+                second = next(batches, None)
+                if second is None:
+                    chunk, body = first
                     raw = await transport.read(path, body)
                     if len(raw) > 1024 * 1024:
-                        decoded = await asyncio.to_thread(self._decode_async_hash_payload, raw, chunk, compact)
+                        results = await asyncio.to_thread(self._decode_async_hash_payload, raw, chunk, compact)
                     else:
-                        decoded = self._decode_async_hash_payload(raw, chunk, compact)
-                    results.extend(decoded)
+                        results = self._decode_async_hash_payload(raw, chunk, compact)
+                else:
+                    from itertools import chain
+                    progress = [False]
+                    batches = chain((first, second), batches)
+                    first = second = None
+                    async for decoded in self._read_hash_batches_async(
+                        transport, path, batches, compact,
+                        getattr(self, supported) is True, progress,
+                    ):
+                        results.extend(decoded)
             except AsyncReadHttpError as error:
-                if error.status != 404 or results:
+                if error.status != 404 or results or progress is not None and progress[0]:
                     raise TemporalStoreCommandError(f"http_{error.status}", str(error)) from error
                 setattr(self, supported, False)
             except AsyncReadLimitError as error:
@@ -541,6 +563,69 @@ class TemporalStoreClient:
                 setattr(self, supported, True)
                 return results
         return await asyncio.to_thread(self.batch_hash_multi_get, keys, fields)
+
+    async def _read_hash_batches_async(self, transport, path, batches, compact,
+                                      known_supported, progress):
+        import asyncio
+        from collections import deque
+        from itertools import chain
+
+        async def read_batch(chunk, body):
+            raw = await transport.read(path, body)
+            if len(raw) > 1024 * 1024:
+                decoded = await asyncio.to_thread(self._decode_async_hash_payload, raw, chunk, compact)
+            else:
+                decoded = self._decode_async_hash_payload(raw, chunk, compact)
+            # A later batch can finish before the first. Its success also forbids fallback.
+            progress[0] = True
+            return decoded
+
+        batches = iter(batches)
+        if not known_supported:
+            first = next(batches, None)
+            if first is None:
+                return
+            yield await read_batch(*first)
+        if self.max_async_read_batches == 1:
+            for chunk, body in batches:
+                yield await read_batch(chunk, body)
+            return
+        first = next(batches, None)
+        if first is None:
+            return
+        second = next(batches, None)
+        if second is None:
+            yield await read_batch(*first)
+            return
+        batches = iter(chain((first, second), batches))
+        first = second = None
+        pending = deque()
+        pending_bytes = 0
+        waiting = None
+        try:
+            while True:
+                while len(pending) < self.max_async_read_batches:
+                    if waiting is None:
+                        waiting = next(batches, None)
+                    if waiting is None:
+                        break
+                    size = len(waiting[1])
+                    if pending and pending_bytes + size > self.max_batch_request_bytes:
+                        break
+                    pending.append((asyncio.create_task(read_batch(*waiting)), size))
+                    pending_bytes += size
+                    waiting = None
+                if not pending:
+                    break
+                task, size = pending.popleft()
+                rows = await task
+                pending_bytes -= size
+                yield rows
+        finally:
+            for task, _size in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*(task for task, _size in pending), return_exceptions=True)
 
     def _decode_async_hash_payload(self, raw: bytes, chunk: List[str], compact: bool) -> List[List[Any]]:
         envelope = msgpack.unpackb(raw, raw=False)
