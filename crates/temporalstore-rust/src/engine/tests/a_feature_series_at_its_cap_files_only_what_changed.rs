@@ -42,9 +42,9 @@ use crate::engine::timestamped_series::TimestampedSeries as _;
 use crate::types::CommandResponse;
 use std::collections::{BTreeMap, BTreeSet};
 
-const KEY: &str = "k";
+pub(super) const KEY: &str = "k";
 
-fn open(dir: &std::path::Path, bound: usize) -> TemporalEngine {
+pub(super) fn open(dir: &std::path::Path, bound: usize) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
         1 << 22,
         dir.join("cache"),
@@ -68,7 +68,7 @@ fn open(dir: &std::path::Path, bound: usize) -> TemporalEngine {
     engine
 }
 
-fn run(engine: &TemporalEngine, command: Command) -> CommandResponse {
+pub(super) fn run(engine: &TemporalEngine, command: Command) -> CommandResponse {
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
         command,
@@ -162,7 +162,7 @@ fn assert_filing_matches_points(engine: &TemporalEngine, context: &str) {
     );
 }
 
-struct Rng(u64);
+pub(super) struct Rng(pub(super) u64);
 
 impl Rng {
     fn next(&mut self, bound: u64) -> u64 {
@@ -172,7 +172,7 @@ impl Rng {
 }
 
 /// One write of the sequence, as the command to send and what it does to the model.
-fn step(rng: &mut Rng, n: usize, newest: &mut u64, model: &mut BTreeMap<u64, Vec<u8>>, bound: usize) -> Command {
+pub(super) fn step(rng: &mut Rng, n: usize, newest: &mut u64, model: &mut BTreeMap<u64, Vec<u8>>, bound: usize) -> Command {
     let command = match rng.next(100) {
         // A few points anywhere in a window the series has already filled: replaces and
         // interleaves, so one block's points are not contiguous.

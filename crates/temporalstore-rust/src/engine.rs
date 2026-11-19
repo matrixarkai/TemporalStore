@@ -1272,6 +1272,16 @@ impl TemporalEngine {
             shard,
             config.feature_max_size,
         );
+        // A WRITE THAT REPLACES A RANGE OF A SERIES takes points out and puts others in, so the size
+        // after it can equal or exceed the size before while the MEMBERSHIP is not the one the blocks
+        // give back: `delta_key_state_change` compares sizes and misses it. These commands state the
+        // series they leave.
+        let feature_range_replaced = matches!(
+            &command,
+            Command::FeatureReplace { .. }
+                | Command::WindowReduceRollup { .. }
+                | Command::WindowReduceRemove { .. }
+        );
         let context_embedding_command =
             Self::command_updates_context_embedding(&command).then(|| command.clone());
         let read_recency_bucket = if object_keys.is_empty() {
@@ -1781,6 +1791,7 @@ impl TemporalEngine {
                 // the 8,838 allocations a message write cost, and the reason filling a node cost
                 // the square of its length.
                 let key_state_changed = feature_trimmed_membership
+                    || feature_range_replaced
                     || delta_key_state_change(
                         shard,
                         &delta_command_keys,
@@ -5781,6 +5792,31 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<crate::index_l
 /// pinning the authoritative membership a write produced. Used on reload after WAL replay
 /// to correct the exact touched keys, so reconstruction from physical blocks honors the
 /// evicted/tombstoned membership instead of resurrecting it.
+/// Applies a key-state edit -- `{"removed": [instants], "added": {"<instant>": <address>}}` -- to the
+/// series the fold holds for `key`: the removed instants go, the added points are set, and a series
+/// left empty takes its key with it. An edit that names nothing it can read changes nothing.
+fn apply_features_edit(shard: &mut ShardState, key: &str, edit: &serde_json::Value) {
+    let removed: Vec<u64> = edit
+        .get("removed")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default();
+    let added: std::collections::BTreeMap<u64, ElementEntry> = edit
+        .get("added")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default();
+    let features = shard.features_mut();
+    let series = features.entry(std::sync::Arc::from(key)).or_default();
+    for at in removed {
+        crate::engine::timestamped_series::TimestampedSeriesWrite::clear(series, at);
+    }
+    for (at, address) in added {
+        crate::engine::timestamped_series::TimestampedSeriesWrite::set(series, at, address);
+    }
+    if crate::engine::timestamped_series::TimestampedSeries::is_empty(series) {
+        features.remove(key);
+    }
+}
+
 fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
     for blob in key_states {
         let Some(key) = blob.get("key").and_then(|value| value.as_str()) else {
@@ -5808,11 +5844,18 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         // The type parameter is named because this map implements `KeyedState` for two value
         // types, exactly as the event map does: the blob carries the B-tree shape and the map
         // holds the array.
-        apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
-            shard.features_mut(),
-            key,
-            blob.get("features"),
-        );
+        // A key-state EDIT names only what left the series and what joined it, and is applied to
+        // the series the fold already holds. It must not go through the whole-series field below,
+        // which reads an absent `features` as "this key had none" and removes the series.
+        if let Some(edit) = blob.get("features_edit") {
+            apply_features_edit(shard, key, edit);
+        } else {
+            apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
+                shard.features_mut(),
+                key,
+                blob.get("features"),
+            );
+        }
         // DIRECT WRITE TO `expires_at_ms` -- the deadline-ordered mirror is invalidated at the
         // end of this function. See the note there.
         apply_key_state_field(shard.expires_at_ms_mut(), key, blob.get("expires_at_ms"));
@@ -6248,10 +6291,16 @@ impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
     for std::collections::HashMap<state::ModelKey, object_record::ObjectSlot>
 {
     fn insert_entry(&mut self, key: &str, value: std::collections::BTreeMap<u64, ElementEntry>) {
+        // THE SLOT CARRIES THE BLOCKS OF THE OBJECT'S DATA as well as its points, and this states the
+        // POINTS. Building a new slot and inserting it dropped the refs of every block the fold had
+        // already filed under this key, leaving those blocks in the index with no identity beside
+        // them; a captured series replaces the series and nothing else.
+        let kept_refs = self.get_mut(key).and_then(|old| old.take_refs());
         let mut slot = object_record::ObjectSlot::default();
         for (at, address) in value {
             timestamped_series::TimestampedSeriesWrite::set(&mut slot, at, address);
         }
+        slot.replace_refs(kept_refs);
         self.insert(key.into(), slot);
     }
 
