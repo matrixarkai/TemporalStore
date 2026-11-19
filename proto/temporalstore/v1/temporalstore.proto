@@ -2113,12 +2113,39 @@ message DurableRaftWalSegmentRuntimeState {
   bool slow_fsync_backpressure_observed = 3;
 }
 
-// Compact durable records for the LLM-context memory client. Metadata is MessagePack
-// inside protobuf so arbitrary caller metadata remains typed without JSON storage.
+// Compact durable records for the LLM-context memory client. Caller metadata is an arbitrary JSON
+// document in memory, and on disk it is a typed value tree: no JSON text and no MessagePack.
+//
+// Integers and floats stay distinct (an `int_value` is never read back as a double), and an empty
+// list differs from an empty map and from null, as they do in the document.
+message LlmMetadataValue {
+  oneof kind {
+    bool null_value = 1;
+    bool bool_value = 2;
+    int64 int_value = 3;
+    uint64 uint_value = 4;
+    double double_value = 5;
+    string string_value = 6;
+    LlmMetadataList list_value = 7;
+    LlmMetadataMap map_value = 8;
+  }
+}
+
+message LlmMetadataList {
+  repeated LlmMetadataValue items = 1;
+}
+
+message LlmMetadataMap {
+  map<string, LlmMetadataValue> entries = 1;
+}
+
+// Tag 3 held the metadata as MessagePack bytes; it is retired, not reused. A reader skips a field it
+// does not know, so a record written that way would read as one with no metadata: `format_version`
+// is what prevents it. The writer sets 1 and the reader refuses anything else.
 message LlmMemoryRecord {
+  reserved 3;
   string id = 1;
   string memory = 2;
-  bytes metadata_msgpack = 3;
   string tenant_id = 4;
   string account_id = 5;
   string user_id = 6;
@@ -2127,16 +2154,22 @@ message LlmMemoryRecord {
   uint64 created_at_ms = 9;
   uint64 updated_at_ms = 10;
   string context_ref = 11;
+  LlmMetadataValue metadata = 12;
+  uint32 format_version = 13;
 }
 
+// Tag 5 held the metadata as MessagePack bytes; retired as above. An absent `metadata` is no
+// metadata, which differs from a present null.
 message LlmMemoryHistoryRecord {
+  reserved 5;
   string id = 1;
   string event = 2;
   uint64 at_ms = 3;
   optional string memory = 4;
-  bytes metadata_msgpack = 5;
   optional string feedback = 6;
   optional string feedback_reason = 7;
+  LlmMetadataValue metadata = 8;
+  uint32 format_version = 9;
 }
 
 enum LlmContextProviderKind {
