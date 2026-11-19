@@ -194,13 +194,12 @@ fn a_mostly_live_store_with_a_stale_slab_closes_the_gate_and_the_stage_skips_col
     assert!(ran, "the page-collection slot never ran");
 
     // CONTROL: the same collection round with no gate in front of it does plan a collection.
-    let ungated = runtime.run_storage_manager_once_with_report_details(
+    let ungated = runtime.run_storage_manager_once(
         SHARD,
         crate::data_node::round_budget::options_for_slot(
             &StorageManagerOptions::default(),
             HeavySlot::PageGc,
         ),
-        false,
     );
     assert!(
         ungated.gc_report.is_some(),
