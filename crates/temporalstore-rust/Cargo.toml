@@ -91,6 +91,10 @@ name = "one_append_amplification_report"
 required-features = ["matrixobject"]
 
 [[example]]
+name = "direct_vs_gateway_latency"
+required-features = ["matrixobject"]
+
+[[example]]
 name = "batched_append_amplification_report"
 required-features = ["matrixobject"]
 
