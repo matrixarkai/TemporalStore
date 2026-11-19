@@ -23,8 +23,6 @@ pub enum ObjectStoreError {
     Io(#[from] std::io::Error),
     #[error("http error: {0}")]
     Http(String),
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
     /// A durable compare-and-set precondition failed: the object either did not hold the
     /// expected bytes (lost a race / stale owner) or the backend does not support a fenced
     /// conditional put. This is the single-writer FENCE signal — callers MUST treat it as a
