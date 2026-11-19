@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! A bounded GC round examines a bounded window of candidate slabs and resumes where it stopped.
 
 use super::*;
