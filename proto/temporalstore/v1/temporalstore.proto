@@ -2260,3 +2260,508 @@ enum CellPredicateOp {
   CELL_PREDICATE_OP_LESS_THAN = 4;
   CELL_PREDICATE_OP_LESS_OR_EQUAL = 5;
 }
+
+// BEGIN GENERATED metaserver-files (tools/gen_proto_converters.py: do not edit)
+
+message MfMetaSnapshot {
+  uint32 format_version = 1;
+  uint64 created_at_ms = 2;
+  map<uint64, MfShardLocation> shards = 3;
+  map<string, MfServerMetaInfo> servers = 4;
+  map<string, MfProxyMetaInfo> proxies = 5;
+  map<string, MfProxyGroupInfo> proxy_groups = 6;
+  map<string, MfMetaEntityState> namespaces = 7;
+  repeated MfTableMetaInfo tables = 8;
+  MfMetaStats stats = 9;
+  uint64 next_table_id = 10;
+  uint64 topology_version = 11;
+  map<string, uint64> scheduler_finish_generations = 12;
+  map<string, uint64> dropped_since_ms = 13;
+  bool meta_change_muted = 14;
+  map<string, uint64> frozen_since_ms = 15;
+  repeated MfTopologyChangeEvent topology_events = 16;
+  MfReservedNames reserved_names = 17;
+}
+
+message MfTaskSchedulerSnapshot {
+  repeated MfSchedulerTask tasks = 1;
+  uint64 next_task_id = 2;
+}
+
+message MfStatus {
+  bool ok = 1;
+  string code = 2;
+  string message = 3;
+}
+
+message MfSchedulerLifecycleToken {
+  uint64 task_id = 1;
+  uint64 shard_id = 2;
+  string operation = 3;
+  uint64 load_version = 4;
+  uint64 generation = 5;
+}
+
+message MfDataNodeShardLifecycleState {
+  uint64 shard_id = 1;
+  string state = 2;
+  string operation = 3;
+  uint64 load_version = 4;
+  uint64 updated_at_ms = 5;
+  MfStatus last_status = 6;
+  optional uint64 scheduler_task_id = 7;
+  optional uint64 scheduler_generation = 8;
+}
+
+message MfRaftMembershipChangeReport {
+  MfRaftMembershipChangePlan plan = 1;
+  MfJointConsensusMembership joint_membership = 2;
+  MfRaftMembership committed_membership = 3;
+  repeated uint64 caught_up_voters = 4;
+  uint64 leader_id = 5;
+  uint64 commit_index = 6;
+}
+
+enum MfSchedulerTaskResult {
+  MF_SCHEDULER_TASK_RESULT_ZERO_UNUSED = 0;
+  MF_SCHEDULER_TASK_RESULT_OK = 1;
+  MF_SCHEDULER_TASK_RESULT_RETRY_LATER = 2;
+  MF_SCHEDULER_TASK_RESULT_ABORTED = 3;
+}
+
+message MfShardLocation {
+  uint64 shard_id = 1;
+  string server_addr = 2;
+  MfMetaEntityState state = 3;
+  MfShardSnapshotRef latest_snapshot = 4;
+  uint64 registered_at_ms = 5;
+  string preferred_location = 6;
+}
+
+message MfServerMetaInfo {
+  string server_addr = 1;
+  uint64 node_id = 2;
+  string location = 3;
+  repeated MfNumaNode numa_nodes = 4;
+  MfMetaEntityState state = 5;
+  uint64 last_heartbeat_ms = 6;
+  uint64 frozen_since_ms = 7;
+  uint64 freeze_cooldown_until_ms = 8;
+  MfFreezeReason freeze_reason = 9;
+  uint64 boot_time_ms = 10;
+  uint64 reported_boot_time_ms = 11;
+  bool reboot_detected = 12;
+  bool reports_shard_states = 13;
+  uint64 registered_at_ms = 14;
+  uint64 load_key_count = 15;
+  uint64 load_memory_bytes = 16;
+  uint32 worst_shard_state_penalty = 17;
+  uint64 reported_record_count = 18;
+  uint64 reported_storage_bytes = 19;
+  string binary_version = 20;
+  repeated MfShardLoad shard_loads = 21;
+  repeated MfShardStatLoad shard_stat_loads = 22;
+  MfServerRuntimeLoad runtime_load = 23;
+  repeated MfServerShardServingState shard_states = 24;
+}
+
+message MfProxyMetaInfo {
+  string proxy_addr = 1;
+  string namespace = 2;
+  string group = 3;
+  string location = 4;
+  MfMetaEntityState state = 5;
+  uint64 config_version = 6;
+  uint64 last_heartbeat_ms = 7;
+  uint64 heartbeats_total = 8;
+  uint64 frozen_since_ms = 9;
+  uint64 freeze_cooldown_until_ms = 10;
+  MfFreezeReason freeze_reason = 11;
+  string binary_version = 12;
+  uint64 registered_at_ms = 13;
+  uint64 boot_time_ms = 14;
+  uint64 restart_count = 15;
+}
+
+message MfProxyGroupInfo {
+  string group = 1;
+  string namespace = 2;
+  string location = 3;
+  uint64 instance_num = 4;
+  uint64 config_version = 5;
+  uint32 drop_percent = 6;
+  MfMetaEntityState state = 7;
+}
+
+enum MfMetaEntityState {
+  MF_META_ENTITY_STATE_ZERO_UNUSED = 0;
+  MF_META_ENTITY_STATE_NORMAL = 1;
+  MF_META_ENTITY_STATE_FROZEN = 2;
+  MF_META_ENTITY_STATE_DROPPED = 3;
+}
+
+message MfTableMetaInfo {
+  uint64 table_id = 1;
+  string namespace = 2;
+  string table_name = 3;
+  MfMetaEntityState state = 4;
+  uint64 topology_version = 5;
+  uint64 first_shard_id = 6;
+  uint64 shard_count = 7;
+  uint64 replica_count = 8;
+  uint32 partition_version = 9;
+  MfTableServingOptions serving_options = 10;
+}
+
+message MfMetaStats {
+  uint64 register_shard_total = 1;
+  uint64 get_shard_total = 2;
+  uint64 server_register_total = 3;
+  uint64 server_heartbeat_total = 4;
+  uint64 proxy_register_total = 5;
+  uint64 proxy_heartbeat_total = 6;
+  uint64 namespace_create_total = 7;
+  uint64 table_create_total = 8;
+  uint64 topology_query_total = 9;
+  uint64 load_finish_total = 10;
+  uint64 topology_version = 11;
+  uint64 server_count = 12;
+  uint64 proxy_count = 13;
+  uint64 namespace_count = 14;
+  uint64 table_count = 15;
+  uint64 shard_count = 16;
+  uint64 frozen_shard_count = 17;
+}
+
+message MfTopologyChangeEvent {
+  uint64 topology_version = 1;
+  uint64 timestamp_ms = 2;
+  string kind = 3;
+  string resource = 4;
+  string detail = 5;
+}
+
+message MfReservedNames {
+  repeated string namespaces = 1;
+  repeated string tables = 2;
+}
+
+message MfSchedulerTask {
+  uint64 id = 1;
+  int32 priority = 2;
+  uint64 create_time_ms = 3;
+  uint64 next_run_time_ms = 4;
+  uint64 last_run_time_ms = 5;
+  uint64 retry_times = 6;
+  MfSchedulerTaskKind kind = 7;
+}
+
+message MfRaftMembershipChangePlan {
+  uint64 shard_id = 1;
+  MfRaftMembershipChangeKind kind = 2;
+  repeated uint64 old_voters = 3;
+  repeated uint64 new_voters = 4;
+  repeated uint64 add_voters = 5;
+  repeated uint64 remove_voters = 6;
+}
+
+message MfJointConsensusMembership {
+  repeated uint64 old_voters = 1;
+  repeated uint64 new_voters = 2;
+}
+
+message MfRaftMembership {
+  uint64 shard_id = 1;
+  repeated uint64 voters = 2;
+  uint64 leader_id = 3;
+}
+
+message MfShardSnapshotRef {
+  string uri = 1;
+  string checksum = 2;
+  uint64 byte_size = 3;
+  uint64 last_log_index = 4;
+  uint64 created_at_ms = 5;
+}
+
+message MfNumaNode {
+  uint64 id = 1;
+  string cpu_list = 2;
+  uint64 memory_size_mb = 3;
+}
+
+enum MfFreezeReason {
+  MF_FREEZE_REASON_ZERO_UNUSED = 0;
+  MF_FREEZE_REASON_UNSPECIFIED = 1;
+  MF_FREEZE_REASON_OPERATOR = 2;
+  MF_FREEZE_REASON_UNRESPONSIVE = 3;
+  MF_FREEZE_REASON_RESTARTED = 4;
+  MF_FREEZE_REASON_STOPPING = 5;
+}
+
+message MfShardLoad {
+  uint64 shard_id = 1;
+  uint64 key_count = 2;
+  uint64 memory_bytes = 3;
+}
+
+message MfShardStatLoad {
+  uint64 shard_id = 1;
+  MfShardStatInfo shard_stat_info = 2;
+}
+
+message MfServerRuntimeLoad {
+  uint64 queue_depth = 1;
+  uint64 background_queue_depth = 2;
+  uint64 queued_shard_count = 3;
+  uint64 running_shard_count = 4;
+  uint64 dirty_object_count = 5;
+  uint64 dirty_shard_count = 6;
+  uint64 rejected_total = 7;
+  uint64 rejected_background_total = 8;
+  uint64 timed_out_total = 9;
+  uint64 canceled_total = 10;
+  uint64 dump_runs = 11;
+  uint64 compaction_runs = 12;
+  uint64 gc_runs = 13;
+  uint64 storage_lifecycle_runs = 14;
+  uint64 last_meta_topology_version = 15;
+  uint64 meta_heartbeat_consecutive_failures = 16;
+  bool meta_forbid_auto_register = 17;
+  repeated string degraded_reasons = 18;
+}
+
+message MfServerShardServingState {
+  uint64 shard_id = 1;
+  string serving_state = 2;
+  uint64 worker_index = 3;
+  uint64 worker_threads = 4;
+  bool loaded = 5;
+  bool readonly = 6;
+  uint64 load_version = 7;
+  string table_name = 8;
+  string shard_uri = 9;
+  uint32 start_routing_bucket = 10;
+  uint32 end_routing_bucket = 11;
+  uint64 total_records = 12;
+  uint64 storage_bytes = 13;
+  uint64 cache_memory_bytes = 14;
+  MfShardCanonicalStorageStats storage = 15;
+  uint64 block_store_bytes_written = 16;
+  uint64 wal_sequence = 17;
+  uint64 dirty_object_count = 18;
+  uint64 dirty_bucket_count = 19;
+}
+
+message MfTableServingOptions {
+  bool pin_primary = 1;
+  string replica_read_policy = 2;
+  string preferred_location = 3;
+  uint32 drop_percent = 4;
+  uint32 max_read_retries = 5;
+  uint32 max_write_retries = 6;
+  uint64 retry_backoff_ms = 7;
+  uint64 continuous_failed_time_ms = 8;
+  uint64 io_timeout_ms = 9;
+  uint64 connect_timeout_ms = 10;
+  repeated string set_fields = 11;
+}
+
+message MfSchedulerTaskKindUpdateMembership {
+  MfMembershipUpdateTaskPlan f0 = 1;
+}
+
+message MfSchedulerTaskKindRebalanceStep {
+  MfRebalanceStep f0 = 1;
+}
+
+message MfSchedulerTaskKind {
+  oneof kind {
+    MfSchedulerTaskKindUpdateMembership update_membership = 1;
+    MfSchedulerTaskKindRebalanceStep rebalance_step = 2;
+  }
+}
+
+enum MfRaftMembershipChangeKind {
+  MF_RAFT_MEMBERSHIP_CHANGE_KIND_ZERO_UNUSED = 0;
+  MF_RAFT_MEMBERSHIP_CHANGE_KIND_ADD_VOTER = 1;
+  MF_RAFT_MEMBERSHIP_CHANGE_KIND_REMOVE_VOTER = 2;
+  MF_RAFT_MEMBERSHIP_CHANGE_KIND_REPLACE_VOTER = 3;
+}
+
+message MfShardStatInfo {
+  uint64 shard_id = 1;
+  bool loaded = 2;
+  bool readonly = 3;
+  uint64 load_version = 4;
+  string table_name = 5;
+  string shard_uri = 6;
+  uint32 start_routing_bucket = 7;
+  uint32 end_routing_bucket = 8;
+  uint64 total_records = 9;
+  uint64 storage_bytes = 10;
+  MfObjectManagerStats object_manager = 11;
+}
+
+message MfShardCanonicalStorageStats {
+  uint64 block_index_entries = 1;
+  uint64 object_index_entries = 2;
+  uint64 bucket_entries = 3;
+  uint64 bucket_index_resident_bytes_floor = 4;
+  uint64 bucket_index_resident_bytes = 5;
+  uint64 bucket_index_resident_entries = 6;
+  uint64 storage_slab_count = 7;
+  uint64 active_storage_slabs = 8;
+  uint64 sealed_storage_slabs = 9;
+  uint64 stream_slab_count = 10;
+  uint64 storage_slab_total_bytes = 11;
+  uint64 logical_write_amplification_ppm = 12;
+  uint64 storage_write_amplification_ppm = 13;
+  uint64 lifetime_write_amplification_ppm = 14;
+  uint64 write_amplification_since_compaction_ppm = 15;
+  uint64 bytes_written_since_compaction = 16;
+  uint64 user_write_amplification_ppm = 17;
+  uint64 live_user_bytes = 18;
+  uint64 live_objects_with_logical_size = 19;
+  uint64 item_space_amplification_ppm = 20;
+  uint64 space_amplification_ppm = 21;
+  uint64 block_space_amplification_ppm = 22;
+  uint64 stale_bytes_recorded = 23;
+  uint64 pending_discard_bytes = 24;
+  uint64 discard_backlog_ppm = 25;
+  uint64 discard_candidate_bytes = 26;
+  uint64 discard_candidate_slabs = 27;
+  uint64 merged_discard_range_count = 28;
+  uint64 fragmented_range_count = 29;
+  uint64 compaction_candidate_bytes = 30;
+  uint64 compaction_candidate_slabs = 31;
+  bool compaction_recommended = 32;
+  uint64 stale_bytes_by_overwrite = 33;
+  uint64 recorded_space_amplification_ppm = 34;
+  uint64 stale_bytes_discarded = 35;
+  uint64 pending_discard_block_refs = 36;
+  uint64 compaction_candidate_range_count = 37;
+  uint64 best_compaction_candidate_bytes = 38;
+  uint64 best_compaction_candidate_ratio_ppm = 39;
+  uint64 dropped_discard_range_count = 40;
+  uint64 stale_slabs_tracked = 41;
+  uint64 stale_slabs_pruned = 42;
+  uint64 stale_bytes_by_removal = 43;
+  uint64 stale_bytes_by_sweep = 44;
+  uint64 storage_slab_used_bytes = 45;
+  uint64 storage_slab_stale_bytes = 46;
+  uint64 block_reads = 47;
+  uint64 block_writes = 48;
+  uint64 bytes_read = 49;
+  uint64 bytes_written = 50;
+  uint64 logical_bytes_written = 51;
+  uint64 live_block_bytes = 52;
+  uint64 non_purged_physical_bytes = 53;
+  uint64 live_bytes_ppm = 54;
+  uint64 stale_bytes_ppm = 55;
+  uint64 append_watermark = 56;
+  uint64 compaction_watermark = 57;
+}
+
+message MfMembershipUpdateTaskPlan {
+  uint64 shard_id = 1;
+  uint64 self_replica_id = 2;
+  repeated uint64 active_replica_ids = 3;
+  uint64 primary_replica_id = 4;
+  uint64 membership_version = 5;
+  repeated MfMembershipUpdatePeerRequest requests = 6;
+}
+
+message MfRebalanceStepLoadTarget {
+  uint64 shard_id = 1;
+  uint64 replica_id = 2;
+  uint64 node_id = 3;
+  uint64 load_version = 4;
+}
+
+message MfRebalanceStepReloadTarget {
+  uint64 shard_id = 1;
+  uint64 replica_id = 2;
+  uint64 node_id = 3;
+  uint64 load_version = 4;
+}
+
+message MfRebalanceStepUpdateMembership {
+  uint64 shard_id = 1;
+  repeated uint64 active_replica_ids = 2;
+  uint64 primary_replica_id = 3;
+  uint64 membership_version = 4;
+}
+
+message MfRebalanceStepFreezeSource {
+  uint64 shard_id = 1;
+  uint64 replica_id = 2;
+  uint64 node_id = 3;
+}
+
+message MfRebalanceStepUnloadSource {
+  uint64 shard_id = 1;
+  uint64 replica_id = 2;
+  uint64 node_id = 3;
+}
+
+message MfRebalanceStep {
+  oneof kind {
+    MfRebalanceStepLoadTarget load_target = 1;
+    MfRebalanceStepReloadTarget reload_target = 2;
+    MfRebalanceStepUpdateMembership update_membership = 3;
+    MfRebalanceStepFreezeSource freeze_source = 4;
+    MfRebalanceStepUnloadSource unload_source = 5;
+  }
+}
+
+message MfObjectManagerStats {
+  uint64 object_count = 1;
+  uint64 block_ref_count = 2;
+  uint64 dirty_object_count = 3;
+  uint64 dirty_bucket_count = 4;
+  uint32 routing_bucket_count = 5;
+}
+
+message MfMembershipUpdatePeerRequest {
+  uint64 replica_id = 1;
+  uint64 node_id = 2;
+  MfMembershipUpdateRequest request = 3;
+}
+
+message MfMembershipUpdateRequest {
+  uint64 shard_id = 1;
+  uint64 membership_version = 2;
+  uint64 replica_membership_version = 3;
+  repeated uint64 replica_node_ids = 4;
+  optional uint64 leader_node_id = 5;
+}
+
+// END GENERATED metaserver-files
+
+// The metaserver's durable scheduler file: the scheduler's queue and the executions it has recorded.
+// The queue is the generated `MfTaskSchedulerSnapshot`; these three are the binary's own types.
+message MetaSchedulerNodeCall {
+  string path = 1;
+  bool skipped = 2;
+  MfStatus status = 3;
+}
+
+message MetaSchedulerExecutionRecord {
+  uint64 task_id = 1;
+  string node_addr = 2;
+  MfStatus status = 3;
+  MfSchedulerTaskResult scheduler_result = 4;
+  uint64 retry_times = 5;
+  optional uint64 next_run_time_ms = 6;
+  repeated MetaSchedulerNodeCall calls = 7;
+  MfSchedulerLifecycleToken lifecycle_token = 8;
+  MfDataNodeShardLifecycleState lifecycle_state = 9;
+  MfRaftMembershipChangeReport raft_membership_report = 10;
+  uint64 queue_len = 11;
+}
+
+message MetaSchedulerDurableSnapshot {
+  MfTaskSchedulerSnapshot scheduler = 1;
+  repeated MetaSchedulerExecutionRecord executions = 2;
+}

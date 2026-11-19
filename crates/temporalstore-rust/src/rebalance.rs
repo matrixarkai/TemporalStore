@@ -373,8 +373,7 @@ impl DeterministicTaskScheduler {
     }
 
     pub fn encode_snapshot(&self) -> Result<Vec<u8>, RebalanceError> {
-        serde_json::to_vec(&self.export_snapshot())
-            .map_err(|err| RebalanceError::CorruptSchedulerSnapshot(err.to_string()))
+        Ok(crate::metaserver_files::encode_scheduler_snapshot(&self.export_snapshot()))
     }
 
     pub fn restore_snapshot(snapshot: TaskSchedulerSnapshot) -> Result<Self, RebalanceError> {
@@ -395,7 +394,7 @@ impl DeterministicTaskScheduler {
     }
 
     pub fn decode_snapshot(bytes: &[u8]) -> Result<Self, RebalanceError> {
-        let snapshot = serde_json::from_slice(bytes)
+        let snapshot = crate::metaserver_files::decode_scheduler_snapshot(bytes)
             .map_err(|err| RebalanceError::CorruptSchedulerSnapshot(err.to_string()))?;
         Self::restore_snapshot(snapshot)
     }
