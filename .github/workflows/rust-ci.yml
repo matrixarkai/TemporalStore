@@ -190,6 +190,14 @@ jobs:
             -- --test-threads=1 2>&1 | tee /tmp/batch-wal-barrier-gate.log
           grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/batch-wal-barrier-gate.log
 
+      - name: Index-log fold keeps an earlier append (pinned finding)
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib the_fold_keeps_the_points_of_an_earlier_append \
+            -- --test-threads=1 2>&1 | tee /tmp/fold-keeps-earlier.log
+          grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/fold-keeps-earlier.log
+
       - name: Bounded memory deletion checks
         timeout-minutes: 30
         run: |
