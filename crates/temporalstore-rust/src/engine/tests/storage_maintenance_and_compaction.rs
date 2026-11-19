@@ -3655,7 +3655,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     }
     shard.bucket_index.hashes.insert_element_for_test(
         "hash-object",
-        std::sync::Arc::from("component"),
+        std::sync::Arc::from("attribute"),
         ElementEntry::from_parts(9, 1, 2, None, None),
     );
     shard.applied_wal_sequence = Some(4242);

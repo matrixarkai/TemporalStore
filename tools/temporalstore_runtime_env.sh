@@ -14,7 +14,7 @@
 # Put the built SDK's library directory on the dynamic loader path, if it exists.
 # Takes the repository root. Safe to call more than once and safe when nothing is built yet --
 # a directory that is not there is skipped rather than exported as an empty entry, because an
-# empty component in LD_LIBRARY_PATH means "the current directory" to the loader.
+# empty entry in LD_LIBRARY_PATH means "the current directory" to the loader.
 temporalstore_export_sdk_loader_path() {
   local root="${1:-}"
   if [[ -z "${root}" ]]; then

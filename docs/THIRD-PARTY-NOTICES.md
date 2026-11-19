@@ -269,7 +269,7 @@ snapshot above. `rustc_version` and `semver` are build-time dependencies of `crc
 - aho-corasick 1.1.4
 - memchr 2.8.1
 
-## Python components (`tools/`)
+## Python tools (`tools/`)
 
 The maintainer tooling and the optional context / benchmark utilities under
 `tools/` use the following Python packages (installed separately by the user,

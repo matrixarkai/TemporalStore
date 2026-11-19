@@ -387,7 +387,7 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     ("block/map_key/kind", Scale::PerBlock, Nature::Identity, ""),
     ("block/map_key/object_key", Scale::PerBlock, Nature::Identity, ""),
     (
-        "block/map_key/component_slot",
+        "block/map_key/element_name_slot",
         Scale::PerBlock,
         Nature::Envelope,
         "",
@@ -448,7 +448,7 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
 ];
 
 /// The one term that is structurally empty and is asserted EXACTLY zero rather than non-zero.
-const STRUCTURALLY_EMPTY: &str = "block/map_key/component_slot";
+const STRUCTURALLY_EMPTY: &str = "block/map_key/element_name_slot";
 
 /// The declared scale and nature of a label, or a panic naming the label.
 fn declared(label: &str) -> (Scale, Nature, &'static str) {
@@ -541,7 +541,7 @@ const BLOCK_KEY_TERMS: &[&str] = &[
     "block/map_key_quotes",
     "block/map_key/kind",
     "block/map_key/object_key",
-    "block/map_key/component_slot",
+    "block/map_key/element_name_slot",
     "block/map_key/block_slab_id",
     "block/map_key/offset",
     "block/map_key/length",
@@ -1097,7 +1097,7 @@ fn walk(reading: &Reading) -> Walked {
             let slots = split_written_key(block_key);
             tally.add("block/map_key/kind", slots.kind.len(), 0);
             tally.add("block/map_key/object_key", slots.object_key.len(), 0);
-            tally.add("block/map_key/component_slot", slots.element_name.len(), 0);
+            tally.add("block/map_key/element_name_slot", slots.element_name.len(), 0);
             tally.add("block/map_key/block_slab_id", slots.block_slab_id.len(), 0);
             tally.add("block/map_key/offset", slots.offset.len(), 0);
             tally.add("block/map_key/length", slots.length.len(), 0);
@@ -1797,7 +1797,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
         (tally.bytes_of("block/map_key_quotes")
             + tally.bytes_of("block/map_key/kind")
             + tally.bytes_of("block/map_key/object_key")
-            + tally.bytes_of("block/map_key/component_slot")
+            + tally.bytes_of("block/map_key/element_name_slot")
             + tally.bytes_of("block/map_key/block_slab_id")
             + tally.bytes_of("block/map_key/offset")
             + tally.bytes_of("block/map_key/length")
