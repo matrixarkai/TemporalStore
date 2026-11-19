@@ -2704,7 +2704,7 @@ pub(crate) fn execute_on_shard(
                 // `RecordedKind::outcome_value`) -- a replay of the OTHER, standalone-filed
                 // outcome would have found no score to install and refused the whole shard load.
                 // One call now does both, record first.
-                super::recorded_map::install_appended_element::<super::recorded_map::ZSetKind>(
+                super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
                     shard,
                     shard_id,
                     &key,
