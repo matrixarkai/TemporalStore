@@ -190,6 +190,14 @@ jobs:
             -- --test-threads=1 2>&1 | tee /tmp/batch-wal-barrier-gate.log
           grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/batch-wal-barrier-gate.log
 
+      - name: Follower catch-up cost checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe a_follower_catch_up \
+            -- --test-threads=1 2>&1 | tee /tmp/follower-catch-up-gate.log
+          grep -q 'test result: ok\. 2 passed; 0 failed;' /tmp/follower-catch-up-gate.log
+
       - name: Bounded memory deletion checks
         timeout-minutes: 30
         run: |
