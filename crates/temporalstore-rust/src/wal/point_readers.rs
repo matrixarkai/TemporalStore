@@ -13,8 +13,8 @@ const OPEN_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DIRECTORIES: usize = 8;
 const DIRECTORY_BYTES: usize = 1024 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stamp {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct Stamp {
     #[cfg(unix)]
     device: u64,
     #[cfg(unix)]
@@ -27,7 +27,7 @@ struct Stamp {
     changed: (i64, i64),
 }
 
-fn stamp(metadata: &fs::Metadata) -> Option<Stamp> {
+pub(super) fn stamp(metadata: &fs::Metadata) -> Option<Stamp> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -52,9 +52,9 @@ pub(super) struct Reader {
     base: u64,
     header: u64,
     length: u64,
-    sealed: bool,
+    pub(super) sealed: bool,
     path: PathBuf,
-    stamp: Option<Stamp>,
+    pub(super) stamp: Option<Stamp>,
     pub(super) file: File,
     pub(super) physical: u64,
 }

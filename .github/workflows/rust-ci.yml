@@ -398,6 +398,10 @@ jobs:
               wal::point_readers::tests::compact_directory_preserves_current_legacy_and_noncanonical_names \
               wal::point_readers::tests::compact_directory_preserves_non_utf8_root_paths \
               wal::point_readers::tests::oversized_alias_metadata_stays_outside_the_directory_cache \
+              wal::packed_frames::layouts::tests::validated_layout_reuses_footer_work_without_retaining_payload \
+              wal::packed_frames::layouts::tests::changed_file_version_revalidates_corrupt_footer_and_truncation \
+              wal::packed_frames::layouts::tests::layout_cache_bounds_entries_and_separates_file_identity_and_offsets \
+              wal::packed_frames::layouts::tests::unstamped_point_reads_keep_validating_the_transport \
               wal::point_reads::tests::leased_prepared_reads_survive_prefix_rewrite \
               wal_proto::indexed::tests::concurrent_directory_readers_share_one_bounded_entry \
               wal::read_retention_tests::acquiring_and_releasing_a_read_lease_does_not_wait_for_wal_io \

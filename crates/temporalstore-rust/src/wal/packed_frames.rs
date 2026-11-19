@@ -9,6 +9,10 @@ use super::{
     WAL_BLOCK_FOOTER_BYTES,
 };
 
+#[path = "point_layouts.rs"]
+mod layouts;
+pub(super) use layouts::Cache as LayoutCache;
+
 // The transport wraps an unchanged integrity-framed record. Its authenticated first-chunk
 // length makes the layout independent of a piece's header, including after prefix reclaim.
 pub(super) const MAGIC: u8 = 0xB4;
@@ -126,7 +130,8 @@ fn read_exact_at_offset(
 
 /// A seekable view of the inner integrity frame, without reading its unrelated payloads.
 /// The first chunk length is authenticated by the transport header. All footer slots are
-/// validated up front; subsequent seeks use that fixed layout, including after prefix reclaim.
+/// validated before admission to the file-version cache; subsequent seeks use that fixed
+/// layout, including after prefix reclaim. No payload is retained in that cache.
 pub(super) struct PointReader<'a> {
     file: &'a mut File,
     start: u64,
@@ -136,7 +141,25 @@ pub(super) struct PointReader<'a> {
 }
 
 impl<'a> PointReader<'a> {
+    #[cfg(test)]
     pub(super) fn new(file: &'a mut File, start: u64) -> io::Result<Option<Self>> {
+        Self::create(file, start, None)
+    }
+
+    pub(super) fn with_layout_cache(
+        file: &'a mut File,
+        start: u64,
+        version: Option<super::point_readers::Stamp>,
+        cache: &LayoutCache,
+    ) -> io::Result<Option<Self>> {
+        Self::create(file, start, version.map(|version| (version, cache)))
+    }
+
+    fn create(
+        file: &'a mut File,
+        start: u64,
+        cached: Option<(super::point_readers::Stamp, &LayoutCache)>,
+    ) -> io::Result<Option<Self>> {
         let mut header = [0u8; HEADER_BYTES];
         let read = read_at_offset(file, start, &mut header)?;
         if read == 0 {
@@ -170,6 +193,9 @@ impl<'a> PointReader<'a> {
         }
         let first = first as u64;
         view.packed = Some((length, first));
+        if cached.is_some_and(|(version, cache)| cache.contains(version, start, length, first)) {
+            return Ok(Some(view));
+        }
         let mut logical = first;
         let mut physical = HEADER_BYTES as u64 + first;
         while logical < length {
@@ -186,6 +212,9 @@ impl<'a> PointReader<'a> {
             let chunk = (DATA_BYTES as u64).min(length - logical);
             logical += chunk;
             physical += WAL_BLOCK_FOOTER_BYTES + chunk;
+        }
+        if let Some((version, cache)) = cached {
+            cache.insert(version, start, length, first);
         }
         Ok(Some(view))
     }
