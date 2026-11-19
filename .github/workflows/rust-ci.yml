@@ -903,6 +903,15 @@ jobs:
             engine::tests::a_window_reduce_rollup_is_a_command::a_new_control_that_cannot_be_served_is_refused_and_writes_nothing_and_each_bound_is_exact \
             engine::tests::a_window_reduce_rollup_is_a_command::a_request_with_none_of_the_new_fields_keeps_its_wire_and_json_bytes \
             engine::cell_retry_ring::tests::a_remembered_token_replays_its_first_receipt_and_a_new_one_is_fresh \
+            engine::sample_tail::tests::a_fold_of_base_and_tail_is_the_value_a_whole_sample_write_stores \
+            engine::sample_tail::tests::a_write_that_would_pass_the_cell_limit_is_refused_on_both_paths_at_the_same_request \
+            engine::sample_tail::tests::a_tail_is_bounded_in_writes_and_in_cells_and_a_write_past_a_bound_is_stored_whole \
+            engine::sample_tail::tests::a_request_that_extends_the_header_is_stored_whole \
+            engine::sample_tail::tests::a_plan_is_the_same_with_the_member_memo_and_without_it \
+            engine::sample_tail::tests::stored_tails_and_logged_items_are_canonical_and_refuse_every_other_spelling \
+            engine::sample_tail::tests::at_most_the_stamp_limit_hold_a_tail_and_the_oldest_are_named_to_make_room \
+            engine::sample_tail::tests::what_a_tail_write_stores_does_not_grow_with_the_sample_while_a_whole_write_does \
+            engine::sample_tail::tests::a_decoded_base_and_its_fold_agree_on_the_header \
             engine::cell_retry_ring::tests::the_capacity_is_sixteen_and_a_full_ring_holds_exactly_that_many \
             engine::cell_retry_ring::tests::the_token_past_the_limit_evicts_the_oldest_and_nothing_else \
             engine::cell_retry_ring::tests::eviction_follows_arrival_order_over_a_long_run \
