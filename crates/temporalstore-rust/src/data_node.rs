@@ -63,6 +63,7 @@ mod shard_lifecycle;
 mod task_execution;
 mod runtime_reports;
 mod runtime_storage;
+mod compaction_stage;
 mod round_budget;
 mod task_output;
 #[path = "data_node/data_node_worker.rs"]

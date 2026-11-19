@@ -198,6 +198,90 @@ fn the_draining_stage_runs_a_whole_round_unless_the_sliced_pass_is_switched_on()
     assert!(boundaries.get() > 0, "the control never fired the boundary callback, so the check above proves nothing");
 }
 
+/// A compaction step returns when its budget is spent, not when the pass is over: with room for one
+/// slice it moves one slice and reports `More`, the pass stays in flight, and stepping on finishes
+/// it with every key still readable. A step that ignored its budget would finish the pass in one
+/// call and report `Done` the first time.
+#[test]
+fn a_compaction_step_returns_when_its_budget_is_spent_and_the_pass_resumes() {
+    use super::compaction_stage::{CompactionCursor, CompactionStage};
+    use super::round_budget::{BoundedStage, StageBudget, StageContext, StageProgress};
+
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded(dir.path());
+    runtime.engine().block_store().roll_slab().unwrap();
+    for i in 0..16 {
+        assert!(
+            runtime
+                .engine()
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("key-{i}"),
+                        value: vec![42; 96]
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+    let options = StorageManagerOptions {
+        enable_block_compaction: true,
+        stale_block_slab_pressure: 1,
+        reclaimable_physical_bytes_pressure: 1,
+        ..options()
+    };
+    let context = StageContext { options: &options, plan: None };
+    let mut stage = CompactionStage::new(&runtime);
+    stage.keys_per_slice = 2;
+    let mut cursor = CompactionCursor::default();
+
+    // Room for one slice: one slice is moved and the pass is left in flight.
+    let mut budget = StageBudget::new(std::time::Duration::from_secs(60), 1);
+    let first = stage.step(1, &mut cursor, &mut budget, &context);
+    assert_eq!(first.progress, StageProgress::More, "the step ran past its budget");
+    assert_eq!(first.work_done, 2, "a step with room for one slice moved more or less than one");
+    assert!(first.status.ok, "{:?}", first.status);
+    assert!(
+        runtime.engine().compaction_pass_in_flight(1),
+        "a step that returned More must leave the pass in flight"
+    );
+
+    // Stepping on finishes the pass, in more than one further step.
+    let mut steps = 1;
+    loop {
+        let mut budget = StageBudget::new(std::time::Duration::from_secs(60), 1);
+        let step = stage.step(1, &mut cursor, &mut budget, &context);
+        assert!(step.status.ok, "{:?}", step.status);
+        steps += 1;
+        if step.progress != StageProgress::More {
+            assert_eq!(step.progress, StageProgress::Done);
+            break;
+        }
+        assert!(steps < 100, "the pass never finished");
+    }
+    assert!(steps > 2, "the pass was not spread over steps: {steps}");
+    assert!(!runtime.engine().compaction_pass_in_flight(1));
+    for i in 0..32 {
+        let response = runtime.engine().execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: format!("key-{i}") },
+        });
+        let expected = if i < 16 { vec![42; 96] } else { vec![i as u8; 96] };
+        assert!(
+            matches!(response.response, CommandResponse::Bytes { value: Some(value) } if value == expected),
+            "key-{i} lost its value across the stepped pass"
+        );
+    }
+
+    // Nothing to compact: a step with compaction off is Idle and starts no pass.
+    let off = StorageManagerOptions { enable_block_compaction: false, ..options.clone() };
+    let mut idle_cursor = CompactionCursor::default();
+    let mut budget = StageBudget::new(std::time::Duration::from_secs(60), 200);
+    let idle = stage.step(1, &mut idle_cursor, &mut budget, &StageContext { options: &off, plan: None });
+    assert_eq!(idle.progress, StageProgress::Idle);
+}
+
 #[test]
 fn timer_manager_compacts_without_a_partial_response_while_explicit_calls_keep_details() {
     for detailed in [false, true] {

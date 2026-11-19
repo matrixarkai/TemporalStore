@@ -103,6 +103,12 @@ impl TemporalEngine {
         )
     }
 
+    /// Whether a sliced pass is in flight on this shard, for a caller that steps one.
+    #[cfg(test)]
+    pub(crate) fn compaction_pass_in_flight(&self, shard_id: ShardId) -> bool {
+        self.sliced_pass_active(shard_id)
+    }
+
     /// Whether a sliced pass owns this shard's compaction, so a whole round must not start.
     pub(super) fn sliced_pass_active(&self, shard_id: ShardId) -> bool {
         let slot = self.pass_slot(shard_id);
