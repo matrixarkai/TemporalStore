@@ -337,6 +337,28 @@ jobs:
           print("::warning::Two source-only naming checks are excluded until 2026-11-27 UTC; runtime correctness tests remain required")
           PY
 
+      # The delta records of concurrent writers reach the index log as one write per batch.
+      # `cargo test` EXITS 0 WHEN THE FILTER MATCHES NOTHING, so each name is run alone and the
+      # greps below fail the step if it matched no test or did not pass.
+      - name: Index log batched append checks
+        run: |
+          set -o pipefail
+          for t in \
+            index_log::index_log_group_write_tests::a_record_nothing_waits_on_is_numbered_and_queued_not_written \
+            index_log::index_log_group_write_tests::a_reader_finishes_the_queue_first_and_it_is_one_write_in_order \
+            index_log::index_log_group_write_tests::a_record_that_asks_to_be_durable_is_written_after_what_is_queued \
+            index_log::index_log_group_write_tests::dropping_the_store_writes_the_tail_and_the_next_store_continues_the_numbering \
+            index_log::index_log_group_write_tests::a_failed_batch_is_retried_whole_and_never_duplicated \
+            index_log::index_log_group_write_tests::a_write_that_stops_part_way_is_cut_back_so_the_retry_leaves_no_torn_record \
+            index_log::index_log_group_write_tests::appenders_on_many_threads_share_writes_and_no_record_is_lost_or_reordered \
+            index_log::index_log_group_write_tests::with_the_switch_off_every_record_is_written_at_once \
+            index_log::index_log_group_write_tests::a_queue_nobody_reads_is_written_by_the_loop_flusher; do
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/index-group-write.log
+            grep -q '^running 1 test$' /tmp/index-group-write.log
+            grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/index-group-write.log
+          done
+
       - name: cargo test (lib + integration, single-threaded, release)
         timeout-minutes: 45
         # Reports every failure but does not block the merge: about a hundred tests in unrelated
