@@ -4962,7 +4962,7 @@ pub(super) fn drop_vacated_live_block(
             .bucket_index
             .object_block_refs(kind, object_key)
             .is_some_and(|refs| refs.as_slice().binary_search(&direct).is_ok());
-    let targets: Vec<_> = if direct_is_filed {
+    let targets: Vec<_> = if false && direct_is_filed {
         vec![direct]
     } else {
         #[cfg(test)]
