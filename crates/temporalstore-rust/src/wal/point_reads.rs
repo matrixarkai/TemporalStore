@@ -12,6 +12,7 @@ pub(super) struct State {
     active: Mutex<usize>,
     available: std::sync::Condvar,
     indexed: crate::wal_proto::indexed::Cache,
+    layouts: packed_frames::LayoutCache,
     completed: Mutex<(u64, u64)>,
 }
 
@@ -88,7 +89,11 @@ impl PreparedRead {
     ) -> (Result<Option<CarriedBlockRead>, WriteAheadLogError>, u64) {
         let mut bytes_read = 0;
         let result = (|| {
-            let selected = match packed_frames::PointReader::new(&mut self.source.file, self.source.physical)? {
+            let selected = match packed_frames::PointReader::with_layout_cache(
+                &mut self.source.file, self.source.physical,
+                self.source.sealed.then_some(self.source.stamp).flatten(),
+                &self.permit.state.layouts,
+            )? {
                 Some(mut reader) => {
                     let result = crate::wal_proto::indexed::read(
                         &mut reader, 0, &self.permit.state.indexed, self.shard, self.log_id,
