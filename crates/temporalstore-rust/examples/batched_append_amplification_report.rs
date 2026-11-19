@@ -315,7 +315,14 @@ async fn main() {
     let smallest = per_entry_by_count.iter().copied().fold(f64::MAX, f64::min);
     let largest = per_entry_by_count.iter().copied().fold(0.0f64, f64::max);
     println!();
-    println!("  PER-ENTRY BYTES ARE FLAT IN THE BATCH SIZE: {smallest:.1} B at the cheapest N,");
+    // Flatness is a property of the frame path only; a container amortizes its header, so under
+    // BATCH_CONTAINER the same spread is reported as what it is, a fall with N.
+    let headline = if std::env::var("BATCH_CONTAINER").is_ok() {
+        "PER-ENTRY BYTES FALL WITH THE BATCH SIZE"
+    } else {
+        "PER-ENTRY BYTES ARE FLAT IN THE BATCH SIZE"
+    };
+    println!("  {headline}: {smallest:.1} B at the cheapest N,");
     println!("  {largest:.1} B at the dearest, over N from {} to {}.", counts[0], counts[counts.len() - 1]);
     assert!(
         counts.len() >= 5 && counts[counts.len() - 1] >= 64 * counts[0],

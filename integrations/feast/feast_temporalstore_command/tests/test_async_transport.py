@@ -112,6 +112,7 @@ class AsyncReadTransportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bounded_chunks_reuse_the_loop_connection(self):
         self.client.max_batch_commands = 1
+        self.client.max_async_read_batches = 1
         self.assertEqual(await self.client.batch_hash_multi_get_async(["a", "b", "c"], ["f"]),
                          [[b"a/f"], [b"b/f"], [b"c/f"]])
         await self.client.batch_hash_multi_get_async(["d"], ["f"])
@@ -128,6 +129,30 @@ class AsyncReadTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entry.session.timeout.connect, self.client.timeout_seconds)
         self.assertEqual(entry.session.timeout.sock_connect, self.client.timeout_seconds)
         self.assertEqual(entry.session.timeout.sock_read, self.client.timeout_seconds)
+
+    async def test_warm_chunks_use_multiple_connections_and_release_admission(self):
+        self.client.max_batch_commands = 1
+        self.client.max_async_read_batches = 3
+        self.client._compact_shared_field_read_supported = True
+        self.server.actions = ["delay", "delay", "delay"]
+        pending = asyncio.create_task(self.client.batch_hash_multi_get_async(["a", "b", "c", "d"], ["f"]))
+
+        async def window_arrived():
+            while len(self.server.requests) < 3:
+                await asyncio.sleep(.001)
+
+        try:
+            await asyncio.wait_for(window_arrived(), 5)
+            self.assertEqual(len({request[2] for request in self.server.requests}), 3)
+            self.assertEqual(self.client._async_read_transport._requests, 3)
+            self.server.release.set()
+            self.assertEqual(await pending, [[key + b"/f"] for key in (b"a", b"b", b"c", b"d")])
+            self.assertEqual(len(self.server.requests), 4)
+            self.assertEqual((self.client._async_read_transport._requests, self.client._async_read_transport._bytes), (0, 0))
+        finally:
+            self.server.release.set()
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
 
     async def test_closed_connection_retries_one_read(self):
         self.server.actions = ["disconnect", "ok"]

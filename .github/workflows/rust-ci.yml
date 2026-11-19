@@ -420,6 +420,9 @@ jobs:
               engine::storage_lifecycle_methods::planning_live_slab_tests::unpublished_compaction_slabs_remain_retained_and_retirement_rechecks_liveness \
               engine::storage_lifecycle_methods::planning_live_slab_tests::an_overreporting_tally_only_defers_collection_until_reconciliation \
               wal::point_readers::tests::returned_descriptors_replace_only_the_exact_stored_path \
+              block_store::restore_only_tests::a_restore_only_round_cannot_age_into_deletion \
+              block_store::restore_only_tests::a_restore_only_round_restores_live_slabs_and_keeps_unnamed_mature_slabs \
+              block_store::restore_only_tests::restore_only_selection_does_not_change_other_quarantined_slabs \
               wal::point_reads::tests::leased_prepared_reads_survive_prefix_rewrite \
               wal_proto::indexed::tests::concurrent_directory_readers_share_one_bounded_entry \
               wal::read_retention_tests::acquiring_and_releasing_a_read_lease_does_not_wait_for_wal_io \
@@ -497,6 +500,7 @@ jobs:
             engine::tests::a_set_door_asks_one_member_not_the_set::the_door_never_lists_the_set \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_answers_what_the_sorted_listing_answered \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_reads_a_prefix_and_never_lists \
+            engine::tests::a_list_position_and_removal_answer_what_a_walk_answered::positions_and_removals_answer_what_a_walk_answered_with_and_without_a_hole \
             engine::storage_bucket_internals::set_batch_work_tests::a_new_sorted_set_member_is_filed_without_scanning_the_objects_refs_at_any_size \
             engine::storage_bucket_internals::set_batch_work_tests::a_repeat_write_to_a_marked_collection_visits_no_block_at_any_size \
             engine::tests::set_install_census::every_command_that_installs_a_set_member_reports_a_touched_element \

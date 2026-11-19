@@ -974,6 +974,16 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
     } else {
         StorageManagerOptions::default()
     };
+    // `LOOP_DUMP=1` crosses the byte gate so every round dumps, which prices the whole-index encode.
+    let shipped = if std::env::var("LOOP_DUMP").is_ok() {
+        StorageManagerOptions {
+            dirty_bucket_pressure: 1,
+            min_undumped_wal_bytes: 1,
+            ..shipped
+        }
+    } else {
+        shipped
+    };
     let dir = tempfile::tempdir().unwrap();
     let runtime = seeded_runtime(dir.path(), keys);
     // Warm the cache the way a served shard would be, so the stage's gate has something to see.
@@ -1014,13 +1024,39 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
         );
         for span in &report.stage_spans {
             eprintln!(
-                "      {:<18} ran={} {:>8} us walk={}",
-                span.stage, span.executed, span.duration_us, span.walk.live_block_entries
+                "      {:<18} ran={} {:>8} us walk={} encodes={}",
+                span.stage,
+                span.executed,
+                span.duration_us,
+                span.walk.live_block_entries,
+                span.walk.index_encodes
             );
         }
         for (site, entries) in crate::engine::live_block_scan_sites_snapshot() {
             eprintln!("      site {site:<60} {entries:>8} entries ({:.1}x)", entries as f64 / keys as f64);
         }
+    }
+    // THE IDLE PHASE: rounds with no client writes after the write rounds, which is where a server
+    // spends the time between loads. `LOOP_IDLE_ROUNDS=<n>` sets how many (default 4). One line per
+    // round with the index stage's own time, walk and encodes, because that stage is what idles.
+    let idle_rounds = std::env::var("LOOP_IDLE_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(4usize);
+    for round in 0..idle_rounds {
+        let report = runtime.run_storage_manager_once(1, shipped.clone());
+        let index = report
+            .stage_spans
+            .iter()
+            .find(|span| span.stage == "reclaim_index")
+            .expect("every round reports the reclaim_index stage");
+        eprintln!(
+            "I round {round}: {} us whole round, reclaim_index {} us walk={} encodes={}",
+            report.duration_us,
+            index.duration_us,
+            index.walk.live_block_entries,
+            index.walk.index_encodes
+        );
     }
 }
 
@@ -1223,5 +1259,132 @@ fn a_writers_waits_are_attributed_to_the_stage_window_it_began_in() {
     println!("PROBE round_us={} idle={idle:?}", stall.round_us);
     for window in &by_window {
         println!("PROBE {window:?}");
+    }
+}
+
+/// Runs the gated fixture for ten rounds, writing only in the first `write_rounds` of them, and
+/// returns per round whether the plan listed a quarantined slab and what the index stage walked.
+///
+/// The writing rounds are what put a slab in quarantine; the quiet rounds after them are the shape a
+/// running server spends nearly all its time in, with a quarantine that is neither growing nor old
+/// enough to purge. `options_for` picks the options of each round.
+fn quarantine_rounds(
+    write_rounds: usize,
+    options_for: impl Fn(usize) -> StorageManagerOptions,
+) -> Vec<(bool, u64)> {
+    let keys = 300usize;
+    let writes = 20usize;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    for _ in 0..6 {
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    }
+    let engine = runtime.engine();
+    let mut rounds = Vec::new();
+    for round in 0..10usize {
+        if round < write_rounds {
+            for write in 0..writes {
+                let index = (round * writes + write) % keys;
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("loop-{index:06}"),
+                        value: vec![b'w'; 96],
+                    },
+                });
+                assert!(response.status.ok, "write {index}: {:?}", response.status);
+            }
+        }
+        let report = runtime.run_storage_manager_once(1, options_for(round));
+        let quarantined = !report.lifecycle_plan.delayed_destroy_block_slab_ids.is_empty();
+        eprintln!(
+            "quarantine round {round}: quarantined={quarantined} index stage walk={} reasons={:?}",
+            index_stage_walk(&report),
+            report.lifecycle_plan.reasons
+        );
+        rounds.push((quarantined, index_stage_walk(&report)));
+    }
+    rounds
+}
+
+/// A QUARANTINE THAT HAS NOT AGED OUT AND HAS BEEN CHECKED DOES NOT MAKE THE INDEX STAGE WALK.
+///
+/// The plan lists every slab in quarantine, and a quarantine is never empty once overwrites have
+/// collected a slab. The purge acts on none of it before the grace has passed, so a quarantine that
+/// nothing has joined since a purge round checked it against the live set is not work for the stage.
+/// After four writing rounds the shard goes quiet with its quarantine intact; the last three rounds
+/// must list a quarantined slab (the denominator) and leave the index stage at zero walk. The first
+/// quiet rounds may still pay one full round for the arrival that preceded them.
+///
+/// Planted fault: dropping `|| index_quarantine_waits` from the stage's idle test, or the
+/// `checked == arrivals` half from the store's answer, puts the walk back (1500 entries on this
+/// fixture).
+#[test]
+fn a_checked_quarantine_that_has_not_aged_out_does_not_make_the_index_stage_walk() {
+    let rounds = quarantine_rounds(4, |_| StorageManagerOptions::default());
+    for round in 7..10usize {
+        let (quarantined, walk) = rounds[round];
+        assert!(quarantined, "round {round} must still list a quarantined slab: {rounds:?}");
+        assert_eq!(walk, 0, "round {round}: a young checked quarantine made the stage walk: {rounds:?}");
+    }
+}
+
+/// A YOUNG QUARANTINE COSTS THE INDEX STAGE NO WALK EVEN WHILE WRITES KEEP ADDING TO IT.
+///
+/// With writes every round the page stage sets a new slab aside each time, so the quarantine is
+/// never "checked since the last arrival" and the stage cannot skip. It still needs only the purge:
+/// the dump, the prune, the roll-forward and the log collector are idle, and the purge reads the
+/// maintained tally while nothing can age out. Every round whose plan lists a quarantined slab must
+/// leave the index stage at zero walk, and at least two must exist.
+///
+/// Planted fault: making `index_gc_purge_only` false sends these rounds down the full path and the
+/// stage walks the shard again (1500 entries on this fixture).
+#[test]
+fn a_young_quarantine_fed_by_steady_writes_costs_the_index_stage_no_walk() {
+    let rounds = quarantine_rounds(10, |_| StorageManagerOptions::default());
+    let quarantined: Vec<_> = rounds.iter().filter(|(quarantined, _)| *quarantined).collect();
+    assert!(
+        quarantined.len() >= 2,
+        "the fixture must leave a slab in quarantine for at least two rounds, got {rounds:?}"
+    );
+    for (_, walk) in &quarantined {
+        assert_eq!(*walk, 0, "a young quarantine made the stage walk the shard: {rounds:?}");
+    }
+}
+
+/// THE TALLY NAMES THE SLABS THE WALK DOES, on the shapes this fixture can make: overwrites that
+/// retire slabs, with rounds of compaction and collection between them.
+///
+/// The tally is only handed to a purge that cannot destroy, so a gap would delay a restore and not
+/// lose a slab; this is what says the gap is not there for strings. It does not cover the other
+/// models, which is why the walked set stays the one a purge that can destroy is given.
+///
+/// Planted fault: leaving the tally's compaction-pinned slabs out of the set makes the two differ
+/// while a compaction round is unpublished.
+#[test]
+fn the_tally_names_the_slabs_the_walk_does_across_overwrites_and_collection() {
+    let keys = 300usize;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    let engine = runtime.engine();
+    for round in 0..8usize {
+        for write in 0..40usize {
+            let index = (round * 40 + write) % keys;
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("loop-{index:06}"),
+                    value: vec![b'w'; 96],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        let walked = engine.live_block_slab_ids_all_shards();
+        let from_tally = engine
+            .live_block_slab_ids_all_shards_from_tally()
+            .expect("the tally is derived after loop rounds");
+        assert!(!walked.is_empty(), "round {round}: the fixture holds no live slab");
+        assert_eq!(from_tally, walked, "round {round}: the tally and the walk name different slabs");
     }
 }

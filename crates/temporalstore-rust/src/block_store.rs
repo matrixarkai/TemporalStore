@@ -1472,8 +1472,8 @@ pub struct BlockStorePurgeDelayedDestroyReport {
     /// listing ran out reports exactly what the listing held.
     #[serde(default)]
     pub examined_block_slabs: usize,
-    /// The round returned WITHOUT opening the trash directory, because no quarantined slab could
-    /// have matured yet.
+    /// The round returned WITHOUT opening the trash directory: no live slab needed restoring,
+    /// and deletion was either disabled for the round or impossible before the grace expired.
     ///
     /// This is what makes the four lists above readable when they are all empty. Without it an
     /// empty `retained_too_young_block_slab_ids` says "the round walked and held nothing back",
@@ -1485,6 +1485,13 @@ pub struct BlockStorePurgeDelayedDestroyReport {
     /// quarantine is empty -- read `delayed_destroy_slab_ids()` for that.
     #[serde(default)]
     pub declined_without_examining: bool,
+    /// How many slabs had entered quarantine, over the life of this store, when the round began.
+    ///
+    /// Read under the same lock the round holds, so no slab arrived while it ran. It is what lets
+    /// a caller that supplied a real live set say "the quarantine as it stood at this count has
+    /// been checked against it" -- see [`BlockStore::note_quarantine_checked`].
+    #[serde(default)]
+    pub quarantine_arrivals_seen: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1932,6 +1939,13 @@ struct BlockStoreInner {
     /// fresh process starts here at `None` -- so the first round after any restart walks, and it
     /// is that round which decides whether a `Some` is justified.
     delayed_destroy_earliest_unix_ms: Option<u64>,
+    /// Slabs that have entered quarantine since this store opened. Only ever incremented, at the one
+    /// place a slab is set aside.
+    quarantine_arrivals: u64,
+    /// The arrival count a purge round last checked against a real live set, as reported by the
+    /// caller. Equal to `quarantine_arrivals` means every slab now in quarantine was in it for
+    /// such a round; anything less means a slab arrived since and nothing has looked at it.
+    quarantine_checked_arrivals: u64,
     // Set only by Default: the store owns its minted scratch directory, and the last
     // clone's drop removes it. Never set for a caller-supplied root.
     scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
@@ -1965,6 +1979,87 @@ fn observe_quarantined_arrival(
             })
         }
         None => *may_publish = false,
+    }
+}
+
+/// Would a purge round change nothing, given what the store remembers about its quarantine?
+///
+/// Both halves are required and neither is the other's stand-in. `now - earliest < min_age` says no
+/// slab can have aged out; `checked == arrivals` says every slab now in quarantine has been through a
+/// round with a real live set, so none is waiting to be restored. `earliest == None` is "not
+/// entitled to an opinion" and answers false, and so does `min_age == 0` because nothing is then
+/// younger than the age.
+fn quarantine_purge_would_do_nothing(
+    earliest: Option<u64>,
+    now: u64,
+    min_age_ms: u64,
+    arrivals: u64,
+    checked: u64,
+) -> bool {
+    quarantine_too_young(earliest, now, min_age_ms) && checked == arrivals
+}
+
+/// Can no slab in quarantine have aged out? True only when the earliest arrival is known and younger
+/// than `min_age_ms`; an unknown earliest and an age of zero both answer false.
+fn quarantine_too_young(earliest: Option<u64>, now: u64, min_age_ms: u64) -> bool {
+    match earliest {
+        Some(earliest) => now.saturating_sub(earliest) < min_age_ms,
+        None => false,
+    }
+}
+
+/// The checked-arrivals count after a caller reports a round: never lowered, and never past the
+/// arrivals the store has seen, so an invented or stale count cannot cover a slab that arrived later.
+fn checked_arrivals_after_note(current: u64, reported: u64, arrivals: u64) -> u64 {
+    current.max(reported.min(arrivals))
+}
+
+#[cfg(test)]
+mod quarantine_wait_guards {
+    use super::{checked_arrivals_after_note, quarantine_purge_would_do_nothing, quarantine_too_young};
+
+    const HOUR: u64 = 60 * 60 * 1000;
+
+    /// An arrival nobody has checked against a live set keeps the purge from being skipped, however
+    /// young the quarantine is. Planted fault: drop the `checked == arrivals` half.
+    #[test]
+    fn a_slab_that_arrived_after_the_last_check_is_not_waiting() {
+        assert!(quarantine_purge_would_do_nothing(Some(1_000), 2_000, HOUR, 3, 3));
+        assert!(!quarantine_purge_would_do_nothing(Some(1_000), 2_000, HOUR, 4, 3));
+    }
+
+    /// A quarantine old enough to purge is not waiting even when it was checked. Planted fault: drop
+    /// the age half.
+    #[test]
+    fn a_quarantine_that_has_aged_out_is_not_waiting() {
+        assert!(quarantine_purge_would_do_nothing(Some(1_000), 1_000 + HOUR - 1, HOUR, 3, 3));
+        assert!(!quarantine_purge_would_do_nothing(Some(1_000), 1_000 + HOUR, HOUR, 3, 3));
+    }
+
+    /// No opinion on the earliest arrival, and an age of zero, both mean the round must look.
+    #[test]
+    fn every_doubt_answers_that_the_round_must_look() {
+        assert!(!quarantine_purge_would_do_nothing(None, 2_000, HOUR, 3, 3));
+        assert!(!quarantine_purge_would_do_nothing(Some(1_000), 2_000, 0, 3, 3));
+    }
+
+    /// The age half alone decides whether a purge could destroy anything, whatever was checked.
+    /// Planted fault: compare with `<=`, which calls a slab exactly at the age too young.
+    #[test]
+    fn too_young_is_strictly_below_the_age_and_needs_a_known_earliest() {
+        assert!(quarantine_too_young(Some(1_000), 1_000 + HOUR - 1, HOUR));
+        assert!(!quarantine_too_young(Some(1_000), 1_000 + HOUR, HOUR));
+        assert!(!quarantine_too_young(None, 2_000, HOUR));
+        assert!(!quarantine_too_young(Some(1_000), 2_000, 0));
+    }
+
+    /// A report can neither lower the count nor cover an arrival the store has not seen. Planted
+    /// fault: drop the clamp to `arrivals`.
+    #[test]
+    fn a_note_never_lowers_the_count_or_passes_the_arrivals() {
+        assert_eq!(checked_arrivals_after_note(2, 5, 5), 5);
+        assert_eq!(checked_arrivals_after_note(5, 2, 5), 5);
+        assert_eq!(checked_arrivals_after_note(2, 9, 5), 5);
     }
 }
 
@@ -2118,6 +2213,8 @@ impl BlockStore {
                 // the state this has to open in: the directory on disk may hold slabs this
                 // manifest never learned about, so the first purge round must walk.
                 delayed_destroy_earliest_unix_ms: None,
+                quarantine_arrivals: 0,
+                quarantine_checked_arrivals: 0,
                 scratch: None,
             })),
         }
@@ -2526,6 +2623,23 @@ impl BlockStore {
         )
     }
 
+    /// Restore named live slabs without granting deletion authority, even if the grace expires
+    /// after the caller chose an approximate live set.
+    pub(crate) fn restore_delayed_destroy_slabs_selected(
+        &self,
+        min_age_ms: u64,
+        live_block_slab_ids: impl IntoIterator<Item = u64>,
+        selected_block_slab_ids: Option<BTreeSet<u64>>,
+    ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
+        self.run_delayed_destroy_round(
+            min_age_ms,
+            live_block_slab_ids,
+            selected_block_slab_ids,
+            DELAYED_DESTROY_MAX_SLABS_PER_ROUND,
+            false,
+        )
+    }
+
     /// The purge, bounded to `max_slabs_per_round` slabs of work. 0 means unbounded.
     ///
     /// THE BOUND IS ON THE LOCK HOLD. Everything above funnels into this function, and this
@@ -2590,6 +2704,23 @@ impl BlockStore {
         selected_block_slab_ids: Option<BTreeSet<u64>>,
         max_slabs_per_round: usize,
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
+        self.run_delayed_destroy_round(
+            min_age_ms,
+            live_block_slab_ids,
+            selected_block_slab_ids,
+            max_slabs_per_round,
+            true,
+        )
+    }
+
+    fn run_delayed_destroy_round(
+        &self,
+        min_age_ms: u64,
+        live_block_slab_ids: impl IntoIterator<Item = u64>,
+        selected_block_slab_ids: Option<BTreeSet<u64>>,
+        max_slabs_per_round: usize,
+        allow_destroy: bool,
+    ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
         let mut live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         live_block_slab_ids.extend(inner.read_pins.keys().copied());
@@ -2613,16 +2744,18 @@ impl BlockStore {
         // THE ROUND THAT DOES NOT HAPPEN. See the note above the signature for why this is an
         // equivalence rather than an approximation; both halves of the condition are required and
         // neither costs a system call.
-        if let Some(earliest) = inner.delayed_destroy_earliest_unix_ms {
-            if now_unix_ms().saturating_sub(earliest) < min_age_ms
-                && !live_set_names_a_quarantined_slab(&inner.slabs, &live_block_slab_ids)
-            {
-                return Ok(BlockStorePurgeDelayedDestroyReport {
-                    max_slabs_per_round,
-                    declined_without_examining: true,
-                    ..Default::default()
-                });
-            }
+        let no_deletion_work = !allow_destroy
+            || inner.delayed_destroy_earliest_unix_ms
+                .is_some_and(|earliest| now_unix_ms().saturating_sub(earliest) < min_age_ms);
+        if no_deletion_work
+            && !live_set_names_a_quarantined_slab(&inner.slabs, &live_block_slab_ids)
+        {
+            return Ok(BlockStorePurgeDelayedDestroyReport {
+                max_slabs_per_round,
+                declined_without_examining: true,
+                quarantine_arrivals_seen: inner.quarantine_arrivals,
+                ..Default::default()
+            });
         }
         // WHAT THIS ROUND LEARNS ABOUT THE EARLIEST ARRIVAL, which it may only publish if it ends
         // up having seen every entry that is still in the directory when it finishes. `None` here
@@ -2709,6 +2842,15 @@ impl BlockStore {
                     );
                     restore_blocked.push(id);
                 }
+                continue;
+            }
+            // Deletion authority cannot grow when the clock crosses the grace boundary.
+            if !allow_destroy {
+                observe_quarantined_arrival(
+                    stamped_at,
+                    &mut earliest_seen,
+                    &mut may_publish_earliest,
+                );
                 continue;
             }
             // Quarantining goes through `set_slab_state`, which stamps `updated_unix_ms`, so the
@@ -2833,7 +2975,60 @@ impl BlockStore {
             max_slabs_per_round,
             examined_block_slabs: examined,
             declined_without_examining: false,
+            quarantine_arrivals_seen: inner.quarantine_arrivals,
         })
+    }
+
+    /// Record that a purge round checked the whole quarantine against a real live set.
+    ///
+    /// `arrivals_seen` is the report's `quarantine_arrivals_seen`. The caller owns the claim that
+    /// the live set was real and that the round was not narrowed or cut short, because only it knows:
+    /// the convenience purge entry points pass an empty live set, and a round that checked nothing
+    /// must not be recorded as one that did.
+    ///
+    /// Clamped to the arrivals this store has actually seen, so a stale or invented count cannot make
+    /// a later arrival look checked.
+    pub fn note_quarantine_checked(&self, arrivals_seen: u64) {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.quarantine_checked_arrivals = checked_arrivals_after_note(
+            inner.quarantine_checked_arrivals,
+            arrivals_seen,
+            inner.quarantine_arrivals,
+        );
+    }
+
+    /// Whether a purge round at `min_age_ms` can destroy nothing, because no slab in quarantine can
+    /// have aged out. Such a round can still RESTORE a slab the live set names, so the live set it is
+    /// handed must still be a real one; what changes is that an approximate one is enough, since a
+    /// missed name delays a restore and cannot destroy.
+    pub fn quarantine_is_too_young_to_purge(&self, min_age_ms: u64) -> bool {
+        let inner = self.inner.lock().expect("block store lock poisoned");
+        quarantine_too_young(
+            inner.delayed_destroy_earliest_unix_ms,
+            now_unix_ms(),
+            min_age_ms,
+        )
+    }
+
+    /// Whether a purge round would do nothing at all, answered from memory.
+    ///
+    /// True only when both halves hold: nothing in quarantine can have matured (the earliest arrival
+    /// is known and younger than `min_age_ms`), and every slab in quarantine has been through a
+    /// purge round with a real live set since it arrived, so none is waiting to be restored. A fresh
+    /// process, a withdrawn earliest and a `min_age_ms` of zero all answer false, so every doubt costs
+    /// a round that looks.
+    ///
+    /// It does NOT answer for a live set that has grown since the check. That is the caller's to rule
+    /// out: a retention owner can name a quarantined slab without any slab arriving.
+    pub fn quarantine_waits_for_age(&self, min_age_ms: u64) -> bool {
+        let inner = self.inner.lock().expect("block store lock poisoned");
+        quarantine_purge_would_do_nothing(
+            inner.delayed_destroy_earliest_unix_ms,
+            now_unix_ms(),
+            min_age_ms,
+            inner.quarantine_arrivals,
+            inner.quarantine_checked_arrivals,
+        )
     }
 
     /// Move every quarantined slab's stamp `age_ms` into the past, so a test can reach the far
@@ -3862,6 +4057,10 @@ mod large_store_scale;
 #[cfg(test)]
 #[path = "block_store/open_read_scale.rs"]
 mod open_read_scale;
+
+#[cfg(test)]
+#[path = "block_store/restore_only_tests.rs"]
+mod restore_only_tests;
 
 #[cfg(test)]
 mod tests {

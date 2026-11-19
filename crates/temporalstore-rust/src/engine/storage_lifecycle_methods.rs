@@ -1269,7 +1269,22 @@ impl TemporalEngine {
                 return Default::default();
             }
         }
-        let mut live_block_slab_ids = self.live_block_slab_ids_all_shards();
+        let min_age_ms = request
+            .block_gc_delayed_destroy_grace_ms
+            .max(crate::block_store::DELAYED_DESTROY_MIN_AGE_MS);
+        // A young quarantine can use the tally only with an explicitly non-destructive round:
+        // its grace may expire while manifests and retention owners are being checked.
+        let approximate_live_set = if self
+            .block_store
+            .quarantine_is_too_young_to_purge(min_age_ms)
+        {
+            self.live_block_slab_ids_all_shards_from_tally()
+        } else {
+            None
+        };
+        let restore_only = approximate_live_set.is_some();
+        let mut live_block_slab_ids = approximate_live_set
+            .unwrap_or_else(|| self.live_block_slab_ids_all_shards());
         let manifests = match list_reclaim_manifests_at(&self.index_dir) {
             Ok(manifests) => manifests,
             // Recovery can skip damaged dumps; physical deletion cannot assume they own nothing.
@@ -1286,12 +1301,15 @@ impl TemporalEngine {
             .as_ref()
             .map(|ids| ids.iter().copied().collect::<BTreeSet<_>>());
         // Direct lifecycle calls must honor the same retention owners as scheduled cycles.
-        if !request.block_gc_shared_store_cursors.is_empty()
+        let has_retention_owners = !request.block_gc_shared_store_cursors.is_empty()
             || self.has_registered_replay_readers(request.shard_id)
             || !request.block_gc_raft_snapshot_refs.is_empty()
             || request.block_gc_checkpoint_floor_slab_id.is_some()
-            || request.block_gc_raft_install_floor_slab_id.is_some()
-        {
+            || request.block_gc_raft_install_floor_slab_id.is_some();
+        // A round that was not narrowed to named slabs and had no retention owner widening its live
+        // set has checked the whole quarantine against the live set below.
+        let checks_whole_quarantine = !has_retention_owners && selected.is_none();
+        if has_retention_owners {
             let candidates = match self.block_store.delayed_destroy_slab_ids() {
                 Ok(ids) => ids,
                 Err(_) => return Default::default(),
@@ -1318,14 +1336,39 @@ impl TemporalEngine {
                 None => allowed,
             });
         }
-        self.block_store
-            .purge_delayed_destroy_slabs_selected(
-                request.block_gc_delayed_destroy_grace_ms
-                    .max(crate::block_store::DELAYED_DESTROY_MIN_AGE_MS),
+        let report = if restore_only {
+            self.block_store.restore_delayed_destroy_slabs_selected(
+                min_age_ms,
                 live_block_slab_ids,
                 selected,
             )
-            .unwrap_or_default()
+        } else {
+            self.block_store.purge_delayed_destroy_slabs_selected(
+                min_age_ms,
+                live_block_slab_ids,
+                selected,
+            )
+        }
+        .unwrap_or_default();
+        // A round that stopped on its budget saw only part of the quarantine, and a slab it could not
+        // restore is still named by the live set: neither has checked everything.
+        if checks_whole_quarantine
+            && !report.budget_exhausted
+            && report.restore_blocked_block_slab_ids.is_empty()
+        {
+            self.block_store
+                .note_quarantine_checked(report.quarantine_arrivals_seen);
+        }
+        report
+    }
+
+    /// Whether a periodic purge of the quarantine, made with `grace_ms` and no retention owner, would
+    /// do nothing: no slab can have aged out and every slab in it has been checked against the live
+    /// set since it arrived. Answered from memory, for a caller that would otherwise build a plan to
+    /// find out. The caller rules out retention owners; this knows only the store.
+    pub(crate) fn quarantine_waits_for_age(&self, grace_ms: u64) -> bool {
+        self.block_store
+            .quarantine_waits_for_age(grace_ms.max(crate::block_store::DELAYED_DESTROY_MIN_AGE_MS))
     }
 
     /// Undumped log bytes, measured from the OLDEST UNDUMPED WRITE rather than from the last dump.
