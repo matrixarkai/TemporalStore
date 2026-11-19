@@ -225,7 +225,11 @@ mod tests {
         objects: BTreeMap<(String, String), (ObjectManifest, Vec<u8>)>,
         /// The next append commits and then reports its publication unconfirmed.
         commit_then_unconfirmed: bool,
+        /// The next append is lost before it commits and reports its publication unconfirmed.
+        lose_then_unconfirmed: bool,
         appends: usize,
+        /// How many unchanged publications (fences) the plane has been asked for.
+        fences: usize,
     }
 
     struct MemoryPlane(Arc<Mutex<Shared>>);
@@ -275,6 +279,12 @@ mod tests {
             let mut shared = self.0.lock().unwrap();
             shared.appends += 1;
             let unconfirmed = std::mem::take(&mut shared.commit_then_unconfirmed);
+            if std::mem::take(&mut shared.lose_then_unconfirmed) {
+                return Err(PlaneFailure {
+                    error: ObjectError::PreconditionFailed("the publication is unconfirmed".into()),
+                    unconfirmed: true,
+                });
+            }
             let slot = (expected.bucket.clone(), expected.key.clone());
             let Some((current, bytes)) = shared.objects.get_mut(&slot) else {
                 return Err(ObjectError::NotFound("append target".into()).into());
@@ -298,6 +308,22 @@ mod tests {
                 });
             }
             Ok(published)
+        }
+
+        fn publish_unchanged(&mut self, expected: &ObjectManifest) -> Result<ObjectManifest, PlaneFailure> {
+            let mut shared = self.0.lock().unwrap();
+            shared.fences += 1;
+            let slot = (expected.bucket.clone(), expected.key.clone());
+            let Some((current, bytes)) = shared.objects.get(&slot).cloned() else {
+                return Err(ObjectError::NotFound("manifest".into()).into());
+            };
+            if &current != expected {
+                return Err(ObjectError::PreconditionFailed("object manifest changed before write".into()).into());
+            }
+            let mut next = current;
+            next.generation += 1;
+            shared.objects.insert(slot, (next.clone(), bytes));
+            Ok(next)
         }
 
         fn read(&mut self, bucket: &str, key: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError> {
@@ -528,6 +554,40 @@ mod tests {
         assert_eq!(cluster_bytes(&pair.direct_cluster)["wal"].1, b"seedrecord-one");
         assert_eq!(pair.direct_cluster.lock().unwrap().appends, 1, "the append was not sent again");
         assert_eq!(pair.gateway_cluster.lock().unwrap().appends, 1);
+    }
+
+    /// The reply to an append is lost AND the append never committed: the case a read cannot
+    /// settle, because the object ends exactly where the append was to start and a late attempt
+    /// could still commit. The resolve fences the lost attempt with an unchanged publication and
+    /// answers absent; the retry lands once. Same bytes and same generation, both ways in.
+    #[tokio::test]
+    async fn an_append_lost_before_it_committed_is_fenced_and_lands_once_in_both_ways() {
+        let pair = pair();
+        pair.gateway.append_blob("wal", Bytes::from_static(b"seed")).await.unwrap();
+        pair.direct.append_blob("wal", Bytes::from_static(b"seed")).await.unwrap();
+        let before = |cluster: &Arc<Mutex<Shared>>| {
+            cluster.lock().unwrap().objects.values().next().unwrap().0.clone()
+        };
+        let stale = [before(&pair.gateway_cluster), before(&pair.direct_cluster)];
+        pair.gateway_cluster.lock().unwrap().lose_then_unconfirmed = true;
+        pair.direct_cluster.lock().unwrap().lose_then_unconfirmed = true;
+        let a = pair.gateway.append_blob("wal", Bytes::from_static(b"record-one")).await.unwrap();
+        let b = pair.direct.append_blob("wal", Bytes::from_static(b"record-one")).await.unwrap();
+        assert_eq!((a.start_offset, a.end_offset, a.object_length), (4, 14, 14));
+        assert_eq!((b.start_offset, b.end_offset, b.object_length), (4, 14, 14));
+        assert_eq!(cluster_bytes(&pair.gateway_cluster), cluster_bytes(&pair.direct_cluster));
+        assert_eq!(cluster_bytes(&pair.direct_cluster)["wal"].1, b"seedrecord-one", "stored once");
+        for (cluster, stale) in [&pair.gateway_cluster, &pair.direct_cluster].into_iter().zip(stale) {
+            {
+                let shared = cluster.lock().unwrap();
+                assert_eq!(shared.fences, 1, "the lost attempt was fenced exactly once");
+                assert_eq!(shared.appends, 2, "the lost attempt, then the retry");
+            }
+            // The attempt that was lost can never commit now: it builds on a generation the fence passed.
+            let late = MemoryPlane(cluster.clone()).append(stale, b"record-one");
+            assert!(late.is_err(), "a late attempt on the old generation must be refused");
+            assert_eq!(cluster.lock().unwrap().objects.values().next().unwrap().1, b"seedrecord-one");
+        }
     }
 
     /// A long run of sequential appends, in both ways, against the gateway's real append path:

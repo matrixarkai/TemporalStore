@@ -571,6 +571,16 @@ impl MatrixObjectHttpStore {
             .checked_add(length)
             .and_then(|end| end.checked_sub(1))
             .ok_or_else(|| ObjectStoreError::InvalidKey(format!("{key}: range overflow")))?;
+        // ASK THE GATEWAY BEFORE READING. A read can say the bytes are in the object, but it cannot
+        // say that an attempt still in flight inside a slow server will never commit: reading
+        // "absent" and then writing again can store the bytes twice. A resolve answers landed, or
+        // absent with the late attempt fenced out, so an absent answer is safe to retry on.
+        match self.resolve_append(key, start_offset, bytes)? {
+            Some(Resolved::Landed) => return self.landed_receipt(key, start_offset, length),
+            Some(Resolved::Absent) => return Ok(None),
+            // A gateway that does not know the route: read the object back, as before.
+            None => {}
+        }
         let response = self
             .send(
                 "GET",
@@ -598,10 +608,23 @@ impl MatrixObjectHttpStore {
         if !present {
             return Ok(None);
         }
+        self.landed_receipt(key, start_offset, length)
+    }
+
+    /// The receipt of an append that is known to be in the object: where it landed and how long
+    /// the object is now. The object may be longer than the append's end, because later appends
+    /// follow it.
+    fn landed_receipt(
+        &self,
+        key: &str,
+        start_offset: u64,
+        length: u64,
+    ) -> Result<Option<AppendBlobReceipt>, ObjectStoreError> {
         let object_length = self.object_length_blocking(key).map_err(|error| {
-            unknown(format!(
-                "the append is present but the length could not be read: {error}"
-            ))
+            ObjectStoreError::OutcomeUnknown {
+                key: key.to_string(),
+                detail: format!("the append is present but the length could not be read: {error}"),
+            }
         })?;
         self.remember_length(key, object_length);
         Ok(Some(AppendBlobReceipt {
@@ -613,6 +636,44 @@ impl MatrixObjectHttpStore {
             physical_slab_count: 0,
             first_physical_offset: None,
         }))
+    }
+
+    /// Ask the gateway whether an append whose reply was lost landed:
+    /// `POST /bucket/key?append-resolve&offset=O&length=N&sha256=<hex>`. `landed` means these bytes
+    /// are at that offset; `absent` means they are not and no attempt still in flight can put them
+    /// there, so a retry as a new append is safe. `None` means the gateway has no such route.
+    /// Anything else the gateway says is an undecided outcome, and never a reason to write again.
+    fn resolve_append(
+        &self,
+        key: &str,
+        start_offset: u64,
+        bytes: &Bytes,
+    ) -> Result<Option<Resolved>, ObjectStoreError> {
+        use sha2::{Digest, Sha256};
+        let unknown = |detail: String| ObjectStoreError::OutcomeUnknown {
+            key: key.to_string(),
+            detail,
+        };
+        let digest = hex::encode(Sha256::digest(bytes.as_ref()));
+        let target = format!(
+            "{}?append-resolve&offset={start_offset}&length={}&sha256={digest}",
+            self.object_target(key),
+            bytes.len()
+        );
+        let response = self
+            .send("POST", &target, &[], &[])
+            .map_err(|error| unknown(format!("the append could not be resolved: {error}")))?;
+        match (response.status, response.header("x-append-resolution")) {
+            (200, Some(word)) => match word.trim() {
+                "landed" => Ok(Some(Resolved::Landed)),
+                "absent" => Ok(Some(Resolved::Absent)),
+                other => Err(unknown(format!("the gateway resolved the append as {other:?}"))),
+            },
+            (503, _) => Err(unknown(
+                "the gateway could not decide whether the append landed".to_string(),
+            )),
+            _ => Ok(None),
+        }
     }
 
     fn list_v2_blocking(
@@ -950,6 +1011,14 @@ impl ObjectStore for MatrixObjectHttpStore {
     fn uri(&self, key: &str) -> String {
         format!("{}/{}", self.uri, key)
     }
+}
+
+/// What a gateway answers when asked to resolve an append whose reply was lost.
+enum Resolved {
+    /// The bytes are in the object at the offset the append named.
+    Landed,
+    /// They are not, and no attempt still in flight can put them there.
+    Absent,
 }
 
 /// One HTTP response, kept whole so a caller can read a header and the body.
@@ -2128,6 +2197,140 @@ mod tests {
         let state = state.lock().unwrap();
         assert_eq!(state.puts, 1, "an append of unknown outcome is never sent again");
         assert_eq!(state.data, b"record-one");
+    }
+
+    // ---- The append resolve ----
+
+    type Answer = Box<dyn Fn(&str, &str, usize) -> Result<DoorReply, String> + Send + Sync>;
+
+    /// A door that answers from a closure (method, target, how many of that method came before)
+    /// and records every request it is handed.
+    struct CannedDoor {
+        log: Mutex<Vec<(String, String)>>,
+        answer: Answer,
+    }
+
+    impl std::fmt::Debug for CannedDoor {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("CannedDoor")
+        }
+    }
+
+    impl InProcessDoor for CannedDoor {
+        fn serve(
+            &self,
+            method: &str,
+            target: &str,
+            _headers: &[(&str, String)],
+            _body: &[u8],
+        ) -> Result<DoorReply, String> {
+            let mut log = self.log.lock().unwrap();
+            let before = log.iter().filter(|(m, _)| m == method).count();
+            log.push((method.to_string(), target.to_string()));
+            drop(log);
+            (self.answer)(method, target, before)
+        }
+    }
+
+    fn canned_reply(status: u16, headers: &[(&str, &str)], body: &[u8]) -> Result<DoorReply, String> {
+        Ok(DoorReply {
+            status,
+            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            body: body.to_vec(),
+        })
+    }
+
+    fn canned_store(answer: Answer) -> (NetworkedMatrixObjectStore, Arc<CannedDoor>) {
+        let door = Arc::new(CannedDoor { log: Mutex::new(Vec::new()), answer });
+        (NetworkedMatrixObjectStore::direct(door.clone(), "temporalstore"), door)
+    }
+
+    fn count(door: &CannedDoor, method: &str) -> usize {
+        door.log.lock().unwrap().iter().filter(|(m, _)| m == method).count()
+    }
+
+    #[tokio::test]
+    async fn an_append_of_unknown_outcome_is_resolved_by_the_gateway_and_landed_is_a_receipt() {
+        // The first length lookup finds nothing; the append is answered 503; the gateway says it
+        // landed; the length is then 10. One PUT, one resolve, no read-back.
+        let (store, door) = canned_store(Box::new(|method, target, before| match method {
+            "HEAD" if before == 0 => canned_reply(404, &[], b""),
+            "HEAD" => canned_reply(200, &[("x-amz-object-size", "10")], b""),
+            "PUT" => canned_reply(503, &[], b"the publication is unconfirmed"),
+            "POST" => {
+                assert!(target.starts_with("/temporalstore/wal?append-resolve&offset=0&length=10&sha256="), "{target}");
+                canned_reply(200, &[("x-append-resolution", "landed")], b"landed\n")
+            }
+            other => panic!("unexpected {other} {target}"),
+        }));
+        let receipt = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect("landed is a receipt");
+        assert_eq!((receipt.start_offset, receipt.end_offset, receipt.object_length), (0, 10, 10));
+        assert_eq!(count(&door, "PUT"), 1, "nothing was sent a second time");
+        assert_eq!(count(&door, "POST"), 1);
+        assert_eq!(count(&door, "GET"), 0, "a resolve replaces the read-back");
+        let log = door.log.lock().unwrap();
+        let digest = log.iter().find(|(m, _)| m == "POST").unwrap().1.rsplit('=').next().unwrap().to_string();
+        assert_eq!(digest.len(), 64, "the request names the SHA-256 of the bytes");
+        assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[tokio::test]
+    async fn an_append_the_gateway_resolves_as_absent_is_retried_as_a_new_append() {
+        // Absent means the lost attempt is fenced out, so a second PUT is safe and is the one that lands.
+        let (store, door) = canned_store(Box::new(|method, target, before| match method {
+            "HEAD" => canned_reply(404, &[], b""),
+            "PUT" if before == 0 => canned_reply(503, &[], b"the publication is unconfirmed"),
+            "PUT" => canned_reply(200, &[("x-amz-object-size", "10")], b""),
+            "POST" => canned_reply(200, &[("x-append-resolution", "absent")], b"absent\n"),
+            other => panic!("unexpected {other} {target}"),
+        }));
+        let receipt = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect("absent, then a new append that lands");
+        assert_eq!((receipt.start_offset, receipt.end_offset, receipt.object_length), (0, 10, 10));
+        assert_eq!(count(&door, "PUT"), 2);
+        assert_eq!(count(&door, "POST"), 1);
+        assert_eq!(count(&door, "GET"), 0);
+    }
+
+    #[tokio::test]
+    async fn an_append_the_gateway_cannot_resolve_is_unknown_and_is_not_repeated() {
+        let (store, door) = canned_store(Box::new(|method, target, _| match method {
+            "HEAD" => canned_reply(404, &[], b""),
+            "PUT" => canned_reply(503, &[], b"the publication is unconfirmed"),
+            "POST" => canned_reply(503, &[], b"undecided"),
+            other => panic!("unexpected {other} {target}"),
+        }));
+        let error = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect_err("the outcome is undecided");
+        assert!(matches!(error, ObjectStoreError::OutcomeUnknown { .. }), "got {error:?}");
+        assert_eq!(count(&door, "PUT"), 1, "an undecided append is never sent again");
+        assert_eq!(count(&door, "GET"), 0, "and the object is not read back as a substitute");
+    }
+
+    #[tokio::test]
+    async fn a_gateway_without_the_resolve_route_is_read_back_as_before() {
+        let (store, door) = canned_store(Box::new(|method, target, before| match method {
+            "HEAD" if before == 0 => canned_reply(404, &[], b""),
+            "HEAD" => canned_reply(200, &[("x-amz-object-size", "10")], b""),
+            "PUT" => canned_reply(503, &[], b"the publication is unconfirmed"),
+            "POST" => canned_reply(405, &[], b""),
+            "GET" => canned_reply(206, &[], b"record-one"),
+            other => panic!("unexpected {other} {target}"),
+        }));
+        let receipt = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect("settled by reading the object");
+        assert_eq!((receipt.start_offset, receipt.end_offset), (0, 10));
+        assert_eq!(count(&door, "PUT"), 1);
+        assert_eq!(count(&door, "GET"), 1, "the read-back is the fallback");
     }
 
     // ---- The networked store and its mode ----
