@@ -221,6 +221,29 @@ def _feature_field(feature_view_name: str, feature_name: str) -> str:
 
 
 @lru_cache(maxsize=128)
+def _cached_view_projection(view_name: str, features: Tuple[str, ...]):
+    fields = [_feature_field(view_name, name) for name in features] + [_ts_field(view_name)]
+    projection = []
+    positions = []
+    indexes = {}
+    for field in fields:
+        position = indexes.get(field)
+        if position is None:
+            position = len(projection)
+            indexes[field] = position
+            projection.append(field)
+        positions.append(position)
+    return tuple(projection), tuple(positions)
+
+
+def _view_projection(view_name: str, features: Tuple[str, ...]):
+    field_chars = len(view_name) + 4 + len(features) * (len(view_name) + 1)
+    if len(features) <= 128 and field_chars + sum(map(len, features)) <= 4096:
+        return _cached_view_projection(view_name, features)
+    return _cached_view_projection.__wrapped__(view_name, features)
+
+
+@lru_cache(maxsize=128)
 def _single_entity_prefix(join_key: str) -> Optional[bytes]:
     prototype = EntityKeyProto(
         join_keys=[join_key], entity_values=[ValueProto(int64_val=0)]
@@ -934,6 +957,20 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         entity_name_to_join_key_map: Dict[str, str],
     ) -> Iterable[Tuple[Any, ...]]:
         if not grouped_refs:
+            return
+        if len(grouped_refs) == 1:
+            table, requested_features = grouped_refs[0]
+            feature_names = list(requested_features)
+            entity_values, row_indexes, output_len = utils._get_unique_entities(
+                table, join_key_values, entity_name_to_join_key_map
+            )
+            entity_keys = utils._get_entity_key_protos(entity_values)
+            hash_keys = [self._entity_hash_key(config, key) for key in entity_keys]
+            projection, positions = _view_projection(
+                self._view_name(table, config), tuple(feature_names)
+            )
+            specs = [(table, feature_names, row_indexes, output_len, entity_keys)]
+            yield hash_keys, list(projection), specs, [(feature_names, list(positions))]
             return
         groups: Dict[Tuple[bytes, ...], List[Tuple[Any, ...]]] = {}
         entity_plans: Dict[Any, Tuple[Any, ...]] = {}

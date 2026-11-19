@@ -328,10 +328,19 @@ impl DataNodeRuntime {
         shard_id: ShardId,
         options: &StorageManagerOptions,
     ) -> (StorageManagerPressureSnapshot, StorageLifecyclePlan) {
+        self.storage_manager_pressure_snapshot_with_report_details(shard_id, options, true)
+    }
+
+    fn storage_manager_pressure_snapshot_with_report_details(
+        &self,
+        shard_id: ShardId,
+        options: &StorageManagerOptions,
+        detailed_report: bool,
+    ) -> (StorageManagerPressureSnapshot, StorageLifecyclePlan) {
         let plan = self
             .inner
             .engine
-            .storage_lifecycle_plan(StorageLifecycleRequest {
+            .storage_lifecycle_plan_with_report_details(StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
                 selected_dump_buckets: Vec::new(),
@@ -353,7 +362,7 @@ impl DataNodeRuntime {
                     crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
                 invalidate_cache: false,
                 warm_cache: false,
-            });
+            }, detailed_report);
         let cache = self.inner.engine.cache().stats();
         // THE NUMBER THAT WAS MISSING. Every memory term below was a cache term, so a shard whose
         // bucket index is large and whose cache is small -- the exact shape eviction exists for --
@@ -489,7 +498,9 @@ impl DataNodeRuntime {
         // The stage walk counters are read-and-cleared at each stage boundary, so the first span
         // must not inherit whatever ran before this round.
         let mut spans = LoopSpans::start();
-        let (pressure, lifecycle_plan) = self.storage_manager_pressure_snapshot(shard_id, &options);
+        let (pressure, lifecycle_plan) = self.storage_manager_pressure_snapshot_with_report_details(
+            shard_id, &options, detailed_report,
+        );
         {
             // The backlog the loop just read, kept where a scrape can see it.
             let mut stats = self.inner.stats.lock().expect("runtime stats lock poisoned");

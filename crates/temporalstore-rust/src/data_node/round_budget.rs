@@ -174,6 +174,11 @@ pub(crate) fn options_for_slot(
     options.enable_index_gc = false;
     options.enable_block_compaction = false;
     options.enable_metrics_reap = false;
+    // The resident bound can enable eviction independently of enable_evict.
+    // Schedule that gate only with the memory work; keep the base limit intact there.
+    if slot != HeavySlot::Memory {
+        options.index_resident_limit_bytes = 0;
+    }
     match slot {
         HeavySlot::WalReclaim => options.enable_wal_reclaim = base.enable_wal_reclaim,
         HeavySlot::Memory => {
@@ -304,11 +309,20 @@ mod tests {
                 _ => 1,
             };
             assert_eq!(count, expected, "{slot:?} left {on:?} switched on");
+            assert_eq!(
+                options.index_resident_limit_bytes,
+                if slot == HeavySlot::Memory { base.index_resident_limit_bytes } else { 0 },
+                "{slot:?} must not schedule another slot's resident bound"
+            );
         }
         let mut off = StorageManagerOptions::default();
         off.enable_wal_reclaim = false;
         let options = options_for_slot(&off, HeavySlot::WalReclaim);
         assert!(!options.enable_wal_reclaim, "a stage the base had off stays off");
+        off.enable_evict = false;
+        let options = options_for_slot(&off, HeavySlot::Memory);
+        assert!(!options.enable_evict);
+        assert_eq!(options.index_resident_limit_bytes, off.index_resident_limit_bytes);
     }
 
     /// A tick runs the cheap work and at most ONE heavy stage, and over the five ticks the five

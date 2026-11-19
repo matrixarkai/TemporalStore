@@ -2447,6 +2447,72 @@ class OnlineStoreTest(unittest.TestCase):
                 self.store._entity_key_hex(self.config, integer_key)
                 self.assertEqual(encode.call_count, 1)
 
+    def test_single_view_plan_skips_cross_view_identity_serialization(self):
+        entity_keys = [object(), object()]
+        indexes = [[2, 0], [1]]
+        with mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_unique_entities",
+            return_value=(["entities"], indexes, 3),
+        ), mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
+            return_value=entity_keys,
+        ), mock.patch.object(self.store, "_entity_hash_key", side_effect=["row1", "row2"]) as hash_key:
+            plans = list(self.store._grouped_read_plans(
+                self.config, [(self.view, ["trips", "trips", "other"])], {}, {}
+            ))
+        self.assertEqual(hash_key.call_count, 2)
+        self.assertEqual(len(plans), 1)
+        keys, fields, specs, layouts = plans[0]
+        self.assertEqual(keys, ["row1", "row2"])
+        self.assertEqual(fields, ["stats:trips", "stats:other", "_ts:stats"])
+        self.assertEqual(layouts, [(["trips", "trips", "other"], [0, 0, 1, 2])])
+        self.assertIs(specs[0][2], indexes)
+        self.assertEqual(specs[0][3], 3)
+        self.assertIs(specs[0][4], entity_keys)
+
+    def test_projection_cache_preserves_order_and_bounds_admission(self):
+        from feast_temporalstore_command.online_store import _cached_view_projection, _view_projection
+
+        _cached_view_projection.cache_clear()
+        self.addCleanup(_cached_view_projection.cache_clear)
+        first = _view_projection("stats@1", ("f", "f", "g"))
+        self.assertEqual(first, (("stats@1:f", "stats@1:g", "_ts:stats@1"), (0, 0, 1, 2)))
+        self.assertIs(_view_projection("stats@1", ("f", "f", "g")), first)
+        self.assertNotEqual(_view_projection("stats@2", ("f", "f", "g")), first)
+        self.assertNotEqual(_view_projection("stats@1", ("g", "f")), first)
+        before = _cached_view_projection.cache_info().currsize
+        for view, features in (("stats", tuple(str(i) for i in range(129))),
+                               ("stats", ("f" * 4096,)), ("s" * 4096, ("f",))):
+            fields, positions = _view_projection(view, features)
+            self.assertEqual(len(positions), len(features) + 1)
+            self.assertEqual(fields[-1], "_ts:" + view)
+            self.assertEqual(_cached_view_projection.cache_info().currsize, before)
+        for index in range(140):
+            _view_projection("stats@" + str(index), ("f",))
+        self.assertEqual(_cached_view_projection.cache_info().currsize, 128)
+
+    def test_single_view_plans_own_projection_lists_and_refresh_entities(self):
+        requested = ["trips"]
+        with mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_unique_entities",
+            return_value=(["entities"], [[0]], 1),
+        ), mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
+            side_effect=[[self._entity_key(1)], [self._entity_key(2)], [self._entity_key(3)]],
+        ), mock.patch.object(self.store, "_view_name", return_value="stats@1") as view_name:
+            first = list(self.store._grouped_read_plans(self.config, [(self.view, requested)], {}, {}))[0]
+            first[1][0] = "changed"
+            first[3][0][1][0] = 99
+            second = list(self.store._grouped_read_plans(self.config, [(self.view, requested)], {}, {}))[0]
+            self.assertEqual(second[1], ["stats@1:trips", "_ts:stats@1"])
+            self.assertEqual(second[3][0][1], [0, 1])
+            self.assertNotEqual(first[0], second[0])
+            requested[:] = ["other"]
+            view_name.return_value = "stats@2"
+            third = list(self.store._grouped_read_plans(self.config, [(self.view, requested)], {}, {}))[0]
+            self.assertEqual(third[1], ["stats@2:other", "_ts:stats@2"])
+            self.assertEqual(second[2][0][1], ["trips"])
+
     def test_feature_views_with_the_same_entities_share_one_projection(self):
         from feast import FeatureView, Field
         from feast.protos.feast.serving.ServingService_pb2 import FieldStatus, GetOnlineFeaturesResponse
@@ -3039,7 +3105,8 @@ class OnlineStoreTest(unittest.TestCase):
                   Value(bool_val=False), Value(double_val=float("nan")), Value(int64_list_val={"val": [1, -2, 0]})]
         encoded = [value.SerializeToString() + b"\xa0\x06\x01" for value in values]
         for feature_names, positions in (([f"f{i}" for i in range(6)], [2, 0, 5, 1, 4, 3, 6]),
-                                         (["f", "other", "f"], [1, 0, 1, 6]), ([], [6])):
+                                         (["f", "other", "f"], [1, 0, 1, 6]),
+                                         (["f", "other", "f", "other", "f"], [1, 0, 1, 0, 1, 6]), ([], [6])):
             fields = feature_names + ["timestamp"]
             for legacy in (False, True):
                 rows = [encoded + [stamp], [None] * 7, [b""] * 7, encoded + [b""]]
@@ -3115,6 +3182,55 @@ class OnlineStoreTest(unittest.TestCase):
         payload[:] = b"\x00" * len(payload)
         self.assertEqual(response.results[0].values[1].bytes_val, b"original")
         self.assertEqual(response.results[0].event_timestamps[1].seconds, 10)
+
+    def test_projected_templates_do_not_share_mutable_column_messages(self):
+        from types import SimpleNamespace
+        from google.protobuf.timestamp_pb2 import Timestamp
+        from feast.protos.feast.serving.ServingService_pb2 import FieldStatus, GetOnlineFeaturesResponse
+        from feast.protos.feast.types.Value_pb2 import Value
+        from feast_temporalstore_command.projected_response import populate_projected_response
+
+        table = SimpleNamespace(name="stats", projection=SimpleNamespace(
+            name="stats", name_alias=None, name_to_use=lambda: "stats"))
+        payload = bytearray(Value(bytes_val=b"original").SerializeToString())
+        response = GetOnlineFeaturesResponse()
+        populate_projected_response([[payload] * 4 + [Timestamp(seconds=10).SerializeToString()]],
+            [0, 1, 2, 3, 4], ["a", "b", "c", "d"], [[0, 1]], response, False, table, 2)
+        response.results[0].values[0].bytes_val = b"changed"
+        response.results[0].event_timestamps[0].seconds = 20
+        response.results[0].statuses[0] = FieldStatus.NOT_FOUND
+        payload[:] = b"\x00" * len(payload)
+        for column in response.results[1:]:
+            self.assertEqual(column.values[0].bytes_val, b"original")
+            self.assertEqual(column.event_timestamps[0].seconds, 10)
+            self.assertEqual(column.statuses[0], FieldStatus.PRESENT)
+        self.assertEqual(response.results[0].values[1].bytes_val, b"original")
+        self.assertEqual(response.results[0].event_timestamps[1].seconds, 10)
+        self.assertEqual(response.results[0].statuses[1], FieldStatus.PRESENT)
+
+    def test_projected_templates_roll_back_late_column_failures(self):
+        from types import SimpleNamespace
+        from google.protobuf.message import DecodeError
+        from feast.protos.feast.serving.ServingService_pb2 import GetOnlineFeaturesResponse
+        from feast.protos.feast.types.Value_pb2 import Value
+        from feast_temporalstore_command.projected_response import populate_projected_response
+
+        table = SimpleNamespace(name="stats", current_version_number=2, projection=SimpleNamespace(
+            name="stats", name_alias=None, name_to_use=lambda: "stats"))
+        payload = Value(int64_val=7).SerializeToString()
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                response = GetOnlineFeaturesResponse()
+                if existing:
+                    response.metadata.feature_names.val.append("existing")
+                    response.results.add().values.add().int64_val = 99
+                before = response.SerializeToString(deterministic=True)
+                with mock.patch("feast.metrics.track_feature_statuses") as tracked:
+                    with self.assertRaises(DecodeError):
+                        populate_projected_response([[payload, payload, payload, b"\xff", b""]],
+                            [0, 1, 2, 3, 4], ["a", "b", "c", "d"], [[0]], response, False, table, 1, True)
+                    tracked.assert_not_called()
+                self.assertEqual(response.SerializeToString(deterministic=True), before)
 
     def test_the_async_read_answers_and_emits_the_same_one_round_trip(self):
         """Feast's async serving path calls this, and the base class raises.

@@ -380,6 +380,22 @@ jobs:
           # One invocation per guard, because `cargo test` takes a single positional filter and a
           # second one is silently an error rather than a second filter.
           for t in \
+              wal::registration_records::tests::mutations_match_an_independent_slot_model \
+              wal::registration_records::tests::uniform_expectations_stay_inline_and_conflicts_release_their_storage \
+              engine::block_in_wal::physical::registration_summary_tests::summaries_combine_domains_and_follow_replacement_retirement_and_clear \
+              engine::block_in_wal::physical::registration_summary_tests::summary_queries_complete_while_both_locator_registries_are_locked \
+              engine::storage_lifecycle_methods::planning_order_tests::claim_ranks_match_manifest_augmented_summaries \
+              engine::storage_lifecycle_methods::lifecycle_report_work_tests::execution_plan_uses_dirty_metadata_without_block_summaries \
+              engine::storage_lifecycle_methods::lifecycle_report_work_tests::empty_quarantine_purge_skips_every_loaded_shards_live_address_walk \
+              engine::storage_lifecycle_methods::lifecycle_report_work_tests::nonempty_quarantine_still_walks_liveness_and_keeps_the_grace_window \
+              block_store::quarantine_probe_tests::absent_empty_and_foreign_quarantine_entries_are_not_slabs \
+              block_store::quarantine_probe_tests::an_unrecorded_quarantined_slab_is_seen_without_changing_it \
+              block_store::quarantine_probe_tests::an_invalid_quarantine_directory_is_an_error_not_an_empty_result \
+              data_node::runtime_storage::maintenance_report_tests::timer_pressure_plans_preserve_work_without_bucket_reports \
+              data_node::round_budget::tests::a_tick_runs_one_heavy_slot_and_each_slot_runs_only_its_own_stages \
+              wal::point_reads::tests::prepared_io_and_completion_do_not_wait_for_writer_mutex \
+              wal::point_reads::tests::leased_prepared_reads_survive_prefix_rewrite \
+              wal_proto::indexed::tests::concurrent_directory_readers_share_one_bounded_entry \
               wal::read_retention_tests::acquiring_and_releasing_a_read_lease_does_not_wait_for_wal_io \
               block_store::read_retention::tests::nested_readers_protect_only_named_slabs_until_last_release \
               block_store::read_retention::tests::read_pins_survive_quarantine_plans_and_restore_before_purge \
@@ -977,6 +993,8 @@ jobs:
           for t in \
             data_node::tests::part3::the_loop_runs_no_stage_on_a_shard_that_is_still_replaying \
             data_node::tests::part3::the_periodic_loop_holds_a_quarantined_slab_for_a_day \
+            data_node::tests::part3::a_quiet_shard_with_every_bucket_clean_can_reclaim_its_log \
+            data_node::tests::part3::the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable \
             data_node::round_budget::tests::the_whole_round_loop_is_the_default_and_the_tick_loop_is_opt_in
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-loop.log
