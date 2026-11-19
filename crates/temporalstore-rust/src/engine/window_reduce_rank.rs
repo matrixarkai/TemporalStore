@@ -18,8 +18,10 @@
 //! * REDUCE folds one member's surviving cells lane by lane with the reduction the header declares
 //!   for that lane ([`read_reducer`]: the write-side merge verb, as the read-side window reduction) through the shared window
 //!   reducers, in sample order. Labels are the newest surviving cell's.
-//! * SCORE turns the reduced lanes into the ordering value: [`WindowReduceScore`]. A member whose score is
-//!   undefined (a zero denominator, no trials) is counted in `unscored` and not ranked.
+//! * SCORE turns the reduced lanes into the ordering value: [`WindowReduceScore`]. Every member is
+//!   ranked: a ratio whose denominator is 0 scores 0, and a Wilson score of lanes that are both 0
+//!   scores 0 (`unscored` stays 0 for those; only a score that cannot be formed at all, such as a
+//!   non-finite weighted sum, leaves a member out and is counted there).
 //!   The one score that is not a function of the reduced lanes is `Decay`: it reads the value each of
 //!   the member's samples stores for a lane and halves it for every half-life between that sample
 //!   and the NEWEST sample of the window (so it does not read the clock, and a key read later or
@@ -52,7 +54,7 @@ use super::cell_set::{validate_top_k, within, Cell, CellHeader, CellRef, FlatCel
 #[cfg(test)]
 use super::cell_set::Member;
 use super::product_model::filter_op_holds;
-use super::window_aggregate::{ratio, weighted_sum, wilson_lower_bound, DecayedSumAcc, Reduced, Reducer};
+use super::window_aggregate::{weighted_sum, DecayedSumAcc, Reduced, Reducer};
 use crate::types::{
     CellMemberId, WindowReduceRankSpec, WindowReduceSampleInfo, WindowReduceScore, WindowReduceWindow, FeatureFilter,
     FeatureFilterOp, RankedCellRow, RankedCells,
@@ -475,20 +477,48 @@ impl Plan {
     }
 }
 
+/// The ratio score: the quotient of the two lanes as a whole number (the fraction is dropped, so
+/// every ratio below 1 scores 0 and members tie on it), and 0 when the denominator is 0. A member
+/// whose denominator is 0 is ranked at 0, not dropped.
+pub(crate) fn whole_ratio(numerator: i64, denominator: i64) -> i128 {
+    if denominator == 0 {
+        0
+    } else {
+        i128::from(numerator) / i128::from(denominator)
+    }
+}
+
+/// The Wilson score: the lower bound of the interval for the smaller of the two lanes out of the
+/// larger (so which of them holds the successes does not matter), at `z` deviations, scaled by
+/// 10,000 and cut to a whole number. 0 when the larger lane is 0 or the arithmetic leaves the
+/// finite numbers; a member is always ranked.
+pub(crate) fn wilson_score(first: i64, second: i64, z: f64) -> i128 {
+    let (low, high) = (first.min(second), first.max(second));
+    if high == 0 {
+        return 0;
+    }
+    let high = high as f64;
+    let ratio = low as f64 / high;
+    let z2 = z * z;
+    let score = (ratio + z2 / (2.0 * high) - (z / (2.0 * high)) * (4.0 * high * (1.0 - ratio) * ratio + z2).sqrt())
+        / (1.0 + z2 / high)
+        * 10_000.0;
+    if !score.is_finite() {
+        0
+    } else if score >= i64::MAX as f64 {
+        i128::from(i64::MAX)
+    } else {
+        i128::from(score as i64)
+    }
+}
+
 impl Scorer {
     /// The ordering value of one member's `lanes`. `None`: the score is undefined for it.
     pub(crate) fn score(&self, member: MemberRef<'_>, last_ms: u64, lanes: &[i64]) -> Result<Option<Key>, String> {
         Ok(match self {
             Scorer::Lane(i) => Some(Key::Int(i128::from(lanes[*i]))),
-            Scorer::Ratio(n, d) => ratio(lanes[*n], lanes[*d]).map(Key::Float),
-            Scorer::Wilson(s, t, z) => {
-                let (successes, trials) = (lanes[*s], lanes[*t]);
-                if successes < 0 || trials < 0 {
-                    None
-                } else {
-                    wilson_lower_bound(successes as u64, trials as u64, *z).map(Key::Float)
-                }
-            }
+            Scorer::Ratio(n, d) => Some(Key::Int(whole_ratio(lanes[*n], lanes[*d]))),
+            Scorer::Wilson(s, t, z) => Some(Key::Int(wilson_score(lanes[*s], lanes[*t], *z))),
             Scorer::Member => match member {
                 MemberRef::U64(v) => Some(Key::Int(i128::from(v))),
                 MemberRef::Bytes(_) => {

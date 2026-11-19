@@ -459,8 +459,9 @@ fn a_rollup_is_a_write_the_log_can_carry_in_every_score_spelling() {
 ///
 /// Rolled into the hour that starts at 0, with slots item 1 and 2 in slot 1 and item 3 in slot 2:
 ///   item 1: 60 shown, 3 clicks, peak 9     item 2: 10 shown, 5 clicks, peak 2     item 3: 100, 1, 3
-/// Capped to one item per slot by clicks / impressions: slot 1 holds item 1 at 3/60 = 0.05 and
-/// item 2 at 5/10 = 0.5, so item 2 stays and item 1 goes. Slot 2 has only item 3.
+/// Capped to one item per slot by impressions / clicks (a whole number, the impressions it took
+/// to earn a click): slot 1 holds item 1 at 60/3 = 20 and item 2 at 10/5 = 2, so item 1 stays and
+/// item 2 goes. Slot 2 has only item 3.
 #[test]
 fn a_worked_example_of_a_rollup() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -492,19 +493,19 @@ fn a_worked_example_of_a_rollup() {
         ]
     );
 
-    // The cap, on the same hour: one item per slot by click rate. The hour is already rolled, so
-    // only the cap acts on it.
+    // The cap, on the same hour: one item per slot by impressions per click. The hour is already
+    // rolled, so only the cap acts on it.
     let capped = roll(
         hour,
         hour,
         Some(WindowReduceCapSpec {
             group_by: Some("slot".to_string()),
-            score: WindowReduceScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
+            score: WindowReduceScore::Ratio { numerator: "impressions".to_string(), denominator: "clicks".to_string() },
             keep: 1, protect_newest_ppm: 0, trigger_over: 0,
         }),
     );
     assert_eq!(receipt(&rollup_response(&engine, &key, capped)), [2, 2, 3, 2, 1]);
-    assert_eq!(decoded(&engine, &key)[0].1, vec![cell(2, 1, [10, 5, 2, 3]), cell(3, 2, [100, 1, 3, 1])]);
+    assert_eq!(decoded(&engine, &key)[0].1, vec![cell(1, 1, [60, 3, 9, 3]), cell(3, 2, [100, 1, 3, 1])]);
 }
 
 // ------------------------------------------------------------------------------------------

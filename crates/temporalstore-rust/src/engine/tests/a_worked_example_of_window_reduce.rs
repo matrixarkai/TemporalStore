@@ -195,13 +195,13 @@ fn a_worked_example_of_window_reduce() {
     // window Last{60 s} -> reduce per item across the samples the window holds -> score the
     // click rate -> the best first. The ten-minute-old sample is outside the window, so item 1
     // is 1 click in 1 impression, not 1 click in 1 001.
+    // A ratio is a WHOLE number (the fraction is dropped): item 1 is 1 / 1 = 1, items 2 and 3 are
+    // 80 / 100 and 9 / 10, both below 1, so both score 0 and tie, and the smaller item leads.
     let by_rate = rank(&engine, &key, Vec::new(), click_rate());
     assert_eq!(by_rate.samples, 2, "the window holds the half-minute and the twenty-second samples");
-    assert_eq!(members(&by_rate), vec![1, 3, 2]);
+    assert_eq!(members(&by_rate), vec![1, 2, 3]);
     let rates: Vec<f64> = by_rate.rows.iter().map(|row| row.score).collect();
-    for (got, want) in rates.iter().zip([1.0, 0.9, 0.8]) {
-        assert!((got - want).abs() < 1e-12, "{rates:?}");
-    }
+    assert_eq!(rates, vec![1.0, 0.0, 0.0]);
     // The row carries what the merge produced: item 2's merged lanes, in the header's order
     // (impressions, clicks), and its label.
     let item_2 = by_rate.rows.iter().find(|row| row.member == CellMemberId::U64(2)).unwrap();
@@ -211,13 +211,14 @@ fn a_worked_example_of_window_reduce() {
 
     // ---- 4. THE SAME QUESTION, BY THE WILSON LOWER BOUND ---------------------------------------
     // A click rate of 1 out of 1 is a perfect rate and almost no evidence. The Wilson lower bound
-    // at z = 1.96 (a 95% interval) is the rate the data can support: 80 of 100 is about 0.711,
-    // 9 of 10 about 0.596, and 1 of 1 about 0.207. The same three items, ordered the other way.
+    // at z = 1.96 (a 95% interval) is the rate the data can support, times 10,000 and cut to a
+    // whole number: 80 of 100 is about 7111, 9 of 10 about 5958, and 1 of 1 about 2065. The same
+    // three items, ordered the other way.
     let by_bound = rank(&engine, &key, Vec::new(), wilson_bound());
     assert_eq!(members(&by_bound), vec![2, 3, 1]);
     let bounds: Vec<f64> = by_bound.rows.iter().map(|row| row.score).collect();
-    for (got, want) in bounds.iter().zip([0.7112, 0.5959, 0.2065]) {
-        assert!((got - want).abs() < 1e-3, "{bounds:?}");
+    for (got, want) in bounds.iter().zip([7111.0, 5958.0, 2065.0]) {
+        assert!((got - want).abs() <= 2.0, "{bounds:?}");
     }
 
     // ---- 5. A SELECTION BY LABEL --------------------------------------------------------------
