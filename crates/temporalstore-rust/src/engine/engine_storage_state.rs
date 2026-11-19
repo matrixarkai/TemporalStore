@@ -1472,6 +1472,10 @@ thread_local! {
     static BUCKET_OWNERS_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// The most owner entries the test-only owner check will derive and compare at once.
+#[cfg(test)]
+const OWNER_CHECK_MAX_ENTRIES: usize = 2_000;
+
 #[cfg(test)]
 pub(super) fn measure_block_identity_visits_for_test<T>(work: impl FnOnce() -> T) -> (T, usize) {
     BLOCK_IDENTITY_VISITS.with(|count| count.set(0));
@@ -8569,6 +8573,12 @@ impl CoreIndex {
         let Some(recorded) = self.bucket_owners.get() else {
             return;
         };
+        // THE CHECK DERIVES EVERY OWNER FROM EVERY REF, so it is linear in the shard, and the delete
+        // path runs it. On a large fixture that made each delete cost the shard again, which hid
+        // what the owners save from every timing test. It runs on small shards only.
+        if recorded.entries() > OWNER_CHECK_MAX_ENTRIES {
+            return;
+        }
         let truth = self.derive_bucket_owners();
         for (bucket, expected) in truth.iter() {
             let have = recorded.owners_of(*bucket);
