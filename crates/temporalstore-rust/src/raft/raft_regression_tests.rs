@@ -46,3 +46,5 @@ mod the_conflict_is_floored_at_the_commit_point;
 
 #[path = "tests/a_catch_up_carries_the_state_machine_it_replaces.rs"]
 mod a_catch_up_carries_the_state_machine_it_replaces;
+#[path = "tests/a_follower_catch_up_copies_only_what_the_follower_lacks.rs"]
+mod a_follower_catch_up_copies_only_what_the_follower_lacks;

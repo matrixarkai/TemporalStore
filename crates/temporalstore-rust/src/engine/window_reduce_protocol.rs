@@ -913,10 +913,30 @@ pub(crate) fn answer_of(profile: &TableProfile, query: &wire::WindowReduceQuery,
         })
         .collect::<Vec<_>>();
     let echoed = query.echo && query.has_echo;
+    // The span the read scanned: the oldest and the newest sample of the window, before the top-k
+    // kept any of it. A read that selects cells by member or by lane value reports the span of the
+    // rows it returned instead, as only those cells were looked for.
+    let by_rows = matches!(
+        query.selector.as_ref().map(|s| s.mode()),
+        Some(wire::RankMode::MembersOnly | wire::RankMode::MatchLane)
+    );
+    let (first_us, last_us) = if by_rows {
+        (
+            if entries.is_empty() { 0 } else { (first as i64).saturating_mul(1000) },
+            (last as i64).saturating_mul(1000),
+        )
+    } else if ranked.samples == 0 {
+        (0, 0)
+    } else {
+        (
+            (ranked.window_first_ms as i64).saturating_mul(1000),
+            (ranked.window_last_ms as i64).saturating_mul(1000),
+        )
+    };
     wire::WindowReduceAnswer {
         entity: query.entity,
-        first_us: if entries.is_empty() { 0 } else { (first as i64).saturating_mul(1000) },
-        last_us: (last as i64).saturating_mul(1000),
+        first_us,
+        last_us,
         entries,
         sample_info: sample_info_of(&ranked.sample_info),
         echoed_selector: echoed.then(|| query.selector.clone()).flatten(),

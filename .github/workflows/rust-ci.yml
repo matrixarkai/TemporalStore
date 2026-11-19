@@ -190,6 +190,14 @@ jobs:
             -- --test-threads=1 2>&1 | tee /tmp/batch-wal-barrier-gate.log
           grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/batch-wal-barrier-gate.log
 
+      - name: Follower catch-up cost checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe a_follower_catch_up \
+            -- --test-threads=1 2>&1 | tee /tmp/follower-catch-up-gate.log
+          grep -q 'test result: ok\. 2 passed; 0 failed;' /tmp/follower-catch-up-gate.log
+
       - name: Bounded memory deletion checks
         timeout-minutes: 30
         run: |
@@ -529,11 +537,21 @@ jobs:
             engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::no_reader_takes_a_manifests_image_around_the_resolver \
             engine::bucket_dump_chain::tests::a_missing_link_is_an_error_and_never_a_shorter_chain \
             raft::wal_proto::tests::every_command_the_raft_wal_carries_is_protobuf \
+            raft::wal_proto::tests::the_raft_wal_record_codec_has_no_json \
+            raft::wal_proto::tests::a_replicated_batch_carries_its_rpc_metadata \
+            raft::wal_proto::tests::an_installed_snapshot_keeps_every_field \
+            raft::wal_proto::tests::an_installed_snapshot_without_the_current_format_is_refused \
             shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
             shared_store::tests::a_command_with_no_protobuf_encoding_is_refused_and_never_written_as_json \
             shared_store::tests::no_json_encode_arm_is_left_in_the_wal_command_encoders \
+            metaserver_files_proto::generated_round_trips::every_generated_type_round_trips \
+            metaserver_files::tests::a_meta_snapshot_file_round_trips \
+            metaserver_files::tests::a_scheduler_snapshot_file_round_trips \
+            metaserver_files::tests::the_json_shape_is_refused \
+            metaserver_files::tests::a_cut_file_is_never_read_as_the_whole \
+            metaserver_files::tests::the_snapshot_files_are_written_and_read_without_json \
             index_log::tests::a_record_the_binary_encoder_cannot_pack_is_refused_not_written_as_unreadable_json \
             index_log::tests::no_json_encode_arm_is_left_in_the_index_log_payload_encoders \
             engine::tests::the_control_state_block_is_protobuf_only::a_series_block_codec_reads_protobuf_and_refuses_everything_else \
@@ -740,7 +758,7 @@ jobs:
             engine::window_reduce_remove::tests::a_member_set_takes_the_members_it_names_and_spares_the_ones_it_excludes \
             engine::window_reduce_remove::tests::the_window_the_members_and_the_predicates_are_anded \
             engine::window_reduce_remove::tests::the_order_and_repetition_of_a_member_set_change_nothing \
-            engine::window_reduce_remove::tests::a_removal_that_restricts_nothing_is_refused_and_each_way_of_restricting_is_accepted \
+            engine::window_reduce_remove::tests::a_removal_that_restricts_nothing_is_the_whole_key_and_each_way_of_restricting_is_not \
             engine::window_reduce_remove::tests::a_name_the_key_does_not_declare_an_empty_include_set_and_a_backwards_window_are_refused \
             engine::window_reduce_remove::tests::predicates_and_member_sets_are_accepted_at_the_limit_and_refused_one_past_it \
             engine::window_reduce_remove::tests::a_sample_that_keeps_every_cell_comes_back_with_the_cells_it_had \
@@ -751,6 +769,7 @@ jobs:
             engine::tests::a_window_reduce_removal_is_a_command::the_same_request_on_two_engines_leaves_the_same_bytes \
             engine::tests::a_window_reduce_removal_is_a_command::a_request_that_matches_nothing_writes_nothing_and_says_so \
             engine::tests::a_window_reduce_removal_is_a_command::removing_every_cell_leaves_an_empty_key_that_still_reads_and_still_takes_a_write \
+            engine::tests::a_window_reduce_removal_is_a_command::a_removal_that_restricts_nothing_deletes_the_key_in_one_record_whatever_its_size_and_a_missing_key_reports_zero \
             engine::tests::a_window_reduce_removal_is_a_command::a_request_the_key_cannot_serve_is_refused_and_writes_nothing \
             engine::tests::a_window_reduce_removal_is_a_command::each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it \
             engine::tests::a_window_reduce_removal_is_a_command::an_absent_key_and_an_expired_key_remove_nothing \
@@ -904,6 +923,7 @@ jobs:
             engine::window_reduce_protocol::tests::a_batch_answer_holds_one_answer_per_query_in_order_each_with_its_own_status \
             engine::window_reduce_protocol::tests::the_accepted_timestamp_range_is_open_at_both_ends \
             engine::window_reduce_protocol::tests::each_translated_rank_mode_becomes_the_score_it_names \
+            engine::window_reduce_protocol::tests::first_and_last_say_what_the_window_scanned_except_for_the_reads_that_select_by_member_or_lane_value \
             engine::window_reduce_protocol::tests::the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_and_kind \
             engine::tests::a_newest_rows_window_reads_stored_rows::a_recent_read_over_a_rows_window_returns_exactly_the_stored_cells_the_window_holds \
             engine::tests::a_newest_rows_window_reads_stored_rows::a_rows_window_applies_to_each_key_of_a_merged_read \
@@ -1313,6 +1333,8 @@ jobs:
             engine::tests::a_cached_feature_query_sees_a_sequence_add::a_cached_feature_query_sees_a_sequence_add_after_expiry \
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::an_in_place_read_answers_what_the_decoder_answered \
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::a_sequence_query_answers_the_rows_that_were_added \
+            engine::tests::a_resident_map_read_takes_the_shared_lock::each_resident_map_read_answers_while_the_shared_lock_is_held \
+            engine::tests::a_resident_map_read_takes_the_shared_lock::the_fast_reads_answer_what_the_maps_hold \
             engine::tests::a_feature_range_read_takes_the_shared_lock::each_range_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_feature_range_read_takes_the_shared_lock::a_range_read_answers_what_was_appended \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::each_point_read_answers_while_the_shared_lock_is_held \

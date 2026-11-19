@@ -398,6 +398,39 @@ fn write_context_node(
 ///
 /// THE CACHE GOES WITH THE RECORD. Dropping the record and leaving its cached copy would let
 /// the very next read answer from the copy, which is the bug this exists to close.
+/// Removes a key's whole feature series in one log record: the series went, not one point. Returns
+/// whether anything changed.
+///
+/// THE BLOCKS ARE MARKED DELETED BEFORE THE SERIES IS REMOVED, not after, and `StringDelete` has the
+/// same two lines in this order for the same reason: `mark_bucket_index_object_deleted` finds an
+/// object's blocks by NAMING each one through the object's row and the block lookup, and keeps any
+/// block it cannot name. Removing the series first took the row the names come from, so the marker
+/// named nothing, kept every block, and left them LIVE in `bucket_map` with no object naming them:
+/// the index writer then refuses the shard ("holds a block whose stored key would name no object").
+///
+/// THE RETRY RING GOES WITH THE SERIES: a key written again afterwards is a new key, and a token it
+/// saw before is not a replay. THE NUMERIC VIEW GOES TOO: this is the one feature write that does not
+/// publish blocks, so the invalidation in `sync_bucket_index_object_blocks_with_mode` does not cover
+/// it, and a key re-created with the same number of points would answer with the sums of the deleted
+/// series.
+fn delete_whole_feature_series(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) -> bool {
+    let mut mutated = false;
+    stage_meta_outcome(shard_id, "feature", key, start_routing_bucket, end_routing_bucket, None, None, true);
+    mutated |= mark_bucket_index_object_deleted(shard, key);
+    mutated |= shard.features_mut().remove(key).is_some();
+    shard.forget_retry_ring(key);
+    control_rollup::feature_forget(shard, key);
+    let _ = cache.invalidate_record(shard_id, "feature", key);
+    mutated
+}
+
 fn drop_if_expired(
     cache: &MultiLayerCache,
     shard_id: ShardId,
@@ -2728,14 +2761,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            CommandResponse::Bytes {
-                value: shard
-                    .bucket_index
-                    .zsets
-                    .get(&key)
-                    .and_then(|members| members.get(&member))
-                    .map(|(biased, _)| zset_score_string(*biased).into_bytes()),
-            }
+            zset_score_answer(shard, &key, &member)
         }
         Command::ZSetRemoveMany { key, members } => {
             // A key past its deadline reads as absent before anything is asked of it.
@@ -2813,9 +2839,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            CommandResponse::Integer {
-                value: shard.bucket_index.zsets.get(&key).map_or(0, BTreeMap::len) as i64,
-            }
+            zset_card_answer(shard, &key)
         }
         Command::ZSetRange {
             key,
@@ -2884,32 +2908,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let members = shard
-                .bucket_index
-                .zsets
-                .get(&key)
-                .map(|members| {
-                    if after.is_empty() {
-                        members
-                            .iter()
-                            .take(limit)
-                            .flat_map(|(member, (biased, _))| {
-                                [member.clone(), zset_score_string(*biased).into_bytes()]
-                            })
-                            .collect::<Vec<_>>()
-                    } else {
-                        use std::ops::Bound::{Excluded, Unbounded};
-                        members
-                            .range::<[u8], _>((Excluded(after.as_slice()), Unbounded))
-                            .take(limit)
-                            .flat_map(|(member, (biased, _))| {
-                                [member.clone(), zset_score_string(*biased).into_bytes()]
-                            })
-                            .collect::<Vec<_>>()
-                    }
-                })
-                .unwrap_or_default();
-            CommandResponse::Members { members }
+            zset_scan_answer(shard, &key, &after, limit)
         }
         Command::SeenCheck {
             key,
@@ -3772,9 +3771,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            CommandResponse::Integer {
-                value: shard.bucket_index.lists.get(&key).map_or(0, BTreeMap::len) as i64,
-            }
+            list_len_answer(shard, &key)
         }
         Command::SetMembers { key } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
@@ -3897,16 +3894,8 @@ pub(crate) fn execute_on_shard(
             }
             // THE LENGTH OF THE MAP THE MEMBERS LIVE IN. The listing this replaces cloned every
             // member into a vector (and into the cache) to take its length.
-            if shard.set_listing_from_map {
-                if let Some(members) = shard.bucket_index.sets.get(&key) {
-                    SET_POINT_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return ExecuteOutcome {
-                        response: CommandResponse::Integer {
-                            value: members.len() as i64,
-                        },
-                        mutated,
-                    };
-                }
+            if let Some(response) = set_card_answer(shard, &key) {
+                return ExecuteOutcome { response, mutated };
             }
             // No resident entry, or the map is switched off for listings: the listing decides,
             // so a key whose blocks say otherwise is counted from them exactly as it is listed.
@@ -3944,16 +3933,8 @@ pub(crate) fn execute_on_shard(
                 };
             }
             // ONE LOOKUP IN THE ORDERED MAP, keyed by member bytes.
-            if shard.set_listing_from_map {
-                if let Some(members) = shard.bucket_index.sets.get(&key) {
-                    SET_POINT_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return ExecuteOutcome {
-                        response: CommandResponse::Integer {
-                            value: i64::from(members.contains_key(member.as_slice())),
-                        },
-                        mutated,
-                    };
-                }
+            if let Some(response) = set_is_member_answer(shard, &key, &member) {
+                return ExecuteOutcome { response, mutated };
             }
             let listed = execute_on_shard(
                 cache,
@@ -3991,24 +3972,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let members = shard
-                .bucket_index
-                .sets
-                .get(&key)
-                .map(|members| {
-                    if after.is_empty() {
-                        members.keys().take(limit).cloned().collect::<Vec<_>>()
-                    } else {
-                        use std::ops::Bound::{Excluded, Unbounded};
-                        members
-                            .range::<[u8], _>((Excluded(after.as_slice()), Unbounded))
-                            .take(limit)
-                            .map(|(member, _)| member.clone())
-                            .collect::<Vec<_>>()
-                    }
-                })
-                .unwrap_or_default();
-            CommandResponse::Members { members }
+            set_scan_answer(shard, &key, &after, limit)
         }
         Command::SetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
@@ -4552,42 +4516,14 @@ pub(crate) fn execute_on_shard(
         }
         Command::FeatureDelete { key } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            // A removal with no element name: the whole series went, not one point.
-            stage_meta_outcome(
+            mutated |= delete_whole_feature_series(
+                cache,
                 shard_id,
-                "feature",
+                shard,
                 &key,
                 start_routing_bucket,
                 end_routing_bucket,
-                None,
-                None,
-                true,
             );
-            // THE BLOCKS ARE MARKED DELETED BEFORE THE SERIES IS REMOVED, not after, and `StringDelete`
-            // above has the same two lines in this order for the same reason.
-            //
-            // `mark_bucket_index_object_deleted` finds an object's blocks by NAMING each one through
-            // the object's row and the block lookup, and keeps any block it cannot name. Removing the
-            // series first took the row the names come from, so the marker named nothing, kept every
-            // block, and left them LIVE in `bucket_map` with no object naming them: the index writer
-            // then refuses the shard ("holds a block whose stored key would name no object"), and
-            // that is an error in a release build too, not an assertion. Every
-            // `FeatureDelete` in the conformance sequences that leave the index unwritable is this
-            // one; no other command is.
-            mutated |= mark_bucket_index_object_deleted(shard, &key);
-            mutated |= shard.features_mut().remove(&key[..]).is_some();
-            // THE RETRY RING GOES WITH THE SERIES: a key written again afterwards is a new key, and
-            // a token it saw before is not a replay.
-            shard.forget_retry_ring(&key);
-            // THE ONE FEATURE WRITE THAT DOES NOT PUBLISH BLOCKS, so the invalidation in
-            // `sync_bucket_index_object_blocks_with_mode` does not cover it. The expiry path's
-            // `forget_object` already drops the view beside its own `features_mut().remove`; this
-            // arm removed the series and left the view behind. The length test hid it in the
-            // common case -- an emptied series reads as length 0 against a non-empty view -- but
-            // not when the key is re-created with the same number of points, which then answers
-            // with the sums of the DELETED series.
-            control_rollup::feature_forget(shard, &key);
-            let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
         aggregate_command @ (Command::FeatureAggQuery { .. }
@@ -5021,6 +4957,23 @@ pub(crate) fn execute_on_shard(
             )
             .ok();
             match plan {
+                Some(plan) if plan.delete_key => {
+                    // Every cell goes: the whole series in one record, as `FeatureDelete` does.
+                    mutated |= delete_whole_feature_series(
+                        cache,
+                        shard_id,
+                        shard,
+                        &key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    );
+                    CommandResponse::WindowReduceRemoveReceipt {
+                        samples_before: plan.samples_before,
+                        samples_after: 0,
+                        cells_before: 0,
+                        cells_removed: 0,
+                    }
+                }
                 Some(plan) => {
                     // The samples from the first change to the last are exactly `plan.replaced`;
                     // the range holds nothing else.
@@ -7562,6 +7515,111 @@ pub(super) fn zset_score_from_bits(biased: u64) -> f64 {
     } else {
         f64::from_bits(!biased)
     }
+}
+
+/// The answers of the reads the resident maps alone can give. ONE copy: the exclusive-lock arms
+/// above call these after their expiry check, and the shared-lock path in `engine.rs` calls the
+/// same functions, so the two cannot answer differently.
+pub(super) fn zset_score_answer(shard: &ShardState, key: &str, member: &[u8]) -> CommandResponse {
+    CommandResponse::Bytes {
+        value: shard
+            .bucket_index
+            .zsets
+            .get(key)
+            .and_then(|members| members.get(member))
+            .map(|(biased, _)| zset_score_string(*biased).into_bytes()),
+    }
+}
+
+pub(super) fn zset_card_answer(shard: &ShardState, key: &str) -> CommandResponse {
+    CommandResponse::Integer {
+        value: shard.bucket_index.zsets.get(key).map_or(0, BTreeMap::len) as i64,
+    }
+}
+
+pub(super) fn list_len_answer(shard: &ShardState, key: &str) -> CommandResponse {
+    CommandResponse::Integer {
+        value: shard.bucket_index.lists.get(key).map_or(0, BTreeMap::len) as i64,
+    }
+}
+
+/// A set's length from the member map, where the shard lets the map answer and holds the key;
+/// `None` leaves the question to the listing. Counted, so a test can tell the map from the fold.
+pub(super) fn set_card_answer(shard: &ShardState, key: &str) -> Option<CommandResponse> {
+    if !shard.set_listing_from_map {
+        return None;
+    }
+    let members = shard.bucket_index.sets.get(key)?;
+    SET_POINT_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Some(CommandResponse::Integer {
+        value: members.len() as i64,
+    })
+}
+
+/// One member's presence, under the same rule as [`set_card_answer`].
+pub(super) fn set_is_member_answer(
+    shard: &ShardState,
+    key: &str,
+    member: &[u8],
+) -> Option<CommandResponse> {
+    if !shard.set_listing_from_map {
+        return None;
+    }
+    let members = shard.bucket_index.sets.get(key)?;
+    SET_POINT_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Some(CommandResponse::Integer {
+        value: i64::from(members.contains_key(member)),
+    })
+}
+
+pub(super) fn zset_scan_answer(
+    shard: &ShardState,
+    key: &str,
+    after: &[u8],
+    limit: usize,
+) -> CommandResponse {
+    use std::ops::Bound::{Excluded, Unbounded};
+    let members = shard
+        .bucket_index
+        .zsets
+        .get(key)
+        .map(|members| {
+            let from = if after.is_empty() {
+                members.range::<[u8], _>(..)
+            } else {
+                members.range::<[u8], _>((Excluded(after), Unbounded))
+            };
+            from.take(limit)
+                .flat_map(|(member, (biased, _))| {
+                    [member.clone(), zset_score_string(*biased).into_bytes()]
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    CommandResponse::Members { members }
+}
+
+pub(super) fn set_scan_answer(
+    shard: &ShardState,
+    key: &str,
+    after: &[u8],
+    limit: usize,
+) -> CommandResponse {
+    use std::ops::Bound::{Excluded, Unbounded};
+    let members = shard
+        .bucket_index
+        .sets
+        .get(key)
+        .map(|members| {
+            let from = if after.is_empty() {
+                members.range::<[u8], _>(..)
+            } else {
+                members.range::<[u8], _>((Excluded(after), Unbounded))
+            };
+            from.take(limit).map(|(member, _)| member.clone()).collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    CommandResponse::Members { members }
 }
 
 pub(super) fn zset_score_string(biased: u64) -> String {

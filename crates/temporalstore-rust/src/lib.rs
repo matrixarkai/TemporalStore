@@ -46,6 +46,8 @@ pub mod client;
 pub mod context_workflow;
 pub mod control;
 pub mod data_node;
+pub mod metaserver_files;
+pub mod metaserver_files_proto;
 pub mod e2e;
 pub mod durability_metrics;
 pub mod flush_gate;

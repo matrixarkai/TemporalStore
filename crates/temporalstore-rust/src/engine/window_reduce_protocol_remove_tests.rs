@@ -152,10 +152,14 @@ fn a_delete_is_a_removal_by_label_and_member_over_every_sample_and_never_of_the_
     // The label alone restricts, at 0 too, as it does on a read.
     let label_only = WindowReduceSelector { channel: 4, kind: 3, ..Default::default() };
     assert_eq!(spec_of(translate_delete(&table, &delete(label_only.clone())).unwrap()).filters, vec![slot(0)]);
-    // A table with no label and a selector with no member would empty the key.
+    // A table with no label and a selector with no member leaves every part open: the whole key.
     let unlabelled = profile(&[]);
-    let err = translate_delete(&unlabelled, &delete(label_only.clone())).unwrap_err();
-    assert!(err.message.contains("would empty the key"), "{err:?}");
+    let whole = spec_of(translate_delete(&unlabelled, &delete(label_only.clone())).unwrap());
+    assert!(crate::engine::window_reduce_remove::removes_the_whole_key(&whole), "{whole:?}");
+    // A delete of a key that held nothing answers NO_DATA; one that held samples answers OK.
+    let receipt = |samples_before| Receipt { samples_before, samples_after: 0, cells_before: 0, cells_removed: 0 };
+    assert_eq!(delete_response(receipt(0)).code, WindowReduceStatusCode::NoData as i32);
+    assert_eq!(delete_response(receipt(3)).code, WindowReduceStatusCode::Ok as i32);
     let named_members = WindowReduceSelector { members: vec![1], ..label_only.clone() };
     assert!(translate_delete(&unlabelled, &delete(named_members)).is_ok());
     // A label the table cannot carry, a missing selector and an oversize list are refused.

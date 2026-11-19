@@ -157,7 +157,10 @@ The keys must live on one shard. A table whose entity is not a 64 bit id refuses
 order, one answer each. A query with `more_entities` has no place in a batch and is refused, naming its
 position; so is any query that would be refused alone.
 
-**Answers.** A read of an absent key is an empty answer with status OK. A pair table answers `pair`,
+**Answers.** `first_us` and `last_us` are the oldest and the newest sample the window selected, before
+the top-k kept any of it (0 and 0 when it selected none); `MEMBERS_ONLY` and `MATCH_LANE` reads, which look
+only for particular cells, report the span of the rows they return. A read of an absent key is an empty
+answer with status OK. A pair table answers `pair`,
 a list table `list`; `timestamp_us` is the newest sample holding the member.
 
 **Errors.** Refusals answer INVALID_ARGUMENT, an unknown table NO_SUCH_TABLE, a duplicate refused
@@ -236,8 +239,10 @@ names a predicate may use are read from the key's own header.
 A cell is removed when its sample is inside the window, its member passes the member set (`include`
 names the members to take, `exclude` the members to spare, a member in both is spared) and every
 predicate (`=`, `!=`, `>`, `>=`, `<`, `<=` over a label, a lane or `member`, at most 8, ANDed) holds on
-it. A request that restricts nothing is refused with a message that says it would empty the key; a
-`DELETE` never deletes the key itself (`FeatureDelete` does). A sample left with no cell is removed,
+it. A `REMOVE` that restricts nothing is refused with a message that says it would empty the key. A
+`DELETE` that restricts nothing (a table with no label, and no member named) deletes the whole key in
+one log record, reading no sample, and its receipt counts samples but not cells; a `DELETE` of a key
+that holds no sample answers NO_DATA. A sample left with no cell is removed,
 so a removal can leave a key that holds no sample; it still reads as an empty answer and takes a
 write.
 

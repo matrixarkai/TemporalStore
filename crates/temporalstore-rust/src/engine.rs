@@ -1923,6 +1923,13 @@ impl TemporalEngine {
                 | Command::FeatureQuery { .. }
                 | Command::FeatureQueryFiltered { .. }
                 | Command::WindowReduceRank { .. }
+                | Command::ZSetScore { .. }
+                | Command::ZSetCard { .. }
+                | Command::ZSetScan { .. }
+                | Command::ListLen { .. }
+                | Command::SetScan { .. }
+                | Command::SetCard { .. }
+                | Command::SetIsMember { .. }
         );
         if !read_command {
             return None;
@@ -2182,6 +2189,36 @@ impl TemporalEngine {
                         ),
                     }
                 }
+                Command::ZSetScore { key, .. }
+                | Command::ZSetCard { key }
+                | Command::ZSetScan { key, .. }
+                | Command::ListLen { key }
+                | Command::SetScan { key, .. }
+                | Command::SetCard { key }
+                | Command::SetIsMember { key, .. } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    // ANSWERED UNDER THE GUARD: each of these is a lookup or a bounded walk of a
+                    // resident map, with no block to read afterwards, so there is nothing to pin.
+                    // A key the map does not name, or a set read the map is not allowed to serve,
+                    // is left to the ordinary path, which knows the fallbacks.
+                    let response = index_only_read(shard, &request.command)?;
+                    FastPathRead::Response {
+                        response,
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
                 _ => return None,
             };
             let wal_snapshot = plan.pin_log_locations(&self.block_store, request.shard_id);
@@ -2358,6 +2395,16 @@ impl TemporalEngine {
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::WindowReduceRanking { ranked },
+                })
+            }
+            FastPathRead::Response {
+                response,
+                routing_bucket,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response,
                 })
             }
             FastPathRead::Answer {
@@ -3761,6 +3808,12 @@ enum FastPathRead<'a> {
     },
     /// An integer answered from the index alone, with nothing to read afterwards.
     Answer { value: i64, routing_bucket: u32 },
+    /// A whole response answered from a resident map under the guard, with nothing to read
+    /// afterwards.
+    Response {
+        response: CommandResponse,
+        routing_bucket: u32,
+    },
     /// The addresses of a feature window, taken under the guard; the points are read after it drops.
     FeatureRange {
         key: &'a str,
@@ -3779,6 +3832,33 @@ enum FastPathRead<'a> {
         end_routing_bucket: u32,
         now_ms: u64,
     },
+}
+
+/// The answer to a read that is a lookup or a bounded walk of a resident map, taken under the shard
+/// guard. `None` leaves the read to the ordinary path.
+///
+/// The same answers the ordinary arms give for the same maps: the expiry check is the caller's, and
+/// a set's count and membership are taken from the member map only when it is allowed to serve them
+/// and holds the key, as the ordinary arms do before they fall back to a listing.
+fn index_only_read(shard: &ShardState, command: &Command) -> Option<CommandResponse> {
+    match command {
+        Command::ZSetScore { key, member } => {
+            Some(execute_on_shard::zset_score_answer(shard, key, member))
+        }
+        Command::ZSetCard { key } => Some(execute_on_shard::zset_card_answer(shard, key)),
+        Command::ListLen { key } => Some(execute_on_shard::list_len_answer(shard, key)),
+        Command::ZSetScan { key, after, limit } => {
+            Some(execute_on_shard::zset_scan_answer(shard, key, after, *limit))
+        }
+        Command::SetScan { key, after, limit } => {
+            Some(execute_on_shard::set_scan_answer(shard, key, after, *limit))
+        }
+        Command::SetCard { key } => execute_on_shard::set_card_answer(shard, key),
+        Command::SetIsMember { key, member } => {
+            execute_on_shard::set_is_member_answer(shard, key, member)
+        }
+        _ => None,
+    }
 }
 
 impl FastPathRead<'_> {
@@ -3862,7 +3942,7 @@ impl FastPathRead<'_> {
                 }
                 snapshot
             }
-            Self::Hash { .. } | Self::Answer { .. } => None,
+            Self::Hash { .. } | Self::Answer { .. } | Self::Response { .. } => None,
         }
     }
 }
