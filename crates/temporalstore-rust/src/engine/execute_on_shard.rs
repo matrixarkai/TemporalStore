@@ -3139,7 +3139,7 @@ pub(crate) fn execute_on_shard(
                 // resident map and THEN filed the bucket-index entry, so a panic between them left
                 // a mutation with no record -- the exact defect class this container removes, found
                 // in the engine rather than argued from. One call now does both, record first.
-                super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
+                super::recorded_map::install_appended_element::<super::recorded_map::ZSetKind>(
                     shard,
                     shard_id,
                     &key,
@@ -3222,7 +3222,7 @@ pub(crate) fn execute_on_shard(
                     async_storage,
                     block_ordinal,
                 ) {
-                    super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
+                    super::recorded_map::install_appended_element::<super::recorded_map::ZSetKind>(
                         shard,
                         shard_id,
                         &key,
