@@ -2180,12 +2180,19 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     let hashes = HashMap::<super::state::ModelKey, super::hash_field_map::HashFieldMap>::new();
     // THE SAME LIVE-ADDRESS SET THE RECONCILE BUILDS, and built from the same walk the derived view
     // below is built from, so the filter can only ever remove what the derived view also lacks.
-    let walked = collect_bucket_index_live_block_entries(shard);
-    let live_blocks_by_address: std::collections::HashSet<super::LiveBlockKey> = walked
-        .iter()
-        .filter(|entry| !entry.deleted)
-        .map(|entry| super::live_block_key(&entry.address))
-        .collect();
+    // An empty persisted map has no fields to filter. Reconciliation still runs below to
+    // invalidate its cached ordinals and timestamp hints, without naming unrelated blocks.
+    let live_blocks_by_address: std::collections::HashSet<super::LiveBlockKey> =
+        if shard.bucket_index.hashes.is_empty() {
+            std::collections::HashSet::new()
+        } else {
+            let walked = collect_bucket_index_live_block_entries(shard);
+            walked
+                .iter()
+                .filter(|entry| !entry.deleted)
+                .map(|entry| super::live_block_key(&entry.address))
+                .collect()
+        };
     // MERGED, NOT ASSIGNED, AND THE `is_empty` GATE WENT WITH THE ASSIGNMENT. While `hashes` was
     // `skip_serializing` there was nothing in `shard.bucket_index.hashes` to protect, so overwriting it whenever
     // the index said anything was harmless and the gate only avoided clearing it to empty. It is
