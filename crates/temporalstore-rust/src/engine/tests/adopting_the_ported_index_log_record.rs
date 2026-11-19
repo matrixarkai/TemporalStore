@@ -569,10 +569,15 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 29,
-        "costed against 24; if this is red the stamp moved and the adoption's cost has to be \
+        current, 32,
+        "audited at 32; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
+    // Re-audited at 32: 30 moved objects under slot_index, 31 moved container maps into that
+    // index, and 32 made object rows positional and added the optional retry-ring domain.
+    // These change the served image, not IndexItemRow's positional fields or binary framing.
+    // The row-slot, frame, owner-width, and replay-fold tests in this module still exercise
+    // those contracts independently of this pin.
     // RE-READ AT 26 -> 27, 27 -> 28 AND AGAIN AT 28 -> 29, AS THE MESSAGE ABOVE DEMANDS,
     // AND THE
     // COSTING STILL STANDS BOTH TIMES.
