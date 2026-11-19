@@ -635,3 +635,5 @@ mod a_resident_map_read_takes_the_shared_lock;
 mod a_rewritten_context_node_replaces_its_block;
 #[path = "tests/a_list_position_and_removal_answer_what_a_walk_answered.rs"]
 mod a_list_position_and_removal_answer_what_a_walk_answered;
+#[path = "tests/a_sequence_read_takes_the_shared_lock.rs"]
+mod a_sequence_read_takes_the_shared_lock;
