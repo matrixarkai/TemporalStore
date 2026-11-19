@@ -1159,6 +1159,76 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
     }
 }
 
+/// Measurement harness, not a gate: what a writer waits inside each stage window of one round, at
+/// `LOOP_KEYS` keys. `--ignored --nocapture`, one test thread. Two rounds are measured on a fresh
+/// shard: a DUMPING round (`dirty_bucket_pressure` and the byte gate crossed, so the index stage
+/// dumps the whole dirty set) and then a QUIET round on the shipped options. For each, one line per
+/// stage window with the writes that began in it and their p50, p99 and longest wait, so the stall
+/// a stage causes is read from the stage's own window and not from the round's total.
+#[test]
+#[ignore]
+fn what_a_writer_waits_during_each_stage_of_a_dumping_round() {
+    let keys = std::env::var("LOOP_KEYS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1500usize);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    let engine = std::sync::Arc::new(runtime.engine());
+    // Dirty the shard so the dumping round has a dirty set to dump.
+    for index in 0..keys.min(2000) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("loop-{index:06}"),
+                value: vec![b'w'; 96],
+            },
+        });
+        assert!(response.status.ok, "dirtying write {index}: {:?}", response.status);
+    }
+    let dumping = StorageManagerOptions {
+        dirty_bucket_pressure: 1,
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
+    for (label, options) in [
+        ("DUMPING", dumping),
+        ("QUIET", StorageManagerOptions::default()),
+    ] {
+        let (stall, report) = crate::engine::writer_stall_probe::measure_writer_stall_with(
+            &engine,
+            1,
+            || runtime.run_storage_manager_once(1, options.clone()),
+        );
+        eprintln!(
+            "W {label} keys={keys}: round {} us, writer saw {} writes, longest wait {} us",
+            stall.round_us, stall.writes, stall.max_wait_us
+        );
+        let windows: Vec<(String, u64, u64)> = report
+            .stage_spans
+            .iter()
+            .map(|span| (span.stage.clone(), span.start_offset_us, span.duration_us))
+            .collect();
+        for window in stall.window_stalls(&windows) {
+            let stage_us = report
+                .stage_spans
+                .iter()
+                .find(|span| span.stage == window.name)
+                .map(|span| span.duration_us)
+                .unwrap_or(0);
+            eprintln!(
+                "      W {label} stage {:<18} {:>10} us  writes={:<6} p50={:>8} us p99={:>9} us max={:>10} us",
+                window.name, stage_us, window.writes, window.p50_us, window.p99_us, window.max_wait_us
+            );
+        }
+        let idle = stall.idle_baseline();
+        eprintln!(
+            "      W {label} outside the round: writes={} p50={} us p99={} us max={} us",
+            idle.writes, idle.p50_us, idle.p99_us, idle.max_wait_us
+        );
+    }
+}
+
 /// A DIRTY ROUND READS THE LIVE BLOCKS OF THE SHARD NO MORE THAN `DIRTY_ROUND_WALK_BOUND` TIMES.
 ///
 /// A shard that takes writes between rounds is dirty at every round, and the round then builds its
