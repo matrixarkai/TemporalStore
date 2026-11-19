@@ -468,6 +468,8 @@ fn an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time() {
         label_columns: vec!["slot".into()],
         lane_columns: vec!["impressions".into(), "clicks".into()],
         samples: 2,
+        window_first_ms: 1_700_000_000_100,
+        window_last_ms: 1_700_000_000_150,
         keys: 1,
         unscored: 1,
         rows: vec![crate::types::RankedCellRow {
@@ -488,7 +490,8 @@ fn an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time() {
     assert!(a.entries[0].has_label && a.entries[0].label == 5);
     let pair = a.entries[0].pair.as_ref().unwrap();
     assert_eq!((pair.first, pair.second, pair.timestamp_us), (5_000_000_000, 2, 1_700_000_000_123_000));
-    assert_eq!(a.first_us, 1_700_000_000_123_000);
+    // The span of what the read scanned, not of the one row it kept.
+    assert_eq!((a.first_us, a.last_us), (1_700_000_000_100_000, 1_700_000_000_150_000));
     assert!(a.echoed_selector.is_some() && a.echoed_window.is_some());
     let refused = answer_of(&profile, &q, &RankedCells { refused: "why".into(), ..Default::default() });
     assert_eq!((refused.code, refused.message.as_str()), (WindowReduceStatusCode::InvalidArgument as i32, "why"));
@@ -1010,7 +1013,9 @@ fn a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_sample() {
     let profile = pair_profile();
     let q = query(trailing(), selector(RankMode::Recent));
     let ranked = RankedCells {
-        samples: 2,
+        samples: 3,
+        window_first_ms: 50,
+        window_last_ms: 400,
         keys: 1,
         rows: vec![
             crate::types::RankedCellRow { member: CellMemberId::U64(7), score: 300.0, last_ms: 300, labels: vec![5], lanes: vec![1, 2] },
@@ -1023,5 +1028,31 @@ fn a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_sample() {
     assert_eq!((answer.entries[0].member, answer.entries[1].member), (7, 7));
     assert_eq!(answer.entries[0].pair.as_ref().unwrap().timestamp_us, 300_000);
     assert_eq!(answer.entries[1].pair.as_ref().unwrap().timestamp_us, 100_000);
-    assert_eq!((answer.first_us, answer.last_us), (100_000, 300_000));
+    // A stored-cell read reports the span of the window it scanned, not of the rows it kept.
+    assert_eq!((answer.first_us, answer.last_us), (50_000, 400_000));
+}
+
+#[test]
+fn first_and_last_say_what_the_window_scanned_except_for_the_reads_that_select_by_member_or_lane_value() {
+    let profile = pair_profile();
+    let ranked = RankedCells {
+        samples: 4,
+        window_first_ms: 10,
+        window_last_ms: 90,
+        keys: 1,
+        rows: vec![crate::types::RankedCellRow { member: CellMemberId::U64(7), score: 1.0, last_ms: 60, labels: vec![5], lanes: vec![1, 2] }],
+        ..Default::default()
+    };
+    let span = |mode: RankMode, ranked: &RankedCells| {
+        let a = answer_of(&profile, &query(trailing(), selector(mode)), ranked);
+        (a.first_us, a.last_us)
+    };
+    for mode in [RankMode::FirstLane, RankMode::Ratio, RankMode::Wilson, RankMode::Member, RankMode::Recent, RankMode::DecayedLane] {
+        assert_eq!(span(mode, &ranked), (10_000, 90_000), "{mode:?}");
+    }
+    for mode in [RankMode::MembersOnly, RankMode::MatchLane] {
+        assert_eq!(span(mode, &ranked), (60_000, 60_000), "{mode:?}");
+    }
+    // A window that selected no sample is 0 and 0.
+    assert_eq!(span(RankMode::FirstLane, &RankedCells::default()), (0, 0));
 }

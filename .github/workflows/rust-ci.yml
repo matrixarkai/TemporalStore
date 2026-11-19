@@ -906,6 +906,7 @@ jobs:
             engine::window_reduce_protocol::tests::a_batch_answer_holds_one_answer_per_query_in_order_each_with_its_own_status \
             engine::window_reduce_protocol::tests::the_accepted_timestamp_range_is_open_at_both_ends \
             engine::window_reduce_protocol::tests::each_translated_rank_mode_becomes_the_score_it_names \
+            engine::window_reduce_protocol::tests::first_and_last_say_what_the_window_scanned_except_for_the_reads_that_select_by_member_or_lane_value \
             engine::window_reduce_protocol::tests::the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_and_kind \
             engine::tests::a_newest_rows_window_reads_stored_rows::a_recent_read_over_a_rows_window_returns_exactly_the_stored_cells_the_window_holds \
             engine::tests::a_newest_rows_window_reads_stored_rows::a_rows_window_applies_to_each_key_of_a_merged_read \

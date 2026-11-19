@@ -157,7 +157,10 @@ The keys must live on one shard. A table whose entity is not a 64 bit id refuses
 order, one answer each. A query with `more_entities` has no place in a batch and is refused, naming its
 position; so is any query that would be refused alone.
 
-**Answers.** A read of an absent key is an empty answer with status OK. A pair table answers `pair`,
+**Answers.** `first_us` and `last_us` are the oldest and the newest sample the window selected, before
+the top-k kept any of it (0 and 0 when it selected none); `MEMBERS_ONLY` and `MATCH_LANE` reads, which look
+only for particular cells, report the span of the rows they return. A read of an absent key is an empty
+answer with status OK. A pair table answers `pair`,
 a list table `list`; `timestamp_us` is the newest sample holding the member.
 
 **Errors.** Refusals answer INVALID_ARGUMENT, an unknown table NO_SUCH_TABLE, a duplicate refused

@@ -552,6 +552,12 @@ pub struct RankedCells {
     pub lane_columns: Vec<String>,
     /// Samples the window selected.
     pub samples: usize,
+    /// The stamps of the oldest and the newest sample the window selected: the span of what the
+    /// read scanned, before the top-k kept any of it. 0 and 0 when it selected none.
+    #[serde(default)]
+    pub window_first_ms: u64,
+    #[serde(default)]
+    pub window_last_ms: u64,
     /// Keys that held at least one sample in the window: 1 for a read of one key that had
     /// some, and for a read over several keys how many of them did. A read that names keys the
     /// serving shard does not hold counts them here as absent, so a caller who named N keys and
