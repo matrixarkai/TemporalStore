@@ -546,6 +546,7 @@ jobs:
             raft::wal_proto::tests::a_replicated_batch_carries_its_rpc_metadata \
             raft::wal_proto::tests::an_installed_snapshot_keeps_every_field \
             raft::wal_proto::tests::an_installed_snapshot_without_the_current_format_is_refused \
+            raft::wal_proto::tests::a_snapshot_object_round_trips_and_refuses_anything_else \
             shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
