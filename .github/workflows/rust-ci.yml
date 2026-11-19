@@ -362,7 +362,7 @@ jobs:
       # The shared WAL is a run of segments and an object never grows with the log. These run in
       # the advisory step above and nowhere else, so they are pinned by exact name: a rename or a
       # move would turn a filter into a no-op that still exits 0, hence the count on each.
-      - name: cargo test (shared WAL segment guards, hard gate)
+      - name: cargo test (shared WAL segment and failed-publish guards, hard gate)
         timeout-minutes: 20
         run: |
           set -o pipefail
@@ -376,7 +376,13 @@ jobs:
             shared_store::wal_segment_tests::no_object_takes_more_appends_than_the_quota_and_a_batch_never_straddles_segments \
             shared_store::wal_segment_tests::a_restart_reads_the_highest_index_segment_and_not_the_history \
             shared_store::wal_segment_tests::a_shard_in_the_pre_segment_layout_is_refused_by_name_and_per_key_objects_are_not_read \
-            shared_store::wal_segment_tests::a_fenced_stale_owner_cannot_open_a_new_segment
+            shared_store::wal_segment_tests::a_fenced_stale_owner_cannot_open_a_new_segment \
+            shared_store::wal_failed_publish_tests::a_failed_publish_does_not_leave_a_hole_in_the_log \
+            shared_store::wal_failed_publish_tests::a_refused_append_is_retried_at_the_same_index_and_the_write_succeeds \
+            shared_store::wal_failed_publish_tests::an_append_that_committed_before_it_reported_failure_is_not_written_twice \
+            shared_store::wal_failed_publish_tests::retries_that_run_out_name_the_hole_refuse_later_writes_and_a_checkpoint_clears_it \
+            shared_store::wal_failed_publish_tests::an_append_whose_outcome_cannot_be_read_back_is_reported_unknown_and_not_repeated \
+            shared_store::wal_failed_publish_tests::a_failed_group_commit_batch_opens_one_hole_and_later_writes_are_refused
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/wal-segment-gate.log
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/wal-segment-gate.log || { echo "guard did not run and pass: $t"; exit 1; }
