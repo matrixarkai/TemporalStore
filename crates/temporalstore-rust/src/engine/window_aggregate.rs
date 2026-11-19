@@ -506,29 +506,6 @@ pub(crate) fn rate_per_second(total: f64, start_ms: u64, end_ms: u64) -> Option<
     Some(total / (span_ms / 1000.0))
 }
 
-/// `numerator / denominator`; `None` when the denominator is `0`.
-pub(crate) fn ratio(numerator: i64, denominator: i64) -> Option<f64> {
-    (denominator != 0).then(|| numerator as f64 / denominator as f64)
-}
-
-/// Lower bound of the Wilson score interval for `successes` out of `trials` at `z` standard
-/// deviations (1.96 is 95%). The result is in `[0, 1]`.
-///
-/// `None` for zero trials, for more successes than trials, and for a `z` that is negative or not
-/// finite. `z == 0` returns the plain proportion.
-pub(crate) fn wilson_lower_bound(successes: u64, trials: u64, z: f64) -> Option<f64> {
-    if trials == 0 || successes > trials || !z.is_finite() || z < 0.0 {
-        return None;
-    }
-    let n = trials as f64;
-    let p = successes as f64 / n;
-    let z2 = z * z;
-    let centre = p + z2 / (2.0 * n);
-    let margin = z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
-    let lower = (centre - margin) / (1.0 + z2 / n);
-    Some(lower.clamp(0.0, 1.0))
-}
-
 /// `sum(lane[i] * weight[i])`. `None` when the lengths differ, a weight is not finite, or the
 /// result is not finite. Both empty: `Some(0.0)`.
 pub(crate) fn weighted_sum(lanes: &[i64], weights: &[f64]) -> Option<f64> {
@@ -943,22 +920,7 @@ mod algorithm_tests {
     }
 
     #[test]
-    fn ratio_wilson_rate_and_weights_edge_cases() {
-        assert_eq!(ratio(3, 4), Some(0.75));
-        assert_eq!(ratio(3, 0), None);
-        // 10 of 10 at 95%: 0.72246 (n / (n + z^2)) * (1 + z^2/2n - z * sqrt(z^2/4n^2)).
-        let w = wilson_lower_bound(10, 10, 1.96).unwrap();
-        assert!((w - 0.72246).abs() < 1e-5, "{w}");
-        // 0 of 10 cannot go below 0; z = 0 is the plain proportion.
-        assert!(wilson_lower_bound(0, 10, 1.96).unwrap() < 1e-12);
-        assert_eq!(wilson_lower_bound(3, 10, 0.0), Some(0.3));
-        // More successes than trials, zero trials, a negative or non-finite z: refused.
-        assert_eq!(wilson_lower_bound(11, 10, 1.96), None);
-        assert_eq!(wilson_lower_bound(0, 0, 1.96), None);
-        assert_eq!(wilson_lower_bound(1, 2, -1.0), None);
-        assert_eq!(wilson_lower_bound(1, 2, f64::NAN), None);
-        // More evidence at the same proportion ranks higher.
-        assert!(wilson_lower_bound(90, 100, 1.96).unwrap() > wilson_lower_bound(9, 10, 1.96).unwrap());
+    fn rate_and_weights_edge_cases() {
         // 600 events over the inclusive window [0, 59_999] is a 60 s window: 10 per second.
         assert_eq!(rate_per_second(600.0, 0, 59_999), Some(10.0));
         assert_eq!(rate_per_second(1.0, 5, 4), None);

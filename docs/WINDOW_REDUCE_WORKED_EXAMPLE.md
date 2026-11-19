@@ -54,9 +54,10 @@ request the key cannot serve is refused before anything is written.
 `crates/temporalstore-rust/src/engine/tests/a_worked_example_of_window_reduce.rs` is a runnable test that
 doubles as this page's example. One user, two dimensions (`channel`, `kind`), a label (`slot`) and
 two lanes (`impressions`, `clicks`, both summed): it writes four samples, merges two writes at
-one timestamp, then ranks the last minute by click rate and by the Wilson lower bound. Item 1,
-clicked once in one impression, leads by click rate and comes last by the bound; item 2, with 80
-clicks in 100 impressions, leads by the bound.
+one timestamp, then ranks the last minute by click rate and by the Wilson lower bound. A ratio is a
+whole number, so item 1, clicked once in one impression (1), leads by click rate, and items 2 and 3,
+whose rates are below 1, both score 0 and tie. By the bound (times 10,000, cut to a whole number)
+item 1 comes last; item 2, with 80 clicks in 100 impressions (about 7111), leads.
 
 ## A worked example of a rollup
 
@@ -67,8 +68,9 @@ clicks in 100 impressions, leads by the bound.
 Rolled per hour with the cutoff at the hour, the three minutes become one sample at the start of
 the hour: item 1 has 60 impressions, 3 clicks and a peak of 9, item 2 has 10, 5 and 2, item 3 has
 100, 1 and 3, and the later sample is untouched. The receipt reads 4 samples before, 2 after,
-6 cells before, 3 after. Capped to one item per `slot` by click rate (`clicks / impressions`),
-item 2 (0.5) stays and item 1 (0.05) goes; item 3 is alone in its slot.
+6 cells before, 3 after. Capped to one item per `slot` by impressions per click
+(`impressions / clicks`, a whole number), item 1 (60 / 3 = 20) stays and item 2 (10 / 5 = 2) goes;
+item 3 is alone in its slot.
 
 ### Tiers, an age and a truncation
 

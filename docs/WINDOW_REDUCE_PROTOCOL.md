@@ -91,10 +91,14 @@ window applies to each key of a merged read. It takes the request clock for no p
 no anchor.
 
 **Rank modes.** FIRST_LANE and SECOND_LANE order members by their reduced lane 0 or 1; NAMED_LANE by
-the lane at `sort_lane` (zero when absent); RATIO by lane 0 over lane 1; MEMBER by member;
+the lane at `sort_lane` (zero when absent); RATIO by lane 0 over lane 1 as a whole number (the fraction is dropped, so every ratio below 1 scores 0 and
+those members tie), 0 when lane 1 is 0; MEMBER by member;
 WEIGHTED by the sum of the lanes at `weighted_lanes` times `weights` (indexes and weights not
-negative, same length, pair tables only index 0 and 1); WILSON by the lower bound for lane 0
-successes of lane 1 trials at `wilson_z` (1.96 when absent). Results are ordered best first; equal
+negative, same length, pair tables only index 0 and 1); WILSON by the lower bound of the Wilson
+interval of the smaller of lanes 0 and 1 out of the larger (so which of them holds the successes does
+not matter) at `wilson_z` (1.96 when absent or not above 0), times 10,000 and cut to a whole number,
+0 when the larger is 0. Every member is ranked: none is dropped for a score that cannot be formed.
+Results are ordered best first; equal
 scores order by member. MEMBERS_ONLY returns the listed members and ignores `limit`. RECENT and
 MATCH_LANE return stored cells newest first, not reduced per member (see **Stored cells** below).
 
