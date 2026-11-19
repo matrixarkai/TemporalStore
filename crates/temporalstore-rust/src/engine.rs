@@ -6075,7 +6075,12 @@ fn fold_delta_block_items(
             // carrying no address cannot name a block, so it keeps the element-name-keyed behaviour it
             // has always had rather than matching everything.
             let names_a_block =
-                crate::engine::storage_bucket_internals::index_entry_names_a_block(&item.model_id);
+                crate::engine::storage_bucket_internals::index_entry_names_a_block(&item.model_id)
+                // THE FEATURE KIND CONVERGES ON THE BLOCK TOO. Its items are one per block written,
+                // and the live write supersedes nothing of the object: it files what it wrote and
+                // retires the blocks its replaced points left empty. Converging on the object here
+                // dropped every earlier block of the series.
+                || item.model_id == crate::engine::storage_bucket_internals::ModelKind::Feature.as_str();
             let here = item
                 .entry
                 .as_ref()

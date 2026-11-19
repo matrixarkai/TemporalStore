@@ -198,6 +198,14 @@ jobs:
             -- --test-threads=1 2>&1 | tee /tmp/follower-catch-up-gate.log
           grep -q 'test result: ok\. 2 passed; 0 failed;' /tmp/follower-catch-up-gate.log
 
+      - name: Index-log fold keeps earlier feature blocks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib the_index_log_fold_keeps_earlier_feature_blocks \
+            -- --test-threads=1 2>&1 | tee /tmp/fold-keeps-feature-blocks.log
+          grep -q 'test result: ok\. 2 passed; 0 failed;' /tmp/fold-keeps-feature-blocks.log
+
       - name: Bounded memory deletion checks
         timeout-minutes: 30
         run: |
