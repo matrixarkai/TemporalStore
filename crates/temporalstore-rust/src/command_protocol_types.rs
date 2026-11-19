@@ -522,6 +522,10 @@ pub struct WindowReduceRollupSummary {
     pub cells_after: u64,
     /// Cells the cap removed.
     pub cells_dropped: u64,
+    /// Buckets folded, summed over the calls a rollup made.
+    pub buckets_folded: u64,
+    /// Unsettled buckets left when the rollup stopped: 0 for a completed one.
+    pub buckets_remaining: u64,
 }
 
 /// A member as a read returns it.
@@ -3373,13 +3377,18 @@ pub enum CommandResponse {
     WindowReduceRanking {
         ranked: RankedCells,
     },
-    /// What a rollup did: samples and cells before and after, and the cells the cap removed.
+    /// What one rollup call did: samples over the whole series before and after; the cells of the
+    /// bucket folded before and after; the cells the cap removed; the buckets folded (1, or 0 when
+    /// none was unsettled) and the unsettled buckets still below the cutoff. A caller calls again
+    /// until a call folds none.
     WindowReduceRollupReceipt {
         samples_before: u64,
         samples_after: u64,
         cells_before: u64,
         cells_after: u64,
         cells_dropped: u64,
+        buckets_folded: u64,
+        buckets_remaining: u64,
     },
     /// What a removal did: the samples of the key before and after, the cells in the window
     /// before, and the cells removed. A key the shard does not hold answers zeros.

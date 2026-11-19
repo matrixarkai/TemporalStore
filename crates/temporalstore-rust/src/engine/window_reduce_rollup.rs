@@ -440,6 +440,18 @@ fn bucket_width(tiers: &[(u64, u64)], ts: u64) -> Option<u64> {
     tiers.iter().rev().find(|(cutoff, _)| ts < *cutoff).map(|(_, width)| *width)
 }
 
+/// The tiers of a request as `(cutoff, bucket_ms)`, finest first, resolved against the newest stamp
+/// the series holds.
+pub(crate) fn bucket_tiers(spec: &RollupSpec, newest_ms: u64) -> Vec<(u64, u64)> {
+    with_view(spec, |view| resolve(view, newest_ms).as_slice().to_vec())
+}
+
+/// The start of the bucket the sample stamped `ts` belongs to under `tiers`: `None` at or past every
+/// cutoff (not rolled).
+pub(crate) fn bucket_start_of(tiers: &[(u64, u64)], ts: u64) -> Option<u64> {
+    bucket_width(tiers, ts).map(|width| ts - ts % width)
+}
+
 /// How many of the oldest samples a truncation removes from a series holding `total`.
 pub(crate) fn truncation_drop(total: usize, truncate: &TruncateSpec) -> usize {
     if total > truncate.trigger.unwrap_or(truncate.keep_last) {
