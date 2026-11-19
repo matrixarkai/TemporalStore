@@ -357,7 +357,7 @@ mod probe {
 
     /// What one more field costs a warm whole-hash read, as the slope between two sizes.
     ///
-    /// The answer needs a name, a value and the selector of its page key: three, and it spends
+    /// The answer needs a name, a value and the selector of its block key: three, and it spends
     /// 3.02. Undoing either change puts back exactly one allocation per field (4.02), and undoing
     /// both is the 5.02 it spent before: those three, a copy of the name made to read the container
     /// out, an `Arc<str>` of it to name the block, and the key the point selection searched with. The

@@ -388,7 +388,7 @@ pub(super) fn context_from_bytes<T: ContextWire>(bytes: &[u8]) -> Option<T> {
 /// The bucket a block's own key routes to, on the range this shard is stamped with.
 ///
 /// THE ONE SPELLING, so that a reader and the write path that produced the page cannot disagree
-/// about which bucket the page cache is keyed by. Every context loader here reaches it through this
+/// about which bucket the block cache is keyed by. Every context loader here reaches it through this
 /// rather than composing `routing_range()` and `block_routing_bucket` for itself.
 pub(super) fn shard_block_routing_bucket(shard: &ShardState, object_key: &str) -> Option<u32> {
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();

@@ -19,7 +19,7 @@
 //!     summed with the retained `aggregate_feature_values`, over an empty series, one point, many,
 //!     negatives, values that are not integers (NaN, inf, text, whitespace), a window, a count cap,
 //!     with the rollup ladder on and off, after a trim and after a reload.
-//!   * `page_keys_equal_the_constructors_keys` -- the keys the run builds are the keys
+//!   * `block_keys_equal_the_constructors_keys` -- the keys the run builds are the keys
 //!     `CacheKey::page_with_slot` builds, field for field. A changed byte is a silent cache miss.
 //!   * `probe::a_feature_sum_does_not_allocate_per_point` needs `alloc-probe` and `--ignored`.
 //!
@@ -326,7 +326,7 @@ fn a_sum_answers_what_the_collected_values_summed_to() {
 }
 
 #[test]
-fn page_keys_equal_the_constructors_keys() {
+fn block_keys_equal_the_constructors_keys() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path(), false, 100_000);
     // Values of growing width so offsets and lengths take one, two and many digits and the blocks
@@ -355,7 +355,7 @@ fn page_keys_equal_the_constructors_keys() {
     };
     assert_eq!(120, addresses.len());
 
-    let mut keys = crate::engine::PageKeys::new();
+    let mut keys = crate::engine::BlockKeys::new();
     let mut slabs = std::collections::BTreeSet::new();
     let mut shared = 0usize;
     for bucket in [None, Some(0u32), Some(7), Some(65_535), Some(u32::MAX)] {
@@ -480,7 +480,7 @@ mod probe {
         );
         assert!(
             sum_slope <= 1.5,
-            "a sum spent {sum_slope:.2} allocations per point; the page key's selector is the one \
+            "a sum spent {sum_slope:.2} allocations per point; the block key's selector is the one \
              that may remain"
         );
     }

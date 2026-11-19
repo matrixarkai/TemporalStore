@@ -9,7 +9,7 @@
 //! separate process per arm. That instrument does not work, and its own sweep proved it: the exact
 //! arm read 31.13, then 138.61, then 46.12 bytes per value at 12,500 / 25,000 / 50,000 — not
 //! monotonic — the sketched arm read HIGHER than the exact one at 12,500, and at 50,000 it
-//! reported **zero growth**. Resident size follows allocator high-water marks and page reuse, so a
+//! reported **zero growth**. Resident size follows allocator high-water marks and block reuse, so a
 //! single sample of it was read as a 65% saving that the next two samples contradicted.
 //!
 //! So this counts the bytes the shard is holding, from the shard. `DistinctBucket` is either

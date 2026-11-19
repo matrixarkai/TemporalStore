@@ -482,7 +482,7 @@ impl TryFrom<BlockAddressWire> for ElementEntry {
                 return Err(format!(
                     "stored address generation {:?} disagrees with block_id.or(object_id) {:?} \
                      at slab {} offset {}: this index was written in a shape this binary cannot \
-                     reproduce, and loading it would recompute every page handle",
+                     reproduce, and loading it would recompute every block handle",
                     wire.generation, derived, block_slab_id, offset
                 ));
             }
@@ -3818,7 +3818,7 @@ mod address_size_tests {
             text.contains("disagrees with block_id.or(object_id)"),
             "the refusal must say what disagreed, got: {text}"
         );
-        assert!(text.contains("recompute every page handle"), "and why it matters, got: {text}");
+        assert!(text.contains("recompute every block handle"), "and why it matters, got: {text}");
 
         // THE ABSENT CASE, which must LOAD rather than be refused. This is the shape of an index
         // written before the generation existed: an identity, and no generation key at all. It

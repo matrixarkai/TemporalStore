@@ -76,7 +76,7 @@ fn indexed_feature_invalidation_refreshes_warm_queries_for_single_and_batch_writ
 }
 
 #[test]
-fn maintenance_record_lookup_preserves_mixed_models_and_unrelated_pages() {
+fn maintenance_record_lookup_preserves_mixed_models_and_unrelated_blocks() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
         16 * 1024 * 1024, dir.path().join("cache"), dir.path().join("blocks"),

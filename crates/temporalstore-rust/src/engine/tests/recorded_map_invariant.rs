@@ -659,7 +659,7 @@ fn reading_any_kind_hands_back_borrows_and_not_copies() {
 /// Those three caught it, and they are the right kind of guard to have -- but they caught it
 /// DOWNSTREAM, as a reload that lost data, and the message named neither the codec nor the kind.
 /// This asserts the mechanism directly, per kind, so the next person sees "the set codec does not
-/// round-trip" rather than "a framed page did not read back".
+/// round-trip" rather than "a framed block did not read back".
 #[test]
 fn every_kind_round_trip_uses_the_codec_its_field_always_used() {
     // HASH: a plain map, which is what the field always was.

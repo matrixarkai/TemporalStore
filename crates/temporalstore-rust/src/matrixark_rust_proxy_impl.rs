@@ -1418,7 +1418,7 @@ fn render_prometheus_metrics(
          matrixark_backend_command_latency_max_ms{{backend=\"rust\"}} {}\n",
         latency_max_ms, latency_max_ms
     ));
-    // The engine's own series, which include the page-cache counters. Appended rather than
+    // The engine's own series, which include the block-cache counters. Appended rather than
     // re-rendered: see engine_prometheus_metrics.
     output.push_str(&serving_cache_prometheus_metrics());
     output.push_str(&engine_prometheus_metrics());
@@ -4874,7 +4874,7 @@ fn engine_cache() -> &'static Mutex<BTreeMap<PathBuf, RecordStore>> {
 
 /// The engine's own Prometheus text, for the engine this process holds open.
 ///
-/// `TemporalEngine::prometheus_metrics` already renders the page-cache counters and the engine
+/// `TemporalEngine::prometheus_metrics` already renders the block-cache counters and the engine
 /// binary serves them on its own `/metrics`. A onebox does not run that binary -- it runs this
 /// proxy -- so those counters existed and nothing published them here. Appending what the engine
 /// already renders keeps ONE set of names across both surfaces: a dashboard or alert written
@@ -4929,7 +4929,7 @@ fn engine_prometheus_metrics() -> String {
     };
     let mut local = cache.values().filter_map(|store| match store {
         RecordStore::Local(engine) => Some(engine),
-        // A remote table keeps no local page cache, so it has nothing to report.
+        // A remote table keeps no local block cache, so it has nothing to report.
         RecordStore::Remote(_) => None,
     });
     let engine = match (local.next(), local.next()) {
@@ -4949,7 +4949,7 @@ fn clear_engine_cache() {
     }
 }
 
-/// Page-cache capacity already handed out across every engine this process has opened.
+/// Block-cache capacity already handed out across every engine this process has opened.
 static ENGINE_CACHE_GRANTED_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 /// MemTotal in bytes, or None where /proc is not available.
@@ -4966,7 +4966,7 @@ fn system_memory_bytes() -> Option<usize> {
     None
 }
 
-/// Page-cache capacity for a newly opened engine.
+/// Block-cache capacity for a newly opened engine.
 ///
 /// The old fixed 128 MiB default is smaller than the working set of any store past a few hundred
 /// megabytes, and every block read that misses it pays a second-layer read AND a cache fill. That
@@ -5054,7 +5054,7 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
         matrixark_proxy_block_store_options(),
     );
     // Hook-mode startup must publish serving state quickly after a normal local
-    // restart. Rebuild decoded serving maps during load, then warm the page cache
+    // restart. Rebuild decoded serving maps during load, then warm the block cache
     // in the background so first requests can read through storage instead of
     // waiting for a full synchronous cache promotion pass.
     if env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err() {
@@ -5110,7 +5110,7 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
             load.status.message
         ));
     }
-    // Warm the page cache on a background thread. `MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD`
+    // Warm the block cache on a background thread. `MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD`
     // could stop this and defaulted on; nothing set it, so every proxy that loaded a record-log
     // root warmed, and this is simply what loading one does.
     {

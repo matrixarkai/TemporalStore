@@ -24,7 +24,7 @@ use super::state::PackedFeatureBlockDecode;
 use super::hashing::BlockIdentity;
 use super::{
     decode_or_count_sequence_row, note_unreadable_sequence_row, parse_i64, read_block_bytes,
-    read_block_shared_keyed, PageKeys, ShardState,
+    read_block_shared_keyed, BlockKeys, ShardState,
 };
 pub(super) fn read_sequence_row(
     cache: &MultiLayerCache,
@@ -59,17 +59,17 @@ pub(super) fn read_sequence_row(
 ///
 /// A write of many rows at once files them in ONE block, so a range over them meets the same
 /// block row after row. The last block read is held, and an address equal to it is answered from
-/// the held bytes: no page key built, no cache lookup. Only a block that was READ is held; one that
+/// the held bytes: no block key built, no cache lookup. Only a block that was READ is held; one that
 /// could not be read is asked for again, as before.
 pub(super) struct SequenceBlockReader {
-    keys: PageKeys,
+    keys: BlockKeys,
     last: Option<(ElementEntry, std::sync::Arc<[u8]>)>,
 }
 
 impl SequenceBlockReader {
     pub(super) fn new() -> Self {
         Self {
-            keys: PageKeys::new(),
+            keys: BlockKeys::new(),
             last: None,
         }
     }

@@ -173,7 +173,7 @@ fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
 /// THE DOOR IS NOW A NO-OP, AND THAT IS THE POINT.
 ///
 /// A `BlockAddress` does not hold a routing bucket, so "put every block into the state an older index
-/// decodes into" and "leave every page alone" are the same operation. The helper is kept because the
+/// decodes into" and "leave every block alone" are the same operation. The helper is kept because the
 /// round-trip it performs is the assertion that the `rs` key on the wire is inert: it must come back
 /// EQUAL, and `the_older_index_door_is_the_identity` fails if it does not.
 ///
@@ -684,7 +684,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
 // 5. THE TWO SITES THAT FILED A BLOCK UNDER THE WHOLE RANGE -- NOW IN shard_carried_range.rs
 // =============================================================================================
 //
-// `the_two_sites_that_file_a_page_still_file_it_under_the_whole_range` lived here. It asserted
+// `the_two_sites_that_file_a_block_still_file_it_under_the_whole_range` lived here. It asserted
 // that `upsert_bucket_index_block_inner` filed `inner-000000` in bucket 1,422,005,296 on a shard
 // holding 0..1023, so that whoever threaded the range would get a failing test the moment they
 // succeeded. mx#1953 succeeded -- by carrying the range on `ShardState` rather than through the
@@ -1096,7 +1096,7 @@ fn every_site_that_hard_codes_the_whole_routing_range_is_accounted_for() {
          has moved.\n\
          If you FIXED one -- made it read `filed_routing_bucket` before falling back -- delete it \
          from STILL_GUESSING, and check that \
-         `the_two_sites_that_file_a_page_still_file_it_under_the_whole_range` still describes the \
+         `the_two_sites_that_file_a_block_still_file_it_under_the_whole_range` still describes the \
          tree.\n\
          If you ADDED one, a reader has gone back to guessing a bucket out of an object key, and \
          on any shard not loaded on 0..u32::MAX it will name a bucket the shard does not hold."

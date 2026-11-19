@@ -314,7 +314,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     );
     assert_eq!(
         blocks, dpages,
-        "the two routes disagree about WHICH pages are live, so comparing their written keys is \
+        "the two routes disagree about WHICH blocks are live, so comparing their written keys is \
          comparing different populations"
     );
     assert_eq!(

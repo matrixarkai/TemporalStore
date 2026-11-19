@@ -690,7 +690,7 @@ impl Default for IndexItemKind {
 /// One delta item: the smallest change to the served index a write can produce. The
 /// field set is the native Rust page-index projection -- `routing_bucket`/`page_ref_key`
 /// locate the entry in the bucket map, and `address`/`size`/`in_log`/`deleted`/`model_id`/
-/// `object_id`/`page_id` mirror the durable page metadata so replay reconstructs the same
+/// `object_id`/`page_id` mirror the durable block metadata so replay reconstructs the same
 /// `BlockIndex` the whole-index serialization would have produced. `deleted` is a
 /// tombstone: replaying it removes the entry.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -2281,7 +2281,7 @@ fn canonical_decimal(text: &str) -> Option<u64> {
 /// The eight slots are SLICES of the key taken at the separator offsets, so concatenating them
 /// with the seven separators reproduces the input byte for byte without anything having to check
 /// it -- provided each decimal slot is in the one spelling the renderer writes, which
-/// [`canonical_decimal`] is what enforces. A verification string built per page would cost an
+/// [`canonical_decimal`] is what enforces. A verification string built per block would cost an
 /// allocation per block on every load to re-establish what the index arithmetic already gives.
 /// `the_renderer_and_the_parse_are_inverse_on_every_page_of_the_shipped_corpus` drives the
 /// property on 8,000 real blocks and

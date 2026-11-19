@@ -546,7 +546,7 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
     );
     assert_eq!(
         id_already_answered, blocks_seen,
-        "only {id_already_answered} of {blocks_seen} pages answer their own object id from the \
+        "only {id_already_answered} of {blocks_seen} blocks answer their own object id from the \
          address. The refutation's first reason is that an ordinal buys a second route to \
          something already free; if the address has stopped answering, that reason weakens"
     );

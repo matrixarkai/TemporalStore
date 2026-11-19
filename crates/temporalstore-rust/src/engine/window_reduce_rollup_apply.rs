@@ -115,7 +115,7 @@ pub(super) fn plan_window_reduce_rollup(
     let (mut cells_before, mut cells_dropped) = (0u64, 0u64);
     let mut header_for_points: Option<CellHeader> = None;
     if !below.is_empty() {
-        let mut page_keys = PageKeys::new();
+        let mut block_keys = BlockKeys::new();
         let identity = || BlockIdentity::of(shard_id, "feature", key, None);
         let routing = Some(routing_bucket);
 
@@ -128,7 +128,7 @@ pub(super) fn plan_window_reduce_rollup(
             newest_address,
             identity(),
             routing,
-            &mut page_keys,
+            &mut block_keys,
             |bytes| split_value(bytes).map(|(header, _)| header),
         )
         .ok_or_else(|| Status::error("data_loss", format!("{key}: the sample stored at {newest_ms} cannot be read")))?
@@ -144,7 +144,7 @@ pub(super) fn plan_window_reduce_rollup(
                 address,
                 identity(),
                 routing,
-                &mut page_keys,
+                &mut block_keys,
                 |bytes| -> Result<(FlatCells, Vec<u8>), String> {
                     let (own, packed) = split_value(bytes)?;
                     if own != header {

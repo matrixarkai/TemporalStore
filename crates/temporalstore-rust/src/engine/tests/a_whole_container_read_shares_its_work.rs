@@ -2,13 +2,13 @@
 // Copyright 2026 MatrixArkAI
 
 //! A READ OF A WHOLE LIST OR HASH SELECTS EACH ELEMENT OUT OF THE CACHE FRAME ITSELF, AND A LIST
-//! RANGE BUILDS ITS PAGE KEYS FROM ONE RECORD KEY PER SLAB.
+//! RANGE BUILDS ITS BLOCK KEYS FROM ONE RECORD KEY PER SLAB.
 //!
 //! A warm read of one element used to copy the whole cached frame into a `Vec`, copy the element
-//! value out of it, and drop the frame. A list range also built each entry page key from scratch
+//! value out of it, and drop the frame. A list range also built each entry block key from scratch
 //! (the slab record-key string, an `Arc` copy of it, and the selector) and formatted the entry
 //! element name into a `String`. Now the frame is selected from in place, the list range shares its
-//! record key through `PageKeys` as the whole-hash read does, and the element name is rendered into
+//! record key through `BlockKeys` as the whole-hash read does, and the element name is rendered into
 //! a stack buffer.
 //!
 //! THE ANSWER IS THE SAME BYTES. Two default-build tests:
@@ -17,7 +17,7 @@
 //!     each end, a warm second read, and a reload that reads every block cold.
 //!   * `a_list_element_name_spells_what_the_formatted_name_spells` -- the stack-rendered name
 //!     against `format!`, over the extremes and a spread of sequences.
-//! The whole-hash tests in `a_hash_get_all_shares_its_page_keys` run over the same read.
+//! The whole-hash tests in `a_hash_get_all_shares_its_block_keys` run over the same read.
 //! And two measurements, `probe::*`, which need `alloc-probe` and `--ignored`.
 //!
 //! rust-internal: measures this crate's own request paths, no product behaviour
@@ -264,7 +264,7 @@ mod probe {
     /// Allocations per ELEMENT of a warm list range, as the slope between two list sizes.
     ///
     /// Before this change the slope was 7.01: a `String` for the entry name, three allocations for
-    /// its page key, the copy of the cached frame, and the value. Now it is the selector and the
+    /// its block key, the copy of the cached frame, and the value. Now it is the selector and the
     /// value.
     #[test]
     #[ignore = "measurement: run with --features alloc-probe --ignored"]

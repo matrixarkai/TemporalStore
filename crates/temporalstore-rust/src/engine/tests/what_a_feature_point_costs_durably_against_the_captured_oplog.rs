@@ -11,8 +11,8 @@
 //! two sides are charged for the SAME payload bytes.
 //!
 //! WHAT IS COMPARED, AND WHAT IS NOT. The captured log is the only stream that carries a point on the
-//! write path; the page that holds it follows later, when a dump runs, and no captured feature page
-//! exists (only hash pages), so that column is DERIVED from the page body layout and printed as
+//! write path; the block that holds it follows later, when a dump runs, and no captured feature block
+//! exists (only hash blocks), so that column is DERIVED from the block body layout and printed as
 //! such. Ours spends bytes in three streams per write -- the write-ahead log, the block store and
 //! the index log -- and all three are printed, because a total names no term.
 //!
@@ -128,10 +128,10 @@ fn captured_oplog_bytes_per_point(name: &str) -> (f64, usize, usize) {
     (spent as f64 / added as f64, added, contents.records.len())
 }
 
-/// What a point adds to a page body, derived from the body layout: a length-prefixed key (the
+/// What a point adds to a block body, derived from the body layout: a length-prefixed key (the
 /// timestamp as a varint), a length-prefixed value (the message behind its own length), the
 /// cluster and deleted varints, and a nanosecond timestamp varint. DERIVED, NOT CAPTURED.
-fn derived_page_bytes_per_point(points: u64) -> f64 {
+fn derived_block_bytes_per_point(points: u64) -> f64 {
     fn varint_len(mut v: u64) -> u64 {
         let mut n = 1;
         while v >= 0x80 {
@@ -169,7 +169,7 @@ fn what_a_feature_point_costs_durably_against_the_captured_oplog() {
     let many = price("uid", 1, 5_010, 0);
     let singles = price("9", 200, 1, 777);
     println!();
-    println!("  FEATURE POINT, bytes per point durably (the captured column is oplog only; page is derived)");
+    println!("  FEATURE POINT, bytes per point durably (the captured column is oplog only; block is derived)");
     println!("  {:<34} {:>8} {:>8} {:>8} {:>8}", "workload", "wal", "block", "index", "total");
     for (name, per) in [("ours: 5,010 points, one request", many), ("ours: 200 requests of one point", singles)] {
         println!("  {name:<34} {:>8.1} {:>8.1} {:>8.1} {:>8.1}", per.wal, per.block, per.index, per.total());
@@ -177,6 +177,6 @@ fn what_a_feature_point_costs_durably_against_the_captured_oplog() {
     }
     println!("  captured oplog, 5,010 in one record {captured_many:>8.1} (framing included)");
     println!("  captured oplog, one point per record {captured_one:>7.1} (framing included)");
-    println!("  derived page body, per point          {:>6.1}", derived_page_bytes_per_point(5_010));
+    println!("  derived block body, per point          {:>6.1}", derived_block_bytes_per_point(5_010));
     println!();
 }

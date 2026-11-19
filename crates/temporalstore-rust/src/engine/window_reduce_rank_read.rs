@@ -55,9 +55,9 @@ fn newest_header(
     series: &ObjectSlot,
     key: &str,
     routing_bucket: Option<u32>,
-    page_keys: &mut PageKeys,
+    block_keys: &mut BlockKeys,
 ) -> Result<Option<CellHeader>, String> {
-    newest_header_of(cache, block_store, shard_id, series.range(..).next_back(), key, routing_bucket, page_keys)
+    newest_header_of(cache, block_store, shard_id, series.range(..).next_back(), key, routing_bucket, block_keys)
 }
 
 /// [`newest_header`] over the newest sample already found, so a caller that holds a copy of the
@@ -69,7 +69,7 @@ fn newest_header_of(
     newest: Option<(u64, &ElementEntry)>,
     key: &str,
     routing_bucket: Option<u32>,
-    page_keys: &mut PageKeys,
+    block_keys: &mut BlockKeys,
 ) -> Result<Option<CellHeader>, String> {
     let Some((newest_ms, newest_address)) = newest else {
         return Ok(None);
@@ -82,7 +82,7 @@ fn newest_header_of(
         newest_address,
         BlockIdentity::of(shard_id, "feature", key, None),
         routing_bucket,
-        page_keys,
+        block_keys,
         |bytes| split_value(bytes).map(|(header, _)| header),
     ) {
         Some(Ok(header)) => Ok(Some(header)),
@@ -105,7 +105,7 @@ fn decode_named(
     shard_id: ShardId,
     key: &str,
     routing_bucket: Option<u32>,
-    page_keys: &mut PageKeys,
+    block_keys: &mut BlockKeys,
     named: Vec<(u64, &ElementEntry)>,
     header: &CellHeader,
 ) -> Result<Decoded, String> {
@@ -119,7 +119,7 @@ fn decode_named(
             address,
             BlockIdentity::of(shard_id, "feature", key, None),
             routing_bucket,
-            page_keys,
+            block_keys,
             |bytes| -> Result<FlatCells, String> {
                 let (own, packed) = split_value(bytes)?;
                 if own != *header {
@@ -150,7 +150,7 @@ fn decode_newest_rows(
     shard_id: ShardId,
     key: &str,
     routing_bucket: Option<u32>,
-    page_keys: &mut PageKeys,
+    block_keys: &mut BlockKeys,
     named: Vec<(u64, &ElementEntry)>,
     header: &CellHeader,
     rows: usize,
@@ -167,7 +167,7 @@ fn decode_newest_rows(
             address,
             BlockIdentity::of(shard_id, "feature", key, None),
             routing_bucket,
-            page_keys,
+            block_keys,
             |bytes| -> Result<FlatCells, String> {
                 let (own, packed) = split_value(bytes)?;
                 if own != *header {
@@ -203,16 +203,16 @@ fn decode_window(
     shard_id: ShardId,
     key: &str,
     routing_bucket: Option<u32>,
-    page_keys: &mut PageKeys,
+    block_keys: &mut BlockKeys,
     named: Vec<(u64, &ElementEntry)>,
     header: &CellHeader,
     window: &WindowReduceWindow,
 ) -> Result<(Decoded, Vec<usize>), String> {
     match window {
         WindowReduceWindow::NewestRows { n } => {
-            decode_newest_rows(cache, block_store, shard_id, key, routing_bucket, page_keys, named, header, *n)
+            decode_newest_rows(cache, block_store, shard_id, key, routing_bucket, block_keys, named, header, *n)
         }
-        _ => decode_named(cache, block_store, shard_id, key, routing_bucket, page_keys, named, header)
+        _ => decode_named(cache, block_store, shard_id, key, routing_bucket, block_keys, named, header)
             .map(|samples| (samples, Vec::new())),
     }
 }
@@ -299,11 +299,11 @@ pub(super) fn serve_snapshot(
     held: RankSnapshot,
 ) -> RankedCells {
     let routing_bucket = Some(block_routing_bucket(key, start_routing_bucket, end_routing_bucket));
-    let mut page_keys = PageKeys::new();
+    let mut block_keys = BlockKeys::new();
 
     // The header the names are resolved against: the key's newest sample's.
     let newest = held.newest.as_ref().map(|(at, entry)| (*at, entry));
-    let header = match newest_header_of(cache, block_store, shard_id, newest, key, routing_bucket, &mut page_keys) {
+    let header = match newest_header_of(cache, block_store, shard_id, newest, key, routing_bucket, &mut block_keys) {
         Ok(Some(header)) => header,
         Ok(None) => return RankedCells::default(),
         Err(why) => return refused(why),
@@ -320,7 +320,7 @@ pub(super) fn serve_snapshot(
         shard_id,
         key,
         routing_bucket,
-        &mut page_keys,
+        &mut block_keys,
         named,
         &header,
         &spec.window,
@@ -365,7 +365,7 @@ pub(super) fn serve_many(
     if let Err(why) = validate_keys(keys) {
         return refused(why);
     }
-    let mut page_keys = PageKeys::new();
+    let mut block_keys = BlockKeys::new();
 
     // Which keys the shard holds, each one's newest header, and the one header they settle on.
     let mut held: Vec<Option<(&ObjectSlot, Option<u32>)>> = Vec::with_capacity(keys.len());
@@ -376,7 +376,7 @@ pub(super) fn serve_many(
             continue;
         };
         let routing_bucket = Some(block_routing_bucket(key, start_routing_bucket, end_routing_bucket));
-        match newest_header(cache, block_store, shard_id, series, key, routing_bucket, &mut page_keys) {
+        match newest_header(cache, block_store, shard_id, series, key, routing_bucket, &mut block_keys) {
             Ok(Some(own)) => {
                 header = match header.take() {
                     None => Some(own),
@@ -425,7 +425,7 @@ pub(super) fn serve_many(
             shard_id,
             key,
             *routing_bucket,
-            &mut page_keys,
+            &mut block_keys,
             named,
             &header,
             &spec.window,

@@ -247,7 +247,7 @@ fn load_context_node(
     shard: &ShardState,
     object_key: &str,
 ) -> Option<ContextNode> {
-    // THE BUCKET THE PAGE CACHE IS KEYED BY, derived the way the write path derives it.
+    // THE BUCKET the block cache is keyed by, derived the way the write path derives it.
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     let routing_bucket = Some(block_routing_bucket(
         object_key,
@@ -394,7 +394,7 @@ fn write_context_node(
 /// all, and otherwise examines only the key it is given plus the three control-state families
 /// derived from it. It never walks the keyspace, so the O(due) cost of an expiry round is
 /// untouched. Cache retirement runs only when a record was actually dropped and uses
-/// record-scoped indexes, so unrelated payload pages are not scanned.
+/// record-scoped indexes, so unrelated payload blocks are not scanned.
 ///
 /// THE CACHE GOES WITH THE RECORD. Dropping the record and leaving its cached copy would let
 /// the very next read answer from the copy, which is the bug this exists to close.
@@ -2371,12 +2371,12 @@ pub(crate) fn execute_on_shard(
             // set with a clone of each index name.
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            let mut page_keys = crate::engine::PageKeys::new();
+            let mut block_keys = crate::engine::BlockKeys::new();
             let mut entries: Vec<(String, Vec<u8>)> =
                 Vec::with_capacity(indexed.len() + container.map_or(0, |fields| fields.len()));
             let mut read_field =
                 |name: &str, address: &crate::block_store::ElementEntry| {
-                    let cache_key = page_keys.key(shard_id, address, Some(routing_bucket));
+                    let cache_key = block_keys.key(shard_id, address, Some(routing_bucket));
                     if let Some(value) = read_block_value_keyed(
                         cache,
                         block_store,
@@ -2439,7 +2439,7 @@ pub(crate) fn execute_on_shard(
             // part that makes observing a divergence safe rather than merely informative.
             //
             // The routing bucket is the object's, so it is one value for every field; and the
-            // fields of one hash sit in few slabs, so the page keys share their record key.
+            // fields of one hash sit in few slabs, so the block keys share their record key.
             if let Some(fields) = container {
                 for (name, address) in fields.iter() {
                     if !named_by_index.contains(&**name) {
@@ -3735,7 +3735,7 @@ pub(crate) fn execute_on_shard(
                 // `String` per entry.
                 let routing_bucket =
                     block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-                let mut page_keys = crate::engine::PageKeys::new();
+                let mut block_keys = crate::engine::BlockKeys::new();
                 list.map(|list| {
                     list.iter()
                         .skip(from as usize)
@@ -3745,7 +3745,7 @@ pub(crate) fn execute_on_shard(
                             // for this list were filed under.
                             let mut name = [0_u8; 16];
                             let element_name = list_element_name(*seq, &mut name);
-                            let cache_key = page_keys.key(shard_id, address, Some(routing_bucket));
+                            let cache_key = block_keys.key(shard_id, address, Some(routing_bucket));
                             read_block_value_keyed(
                                 cache,
                                 block_store,
@@ -4581,7 +4581,7 @@ pub(crate) fn execute_on_shard(
                     // Each value is read IN PLACE and parsed where it sits: a point's number is
                     // `parse_i64` of its bytes, or 0 when it is not a number, which is what summing
                     // the one-element slice came to. No `FeaturePoint` or value copy is built.
-                    let mut page_keys = crate::engine::PageKeys::new();
+                    let mut block_keys = crate::engine::BlockKeys::new();
                     let identity = BlockIdentity::of(shard_id, "feature", &key, None);
                     let routing_bucket = Some(block_routing_bucket(
                         &key,
@@ -4603,7 +4603,7 @@ pub(crate) fn execute_on_shard(
                                         address,
                                         identity,
                                         routing_bucket,
-                                        &mut page_keys,
+                                        &mut block_keys,
                                         |value| parse_i64_slice(value).unwrap_or(0),
                                     )
                                     .map(|number| (timestamp_ms, number))
@@ -4622,7 +4622,7 @@ pub(crate) fn execute_on_shard(
                     value: control_rollup::feature_windowed_sum(shard, &key, start_ms, end_ms),
                 }
             } else {
-                let mut page_keys = crate::engine::PageKeys::new();
+                let mut block_keys = crate::engine::BlockKeys::new();
                 let count_only = matches!(
                     crate::engine::window_aggregate::AggName::parse(&aggregator),
                     None | Some(
@@ -4650,7 +4650,7 @@ pub(crate) fn execute_on_shard(
                                 address,
                                 identity,
                                 routing_bucket,
-                                &mut page_keys,
+                                &mut block_keys,
                                 |value| {
                                     if count_only {
                                         None

@@ -30,7 +30,7 @@
 //!
 //! ```text
 //!     magic            7 bytes   b"TSCPG1\n"
-//!     key spelling     1 byte    how a key in this page spells its index element name
+//!     key spelling     1 byte    how a key in this block spells its index element name
 //!     item count       varint
 //!     per item:
 //!       key length     varint
@@ -54,7 +54,7 @@
 //! An EMPTY value needs no case of its own -- the empty slice is the tail starting at the key's
 //! end, so it encodes in two varints and decodes back to empty.
 //!
-//! ## WHY THE KEY SPELLING IS IN THE PAGE AND NOT IN THE SIGNATURE
+//! ## WHY THE KEY SPELLING IS IN THE BLOCK AND NOT IN THE SIGNATURE
 //!
 //! The obvious alternative was to key each item by the element name STRING, so that selecting an
 //! element is a string compare and nothing has to know the kind. Measured on the shapes this store
@@ -91,7 +91,7 @@
 //!
 //! # WHAT DOES NOT MOVE
 //!
-//! No stored format is retired and no version stamp is spent. The magic DISCRIMINATES: a page
+//! No stored format is retired and no version stamp is spent. The magic DISCRIMINATES: a block
 //! written before this module has no magic, [`decode_container_block`] answers `NotFramed`, and the
 //! read funnel hands the bytes back exactly as it always did. That is the same trade
 //! `encode_feature_block` already makes with `TSFPB1\n` against the JSON blocks that came before it,
@@ -106,7 +106,7 @@
 //! rather than guarded because a guard would have to be a length or checksum the block record
 //! already provides.
 
-/// How a key inside a container page spells the element name its index entry is filed under.
+/// How a key inside a container block spells the element name its index entry is filed under.
 ///
 /// One byte in the block, because the block has to be interpretable WITHOUT the entry that names it
 /// -- that is the entire point of the module -- and the kind is not recoverable from the bytes.
@@ -160,7 +160,7 @@ impl ElementKeySpelling {
         }
     }
 
-    /// The spelling the given stored kind uses, or `None` for a kind whose page is its whole
+    /// The spelling the given stored kind uses, or `None` for a kind whose block is its whole
     /// object and carries no element key.
     ///
     /// Derived from the kind string the write sites already hold, in ONE place, so a fifth
@@ -747,12 +747,12 @@ fn frame_header(
     };
     let Some(byte) = bytes.get(CONTAINER_BLOCK_MAGIC.len()).copied() else {
         return Some(Err(String::from(
-            "container page is the magic and nothing else, so it names no key spelling",
+            "container block is the magic and nothing else, so it names no key spelling",
         )));
     };
     Some(
         ElementKeySpelling::from_byte(byte)
-            .ok_or_else(|| format!("container page names key spelling {byte}, which is not one"))
+            .ok_or_else(|| format!("container block names key spelling {byte}, which is not one"))
             .map(|spelling| (shape, spelling)),
     )
 }
@@ -1037,7 +1037,7 @@ pub(super) fn member_from_element_name(element_name: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// The index element name a page key spells.
+/// The index element name a block key spells.
 ///
 /// Inverse of [`element_key_from_element_name`]. `None` where the key cannot spell one at all -- a
 /// hash field that is not valid UTF-8, a list word that is not eight bytes -- which is a corrupt
@@ -1078,7 +1078,7 @@ pub(super) fn element_name_from_element_key(
     }
 }
 
-/// The page key an element name spells.
+/// The block key an element name spells.
 ///
 /// Inverse of [`element_name_from_element_key`]. `None` where the element name is not one this spelling
 /// can produce -- which is how a reader asking a set block for an element name that is not hex gets

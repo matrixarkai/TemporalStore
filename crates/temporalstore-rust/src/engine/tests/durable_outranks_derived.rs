@@ -2813,7 +2813,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
     );
     assert_eq!(
         0, disagreed,
-        "{disagreed} outcomes were refused for disagreeing with their page, on a fixture where no \
+        "{disagreed} outcomes were refused for disagreeing with their block, on a fixture where no \
          block was readable at all -- so the disagreement check is firing on something it cannot \
          have compared"
     );
@@ -2831,7 +2831,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
 /// one. Both are corruption, so neither is chosen.
 ///
 /// DRIVEN BY PLANTING THE DISAGREEMENT, because no fixture produces it on purpose: a real record is
-/// taken and its outcome's element name is renamed to an element the page does not hold. The page
+/// taken and its outcome's element name is renamed to an element the block does not hold. The block
 /// stays readable, which is what separates this from the arm above.
 ///
 /// THE CONTROL IS THE SAME RECORD UNRENAMED. Without it a refusal here could be the fixture failing
@@ -2906,7 +2906,7 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
         )
     };
 
-    // THE CONTROL: unrenamed, the page and the outcome agree, the load works.
+    // THE CONTROL: unrenamed, the block and the outcome agree, the load works.
     let (control_ok, control_status, control_disagreed) = replay(false);
     println!("[disagree] CONTROL ok={control_ok} disagreed={control_disagreed}");
     assert!(
@@ -2916,7 +2916,7 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
     );
     assert_eq!(
         0, control_disagreed,
-        "the unrenamed replay counted {control_disagreed} disagreements, so the page and the \
+        "the unrenamed replay counted {control_disagreed} disagreements, so the block and the \
          outcome do not agree even before anything is planted"
     );
 

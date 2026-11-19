@@ -33,7 +33,7 @@
 //!     rather than assumed: [`the_lookup_is_empty_after_a_round_trip_so_it_cannot_be_the_source`]
 //!     measures that `object_block_lookup` comes back EMPTY, which is what makes every other arm
 //!     here a statement about some OTHER structure.
-//!   * WITHOUT A PAGE READ -- the measurement is taken on the decode alone. `ShardState`'s serde
+//!   * WITHOUT A BLOCK READ -- the measurement is taken on the decode alone. `ShardState`'s serde
 //!     impls are the whole apparatus; there is no block store in this module, so a recovery that
 //!     needed one could not register as a success. That matters because the kinds that refuse are
 //!     precisely the ones whose maps `reconcile_secondary_views_from_bucket_index` restores by

@@ -253,15 +253,15 @@ fn each_tagged_word_reads_back_as_the_arm_it_was_set_to() {
         BlockAddress::Many(BlockLayoutHandle::from_stored(42)),
     ] {
         record.set_block_address(arm);
-        assert_eq!(arm, record.page_address(), "the address arm did not survive a set-then-get");
+        assert_eq!(arm, record.block_address(), "the address arm did not survive a set-then-get");
     }
 
     // A HANDLE OF ZERO AND AN ADDRESS OF ZERO ARE DIFFERENT ARMS. Both words are zero, so only the
     // tag separates them -- which is exactly the case a sentinel would collapse.
     record.set_block_address(BlockAddress::One(0));
-    let as_address = record.page_address();
+    let as_address = record.block_address();
     record.set_block_address(BlockAddress::Many(BlockLayoutHandle::from_stored(0)));
-    let as_handle = record.page_address();
+    let as_handle = record.block_address();
     assert_ne!(as_address, as_handle, "a zero address and a zero handle read the same");
 }
 
@@ -300,8 +300,8 @@ fn the_record_survives_its_own_codec_intact() {
             });
         assert_eq!(record, decoded, "the codec moved a field: {encoded}");
         assert_eq!(
-            record.page_address(),
-            decoded.page_address(),
+            record.block_address(),
+            decoded.block_address(),
             "the address arm did not survive the codec: {encoded}"
         );
     }
@@ -404,7 +404,7 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
         let record = ObjectRecord::from_object_rows(&address, model_id, deadline, dirty)
             .unwrap_or_else(|error| panic!("{what}: the inline arm refused a row it should hold: {error}"));
         assert!(
-            matches!(record.page_address(), BlockAddress::One(_)),
+            matches!(record.block_address(), BlockAddress::One(_)),
             "{what}: a log-resident block should take the inline arm"
         );
         let (back_address, back_model) = record
@@ -435,7 +435,7 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
             ObjectRecord::from_object_rows_with_layout(&address, model_id, deadline, dirty, handle)
                 .unwrap_or_else(|error| panic!("{what}: the layout arm refused: {error}"));
         assert!(
-            matches!(record.page_address(), BlockAddress::Many(_)),
+            matches!(record.block_address(), BlockAddress::Many(_)),
             "{what}: an identified block should take the layout arm"
         );
         assert_eq!(1, layout.len(), "{what}: one block should produce a one-block layout");
@@ -472,7 +472,7 @@ fn the_inline_arm_takes_ordinal_zero_and_refuses_a_nonzero_one_by_name() {
             panic!("the inline arm refused ordinal {ordinal:?}, which it must hold: {error}")
         });
         assert!(
-            matches!(record.page_address(), BlockAddress::One(_)),
+            matches!(record.block_address(), BlockAddress::One(_)),
             "ordinal {ordinal:?} did not take the inline arm"
         );
         let (back, ..) = record.into_object_rows(None).expect("unfold");
@@ -935,7 +935,7 @@ fn how_often_a_real_store_needs_the_layout_arm() {
                         panic!("the census put this address inline and the converter refused: {error}")
                     });
                 assert!(
-                    matches!(record.page_address(), BlockAddress::One(_)),
+                    matches!(record.block_address(), BlockAddress::One(_)),
                     "an address counted as inline did not take the inline arm"
                 );
                 let (back, ..) = record.into_object_rows(None).unwrap_or_else(|error| {
@@ -1451,7 +1451,7 @@ fn compacting_a_record_keeps_everything_that_is_not_the_address() {
     // --- GROUP TWO: what must TRACK, because it IS the address. ---
     assert_eq!(relocated, record.address(), "the address did not take");
     assert!(
-        matches!(record.page_address(), BlockAddress::One(_)),
+        matches!(record.block_address(), BlockAddress::One(_)),
         "the write-back left the address arm as a handle"
     );
     assert_eq!(128, record.block_size(), "the block size did not track the new address");
@@ -1483,7 +1483,7 @@ fn every_way_of_building_a_single_address_record_lands_in_the_inline_arm() {
 
         let built = ObjectRecord::from_object_rows(&entry, 1, None, false).expect("inline arm");
         assert!(
-            matches!(built.page_address(), BlockAddress::One(_)),
+            matches!(built.block_address(), BlockAddress::One(_)),
             "from_object_rows left a handle for ordinal {ordinal:?}"
         );
         assert_eq!(entry, built.address(), "address() did not return what was filed");
@@ -1491,7 +1491,7 @@ fn every_way_of_building_a_single_address_record_lands_in_the_inline_arm() {
         let mut written = ObjectRecord::default();
         written.set_address(&entry);
         assert!(
-            matches!(written.page_address(), BlockAddress::One(_)),
+            matches!(written.block_address(), BlockAddress::One(_)),
             "set_address left a handle for ordinal {ordinal:?}"
         );
         assert_eq!(entry, written.address(), "address() did not return what set_address wrote");
