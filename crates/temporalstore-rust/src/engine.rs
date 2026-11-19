@@ -1920,7 +1920,6 @@ impl TemporalEngine {
                 | Command::HashGet { .. }
                 | Command::HashLen { .. }
                 | Command::HashFieldExists { .. }
-                | Command::SequenceQuery { .. }
                 | Command::FeatureQuery { .. }
                 | Command::FeatureQueryFiltered { .. }
                 | Command::WindowReduceRank { .. }
