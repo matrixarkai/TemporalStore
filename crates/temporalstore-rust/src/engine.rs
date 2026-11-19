@@ -2037,6 +2037,11 @@ impl TemporalEngine {
                     {
                         return None;
                     }
+                    // A key with a chain of tail segments is not one address: the ordinary path
+                    // assembles the base and its segments (see the `StringGet` arm above).
+                    if string_chain::has_segments(shard, key.as_str()) {
+                        return None;
+                    }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::StringShared {
                         key: key.as_str(),
