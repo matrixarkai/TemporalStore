@@ -156,7 +156,7 @@ mod tests {
             || {
                 let dir = tempfile::tempdir().unwrap();
                 let small = serde_json::json!({"key":"small"});
-                let large = serde_json::json!({"key":"large","payload":"retained memory history ".repeat(8_192)});
+                let large = serde_json::json!({"key": "retained memory history ".repeat(8_192)});
                 {
                     let store = LocalIndexLogStore::new(dir.path());
                     store

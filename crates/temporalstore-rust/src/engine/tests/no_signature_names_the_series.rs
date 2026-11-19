@@ -100,6 +100,20 @@ const ALLOWED: &[(&str, &str, &str)] = &[
          these methods, and the guard was red on main until it was added.",
     ),
     (
+        "key_state_wire.rs",
+        "series_to_proto",
+        "THE WIRE'S CONVERSION BOUNDARY. A key-state blob carries the STORED B-tree shape of a series\
+         (see the `to_btree` entries below), and this turns that shape into the protobuf message the\
+         record stores. It names the representation because the blob it converts is defined as that\
+         shape; a series that changes representation changes `to_btree`, not the blob.",
+    ),
+    (
+        "key_state_wire.rs",
+        "series_from_proto",
+        "THE INVERSE OF `series_to_proto`: the protobuf message back to the stored B-tree shape the\
+         fold's `apply_key_state_field` deserializes. Same boundary, same reason.",
+    ),
+    (
         "object_record.rs",
         "to_btree",
         "THE REPORTING AND CAPTURE PROJECTION, the outbound half of the pair above and the same\
