@@ -189,9 +189,9 @@ fn the_order_and_repetition_of_a_member_set_change_nothing() {
 }
 
 #[test]
-fn a_removal_that_restricts_nothing_is_refused_and_each_way_of_restricting_is_accepted() {
-    let err = validate_spec(&spec()).unwrap_err();
-    assert!(err.contains("would empty the key"), "{err}");
+fn a_removal_that_restricts_nothing_is_the_whole_key_and_each_way_of_restricting_is_not() {
+    assert_eq!(validate_spec(&spec()), Ok(()));
+    assert!(removes_the_whole_key(&spec()));
     for restricted in [
         WindowReduceRemoveSpec { start_ms: Some(0), ..spec() },
         WindowReduceRemoveSpec { end_ms: Some(u64::MAX), ..spec() },
@@ -200,6 +200,7 @@ fn a_removal_that_restricts_nothing_is_refused_and_each_way_of_restricting_is_ac
         WindowReduceRemoveSpec { filters: vec![on("slot", FeatureFilterOp::NotEqual, 9)], ..spec() },
     ] {
         assert_eq!(validate_spec(&restricted), Ok(()), "{restricted:?}");
+        assert!(!removes_the_whole_key(&restricted), "{restricted:?}");
     }
 }
 

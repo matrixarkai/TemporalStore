@@ -742,7 +742,7 @@ jobs:
             engine::window_reduce_remove::tests::a_member_set_takes_the_members_it_names_and_spares_the_ones_it_excludes \
             engine::window_reduce_remove::tests::the_window_the_members_and_the_predicates_are_anded \
             engine::window_reduce_remove::tests::the_order_and_repetition_of_a_member_set_change_nothing \
-            engine::window_reduce_remove::tests::a_removal_that_restricts_nothing_is_refused_and_each_way_of_restricting_is_accepted \
+            engine::window_reduce_remove::tests::a_removal_that_restricts_nothing_is_the_whole_key_and_each_way_of_restricting_is_not \
             engine::window_reduce_remove::tests::a_name_the_key_does_not_declare_an_empty_include_set_and_a_backwards_window_are_refused \
             engine::window_reduce_remove::tests::predicates_and_member_sets_are_accepted_at_the_limit_and_refused_one_past_it \
             engine::window_reduce_remove::tests::a_sample_that_keeps_every_cell_comes_back_with_the_cells_it_had \
@@ -753,6 +753,7 @@ jobs:
             engine::tests::a_window_reduce_removal_is_a_command::the_same_request_on_two_engines_leaves_the_same_bytes \
             engine::tests::a_window_reduce_removal_is_a_command::a_request_that_matches_nothing_writes_nothing_and_says_so \
             engine::tests::a_window_reduce_removal_is_a_command::removing_every_cell_leaves_an_empty_key_that_still_reads_and_still_takes_a_write \
+            engine::tests::a_window_reduce_removal_is_a_command::a_removal_that_restricts_nothing_deletes_the_key_in_one_record_whatever_its_size_and_a_missing_key_reports_zero \
             engine::tests::a_window_reduce_removal_is_a_command::a_request_the_key_cannot_serve_is_refused_and_writes_nothing \
             engine::tests::a_window_reduce_removal_is_a_command::each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it \
             engine::tests::a_window_reduce_removal_is_a_command::an_absent_key_and_an_expired_key_remove_nothing \

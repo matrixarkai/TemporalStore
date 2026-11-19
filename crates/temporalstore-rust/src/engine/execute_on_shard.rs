@@ -398,6 +398,39 @@ fn write_context_node(
 ///
 /// THE CACHE GOES WITH THE RECORD. Dropping the record and leaving its cached copy would let
 /// the very next read answer from the copy, which is the bug this exists to close.
+/// Removes a key's whole feature series in one log record: the series went, not one point. Returns
+/// whether anything changed.
+///
+/// THE BLOCKS ARE MARKED DELETED BEFORE THE SERIES IS REMOVED, not after, and `StringDelete` has the
+/// same two lines in this order for the same reason: `mark_bucket_index_object_deleted` finds an
+/// object's blocks by NAMING each one through the object's row and the block lookup, and keeps any
+/// block it cannot name. Removing the series first took the row the names come from, so the marker
+/// named nothing, kept every block, and left them LIVE in `bucket_map` with no object naming them:
+/// the index writer then refuses the shard ("holds a block whose stored key would name no object").
+///
+/// THE RETRY RING GOES WITH THE SERIES: a key written again afterwards is a new key, and a token it
+/// saw before is not a replay. THE NUMERIC VIEW GOES TOO: this is the one feature write that does not
+/// publish blocks, so the invalidation in `sync_bucket_index_object_blocks_with_mode` does not cover
+/// it, and a key re-created with the same number of points would answer with the sums of the deleted
+/// series.
+fn delete_whole_feature_series(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) -> bool {
+    let mut mutated = false;
+    stage_meta_outcome(shard_id, "feature", key, start_routing_bucket, end_routing_bucket, None, None, true);
+    mutated |= mark_bucket_index_object_deleted(shard, key);
+    mutated |= shard.features_mut().remove(key).is_some();
+    shard.forget_retry_ring(key);
+    control_rollup::feature_forget(shard, key);
+    let _ = cache.invalidate_record(shard_id, "feature", key);
+    mutated
+}
+
 fn drop_if_expired(
     cache: &MultiLayerCache,
     shard_id: ShardId,
@@ -4483,42 +4516,14 @@ pub(crate) fn execute_on_shard(
         }
         Command::FeatureDelete { key } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            // A removal with no element name: the whole series went, not one point.
-            stage_meta_outcome(
+            mutated |= delete_whole_feature_series(
+                cache,
                 shard_id,
-                "feature",
+                shard,
                 &key,
                 start_routing_bucket,
                 end_routing_bucket,
-                None,
-                None,
-                true,
             );
-            // THE BLOCKS ARE MARKED DELETED BEFORE THE SERIES IS REMOVED, not after, and `StringDelete`
-            // above has the same two lines in this order for the same reason.
-            //
-            // `mark_bucket_index_object_deleted` finds an object's blocks by NAMING each one through
-            // the object's row and the block lookup, and keeps any block it cannot name. Removing the
-            // series first took the row the names come from, so the marker named nothing, kept every
-            // block, and left them LIVE in `bucket_map` with no object naming them: the index writer
-            // then refuses the shard ("holds a block whose stored key would name no object"), and
-            // that is an error in a release build too, not an assertion. Every
-            // `FeatureDelete` in the conformance sequences that leave the index unwritable is this
-            // one; no other command is.
-            mutated |= mark_bucket_index_object_deleted(shard, &key);
-            mutated |= shard.features_mut().remove(&key[..]).is_some();
-            // THE RETRY RING GOES WITH THE SERIES: a key written again afterwards is a new key, and
-            // a token it saw before is not a replay.
-            shard.forget_retry_ring(&key);
-            // THE ONE FEATURE WRITE THAT DOES NOT PUBLISH BLOCKS, so the invalidation in
-            // `sync_bucket_index_object_blocks_with_mode` does not cover it. The expiry path's
-            // `forget_object` already drops the view beside its own `features_mut().remove`; this
-            // arm removed the series and left the view behind. The length test hid it in the
-            // common case -- an emptied series reads as length 0 against a non-empty view -- but
-            // not when the key is re-created with the same number of points, which then answers
-            // with the sums of the DELETED series.
-            control_rollup::feature_forget(shard, &key);
-            let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
         aggregate_command @ (Command::FeatureAggQuery { .. }
@@ -4952,6 +4957,23 @@ pub(crate) fn execute_on_shard(
             )
             .ok();
             match plan {
+                Some(plan) if plan.delete_key => {
+                    // Every cell goes: the whole series in one record, as `FeatureDelete` does.
+                    mutated |= delete_whole_feature_series(
+                        cache,
+                        shard_id,
+                        shard,
+                        &key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    );
+                    CommandResponse::WindowReduceRemoveReceipt {
+                        samples_before: plan.samples_before,
+                        samples_after: 0,
+                        cells_before: 0,
+                        cells_removed: 0,
+                    }
+                }
                 Some(plan) => {
                     // The samples from the first change to the last are exactly `plan.replaced`;
                     // the range holds nothing else.
