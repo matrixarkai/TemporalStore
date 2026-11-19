@@ -149,3 +149,51 @@ fn a_bounded_collection_resumes_and_removes_what_one_unbounded_pass_removes() {
     );
     assert_eq!(cursor, PageCursor::default(), "a finished scan leaves no cursor behind");
 }
+
+/// A store whose slabs are all live has nothing to collect, and the stage must not even plan: the
+/// gate is closed, so the round reports no collection at all. The control is the gate itself: the
+/// same store must show a non-empty denominator and a closed gate, so a store with no slabs (which
+/// is also "nothing to do") cannot pass for the right reason.
+#[test]
+fn a_store_that_is_all_live_closes_the_gate_and_the_stage_skips_collection() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(SHARD);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions { worker_threads: 0, max_queue_depth: 4, max_background_queue_depth: 2 },
+    );
+    for index in 0..400 {
+        runtime.engine().execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringSet { key: format!("live-{index:06}"), value: vec![b'v'; 96] },
+        });
+    }
+    let seed_options = StorageManagerOptions { enable_block_gc: false, ..StorageManagerOptions::default() };
+    runtime.run_storage_manager_once(SHARD, seed_options);
+    runtime.engine().publish_block_slab_live_bytes();
+    let gate = runtime
+        .engine()
+        .block_store()
+        .reclaim_gate(crate::block_store::DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
+    assert!(gate.ready && gate.logical_bytes > 0, "CONTROL: the store must hold slabs: {gate:?}");
+    assert!(!gate.due, "CONTROL: an all-live store must close the gate: {gate:?}");
+
+    let period = Duration::from_secs(1);
+    let mut state = ShardRoundState::new(Instant::now() - Duration::from_secs(60), period);
+    for _ in 0..20 {
+        let Some((slot, report)) =
+            runtime.run_storage_manager_tick(SHARD, &StorageManagerOptions::default(), &mut state, period)
+        else {
+            break;
+        };
+        if slot == HeavySlot::PageGc {
+            assert!(
+                report.gc_report.is_none(),
+                "a closed gate must skip block collection: {:?}",
+                report.gc_report
+            );
+            return;
+        }
+    }
+    panic!("the page-collection slot never ran");
+}
