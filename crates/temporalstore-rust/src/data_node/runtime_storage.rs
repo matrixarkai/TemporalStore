@@ -3,7 +3,10 @@
 
 //! DataNodeRuntime storage-manager scheduling/lifecycle methods, extracted from data_node.rs.
 
-use super::round_budget::{options_for_slot, HeavySlot, ShardRoundState};
+use super::round_budget::{
+    options_for_slot, BoundedStage, HeavySlot, PageCursor, ShardRoundState, StageBudget,
+    StageContext, StageProgress, StageStep,
+};
 use super::*;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -1269,6 +1272,12 @@ impl DataNodeRuntime {
                         .block_gc_max_destroy_physical_bytes_per_round,
                     block_gc_min_slab_garbage_basis_points: options
                         .block_gc_min_slab_garbage_basis_points,
+                    block_gc_max_scan_slabs_per_round: options
+                        .block_gc_scan_window
+                        .map_or(0, |window| window.max_slabs),
+                    block_gc_scan_after_slab_id: options
+                        .block_gc_scan_window
+                        .and_then(|window| window.after_block_slab_id),
                     include_lifecycle_plan: false,
                 },
             );
@@ -2097,13 +2106,28 @@ impl DataNodeRuntime {
             return Some((slot, self.run_compaction_step(shard_id, options, state, period)));
         }
         let started = std::time::Instant::now();
-        let report = self.run_storage_manager_once_with_report_details(
-            shard_id,
-            options_for_slot(options, slot),
-            false,
-        );
+        let mut resume = false;
+        let report = if slot == HeavySlot::PageGc {
+            let stage = PageGcStage { runtime: self };
+            let mut budget = StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX);
+            let context = StageContext { options, plan: None };
+            let (step, report) =
+                stage.run(shard_id, &mut state.cursors.page, &mut budget, &context);
+            resume = step.progress == StageProgress::More;
+            report
+        } else {
+            self.run_storage_manager_once_with_report_details(
+                shard_id,
+                options_for_slot(options, slot),
+                false,
+            )
+        };
         self.note_round_overrun(started.elapsed(), period);
-        state.finished(slot, std::time::Instant::now(), period);
+        if resume {
+            state.resume_next_tick(slot, std::time::Instant::now());
+        } else {
+            state.finished(slot, std::time::Instant::now(), period);
+        }
         Some((slot, report))
     }
 
@@ -2956,5 +2980,92 @@ mod eviction_loop_termination_guards {
             report.pressure_before, 1_775_000,
             "pressure_before must come from the FIRST batch",
         );
+    }
+}
+
+
+/// The longest a bounded page-GC step is meant to run. The window of candidates a round examines is
+/// the real bound; this is the time budget the driver hands the step.
+const PAGE_GC_STEP_TIME: Duration = Duration::from_millis(10);
+
+/// Block collection as a bounded, resumable stage: each step examines a window of candidate slabs
+/// starting behind the cursor, and reports whether more remain.
+pub(crate) struct PageGcStage<'a> {
+    runtime: &'a DataNodeRuntime,
+}
+
+impl PageGcStage<'_> {
+    /// One bounded step, with the loop report the legacy tick also returns.
+    pub(crate) fn run(
+        &self,
+        shard: ShardId,
+        cursor: &mut PageCursor,
+        budget: &mut StageBudget,
+        context: &StageContext<'_>,
+    ) -> (StageStep, StorageManagerLoopReport) {
+        let mut options = options_for_slot(context.options, HeavySlot::PageGc);
+        // The work budget can only shrink the window, and never to nothing: a step that examines
+        // no candidate could not make progress.
+        let window = match context.options.block_gc_max_scan_slabs_per_round {
+            0 => 0,
+            cap => cap.min(budget.work_left().min(usize::MAX as u64) as usize).max(1),
+        };
+        options.block_gc_scan_window = Some(super::BlockGcScanWindow {
+            after_block_slab_id: cursor.after_slab_id,
+            max_slabs: window,
+        });
+        // A round that starts a fresh pass asks the gate first: refresh the per-slab tally, then ask
+        // whether the live fraction over every slab is under the threshold. Both are O(slabs) with
+        // no file opened. A pass already underway finishes; an unpublished tally reads as due.
+        if cursor.after_slab_id.is_none() {
+            let engine = &self.runtime.inner.engine;
+            engine.publish_block_slab_live_bytes();
+            let gate = engine
+                .block_store()
+                .reclaim_gate(crate::block_store::DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
+            if !gate.due {
+                options.enable_block_gc = false;
+            }
+        }
+        let report = self
+            .runtime
+            .run_storage_manager_once_with_report_details(shard, options, false);
+        let (progress, work_done, status) = match report.gc_report.as_ref() {
+            None => {
+                *cursor = PageCursor::default();
+                (StageProgress::Idle, 0, Status::ok())
+            }
+            Some(gc) => {
+                let examined = gc.block_gc_scan_examined_slabs as u64;
+                budget.spend(examined);
+                let more = !gc.block_gc_scan_complete && gc.block_gc_scan_last_block_slab_id.is_some();
+                *cursor = if more {
+                    PageCursor { after_slab_id: gc.block_gc_scan_last_block_slab_id }
+                } else {
+                    PageCursor::default()
+                };
+                (
+                    if more { StageProgress::More } else { StageProgress::Done },
+                    examined,
+                    gc.status.clone(),
+                )
+            }
+        };
+        (StageStep { progress, work_done, status }, report)
+    }
+}
+
+impl BoundedStage for PageGcStage<'_> {
+    type Cursor = PageCursor;
+    const NAME: &'static str = "reclaim_page";
+
+    fn step(
+        &self,
+        shard: ShardId,
+        cursor: &mut PageCursor,
+        budget: &mut StageBudget,
+        context: &StageContext<'_>,
+    ) -> StageStep {
+        self.run(shard, cursor, budget, context).0
     }
 }

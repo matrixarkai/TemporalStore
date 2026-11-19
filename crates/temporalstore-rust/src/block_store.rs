@@ -1190,6 +1190,19 @@ pub struct BlockStoreGcReport {
     pub retained_live_bytes_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub retained_live_bytes_physical_bytes: u64,
+    /// Candidate slabs the scan behind this round examined.
+    #[serde(default)]
+    pub scan_examined_slabs: usize,
+    /// The highest candidate slab id it examined, when it examined any.
+    #[serde(default)]
+    pub scan_last_block_slab_id: Option<u64>,
+    /// Every candidate above the starting point was examined.
+    #[serde(default = "scan_complete_by_default")]
+    pub scan_complete: bool,
+}
+
+fn scan_complete_by_default() -> bool {
+    true
 }
 
 /// Live blocks on ONE slab, as the INDEX counts them.
@@ -1265,12 +1278,24 @@ pub struct BlockStoreGcPolicy {
     /// expressed against Rust slabs.
     #[serde(default)]
     pub min_slab_garbage_basis_points: Option<u64>,
+    /// Candidate slabs one round examines before it yields. 0 examines every candidate.
+    ///
+    /// A round that examines a bounded window does a bounded amount of work however many stale
+    /// slabs the store holds, and `scan_after_slab_id` lets the next round resume behind it.
+    #[serde(default)]
+    pub max_scan_slabs: usize,
+    /// Examine only candidates with a slab id above this one: where the previous bounded round
+    /// stopped. `None` starts from the lowest.
+    #[serde(default)]
+    pub scan_after_slab_id: Option<u64>,
 }
 
 impl BlockStoreGcPolicy {
     pub fn max_slabs(max_destroy_slabs: usize) -> Self {
         Self {
             max_destroy_slabs,
+            max_scan_slabs: 0,
+            scan_after_slab_id: None,
             max_destroy_physical_bytes: 0,
             max_utility_score: None,
             min_age_ms: None,
@@ -1324,6 +1349,8 @@ impl BlockStoreGcPolicy {
         min_age_ms: Option<u64>,
     ) -> Self {
         Self {
+            max_scan_slabs: 0,
+            scan_after_slab_id: None,
             max_destroy_slabs: 0,
             max_destroy_physical_bytes: 0,
             max_utility_score: None,
@@ -1331,6 +1358,62 @@ impl BlockStoreGcPolicy {
             min_slab_garbage_basis_points: Some(min_slab_garbage_basis_points),
         }
     }
+}
+
+/// The block-GC gate's answer: is any space worth collecting, decided from two running totals.
+///
+/// `due` is the only field a caller needs to branch on; the rest are the inputs it was decided
+/// from, so a closed gate can be shown in a report without a second read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReclaimGate {
+    pub due: bool,
+    pub live_bytes: u64,
+    pub logical_bytes: u64,
+    /// False when the totals could not be trusted. A gate that is not ready is always due.
+    pub ready: bool,
+}
+
+/// The overall space utility, in basis points, below which collection is worth running.
+pub const DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS: u64 = 5_000;
+
+/// Decide the gate from `live_bytes` and `logical_bytes` (both summed over the slabs that are
+/// not the current one) and a threshold in basis points.
+///
+/// Utility is live over logical. The gate is due when utility is strictly BELOW the threshold, so
+/// a store exactly at the threshold is left alone. A gate that is not `ready` is due: an unknown
+/// total must never turn collection off. No logical bytes means no slab to collect, so not due.
+/// A threshold of 0 switches the gate off, which means due, in line with every other bound here
+/// where 0 is "no limit".
+pub fn evaluate_reclaim_gate(
+    live_bytes: u64,
+    logical_bytes: u64,
+    ready: bool,
+    threshold_basis_points: u64,
+) -> ReclaimGate {
+    let due = if !ready || threshold_basis_points == 0 {
+        true
+    } else if logical_bytes == 0 {
+        false
+    } else {
+        // Live bytes above logical bytes are a counting artefact, not extra utility.
+        let live = u128::from(live_bytes.min(logical_bytes));
+        let utility_basis_points = live * 10_000 / u128::from(logical_bytes);
+        utility_basis_points < u128::from(threshold_basis_points)
+    };
+    ReclaimGate {
+        due,
+        live_bytes,
+        logical_bytes,
+        ready,
+    }
+}
+
+/// What one bounded candidate scan found, and where it stopped.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BlockStoreCandidateWindow {
+    pub candidates: Vec<BlockStoreGcUtilityCandidate>,
+    pub last_examined_block_slab_id: Option<u64>,
+    pub scan_complete: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1352,6 +1435,14 @@ pub struct BlockStoreGcPolicyPlan {
     pub skipped_by_policy_physical_bytes: u64,
     pub skipped_by_budget_count: usize,
     pub skipped_by_budget_physical_bytes: u64,
+    /// The highest candidate slab id this round examined, when it examined any. A bounded round
+    /// resumes after it.
+    #[serde(default)]
+    pub scan_last_block_slab_id: Option<u64>,
+    /// Every candidate above the starting point was examined. False means a bounded round
+    /// stopped with more to look at.
+    #[serde(default)]
+    pub scan_complete: bool,
     pub candidates: Vec<BlockStoreGcUtilityCandidate>,
 }
 
@@ -4009,6 +4100,8 @@ mod address_size_tests {
 #[cfg(test)]
 #[path = "block_store/large_store_scale.rs"]
 mod large_store_scale;
+#[cfg(test)]
+mod gc_scan_window;
 
 #[cfg(test)]
 #[path = "block_store/open_read_scale.rs"]
@@ -8233,6 +8326,8 @@ const RETIRED_NAMES: &[&str] = &[
         // ONE BYTE: smaller than either candidate, the shape that used to close the gate
         // permanently. The count bound is off, so the byte bound is the only thing acting.
         let policy = BlockStoreGcPolicy {
+            max_scan_slabs: 0,
+            scan_after_slab_id: None,
             max_destroy_slabs: 0,
             max_destroy_physical_bytes: 1,
             max_utility_score: None,
@@ -8268,6 +8363,8 @@ const RETIRED_NAMES: &[&str] = &[
         store.install_slab(3, b"current-segment").unwrap();
 
         let policy = BlockStoreGcPolicy {
+            max_scan_slabs: 0,
+            scan_after_slab_id: None,
             max_destroy_slabs: 2,
             max_destroy_physical_bytes: b"small".len() as u64,
             max_utility_score: Some(0),

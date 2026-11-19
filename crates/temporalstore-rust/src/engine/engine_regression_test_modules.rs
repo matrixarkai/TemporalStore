@@ -459,6 +459,8 @@ mod the_user_byte_write_ratio;
 mod whether_a_dead_slab_can_be_reclaimed;
 #[path = "tests/the_overwrite_records_what_it_retired.rs"]
 mod the_overwrite_records_what_it_retired;
+#[path = "tests/the_live_total_follows_every_charge.rs"]
+mod the_live_total_follows_every_charge;
 #[path = "tests/the_cached_payload_is_a_byte_string.rs"]
 mod the_cached_payload_is_a_byte_string;
 #[path = "tests/the_payload_cache_per_user_byte.rs"]
