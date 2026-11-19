@@ -228,6 +228,28 @@ The output is JSON and includes per-write publish/queue status, async flush prog
 position, restored read value, dynamic per-event replication decisions, and the local WAL segment
 files used by each Raft replica.
 
+## A failed publish does not leave a hole
+
+A commit takes a WAL index before it publishes. If the publish then fails, the index would be
+missing from the log while every later index lands, and a replay would stop at it with a missing-index error.
+The writer therefore never moves on past a failed publish:
+
+- A refused append is retried at the SAME index (default 3 attempts within 5 s, 100 ms apart;
+  `with_publish_retry` changes them).
+- A failure that may have committed is resolved by reading the object at the offset the append was
+  sent to. The single writer is fenced, so the bytes there are either this entry or nothing.
+  If they are this entry it is not appended again; if the read itself fails the outcome is
+  `AppendOutcomeUnknown` and nothing is repeated.
+- When the retries run out the writer fails stop: it records the hole, names it in
+  `UnresolvedWalHole` and refuses every later write, so no entry is numbered above it.
+  A group-commit batch is remembered whole.
+- A checkpoint at or above the hole's last index covers it (`resolve_hole_through`); replay starts
+  after the checkpoint and never reads the missing entries.
+
+The data server logs the hole once and exposes `temporalstore_shared_wal_hole_open`,
+`temporalstore_shared_wal_hole_first_index` and `temporalstore_shared_wal_hole_last_index` on
+`/metrics`. The shared log does not catch up by itself after a hole; it needs a checkpoint.
+
 ## What Is Still Missing For Production
 
 - integration with real Raft commit index

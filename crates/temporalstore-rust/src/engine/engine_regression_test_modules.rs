@@ -459,6 +459,8 @@ mod the_user_byte_write_ratio;
 mod whether_a_dead_slab_can_be_reclaimed;
 #[path = "tests/the_overwrite_records_what_it_retired.rs"]
 mod the_overwrite_records_what_it_retired;
+#[path = "tests/the_live_total_follows_every_charge.rs"]
+mod the_live_total_follows_every_charge;
 #[path = "tests/the_cached_payload_is_a_byte_string.rs"]
 mod the_cached_payload_is_a_byte_string;
 #[path = "tests/the_payload_cache_per_user_byte.rs"]
@@ -579,6 +581,8 @@ mod a_ranked_cell_read_takes_the_shared_shard_lock;
 mod a_window_reduce_removal_does_not_allocate_a_value_per_cell;
 #[path = "tests/a_batch_and_a_fan_in_read_take_the_shared_shard_lock.rs"]
 mod a_batch_and_a_fan_in_read_take_the_shared_shard_lock;
+#[path = "tests/a_window_reduce_rollup_folds_one_bucket_a_call.rs"]
+mod a_window_reduce_rollup_folds_one_bucket_a_call;
 #[path = "tests/a_string_increment_and_append_are_one_step.rs"]
 mod a_string_increment_and_append_are_one_step;
 #[path = "tests/a_set_length_and_membership_read_the_member_map.rs"]

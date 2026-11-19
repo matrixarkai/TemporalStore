@@ -138,6 +138,6 @@ fn mixed_record_keeps_logical_names_and_exact_physical_positions() {
     let registry = registry().lock().unwrap();
     let names = registry.shard(blocks.store_id(), 1).unwrap();
     assert_eq!(names.len(), 2);
-    assert_eq!(names[&block_key(99, Some("left"))].4, Some(128));
-    assert_eq!(names[&block_key(777, None)].4, Some(129));
+    assert_eq!(names.get(&block_key(99, Some("left"))).unwrap().4, Some(128));
+    assert_eq!(names.get(&block_key(777, None)).unwrap().4, Some(129));
 }

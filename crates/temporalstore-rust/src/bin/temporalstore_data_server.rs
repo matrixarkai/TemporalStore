@@ -720,6 +720,7 @@ fn main() {
                 append_ingestion_metrics(&mut metrics, &engine);
                 append_runtime_metrics(&mut metrics, &runtime);
                 append_storage_backend_metric(&mut metrics, &storage_backend, &storage_reason);
+                append_networked_wal_hole_metrics(&mut metrics);
                 if let Some(raft_state) = &raft_state {
                     metrics.push_str(&raft_state.runtime.cluster().prometheus_metrics());
                 }
@@ -2481,12 +2482,52 @@ impl temporalstore_rust::SharedWalSink for MatrixObjectNetworkedWalSink {
         let result = self
             .handle
             .block_on(async move { writer.write(shard_id, command).await });
-        if let Err(err) = result {
-            // Durability failure: log loudly. The local write already succeeded, so
-            // the node stays available; the networked store catches up on the next
-            // successful publish or on the next full replay.
-            eprintln!("matrixobject networked durable write failed for shard {shard_id}: {err}");
+        match result {
+            Ok(_) => {}
+            Err(err) => {
+                // The local write already succeeded, so the node stays available. The shared log
+                // does NOT catch up by itself: a publish that failed after its retries leaves an
+                // open hole, every later write is refused until a checkpoint covers it, and a
+                // replay would stop at it. Say so, and publish the state for /metrics.
+                eprintln!(
+                    "matrixobject networked durable write failed for shard {shard_id}: {err}"
+                );
+            }
         }
+        match self.writer.unresolved_hole() {
+            Some((first, last)) => {
+                let previous = NETWORKED_WAL_HOLE_FIRST.swap(first, std::sync::atomic::Ordering::Relaxed);
+                NETWORKED_WAL_HOLE_LAST.store(last, std::sync::atomic::Ordering::Relaxed);
+                NETWORKED_WAL_HOLE_OPEN.store(1, std::sync::atomic::Ordering::Relaxed);
+                if previous != first {
+                    eprintln!(
+                        "matrixobject networked WAL has an unresolved hole at indexes {first}..={last} for shard {shard_id}: \
+                         further shared writes are refused until a checkpoint at or above {last} covers it"
+                    );
+                }
+            }
+            None => NETWORKED_WAL_HOLE_OPEN.store(0, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+static NETWORKED_WAL_HOLE_OPEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static NETWORKED_WAL_HOLE_FIRST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static NETWORKED_WAL_HOLE_LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn append_networked_wal_hole_metrics(metrics: &mut String) {
+    use std::sync::atomic::Ordering::Relaxed;
+    metrics.push_str("# TYPE temporalstore_shared_wal_hole_open gauge\\n");
+    metrics.push_str(&format!(
+        "temporalstore_shared_wal_hole_open {}\\n",
+        NETWORKED_WAL_HOLE_OPEN.load(Relaxed)
+    ));
+    if NETWORKED_WAL_HOLE_OPEN.load(Relaxed) == 1 {
+        metrics.push_str(&format!(
+            "temporalstore_shared_wal_hole_first_index {}\\ntemporalstore_shared_wal_hole_last_index {}\\n",
+            NETWORKED_WAL_HOLE_FIRST.load(Relaxed),
+            NETWORKED_WAL_HOLE_LAST.load(Relaxed)
+        ));
     }
 }
 

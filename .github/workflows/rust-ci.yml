@@ -362,7 +362,7 @@ jobs:
       # The shared WAL is a run of segments and an object never grows with the log. These run in
       # the advisory step above and nowhere else, so they are pinned by exact name: a rename or a
       # move would turn a filter into a no-op that still exits 0, hence the count on each.
-      - name: cargo test (shared WAL segment guards, hard gate)
+      - name: cargo test (shared WAL segment and failed-publish guards, hard gate)
         timeout-minutes: 20
         run: |
           set -o pipefail
@@ -376,7 +376,13 @@ jobs:
             shared_store::wal_segment_tests::no_object_takes_more_appends_than_the_quota_and_a_batch_never_straddles_segments \
             shared_store::wal_segment_tests::a_restart_reads_the_highest_index_segment_and_not_the_history \
             shared_store::wal_segment_tests::a_shard_in_the_pre_segment_layout_is_refused_by_name_and_per_key_objects_are_not_read \
-            shared_store::wal_segment_tests::a_fenced_stale_owner_cannot_open_a_new_segment
+            shared_store::wal_segment_tests::a_fenced_stale_owner_cannot_open_a_new_segment \
+            shared_store::wal_failed_publish_tests::a_failed_publish_does_not_leave_a_hole_in_the_log \
+            shared_store::wal_failed_publish_tests::a_refused_append_is_retried_at_the_same_index_and_the_write_succeeds \
+            shared_store::wal_failed_publish_tests::an_append_that_committed_before_it_reported_failure_is_not_written_twice \
+            shared_store::wal_failed_publish_tests::retries_that_run_out_name_the_hole_refuse_later_writes_and_a_checkpoint_clears_it \
+            shared_store::wal_failed_publish_tests::an_append_whose_outcome_cannot_be_read_back_is_reported_unknown_and_not_repeated \
+            shared_store::wal_failed_publish_tests::a_failed_group_commit_batch_opens_one_hole_and_later_writes_are_refused
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/wal-segment-gate.log
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/wal-segment-gate.log || { echo "guard did not run and pass: $t"; exit 1; }
@@ -560,6 +566,9 @@ jobs:
             engine::tests::bucket_dump_binary_shape::no_json_path_is_left_for_a_manifest_or_a_marker \
             engine::tests::a_dump_manifest_lists_the_shard_once::the_summaries_in_a_manifest_are_the_live_shards_summaries \
             engine::tests::a_dump_manifest_lists_the_shard_once::a_manifest_lists_the_live_blocks_once \
+            engine::block_in_wal::a_registry_walk_copies_one_part_at_a_time::the_candidate_walk_copies_a_small_part_of_the_shard_under_one_lock_hold \
+            engine::block_in_wal::a_registry_walk_copies_one_part_at_a_time::the_oldest_first_walk_copies_a_small_part_of_the_shard_under_one_lock_hold \
+            engine::block_in_wal::a_registry_walk_copies_one_part_at_a_time::a_writer_registering_between_parts_is_neither_lost_nor_double_counted \
             engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::a_whole_manifest_gives_its_image_and_a_delta_is_refused \
             engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::the_reader_doors_refuse_a_delta \
             proxy::memory::memory_metadata_tests::a_metadata_document_round_trips_exactly \
@@ -906,6 +915,15 @@ jobs:
             engine::tests::a_window_reduce_rollup_is_a_command::a_new_control_that_cannot_be_served_is_refused_and_writes_nothing_and_each_bound_is_exact \
             engine::tests::a_window_reduce_rollup_is_a_command::a_request_with_none_of_the_new_fields_keeps_its_wire_and_json_bytes \
             engine::cell_retry_ring::tests::a_remembered_token_replays_its_first_receipt_and_a_new_one_is_fresh \
+            engine::sample_tail::tests::a_fold_of_base_and_tail_is_the_value_a_whole_sample_write_stores \
+            engine::sample_tail::tests::a_write_that_would_pass_the_cell_limit_is_refused_on_both_paths_at_the_same_request \
+            engine::sample_tail::tests::a_tail_is_bounded_in_writes_and_in_cells_and_a_write_past_a_bound_is_stored_whole \
+            engine::sample_tail::tests::a_request_that_extends_the_header_is_stored_whole \
+            engine::sample_tail::tests::a_plan_is_the_same_with_the_member_memo_and_without_it \
+            engine::sample_tail::tests::stored_tails_and_logged_items_are_canonical_and_refuse_every_other_spelling \
+            engine::sample_tail::tests::at_most_the_stamp_limit_hold_a_tail_and_the_oldest_are_named_to_make_room \
+            engine::sample_tail::tests::what_a_tail_write_stores_does_not_grow_with_the_sample_while_a_whole_write_does \
+            engine::sample_tail::tests::a_decoded_base_and_its_fold_agree_on_the_header \
             engine::cell_retry_ring::tests::the_capacity_is_sixteen_and_a_full_ring_holds_exactly_that_many \
             engine::cell_retry_ring::tests::the_token_past_the_limit_evicts_the_oldest_and_nothing_else \
             engine::cell_retry_ring::tests::eviction_follows_arrival_order_over_a_long_run \

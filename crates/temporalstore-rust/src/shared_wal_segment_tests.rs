@@ -304,11 +304,12 @@ async fn a_crash_between_two_segments_loses_nothing_acknowledged_and_resumes_at_
         assert_eq!(restarted.replay_wal(SHARD, 0, &follower).await.unwrap().applied, 5);
     }
     // (4) The first append of the new segment is refused: nothing is created, nothing is counted,
-    // and the retry opens the same segment.
+    // and the retry opens the same segment. The publish itself does not retry here, so the refusal
+    // is seen by the caller.
     {
         let dir = tempfile::tempdir().unwrap();
         let store = CountingStore::new(dir.path());
-        let r = replicator(&store, 4);
+        let r = replicator(&store, 4).with_publish_retry(1, Duration::ZERO);
         write(&r, 1, 4).await;
         store.refuse_appends.store(1, AtomicOrdering::SeqCst);
         assert!(r.publish_wal_entries_batch(&[entry(5)]).await.is_err());

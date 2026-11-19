@@ -4956,6 +4956,8 @@ pub(crate) fn execute_on_shard(
                         cells_before: plan.cells_before,
                         cells_after: plan.cells_after,
                         cells_dropped: plan.cells_dropped,
+                        buckets_folded: plan.buckets_folded,
+                        buckets_remaining: plan.buckets_remaining,
                     }
                 }
                 None => CommandResponse::WindowReduceRollupReceipt {
@@ -4964,6 +4966,8 @@ pub(crate) fn execute_on_shard(
                     cells_before: 0,
                     cells_after: 0,
                     cells_dropped: 0,
+                    buckets_folded: 0,
+                    buckets_remaining: 0,
                 },
             };
             receipt

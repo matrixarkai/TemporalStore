@@ -62,6 +62,10 @@ impl StageBudget {
         self.work_left = self.work_left.saturating_sub(units);
     }
 
+    pub(crate) fn work_left(&self) -> u64 {
+        self.work_left
+    }
+
     pub(crate) fn time_left(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
     }
@@ -130,6 +134,15 @@ pub(crate) struct RoundPlan {
 #[derive(Default)]
 pub(crate) struct StageCursors {
     pub(crate) compaction: super::compaction_stage::CompactionCursor,
+    pub(crate) page: PageCursor,
+}
+
+/// Where the page-GC stage resumes: the highest candidate slab its last bounded round examined.
+/// A slab id, never a position, so slabs destroyed in between cannot shift it; a cursor past
+/// every candidate finds nothing and the pass restarts from the lowest slab.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PageCursor {
+    pub(crate) after_slab_id: Option<u64>,
 }
 
 /// One heavy unit of the loop. Each is a whole stage, or the group of cheap stages that share the

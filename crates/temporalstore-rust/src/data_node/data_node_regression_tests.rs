@@ -36,3 +36,5 @@ mod a_sync_value_once_survives_the_loop;
 mod a_sync_value_once_does_not_outgrow_the_materialise_cap;
 #[path = "tests/an_idle_collection_round_does_not_walk_the_shard.rs"]
 mod an_idle_collection_round_does_not_walk_the_shard;
+#[path = "tests/page_gc_resumes_behind_its_window.rs"]
+mod page_gc_resumes_behind_its_window;

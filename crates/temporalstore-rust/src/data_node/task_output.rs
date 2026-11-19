@@ -73,6 +73,9 @@ pub(super) fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput 
             gc_durable_index_backed: false,
             wal_gc_clamped_by_durable_index: false,
             index_log_gc_clamped_by_durable_index: false,
+            block_gc_scan_examined_slabs: 0,
+            block_gc_scan_last_block_slab_id: None,
+            block_gc_scan_complete: true,
             lifecycle_plan: None,
         }),
         DataNodeTaskKind::StorageManager => {
@@ -142,6 +145,9 @@ pub(super) fn task_canceled_output(task: &QueuedTask, message: &str) -> DataNode
             gc_durable_index_backed: false,
             wal_gc_clamped_by_durable_index: false,
             index_log_gc_clamped_by_durable_index: false,
+            block_gc_scan_examined_slabs: 0,
+            block_gc_scan_last_block_slab_id: None,
+            block_gc_scan_complete: true,
             lifecycle_plan: None,
         }),
         DataNodeTaskKind::StorageManager => {

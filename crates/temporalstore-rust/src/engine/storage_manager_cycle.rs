@@ -670,6 +670,8 @@ impl TemporalEngine {
                 // built, a production round destroyed every eligible slab and the
                 // `skipped_by_budget_*` figures it reports could never be anything but 0.
                 BlockStoreGcPolicy {
+                    max_scan_slabs: 0,
+                    scan_after_slab_id: None,
                     max_destroy_slabs: request.block_gc_max_destroy_slabs_per_round,
                     max_destroy_physical_bytes: request
                         .block_gc_max_destroy_physical_bytes_per_round,

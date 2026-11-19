@@ -3581,6 +3581,8 @@ pub const DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS: u64 = 5_000;
 /// this stage -- the reason to have it is that `0` admitted an unbounded round at all, and the two
 /// `skipped_by_budget_*` figures the stage reports could never be anything but 0 while it did.
 pub const DEFAULT_BLOCK_GC_MAX_DESTROY_SLABS_PER_ROUND: usize = 500;
+/// Candidate slabs one periodic block-GC round examines before it yields.
+pub const DEFAULT_BLOCK_GC_MAX_SCAN_SLABS_PER_ROUND: usize = 500;
 
 /// The byte half of the same ceiling, and it is a SPENDING bound.
 ///

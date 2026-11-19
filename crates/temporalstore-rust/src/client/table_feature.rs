@@ -276,32 +276,52 @@ impl TemporalStoreTable {
     /// buckets, optionally capping each rolled sample, and says what it did. A request the key
     /// cannot serve is refused and nothing is written; rolling up again with the same arguments
     /// changes nothing.
+    ///
+    /// The server folds one bucket a call; this calls again until a call folds none (that last
+    /// call also applies the request's truncation), and sums what each call did. The samples
+    /// before are the first call's and the samples after the last call's.
     pub fn window_reduce_rollup(
         &self,
         key: impl Into<String>,
         spec: crate::types::WindowReduceRollupSpec,
     ) -> Result<crate::types::WindowReduceRollupSummary, ClientError> {
-        match self
-            .execute(Command::WindowReduceRollup { key: key.into(), spec })?
-            .response
-        {
-            CommandResponse::WindowReduceRollupReceipt {
-                samples_before,
-                samples_after,
-                cells_before,
-                cells_after,
-                cells_dropped,
-            } => Ok(crate::types::WindowReduceRollupSummary {
-                samples_before,
-                samples_after,
-                cells_before,
-                cells_after,
-                cells_dropped,
-            }),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "window_reduce_rollup",
-                response,
-            }),
+        let key = key.into();
+        let mut summary: Option<crate::types::WindowReduceRollupSummary> = None;
+        loop {
+            match self
+                .execute(Command::WindowReduceRollup { key: key.clone(), spec: spec.clone() })?
+                .response
+            {
+                CommandResponse::WindowReduceRollupReceipt {
+                    samples_before,
+                    samples_after,
+                    cells_before,
+                    cells_after,
+                    cells_dropped,
+                    buckets_folded,
+                    buckets_remaining,
+                } => {
+                    let total = summary.get_or_insert(crate::types::WindowReduceRollupSummary {
+                        samples_before,
+                        ..Default::default()
+                    });
+                    total.samples_after = samples_after;
+                    total.cells_before += cells_before;
+                    total.cells_after += cells_after;
+                    total.cells_dropped += cells_dropped;
+                    total.buckets_folded += buckets_folded;
+                    total.buckets_remaining = buckets_remaining;
+                    if buckets_folded == 0 {
+                        return Ok(*total);
+                    }
+                }
+                response => {
+                    return Err(ClientError::UnexpectedResponse {
+                        operation: "window_reduce_rollup",
+                        response,
+                    })
+                }
+            }
         }
     }
 
