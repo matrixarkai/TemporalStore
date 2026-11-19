@@ -579,6 +579,8 @@ mod a_ranked_cell_read_takes_the_shared_shard_lock;
 mod a_window_reduce_removal_does_not_allocate_a_value_per_cell;
 #[path = "tests/a_batch_and_a_fan_in_read_take_the_shared_shard_lock.rs"]
 mod a_batch_and_a_fan_in_read_take_the_shared_shard_lock;
+#[path = "tests/a_window_reduce_rollup_folds_one_bucket_a_call.rs"]
+mod a_window_reduce_rollup_folds_one_bucket_a_call;
 #[path = "tests/a_string_increment_and_append_are_one_step.rs"]
 mod a_string_increment_and_append_are_one_step;
 #[path = "tests/a_set_length_and_membership_read_the_member_map.rs"]

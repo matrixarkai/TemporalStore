@@ -1654,6 +1654,8 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             cells_before,
             cells_after,
             cells_dropped,
+            buckets_folded,
+            buckets_remaining,
         } => v1::CommandResponse {
             status: Some(types_status_to_sdk(types::Status::ok())),
             count: samples_after,
@@ -1661,6 +1663,8 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             cells_before,
             cells_after,
             cells_dropped,
+            buckets_folded,
+            buckets_remaining,
             ..Default::default()
         },
         types::CommandResponse::WindowReduceRemoveReceipt {

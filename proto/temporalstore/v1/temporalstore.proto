@@ -324,6 +324,10 @@ message CommandResponse {
   uint64 cells_before = 12;
   uint64 cells_after = 13;
   uint64 cells_dropped = 14;
+  // One rollup call folds at most one bucket: how many it folded (0 or 1) and how many unsettled
+  // buckets remain below the cutoff.
+  uint64 buckets_folded = 17;
+  uint64 buckets_remaining = 18;
   // A removal reports what it did: `count` is the samples after, `samples_before` and
   // `cells_before` as for a rollup, and this is the cells it took out.
   uint64 cells_removed = 16;
