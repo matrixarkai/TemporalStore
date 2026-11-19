@@ -1086,9 +1086,10 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
             memo_after.as_deref().unwrap_or("none")
         );
         eprintln!(
-            "      I{round} pressure: dirty_buckets={} undumped_wal_records={} executed={:?} skipped={:?}",
+            "      I{round} pressure: dirty_buckets={} undumped_wal_records={} wal_reclaim_round={:?} executed={:?} skipped={:?}",
             report.pressure.dirty_bucket_count,
             report.pressure.undumped_wal_records,
+            report.wal_reclaim_round,
             report.executed_stages,
             report.skipped_stages
         );
@@ -1236,8 +1237,9 @@ fn what_a_writer_waits_during_each_stage_of_a_dumping_round() {
 /// that can never hit), the stage walks, and what the compaction plan says it could relocate. The
 /// last line is the number of rounds it took, or NEVER within `LOOP_QUIET_MAX` (default 20).
 ///
-/// `moved_blocks`, `dumped` and the WAL records removed are locals of the loop, not report fields; a
-/// memo that ends a round as `reclaimable=true` is the loop's own statement that all three were zero.
+/// `wal_reclaim_round` on the report names, per round, whether the stage dumped, how many blocks it
+/// moved and how many WAL records it removed; a memo that ends a round as `reclaimable=true` is the
+/// loop's own statement that all three were zero.
 #[test]
 #[ignore]
 fn how_many_rounds_a_written_shard_takes_to_go_quiet() {
@@ -1293,7 +1295,7 @@ fn how_many_rounds_a_written_shard_takes_to_go_quiet() {
         eprintln!(
             "Q round {round}: whole {} us; reclaim_wal {} us walk={} ran={}; compact_pages {} us walk={} ran={}; \
              compaction_relocatable_block_refs={relocatable} reclaim_candidates={} dump_manifest={}; \
-             dirty_buckets={} undumped_wal_records={}",
+             dirty_buckets={} undumped_wal_records={} wal_reclaim_round={:?}",
             report.duration_us,
             wal.duration_us,
             wal.walk.live_block_entries,
@@ -1308,7 +1310,8 @@ fn how_many_rounds_a_written_shard_takes_to_go_quiet() {
                 .map(|lifecycle| lifecycle.dump_manifest.is_some())
                 .unwrap_or(false),
             report.pressure.dirty_bucket_count,
-            report.pressure.undumped_wal_records
+            report.pressure.undumped_wal_records,
+            report.wal_reclaim_round
         );
         eprintln!("      Q{round} memo before: {}", before.as_deref().unwrap_or("none"));
         eprintln!("      Q{round} memo after : {}", after.as_deref().unwrap_or("none"));
@@ -1328,6 +1331,54 @@ fn how_many_rounds_a_written_shard_takes_to_go_quiet() {
         Some(rounds) => eprintln!("Q RESULT keys={keys}: quiet after {rounds} round(s)"),
         None => eprintln!("Q RESULT keys={keys}: NEVER quiet within {max_rounds} rounds"),
     }
+}
+
+/// THE ROUND REPORT SAYS WHETHER THE WAL RECLAIM STAGE DUMPED, so a shard that stays busy while idle
+/// names the work that keeps it busy. A round forced over the byte gate on a dirty shard reports a
+/// dump; a round with the stage switched off reports none of its work.
+///
+/// Planted fault: dropping the `wal_reclaim_round.dumped = dumped` assignment in the loop leaves the
+/// first assertion false.
+#[test]
+fn the_round_report_says_whether_the_wal_reclaim_stage_dumped() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 300);
+    let engine = runtime.engine();
+    for index in 0..40usize {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("loop-{index:06}"),
+                value: vec![b'w'; 96],
+            },
+        });
+        assert!(response.status.ok);
+    }
+    let forced = StorageManagerOptions {
+        dirty_bucket_pressure: 1,
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
+    let dumping = runtime.run_storage_manager_once(1, forced);
+    assert!(
+        dumping.wal_reclaim_round.dumped,
+        "a round forced over the byte gate on a dirty shard must report its dump: {:?}",
+        dumping.wal_reclaim_round
+    );
+    // The control: a round with the stage switched off reports nothing, so the first assertion
+    // cannot be satisfied by a field that is simply always true.
+    let off = runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            enable_wal_reclaim: false,
+            ..StorageManagerOptions::default()
+        },
+    );
+    assert_eq!(
+        off.wal_reclaim_round,
+        StorageManagerWalReclaimRound::default(),
+        "a round without the WAL reclaim stage must report none of its work"
+    );
 }
 
 /// A DIRTY ROUND READS THE LIVE BLOCKS OF THE SHARD NO MORE THAN `DIRTY_ROUND_WALK_BOUND` TIMES.
