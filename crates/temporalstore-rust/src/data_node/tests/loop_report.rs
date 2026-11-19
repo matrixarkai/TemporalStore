@@ -1043,9 +1043,85 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(4usize);
+    // THE IDLE PHASE RUNS THE SHIPPED OPTIONS unless `LOOP_IDLE_FORCED=1` keeps the write phase's
+    // forced-dump options. `LOOP_DUMP=1` crosses the byte gate so that every round dumps, which is
+    // right for pricing a dump and wrong for an idle round: a round that is forced to dump is never
+    // quiet, and the quiet-reclaim memo is never consulted for it.
+    let idle_options = if std::env::var("LOOP_IDLE_FORCED").is_ok() {
+        shipped.clone()
+    } else {
+        StorageManagerOptions::default()
+    };
+    eprintln!(
+        "I options: forced={} dirty_bucket_pressure={} min_undumped_wal_bytes={}",
+        std::env::var("LOOP_IDLE_FORCED").is_ok(),
+        idle_options.dirty_bucket_pressure,
+        idle_options.min_undumped_wal_bytes
+    );
     for round in 0..idle_rounds {
         crate::engine::reset_live_block_scan_sites();
-        let report = runtime.run_storage_manager_once(1, shipped.clone());
+        // What the quiet-reclaim memo holds BEFORE the round: a remembered key that still equals
+        // the round's key is a hit, so the round's own plan walk is skipped.
+        let memo_before = runtime
+            .inner
+            .quiet_wal_reclaim
+            .lock()
+            .unwrap()
+            .get(&1)
+            .map(|(key, reclaimable)| format!("{key:?} reclaimable={reclaimable}"));
+        let report = runtime.run_storage_manager_once(1, idle_options.clone());
+        let memo_after = runtime
+            .inner
+            .quiet_wal_reclaim
+            .lock()
+            .unwrap()
+            .get(&1)
+            .map(|(key, reclaimable)| format!("{key:?} reclaimable={reclaimable}"));
+        eprintln!(
+            "      I{round} memo before: {}",
+            memo_before.as_deref().unwrap_or("none")
+        );
+        eprintln!(
+            "      I{round} memo after : {}",
+            memo_after.as_deref().unwrap_or("none")
+        );
+        eprintln!(
+            "      I{round} pressure: dirty_buckets={} undumped_wal_records={} executed={:?} skipped={:?}",
+            report.pressure.dirty_bucket_count,
+            report.pressure.undumped_wal_records,
+            report.executed_stages,
+            report.skipped_stages
+        );
+        // The decision record of every stage the round owner asked about, with its signals.
+        for decision in report
+            .pressure_decisions
+            .iter()
+            .filter(|decision| decision.stage == "reclaim_wal" || decision.stage == "compact_pages")
+        {
+            let signals: Vec<String> = decision
+                .signals
+                .iter()
+                .map(|signal| {
+                    format!(
+                        "{}={}/{}{}",
+                        signal.name,
+                        signal.observed,
+                        signal.threshold,
+                        if signal.over_threshold { "!" } else { "" }
+                    )
+                })
+                .collect();
+            eprintln!(
+                "      I{round} decision {} enabled={} pressure_active={} executed={} reasons={:?} skip={:?} signals=[{}]",
+                decision.stage,
+                decision.enabled,
+                decision.pressure_active,
+                decision.executed,
+                decision.trigger_reasons,
+                decision.skip_reason,
+                signals.join(" ")
+            );
+        }
         let index = report
             .stage_spans
             .iter()
