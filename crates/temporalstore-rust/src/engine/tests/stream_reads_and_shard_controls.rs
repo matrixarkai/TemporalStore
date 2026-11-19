@@ -3441,3 +3441,73 @@ fn a_writer_is_not_blocked_while_a_listing_builds_its_summaries() {
          still holds its read guard on the shard"
     );
 }
+
+/// A listing reports the shard as it stood when the listing took its copy, not as it stands when the
+/// summaries are finished building.
+///
+/// Building the summaries after the guard is released is only sound if they are built from what the
+/// guard covered. A write that lands in between must not appear in this listing and must appear in
+/// the next one; a build that went back to the live shard once the guard was released would show it
+/// in this one, and would be reading the shard without holding it.
+#[test]
+fn a_listing_built_after_the_guard_is_released_reports_the_shard_as_it_was_copied() {
+    use std::sync::{mpsc, Arc};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn dirty_objects(engine: &TemporalEngine) -> u64 {
+        engine
+            .bucket_storage_summaries(1)
+            .iter()
+            .map(|summary| summary.dirty_object_count)
+            .sum()
+    }
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "first".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    let before = dirty_objects(&engine);
+    assert!(before > 0, "the seed write left no dirty object to count");
+
+    let wrote_while_parked = Arc::new(AtomicBool::new(false));
+    let writer_engine = engine.clone();
+    let flag = Arc::clone(&wrote_while_parked);
+    crate::engine::storage_reporting::on_next_listing_released(move || {
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            writer_engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "during".to_string(),
+                    value: b"v".to_vec(),
+                },
+            });
+            let _ = done_tx.send(());
+        });
+        flag.store(
+            done_rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok(),
+            Ordering::SeqCst,
+        );
+        writer.join().expect("writer thread");
+    });
+
+    let during_listing = dirty_objects(&engine);
+    assert!(
+        wrote_while_parked.load(Ordering::SeqCst),
+        "the write could not finish while the listing was parked"
+    );
+    assert_eq!(
+        during_listing, before,
+        "a write that landed after the listing took its copy showed up in that listing"
+    );
+    assert_eq!(
+        dirty_objects(&engine),
+        before + 1,
+        "the next listing does not show the write that landed during the last one"
+    );
+}
