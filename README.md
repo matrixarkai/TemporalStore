@@ -490,7 +490,7 @@ with deployment guides and readiness reports for the chosen configuration.
 
 All six projects are public under **Apache-2.0**, available worldwide for anyone
 to use, fork, modify, test, and contribute to under the license. The storage,
-cache, consensus, and object-store components are Rust; MatrixArk is Python
+cache, consensus, and object-store parts are Rust; MatrixArk is Python
 companion tooling. MatrixAdsDemo is a standalone Python demonstration using
 generated data. Context-management code and serving remain in TemporalStore.
 

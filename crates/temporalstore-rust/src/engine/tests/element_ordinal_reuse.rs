@@ -1732,7 +1732,7 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
         std::mem::size_of::<T>()
     }
 
-    let name: Option<std::sync::Arc<str>> = Some(std::sync::Arc::from("a-component-name"));
+    let name: Option<std::sync::Arc<str>> = Some(std::sync::Arc::from("a-key-field-name"));
     let element_name_width = field_width(&name);
     let u16_ordinal = field_width(&Some(0u16));
     let u32_ordinal = field_width(&Some(0u32));

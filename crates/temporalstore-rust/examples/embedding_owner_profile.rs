@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Linux component profile for compact embedding owner searches.
+//! Linux profile for compact embedding owner searches.
 //! cargo run --release -p temporalstore-rust --example embedding_owner_profile -- flat
 //! cargo run --release -p temporalstore-rust --example embedding_owner_profile -- owners
 //! cargo run --release -p temporalstore-rust --example embedding_owner_profile -- unique-owners

@@ -1947,7 +1947,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
         let commands = (chunk_start..(chunk_start + 500).min(FIELDS_PER_OBJECT))
             .map(|i| Command::HashSet {
                 key: "wide_object".to_string(),
-                field: format!("component{i}"),
+                field: format!("attribute{i}"),
                 value: vec![104u8; 16],
             })
             .collect::<Vec<_>>();

@@ -210,7 +210,7 @@ else:
 
 ## Minimal Implementation Milestones
 
-### Milestone 1: single-process component test
+### Milestone 1: single-process test
 
 - Create a fake in-memory partition Raft group.
 - Propose a serialized WAL record.
