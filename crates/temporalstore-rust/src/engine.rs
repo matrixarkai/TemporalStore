@@ -1920,6 +1920,7 @@ impl TemporalEngine {
                 | Command::HashGet { .. }
                 | Command::HashLen { .. }
                 | Command::HashFieldExists { .. }
+                | Command::SequenceQuery { .. }
                 | Command::FeatureQuery { .. }
                 | Command::FeatureQueryFiltered { .. }
                 | Command::WindowReduceRank { .. }
@@ -2095,6 +2096,7 @@ impl TemporalEngine {
                             end_routing_bucket,
                         ),
                         filters: None,
+                        rows: false,
                     }
                 }
                 Command::FeatureQueryFiltered { key, start_ms, end_ms, count, filters } => {
@@ -2127,6 +2129,39 @@ impl TemporalEngine {
                             end_routing_bucket,
                         ),
                         filters: Some(filters.as_slice()),
+                        rows: false,
+                    }
+                }
+                Command::SequenceQuery { key, start_ms, end_ms, count, filters } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::FeatureRange {
+                        key: key.as_str(),
+                        window: shard
+                            .features()
+                            .get(key.as_str())
+                            .map(|series| {
+                                series
+                                    .range(timestamp_range_bounds(*start_ms, *end_ms))
+                                    .take(*count)
+                                    .map(|(instant, address)| (instant, address.clone()))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default(),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        filters: Some(filters.as_slice()),
+                        rows: true,
                     }
                 }
                 Command::WindowReduceRank { key, spec } => {
@@ -2321,8 +2356,41 @@ impl TemporalEngine {
                 window,
                 routing_bucket,
                 filters,
+                rows,
             } => {
                 self.note_fast_read_recency(request.shard_id, routing_bucket);
+                if rows {
+                    // A SEQUENCE READ: each row is decoded where it sits in the block, and the rows
+                    // every filter holds for are answered. The window is capped before the filters,
+                    // as the ordinary arm does.
+                    let identity = BlockIdentity::of(request.shard_id, "feature", key, None);
+                    let mut reader = crate::engine::product_model::SequenceBlockReader::new();
+                    let rows = window
+                        .iter()
+                        .filter_map(|(instant, address)| {
+                            crate::engine::product_model::read_sequence_row_in_place(
+                                &self.cache,
+                                &self.block_store,
+                                request.shard_id,
+                                *instant,
+                                address,
+                                identity,
+                                Some(routing_bucket),
+                                &mut reader,
+                            )
+                        })
+                        .filter(|row| {
+                            filters
+                                .unwrap_or(&[])
+                                .iter()
+                                .all(|filter| sequence_filter_matches(row, filter))
+                        })
+                        .collect::<Vec<_>>();
+                    return Some(ExecuteResponse {
+                        status: Status::ok(),
+                        response: CommandResponse::SequenceRows { rows },
+                    });
+                }
                 // NO RESPONSE-CACHE ENTRY IS READ OR WRITTEN HERE. A reader that fills the cache
                 // after the guard drops could store an answer older than a write that has already
                 // invalidated the key, and nothing in the entry says so. The window is read off
@@ -3821,6 +3889,8 @@ enum FastPathRead<'a> {
         routing_bucket: u32,
         /// `Some` for the filtered read, which keeps the points whose row every filter holds for.
         filters: Option<&'a [crate::types::FeatureFilter]>,
+        /// A sequence read: the points are decoded as rows and answered as rows.
+        rows: bool,
     },
     /// A ranked cell read: the entries it opens, taken under the guard; the samples are read after
     /// it drops.
