@@ -450,15 +450,43 @@ fn a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time() {
 #[test]
 fn a_window_from_a_start_covers_whole_milliseconds_and_excludes_its_end() {
     let w = |start_us, span| Window { kind: WindowKind::FromStart as i32, span, start_us };
-    assert_eq!(window_of(&w(1_000, 3_000)).unwrap(), WindowReduceWindow::Between { start_ms: 1, end_ms: 3 });
-    assert_eq!(window_of(&w(1_001, 3_000)).unwrap(), WindowReduceWindow::Between { start_ms: 2, end_ms: 4 });
-    assert_eq!(window_of(&w(0, 1_000)).unwrap(), WindowReduceWindow::Between { start_ms: 0, end_ms: 0 });
-    assert!(window_of(&w(5, 0)).is_err());
-    assert!(window_of(&w(5, -1)).is_err());
+    assert_eq!(window_of(&w(1_000, 3_000), false).unwrap(), WindowReduceWindow::Between { start_ms: 1, end_ms: 3 });
+    assert_eq!(window_of(&w(1_001, 3_000), false).unwrap(), WindowReduceWindow::Between { start_ms: 2, end_ms: 4 });
+    assert_eq!(window_of(&w(0, 1_000), false).unwrap(), WindowReduceWindow::Between { start_ms: 0, end_ms: 0 });
+    assert!(window_of(&w(5, 0), false).is_err());
+    assert!(window_of(&w(5, -1), false).is_err());
     assert_eq!(
-        window_of(&Window { kind: WindowKind::TrailingFromNow as i32, span: 61_999, start_us: 0 }).unwrap(),
+        window_of(&Window { kind: WindowKind::TrailingFromNow as i32, span: 61_999, start_us: 0 }, false).unwrap(),
         WindowReduceWindow::Last { duration_ms: 61 }
     );
+}
+
+#[test]
+fn a_window_from_a_start_includes_its_end_for_the_reads_that_select_by_member_or_lane_value() {
+    let w = |start_us, span| Window { kind: WindowKind::FromStart as i32, span, start_us };
+    // [1,000, 4,000] microseconds: the stamp at 4 ms is inside.
+    assert_eq!(window_of(&w(1_000, 3_000), true).unwrap(), WindowReduceWindow::Between { start_ms: 1, end_ms: 4 });
+    assert_eq!(window_of(&w(1_001, 3_000), true).unwrap(), WindowReduceWindow::Between { start_ms: 2, end_ms: 4 });
+    // A span of 0 is the one instant at the start.
+    assert_eq!(window_of(&w(5_000, 0), true).unwrap(), WindowReduceWindow::Between { start_ms: 5, end_ms: 5 });
+    assert!(window_of(&w(5, 0), true).is_err(), "no whole millisecond lies in [5, 5] microseconds");
+    // Through a query, by mode: the same window ends one ms later for MEMBERS_ONLY and MATCH_LANE.
+    let from = Window { kind: WindowKind::FromStart as i32, span: 3_000, start_us: 1_000 };
+    let end_of = |mode: RankMode| match translate_query(
+        &pair_profile(),
+        &query(from.clone(), WindowReduceSelector { has_members: true, members: vec![1], ..selector(mode) }),
+    )
+    .unwrap()
+    .spec
+    .window
+    {
+        WindowReduceWindow::Between { end_ms, .. } => end_ms,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(end_of(RankMode::FirstLane), 3);
+    assert_eq!(end_of(RankMode::Recent), 3);
+    assert_eq!(end_of(RankMode::MembersOnly), 4);
+    assert_eq!(end_of(RankMode::MatchLane), 4);
 }
 
 #[test]
@@ -498,20 +526,21 @@ fn an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time() {
 }
 
 #[test]
-fn the_skip_existing_flag_is_carried_and_refused_with_a_message_that_says_what_to_use() {
+fn the_skip_existing_flag_is_ignored_by_a_write_so_the_request_translates_to_the_same_commands() {
     let mut request = add(vec![observation(7, NOW_US, vec![pair_entry(9, 1, 1)])]);
-    assert!(translate_add(&pair_profile(), &request, NOW_US).is_ok());
+    let plain = translate_add(&pair_profile(), &request, NOW_US).unwrap();
     request.skip_existing = true;
-    let err = translate_add(&pair_profile(), &request, NOW_US).unwrap_err();
-    assert_eq!(err.code, WindowReduceStatusCode::InvalidArgument);
-    assert!(err.message.contains("retry token"), "{err:?}");
-    let restore = WindowReduceRestoreRequest {
+    assert_eq!(format!("{:?}", translate_add(&pair_profile(), &request, NOW_US).unwrap()), format!("{plain:?}"));
+    let restore = |skip_existing: bool| WindowReduceRestoreRequest {
         table: b"stats".to_vec(),
-        skip_existing: true,
+        skip_existing,
         observations: vec![RestoredObservation { entity: 7, latest_us: NOW_US, earliest_us: NOW_US, entries: vec![pair_entry(9, 1, 1)], ..Default::default() }],
         ..Default::default()
     };
-    assert!(translate_restore(&pair_profile(), &restore, NOW_US).is_err());
+    assert_eq!(
+        format!("{:?}", translate_restore(&pair_profile(), &restore(true), NOW_US).unwrap()),
+        format!("{:?}", translate_restore(&pair_profile(), &restore(false), NOW_US).unwrap())
+    );
 }
 
 fn tokens_of(commands: &[Command]) -> Vec<Option<u64>> {
@@ -849,32 +878,31 @@ fn a_batch_answer_holds_one_answer_per_query_in_order_each_with_its_own_status()
 // ---------------------------------------------------------------- options no read honours
 
 #[test]
-fn a_selector_that_asks_for_a_member_limit_is_refused_naming_the_field() {
-    // The unset request is translated: the refusals below are the option, not the selector.
-    assert!(translate_query(&pair_profile(), &query(trailing(), selector(RankMode::FirstLane))).is_ok());
+fn limit_members_is_the_row_count_of_a_stored_cell_read_that_names_no_limit_and_nothing_else() {
+    let recent = |limit: i32, limit_members: i32, flagged: bool| {
+        translate_query(
+            &pair_profile(),
+            &query(trailing(), WindowReduceSelector { limit, limit_members, has_limit_members: flagged, ..selector(RankMode::Recent) }),
+        )
+    };
+    // No limit and a flagged member count: the count is the rows.
+    assert_eq!(recent(0, 25, true).unwrap().spec.top_k, 25);
+    assert_eq!(recent(-3, 25, true).unwrap().spec.top_k, 25);
+    // A limit wins over it, and an unflagged or non-positive count asks nothing.
+    assert_eq!(recent(7, 25, true).unwrap().spec.top_k, 7);
+    assert!(recent(0, 25, false).is_err());
+    assert!(recent(0, 0, true).is_err());
+    assert!(recent(0, -4, true).is_err());
+    // The bound on rows still holds.
+    assert!(recent(0, 1000, true).is_ok());
+    assert!(recent(0, 1001, true).unwrap_err().message.contains("over the limit"));
 
-    // A member limit refuses at 1, the first value that limits anything, and at the extremes.
-    for limit in [1, 2, 1000, i32::MAX, -1, i32::MIN] {
-        for flagged in [false, true] {
-            let capped = WindowReduceSelector { limit_members: limit, has_limit_members: flagged, ..selector(RankMode::FirstLane) };
-            let err = refusal(capped);
-            assert_eq!(err.code, WindowReduceStatusCode::InvalidArgument);
-            assert!(err.message.contains(&format!("limit_members {limit} is not supported")), "{limit}: {err:?}");
-            assert!(err.message.contains("use `limit`"), "{err:?}");
-        }
+    // Every other mode ignores it: the read is the one without it.
+    for mode in [RankMode::FirstLane, RankMode::SecondLane, RankMode::Member, RankMode::MatchLane] {
+        let plain = plan(selector(mode));
+        let asked = plan(WindowReduceSelector { limit_members: 3, has_limit_members: true, ..selector(mode) });
+        assert_eq!(asked.spec, plain.spec, "{mode:?}");
     }
-
-    // Every mode that reads is refused alike, and so is a query inside a batch, by position.
-    for mode in [RankMode::SecondLane, RankMode::Member, RankMode::MembersOnly, RankMode::DecayedLane] {
-        let asked = WindowReduceSelector { limit_members: 3, members: vec![1], ..selector(mode) };
-        assert!(refusal(asked).message.contains("limit_members 3"), "{mode:?}");
-    }
-    let profiles = Profiles::new(vec![pair_profile()]).unwrap();
-    let good = query(trailing(), selector(RankMode::FirstLane));
-    let mut capped = good.clone();
-    capped.selector.as_mut().unwrap().limit_members = 5;
-    let err = translate_batch(&profiles, &WindowReduceBatchQuery { queries: vec![good.clone(), capped] }).unwrap_err();
-    assert!(err.message.starts_with("query 1:") && err.message.contains("limit_members 5"), "{err:?}");
 }
 
 #[test]
@@ -974,7 +1002,7 @@ fn recent_is_the_stored_cell_read_with_the_selectors_label_and_limit() {
 }
 
 #[test]
-fn match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_say() {
+fn match_lane_adds_an_equality_on_the_lane_it_names_and_matches_nothing_on_a_lane_the_table_lacks() {
     let matched = |lane: Option<i64>, value: Option<i64>| {
         translate_query(
             &pair_profile(),
@@ -997,12 +1025,15 @@ fn match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_s
     assert_eq!(matched(Some(1), Some(7)).unwrap().spec.filters, vec![slot_is_five(), on("clicks", 7)]);
     // An absent lane is the first and an absent value is 0, as a sort lane is.
     assert_eq!(matched(None, None).unwrap().spec.filters, vec![slot_is_five(), on("impressions", 0)]);
-    // The table has two lanes: a third is refused naming it, as is a negative one; so is a
-    // negative value, which a predicate cannot compare, and a lane too wide for the wire's i32.
-    assert!(matched(Some(2), Some(1)).unwrap_err().message.contains("match lane 2"));
-    assert!(matched(Some(-1), Some(1)).unwrap_err().message.contains("match lane -1"));
-    assert!(matched(Some(i64::MAX), Some(1)).unwrap_err().message.contains("match lane"));
-    assert!(matched(Some(0), Some(-1)).unwrap_err().message.contains("negative"));
+    // The table has two lanes. A lane it does not declare (a third, a negative one, one too wide
+    // for an i32) holds nothing: the test no cell passes, and the read answers nothing.
+    let nothing = FeatureFilter { field: "member".into(), op: FeatureFilterOp::LessThan, value: 0 };
+    for lane in [2, -1, i64::MAX, i64::MIN] {
+        assert_eq!(matched(Some(lane), Some(1)).unwrap().spec.filters, vec![slot_is_five(), nothing.clone()], "lane {lane}");
+    }
+    // A lane is signed, so a negative value is a value: it travels as the 64 bits it was sent in.
+    assert_eq!(matched(Some(0), Some(-1)).unwrap().spec.filters, vec![slot_is_five(), on("impressions", u64::MAX)]);
+    assert_eq!(matched(Some(1), Some(i64::MIN)).unwrap().spec.filters, vec![slot_is_five(), on("clicks", 1 << 63)]);
     // The match fields mean nothing to any other mode: its filters are the label alone.
     let ignored = WindowReduceSelector { has_match_lane: true, match_lane: 1, has_match_value: true, match_value: 9, ..selector(RankMode::FirstLane) };
     assert_eq!(plan(ignored).spec.filters, vec![slot_is_five()]);

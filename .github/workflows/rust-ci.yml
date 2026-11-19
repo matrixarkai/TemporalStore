@@ -960,12 +960,14 @@ jobs:
             engine::window_reduce_protocol::tests::a_newest_rows_window_counts_rows_and_its_bounds_are_exact \
             engine::window_reduce_rank::flat_tests::a_sample_read_without_its_first_cells_ranks_as_the_plain_sample_without_them \
             engine::window_reduce_protocol::tests::recent_is_the_stored_cell_read_with_the_selectors_label_and_limit \
-            engine::window_reduce_protocol::tests::match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_say \
+            engine::window_reduce_protocol::tests::match_lane_adds_an_equality_on_the_lane_it_names_and_matches_nothing_on_a_lane_the_table_lacks \
+            engine::window_reduce_protocol::tests::a_window_from_a_start_includes_its_end_for_the_reads_that_select_by_member_or_lane_value \
+            engine::window_reduce_rank::signed_lane_predicate_tests::a_lane_predicate_reads_its_value_as_signed_and_a_label_predicate_as_unsigned \
             engine::window_reduce_protocol::tests::a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_sample \
             engine::window_reduce_protocol::tests::a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time \
             engine::window_reduce_protocol::tests::a_window_from_a_start_covers_whole_milliseconds_and_excludes_its_end \
             engine::window_reduce_protocol::tests::an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time \
-            engine::window_reduce_protocol::tests::the_skip_existing_flag_is_carried_and_refused_with_a_message_that_says_what_to_use \
+            engine::window_reduce_protocol::tests::the_skip_existing_flag_is_ignored_by_a_write_so_the_request_translates_to_the_same_commands \
             engine::window_reduce_protocol::tests::a_retry_token_on_the_wire_rides_on_every_key_of_the_append_and_a_zero_token_is_none \
             engine::window_reduce_protocol::tests::the_token_and_the_replayed_flag_have_the_established_field_numbers \
             engine::window_reduce_protocol::tests::a_replayed_receipt_is_reported_with_the_counts_of_the_first_application \
@@ -974,7 +976,7 @@ jobs:
             engine::tests::a_read_can_say_which_samples_it_used::a_read_that_asks_says_which_samples_it_used_and_how_many_cells_each_held_live_and_after_a_restart \
             engine::tests::a_read_can_say_which_samples_it_used::a_read_that_does_not_ask_answers_what_it_always_answered_and_its_json_has_no_new_field \
             engine::tests::a_read_can_say_which_samples_it_used::a_rows_window_counts_only_the_cells_it_holds_of_the_sample_at_its_edge \
-            engine::window_reduce_protocol::tests::a_selector_that_asks_for_a_member_limit_is_refused_naming_the_field \
+            engine::window_reduce_protocol::tests::limit_members_is_the_row_count_of_a_stored_cell_read_that_names_no_limit_and_nothing_else \
             engine::window_reduce_protocol::tests::a_selector_that_wants_sample_info_asks_the_read_for_it_and_changes_nothing_else \
             engine::window_reduce_protocol::tests::an_answer_says_which_samples_the_read_used_in_microseconds_and_leaves_the_field_out_when_not_asked \
             engine::window_reduce_protocol::tests::a_selector_that_sets_them_off_is_translated_to_exactly_the_read_it_was_without_them \
