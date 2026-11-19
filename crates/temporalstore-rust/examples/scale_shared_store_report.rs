@@ -550,6 +550,22 @@ async fn main() {
                 n.chunk_reads
             );
             let hits = n.chunk_reads - n.cache_misses;
+            // Misses are the distinct chunks the replay fetched, so they track the entries:
+            // measured 200 misses at 200 entries and 402 at 400 on every node, the extra few
+            // being chunk-boundary re-reads. A cleared cache that is bypassed puts misses
+            // below the entries; an extra fetch per lookup puts them above the allowance, which
+            // grows as a fiftieth of the entries and not as the lookup count.
+            let entries = r.entries as u64;
+            let allowance = (entries / 50).max(8);
+            assert!(
+                n.cache_misses >= entries && n.cache_misses <= entries + allowance,
+                "{} at {} entries fetched {} distinct chunks, outside {}..={}",
+                n.node,
+                r.entries,
+                n.cache_misses,
+                entries,
+                entries + allowance
+            );
             assert!(
                 hits * 2 <= n.chunk_reads,
                 "{} at {} entries served {} of its {} lookups from cache, and a replay that                  starts with a cleared cache has only its own repeat lookups to hit",
