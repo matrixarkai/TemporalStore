@@ -7496,7 +7496,7 @@ mod tests {
     /// the first seal and fails the comparison right after it.
     #[test]
     fn the_cached_gate_agrees_with_the_walked_gate_through_every_change_to_the_log() {
-        let _rolling = roll_at(4 * 1024);
+        let _rolling = roll_at(2 * 1024);
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         let mut compared = 0usize;
@@ -7538,7 +7538,7 @@ mod tests {
         // Asked BEFORE the first append, so the ledger exists and every seal that follows has to
         // be pushed onto it rather than found by a listing.
         compare(&store, "empty log", &mut compared);
-        for value in 0..400usize {
+        for value in 0..500usize {
             if value % 2 == 0 {
                 store.append_index_bytes(7, &fixture_index(value)).unwrap();
             } else {
