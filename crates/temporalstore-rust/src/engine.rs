@@ -1932,6 +1932,8 @@ impl TemporalEngine {
                 | Command::SetScan { .. }
                 | Command::SetCard { .. }
                 | Command::SetIsMember { .. }
+                | Command::WindowReduceRankBatch { .. }
+                | Command::WindowReduceFanInRank { .. }
         );
         if !read_command {
             return None;
@@ -2158,6 +2160,65 @@ impl TemporalEngine {
                             .get(key.as_str())
                             .map(|series| window_reduce_rank_read::snapshot(series, spec, now_ms))
                             .unwrap_or_default(),
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        now_ms,
+                    }
+                }
+                Command::WindowReduceRankBatch { queries } => {
+                    let now_ms = resolve_now_ms();
+                    if queries.iter().any(|query| {
+                        shard
+                            .expires_at_ms()
+                            .get(query.key.as_str())
+                            .map(|expires_at| *expires_at <= now_ms)
+                            .unwrap_or(false)
+                    }) {
+                        return None;
+                    }
+                    // A batch admission would refuse is answered by the ordinary path, with its status.
+                    if window_reduce_fan_in::validate_batch(queries).is_err() {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::WindowReduceRankBatch {
+                        queries: queries.as_slice(),
+                        held: queries
+                            .iter()
+                            .map(|query| {
+                                shard
+                                    .features()
+                                    .get(query.key.as_str())
+                                    .map(|series| window_reduce_rank_read::snapshot(series, &query.spec, now_ms))
+                                    .unwrap_or_default()
+                            })
+                            .collect(),
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        now_ms,
+                    }
+                }
+                Command::WindowReduceFanInRank { keys, spec } => {
+                    let now_ms = resolve_now_ms();
+                    if keys.iter().any(|key| {
+                        shard
+                            .expires_at_ms()
+                            .get(key.as_str())
+                            .map(|expires_at| *expires_at <= now_ms)
+                            .unwrap_or(false)
+                    }) {
+                        return None;
+                    }
+                    if window_reduce_fan_in::validate_keys(keys).is_err()
+                        || crate::engine::window_reduce_rank::validate_spec(spec).is_err()
+                    {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::WindowReduceFanIn {
+                        keys: keys.as_slice(),
+                        spec,
+                        held: window_reduce_rank_read::snapshot_many(shard, keys, spec, now_ms),
                         start_routing_bucket,
                         end_routing_bucket,
                         now_ms,
@@ -2407,6 +2468,66 @@ impl TemporalEngine {
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response,
+                })
+            }
+            FastPathRead::WindowReduceRankBatch {
+                queries,
+                held,
+                start_routing_bucket,
+                end_routing_bucket,
+                now_ms,
+            } => {
+                let mut rankings = Vec::with_capacity(queries.len());
+                for (query, taken) in queries.iter().zip(held) {
+                    self.note_fast_read_recency(
+                        request.shard_id,
+                        block_routing_bucket(&query.key, start_routing_bucket, end_routing_bucket),
+                    );
+                    rankings.push(window_reduce_rank_read::serve_snapshot(
+                        &self.cache,
+                        &self.block_store,
+                        request.shard_id,
+                        &query.key,
+                        &query.spec,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        now_ms,
+                        taken,
+                    ));
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::WindowReduceRankings { rankings },
+                })
+            }
+            FastPathRead::WindowReduceFanIn {
+                keys,
+                spec,
+                held,
+                start_routing_bucket,
+                end_routing_bucket,
+                now_ms,
+            } => {
+                for key in keys {
+                    self.note_fast_read_recency(
+                        request.shard_id,
+                        block_routing_bucket(key, start_routing_bucket, end_routing_bucket),
+                    );
+                }
+                let ranked = window_reduce_rank_read::serve_many_snapshots(
+                    &self.cache,
+                    &self.block_store,
+                    request.shard_id,
+                    keys,
+                    spec,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    now_ms,
+                    held,
+                );
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::WindowReduceRanking { ranked },
                 })
             }
             FastPathRead::Answer {
@@ -3832,6 +3953,23 @@ enum FastPathRead<'a> {
         end_routing_bucket: u32,
         now_ms: u64,
     },
+    /// Several ranked reads, each with the entries it opens taken under the guard.
+    WindowReduceRankBatch {
+        queries: &'a [crate::types::WindowReduceRankBatchItem],
+        held: Vec<window_reduce_rank_read::RankSnapshot>,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+        now_ms: u64,
+    },
+    /// One ranked read over several keys, one snapshot of entries per key.
+    WindowReduceFanIn {
+        keys: &'a [String],
+        spec: &'a crate::types::WindowReduceRankSpec,
+        held: Vec<window_reduce_rank_read::RankSnapshot>,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+        now_ms: u64,
+    },
 }
 
 /// The answer to a read that is a lookup or a bounded walk of a resident map, taken under the shard
@@ -3862,10 +4000,29 @@ fn index_only_read(shard: &ShardState, command: &Command) -> Option<CommandRespo
 }
 
 impl FastPathRead<'_> {
+    /// Every entry a ranked read opens, with the key it belongs to, for pinning what they name.
+    fn rank_entries(&self) -> Vec<(&str, &ElementEntry)> {
+        match self {
+            Self::WindowReduceRank { key, held, .. } => held.entries().map(|entry| (*key, entry)).collect(),
+            Self::WindowReduceRankBatch { queries, held, .. } => queries
+                .iter()
+                .zip(held)
+                .flat_map(|(query, taken)| taken.entries().map(move |entry| (query.key.as_str(), entry)))
+                .collect(),
+            Self::WindowReduceFanIn { keys, held, .. } => keys
+                .iter()
+                .zip(held)
+                .flat_map(|(key, taken)| taken.entries().map(move |entry| (key.as_str(), entry)))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     fn pin_feature_slabs(&self, blocks: &BlockStore) -> Option<crate::block_store::BlockStoreReadSnapshot> {
-        if let Self::WindowReduceRank { held, .. } = self {
+        let ranked = self.rank_entries();
+        if !ranked.is_empty() {
             let mut snapshot = None;
-            for address in held.entries() {
+            for (_, address) in ranked {
                 if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
                     snapshot.get_or_insert_with(|| crate::block_store::BlockStoreReadSnapshot::new(blocks))
                         .pin(address.block_slab_id());
@@ -3930,14 +4087,14 @@ impl FastPathRead<'_> {
                 }
                 snapshot
             }
-            Self::WindowReduceRank { key, held, .. } => {
+            Self::WindowReduceRank { .. } | Self::WindowReduceRankBatch { .. } | Self::WindowReduceFanIn { .. } => {
+                let entries = self.rank_entries();
                 let mut snapshot = None;
-                let object = stable_block_object_id(shard, "feature", key);
-                for address in held.entries() {
+                for (key, address) in &entries {
                     if crate::wal_record::is_wal_resident(address.block_slab_id()) {
                         snapshot.get_or_insert_with(|| {
-                            block_in_wal::ReadSnapshotGuard::retained_batch(blocks, shard, held.entries().count())
-                        }).pin(blocks, object, None, address);
+                            block_in_wal::ReadSnapshotGuard::retained_batch(blocks, shard, entries.len())
+                        }).pin(blocks, stable_block_object_id(shard, "feature", key), None, address);
                     }
                 }
                 snapshot
