@@ -7743,7 +7743,7 @@ fn list_seq_at<V>(list: &BTreeMap<i64, V>, index: usize) -> Option<i64> {
     let first = *list.keys().next()?;
     let last = *list.keys().next_back()?;
     if last as i128 - first as i128 + 1 == length as i128 {
-        return Some(first + index as i64);
+        return Some(first + index as i64 + 1);
     }
     if index <= length / 2 {
         list.keys().nth(index).copied()
