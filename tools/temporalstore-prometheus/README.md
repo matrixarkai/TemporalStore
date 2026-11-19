@@ -37,6 +37,9 @@ The sidecar writes both converted TemporalStore metrics and exporter health metr
   service availability, exporter scrape errors, client validation, proxy smoke,
   client benchmark errors, retry exhaustion, ingestion lag/backpressure, cache
   fallback evidence, follower-read SLA, and raft gate readiness.
+  Every alert carries a `severity` label and a `subsystem` label naming the part that failed
+  (for example `raft`, `ingestion`, `cache`, `client`), so a route or an inhibit rule can group on
+  either one.
 
 - `temporalstore-engine-alerts.yml` is mounted from `docs/ops/temporalstore-alerts.yml` and covers
   the engine itself: Raft majority loss and stalled applies, scheduler backlog, proxy quarantine,
