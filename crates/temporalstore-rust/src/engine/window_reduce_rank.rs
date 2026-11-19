@@ -722,6 +722,8 @@ impl Plan {
             label_columns: self.label_names.clone(),
             lane_columns: self.lane_names.clone(),
             samples: chosen.len(),
+            window_first_ms: chosen.first().map_or(0, |s| s.stamp()),
+            window_last_ms: chosen.last().map_or(0, |s| s.stamp()),
             keys: 0,
             unscored: 0,
             rows,
@@ -808,6 +810,8 @@ impl Plan {
             label_columns: self.label_names.clone(),
             lane_columns: self.lane_names.clone(),
             samples: chosen.len(),
+            window_first_ms: chosen.first().map_or(0, |s| s.stamp()),
+            window_last_ms: chosen.last().map_or(0, |s| s.stamp()),
             // The caller knows how many series `chosen` came from.
             keys: 0,
             unscored,
