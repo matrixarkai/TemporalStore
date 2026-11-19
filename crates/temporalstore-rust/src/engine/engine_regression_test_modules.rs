@@ -571,6 +571,8 @@ mod a_window_reduce_read_over_several_keys;
 mod the_window_reduce_allocations_are_counted_per_operation;
 #[path = "tests/the_window_reduce_bytes_are_counted_per_operation.rs"]
 mod the_window_reduce_bytes_are_counted_per_operation;
+#[path = "tests/a_ranked_cell_read_takes_the_shared_shard_lock.rs"]
+mod a_ranked_cell_read_takes_the_shared_shard_lock;
 #[path = "tests/a_string_increment_and_append_are_one_step.rs"]
 mod a_string_increment_and_append_are_one_step;
 #[path = "tests/a_set_length_and_membership_read_the_member_map.rs"]
