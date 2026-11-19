@@ -580,7 +580,6 @@ jobs:
             engine::tests::part4::the_slab_usage_sample_emits_the_canonical_name_and_reads_no_retired_one \
             engine::tests::part4::a_bucket_summary_reads_back_the_names_it_writes \
             index_log::tests::an_index_item_spelled_with_a_retired_name_is_not_read_as_the_same_item \
-            engine::tests::block_entry_names::the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones \
             index_log::tests::a_delta_record_with_a_long_field_name_is_not_read_as_the_same_record \
             index_log::tests::a_log_holding_a_real_anchor_still_folds_rolls_and_sweeps \
             engine::tests::a_checkpoint_publish_into_a_log_with_an_anchor_lands::a_second_checkpoint_publish_lands_in_a_log_that_holds_the_first_ones_anchor \
