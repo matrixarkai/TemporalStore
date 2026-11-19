@@ -161,6 +161,35 @@ pub trait ObjectStore: Send + Sync {
     fn uri(&self, key: &str) -> String;
 }
 
+/// One S3 reply from a door that lives in this process.
+#[derive(Debug, Clone)]
+pub struct DoorReply {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+/// An S3 door served IN THIS PROCESS instead of over a socket.
+///
+/// The direct way to reach a MatrixObject cluster is the gateway's own request handling, run by
+/// the node, against the metadata group and the chunk servers: there is no gateway process and
+/// no hop to it. Everything above the transport is the code that already talks to a gateway --
+/// the append rules, the read-back of an append whose outcome is unknown, ranged reads, listing
+/// -- so the two ways cannot disagree about a request, only about how it travels.
+///
+/// The request is the method, the target as it would appear on the wire (path and query,
+/// percent-encoded), the extra headers the store sends, and the body. A transport error is the
+/// door failing to answer at all; anything it answers, including a 503, is a [`DoorReply`].
+pub trait InProcessDoor: Send + Sync + std::fmt::Debug {
+    fn serve(
+        &self,
+        method: &str,
+        target: &str,
+        headers: &[(&str, String)],
+        body: &[u8],
+    ) -> Result<DoorReply, String>;
+}
+
 /// Networked object store speaking S3 over HTTP to a matrixobject `object_server`.
 ///
 /// # WHY S3, AND WHAT THIS REPLACED
@@ -190,6 +219,8 @@ pub trait ObjectStore: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct MatrixObjectHttpStore {
     addr: String,
+    /// When set, requests are served by this door in process and no socket is opened.
+    door: Option<Arc<dyn InProcessDoor>>,
     uri: String,
     bucket: String,
     /// Object lengths this client last observed, so an append can skip asking.
@@ -278,6 +309,7 @@ impl MatrixObjectHttpStore {
         }
         Ok(Self {
             addr: authority.to_string(),
+            door: None,
             uri: trimmed.trim_end_matches('/').to_string(),
             bucket: bucket.to_string(),
             known_lengths: Arc::default(),
@@ -287,6 +319,27 @@ impl MatrixObjectHttpStore {
             connections: Arc::default(),
             connections_opened: Arc::default(),
         })
+    }
+
+    /// A store whose requests are answered by `door` in this process. See [`InProcessDoor`].
+    pub fn in_process(door: Arc<dyn InProcessDoor>, bucket: &str) -> Self {
+        let bucket = if bucket.trim().is_empty() {
+            DEFAULT_HTTP_BUCKET
+        } else {
+            bucket.trim()
+        };
+        Self {
+            addr: "in-process".to_string(),
+            door: Some(door),
+            uri: format!("matrixobject://in-process/{bucket}"),
+            bucket: bucket.to_string(),
+            known_lengths: Arc::default(),
+            requests: Arc::default(),
+            wire_sent: Arc::default(),
+            wire_received: Arc::default(),
+            connections: Arc::default(),
+            connections_opened: Arc::default(),
+        }
     }
 
     /// Which bucket this endpoint's objects live in.
@@ -371,6 +424,23 @@ impl MatrixObjectHttpStore {
     ) -> Result<HttpResponse, ObjectStoreError> {
         self.requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        if let Some(door) = &self.door {
+            // NOTHING WENT ON A WIRE, so nothing is added to the wire counters. A door that
+            // fails to answer is a transport failure exactly as a dropped socket is: the
+            // request may have been served, and the caller settles that by reading.
+            let reply = door
+                .serve(method, target, extra, body)
+                .map_err(ObjectStoreError::Http)?;
+            return Ok(HttpResponse {
+                status: reply.status,
+                headers: reply.headers,
+                body: reply.body,
+                raw_len: 0,
+                request_len: 0,
+                reusable: false,
+            });
+        }
 
         // A POOLED SOCKET MAY HAVE DIED WHILE IT SAT IDLE, and nothing tells the holder: the
         // server can close an idle keep-alive connection whenever it likes. So a failure on a
@@ -1501,6 +1571,8 @@ impl BlockingObjectRead for MatrixObjectHttpStore {
 #[derive(Debug, Clone)]
 pub enum NetworkedMatrixObjectStore {
     Gateway(MatrixObjectHttpStore),
+    /// The same store, its requests answered in process by the cluster client.
+    Direct(MatrixObjectHttpStore),
 }
 
 impl NetworkedMatrixObjectStore {
@@ -1510,44 +1582,55 @@ impl NetworkedMatrixObjectStore {
             MatrixObjectMode::Gateway => Ok(Self::Gateway(MatrixObjectHttpStore::new(target)?)),
             MatrixObjectMode::Direct => Err(ObjectStoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "direct MatrixObject mode is not built into this binary",
+                "direct MatrixObject mode needs a binary built with the `matrixobject` feature",
             ))),
         }
+    }
+
+    /// The direct way in: a store whose requests `door` answers in this process.
+    pub fn direct(door: Arc<dyn InProcessDoor>, bucket: &str) -> Self {
+        Self::Direct(MatrixObjectHttpStore::in_process(door, bucket))
     }
 
     pub fn mode(&self) -> MatrixObjectMode {
         match self {
             Self::Gateway(_) => MatrixObjectMode::Gateway,
+            Self::Direct(_) => MatrixObjectMode::Direct,
         }
     }
 
     pub fn bucket(&self) -> &str {
         match self {
             Self::Gateway(store) => store.bucket(),
+            Self::Direct(store) => store.bucket(),
         }
     }
 
     pub fn requests_issued(&self) -> u64 {
         match self {
             Self::Gateway(store) => store.requests_issued(),
+            Self::Direct(store) => store.requests_issued(),
         }
     }
 
     pub fn wire_bytes_sent(&self) -> u64 {
         match self {
             Self::Gateway(store) => store.wire_bytes_sent(),
+            Self::Direct(store) => store.wire_bytes_sent(),
         }
     }
 
     pub fn wire_bytes_received(&self) -> u64 {
         match self {
             Self::Gateway(store) => store.wire_bytes_received(),
+            Self::Direct(store) => store.wire_bytes_received(),
         }
     }
 
     pub fn connections_opened(&self) -> u64 {
         match self {
             Self::Gateway(store) => store.connections_opened(),
+            Self::Direct(store) => store.connections_opened(),
         }
     }
 }
@@ -1556,6 +1639,7 @@ impl BlockingObjectRead for NetworkedMatrixObjectStore {
     fn get_blocking(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
         match self {
             Self::Gateway(store) => BlockingObjectRead::get_blocking(store, key),
+            Self::Direct(store) => BlockingObjectRead::get_blocking(store, key),
         }
     }
 }
@@ -1565,6 +1649,7 @@ impl ObjectStore for NetworkedMatrixObjectStore {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
         match self {
             Self::Gateway(store) => store.put(key, bytes).await,
+            Self::Direct(store) => store.put(key, bytes).await,
         }
     }
 
@@ -1575,12 +1660,14 @@ impl ObjectStore for NetworkedMatrixObjectStore {
     ) -> Result<AppendBlobReceipt, ObjectStoreError> {
         match self {
             Self::Gateway(store) => store.append_blob(key, bytes).await,
+            Self::Direct(store) => store.append_blob(key, bytes).await,
         }
     }
 
     async fn put_many(&self, objects: &[(String, Bytes)]) -> Result<(), ObjectStoreError> {
         match self {
             Self::Gateway(store) => store.put_many(objects).await,
+            Self::Direct(store) => store.put_many(objects).await,
         }
     }
 
@@ -1592,12 +1679,14 @@ impl ObjectStore for NetworkedMatrixObjectStore {
     ) -> Result<(), ObjectStoreError> {
         match self {
             Self::Gateway(store) => store.compare_and_swap(key, expected, new).await,
+            Self::Direct(store) => store.compare_and_swap(key, expected, new).await,
         }
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
         match self {
             Self::Gateway(store) => store.get(key).await,
+            Self::Direct(store) => store.get(key).await,
         }
     }
 
@@ -1609,6 +1698,7 @@ impl ObjectStore for NetworkedMatrixObjectStore {
     ) -> Result<Bytes, ObjectStoreError> {
         match self {
             Self::Gateway(store) => store.get_range(key, offset, length).await,
+            Self::Direct(store) => store.get_range(key, offset, length).await,
         }
     }
 
@@ -1619,36 +1709,42 @@ impl ObjectStore for NetworkedMatrixObjectStore {
     ) -> Result<Option<Bytes>, ObjectStoreError> {
         match self {
             Self::Gateway(store) => store.get_range_from(key, offset).await,
+            Self::Direct(store) => store.get_range_from(key, offset).await,
         }
     }
 
     async fn get_many(&self, keys: &[String]) -> Result<Vec<(String, Bytes)>, ObjectStoreError> {
         match self {
             Self::Gateway(store) => store.get_many(keys).await,
+            Self::Direct(store) => store.get_many(keys).await,
         }
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
         match self {
             Self::Gateway(store) => store.list(prefix).await,
+            Self::Direct(store) => store.list(prefix).await,
         }
     }
 
     async fn list_after(&self, prefix: &str, after: &str) -> Result<Vec<String>, ObjectStoreError> {
         match self {
             Self::Gateway(store) => store.list_after(prefix, after).await,
+            Self::Direct(store) => store.list_after(prefix, after).await,
         }
     }
 
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
         match self {
             Self::Gateway(store) => store.delete(key).await,
+            Self::Direct(store) => store.delete(key).await,
         }
     }
 
     fn uri(&self, key: &str) -> String {
         match self {
             Self::Gateway(store) => store.uri(key),
+            Self::Direct(store) => store.uri(key),
         }
     }
 }
@@ -1812,6 +1908,7 @@ mod tests {
         Refuse503,
     }
 
+    #[derive(Debug)]
     struct ScriptedState {
         data: Vec<u8>,
         existing: bool,
@@ -1819,6 +1916,98 @@ mod tests {
         fault_on_first_put: Fault,
         /// Every GET with a range answers 500.
         reads_fail: bool,
+    }
+
+    /// What the scripted one-object door answers, as raw HTTP bytes, or `None` to drop the
+    /// connection without answering. Shared by the socket server and the in-process door, so
+    /// both ways in are served by the same script.
+    fn scripted_respond(
+        shared: &Mutex<ScriptedState>,
+        method: &str,
+        header: &dyn Fn(&str) -> Option<String>,
+        body: &[u8],
+    ) -> Option<Vec<u8>> {
+        let reply = |status: &str, extra: &str, body: &[u8], with_body: bool| {
+            let mut out = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n",
+                body.len()
+            )
+            .into_bytes();
+            if with_body {
+                out.extend_from_slice(body);
+            }
+            out
+        };
+        let mut state = shared.lock().unwrap();
+        let answer: Option<Vec<u8>> = match method {
+            "HEAD" if !state.existing => Some(reply("404 Not Found", "", b"", false)),
+            "HEAD" => Some(reply(
+                "200 OK",
+                &format!("x-amz-object-size: {}\r\n", state.data.len()),
+                &vec![0u8; state.data.len()],
+                false,
+            )),
+            "GET" => {
+                if state.reads_fail {
+                    Some(reply("500 Internal Server Error", "", b"read failed", true))
+                } else if !state.existing {
+                    Some(reply("404 Not Found", "", b"", true))
+                } else if let Some(range) = header("range") {
+                    let spec = range.trim_start_matches("bytes=");
+                    let (first, last) = spec.split_once('-').unwrap();
+                    let first: usize = first.parse().unwrap();
+                    if first >= state.data.len() {
+                        Some(reply(
+                            "416 Range Not Satisfiable",
+                            &format!("Content-Range: bytes */{}\r\n", state.data.len()),
+                            b"",
+                            true,
+                        ))
+                    } else {
+                        let last = last
+                            .parse::<usize>()
+                            .unwrap_or(usize::MAX)
+                            .min(state.data.len() - 1);
+                        Some(reply("206 Partial Content", "", &state.data[first..=last], true))
+                    }
+                } else {
+                    Some(reply("200 OK", "", &state.data.clone(), true))
+                }
+            }
+            "PUT" => {
+                state.puts += 1;
+                let fault = if state.puts == 1 { state.fault_on_first_put } else { Fault::None };
+                let offset: usize = header("x-amz-write-offset-bytes")
+                    .and_then(|value| value.parse().ok())
+                    .expect("an append carries its offset");
+                if offset != state.data.len() {
+                    Some(reply("412 Precondition Failed", "", b"offset", true))
+                } else if fault == Fault::Refuse503 {
+                    Some(reply("503 Service Unavailable", "", b"try later", true))
+                } else {
+                    state.data.extend_from_slice(body);
+                    state.existing = true;
+                    match fault {
+                        Fault::CommitThenDrop => None,
+                        Fault::CommitThen503 => Some(reply(
+                            "503 Service Unavailable",
+                            "",
+                            b"the publication is unconfirmed",
+                            true,
+                        )),
+                        _ => Some(reply(
+                            "200 OK",
+                            &format!("x-amz-object-size: {}\r\n", state.data.len()),
+                            b"",
+                            false,
+                        )),
+                    }
+                }
+            }
+            _ => Some(reply("405 Method Not Allowed", "", b"", true)),
+        };
+        drop(state);
+        answer
     }
 
     fn scripted_server(
@@ -1873,81 +2062,7 @@ mod tests {
                     raw.extend_from_slice(&chunk[..n]);
                 }
                 let body = raw[head_end..].to_vec();
-                let reply = |status: &str, extra: &str, body: &[u8], with_body: bool| {
-                    let mut out = format!(
-                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n",
-                        body.len()
-                    )
-                    .into_bytes();
-                    if with_body {
-                        out.extend_from_slice(body);
-                    }
-                    out
-                };
-                let mut state = shared.lock().unwrap();
-                let answer: Option<Vec<u8>> = match method.as_str() {
-                    "HEAD" if !state.existing => Some(reply("404 Not Found", "", b"", false)),
-                    "HEAD" => Some(reply(
-                        "200 OK",
-                        &format!("x-amz-object-size: {}\r\n", state.data.len()),
-                        &vec![0u8; state.data.len()],
-                        false,
-                    )),
-                    "GET" => {
-                        if state.reads_fail {
-                            Some(reply("500 Internal Server Error", "", b"read failed", true))
-                        } else if !state.existing {
-                            Some(reply("404 Not Found", "", b"", true))
-                        } else if let Some(range) = header("range") {
-                            let spec = range.trim_start_matches("bytes=");
-                            let (first, last) = spec.split_once('-').unwrap();
-                            let first: usize = first.parse().unwrap();
-                            if first >= state.data.len() {
-                                Some(reply("416 Range Not Satisfiable", "", b"", true))
-                            } else {
-                                let last = last
-                                    .parse::<usize>()
-                                    .unwrap_or(usize::MAX)
-                                    .min(state.data.len() - 1);
-                                Some(reply("206 Partial Content", "", &state.data[first..=last], true))
-                            }
-                        } else {
-                            Some(reply("200 OK", "", &state.data.clone(), true))
-                        }
-                    }
-                    "PUT" => {
-                        state.puts += 1;
-                        let fault = if state.puts == 1 { state.fault_on_first_put } else { Fault::None };
-                        let offset: usize = header("x-amz-write-offset-bytes")
-                            .and_then(|value| value.parse().ok())
-                            .expect("an append carries its offset");
-                        if offset != state.data.len() {
-                            Some(reply("412 Precondition Failed", "", b"offset", true))
-                        } else if fault == Fault::Refuse503 {
-                            Some(reply("503 Service Unavailable", "", b"try later", true))
-                        } else {
-                            state.data.extend_from_slice(&body);
-                            state.existing = true;
-                            match fault {
-                                Fault::CommitThenDrop => None,
-                                Fault::CommitThen503 => Some(reply(
-                                    "503 Service Unavailable",
-                                    "",
-                                    b"the publication is unconfirmed",
-                                    true,
-                                )),
-                                _ => Some(reply(
-                                    "200 OK",
-                                    &format!("x-amz-object-size: {}\r\n", state.data.len()),
-                                    b"",
-                                    false,
-                                )),
-                            }
-                        }
-                    }
-                    _ => Some(reply("405 Method Not Allowed", "", b"", true)),
-                };
-                drop(state);
+                let answer = scripted_respond(&shared, &method, &header, &body);
                 if let Some(answer) = answer {
                     let _ = stream.write_all(&answer);
                 }
@@ -2055,7 +2170,7 @@ mod tests {
     fn direct_mode_is_refused_loudly_until_the_client_is_built_in() {
         let error = NetworkedMatrixObjectStore::connect(MatrixObjectMode::Direct, "m1:7000")
             .expect_err("no direct client yet");
-        assert!(error.to_string().contains("not built into this binary"), "{error}");
+        assert!(error.to_string().contains("`matrixobject` feature"), "{error}");
     }
 
     #[tokio::test]
@@ -2078,5 +2193,200 @@ mod tests {
         let direct = inner.compare_and_swap("k", None, Bytes::from_static(b"x")).await;
         let wrapped = store.compare_and_swap("k", None, Bytes::from_static(b"x")).await;
         assert_eq!(format!("{direct:?}"), format!("{wrapped:?}"));
+    }
+
+    /// The scripted door, reached in process: the same answers, no socket.
+    #[derive(Debug)]
+    struct ScriptedDoor(Arc<Mutex<ScriptedState>>);
+
+    impl InProcessDoor for ScriptedDoor {
+        fn serve(
+            &self,
+            method: &str,
+            _target: &str,
+            headers: &[(&str, String)],
+            body: &[u8],
+        ) -> Result<DoorReply, String> {
+            let header = |name: &str| -> Option<String> {
+                headers
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .map(|(_, value)| value.clone())
+            };
+            let raw = scripted_respond(&self.0, method, &header, body)
+                .ok_or_else(|| "the door dropped the request".to_string())?;
+            let head_end = raw.windows(4).position(|w| w == b"\r\n\r\n").expect("a reply head") + 4;
+            let head = String::from_utf8_lossy(&raw[..head_end]).to_string();
+            let mut lines = head.lines();
+            let status = lines
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|code| code.parse().ok())
+                .expect("a status line");
+            let headers = lines
+                .filter_map(|line| line.split_once(':'))
+                .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+                .collect();
+            Ok(DoorReply {
+                status,
+                headers,
+                body: raw[head_end..].to_vec(),
+            })
+        }
+    }
+
+    fn scripted_direct(
+        fault_on_first_put: Fault,
+        reads_fail: bool,
+    ) -> (NetworkedMatrixObjectStore, Arc<Mutex<ScriptedState>>) {
+        let state = Arc::new(Mutex::new(ScriptedState {
+            data: Vec::new(),
+            existing: false,
+            puts: 0,
+            fault_on_first_put,
+            reads_fail,
+        }));
+        let store = NetworkedMatrixObjectStore::direct(Arc::new(ScriptedDoor(state.clone())), "temporalstore");
+        (store, state)
+    }
+
+    fn scripted_gateway(
+        fault_on_first_put: Fault,
+        reads_fail: bool,
+    ) -> (NetworkedMatrixObjectStore, Arc<Mutex<ScriptedState>>) {
+        let (uri, state) = scripted_server(fault_on_first_put, reads_fail);
+        (NetworkedMatrixObjectStore::connect(MatrixObjectMode::Gateway, &uri).unwrap(), state)
+    }
+
+    /// One sequence of writes, run through any store, reporting everything a caller can see.
+    async fn drive<S: ObjectStore>(store: &S) -> Vec<String> {
+        let mut seen = Vec::new();
+        seen.push(format!("absent get: {:?}", store.get("wal").await.map_err(|e| e.to_string())));
+        for record in [&b"alpha"[..], b"", b"bravo-bravo", b"c"] {
+            let receipt = store.append_blob("wal", Bytes::copy_from_slice(record)).await;
+            seen.push(match receipt {
+                Ok(r) => format!(
+                    "append {} -> start {} end {} written {} length {} slabs {} first {:?}",
+                    record.len(),
+                    r.start_offset,
+                    r.end_offset,
+                    r.bytes_written,
+                    r.object_length,
+                    r.physical_slab_count,
+                    r.first_physical_offset
+                ),
+                Err(e) => format!("append {} -> error {e}", record.len()),
+            });
+        }
+        seen.push(format!("get {:?}", store.get("wal").await.unwrap()));
+        seen.push(format!("range 3..8 {:?}", store.get_range("wal", 3, 5).await.unwrap()));
+        seen.push(format!("range 0..0 {:?}", store.get_range("wal", 0, 0).await.unwrap()));
+        seen.push(format!("range_from 5 {:?}", store.get_range_from("wal", 5).await.unwrap()));
+        seen.push(format!("range_from end {:?}", store.get_range_from("wal", 17).await.unwrap()));
+        seen.push(format!("range_from past {:?}", store.get_range_from("wal", 18).await.unwrap()));
+        seen
+    }
+
+    #[tokio::test]
+    async fn identical_bytes_in_both_modes() {
+        let (gateway, gateway_state) = scripted_gateway(Fault::None, false);
+        let (direct, direct_state) = scripted_direct(Fault::None, false);
+        assert_eq!(direct.mode(), MatrixObjectMode::Direct);
+        let through_gateway = drive(&gateway).await;
+        let through_direct = drive(&direct).await;
+        // What the caller saw: receipts, reads, ranges, tails.
+        assert_eq!(through_gateway, through_direct);
+        // What is durably in the object: the bytes themselves.
+        assert_eq!(gateway_state.lock().unwrap().data, direct_state.lock().unwrap().data);
+        assert_eq!(direct_state.lock().unwrap().data, b"alphabravo-bravoc");
+        // The control: the drive wrote and read something, so two empty lists would not pass.
+        assert!(through_gateway.len() >= 10, "{through_gateway:?}");
+        // The direct way sent nothing over a wire; the gateway way did.
+        assert_eq!(direct.wire_bytes_sent(), 0);
+        assert!(gateway.wire_bytes_sent() > 0);
+    }
+
+    /// The same fault in each way in leaves the same bytes and the same answer.
+    #[tokio::test]
+    async fn an_append_that_committed_before_a_failure_leaves_the_same_bytes_in_both_modes() {
+        for fault in [Fault::CommitThen503, Fault::CommitThenDrop, Fault::Refuse503] {
+            let (gateway, gateway_state) = scripted_gateway(fault, false);
+            let (direct, direct_state) = scripted_direct(fault, false);
+            let a = gateway.append_blob("wal", Bytes::from_static(b"record-one")).await.unwrap();
+            let b = direct.append_blob("wal", Bytes::from_static(b"record-one")).await.unwrap();
+            assert_eq!(
+                (a.start_offset, a.end_offset, a.object_length),
+                (b.start_offset, b.end_offset, b.object_length),
+                "{fault:?}"
+            );
+            assert_eq!(gateway_state.lock().unwrap().data, direct_state.lock().unwrap().data, "{fault:?}");
+            assert_eq!(direct_state.lock().unwrap().data, b"record-one", "stored exactly once ({fault:?})");
+            assert_eq!(
+                gateway_state.lock().unwrap().puts,
+                direct_state.lock().unwrap().puts,
+                "the same number of requests reached the door ({fault:?})"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_append_that_cannot_be_read_back_is_unknown_in_both_modes_and_is_not_repeated() {
+        let (gateway, gateway_state) = scripted_gateway(Fault::CommitThenDrop, true);
+        let (direct, direct_state) = scripted_direct(Fault::CommitThenDrop, true);
+        for (store, state) in [(&gateway, &gateway_state), (&direct, &direct_state)] {
+            let error = store
+                .append_blob("wal", Bytes::from_static(b"record-one"))
+                .await
+                .expect_err("whether it landed cannot be established");
+            assert!(matches!(error, ObjectStoreError::OutcomeUnknown { .. }), "got {error:?}");
+            assert_eq!(state.lock().unwrap().puts, 1, "never sent again");
+        }
+    }
+
+    /// A long run of sequential appends must not wedge or diverge in either mode: each lands at
+    /// the end the last one left, every receipt agrees with the other mode's, and the bytes match.
+    #[tokio::test]
+    async fn three_thousand_sequential_appends_agree_in_both_modes() {
+        const APPENDS: usize = 3000;
+        const SIZE: usize = 1024;
+        let (gateway, gateway_state) = scripted_gateway(Fault::None, false);
+        let (direct, direct_state) = scripted_direct(Fault::None, false);
+        for index in 0..APPENDS {
+            let record = vec![(index % 251) as u8; SIZE];
+            let a = gateway
+                .append_blob("wal", Bytes::from(record.clone()))
+                .await
+                .unwrap_or_else(|e| panic!("gateway append {index}: {e}"));
+            let b = direct
+                .append_blob("wal", Bytes::from(record))
+                .await
+                .unwrap_or_else(|e| panic!("direct append {index}: {e}"));
+            assert_eq!(
+                (a.start_offset, a.end_offset, a.object_length),
+                (b.start_offset, b.end_offset, b.object_length),
+                "receipts diverged at append {index}"
+            );
+            assert_eq!(a.start_offset, (index * SIZE) as u64, "append {index} landed off the end");
+        }
+        assert_eq!(direct_state.lock().unwrap().data.len(), APPENDS * SIZE);
+        assert!(
+            gateway_state.lock().unwrap().data == direct_state.lock().unwrap().data,
+            "the stored bytes differ"
+        );
+        // One request per append once the length is known: neither way pays a HEAD each time.
+        assert_eq!(direct.requests_issued() as usize, APPENDS + 1);
+        assert_eq!(gateway.requests_issued() as usize, APPENDS + 1);
+    }
+
+    /// A door that fails to answer is a transport failure, settled by reading and not repeated.
+    #[tokio::test]
+    async fn a_door_that_fails_to_answer_is_settled_by_reading_the_object() {
+        let (direct, state) = scripted_direct(Fault::CommitThenDrop, false);
+        let receipt = direct
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect("the bytes are in the object, so the append succeeded");
+        assert_eq!((receipt.start_offset, receipt.end_offset), (0, 10));
+        assert_eq!(state.lock().unwrap().puts, 1, "nothing was sent a second time");
     }
 }
