@@ -577,6 +577,8 @@ mod the_window_reduce_bytes_are_counted_per_operation;
 mod a_ranked_cell_read_takes_the_shared_shard_lock;
 #[path = "tests/a_window_reduce_removal_does_not_allocate_a_value_per_cell.rs"]
 mod a_window_reduce_removal_does_not_allocate_a_value_per_cell;
+#[path = "tests/a_batch_and_a_fan_in_read_take_the_shared_shard_lock.rs"]
+mod a_batch_and_a_fan_in_read_take_the_shared_shard_lock;
 #[path = "tests/a_string_increment_and_append_are_one_step.rs"]
 mod a_string_increment_and_append_are_one_step;
 #[path = "tests/a_set_length_and_membership_read_the_member_map.rs"]
@@ -633,3 +635,5 @@ mod a_resident_map_read_takes_the_shared_lock;
 mod a_rewritten_context_node_replaces_its_block;
 #[path = "tests/a_list_position_and_removal_answer_what_a_walk_answered.rs"]
 mod a_list_position_and_removal_answer_what_a_walk_answered;
+#[path = "tests/a_sequence_read_takes_the_shared_lock.rs"]
+mod a_sequence_read_takes_the_shared_lock;

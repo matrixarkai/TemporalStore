@@ -1375,6 +1375,8 @@ jobs:
             engine::tests::a_resident_map_read_takes_the_shared_lock::the_fast_reads_answer_what_the_maps_hold \
             engine::tests::a_rewritten_context_node_replaces_its_block::a_rewritten_node_holds_one_block_entry \
             engine::tests::a_rewritten_context_node_replaces_its_block::a_rewritten_node_reads_back_after_a_restart \
+            engine::tests::a_sequence_read_takes_the_shared_lock::a_sequence_read_answers_while_the_shared_lock_is_held \
+            engine::tests::a_sequence_read_takes_the_shared_lock::a_sequence_read_answers_what_was_added \
             engine::tests::a_feature_range_read_takes_the_shared_lock::each_range_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_feature_range_read_takes_the_shared_lock::a_range_read_answers_what_was_appended \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::each_point_read_answers_while_the_shared_lock_is_held \
