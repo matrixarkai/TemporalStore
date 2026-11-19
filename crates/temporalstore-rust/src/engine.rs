@@ -33,6 +33,7 @@ mod product_model;
 mod cell_merge_append;
 // The per-key retry ring of a merge-reduce append.
 mod cell_retry_ring;
+mod sample_tail;
 mod window;
 mod window_aggregate;
 mod window_reduce_rank;
