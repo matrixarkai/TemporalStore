@@ -182,6 +182,8 @@ pub fn encode_wal_line_for_test(
 #[path = "wal/packed_frames.rs"]
 mod packed_frames;
 mod point_readers;
+#[path = "wal/point_reads.rs"]
+mod point_reads;
 
 /// Read one complete physical record, including any continuation envelope and footer slots.
 fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Option<packed_frames::ReadRecord>> {
@@ -1369,7 +1371,7 @@ struct WriteAheadLogInner {
     /// whole record again every time -- four kilobytes an append at a four-kilobyte value. Kept
     /// here so its capacity survives; a steady workload stops allocating for it entirely.
     encode_scratch: Vec<u8>,
-    indexed_records: crate::wal_proto::indexed::Cache,
+    point_reads: Arc<point_reads::State>,
     point_readers: point_readers::Cache,
     // Set only by Default: the store owns its minted scratch directory, and the last
     // clone's drop removes it. Never set for a caller-supplied root.
@@ -1570,7 +1572,7 @@ impl LocalWriteAheadLogStore {
                 active_path_by_shard: HashMap::new(),
                 append_lock_by_shard: HashMap::new(),
                 encode_scratch: Vec::new(),
-                indexed_records: crate::wal_proto::indexed::Cache::default(),
+                point_reads: Arc::default(),
                 point_readers: point_readers::Cache::default(),
                 scratch: None,
                 stats: WriteAheadLogStats::default(),
@@ -3453,38 +3455,7 @@ impl LocalWriteAheadLogStore {
         &self, shard_id: ShardId, log_id: u64, sequence: u64, index: usize,
         object_id: u64, element_name: Option<&str>,
     ) -> Result<Option<CarriedBlockRead>, WriteAheadLogError> {
-        let mut inner = self.lock_inner();
-        let source = {
-            let WriteAheadLogInner { root, point_readers, .. } = &mut *inner;
-            point_readers.take(root, shard_id, log_id)?
-        };
-        let Some(mut source) = source else {
-            return Ok(None);
-        };
-        let mut bytes_read = 0;
-        let result = (|| {
-            let selected = match packed_frames::PointReader::new(&mut source.file, source.physical)? {
-                Some(mut reader) => {
-                    let result = crate::wal_proto::indexed::read(
-                        &mut reader, 0, &mut inner.indexed_records, shard_id, log_id,
-                        sequence, index, object_id, element_name, &mut 0,
-                    );
-                    bytes_read = reader.physical_bytes;
-                    result
-                }
-                None => Ok(None),
-            };
-            if let Some(block) = selected? { return Ok(Some(CarriedBlockRead::Block(block))); }
-            source.file.seek(SeekFrom::Start(source.physical))?;
-            let mut reader = BufReader::with_capacity(1024, &mut source.file);
-            let raw = read_raw_record(&mut reader)?;
-            if let Some(record) = raw.as_ref() { bytes_read += record.physical_bytes; }
-            Ok(raw.map(|record| CarriedBlockRead::Record(record.bytes)))
-        })();
-        inner.stats.reads += 1;
-        inner.stats.bytes_read += bytes_read;
-        if result.is_ok() { inner.point_readers.put(source); }
-        result
+        point_reads::read(self, shard_id, log_id, sequence, index, object_id, element_name)
     }
 
     /// Reclaim this shard's WAL prefix below `retain_from_sequence`, never going past what the
@@ -3887,7 +3858,7 @@ impl LocalWriteAheadLogStore {
                 .unwrap_or_default(),
             persistent_bytes: sealed_bytes.saturating_add(durable_active),
             last_flushed_sequence: durable_sequence,
-            ..inner.stats
+            ..inner.point_reads.stats(inner.stats)
         }
     }
 
@@ -3955,7 +3926,7 @@ impl LocalWriteAheadLogStore {
             last_sequence,
             persistent_bytes: sealed_bytes.saturating_add(durable_active),
             last_flushed_sequence: durable_sequence,
-            ..inner.stats
+            ..inner.point_reads.stats(inner.stats)
         }
     }
 
@@ -3986,7 +3957,7 @@ impl LocalWriteAheadLogStore {
                 .get(&shard_id)
                 .copied()
                 .unwrap_or(inner.stats.last_sequence),
-            ..inner.stats
+            ..inner.point_reads.stats(inner.stats)
         }
     }
 

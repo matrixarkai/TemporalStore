@@ -208,11 +208,28 @@ struct Cached {
 /// Directory metadata only; payload buffers are never retained here.
 #[derive(Debug, Default)]
 pub(crate) struct Cache {
+    state: std::sync::Mutex<CacheState>,
+}
+
+#[derive(Debug, Default)]
+struct CacheState {
     entries: VecDeque<Cached>,
     bytes: usize,
 }
 
 impl Cache {
+    fn get(&self, shard: u64, log_id: u64, payload_len: u64, checksum: u32) -> Option<Arc<Validated>> {
+        self.state.lock().expect("indexed directory cache poisoned")
+            .get(shard, log_id, payload_len, checksum)
+    }
+
+    fn insert(&self, shard: u64, log_id: u64, payload_len: u64, checksum: u32, value: Arc<Validated>) {
+        self.state.lock().expect("indexed directory cache poisoned")
+            .insert(shard, log_id, payload_len, checksum, value);
+    }
+}
+
+impl CacheState {
     fn get(
         &mut self,
         shard: u64,
@@ -241,6 +258,11 @@ impl Cache {
         value: Arc<Validated>,
     ) {
         if value.weight > CACHE_BYTES {
+            return;
+        }
+        if self.entries.iter().any(|entry| entry.shard == shard && entry.log_id == log_id
+            && entry.payload_len == payload_len && entry.checksum == checksum)
+        {
             return;
         }
         if self.entries.len() >= 4096 {
@@ -293,7 +315,7 @@ fn read_exact_at<R: Read + Seek>(
 pub(crate) fn read<R: Read + Seek>(
     file: &mut R,
     physical: u64,
-    cache: &mut Cache,
+    cache: &Cache,
     shard: u64,
     log_id: u64,
     sequence: u64,
