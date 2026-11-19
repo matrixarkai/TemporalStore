@@ -3535,7 +3535,7 @@ pub(crate) fn execute_on_shard(
                 if resolved < 0 || resolved >= length {
                     None
                 } else {
-                    list.keys().nth(resolved as usize).copied()
+                    list_seq_at(list, resolved as usize)
                 }
             });
             match target {
@@ -3596,43 +3596,45 @@ pub(crate) fn execute_on_shard(
         }
         Command::ListRemove { key, count, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let entries: Vec<(i64, _)> = shard
-                .bucket_index
-                .lists
-                .get(&key)
-                .map(|list| list.iter().map(|(seq, address)| (*seq, address.clone())).collect())
-                .unwrap_or_default();
             let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let limit = if count == 0 { usize::MAX } else { count.unsigned_abs() as usize };
-            let matches = |seq: i64, address: &_| -> bool {
-                let element_name = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
-                read_block_bytes(
-                    cache,
-                    block_store,
-                    shard_id,
-                    address,
-                    BlockIdentity::of(shard_id, "list", &key, Some(element_name.as_str())),
-                    Some(routing_bucket),
-                ) == Some(member.clone())
-            };
-            // Positive count scans from the head, negative from the tail, zero removes every match.
+            // The elements are compared where they sit: copying every address of the list to scan it,
+            // and rendering a name and cloning the member for each comparison, cost an allocation per
+            // element before the first block was read.
             let mut doomed: Vec<i64> = Vec::new();
-            if count >= 0 {
-                for (seq, address) in entries.iter() {
-                    if doomed.len() >= limit {
-                        break;
+            if let Some(list) = shard.bucket_index.lists.get(&key) {
+                let matches = |seq: i64, address: &_| -> bool {
+                    let mut name = [0_u8; 16];
+                    let element_name = list_element_name(seq, &mut name);
+                    read_block_bytes(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        BlockIdentity::of(shard_id, "list", &key, Some(element_name)),
+                        Some(routing_bucket),
+                    )
+                    .as_deref()
+                        == Some(member.as_slice())
+                };
+                // Positive count scans from the head, negative from the tail, zero removes every match.
+                if count >= 0 {
+                    for (seq, address) in list.iter() {
+                        if doomed.len() >= limit {
+                            break;
+                        }
+                        if matches(*seq, address) {
+                            doomed.push(*seq);
+                        }
                     }
-                    if matches(*seq, address) {
-                        doomed.push(*seq);
-                    }
-                }
-            } else {
-                for (seq, address) in entries.iter().rev() {
-                    if doomed.len() >= limit {
-                        break;
-                    }
-                    if matches(*seq, address) {
-                        doomed.push(*seq);
+                } else {
+                    for (seq, address) in list.iter().rev() {
+                        if doomed.len() >= limit {
+                            break;
+                        }
+                        if matches(*seq, address) {
+                            doomed.push(*seq);
+                        }
                     }
                 }
             }
@@ -3738,9 +3740,11 @@ pub(crate) fn execute_on_shard(
                     block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
                 let mut page_keys = crate::engine::PageKeys::new();
                 list.map(|list| {
-                    list.iter()
-                        .skip(from as usize)
-                        .take(wanted)
+                    // From the element's own sequence word, so reaching a late offset costs two
+                    // ordered-map lookups and not a walk over every node before it.
+                    list_seq_at(list, from as usize)
+                        .into_iter()
+                        .flat_map(|start| list.range(start..).take(wanted))
                         .filter_map(|(seq, address)| {
                             // The same rendering ListPop uses, which is what the index rows
                             // for this list were filed under.
@@ -7721,6 +7725,31 @@ fn bucket_answer(allowed: bool, remaining: f64, retry_after_ms: u64) -> Vec<Vec<
         format!("{remaining:.3}").into_bytes(),
         retry_after_ms.to_string().into_bytes(),
     ]
+}
+
+/// The sequence word of the element at 0-based `index` of a list, without walking to it when the
+/// list has no interior hole.
+///
+/// A list's elements are keyed by sequence word and a push takes the next word past either end, so a
+/// list that has only been pushed to and popped from holds a CONTIGUOUS run of words and the element
+/// at `index` is the first word plus `index`. A removal from the middle leaves a hole and the run is
+/// no longer contiguous; then the answer is found by walking from whichever end is nearer. The
+/// contiguity test is two ordered-map lookups (the first and last key) against the length.
+fn list_seq_at<V>(list: &BTreeMap<i64, V>, index: usize) -> Option<i64> {
+    let length = list.len();
+    if index >= length {
+        return None;
+    }
+    let first = *list.keys().next()?;
+    let last = *list.keys().next_back()?;
+    if last as i128 - first as i128 + 1 == length as i128 {
+        return Some(first + index as i64);
+    }
+    if index <= length / 2 {
+        list.keys().nth(index).copied()
+    } else {
+        list.keys().rev().nth(length - 1 - index).copied()
+    }
 }
 
 /// The element name a list entry is filed under: its sequence, offset so that the order of the names
