@@ -1222,6 +1222,19 @@ impl TemporalEngine {
         if !request.purge_delayed_destroy {
             return Default::default();
         }
+        // Nothing can be purged or restored without a quarantine entry. A concurrent
+        // quarantine is left for the next round, never deleted without the checks below.
+        match self.block_store.has_delayed_destroy_slabs() {
+            Ok(false) => return crate::block_store::BlockStorePurgeDelayedDestroyReport {
+                max_slabs_per_round: crate::block_store::DELAYED_DESTROY_MAX_SLABS_PER_ROUND,
+                ..Default::default()
+            },
+            Ok(true) => (),
+            Err(error) => {
+                tracing::warn!(shard_id = request.shard_id, %error, "purge deferred: quarantine unavailable");
+                return Default::default();
+            }
+        }
         let mut live_block_slab_ids = self.live_block_slab_ids_all_shards();
         let manifests = match list_reclaim_manifests_at(&self.index_dir) {
             Ok(manifests) => manifests,

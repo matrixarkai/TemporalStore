@@ -24,6 +24,8 @@ mod read;
 #[path = "block_store/block_store_gc.rs"]
 mod gc;
 mod read_retention;
+#[cfg(test)]
+mod quarantine_probe_tests;
 pub(crate) use read_retention::BlockStoreReadSnapshot;
 mod slab_ids;
 mod slab_backend;
@@ -2402,6 +2404,21 @@ impl BlockStore {
         )
     }
 
+
+    pub(crate) fn has_delayed_destroy_slabs(&self) -> Result<bool, BlockStoreError> {
+        let root = self.inner.lock().expect("block store lock poisoned").root.clone();
+        let entries = match std::fs::read_dir(delayed_destroy_dir(&root)) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        for entry in entries {
+            if delayed_destroy_slab_id_from_name(&entry?.file_name()).is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 
     pub fn delayed_destroy_slab_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
         let root = self

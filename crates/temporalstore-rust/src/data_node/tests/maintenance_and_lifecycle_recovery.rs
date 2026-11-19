@@ -9046,7 +9046,7 @@ fn a_quiet_shard_with_every_bucket_clean_can_reclaim_its_log() {
     }
     // The overwrite is load-bearing, not decoration. Without it no slot reaches the branch this
     // test exists for.
-    for index in 0..666usize {
+    for index in 0..2_000usize {
         engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
@@ -9063,9 +9063,18 @@ fn a_quiet_shard_with_every_bucket_clean_can_reclaim_its_log() {
             max_background_queue_depth: 2,
         },
     );
-    // One round to dump everything, then the writer stops for good.
-    runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    // Exercise reclaim after a dump, independent of the production byte threshold.
+    runtime.run_storage_manager_once(1, StorageManagerOptions {
+        min_undumped_wal_records: 1,
+        max_dump_buckets_per_round: 0,
+        ..StorageManagerOptions::default()
+    });
     let engine = runtime.engine();
+
+    assert!(engine.storage_lifecycle_plan(StorageLifecycleRequest {
+        shard_id: 1,
+        ..StorageLifecycleRequest::default()
+    }).dirty_buckets.is_empty(), "the fixture must durably dump every dirty bucket");
 
     let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
 
@@ -9168,7 +9177,12 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
         },
     );
     // Round 0 dumps. After it the writer is gone and every later round is an idle one.
-    let first = runtime.run_storage_manager_once(1, StorageManagerOptions { dirty_bucket_pressure: 1, ..StorageManagerOptions::default() });
+    let options = StorageManagerOptions {
+        dirty_bucket_pressure: 1,
+        min_undumped_wal_records: 1,
+        ..StorageManagerOptions::default()
+    };
+    let first = runtime.run_storage_manager_once(1, options.clone());
     assert!(
         first
             .executed_stages
@@ -9187,7 +9201,7 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
             .storage_wal_reclaim_plan(1, Vec::new(), Vec::new())
             .safe_to_reclaim;
         drop(engine);
-        let report = runtime.run_storage_manager_once(1, StorageManagerOptions { dirty_bucket_pressure: 1, ..StorageManagerOptions::default() });
+        let report = runtime.run_storage_manager_once(1, options.clone());
         if !reclaimable {
             continue;
         }

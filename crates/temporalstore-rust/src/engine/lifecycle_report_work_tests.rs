@@ -76,6 +76,64 @@ fn seed(engine: &TemporalEngine, count: usize) {
 }
 
 #[test]
+fn empty_quarantine_purge_skips_every_loaded_shards_live_address_walk() {
+    for count in [32, 512] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path());
+        seed(&engine, count);
+        engine.load_shard(2);
+        assert!(engine.execute(ExecuteRequest {
+            shard_id: 2,
+            command: Command::StringSet { key: "second".into(), value: vec![1; 96] },
+        }).status.ok);
+        crate::snapshot_probe::reset();
+        assert!(!engine.live_block_slab_ids_all_shards().is_empty());
+        let control = crate::snapshot_probe::counts();
+        assert_eq!(control.live_slab_scans, 2);
+        assert!(control.live_slab_scan_addresses >= count as u64 + 1);
+        for make_directory in [false, true] {
+            if make_directory {
+                let trash = dir.path().join("blocks/.block_segment_trash");
+                std::fs::create_dir_all(&trash).unwrap();
+                std::fs::write(trash.join("unrelated"), b"keep").unwrap();
+            }
+            crate::snapshot_probe::reset();
+            let report = engine.purge_storage_delayed_destroy(&StorageLifecycleRequest {
+                shard_id: 1,
+                purge_delayed_destroy: true,
+                block_gc_checkpoint_floor_slab_id: Some(0),
+                ..Default::default()
+            });
+            assert!(report.purged_block_slab_ids.is_empty());
+            assert!(report.restored_block_slab_ids.is_empty());
+            assert_eq!(crate::snapshot_probe::counts().live_slab_scans, 0);
+            assert_eq!(crate::snapshot_probe::counts().live_slab_scan_addresses, 0);
+        }
+    }
+}
+
+#[test]
+fn nonempty_quarantine_still_walks_liveness_and_keeps_the_grace_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    seed(&engine, 32);
+    let trash = dir.path().join("blocks/.block_segment_trash");
+    std::fs::create_dir_all(&trash).unwrap();
+    let orphan = trash.join("block_segment_00000000000000000007.seg.deleted.1");
+    std::fs::write(&orphan, b"recoverable").unwrap();
+    crate::snapshot_probe::reset();
+    let report = engine.purge_storage_delayed_destroy(&StorageLifecycleRequest {
+        shard_id: 1,
+        purge_delayed_destroy: true,
+        ..Default::default()
+    });
+    assert_eq!(report.retained_too_young_block_slab_ids, vec![7]);
+    assert!(report.purged_block_slab_ids.is_empty());
+    assert!(crate::snapshot_probe::counts().live_slab_scan_addresses >= 32);
+    assert_eq!(std::fs::read(orphan).unwrap(), b"recoverable");
+}
+
+#[test]
 fn operational_lifecycle_omits_only_the_two_diagnostic_identity_walks() {
     for count in [32, 512] {
         let dir = tempfile::tempdir().unwrap();
