@@ -2471,6 +2471,10 @@ pub(crate) fn execute_on_shard(
                     }
                 }
             }
+            // ASCENDING BY FIELD NAME, as the shared-lock read answers and as the ordered hash
+            // map is walked: the resident field map holds its fields in no order, so without this
+            // the two paths gave one hash two orders.
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
             CommandResponse::HashEntries { entries }
         }
         Command::HashLen { key } => {

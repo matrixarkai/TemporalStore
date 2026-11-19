@@ -631,3 +631,5 @@ mod a_restating_write_names_one_bucket_not_the_shard;
 mod a_resident_map_read_takes_the_shared_lock;
 #[path = "tests/a_rewritten_context_node_replaces_its_block.rs"]
 mod a_rewritten_context_node_replaces_its_block;
+#[path = "tests/a_whole_hash_read_answers_in_field_order.rs"]
+mod a_whole_hash_read_answers_in_field_order;
