@@ -1379,7 +1379,7 @@ pub(super) fn validate_command_preconditions(
             return Ok(());
         }
         // The reader `StringGet` uses, so the value refused here is the value a read returns.
-        let current = match read_bucket_index_value(cache, block_store, shard_id, shard, "string", key, None) {
+        let current = match super::string_chain::read_string_value(cache, block_store, shard_id, shard, key) {
             None => 0_i64,
             Some(bytes) => parse_i64(&bytes)
                 .ok_or_else(|| Status::error("unmatched", "value is not an integer"))?,

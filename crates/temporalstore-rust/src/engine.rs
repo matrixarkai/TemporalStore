@@ -1982,6 +1982,12 @@ impl TemporalEngine {
                     {
                         return None;
                     }
+                    // A KEY WITH A CHAIN OF TAIL SEGMENTS IS NOT ONE ADDRESS. This arm reads the
+                    // one block the row names, which for a chain is only the base, so the ordinary
+                    // path -- which assembles the base and its segments -- answers it instead.
+                    if string_chain::has_segments(shard, key.as_str()) {
+                        return None;
+                    }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::String {
                         key: key.as_str(),

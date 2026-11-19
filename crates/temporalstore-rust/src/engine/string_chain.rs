@@ -127,6 +127,24 @@ pub(crate) fn should_compact(shape: &ChainShape) -> bool {
         || shape.tail_len() > COMPACT_AT_TAIL_FLOOR.max(shape.base_len / 4)
 }
 
+/// The element name a segment is filed and looked up under. ONE SPELLING, used by the reader and by
+/// the writer that files the segment, because the log's registry is keyed by it.
+pub(crate) fn segment_name(ordinal: u64) -> String {
+    format!("s{ordinal}")
+}
+
+/// The kind a segment's OBJECT ID is derived under, which is not `"string"`.
+///
+/// A SEGMENT MUST NOT SHARE THE BASE'S OBJECT ID. The log's registry answers a lookup that finds no
+/// entry for `(object, element)` with the entry for `(object, no element)` -- the object's own
+/// block -- on the reasonable ground that a block with no element name is the whole object. For a
+/// segment that fallback lands on the BASE: a segment whose block is lost would read back as the
+/// base's bytes, and the value would come out longer and wrong instead of failing. Under its own
+/// id, a lost segment finds nothing at either key and the read fails, which is the answer a lost
+/// block must give. (It also leaves one block per object id in a carried record, which is what the
+/// replay pairing assumes.)
+pub(crate) const SEGMENT_KIND: &str = "string_segment";
+
 /// Why a chain could not be read back.
 ///
 /// NONE OF THESE IS A SHORT VALUE. A chain the reader cannot complete is an error the caller must
@@ -196,20 +214,82 @@ pub(super) fn read_string_assembled(
     let bucket = Some(crate::engine::hashing::block_routing_bucket(key, start, end));
     let mut parts = Vec::with_capacity(owned.len());
     for (ordinal, entry) in owned.iter().filter(|(ordinal, _)| *ordinal != 0) {
-        // The identity is the string's own, with NO element name: a segment is a plain block of the
-        // object, not a container frame, and an element name here would select into it.
-        let bytes = super::read_block_bytes(
+        // A SEGMENT IS NAMED, AND READ WITHOUT SELECTING. The name (`s<ordinal>`) is what keeps the
+        // read from falling through to the BASE: a block that cannot be found at its address is
+        // looked up in the log's registry, and with no element name that lookup lands on the
+        // object's own entry -- the base's bytes -- so a lost segment would read as the base again
+        // and the value would come back longer and wrong instead of failing. The frame reader is
+        // used rather than `read_block_bytes` because that one treats a named read as a container
+        // frame and selects the element out of it; a segment's block IS the bytes.
+        let name = segment_name(*ordinal);
+        let bytes = super::read_block_frame_bytes(
             cache,
             block_store,
             shard_id,
             entry,
-            BlockIdentity::of(shard_id, "string", key, None),
+            BlockIdentity::of(shard_id, SEGMENT_KIND, key, Some(&name)),
             bucket,
         )
         .ok_or(StringChainError::SegmentMissing { ordinal: *ordinal })?;
         parts.push(bytes);
     }
     Ok(Some(assemble(base, parts)))
+}
+
+/// Whether this key's slot lists tail segments, which is to say its value is not one block.
+pub(super) fn has_segments(shard: &ShardState, key: &str) -> bool {
+    shard
+        .strings()
+        .get(key)
+        .and_then(|slot| slot.owned_elements())
+        .is_some_and(|entries| !entries.is_empty())
+}
+
+/// A string's whole value for every reader that wants the bytes: the one block it always was, or
+/// the base and its segments.
+///
+/// A KEY WITHOUT SEGMENTS TAKES THE SAME CALL IT ALWAYS DID, so the common read pays one map probe
+/// for the answer to "is there a chain" and nothing else.
+///
+/// A chain that cannot be completed answers `None`, which is what every unreadable string block
+/// already answers (a read that falls through to MISSING), and is logged: the execute layer has no
+/// error to return, and answering the prefix that was found would be worse than answering nothing.
+pub(super) fn read_string_value(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+) -> Option<Vec<u8>> {
+    if !has_segments(shard, key) {
+        return super::bucket_store::read_bucket_index_value(
+            cache, block_store, shard_id, shard, "string", key, None,
+        );
+    }
+    match read_string_assembled(cache, block_store, shard_id, shard, key) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(shard_id, key, ?error, "a segmented string could not be read back");
+            None
+        }
+    }
+}
+
+/// [`read_string_value`] for a caller that only inspects the bytes, handed back shared. A key with
+/// no chain keeps the cache's own shared bytes, uncopied.
+pub(super) fn read_string_value_shared(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+) -> Option<std::sync::Arc<[u8]>> {
+    if !has_segments(shard, key) {
+        return super::bucket_store::read_bucket_index_value_shared(
+            cache, block_store, shard_id, shard, "string", key, None,
+        );
+    }
+    read_string_value(cache, block_store, shard_id, shard, key).map(std::sync::Arc::from)
 }
 
 #[cfg(test)]

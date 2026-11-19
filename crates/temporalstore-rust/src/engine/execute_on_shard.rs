@@ -1401,7 +1401,7 @@ fn execute_string_read_modify_write(
     // fresh value, exactly as `StringSetConditional` treats it.
     let mut mutated = false;
     mutated |= drop_if_expired(cache, shard_id, shard, &key);
-    let old = read_bucket_index_value(cache, block_store, shard_id, shard, "string", &key, None);
+    let old = super::string_chain::read_string_value(cache, block_store, shard_id, shard, &key);
     let (new_value, answer) = match change {
         StringChange::Add(increment) => {
             let current = match old.as_deref() {
@@ -1956,14 +1956,8 @@ pub(crate) fn execute_on_shard(
             // block-store read -- the frame entry is what it finds -- and that is asserted rather
             // than assumed by the cache arms that measure this path.
             CommandResponse::Bytes {
-                value: read_bucket_index_value(
-                    cache,
-                    block_store,
-                    shard_id,
-                    shard,
-                    "string",
-                    &key,
-                    None,
+                value: super::string_chain::read_string_value(
+                    cache, block_store, shard_id, shard, &key,
                 ),
             }
         }
@@ -1979,14 +1973,8 @@ pub(crate) fn execute_on_shard(
             // THE LENGTH IS TAKEN FROM THE CACHE'S SHARED BYTES, NOT FROM A COPY OF THEM. A string
             // block is the whole value, so its length is the value's.
             CommandResponse::Integer {
-                value: read_bucket_index_value_shared(
-                    cache,
-                    block_store,
-                    shard_id,
-                    shard,
-                    "string",
-                    &key,
-                    None,
+                value: super::string_chain::read_string_value_shared(
+                    cache, block_store, shard_id, shard, &key,
                 )
                 .map_or(0, |bytes| bytes.len() as i64),
             }
@@ -2003,14 +1991,8 @@ pub(crate) fn execute_on_shard(
             // ONLY THE SLICE IS COPIED. The whole value used to be copied out of the cache and the
             // door then copied the range out of that copy.
             CommandResponse::Bytes {
-                value: read_bucket_index_value_shared(
-                    cache,
-                    block_store,
-                    shard_id,
-                    shard,
-                    "string",
-                    &key,
-                    None,
+                value: super::string_chain::read_string_value_shared(
+                    cache, block_store, shard_id, shard, &key,
                 )
                 .map(|bytes| {
                     let (from, to) = crate::redis::normalize_range(start, end, bytes.len());
