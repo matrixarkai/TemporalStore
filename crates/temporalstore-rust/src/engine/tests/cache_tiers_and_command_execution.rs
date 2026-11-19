@@ -822,7 +822,12 @@ fn write_invalidates_cached_string() {
             value: Some(b"new".to_vec())
         }
     );
-    assert!(cache.stats().invalidations >= 2);
+    // ZERO, where this asserted `>= 2`. Nothing in this sequence ever caches the string's logical
+    // key (`StringGet` does not fill it), so the two writes have nothing to invalidate; the old
+    // `>= 2` was satisfied only by two invalidations that removed nothing. That a write still
+    // removes an entry that IS cached is pinned where it can fail:
+    // `a_cached_string_is_still_invalidated_by_a_write`.
+    assert_eq!(cache.stats().invalidations, 0);
 }
 
 #[test]
