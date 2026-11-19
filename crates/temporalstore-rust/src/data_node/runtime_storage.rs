@@ -20,19 +20,58 @@ use std::time::Duration;
 /// When the last round that asked found nothing to reclaim, this is what the next round compares
 /// against: if none of it has moved, the answer cannot have either.
 ///
-/// A WRITE moves `wal_last_sequence`. A dump or an index-log truncate moves
-/// `index_log_bytes` or `wal_persistent_bytes`. Moving a block out of the log moves
-/// `resident_blocks`, which lowers the retention floor without touching any sequence. A change
-/// to the cursors or snapshot references the caller passes moves `retention_inputs`.
+/// A WRITE moves `wal_last_sequence`. A truncate of the write-ahead log moves
+/// `wal_persistent_bytes`. A dump clears dirty buckets, which moves `dirty_buckets` and
+/// `undumped_wal_records`. Moving a block out of the log moves `resident_blocks`, which lowers the
+/// retention floor without touching any sequence. A change to the cursors or snapshot references
+/// the caller passes moves `retention_inputs`.
+///
+/// THE INDEX LOG'S LENGTH IS NOT PART OF THE KEY. It was, and a compaction step that moves blocks
+/// appends one small index record per round, so on a shard that is draining stale slabs the key
+/// moved every round and the stage built the reclaim plan, which walks every live block, every
+/// round: the log grew by 53 bytes a round and the stage paid five whole-shard walks for it.
+/// Nothing that decides whether the write-ahead log is reclaimable lives in the index log's tail:
+/// the floors come from the write-ahead log, the retained dumps and the resident blocks, and the
+/// index log is truncated by its own stage.
+///
+/// `quiet_minute` is the backstop for any input this key does not see: a remembered answer
+/// is good for at most one minute (until the wall clock's minute changes), then the stage asks
+/// again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct QuietWalReclaimKey {
     wal_last_sequence: u64,
     wal_persistent_bytes: u64,
-    index_log_bytes: u64,
     resident_blocks: usize,
     dirty_buckets: usize,
     undumped_wal_records: u64,
     retention_inputs: u64,
+    quiet_minute: u64,
+}
+
+/// How long a remembered "nothing to reclaim" stays good, in seconds.
+pub(super) const QUIET_WAL_RECLAIM_MAX_AGE_SECS: u64 = 60;
+
+impl QuietWalReclaimKey {
+    /// The key from its inputs. Kept apart from the reads so a test can move one input at a time.
+    pub(super) fn from_inputs(
+        wal_last_sequence: u64,
+        wal_persistent_bytes: u64,
+        resident_blocks: usize,
+        dirty_buckets: usize,
+        undumped_wal_records: u64,
+        retention_inputs: u64,
+        now_unix_secs: u64,
+    ) -> Self {
+        Self {
+            wal_last_sequence,
+            wal_persistent_bytes,
+            resident_blocks,
+            dirty_buckets,
+            undumped_wal_records,
+            retention_inputs,
+            quiet_minute: now_unix_secs / QUIET_WAL_RECLAIM_MAX_AGE_SECS,
+        }
+    }
 }
 
 fn record_purge_work(
@@ -110,18 +149,58 @@ impl DataNodeRuntime {
             .hash(&mut hasher);
             hasher.finish()
         };
-        QuietWalReclaimKey {
-            wal_last_sequence: wal.last_sequence,
-            wal_persistent_bytes: wal.persistent_bytes,
-            // The log's LENGTH, not its last sequence: the sequence is read by scanning the active
-            // piece, while the length is one directory listing and a stat per piece. An append, a
-            // truncate and a collect each change it, so the key keeps what it needs.
-            index_log_bytes: self.inner.engine.index_log_store().log_len_bytes(shard_id),
-            resident_blocks: self.inner.engine.wal_resident_block_count(shard_id),
+        QuietWalReclaimKey::from_inputs(
+            wal.last_sequence,
+            wal.persistent_bytes,
+            self.inner.engine.wal_resident_block_count(shard_id),
             dirty_buckets,
             undumped_wal_records,
             retention_inputs,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs())
+                .unwrap_or(0),
+        )
+    }
+}
+
+#[cfg(test)]
+mod quiet_wal_reclaim_key_tests {
+    use super::*;
+
+    const NOW: u64 = 1_800_000_000;
+
+    fn base() -> QuietWalReclaimKey {
+        QuietWalReclaimKey::from_inputs(10, 4096, 3, 0, 0, 0, NOW)
+    }
+
+    /// Every input the key keeps moves it, one at a time, so a field dropped from the key by
+    /// mistake fails here by name. The control is the unmoved key.
+    #[test]
+    fn each_input_the_key_keeps_moves_it_and_nothing_else_does() {
+        assert_eq!(base(), base(), "control: the same inputs are the same key");
+        let moved = [
+            ("wal_last_sequence", QuietWalReclaimKey::from_inputs(11, 4096, 3, 0, 0, 0, NOW)),
+            ("wal_persistent_bytes", QuietWalReclaimKey::from_inputs(10, 8192, 3, 0, 0, 0, NOW)),
+            ("resident_blocks", QuietWalReclaimKey::from_inputs(10, 4096, 2, 0, 0, 0, NOW)),
+            ("dirty_buckets", QuietWalReclaimKey::from_inputs(10, 4096, 3, 1, 0, 0, NOW)),
+            ("undumped_wal_records", QuietWalReclaimKey::from_inputs(10, 4096, 3, 0, 1, 0, NOW)),
+            ("retention_inputs", QuietWalReclaimKey::from_inputs(10, 4096, 3, 0, 0, 7, NOW)),
+        ];
+        for (name, key) in moved {
+            assert_ne!(base(), key, "{name} must move the key");
         }
+    }
+
+    /// The remembered answer expires: a minute later the same inputs are a different key, so the
+    /// stage asks again even if an input the key does not see has moved. Inside one minute it
+    /// stays the same key.
+    #[test]
+    fn a_remembered_answer_is_good_for_a_minute_and_no_longer() {
+        let start = (NOW / QUIET_WAL_RECLAIM_MAX_AGE_SECS) * QUIET_WAL_RECLAIM_MAX_AGE_SECS;
+        let at = |secs: u64| QuietWalReclaimKey::from_inputs(10, 4096, 3, 0, 0, 0, start + secs);
+        assert_eq!(at(0), at(QUIET_WAL_RECLAIM_MAX_AGE_SECS - 1));
+        assert_ne!(at(0), at(QUIET_WAL_RECLAIM_MAX_AGE_SECS));
     }
 }
 
