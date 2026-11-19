@@ -10574,7 +10574,8 @@ fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
 /// O(slabs), so the walk is not shared or deferred -- it is not performed. It fell on BOTH halves
 /// because that report is taken whether or not the round has work, which is exactly why the idle
 /// half is measured separately.
-const EXPECTED_IDLE_MULTIPLE: u64 = 2;
+// 2 -> 1: the idle round's apply lists the shard once for its object lifecycle and samples (`an_apply_lists_the_shard_once_for_its_report`).
+const EXPECTED_IDLE_MULTIPLE: u64 = 1;
 // 6 -> 5 -> 4 -> 3 for the same reasons as `EXPECTED_MULTIPLE` in `one_call_walks_the_live_blocks_a_known_number_of_times`.
 const EXPECTED_DIRTY_MULTIPLE: u64 = 3;
 
