@@ -78,6 +78,41 @@ fn timer_execution_preserves_actions_and_counters_without_exposing_partial_diagn
 }
 
 #[test]
+fn timer_pressure_plans_preserve_work_without_bucket_reports() {
+    for threshold in [1, u64::MAX] {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = seeded(dir.path());
+        let options = StorageManagerOptions {
+            min_undumped_wal_records: threshold,
+            min_undumped_wal_bytes: u64::MAX,
+            ..options()
+        };
+        crate::engine::reset_live_block_scan_entries();
+        let (mut detailed_pressure, mut detailed_plan) =
+            runtime.storage_manager_pressure_snapshot(1, &options);
+        let detailed_work = crate::engine::live_block_scan_entries();
+        crate::engine::reset_live_block_scan_entries();
+        let (pressure, plan) =
+            runtime.storage_manager_pressure_snapshot_with_report_details(1, &options, false);
+        let execution_work = crate::engine::live_block_scan_entries();
+
+        assert!(detailed_pressure.live_block_summaries_measured);
+        assert!(detailed_pressure.expired_bucket_object_scan_debt > 0);
+        assert!(!pressure.live_block_summaries_measured);
+        assert_eq!(pressure.expired_bucket_object_scan_debt, 0);
+        assert!(detailed_plan.bucket_summaries.is_some());
+        assert!(plan.bucket_summaries.is_none());
+        detailed_pressure.live_block_summaries_measured = false;
+        detailed_pressure.expired_bucket_object_scan_debt = 0;
+        detailed_plan.bucket_summaries = None;
+        assert_eq!(pressure, detailed_pressure);
+        assert_eq!(plan, detailed_plan);
+        assert!(detailed_work > execution_work,
+            "detailed={detailed_work} execution={execution_work}");
+    }
+}
+
+#[test]
 fn explicit_manager_and_lifecycle_requests_still_return_full_diagnostics() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = seeded(dir.path());

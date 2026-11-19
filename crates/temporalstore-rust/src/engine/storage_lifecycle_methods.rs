@@ -284,7 +284,7 @@ impl TemporalEngine {
         self.storage_lifecycle_plan_with_report_details(request, true)
     }
 
-    pub(super) fn storage_lifecycle_plan_with_report_details(
+    pub(crate) fn storage_lifecycle_plan_with_report_details(
         &self,
         request: StorageLifecycleRequest,
         detailed_report: bool,
@@ -617,23 +617,23 @@ impl TemporalEngine {
         if request.purge_delayed_destroy && !delayed_destroy_reports.is_empty() {
             reasons.push("delayed_destroy_purge".to_string());
         }
-        let block_gc_dependency_plan = self.storage_block_gc_dependency_plan(
-            request.shard_id,
-            reclaim_candidates
-                .iter()
-                .map(|candidate| candidate.block_slab_id),
-            request.block_gc_shared_store_cursors.clone(),
-            request.block_gc_raft_snapshot_refs.clone(),
-            request.block_gc_checkpoint_floor_slab_id,
-            request.block_gc_raft_install_floor_slab_id,
-            request.block_gc_delayed_destroy_grace_ms,
-        );
-        if !block_gc_dependency_plan
-            .candidate_block_slab_ids
-            .is_empty()
-            && !block_gc_dependency_plan.safe_to_reclaim
-        {
-            reasons.push("block_gc_dependency_blocked".to_string());
+        if !reclaim_candidates.is_empty() {
+            let block_gc_dependency_plan = self.storage_block_gc_dependency_plan(
+                request.shard_id,
+                reclaim_candidates
+                    .iter()
+                    .map(|candidate| candidate.block_slab_id),
+                request.block_gc_shared_store_cursors.clone(),
+                request.block_gc_raft_snapshot_refs.clone(),
+                request.block_gc_checkpoint_floor_slab_id,
+                request.block_gc_raft_install_floor_slab_id,
+                request.block_gc_delayed_destroy_grace_ms,
+            );
+            if !block_gc_dependency_plan.candidate_block_slab_ids.is_empty()
+                && !block_gc_dependency_plan.safe_to_reclaim
+            {
+                reasons.push("block_gc_dependency_blocked".to_string());
+            }
         }
         let manifest_prune_plan = self.bucket_dump_manifest_prune_plan_with_follower_cursors(
             request.shard_id,
