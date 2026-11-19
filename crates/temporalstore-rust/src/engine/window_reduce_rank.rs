@@ -175,7 +175,13 @@ impl Predicate {
             Target::Label(i) => i128::from(cell.labels[i]),
             Target::Lane(i) => i128::from(cell.lanes[i]),
         };
-        filter_op_holds(&self.op, lhs, i128::from(self.value))
+        // A lane is signed, so the 64 bits a predicate carries are read as signed for it; a label
+        // and a member are unsigned.
+        let rhs = match self.target {
+            Target::Lane(_) => i128::from(self.value as i64),
+            _ => i128::from(self.value),
+        };
+        filter_op_holds(&self.op, lhs, rhs)
     }
 }
 
@@ -819,6 +825,50 @@ impl Plan {
             refused: String::new(),
             sample_info: self.sample_summary(chosen),
         })
+    }
+}
+
+#[cfg(test)]
+mod signed_lane_predicate_tests {
+    use super::*;
+    use super::super::cell_set::{DimSpec, DimType, EntityType, KeySpec, LaneReducer, LaneSpec};
+
+    fn header() -> CellHeader {
+        CellHeader {
+            version: super::super::cell_set::HEADER_VERSION,
+            key: KeySpec {
+                namespace: "ns".to_string(),
+                entity: EntityType::U64,
+                dimensions: vec![DimSpec { name: "channel".to_string(), ty: DimType::U16, required: true }],
+            },
+            labels: vec!["slot".to_string()],
+            lanes: vec![LaneSpec { name: "v".to_string(), reducer: LaneReducer::Sum }],
+        }
+    }
+
+    fn holds(filter: FeatureFilter, lane: i64, slot: u64) -> bool {
+        let predicates = compile_predicates(&header(), &[filter]).expect("the names are declared");
+        let (labels, lanes) = ([slot], [lane]);
+        predicates[0].holds(&CellRef { member: MemberRef::U64(1), labels: &labels, lanes: &lanes })
+    }
+
+    fn on(field: &str, op: FeatureFilterOp, value: u64) -> FeatureFilter {
+        FeatureFilter { field: field.to_string(), op, value }
+    }
+
+    #[test]
+    fn a_lane_predicate_reads_its_value_as_signed_and_a_label_predicate_as_unsigned() {
+        // A lane is signed: the 64 bits of -1 equal a lane holding -1, and -1 is below 0 and 5.
+        assert!(holds(on("v", FeatureFilterOp::Equal, (-1i64) as u64), -1, 0));
+        assert!(!holds(on("v", FeatureFilterOp::Equal, (-1i64) as u64), 1, 0));
+        assert!(holds(on("v", FeatureFilterOp::LessThan, 0), -1, 0));
+        assert!(holds(on("v", FeatureFilterOp::GreaterThan, (-5i64) as u64), -1, 0));
+        assert!(!holds(on("v", FeatureFilterOp::GreaterThan, (-5i64) as u64), -9, 0));
+        // A label is unsigned: the largest label equals the largest value, and is above every other.
+        assert!(holds(on("slot", FeatureFilterOp::Equal, u64::MAX), 0, u64::MAX));
+        assert!(holds(on("slot", FeatureFilterOp::GreaterThan, 5), 0, u64::MAX));
+        // The test no cell passes: a member is never below 0.
+        assert!(!holds(on("member", FeatureFilterOp::LessThan, 0), 0, 0));
     }
 }
 
