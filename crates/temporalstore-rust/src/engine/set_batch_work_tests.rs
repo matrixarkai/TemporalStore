@@ -345,3 +345,53 @@ fn a_repeat_write_to_a_marked_collection_visits_no_block_at_any_size() {
         assert_dirty(&engine, "order");
     }
 }
+
+/// A new member of a sorted set is a block just appended, so filing it needs no look at the blocks
+/// the object already has. It was filed as an unknown write, which walked every ref of the object
+/// (a bucket and block lookup per member held) to find a block to supersede that a fresh append
+/// cannot have. Held at two sizes so a cost that grew with the members could not pass.
+#[test]
+fn a_new_sorted_set_member_is_filed_without_scanning_the_objects_refs_at_any_size() {
+    for existing in [64usize, 2_048] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path());
+        for chunk in (0..existing).collect::<Vec<_>>().chunks(256) {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ZSetAddMany {
+                    key: "z".into(),
+                    members: chunk
+                        .iter()
+                        .map(|n| crate::types::ZSetScoredMember {
+                            member: format!("member-{n:06}").into_bytes(),
+                            score: *n as f64,
+                        })
+                        .collect(),
+                },
+            });
+            assert!(response.status.ok, "{:?}", response.status);
+        }
+        reset();
+        for i in 0..50usize {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ZSetAdd {
+                    key: "z".into(),
+                    member: format!("new-{i:06}").into_bytes(),
+                    score: i as f64,
+                },
+            });
+            assert!(response.status.ok, "{:?}", response.status);
+        }
+        let (supersede, _) = counts();
+        assert_eq!(
+            supersede, 0,
+            "size {existing}: filing 50 new members scanned the object's refs {supersede} time(s)"
+        );
+        let card = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ZSetCard { key: "z".into() },
+        });
+        assert_eq!(card.response, CommandResponse::Integer { value: (existing + 50) as i64 });
+    }
+}
