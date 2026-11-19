@@ -3686,9 +3686,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 ///   * A NEW BINARY READING OLD BYTES IS 13'S SHAPE AND NEEDS NO STAMP AT ALL. The stored entry's
 ///     two extra keys are dropped by the named decoder, silently, and the reconstruction reads the
 ///     SAME two values out of the key beside them -- so an old index decodes to exactly the index
-///     it decoded to before. That is not assumed: `block_entry_names`'s `OLD_STORE_INDEX` is bytes a
-///     pre-change binary wrote, and `an_index_written_before_this_change_loads_block_for_block`
-///     compares every block of it field by field against a committed table.
+///     it decoded to before.
 ///   * AN OLD BINARY READING NEW BYTES IS WHAT THE STAMP IS SPENT ON, and the msgpack container
 ///     refuses on EQUALITY in its header before decoding anything -- so 27 makes that refusal
 ///     clean, where without a bump the old binary would reach `StoredBlockEntry` and fail on a
@@ -6706,8 +6704,7 @@ fn env_flag_on(name: &str) -> bool {
 ///
 /// A store written with the gate OFF has entries that name their elements, and this binary cannot
 /// read one. It must be REFUSED rather than misread, and that is the stamp's job --
-/// `an_ungated_store_is_refused_before_it_is_served` drives it on a stored golden and reads the
-/// engine's own load-path counters: accepted 0, stale 1, and nothing served. The named decoder drops
+/// `a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded` drives it. The named decoder drops
 /// a key it has no field for SILENTLY, so the refusal is what stands between that drop and an
 /// answer.
 ///

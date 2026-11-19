@@ -305,9 +305,8 @@ pub(super) struct ShardState {
     // ONE FIELD FOR BOTH ADDRESS MAPS NOW, keyed by `AddressMap`, behind `strings()` /
     // `_mut()` and `context_nodes()` / `_mut()`. `default`, because an index written before
     // this merge carries `strings` and no `address_maps` and must still DECODE -- the stamp
-    // is what refuses it, and a decode error would hide that, which is the defect
-    // `an_ungated_store_is_refused_before_it_is_served` caught when `counter_series` shipped
-    // without one.
+    // is what refuses it, and a decode error would hide that, as it did when `counter_series`
+    // shipped without one.
     // ONE FIELD FOR EVERY DOMAIN-KEYED SIDE TABLE, keyed by `SideTable`, behind the same four
     // doors as before. THE VARIANT WRAPS THE TABLE, NOT THE ENTRY, so no key pays a byte: the tag
     // is paid once per domain, four times in total, and every inner map keeps its exact type.
@@ -4906,7 +4905,7 @@ impl Serialize for BlockIndexAt<'_> {
 /// THE KEY SET IS OBSERVED, NOT READ OFF THE ATTRIBUTES.
 /// `block_entry_names::capture_the_stored_spelling_of_a_block_entry` prints a real encode of an
 /// entry and of a whole index, and
-/// `block_entry_names::the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot` pins the three
+/// `block_entry_names::the_stored_spelling_of_a_block_entry_is_pinned_over_three_shapes` pins the three
 /// written forms byte for byte.
 pub(super) struct BlockEntryAt<'a> {
     pub(super) block: &'a BlockIndex,
@@ -4929,8 +4928,6 @@ pub(super) struct BlockEntryAt<'a> {
 /// AND THE TWO THAT LEFT ARE DELIBERATELY NOT `#[serde(default)]` DECOYS: the derive drops a key it
 /// has no field for, so an index written before this change arrives with its `object_key` and
 /// `model_id` dropped and the reconstruction reads the SAME values out of the key beside them.
-/// `block_entry_names::an_index_written_before_this_change_loads_block_for_block` drives that against
-/// committed bytes, field by field.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct StoredBlockEntry {
     pub(super) address: ElementEntry,
@@ -5129,10 +5126,8 @@ where
         // would inherit the stronger claim from the prose.
         //
         // WHERE THE CLAIM LIVES NOW, and it is a golden rather than a tie:
-        // `block_entry_names::the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot` pins
-        // the four written forms byte for byte, and
-        // `an_index_written_before_this_change_loads_block_for_block` pins that a row written by a
-        // binary that still had the field decodes.
+        // `block_entry_names::the_stored_spelling_of_a_block_entry_is_pinned_over_three_shapes` pins
+        // the three written forms byte for byte.
         entries.push((
             block_index_written_key(beside.object_key, block),
             BlockEntryAt { block },
@@ -7147,8 +7142,7 @@ mod tombstone_reconcile_cost_tests;
 ///     of the break and is why it is stated here rather than discovered;
 ///   * each field has ONE accepted spelling. `object_ids`, `deleted_object_ids`, `page_index` and
 ///     `page_refs` are not read: a key nothing declares falls to `Ignore`, so a document that
-///     spells one loads with that field empty, which `the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones`
-///     asserts;
+///     spells one loads with that field empty;
 ///   * the fields that had `#[serde(default)]` still default when the key is absent, and the ones
 ///     that did not still REFUSE a node that omits them. Presence comes from the wire.
 ///
@@ -7682,11 +7676,7 @@ const _: () = assert!(
 /// decode still cross-checks an old `g` against `block_id.or(object_id)` through it.
 ///
 /// So the stored form moved, `SHARD_INDEX_FORMAT_VERSION` goes to 6 to pay for it, and the guards
-/// are `the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot` (the four goldens),
-/// `an_index_written_before_this_change_loads_block_for_block` (that an old row still decodes),
-/// `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed` (what this
-/// binary writes back in its place) and `core_index_loads_legacy_bucket_page_field_names` (that
-/// the old names still read).
+/// are `the_stored_spelling_of_a_block_entry_is_pinned_over_three_shapes` (the three goldens).
 // FORTY, AND THE NEIGHBOUR BRACKET THAT STOOD HERE IS GONE.
 //
 // IT COULD DISTINGUISH NO CASE. The `!= 39` and `!= 41` lines sat in the SAME const context as
