@@ -295,26 +295,24 @@ pub(crate) fn string_increment_response(
     increment: i64,
     execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
 ) -> RespValue {
-    let key = name_arg(key);
-    let current = match execute(Command::StringGet { key: key.clone() }) {
-        Ok(CommandResponse::Bytes { value: None }) => 0,
-        Ok(CommandResponse::Bytes { value: Some(value) }) => match parse_i64_arg(&value, "value") {
-            Ok(value) => value,
-            Err(_) => return RespValue::Error("ERR value is not an integer".to_string()),
-        },
-        Ok(_) => return RespValue::Error("ERR invalid incr response".to_string()),
-        Err(err) => return RespValue::Error(format!("ERR {err}")),
-    };
-    let Some(next) = current.checked_add(increment) else {
-        return RespValue::Error("ERR increment or decrement would overflow".to_string());
-    };
-    if let Err(err) = execute(Command::StringSet {
-        key,
-        value: next.to_string().into_bytes(),
+    // ONE COMMAND, NOT A READ AND A WRITE. The shard adds the amount while it holds the key, so two
+    // clients incrementing one counter cannot both read the old value and lose an update. The
+    // refusals keep the words this door has always used for them, whichever way the status
+    // arrives (a bare message, or prefixed with its code by the proxy).
+    match execute(Command::StringIncrBy {
+        key: name_arg(key),
+        increment,
     }) {
-        return RespValue::Error(format!("ERR {err}"));
+        Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+        Ok(_) => RespValue::Error("ERR invalid incr response".to_string()),
+        Err(err) if err.contains("value is not an integer") => {
+            RespValue::Error("ERR value is not an integer".to_string())
+        }
+        Err(err) if err.contains("would overflow") => {
+            RespValue::Error("ERR increment or decrement would overflow".to_string())
+        }
+        Err(err) => RespValue::Error(format!("ERR {err}")),
     }
-    RespValue::Integer(next)
 }
 
 pub(crate) fn string_increment_float_response(
@@ -394,14 +392,12 @@ pub(crate) fn string_getrange_response(
         Ok(value) => value,
         Err(err) => return RespValue::Error(err),
     };
-    match execute(Command::StringGet {
+    match execute(Command::StringGetRange {
         key: name_arg(&args[1]),
+        start,
+        end: stop,
     }) {
-        Ok(CommandResponse::Bytes { value }) => {
-            let value = value.unwrap_or_default();
-            let (start, stop) = normalize_range(start, stop, value.len());
-            RespValue::Bulk(Some(value[start..stop].to_vec()))
-        }
+        Ok(CommandResponse::Bytes { value }) => RespValue::Bulk(Some(value.unwrap_or_default())),
         Ok(_) => RespValue::Error("ERR invalid getrange response".to_string()),
         Err(err) => RespValue::Error(format!("ERR {err}")),
     }

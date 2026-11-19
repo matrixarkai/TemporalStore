@@ -256,17 +256,14 @@ impl ProxyService {
             ("POST", "/ProxyService/FeatureAdd") => {
                 match parse_json::<ProxyFeatureAddCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = if let Some(policy) = req.policy {
-                            Command::FeatureAppendWithPolicy {
-                                key: req.key,
-                                points: req.points,
-                                policy,
-                            }
-                        } else {
-                            Command::FeatureAppend {
-                                key: req.key,
-                                points: req.points,
-                            }
+                        let command = match feature_add_command(
+                            req.key,
+                            req.points,
+                            req.policy,
+                            req.retry_token,
+                        ) {
+                            Ok(command) => command,
+                            Err(message) => return self.bad_execute_request(message),
                         };
                         json_response(
                             200,
@@ -404,10 +401,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/CellRankQuery") => {
-                match parse_json::<ProxyCellRankQueryCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/WindowReduceRankBatch") => {
+                match parse_json::<ProxyWindowReduceRankBatchCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::CellRankQuery { key: req.key, spec: req.spec };
+                        let command = Command::WindowReduceRankBatch { queries: req.queries };
                         json_response(
                             200,
                             &self.table_execute(ProxyTableExecuteRequest {
@@ -420,10 +417,58 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/CellRollup") => {
-                match parse_json::<ProxyCellRollupCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/WindowReduceFanInRank") => {
+                match parse_json::<ProxyWindowReduceFanInRankCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::CellRollup { key: req.key, spec: req.spec };
+                        let command = Command::WindowReduceFanInRank { keys: req.keys, spec: req.spec };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/WindowReduceRank") => {
+                match parse_json::<ProxyWindowReduceRankCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::WindowReduceRank { key: req.key, spec: req.spec };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/WindowReduceRollup") => {
+                match parse_json::<ProxyWindowReduceRollupCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::WindowReduceRollup { key: req.key, spec: req.spec };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/WindowReduceRemove") => {
+                match parse_json::<ProxyWindowReduceRemoveCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::WindowReduceRemove { key: req.key, spec: req.spec };
                         json_response(
                             200,
                             &self.table_execute(ProxyTableExecuteRequest {

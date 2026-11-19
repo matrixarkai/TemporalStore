@@ -318,13 +318,42 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             member: command.member,
             left: command.left,
         },
+        v1::command::Kind::ListSet(command) => types::Command::ListSet {
+            key: command.key,
+            index: command.index,
+            member: command.member,
+        },
+        v1::command::Kind::ListRemove(command) => types::Command::ListRemove {
+            key: command.key,
+            count: command.count,
+            member: command.member,
+        },
+        v1::command::Kind::ListTrim(command) => types::Command::ListTrim {
+            key: command.key,
+            start: command.start,
+            stop: command.stop,
+        },
         v1::command::Kind::ListPop(command) => types::Command::ListPop {
             key: command.key,
             left: command.left,
         },
+        v1::command::Kind::ListPushMany(command) => types::Command::ListPushMany {
+            key: command.key,
+            members: command.members,
+            left: command.left,
+        },
+        v1::command::Kind::ListPopMany(command) => types::Command::ListPopMany {
+            key: command.key,
+            left: command.left,
+            count: usize::try_from(command.count).unwrap_or(usize::MAX),
+        },
         v1::command::Kind::SetRemove(command) => types::Command::SetRemove {
             key: command.key,
             member: command.member,
+        },
+        v1::command::Kind::SetRemoveMany(command) => types::Command::SetRemoveMany {
+            key: command.key,
+            members: command.members,
         },
         v1::command::Kind::ZsetAdd(command) => types::Command::ZSetAdd {
             key: command.key,
@@ -334,6 +363,18 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
         v1::command::Kind::ZsetRemove(command) => types::Command::ZSetRemove {
             key: command.key,
             member: command.member,
+        },
+        v1::command::Kind::ZsetAddMany(command) => types::Command::ZSetAddMany {
+            key: command.key,
+            members: command
+                .members
+                .into_iter()
+                .map(|member| types::ZSetScoredMember { member: member.member, score: member.score })
+                .collect(),
+        },
+        v1::command::Kind::ZsetRemoveMany(command) => types::Command::ZSetRemoveMany {
+            key: command.key,
+            members: command.members,
         },
         v1::command::Kind::ZsetIncrBy(command) => types::Command::ZSetIncrBy {
             key: command.key,
@@ -400,6 +441,10 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
         v1::command::Kind::SetAdd(command) => types::Command::SetAdd {
             key: command.key,
             member: command.member,
+        },
+        v1::command::Kind::SetAddMany(command) => types::Command::SetAddMany {
+            key: command.key,
+            members: command.members,
         },
         v1::command::Kind::SetMembers(command) => types::Command::SetMembers { key: command.key },
         v1::command::Kind::SetScan(command) => types::Command::SetScan {
@@ -583,16 +628,17 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                     .map(sdk_feature_point_to_types)
                     .collect(),
                 policy: feature_write_policy_from_proto(command.policy)?,
+                retry_token: command.retry_token,
             }
         }
-        v1::command::Kind::CellRollup(command) => types::Command::CellRollup {
-            key: command.key,
-            spec: cell_rollup_spec_from_proto(
-                command.older_than_ms,
-                command.bucket_ms,
-                command.cap,
-            )?,
-        },
+        v1::command::Kind::WindowReduceRemove(command) => {
+            let (key, spec) = window_reduce_remove_from_proto(command)?;
+            types::Command::WindowReduceRemove { key, spec }
+        }
+        v1::command::Kind::WindowReduceRollup(command) => {
+            let (key, spec) = window_reduce_rollup_from_proto(command)?;
+            types::Command::WindowReduceRollup { key, spec }
+        }
         v1::command::Kind::SeenCheck(command) => types::Command::SeenCheck {
             key: command.key,
             member: command.member,
@@ -612,6 +658,14 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 keep_ttl: command.keep_ttl,
             }
         }
+        v1::command::Kind::StringIncrBy(command) => types::Command::StringIncrBy {
+            key: command.key,
+            increment: command.increment,
+        },
+        v1::command::Kind::StringAppend(command) => types::Command::StringAppend {
+            key: command.key,
+            value: command.value,
+        },
         v1::command::Kind::ContextResourceBlobBegin(command) => {
             types::Command::ContextResourceBlobBegin {
                 tenant_hash: command.tenant_hash,
@@ -1215,75 +1269,222 @@ pub(crate) fn feature_write_policy_from_proto(
     }
 }
 
-pub(crate) fn cell_rollup_score_to_proto(score: &types::CellScore) -> v1::CellRollupScore {
-    use v1::cell_rollup_score::Kind;
+pub(crate) fn window_reduce_rollup_score_to_proto(score: &types::WindowReduceScore) -> v1::WindowReduceRollupScore {
+    use v1::window_reduce_rollup_score::Kind;
     let kind = match score {
-        types::CellScore::Lane { lane } => Kind::Lane(lane.clone()),
-        types::CellScore::Ratio { numerator, denominator } => Kind::Ratio(v1::CellRollupRatio {
+        types::WindowReduceScore::Lane { lane } => Kind::Lane(lane.clone()),
+        types::WindowReduceScore::Ratio { numerator, denominator } => Kind::Ratio(v1::WindowReduceRollupRatio {
             numerator: numerator.clone(),
             denominator: denominator.clone(),
         }),
-        types::CellScore::Wilson { successes, trials, z } => Kind::Wilson(v1::CellRollupWilson {
+        types::WindowReduceScore::Wilson { successes, trials, z } => Kind::Wilson(v1::WindowReduceRollupWilson {
             successes: successes.clone(),
             trials: trials.clone(),
             z: *z,
         }),
-        types::CellScore::Member => Kind::Member(true),
-        types::CellScore::Time => Kind::Time(true),
-        types::CellScore::Weighted { lanes, weights } => Kind::Weighted(v1::CellRollupWeighted {
+        types::WindowReduceScore::Member => Kind::Member(true),
+        types::WindowReduceScore::Time => Kind::Time(true),
+        types::WindowReduceScore::Weighted { lanes, weights } => Kind::Weighted(v1::WindowReduceRollupWeighted {
             lanes: lanes.clone(),
             weights: weights.clone(),
         }),
+        // A decay reads a member's samples and a rollup cap scores one folded cell, so the rollup has no
+        // such kind. Sending none is refused by `window_reduce_rollup_score_from_proto`, never defaulted.
+        // A recent read answers stored cells, which no cap scores: the same refusal.
+        types::WindowReduceScore::Decay { .. } | types::WindowReduceScore::Recent => return v1::WindowReduceRollupScore { kind: None },
     };
-    v1::CellRollupScore { kind: Some(kind) }
+    v1::WindowReduceRollupScore { kind: Some(kind) }
 }
 
 /// REFUSED, NOT DEFAULTED: a score with no kind, or a flag kind that is not `true`, is not a
 /// score this build can apply.
-pub(crate) fn cell_rollup_score_from_proto(
-    score: Option<v1::CellRollupScore>,
-) -> Result<types::CellScore, TonicStatus> {
-    use v1::cell_rollup_score::Kind;
+pub(crate) fn window_reduce_rollup_score_from_proto(
+    score: Option<v1::WindowReduceRollupScore>,
+) -> Result<types::WindowReduceScore, TonicStatus> {
+    use v1::window_reduce_rollup_score::Kind;
     match score.and_then(|score| score.kind) {
-        Some(Kind::Lane(lane)) => Ok(types::CellScore::Lane { lane }),
-        Some(Kind::Ratio(r)) => Ok(types::CellScore::Ratio { numerator: r.numerator, denominator: r.denominator }),
-        Some(Kind::Wilson(w)) => Ok(types::CellScore::Wilson { successes: w.successes, trials: w.trials, z: w.z }),
-        Some(Kind::Member(true)) => Ok(types::CellScore::Member),
-        Some(Kind::Time(true)) => Ok(types::CellScore::Time),
-        Some(Kind::Weighted(w)) => Ok(types::CellScore::Weighted { lanes: w.lanes, weights: w.weights }),
+        Some(Kind::Lane(lane)) => Ok(types::WindowReduceScore::Lane { lane }),
+        Some(Kind::Ratio(r)) => Ok(types::WindowReduceScore::Ratio { numerator: r.numerator, denominator: r.denominator }),
+        Some(Kind::Wilson(w)) => Ok(types::WindowReduceScore::Wilson { successes: w.successes, trials: w.trials, z: w.z }),
+        Some(Kind::Member(true)) => Ok(types::WindowReduceScore::Member),
+        Some(Kind::Time(true)) => Ok(types::WindowReduceScore::Time),
+        Some(Kind::Weighted(w)) => Ok(types::WindowReduceScore::Weighted { lanes: w.lanes, weights: w.weights }),
         Some(Kind::Member(false)) | Some(Kind::Time(false)) | None => Err(TonicStatus::invalid_argument(
             "a cell rollup score names no kind this build can apply",
         )),
     }
 }
 
-pub(crate) fn cell_rollup_spec_to_proto(spec: &types::CellRollupSpec) -> (u64, u64, Option<v1::CellRollupCap>) {
-    (
-        spec.older_than_ms,
-        spec.bucket_ms,
-        spec.cap.as_ref().map(|cap| v1::CellRollupCap {
+pub(crate) fn window_reduce_rollup_to_proto(key: &str, spec: &types::WindowReduceRollupSpec) -> v1::WindowReduceRollup {
+    v1::WindowReduceRollup {
+        key: key.to_string(),
+        older_than_ms: spec.older_than_ms,
+        bucket_ms: spec.bucket_ms,
+        cap: spec.cap.as_ref().map(|cap| v1::WindowReduceRollupCap {
             group_by: cap.group_by.clone(),
-            score: Some(cell_rollup_score_to_proto(&cap.score)),
+            score: Some(window_reduce_rollup_score_to_proto(&cap.score)),
             keep: cap.keep as u64,
+            protect_newest_ppm: cap.protect_newest_ppm,
+            trigger_over: cap.trigger_over as u64,
         }),
-    )
+        anchor: match spec.anchor {
+            types::WindowReduceRollupAnchor::Request => v1::WindowReduceRollupAnchor::Request,
+            types::WindowReduceRollupAnchor::NewestMinusAge => v1::WindowReduceRollupAnchor::NewestMinusAge,
+        } as i32,
+        coarser_tiers: spec
+            .coarser_tiers
+            .iter()
+            .map(|tier| v1::WindowReduceRollupTier { older_than_ms: tier.older_than_ms, bucket_ms: tier.bucket_ms })
+            .collect(),
+        truncate: spec.truncate.map(|truncate| v1::WindowReduceRollupTruncate {
+            keep_last: truncate.keep_last as u64,
+            trigger: truncate.trigger.map(|trigger| trigger as u64),
+        }),
+    }
 }
 
-pub(crate) fn cell_rollup_spec_from_proto(
-    older_than_ms: u64,
-    bucket_ms: u64,
-    cap: Option<v1::CellRollupCap>,
-) -> Result<types::CellRollupSpec, TonicStatus> {
-    let cap = match cap {
+fn platform_usize(value: u64, what: &str) -> Result<usize, TonicStatus> {
+    usize::try_from(value).map_err(|_| TonicStatus::invalid_argument(format!("cell rollup {what} does not fit this platform")))
+}
+
+/// REFUSED, NOT DEFAULTED: an anchor this build does not know is not the request's anchor.
+pub(crate) fn window_reduce_rollup_from_proto(command: v1::WindowReduceRollup) -> Result<(String, types::WindowReduceRollupSpec), TonicStatus> {
+    let anchor = match v1::WindowReduceRollupAnchor::try_from(command.anchor) {
+        Ok(v1::WindowReduceRollupAnchor::Request) => types::WindowReduceRollupAnchor::Request,
+        Ok(v1::WindowReduceRollupAnchor::NewestMinusAge) => types::WindowReduceRollupAnchor::NewestMinusAge,
+        Err(_) => {
+            return Err(TonicStatus::invalid_argument(format!(
+                "cell rollup anchor {} is not one this build can apply",
+                command.anchor
+            )))
+        }
+    };
+    let cap = match command.cap {
         None => None,
-        Some(cap) => Some(types::CellCapSpec {
+        Some(cap) => Some(types::WindowReduceCapSpec {
             group_by: cap.group_by,
-            score: cell_rollup_score_from_proto(cap.score)?,
-            keep: usize::try_from(cap.keep)
-                .map_err(|_| TonicStatus::invalid_argument("cell rollup keep does not fit this platform"))?,
+            score: window_reduce_rollup_score_from_proto(cap.score)?,
+            keep: platform_usize(cap.keep, "keep")?,
+            protect_newest_ppm: cap.protect_newest_ppm,
+            trigger_over: platform_usize(cap.trigger_over, "trigger_over")?,
         }),
     };
-    Ok(types::CellRollupSpec { older_than_ms, bucket_ms, cap })
+    let truncate = match command.truncate {
+        None => None,
+        Some(truncate) => Some(types::WindowReduceTruncateSpec {
+            keep_last: platform_usize(truncate.keep_last, "keep_last")?,
+            trigger: truncate.trigger.map(|trigger| platform_usize(trigger, "trigger")).transpose()?,
+        }),
+    };
+    Ok((
+        command.key,
+        types::WindowReduceRollupSpec {
+            older_than_ms: command.older_than_ms,
+            bucket_ms: command.bucket_ms,
+            cap,
+            anchor,
+            coarser_tiers: command
+                .coarser_tiers
+                .into_iter()
+                .map(|tier| types::WindowReduceRollupTier { older_than_ms: tier.older_than_ms, bucket_ms: tier.bucket_ms })
+                .collect(),
+            truncate,
+        },
+    ))
+}
+
+fn cell_member_to_proto(member: &types::CellMemberId) -> v1::CellMember {
+    use v1::cell_member::Kind;
+    v1::CellMember {
+        kind: Some(match member {
+            types::CellMemberId::U64(id) => Kind::Id(*id),
+            types::CellMemberId::Bytes(bytes) => Kind::Bytes(bytes.clone()),
+        }),
+    }
+}
+
+/// REFUSED, NOT DEFAULTED: a member with no kind is not member 0.
+fn cell_member_from_proto(member: v1::CellMember) -> Result<types::CellMemberId, TonicStatus> {
+    use v1::cell_member::Kind;
+    match member.kind {
+        Some(Kind::Id(id)) => Ok(types::CellMemberId::U64(id)),
+        Some(Kind::Bytes(bytes)) => Ok(types::CellMemberId::Bytes(bytes)),
+        None => Err(TonicStatus::invalid_argument("a cell member names neither an id nor bytes")),
+    }
+}
+
+fn cell_predicate_op_to_proto(op: &types::FeatureFilterOp) -> v1::CellPredicateOp {
+    match op {
+        types::FeatureFilterOp::Equal => v1::CellPredicateOp::Equal,
+        types::FeatureFilterOp::NotEqual => v1::CellPredicateOp::NotEqual,
+        types::FeatureFilterOp::GreaterThan => v1::CellPredicateOp::GreaterThan,
+        types::FeatureFilterOp::GreaterOrEqual => v1::CellPredicateOp::GreaterOrEqual,
+        types::FeatureFilterOp::LessThan => v1::CellPredicateOp::LessThan,
+        types::FeatureFilterOp::LessOrEqual => v1::CellPredicateOp::LessOrEqual,
+    }
+}
+
+pub(crate) fn window_reduce_remove_to_proto(key: &str, spec: &types::WindowReduceRemoveSpec) -> v1::WindowReduceRemove {
+    v1::WindowReduceRemove {
+        key: key.to_string(),
+        start_ms: spec.start_ms,
+        end_ms: spec.end_ms,
+        include: spec
+            .members
+            .include
+            .as_ref()
+            .map(|set| v1::CellMemberSet { members: set.iter().map(cell_member_to_proto).collect() }),
+        exclude: spec.members.exclude.iter().map(cell_member_to_proto).collect(),
+        filters: spec
+            .filters
+            .iter()
+            .map(|filter| v1::CellPredicate {
+                field: filter.field.clone(),
+                op: cell_predicate_op_to_proto(&filter.op) as i32,
+                value: filter.value,
+            })
+            .collect(),
+    }
+}
+
+/// REFUSED, NOT DEFAULTED: an operator this build does not know is not equality, and a member of
+/// no kind is not member 0.
+pub(crate) fn window_reduce_remove_from_proto(command: v1::WindowReduceRemove) -> Result<(String, types::WindowReduceRemoveSpec), TonicStatus> {
+    let include = command
+        .include
+        .map(|set| set.members.into_iter().map(cell_member_from_proto).collect::<Result<Vec<_>, _>>())
+        .transpose()?;
+    let exclude = command.exclude.into_iter().map(cell_member_from_proto).collect::<Result<Vec<_>, _>>()?;
+    let filters = command
+        .filters
+        .into_iter()
+        .map(|filter| {
+            let op = match v1::CellPredicateOp::try_from(filter.op) {
+                Ok(v1::CellPredicateOp::Equal) => types::FeatureFilterOp::Equal,
+                Ok(v1::CellPredicateOp::NotEqual) => types::FeatureFilterOp::NotEqual,
+                Ok(v1::CellPredicateOp::GreaterThan) => types::FeatureFilterOp::GreaterThan,
+                Ok(v1::CellPredicateOp::GreaterOrEqual) => types::FeatureFilterOp::GreaterOrEqual,
+                Ok(v1::CellPredicateOp::LessThan) => types::FeatureFilterOp::LessThan,
+                Ok(v1::CellPredicateOp::LessOrEqual) => types::FeatureFilterOp::LessOrEqual,
+                Err(_) => {
+                    return Err(TonicStatus::invalid_argument(format!(
+                        "cell predicate operator {} is not one this build can apply",
+                        filter.op
+                    )))
+                }
+            };
+            Ok(types::FeatureFilter { field: filter.field, op, value: filter.value })
+        })
+        .collect::<Result<Vec<_>, TonicStatus>>()?;
+    Ok((
+        command.key,
+        types::WindowReduceRemoveSpec {
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            members: types::CellMemberFilter { include, exclude },
+            filters,
+        },
+    ))
 }
 
 /// THE FAMILY TAG, RUST SPELLING TO WIRE NUMBER.
@@ -1435,29 +1636,44 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             ..Default::default()
         },
         types::CommandResponse::CellMergeReceipt {
-            snapshots_written,
+            samples_written,
             cells_created,
             cells_merged,
+            replayed,
         } => v1::CommandResponse {
             status: Some(types_status_to_sdk(types::Status::ok())),
-            count: snapshots_written,
+            count: samples_written,
             cells_created,
             cells_merged,
+            replayed,
             ..Default::default()
         },
-        types::CommandResponse::CellRollupReceipt {
-            snapshots_before,
-            snapshots_after,
+        types::CommandResponse::WindowReduceRollupReceipt {
+            samples_before,
+            samples_after,
             cells_before,
             cells_after,
             cells_dropped,
         } => v1::CommandResponse {
             status: Some(types_status_to_sdk(types::Status::ok())),
-            count: snapshots_after,
-            snapshots_before,
+            count: samples_after,
+            samples_before,
             cells_before,
             cells_after,
             cells_dropped,
+            ..Default::default()
+        },
+        types::CommandResponse::WindowReduceRemoveReceipt {
+            samples_before,
+            samples_after,
+            cells_before,
+            cells_removed,
+        } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            count: samples_after,
+            samples_before,
+            cells_before,
+            cells_removed,
             ..Default::default()
         },
         types::CommandResponse::Members { members } => v1::CommandResponse {
@@ -1793,3 +2009,7 @@ mod tests {
         assert_eq!(preflight.table_cache_entries, 1);
     }
 }
+
+#[cfg(test)]
+#[path = "sdk_window_reduce_wire_tests.rs"]
+mod window_reduce_wire_tests;

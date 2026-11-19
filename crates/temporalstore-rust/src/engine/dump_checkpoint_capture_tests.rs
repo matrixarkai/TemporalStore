@@ -169,3 +169,98 @@ fn owned_dump_capture_keeps_released_buckets_and_installs_without_source_logs() 
         assert_eq!(result.response, CommandResponse::Bytes { value: Some(vec![index as u8; 128]) });
     }
 }
+
+#[test]
+fn live_entry_stream_does_not_hold_one_owned_row_per_hash_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    for index in 0..128 {
+        execute(&engine, Command::HashSet {
+            key: "wide-hash".into(), field: format!("field-{index:04}"), value: vec![7; 32],
+        });
+    }
+    let shards = engine.shards.read().unwrap();
+    let shard = &shards[&1];
+    let entries = collect_live_block_entries(shard);
+    assert_eq!(entries.len(), 128);
+    let key = Arc::clone(&entries[0].object_key);
+    drop(entries);
+    let base_handles = Arc::strong_count(&key);
+    let control = collect_live_block_entries(shard);
+    assert_eq!(Arc::strong_count(&key), base_handles + 128,
+        "the collected control must retain one key handle per block");
+    let expected = control.iter().map(|entry| (
+        entry.kind, entry.object_key.to_string(), entry.address.clone(), entry.filed_bucket(),
+        entry.dirty, entry.deleted, entry.log_backed,
+    )).collect::<Vec<_>>();
+    drop(control);
+    let mut index = 0;
+    visit_live_block_entries(shard, |entry| {
+        assert_eq!(Arc::strong_count(&key), base_handles + 1);
+        assert_eq!((entry.kind, entry.object_key.to_string(), entry.address.clone(), entry.filed_bucket(),
+                    entry.dirty, entry.deleted, entry.log_backed), expected[index]);
+        index += 1;
+    });
+    assert_eq!(index, 128);
+    assert_eq!(Arc::strong_count(&key), base_handles);
+}
+
+#[test]
+fn streamed_bucket_facts_match_collected_facts_with_deletes_and_released_buckets() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    for index in 0..96 {
+        execute(&engine, Command::HashSet {
+            key: format!("stream-{index:04}"), field: "value".into(), value: vec![7; 128],
+        });
+        execute(&engine, Command::StringSet {
+            key: format!("released-stream-{index:04}"), value: vec![9; 128],
+        });
+    }
+    for index in 0..8 {
+        execute(&engine, Command::HashDelete {
+            key: format!("stream-{index:04}"), field: "value".into(),
+        });
+    }
+    engine.materialize_synthetic_blocks(1);
+    for release in [false, true] {
+        if release {
+            let manifest = engine.create_bucket_dump_manifest(1, []).unwrap();
+            engine.clear_dumped_bucket_dirty_state(1, &manifest);
+            let mut shards = engine.shards.write().unwrap();
+            let shard = shards.get_mut(&1).unwrap();
+            // Release supports addressable scalar blocks, not hash fields.
+            let buckets = shard.bucket_index.bucket_map.iter()
+                .filter(|(_, bucket)| !bucket.block_index.is_empty()
+                    && bucket.block_index.values().all(|block| block.model_id().as_str() == "string"))
+                .map(|(id, _)| *id).take(8).collect::<Vec<_>>();
+            assert!(!buckets.is_empty());
+            let released = storage_bucket_internals::release_bucket_blocks(shard, &buckets);
+            assert!(!released.released_buckets.is_empty(), "{released:?}");
+        }
+        let shards = engine.shards.read().unwrap();
+        let shard = &shards[&1];
+        let (start, end) = shard.routing_range();
+        let entries = collect_live_block_entries(shard);
+        assert_eq!(bucket_storage_summaries(shard, start, end),
+            bucket_storage_summaries_from_entries(shard, start, end, &entries));
+        let selected = entries.iter().take(8).map(|entry| entry.filed_bucket().unwrap()).collect::<BTreeSet<_>>();
+        for selected in [BTreeSet::new(), selected] {
+            let report = storage_object_lifecycle_report_for_buckets(1, shard, &selected,
+                |key| engine.routing_bucket_for_key(1, key));
+            let mut owners = BTreeMap::<u64, BTreeSet<u64>>::new();
+            let mut refs = 0u64;
+            for entry in &entries {
+                if selected.is_empty() || selected.contains(&entry.filed_bucket().unwrap()) {
+                    refs += 1;
+                    owners.entry(expected_live_block_object_id(1, entry)).or_default()
+                        .insert(stable_object_hash(&format!("{}:{}", entry.kind.as_str(), entry.object_key)));
+                }
+            }
+            assert_eq!(report.live_object_ids, owners.len() as u64);
+            assert_eq!(report.live_block_refs, refs);
+            assert_eq!(report.reused_object_ids, owners.into_iter()
+                .filter_map(|(id, terms)| (terms.len() > 1).then_some(id)).collect::<Vec<_>>());
+        }
+    }
+}

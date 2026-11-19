@@ -68,7 +68,7 @@
 //! # THE ONE WAY THIS COULD HAVE BEEN SILENT DATA LOSS
 //!
 //! `decode_block_record` compares `address.block_id()` against the record header's own block id and
-//! refuses the page with "page id mismatch" when they differ -- the one cross-check on a read that
+//! refuses the page with "block id mismatch" when they differ -- the one cross-check on a read that
 //! can actually fire. It is inert today only because the address side is 0 on both sides. Stamping
 //! the ordinal onto the INDEX's copy of the address after the append would have left the header
 //! saying 0 and the address saying N, and every container block written would have become unreadable.
@@ -942,7 +942,7 @@ fn hash_len_still_answers_the_entry_count() {
 /// A RELOADED CONTAINER STILL READS EVERY ELEMENT, AND KEEPS THE ORDINALS IT WAS WRITTEN WITH.
 ///
 /// THIS IS THE TEST THAT MATTERS. `decode_block_record` refuses a block whose address block id and
-/// record header block id differ ("page id mismatch"), and that arm is inert today only because both
+/// record header block id differ ("block id mismatch"), and that arm is inert today only because both
 /// sides are 0. Had the ordinal been stamped onto the index's copy of the address after the append
 /// -- the obvious way to write this change -- every container block would still have had a header
 /// saying 0, and every one of these reads would come back empty.
@@ -987,7 +987,7 @@ fn a_reloaded_container_still_reads_every_element() {
                 read_back += 1;
             }
             other => panic!(
-                "field {field} did not read back after a reload: {other:?}. A \"page id mismatch\" \
+                "field {field} did not read back after a reload: {other:?}. A \"block id mismatch\" \
                  from `decode_block_record` reads exactly like this -- the block is refused and the \
                  answer is empty"
             ),

@@ -42,12 +42,7 @@ impl DataNodeRuntime {
         let queue_depth = queue.queued_total;
         let queued_shard_count = queue.by_shard.len();
         let running_shard_count = queue.running_shards.len();
-        let dirty_shard_count = dirty
-            .by_key
-            .keys()
-            .map(|(shard_id, _)| *shard_id)
-            .collect::<BTreeSet<_>>()
-            .len();
+        let dirty_shard_count = dirty.by_shard.len();
         DataNodeRuntimeStats {
             worker_threads: self.inner.options.worker_threads,
             max_queue_depth: self.inner.options.max_queue_depth,
@@ -85,9 +80,21 @@ impl DataNodeRuntime {
             storage_manager_failed_rounds: stats.storage_manager_failed_rounds,
             storage_manager_stage_skips: stats.storage_manager_stage_skips,
             storage_manager_overrun_rounds: stats.storage_manager_overrun_rounds,
+            storage_manager_retention_owners_configured: stats
+                .storage_manager_retention_owners_configured,
             storage_manager_round_us_total: stats.storage_manager_round_us_total,
             storage_manager_round_us_max: stats.storage_manager_round_us_max,
             storage_manager_stage_timing: stats.storage_manager_stage_timing.clone(),
+            expiry_sweep_failures: self.inner.engine.expiry_sweep_failures(),
+            storage_manager_dump_buckets: stats.storage_manager_dump_buckets,
+            storage_manager_dump_logical_bytes: stats.storage_manager_dump_logical_bytes,
+            storage_manager_dump_us_total: stats.storage_manager_dump_us_total,
+            storage_manager_dump_us_max: stats.storage_manager_dump_us_max,
+            storage_manager_loop_wal_bytes: stats.storage_manager_loop_wal_bytes,
+            storage_manager_loop_undumped_wal_records: stats
+                .storage_manager_loop_undumped_wal_records,
+            storage_manager_loop_dirty_buckets: stats.storage_manager_loop_dirty_buckets,
+            storage_manager_loop_index_log_bytes: stats.storage_manager_loop_index_log_bytes,
         }
     }
 
@@ -451,11 +458,13 @@ impl DataNodeRuntime {
     }
 
     pub fn shard_serving_states(&self) -> Vec<ServerShardServingState> {
-        let dirty_objects = self.dirty_objects();
-        let mut dirty_by_shard = HashMap::<ShardId, usize>::new();
-        for dirty in dirty_objects {
-            *dirty_by_shard.entry(dirty.shard_id).or_default() += 1;
-        }
+        let dirty_by_shard = self
+            .inner
+            .dirty
+            .lock()
+            .expect("dirty tracker lock poisoned")
+            .by_shard
+            .clone();
         let queue = self
             .inner
             .queue

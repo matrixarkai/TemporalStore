@@ -826,6 +826,32 @@ pub struct ProxyFeatureAddCommandRequest {
     pub points: Vec<crate::types::FeaturePoint>,
     #[serde(default)]
     pub policy: Option<FeatureWritePolicy>,
+    /// A caller-chosen retry token for a merge-reduce append: the same token on the same key
+    /// answers the first receipt with `replayed` set and writes nothing. Absent is the request
+    /// every caller sent before tokens existed; zero is a token like any other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_token: Option<u64>,
+}
+
+/// The command a `FeatureAdd` request stands for. A token rides only on a policy-carrying append
+/// (the engine refuses it under any policy but merge-reduce); asking for one with no policy at all
+/// is refused here, because the plain append has nowhere to put it and would drop it silently.
+pub(crate) fn feature_add_command(
+    key: String,
+    points: Vec<crate::types::FeaturePoint>,
+    policy: Option<FeatureWritePolicy>,
+    retry_token: Option<u64>,
+) -> Result<Command, &'static str> {
+    match (policy, retry_token) {
+        (Some(policy), retry_token) => Ok(Command::FeatureAppendWithPolicy {
+            key,
+            points,
+            policy,
+            retry_token,
+        }),
+        (None, None) => Ok(Command::FeatureAppend { key, points }),
+        (None, Some(_)) => Err("retry_token needs policy merge_reduce"),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -884,19 +910,42 @@ pub struct ProxySequenceQueryCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyCellRollupCommandRequest {
+pub struct ProxyWindowReduceRollupCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    pub spec: crate::types::CellRollupSpec,
+    pub spec: crate::types::WindowReduceRollupSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyCellRankQueryCommandRequest {
+pub struct ProxyWindowReduceRemoveCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    pub spec: crate::types::CellRankSpec,
+    pub spec: crate::types::WindowReduceRemoveSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyWindowReduceRankCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub spec: crate::types::WindowReduceRankSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyWindowReduceRankBatchCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub queries: Vec<crate::types::WindowReduceRankBatchItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyWindowReduceFanInRankCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub keys: Vec<String>,
+    pub spec: crate::types::WindowReduceRankSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5089,6 +5138,51 @@ mod tests {
     }
 
     #[test]
+    fn a_feature_add_request_carries_its_retry_token_into_the_command() {
+        let request = |extra: &str| {
+            let body = format!(
+                r#"{{"namespace":"ns","table_name":"tbl","key":"k","points":[]{extra}}}"#
+            );
+            serde_json::from_slice::<ProxyFeatureAddCommandRequest>(body.as_bytes()).unwrap()
+        };
+        let command = |req: ProxyFeatureAddCommandRequest| {
+            feature_add_command(req.key, req.points, req.policy, req.retry_token)
+        };
+        let with_policy = |retry_token| Command::FeatureAppendWithPolicy {
+            key: "k".to_string(),
+            points: Vec::new(),
+            policy: FeatureWritePolicy::MergeReduce,
+            retry_token,
+        };
+        // A token rides to the command, and zero is a token like any other.
+        let tokened = request(r#","policy":"merge_reduce","retry_token":7"#);
+        assert_eq!(Some(7), tokened.retry_token);
+        assert_eq!(Ok(with_policy(Some(7))), command(tokened));
+        let zero = request(r#","policy":"merge_reduce","retry_token":0"#);
+        assert_eq!(Ok(with_policy(Some(0))), command(zero));
+        // CONTROL: a request written before tokens existed names none and is the same command.
+        let untokened = request(r#","policy":"merge_reduce""#);
+        assert_eq!(None, untokened.retry_token);
+        assert_eq!(Ok(with_policy(None)), command(untokened.clone()));
+        assert!(!serde_json::to_string(&untokened).unwrap().contains("retry_token"));
+        assert_eq!(
+            Ok(Command::FeatureAppend { key: "k".to_string(), points: Vec::new() }),
+            command(request(""))
+        );
+        // A token with no policy would be dropped by the plain append: refused, not ignored.
+        assert!(command(request(r#","retry_token":7"#)).is_err());
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/ProxyService/FeatureAdd".to_string(),
+            body: br#"{"namespace":"ns","table_name":"tbl","key":"k","points":[],"retry_token":7}"#
+                .to_vec(),
+        });
+        assert_eq!(400, code);
+        assert!(String::from_utf8_lossy(&body).contains("retry_token"), "{body:?}");
+    }
+
+    #[test]
     fn proxy_account_scope_rejects_foreign_namespaces() {
         let proxy = scoped_proxy(ProxyOptions {
             ingestion_account: "tenant-a".to_string(),
@@ -7988,6 +8082,7 @@ mod tests {
                     table_name: "tbl".to_string(),
                     key: "native-proxy-feature".to_string(),
                     policy: None,
+                    retry_token: None,
                     points: vec![crate::types::FeaturePoint {
                         timestamp_ms: 10,
                         value: b"7".to_vec(),
@@ -9625,6 +9720,7 @@ mod tests {
                 table_name: "tbl".to_string(),
                 key: "itest:feat".to_string(),
                 policy: None,
+                retry_token: None,
                 points: vec![
                     crate::types::FeaturePoint { timestamp_ms: 10, value: b"10".to_vec() },
                     crate::types::FeaturePoint { timestamp_ms: 20, value: b"20".to_vec() },

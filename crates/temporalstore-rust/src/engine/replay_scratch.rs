@@ -272,7 +272,7 @@ fn replay_clears_staging_on_empty_and_refused_tails() {
                 .find(|item| item.kind == "string")
                 .unwrap()
                 .clone();
-            invalid.kind = "hash".to_string();
+            invalid.kind = "hash".into();
             invalid.address = None;
             invalid.value = None;
             invalid.element_name = None;

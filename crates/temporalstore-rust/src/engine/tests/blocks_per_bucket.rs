@@ -870,7 +870,7 @@ fn what_each_shape_of_the_block_index_would_cost() {
     assert_eq!(
         size_of::<BlockIndexMap>(),
         size_of::<MirrorLiveBlockIndex>(),
-        "the mirror of the live page index is {} bytes against the declaration's {}; the mirrors \
+        "the mirror of the live block index is {} bytes against the declaration's {}; the mirrors \
          have drifted and every price below is fiction",
         size_of::<MirrorLiveBlockIndex>(),
         size_of::<BlockIndexMap>()
@@ -954,7 +954,7 @@ fn what_each_shape_of_the_block_index_would_cost() {
     assert_eq!(
         live_node,
         size_of::<MirrorNode<MirrorBoxedBlockIndex>>(),
-        "the boxed mirror is {} B against the live node's {live_node} B. Boxing the single page is \
+        "the boxed mirror is {} B against the live node's {live_node} B. Boxing the single block is \
          what SHIPPED, so these must be equal; a difference means the mirror no longer describes the \
          declaration",
         size_of::<MirrorNode<MirrorBoxedBlockIndex>>()

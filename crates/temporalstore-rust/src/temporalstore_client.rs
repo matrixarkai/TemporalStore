@@ -22,6 +22,8 @@ use crate::meta::{
 };
 #[path = "client/client_routing.rs"]
 mod client_routing;
+#[path = "client/response_json.rs"]
+mod response_json;
 #[path = "client/client_meta_sync.rs"]
 mod client_meta_sync;
 #[path = "client/client_commands.rs"]
@@ -1319,6 +1321,42 @@ impl TemporalStoreTable {
             key: key.into(),
             entries,
         })
+    }
+
+    /// Add `increment` to the integer a string holds, in one step on the shard, and return the
+    /// new value. A missing key counts as zero; a value that is not an integer, or a sum past the
+    /// `i64` range, is refused and nothing is written.
+    pub fn incrby(&self, key: impl Into<String>, increment: i64) -> Result<i64, ClientError> {
+        match self
+            .execute(Command::StringIncrBy {
+                key: key.into(),
+                increment,
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "incrby",
+                response,
+            }),
+        }
+    }
+
+    /// Add `value` to the end of a string, in one step on the shard, and return the new length.
+    pub fn append(&self, key: impl Into<String>, value: Vec<u8>) -> Result<i64, ClientError> {
+        match self
+            .execute(Command::StringAppend {
+                key: key.into(),
+                value,
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "append",
+                response,
+            }),
+        }
     }
 
     pub fn hincrby(

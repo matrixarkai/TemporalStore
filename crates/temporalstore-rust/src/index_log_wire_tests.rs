@@ -307,7 +307,7 @@ fn what_the_schema_costs_against_the_positional_row() {
             )
         })
         .collect::<Vec<_>>();
-    let record = IndexDeltaRecord {
+    let record: IndexDeltaRecord = IndexDeltaRecord {
         shard_id: 1,
         sequence: 1_000,
         items,

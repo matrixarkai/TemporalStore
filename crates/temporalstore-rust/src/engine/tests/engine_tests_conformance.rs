@@ -1072,3 +1072,47 @@ fn no_command_leaves_the_shard_index_unwritable() {
         failures.join("\n")
     );
 }
+
+/// Whether running `commands`, unloading the shard and loading it again panics, and with what.
+fn probe_reload_panics(commands: &[Command]) -> Option<String> {
+    with_recording_hook(|| {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let blocks = dir.path().join("blocks");
+            let indexes = dir.path().join("indexes");
+            let engine =
+                TemporalEngine::with_local_dirs(1 << 20, dir.path().join("a"), &blocks, &indexes);
+            engine.load_shard(1);
+            for command in commands {
+                let _ = engine.execute(ExecuteRequest { shard_id: 1, command: command.clone() });
+            }
+            engine.unload_shard(1);
+            let reloaded =
+                TemporalEngine::with_local_dirs(1 << 20, dir.path().join("b"), &blocks, &indexes);
+            reloaded.load_shard(1);
+        }));
+        outcome.err().map(|_| LAST_PANIC.with(|last| last.borrow().clone()))
+    })
+}
+
+#[test]
+fn a_control_state_block_keeps_its_identity_across_a_reload() {
+    // TWO COMMANDS ARE ENOUGH, and neither alone is: a control-state key makes one block, and any
+    // other object in the shard makes the inversion name positions. Reloading then rebuilt the
+    // control-state rows without the refs they carried, leaving that block live and named by
+    // nothing. The minimal pairs were found by cutting seeds 4, 6 and 12 down command by command.
+    let pairs: Vec<Vec<Command>> = vec![
+        vec![
+            Command::ControlStateIncrement { key: "c0".into(), timestamp_ms: 53, amount: 629 },
+            Command::HashSet { key: "h3".into(), field: "f0".into(), value: vec![66, 79] },
+        ],
+        vec![
+            Command::ControlStateIncrement { key: "c3".into(), timestamp_ms: 36, amount: 428 },
+            Command::StringSet { key: "s1".into(), value: vec![211, 241] },
+        ],
+    ];
+    for commands in pairs {
+        let panic = probe_reload_panics(&commands);
+        assert!(panic.is_none(), "reloading {commands:?} panicked: {panic:?}");
+    }
+}

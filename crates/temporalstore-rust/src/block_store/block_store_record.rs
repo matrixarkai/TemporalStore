@@ -325,7 +325,7 @@ pub(super) fn decode_block_record(
         if address_block_id != record_block_id {
             return Err(corrupt_block_envelope(
                 address,
-                format!("page id mismatch: address {address_block_id}, record {record_block_id}"),
+                format!("block id mismatch: address {address_block_id}, record {record_block_id}"),
             ));
         }
     }
@@ -1118,7 +1118,7 @@ mod block_record_format_tests {
         let refusal = decode_block_record(&encoded.bytes, &mismatched)
             .expect_err("a record stating block 3 must not read through an address claiming 4");
         assert!(
-            refusal.to_string().contains("page id mismatch"),
+            refusal.to_string().contains("block id mismatch"),
             "the refusal must name the block id: {refusal}"
         );
 

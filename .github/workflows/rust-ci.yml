@@ -190,6 +190,14 @@ jobs:
             -- --test-threads=1 2>&1 | tee /tmp/batch-wal-barrier-gate.log
           grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/batch-wal-barrier-gate.log
 
+      - name: Follower catch-up cost checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe a_follower_catch_up \
+            -- --test-threads=1 2>&1 | tee /tmp/follower-catch-up-gate.log
+          grep -q 'test result: ok\. 2 passed; 0 failed;' /tmp/follower-catch-up-gate.log
+
       - name: Bounded memory deletion checks
         timeout-minutes: 30
         run: |
@@ -234,7 +242,7 @@ jobs:
         timeout-minutes: 30
         run: |
           set -o pipefail
-          for spec in retention_work_tests:4 compaction_retention_tests:3 physical_wal_:5 block_owner_query_tests:3; do
+          for spec in retention_work_tests:4 compaction_retention_tests:3 physical_wal_:5 block_owner_query_tests:3 record_frame_alloc_probe:1; do
             filter=${spec%:*}
             expected=${spec##*:}
             cargo test -p temporalstore-rust --lib --features alloc-probe "$filter" \
@@ -322,6 +330,49 @@ jobs:
       #     rejoined the JSON arm, behind a green check. Two of the four assert a DENOMINATOR
       #     (the case count, the parsed variant count) because both read source text or a fixed
       #     list, and a list that shrank to nothing would otherwise satisfy every claim in them
+      - name: cargo test (WAL byte gate guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # The gate's undumped-bytes figure is fed by every append path. These were red on main
+          # while the unfiltered suite above reported without gating, so they are pinned by exact
+          # name: a path that forgets a counter must fail here.
+          for t in \
+            engine::tests::the_figure_after_a_dump_is_the_bytes_appended_since_it::the_figure_after_a_dump_is_the_bytes_appended_since_it \
+            engine::tests::the_undumped_byte_figure_survives_one_claimless_bucket::one_bucket_without_a_claim_does_not_put_the_figure_back_on_the_zeroed_counter \
+            engine::tests::part2::the_wal_byte_threshold_measures_undumped_bytes_not_the_whole_log \
+            data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::a_capped_dump_does_not_rearm_the_byte_gate \
+            data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::a_hot_bucket_dirtied_every_round_keeps_the_log_near_the_gate \
+            data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::a_shard_opened_over_an_undumped_tail_runs_the_stage_in_its_first_round \
+            data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::a_dirty_shard_below_the_byte_gate_does_not_run_the_wal_reclaim_stage \
+            data_node::tests::the_wal_reclaim_stage_waits_for_the_byte_gate::the_dirty_bucket_trigger_still_runs_the_stage_when_an_operator_sets_it
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/wal-byte-gate.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count too.
+            grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/wal-byte-gate.log || { echo "guard did not run and pass: $t"; exit 1; }
+          done
+      # The shared WAL is a run of segments and an object never grows with the log. These run in
+      # the advisory step above and nowhere else, so they are pinned by exact name: a rename or a
+      # move would turn a filter into a no-op that still exits 0, hence the count on each.
+      - name: cargo test (shared WAL segment guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          for t in \
+            shared_store::wal_segment_tests::the_segment_names_the_quota_and_the_builder_floor_are_pinned \
+            shared_store::wal_segment_tests::a_crash_between_two_segments_loses_nothing_acknowledged_and_resumes_at_the_next_index \
+            shared_store::wal_segment_tests::replay_crosses_every_segment_boundary_in_order_and_skips_the_segments_below_a_checkpoint \
+            shared_store::wal_segment_tests::a_hole_between_segments_is_refused_and_never_replayed_as_a_shorter_log \
+            shared_store::wal_segment_tests::the_collector_never_deletes_the_live_segment_and_deletes_index_before_log \
+            shared_store::wal_segment_tests::the_collector_sweeps_orphan_logs_and_keeps_the_one_the_next_append_goes_to \
+            shared_store::wal_segment_tests::no_object_takes_more_appends_than_the_quota_and_a_batch_never_straddles_segments \
+            shared_store::wal_segment_tests::a_restart_reads_the_highest_index_segment_and_not_the_history \
+            shared_store::wal_segment_tests::a_shard_in_the_pre_segment_layout_is_refused_by_name_and_per_key_objects_are_not_read \
+            shared_store::wal_segment_tests::a_fenced_stale_owner_cannot_open_a_new_segment
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/wal-segment-gate.log
+            grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/wal-segment-gate.log || { echo "guard did not run and pass: $t"; exit 1; }
+          done
       - name: cargo test (read-safety guards, hard gate)
         timeout-minutes: 20
         run: |
@@ -329,10 +380,55 @@ jobs:
           # One invocation per guard, because `cargo test` takes a single positional filter and a
           # second one is silently an error rather than a second filter.
           for t in \
+              wal::registration_records::tests::mutations_match_an_independent_slot_model \
+              wal::registration_records::tests::uniform_expectations_stay_inline_and_conflicts_release_their_storage \
+              engine::block_in_wal::physical::registration_summary_tests::summaries_combine_domains_and_follow_replacement_retirement_and_clear \
+              engine::block_in_wal::physical::registration_summary_tests::summary_queries_complete_while_both_locator_registries_are_locked \
+              engine::storage_lifecycle_methods::planning_order_tests::claim_ranks_match_manifest_augmented_summaries \
+              engine::storage_lifecycle_methods::lifecycle_report_work_tests::execution_plan_uses_dirty_metadata_without_block_summaries \
+              engine::storage_lifecycle_methods::lifecycle_report_work_tests::empty_quarantine_purge_skips_every_loaded_shards_live_address_walk \
+              engine::storage_lifecycle_methods::lifecycle_report_work_tests::nonempty_quarantine_still_walks_liveness_and_keeps_the_grace_window \
+              block_store::quarantine_probe_tests::absent_empty_and_foreign_quarantine_entries_are_not_slabs \
+              block_store::quarantine_probe_tests::an_unrecorded_quarantined_slab_is_seen_without_changing_it \
+              block_store::quarantine_probe_tests::an_invalid_quarantine_directory_is_an_error_not_an_empty_result \
+              data_node::runtime_storage::maintenance_report_tests::timer_pressure_plans_preserve_work_without_bucket_reports \
+              data_node::round_budget::tests::a_tick_runs_one_heavy_slot_and_each_slot_runs_only_its_own_stages \
+              wal::point_reads::tests::prepared_io_and_completion_do_not_wait_for_writer_mutex \
+              wal::point_readers::tests::compact_directory_reuses_large_listings_without_retaining_descriptors \
+              wal::point_readers::tests::compact_directory_preserves_current_legacy_and_noncanonical_names \
+              wal::point_readers::tests::compact_directory_preserves_non_utf8_root_paths \
+              wal::point_readers::tests::oversized_alias_metadata_stays_outside_the_directory_cache \
+              wal::packed_frames::layouts::tests::validated_layout_reuses_footer_work_without_retaining_payload \
+              wal::packed_frames::layouts::tests::changed_file_version_revalidates_corrupt_footer_and_truncation \
+              wal::packed_frames::layouts::tests::layout_cache_bounds_entries_and_separates_file_identity_and_offsets \
+              wal::packed_frames::layouts::tests::unstamped_point_reads_keep_validating_the_transport \
+              engine::hash_field_map::shared_field_tests::shared_field_construction_is_exact_sorted_and_uses_canonical_names \
+              engine::hash_field_map::shared_field_tests::shared_field_rows_keep_the_map_wire_shape_and_mutation_behavior \
+              engine::hash_field_map::shared_field_tests::shared_field_construction_avoids_wide_row_growth_slack \
+              engine::recorded_map::shared_hash_fields_tests::shared_hash_fields_new_rows_are_exact_sized_and_survive_reload \
+              wal::point_reads::tests::leased_prepared_reads_survive_prefix_rewrite \
+              wal_proto::indexed::tests::concurrent_directory_readers_share_one_bounded_entry \
+              wal::read_retention_tests::acquiring_and_releasing_a_read_lease_does_not_wait_for_wal_io \
+              block_store::read_retention::tests::nested_readers_protect_only_named_slabs_until_last_release \
+              block_store::read_retention::tests::read_pins_survive_quarantine_plans_and_restore_before_purge \
+              wal::read_retention_tests::read_leases_scope_floors_and_reuse_slots_without_retaining_the_owner \
+              wal::read_retention_tests::reclaim_preserves_a_leased_record_and_advances_after_release \
+              engine::execute_on_shard::prepared_hash_reads::tests::point_plan_has_no_row_vector_and_preserves_error_order \
+              engine::execute_on_shard::prepared_hash_reads::tests::cached_payload_budget_counts_complete_frames \
+              engine::execute_on_shard::prepared_hash_reads::tests::membership_masks_preserve_missing_slots_beyond_one_word \
+              engine::stream_batch_methods::projected_read_snapshot_tests::serialization_releases_guard_and_preserves_owned_and_shared_snapshots \
+              engine::stream_batch_methods::projected_read_snapshot_tests::snapshot_preserves_missing_duplicate_and_empty_projections \
+              engine::stream_batch_methods::projected_read_snapshot_tests::oversized_projection_streams_after_releasing_the_guard \
+              engine::stream_batch_methods::projected_read_snapshot_tests::unloaded_shard_never_delivers_snapshot_rows \
+              engine::stream_batch_methods::projected_read_snapshot_tests::wal_snapshot_survives_overwrite_delete_and_reclaim_before_payload_loading \
+              engine::stream_batch_methods::projected_read_snapshot_tests::slab_snapshot_survives_overwrite_delete_and_reclaim_before_payload_loading \
+              engine::tests::a_feature_range_read_takes_the_shared_lock::a_captured_feature_window_survives_delete_and_reclaim \
+            engine::block_in_wal::read_snapshot::tests::captured_locators_survive_pruning_and_nested_scope_cleanup \
+            engine::block_in_wal::read_snapshot::tests::fast_wal_reads_keep_complete_snapshots_after_concurrent_overwrite \
             raft::tests::part5::only_the_majority_check_refuses_a_read_on_a_node_that_lost_its_peers \
             raft::tests::part5::the_sender_of_an_append_is_attributed_in_both_encodings \
             shared_store::tests::outcome_only_binary_frames_recover_in_every_supported_format \
-            shared_store::tests::default_shared_wal_preserves_multiple_binary_outcomes_beside_a_per_key_object \
+            shared_store::tests::default_shared_wal_records_multiple_binary_outcomes_and_does_not_read_a_per_key_object \
             shared_store::tests::a_default_replicator_publishes_a_batch_as_one_container_and_replays_it \
             shared_store::tests::one_offset_frame_per_container::a_container_frame_decodes_to_the_map_its_entry_frames_decode_to \
             shared_store::tests::one_offset_frame_per_container::the_container_frame_is_a_fraction_of_the_entry_frames \
@@ -340,7 +436,61 @@ jobs:
             shared_store::tests::one_offset_frame_per_container::entry_frames_and_container_frames_share_one_stream_in_order \
             shared_store::tests::one_offset_frame_per_container::a_damaged_container_frame_is_an_error_not_a_short_map \
             shared_store::tests::one_offset_frame_per_container::an_entry_frame_never_sets_the_container_flag \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_delete_an_expiry_and_a_trim_to_nothing_each_forget_the_ring \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_refused_request_does_not_consume_its_token_and_the_wrong_policy_is_refused \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_repeated_token_answers_the_first_receipt_and_writes_nothing \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_replay_is_admitted_before_the_request_is_checked_against_the_key \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_token_belongs_to_its_key \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_token_survives_a_crash_and_a_storage_cycle_that_reclaimed_the_log \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::an_append_without_a_token_stores_what_it_always_stored \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::an_image_that_holds_rings_cannot_be_read_by_a_binary_that_does_not_know_them \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::a_replayed_log_tail_reaches_the_live_series_bytes_and_leaves_the_flushed_ring_alone \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::the_ring_holds_sixteen_through_the_engine_and_the_seventeenth_token_evicts_the_first \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::the_token_rides_the_command_bytes_and_a_tokenless_command_is_unchanged_on_every_wire \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::two_engines_given_the_same_requests_hold_the_same_bytes \
+            engine::tests::a_retried_merge_append_answers_its_first_receipt::two_tokens_interleaved_and_one_token_twice_apart_apply_once_each \
+            client::tests::part3::a_merge_append_sends_its_retry_token_and_reports_a_replayed_receipt \
+            proxy::tests::a_feature_add_request_carries_its_retry_token_into_the_command \
             engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_element_name \
+            engine::tests::a_string_increment_and_append_are_one_step::concurrent_increments_of_one_counter_lose_no_update \
+            engine::tests::a_string_increment_and_append_are_one_step::concurrent_appends_to_one_string_drop_no_bytes \
+            engine::tests::a_string_increment_and_append_are_one_step::the_largest_sum_is_accepted_and_one_past_it_is_refused_with_the_value_left_alone \
+            engine::tests::a_string_increment_and_append_are_one_step::a_value_that_is_not_an_integer_is_refused_and_a_missing_key_counts_as_zero \
+            engine::tests::a_string_increment_and_append_are_one_step::an_increment_and_an_append_keep_the_deadline_the_key_holds \
+            engine::tests::a_string_increment_and_append_are_one_step::a_key_past_its_deadline_starts_again_from_nothing \
+            engine::tests::a_string_increment_and_append_are_one_step::an_append_creates_the_key_and_answers_the_new_length \
+            engine::tests::a_string_increment_and_append_are_one_step::the_stepped_value_survives_a_restart_with_its_deadline \
+            engine::tests::a_resp_hash_write_asks_the_field_map::an_hdel_counts_the_fields_it_removes_by_asking_the_field_map_and_deletes_only_those \
+            engine::tests::a_resp_hash_write_asks_the_field_map::an_hset_counts_the_fields_it_adds_by_asking_the_field_map_and_never_reads_a_value \
+            engine::tests::a_set_command_can_name_many_members::many_members_leave_what_the_one_at_a_time_path_leaves_and_count_the_same \
+            engine::tests::a_set_command_can_name_many_members::removing_the_last_members_removes_the_key_as_a_remove_does_and_an_absent_key_removes_nothing \
+            engine::tests::a_set_command_can_name_many_members::sadd_and_srem_are_one_command_per_run_of_members_and_answer_what_they_always_answered \
+            engine::tests::a_set_command_can_name_many_members::the_member_bound_is_accepted_at_the_limit_and_refused_one_past_it_and_at_none \
+            engine::tests::a_set_command_can_name_many_members::the_two_commands_are_writes_a_client_can_route_and_the_wal_encodes_as_protobuf \
+            engine::tests::a_sorted_set_command_can_name_many_members::many_members_leave_what_the_one_at_a_time_path_leaves_and_count_the_same \
+            engine::tests::a_sorted_set_command_can_name_many_members::removing_the_last_members_removes_the_key_as_a_remove_does_and_an_absent_key_removes_nothing \
+            engine::tests::a_sorted_set_command_can_name_many_members::the_member_bound_is_accepted_at_the_limit_and_refused_one_past_it_and_at_none \
+            engine::tests::a_sorted_set_command_can_name_many_members::the_two_commands_are_writes_a_client_can_route_and_the_wal_encodes_as_protobuf \
+            engine::tests::a_sorted_set_command_can_name_many_members::zadd_and_zrem_are_one_command_per_run_of_members_and_answer_what_they_always_answered \
+            engine::tests::a_list_command_can_name_many_elements::lpush_rpush_and_lpop_are_one_command_per_run_and_answer_what_they_always_answered \
+            engine::tests::a_list_command_can_name_many_elements::many_elements_leave_what_the_one_at_a_time_path_leaves_and_answer_the_same \
+            engine::tests::a_list_command_can_name_many_elements::the_bounds_are_accepted_at_the_limit_and_refused_one_past_it_and_at_none \
+            engine::tests::a_list_command_can_name_many_elements::the_two_commands_are_writes_a_client_can_route_and_the_wal_encodes_as_protobuf \
+            engine::tests::a_set_length_and_membership_read_the_member_map::the_point_commands_answer_what_the_listing_answers \
+            engine::tests::a_set_length_and_membership_read_the_member_map::the_point_commands_answer_the_same_with_the_map_switched_off \
+            engine::tests::a_set_length_and_membership_read_the_member_map::the_resp_door_answers_through_the_point_commands \
+            engine::tests::a_set_door_asks_one_member_not_the_set::the_door_answers_what_it_always_answered \
+            engine::tests::a_set_door_asks_one_member_not_the_set::the_door_never_lists_the_set \
+            engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_answers_what_the_sorted_listing_answered \
+            engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_reads_a_prefix_and_never_lists \
+            engine::storage_bucket_internals::set_batch_work_tests::a_new_sorted_set_member_is_filed_without_scanning_the_objects_refs_at_any_size \
+            engine::storage_bucket_internals::set_batch_work_tests::a_repeat_write_to_a_marked_collection_visits_no_block_at_any_size \
+            engine::tests::set_install_census::every_command_that_installs_a_set_member_reports_a_touched_element \
+            shared_store::tests::a_string_increment_and_an_append_are_framed_as_protobuf_and_round_trip \
+            engine::tests::part4::what_each_command_recorded_describes_everything_it_changed \
+            engine::tests::the_side_table_codec_resolves_shape_from_spelling::every_side_table_domain_round_trips_as_its_own_shape \
+            engine::tests::the_side_table_codec_resolves_shape_from_spelling::the_seven_spellings_are_distinct_and_the_six_old_ones_are_unchanged \
+            engine::tests::the_side_table_codec_resolves_shape_from_spelling::the_stored_image_carries_the_spellings_without_a_variant_tag \
             engine::tests::what_each_maintenance_bound_costs_per_round::a_cycle_request_that_names_no_bound_still_arrives_bounded \
             engine::tests::part4::every_maintenance_round_is_bounded_by_default \
             engine::tests::part4::the_counter_coalesce_cure_is_inert_under_default_config \
@@ -390,12 +540,36 @@ jobs:
             engine::tests::bucket_dump_binary_shape::a_manifest_is_listed_a_json_one_is_not_and_a_changed_field_is_not_trusted \
             engine::tests::bucket_dump_binary_shape::an_install_marker_is_protobuf_only \
             engine::tests::bucket_dump_binary_shape::no_json_path_is_left_for_a_manifest_or_a_marker \
+            engine::tests::a_dump_manifest_lists_the_shard_once::the_summaries_in_a_manifest_are_the_live_shards_summaries \
+            engine::tests::a_dump_manifest_lists_the_shard_once::a_manifest_lists_the_live_blocks_once \
+            engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::a_whole_manifest_gives_its_image_and_a_delta_is_refused \
+            engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::the_reader_doors_refuse_a_delta \
+            proxy::memory::memory_metadata_tests::a_metadata_document_round_trips_exactly \
+            proxy::memory::memory_metadata_tests::a_memory_record_round_trips_with_its_metadata \
+            proxy::memory::memory_metadata_tests::a_history_entry_keeps_absent_metadata_apart_from_null \
+            proxy::memory::memory_metadata_tests::a_record_without_the_current_format_is_refused \
+            proxy::memory::memory_metadata_tests::the_memory_records_hold_no_messagepack \
+            engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::retention_keeps_the_base_of_the_delta_it_keeps \
+            engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::a_delta_whose_base_is_gone_keeps_every_manifest \
+            engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::no_reader_takes_a_manifests_image_around_the_resolver \
+            engine::bucket_dump_chain::tests::a_missing_link_is_an_error_and_never_a_shorter_chain \
             raft::wal_proto::tests::every_command_the_raft_wal_carries_is_protobuf \
+            raft::wal_proto::tests::the_raft_wal_record_codec_has_no_json \
+            raft::wal_proto::tests::a_replicated_batch_carries_its_rpc_metadata \
+            raft::wal_proto::tests::an_installed_snapshot_keeps_every_field \
+            raft::wal_proto::tests::an_installed_snapshot_without_the_current_format_is_refused \
+            raft::wal_proto::tests::a_snapshot_object_round_trips_and_refuses_anything_else \
             shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
             shared_store::tests::a_command_with_no_protobuf_encoding_is_refused_and_never_written_as_json \
             shared_store::tests::no_json_encode_arm_is_left_in_the_wal_command_encoders \
+            metaserver_files_proto::generated_round_trips::every_generated_type_round_trips \
+            metaserver_files::tests::a_meta_snapshot_file_round_trips \
+            metaserver_files::tests::a_scheduler_snapshot_file_round_trips \
+            metaserver_files::tests::the_json_shape_is_refused \
+            metaserver_files::tests::a_cut_file_is_never_read_as_the_whole \
+            metaserver_files::tests::the_snapshot_files_are_written_and_read_without_json \
             index_log::tests::a_record_the_binary_encoder_cannot_pack_is_refused_not_written_as_unreadable_json \
             index_log::tests::no_json_encode_arm_is_left_in_the_index_log_payload_encoders \
             engine::tests::the_control_state_block_is_protobuf_only::a_series_block_codec_reads_protobuf_and_refuses_everything_else \
@@ -410,7 +584,6 @@ jobs:
             engine::tests::part4::the_slab_usage_sample_emits_the_canonical_name_and_reads_no_retired_one \
             engine::tests::part4::a_bucket_summary_reads_back_the_names_it_writes \
             index_log::tests::an_index_item_spelled_with_a_retired_name_is_not_read_as_the_same_item \
-            engine::tests::block_entry_names::the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones \
             index_log::tests::a_delta_record_with_a_long_field_name_is_not_read_as_the_same_record \
             index_log::tests::a_log_holding_a_real_anchor_still_folds_rolls_and_sweeps \
             engine::tests::a_checkpoint_publish_into_a_log_with_an_anchor_lands::a_second_checkpoint_publish_lands_in_a_log_that_holds_the_first_ones_anchor \
@@ -455,6 +628,19 @@ jobs:
             wal_record::tests::the_synthetic_slab_sentinels_are_not_the_top_of_the_u64_range \
             wal_record::tests::is_wal_resident_covers_both_sentinels_and_refuses_a_real_slab \
             wal_record::tests::the_hot_block_sentinel_is_declared_in_exactly_one_file \
+            real_capture_tests::every_data_capture_reads_and_carries_the_raw_checksum_the_standard_one_is_not \
+            real_capture_tests::our_writer_reproduces_every_data_capture_byte_for_byte \
+            real_capture_tests::every_captured_operation_record_is_a_wal_record_and_re_encodes_identically \
+            real_capture_tests::the_hash_capture_carries_a_key_a_field_and_a_value_as_length_prefixed_text \
+            real_capture_tests::a_captured_feature_point_is_a_varint_timestamp_key_and_a_length_prefixed_message_value \
+            real_capture_tests::a_captured_deadline_and_a_captured_block_item_are_the_fields_this_crate_names \
+            real_capture_tests::every_captured_index_record_is_a_plain_schema_record_and_re_encodes_identically \
+            real_capture_tests::a_page_item_names_the_page_record_it_points_at_and_the_two_agree \
+            real_capture_tests::every_captured_page_record_is_reproduced_byte_for_byte_by_the_block_codec \
+            real_capture_tests::a_captured_page_body_holds_the_elements_the_operation_log_recorded_in_order \
+            real_capture_tests::a_damaged_capture_is_refused_or_visibly_shorter_and_never_read_as_the_same_records \
+            real_capture_tests::a_frame_built_here_is_the_frame_in_every_captured_file \
+            real_capture_tests::a_captured_frame_is_decoded_here_and_a_damaged_or_short_one_is_refused \
             shared_store::tests::a_group_commit_container::a_reader_without_this_batch_format_refuses_the_container_by_name \
             shared_store::tests::a_group_commit_container::a_tampered_payload_in_a_container_is_refused_and_its_neighbours_are_not \
             engine::tests::part4::the_shipped_dump_gate_decides_on_bytes_and_the_record_trigger_is_still_configurable \
@@ -469,12 +655,13 @@ jobs:
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_count_lane_counts_writes_and_ignores_the_value_it_carries \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::write_order_changes_first_and_last_and_nothing_else_and_one_request_equals_three \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_receipt_says_what_landed \
-            engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_merged_snapshot_survives_a_cold_reload_and_keeps_merging \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_merged_sample_survives_a_cold_reload_and_keeps_merging \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_request_that_disagrees_with_the_stored_header_is_refused_naming_the_field_and_writes_nothing \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_key_that_does_not_fit_its_spec_a_junk_value_a_plain_value_and_an_empty_request_are_refused \
-            engine::tests::a_feature_append_merges_cells_by_lane_reducer::cells_per_request_and_per_snapshot_refuse_one_past_and_accept_the_limit \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::cells_per_request_and_per_sample_refuse_one_past_and_accept_the_limit \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_cells_of_all_points_of_one_command_are_bounded_together \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_feature_ceiling_holds_for_a_merge_reduce_append \
-            engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_trim_keeps_the_newest_snapshots_and_each_still_carries_its_header \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_trim_keeps_the_newest_samples_and_each_still_carries_its_header \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_key_past_its_deadline_merges_as_a_new_key \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_sequence_add_still_stores_exactly_the_bytes_it_always_did \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_policy_has_a_wire_number_a_text_spelling_and_survives_the_proto_round_trip \
@@ -486,43 +673,131 @@ jobs:
             engine::window_aggregate::tests::the_shared_doors_answer_what_the_bodies_they_replaced_answered \
             engine::window_aggregate::tests::a_name_is_known_or_refused_and_the_table_is_case_insensitive \
             engine::window_aggregate::tests::edge_answers_are_the_documented_ones \
-            engine::cell_rank::tests::each_score_orders_by_the_value_only_it_produces \
-            engine::cell_rank::tests::a_wilson_bound_is_the_hand_computed_number_and_rewards_volume \
-            engine::cell_rank::tests::an_undefined_score_is_counted_and_not_ranked \
-            engine::cell_rank::tests::each_window_kind_selects_the_snapshots_it_names \
-            engine::cell_rank::tests::a_window_that_cannot_hold_a_snapshot_is_refused \
-            engine::cell_rank::tests::ties_break_by_member_and_a_smaller_k_is_a_prefix_of_a_larger_one \
-            engine::cell_rank::tests::a_row_carries_its_reduced_lanes_its_newest_labels_and_its_newest_stamp \
-            engine::cell_rank::tests::a_projection_returns_the_named_columns_only \
-            engine::cell_rank::tests::every_filter_operator_selects_what_it_names \
-            engine::cell_rank::tests::a_predicate_cuts_before_the_reduction_not_after_it \
-            engine::cell_rank::tests::a_name_the_key_does_not_declare_is_refused_before_anything_is_read \
-            engine::cell_rank::tests::the_member_score_refuses_a_bytes_member_rather_than_ranking_it_somewhere \
-            engine::cell_rank::tests::nothing_to_rank_is_an_empty_answer_not_an_error \
-            engine::cell_rank::tests::snapshots_that_cannot_be_merged_are_refused_not_guessed \
-            engine::cell_rank::tests::a_reloaded_snapshot_ranks_as_the_snapshot_it_was_stored_from \
-            engine::cell_rank::tests::top_k_is_bounded_at_exactly_the_limit \
-            engine::cell_rank::tests::predicates_per_query_are_bounded_at_exactly_the_limit \
-            engine::cell_rank::tests::lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit \
-            engine::cell_rank::tests::snapshots_in_a_window_are_bounded_at_exactly_the_limit \
-            engine::cell_rank::tests::the_merge_answers_what_a_per_member_table_answers \
-            engine::cell_rank::tests::options::an_include_and_an_exclude_set_keep_exactly_the_members_they_name \
-            engine::cell_rank::tests::options::the_member_set_is_anded_with_the_predicates_and_cuts_before_the_reduction \
-            engine::cell_rank::tests::options::the_order_and_repetition_of_a_set_do_not_change_the_answer \
-            engine::cell_rank::tests::options::an_include_set_that_names_nothing_is_refused_and_an_empty_exclude_set_is_not \
-            engine::cell_rank::tests::options::a_member_set_read_equals_the_same_read_over_cells_filtered_by_an_independent_fold \
-            engine::cell_rank::tests::options::a_set_holds_at_most_the_limit_as_sent_and_a_bytes_member_at_most_its_own_limit \
-            engine::cell_rank::tests::options::an_anchored_last_window_ends_at_the_newest_snapshot_whatever_the_clock_says \
-            engine::cell_rank::tests::options::the_anchored_window_spans_exactly_its_duration_and_a_duration_of_zero_holds_nothing \
-            engine::cell_rank::tests::options::an_anchor_on_any_window_but_last_is_refused_and_a_request_anchor_is_accepted_on_all \
-            engine::cell_rank::tests::options::a_read_that_uses_no_option_answers_what_compile_has_always_answered \
-            engine::tests::a_ranked_cell_read_is_a_command::a_ranked_read_answers_from_what_was_stored_live_and_after_a_restart \
-            engine::tests::a_ranked_cell_read_is_a_command::an_absent_key_and_an_expired_key_rank_nothing \
-            engine::tests::a_ranked_cell_read_is_a_command::a_read_the_key_cannot_serve_is_refused_with_its_reason \
-            engine::tests::a_ranked_cell_read_is_a_command::a_bound_is_refused_at_admission_and_accepted_at_exactly_the_limit \
-            engine::tests::a_ranked_cell_read_is_a_command::a_window_over_the_bound_is_refused_after_a_bounded_read_and_one_at_the_bound_is_served \
-            engine::tests::a_ranked_cell_read_is_a_command::a_lane_added_later_reads_as_zero_in_the_snapshots_written_before_it \
-            engine::tests::a_worked_example_of_cells::a_worked_example_of_cells \
+            engine::window_reduce_fan_in::tests::one_key_answers_what_the_single_key_read_answers \
+            engine::window_reduce_fan_in::tests::keys_with_distinct_stamps_answer_what_one_key_holding_all_their_samples_answers \
+            engine::window_reduce_fan_in::tests::a_fan_in_answers_what_an_independent_fold_answers \
+            engine::window_reduce_fan_in::tests::the_union_ranks_a_member_that_no_single_key_ranks_first \
+            engine::window_reduce_fan_in::tests::a_key_named_twice_is_refused_naming_both_positions_and_the_limit_is_accepted \
+            engine::window_reduce_fan_in::tests::a_tie_between_keys_at_one_stamp_resolves_by_key_position_and_sum_max_min_ignore_it \
+            engine::window_reduce_fan_in::tests::the_same_request_twice_agrees_and_the_key_order_changes_nothing_when_stamps_are_distinct \
+            engine::window_reduce_fan_in::tests::the_window_applies_to_each_key_and_the_answer_counts_what_it_chose \
+            engine::window_reduce_fan_in::tests::nothing_to_rank_is_an_empty_answer_and_a_malformed_key_is_refused_naming_its_position \
+            engine::window_reduce_fan_in::tests::keys_in_a_fan_in_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_fan_in::tests::samples_in_a_fan_in_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_fan_in::tests::cells_in_a_fan_in_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_fan_in::tests::the_size_checks_accept_the_limit_and_refuse_one_past_it_by_themselves \
+            engine::window_reduce_fan_in::tests::the_keys_count_is_a_wire_field_that_an_answer_without_it_reads_as_zero \
+            engine::window_reduce_rank::tests::each_score_orders_by_the_value_only_it_produces \
+            engine::window_reduce_rank::tests::a_wilson_bound_is_the_hand_computed_number_and_rewards_volume \
+            engine::window_reduce_rank::tests::an_undefined_score_is_counted_and_not_ranked \
+            engine::window_reduce_rank::tests::each_window_kind_selects_the_samples_it_names \
+            engine::window_reduce_rank::tests::a_window_that_cannot_hold_a_sample_is_refused \
+            engine::window_reduce_rank::tests::ties_break_by_member_and_a_smaller_k_is_a_prefix_of_a_larger_one \
+            engine::window_reduce_rank::tests::a_row_carries_its_reduced_lanes_its_newest_labels_and_its_newest_stamp \
+            engine::window_reduce_rank::tests::a_projection_returns_the_named_columns_only \
+            engine::window_reduce_rank::tests::every_filter_operator_selects_what_it_names \
+            engine::window_reduce_rank::tests::a_predicate_cuts_before_the_reduction_not_after_it \
+            engine::window_reduce_rank::tests::a_name_the_key_does_not_declare_is_refused_before_anything_is_read \
+            engine::window_reduce_rank::tests::the_member_score_refuses_a_bytes_member_rather_than_ranking_it_somewhere \
+            engine::window_reduce_rank::tests::nothing_to_rank_is_an_empty_answer_not_an_error \
+            engine::window_reduce_rank::tests::samples_that_cannot_be_merged_are_refused_not_guessed \
+            engine::window_reduce_rank::tests::a_reloaded_sample_ranks_as_the_sample_it_was_stored_from \
+            engine::window_reduce_rank::tests::top_k_is_bounded_at_exactly_the_limit \
+            engine::window_reduce_rank::tests::predicates_per_query_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_rank::tests::lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_rank::tests::samples_in_a_window_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_rank::tests::the_merge_answers_what_a_per_member_table_answers \
+            engine::window_reduce_rank::tests::quota::a_quota_keeps_the_best_members_that_fit_a_short_lane_and_stops_when_every_lane_is_full \
+            engine::window_reduce_rank::tests::quota::members_that_fit_no_short_lane_are_kept_up_to_the_others_count_and_the_walk_ends_with_the_lanes \
+            engine::window_reduce_rank::tests::quota::a_quota_never_looks_past_the_top_k_and_never_returns_more_than_it \
+            engine::window_reduce_rank::tests::quota::a_quota_only_drops_members_and_leaves_every_surviving_row_as_the_plain_read_has_it \
+            engine::window_reduce_rank::tests::quota::a_quota_answers_what_a_literal_scan_of_the_ranking_answers \
+            engine::window_reduce_rank::tests::quota::a_quota_is_bounded_at_exactly_its_limits \
+            engine::window_reduce_rank::flat_tests::a_read_over_flat_samples_answers_what_a_read_over_plain_samples_answers \
+            engine::window_reduce_rank::flat_tests::a_fan_in_over_flat_samples_answers_what_a_fan_in_over_plain_samples_answers \
+            engine::window_reduce_rank::flat_tests::a_flat_sample_out_of_order_is_refused_as_a_plain_one_is \
+            engine::window_reduce_rank::tests::options::an_include_and_an_exclude_set_keep_exactly_the_members_they_name \
+            engine::window_reduce_rank::tests::options::the_member_set_is_anded_with_the_predicates_and_cuts_before_the_reduction \
+            engine::window_reduce_rank::tests::options::the_order_and_repetition_of_a_set_do_not_change_the_answer \
+            engine::window_reduce_rank::tests::options::an_include_set_that_names_nothing_is_refused_and_an_empty_exclude_set_is_not \
+            engine::window_reduce_rank::tests::options::a_member_set_read_equals_the_same_read_over_cells_filtered_by_an_independent_fold \
+            engine::window_reduce_rank::tests::options::a_set_holds_at_most_the_limit_as_sent_and_a_bytes_member_at_most_its_own_limit \
+            engine::window_reduce_rank::tests::options::an_anchored_last_window_ends_at_the_newest_sample_whatever_the_clock_says \
+            engine::window_reduce_rank::tests::options::the_anchored_window_spans_exactly_its_duration_and_a_duration_of_zero_holds_nothing \
+            engine::window_reduce_rank::tests::options::an_anchor_on_any_window_but_last_is_refused_and_a_request_anchor_is_accepted_on_all \
+            engine::window_reduce_rank::tests::options::a_read_that_uses_no_option_answers_what_compile_has_always_answered \
+            engine::window_reduce_rank::tests::decay::recency_outweighs_volume_exactly_when_the_half_life_says_it_does \
+            engine::window_reduce_rank::tests::decay::a_decayed_sum_is_the_hand_computed_total_as_of_the_newest_sample_of_the_window \
+            engine::window_reduce_rank::tests::decay::a_decay_reads_the_values_the_samples_store_and_not_the_lanes_reduction \
+            engine::window_reduce_rank::tests::decay::a_decay_equals_an_independent_fold_exactly_on_whole_half_lives_and_closely_otherwise \
+            engine::window_reduce_rank::tests::decay::a_half_life_is_bounded_at_exactly_its_limits \
+            engine::window_reduce_rank::tests::decay::a_total_past_the_integer_range_neither_wraps_nor_goes_unranked \
+            engine::window_reduce_rank::tests::decay::a_member_whose_weights_have_all_vanished_is_ranked_at_zero_not_dropped \
+            engine::window_reduce_rank::tests::decay::a_decay_names_a_lane_and_has_no_value_for_a_single_folded_cell \
+            engine::window_reduce_rank::tests::recent::a_recent_read_answers_every_stored_cell_once_newest_sample_first_and_reduces_none \
+            engine::window_reduce_rank::tests::recent::rows_are_bounded_by_the_limit_and_the_walk_stops_in_the_middle_of_a_sample \
+            engine::window_reduce_rank::tests::recent::the_window_the_predicates_the_member_set_and_the_projection_apply_to_each_cell \
+            engine::window_reduce_rank::tests::recent::samples_sharing_a_stamp_come_back_with_the_later_one_in_the_slice_first \
+            engine::window_reduce_rank::tests::recent::a_recent_read_refuses_a_quota_and_is_no_score_for_a_cap \
+            engine::window_reduce_rank::tests::recent::a_cell_that_breaks_the_header_shape_or_the_member_order_is_refused_not_returned \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_ranked_read_answers_from_what_was_stored_live_and_after_a_restart \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::an_absent_key_and_an_expired_key_rank_nothing \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_read_the_key_cannot_serve_is_refused_with_its_reason \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_bound_is_refused_at_admission_and_accepted_at_exactly_the_limit \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_window_over_the_bound_is_refused_after_a_bounded_read_and_one_at_the_bound_is_served \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_lane_added_later_reads_as_zero_in_the_samples_written_before_it \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_decay_score_answers_its_hand_computed_value_live_and_after_a_restart \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_half_life_is_refused_at_admission_past_its_limits_and_served_at_them \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_decay_total_past_the_integer_range_does_not_wrap_through_the_engine \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_member_set_changes_the_answer_exactly_as_an_independent_fold_says \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::the_member_set_is_bounded_at_admission_and_accepted_at_exactly_the_limit \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::an_anchored_window_reads_the_newest_sample_whatever_the_clock_says \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_quota_selects_exactly_as_a_fold_of_the_ranking_says \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_quota_is_refused_at_admission_past_its_bounds_and_served_at_them \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_query_that_uses_none_of_the_controls_is_encoded_and_answered_as_it_always_was \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_recent_read_answers_the_stored_cells_newest_first_live_and_after_a_restart \
+            engine::tests::a_window_reduce_ranked_read_is_a_command::a_recent_read_is_bounded_like_the_ranked_read_and_refuses_a_quota \
+            engine::tests::a_window_reduce_read_over_several_keys::a_batch_honours_the_quota_each_read_carries \
+            engine::tests::a_window_reduce_read_over_several_keys::a_batch_is_refused_at_admission_for_its_size_and_for_any_read_a_single_read_would_be_refused_for \
+            engine::tests::a_window_reduce_read_over_several_keys::a_batch_of_reads_answers_each_as_the_single_read_would_in_request_order_and_one_failing_read_fails_no_other \
+            engine::tests::a_window_reduce_read_over_several_keys::a_batch_read_drops_an_expired_key_and_answers_it_empty \
+            engine::tests::a_window_reduce_read_over_several_keys::a_fan_in_honours_the_member_filter_the_spec_carries \
+            engine::tests::a_window_reduce_read_over_several_keys::a_fan_in_read_is_a_read \
+            engine::tests::a_window_reduce_read_over_several_keys::a_key_the_shard_does_not_hold_or_that_expired_contributes_nothing_and_is_not_counted \
+            engine::tests::a_window_reduce_read_over_several_keys::a_request_that_breaks_a_bound_is_refused_at_admission_and_the_limit_is_accepted \
+            engine::tests::a_window_reduce_read_over_several_keys::a_worked_example_of_a_ranked_read_across_the_channels_of_one_user \
+            engine::tests::a_window_reduce_read_over_several_keys::keys_whose_headers_differ_only_by_an_added_lane_read_under_the_wider_and_any_other_difference_is_refused \
+            engine::tests::a_window_reduce_read_over_several_keys::the_cell_ceiling_holds_while_reading_and_the_limit_is_served \
+            engine::tests::a_window_reduce_read_over_several_keys::the_sample_ceiling_holds_while_reading_and_the_limit_is_served \
+            engine::tests::a_worked_example_of_window_reduce::a_worked_example_of_window_reduce \
+            engine::window_reduce_remove::tests::a_window_takes_every_cell_of_the_samples_inside_it_and_both_bounds_are_inclusive \
+            engine::window_reduce_remove::tests::a_predicate_takes_the_cells_it_holds_on_and_keeps_the_rest_in_stored_order \
+            engine::window_reduce_remove::tests::a_member_set_takes_the_members_it_names_and_spares_the_ones_it_excludes \
+            engine::window_reduce_remove::tests::the_window_the_members_and_the_predicates_are_anded \
+            engine::window_reduce_remove::tests::the_order_and_repetition_of_a_member_set_change_nothing \
+            engine::window_reduce_remove::tests::a_removal_that_restricts_nothing_is_the_whole_key_and_each_way_of_restricting_is_not \
+            engine::window_reduce_remove::tests::a_name_the_key_does_not_declare_an_empty_include_set_and_a_backwards_window_are_refused \
+            engine::window_reduce_remove::tests::predicates_and_member_sets_are_accepted_at_the_limit_and_refused_one_past_it \
+            engine::window_reduce_remove::tests::a_sample_that_keeps_every_cell_comes_back_with_the_cells_it_had \
+            engine::tests::a_window_reduce_removal_is_a_command::a_removal_leaves_exactly_the_cells_an_independent_fold_keeps \
+            engine::tests::a_window_reduce_removal_is_a_command::a_ranked_read_after_a_removal_answers_what_a_fold_over_the_kept_cells_says \
+            engine::tests::a_window_reduce_removal_is_a_command::a_cold_reload_reads_the_removed_bytes_and_removing_again_changes_nothing \
+            engine::tests::a_window_reduce_removal_is_a_command::replaying_the_log_reaches_the_bytes_the_live_engine_reached \
+            engine::tests::a_window_reduce_removal_is_a_command::the_same_request_on_two_engines_leaves_the_same_bytes \
+            engine::tests::a_window_reduce_removal_is_a_command::a_request_that_matches_nothing_writes_nothing_and_says_so \
+            engine::tests::a_window_reduce_removal_is_a_command::removing_every_cell_leaves_an_empty_key_that_still_reads_and_still_takes_a_write \
+            engine::tests::a_window_reduce_removal_is_a_command::a_removal_that_restricts_nothing_deletes_the_key_in_one_record_whatever_its_size_and_a_missing_key_reports_zero \
+            engine::tests::a_window_reduce_removal_is_a_command::a_request_the_key_cannot_serve_is_refused_and_writes_nothing \
+            engine::tests::a_window_reduce_removal_is_a_command::each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it \
+            engine::tests::a_window_reduce_removal_is_a_command::an_absent_key_and_an_expired_key_remove_nothing \
+            engine::tests::a_window_reduce_removal_is_a_command::a_removal_is_a_write_the_log_can_carry_in_every_selector_spelling \
+            engine::window_reduce_protocol::remove::tests::a_remove_names_its_key_its_span_in_whole_milliseconds_and_its_label_predicate \
+            engine::window_reduce_protocol::remove::tests::a_span_that_holds_no_whole_millisecond_or_runs_backwards_or_is_negative_is_refused \
+            engine::window_reduce_protocol::remove::tests::a_remove_that_restricts_nothing_is_refused_and_a_member_set_or_a_span_restricts \
+            engine::window_reduce_protocol::remove::tests::member_lists_are_accepted_at_1024_and_refused_at_1025 \
+            engine::window_reduce_protocol::remove::tests::a_delete_is_a_removal_by_label_and_member_over_every_sample_and_never_of_the_key \
+            engine::window_reduce_protocol::remove::tests::the_responses_carry_the_receipt_on_the_additive_fields_and_the_established_ones_unchanged \
+            engine::window_reduce_protocol::remove::tests::a_remove_request_round_trips_its_additive_fields_and_an_older_reader_skips_them \
             engine::window_aggregate::algorithm_tests::each_reducer_answers_the_value_only_that_reducer_produces \
             engine::window_aggregate::algorithm_tests::the_three_roundings_differ_on_a_fraction \
             engine::window_aggregate::algorithm_tests::an_empty_window_answers_what_the_notes_say \
@@ -534,21 +809,21 @@ jobs:
             engine::window_aggregate::algorithm_tests::first_and_last_merge_only_in_stream_order \
             engine::window_aggregate::algorithm_tests::parsed_reducer_names_map_to_the_declared_reducers \
             engine::cell_set::tests::a_bytes_entity_round_trips_and_is_bounded \
-            engine::cell_set::tests::a_decoded_snapshot_is_held_to_the_same_bounds \
+            engine::cell_set::tests::a_decoded_sample_is_held_to_the_same_bounds \
             engine::cell_set::tests::a_distance_that_overflows_or_a_misplaced_flag_is_refused \
             engine::cell_set::tests::a_header_check_accepts_the_same_header_and_additions_and_refuses_the_rest_naming_the_field \
-            engine::cell_set::tests::a_header_round_trips_and_a_snapshot_round_trips_with_values_only_this_path_makes \
+            engine::cell_set::tests::a_header_round_trips_and_a_sample_round_trips_with_values_only_this_path_makes \
             engine::cell_set::tests::a_header_that_declares_too_many_fields_is_refused_while_it_is_read \
             engine::cell_set::tests::a_key_round_trips_and_numeric_order_is_lexical_order \
             engine::cell_set::tests::a_key_that_is_not_the_canonical_spelling_is_refused \
             engine::cell_set::tests::a_malformed_or_truncated_image_is_an_error_and_never_a_panic \
-            engine::cell_set::tests::a_merge_that_would_overflow_the_snapshot_changes_nothing \
+            engine::cell_set::tests::a_merge_that_would_overflow_the_sample_changes_nothing \
             engine::cell_set::tests::a_request_merges_into_what_is_stored_and_the_first_write_creates_the_key \
             engine::cell_set::tests::a_request_over_the_cell_limit_is_refused_and_at_the_limit_is_accepted \
-            engine::cell_set::tests::a_request_with_another_header_is_refused_and_one_that_adds_a_lane_upgrades_the_stored_snapshot \
+            engine::cell_set::tests::a_request_with_another_header_is_refused_and_one_that_adds_a_lane_upgrades_the_stored_sample \
             engine::cell_set::tests::a_text_value_holding_the_separator_or_a_length_prefix_cannot_collide \
             engine::cell_set::tests::a_value_carries_its_header_and_round_trips \
-            engine::cell_set::tests::an_old_snapshot_reads_a_new_trailing_lane_and_label_as_zero \
+            engine::cell_set::tests::an_old_sample_reads_a_new_trailing_lane_and_label_as_zero \
             engine::cell_set::tests::each_lane_reducer_combines_as_documented \
             engine::cell_set::tests::every_bound_refuses_one_past_the_limit_and_accepts_the_limit \
             engine::cell_set::tests::keys_that_do_not_fit_the_spec_are_refused \
@@ -556,34 +831,157 @@ jobs:
             engine::cell_set::tests::merging_applies_each_lane_reducer_per_member_and_replaces_labels \
             engine::cell_set::tests::sorted_u64_members_are_stored_as_distances_and_cost_one_byte_each \
             engine::cell_set::tests::the_version_gate_accepts_at_exactly_the_first_additive_version_and_refuses_below \
-            engine::cell_rollup::tests::a_rollup_equals_an_independent_fold_for_every_bucket_size_and_cutoff \
-            engine::cell_rollup::tests::each_lane_combines_oldest_first_and_a_count_is_the_sum_of_counts_not_the_number_of_snapshots \
-            engine::cell_rollup::tests::members_that_meet_merge_and_members_that_do_not_pass_through_in_order \
-            engine::cell_rollup::tests::sums_and_counts_saturate_and_never_wrap \
-            engine::cell_rollup::tests::rolling_a_rolled_result_again_changes_no_byte_and_the_same_request_twice_agrees \
-            engine::cell_rollup::tests::a_snapshot_exactly_at_the_cutoff_is_not_rolled_and_one_below_it_is \
-            engine::cell_rollup::tests::a_late_snapshot_in_an_already_rolled_bucket_folds_in_as_the_newest_contribution \
-            engine::cell_rollup::tests::a_decoded_replay_reaches_the_bytes_the_first_run_reached \
-            engine::cell_rollup::tests::nothing_to_roll_returns_the_snapshots_unchanged \
-            engine::cell_rollup::tests::a_cap_keeps_the_best_of_each_group_breaks_ties_by_member_and_reports_the_drops \
-            engine::cell_rollup::tests::a_cell_whose_score_is_undefined_ranks_after_every_scored_cell \
-            engine::cell_rollup::tests::the_cap_runs_on_the_folded_bucket_not_on_the_snapshots_that_make_it \
-            engine::cell_rollup::tests::a_snapshot_the_cap_does_not_reach_keeps_every_cell \
-            engine::cell_rollup::tests::a_bucket_width_is_bounded_below_at_exactly_one \
-            engine::cell_rollup::tests::keep_is_bounded_at_one_below_and_the_snapshot_limit_above \
-            engine::cell_rollup::tests::snapshots_below_the_cutoff_are_bounded_at_exactly_the_limit \
-            engine::cell_rollup::tests::a_bucket_over_the_snapshot_cell_limit_is_refused_and_one_at_the_limit_is_folded \
-            engine::cell_rollup::tests::a_request_the_key_cannot_serve_is_refused_naming_what_was_wrong \
-            engine::cell_rollup::tests::a_bytes_member_cannot_be_scored_by_member_and_is_otherwise_rolled_like_any_other \
-            engine::tests::a_cell_rollup_is_a_command::a_ranking_over_the_rolled_buckets_answers_what_it_answered_over_the_snapshots_they_replaced \
-            engine::tests::a_cell_rollup_is_a_command::a_cold_reload_reads_the_rolled_bytes_and_rolling_again_changes_nothing \
-            engine::tests::a_cell_rollup_is_a_command::replaying_the_log_reaches_the_bytes_the_live_engine_reached \
-            engine::tests::a_cell_rollup_is_a_command::the_same_request_on_two_engines_leaves_the_same_bytes \
-            engine::tests::a_cell_rollup_is_a_command::a_request_the_key_cannot_serve_is_refused_and_writes_nothing \
-            engine::tests::a_cell_rollup_is_a_command::each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it \
-            engine::tests::a_cell_rollup_is_a_command::an_absent_key_and_an_expired_key_roll_nothing_up \
-            engine::tests::a_cell_rollup_is_a_command::a_rollup_is_a_write_the_log_can_carry_in_every_score_spelling \
-            engine::tests::a_cell_rollup_is_a_command::a_worked_example_of_a_rollup \
+            engine::cell_set::decode_fast_tests::a_sample_decodes_the_same_through_the_fast_path_and_field_by_field \
+            engine::cell_set::decode_fast_tests::a_sample_written_under_a_narrower_header_reads_as_zero_in_what_it_lacks_either_way \
+            engine::cell_set::decode_fast_tests::a_damaged_sample_is_refused_in_the_same_words_or_read_as_the_same_cells_either_way \
+            engine::cell_set::decode_fast_tests::every_cell_of_a_sample_written_as_the_encoder_writes_it_takes_the_fast_path_at_any_size \
+            engine::window_reduce_rollup::tests::a_rollup_equals_an_independent_fold_for_every_bucket_size_and_cutoff \
+            engine::window_reduce_rollup::tests::each_lane_combines_oldest_first_and_a_count_is_the_sum_of_counts_not_the_number_of_samples \
+            engine::window_reduce_rollup::tests::members_that_meet_merge_and_members_that_do_not_pass_through_in_order \
+            engine::window_reduce_rollup::tests::sums_and_counts_saturate_and_never_wrap \
+            engine::window_reduce_rollup::tests::rolling_a_rolled_result_again_changes_no_byte_and_the_same_request_twice_agrees \
+            engine::window_reduce_rollup::tests::a_sample_exactly_at_the_cutoff_is_not_rolled_and_one_below_it_is \
+            engine::window_reduce_rollup::tests::a_late_sample_in_an_already_rolled_bucket_folds_in_as_the_newest_contribution \
+            engine::window_reduce_rollup::tests::a_decoded_replay_reaches_the_bytes_the_first_run_reached \
+            engine::window_reduce_rollup::tests::nothing_to_roll_returns_the_samples_unchanged \
+            engine::window_reduce_rollup::tests::a_cap_keeps_the_best_of_each_group_breaks_ties_by_member_and_reports_the_drops \
+            engine::window_reduce_rollup::tests::a_cell_whose_score_is_undefined_ranks_after_every_scored_cell \
+            engine::window_reduce_rollup::flat_tests::a_rollup_over_flat_samples_rolls_up_what_a_rollup_over_plain_samples_rolls_up \
+            engine::window_reduce_rollup::flat_tests::a_flat_sample_out_of_order_is_refused_as_a_plain_one_is \
+            engine::window_reduce_rollup::tests::the_cap_runs_on_the_folded_bucket_not_on_the_samples_that_make_it \
+            engine::window_reduce_rollup::tests::a_sample_the_cap_does_not_reach_keeps_every_cell \
+            engine::window_reduce_rollup::tests::a_bucket_width_is_bounded_below_at_exactly_one \
+            engine::window_reduce_rollup::tests::keep_is_bounded_at_one_below_and_the_sample_limit_above \
+            engine::window_reduce_rollup::tests::samples_below_the_cutoff_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_rollup::tests::a_bucket_over_the_sample_cell_limit_is_refused_and_one_at_the_limit_is_folded \
+            engine::window_reduce_rollup::tests::a_request_the_key_cannot_serve_is_refused_naming_what_was_wrong \
+            engine::window_reduce_rollup::tests::a_bytes_member_cannot_be_scored_by_member_and_is_otherwise_rolled_like_any_other \
+            engine::window_reduce_rollup::tier_tests::a_tiered_rollup_equals_an_independent_fold_with_a_bucket_per_tier \
+            engine::window_reduce_rollup::tier_tests::a_sample_takes_the_coarsest_tier_whose_cutoff_is_above_it_and_each_cutoff_is_strict \
+            engine::window_reduce_rollup::tier_tests::a_cutoff_that_is_not_a_multiple_of_the_finer_width_is_aligned_down_to_it \
+            engine::window_reduce_rollup::tier_tests::the_catch_all_tier_holds_everything_older_in_one_sample_at_stamp_zero \
+            engine::window_reduce_rollup::tier_tests::an_age_resolves_against_the_newest_stamp_and_a_request_cutoff_ignores_it \
+            engine::window_reduce_rollup::tier_tests::a_tiered_capped_result_rolled_again_changes_no_byte \
+            engine::window_reduce_rollup::tier_tests::a_request_that_names_every_new_control_at_its_default_is_the_single_tier_request \
+            engine::window_reduce_rollup::tier_tests::a_truncation_acts_only_over_its_trigger_and_then_keeps_the_newest_n \
+            engine::window_reduce_rollup::tier_tests::truncating_a_rolled_series_keeps_the_newest_samples_of_what_the_rollup_left \
+            engine::window_reduce_rollup::tier_tests::a_protected_share_of_the_newest_members_survives_whatever_its_score \
+            engine::window_reduce_rollup::tier_tests::a_member_is_as_new_as_the_newest_sample_that_wrote_it \
+            engine::window_reduce_rollup::tier_tests::a_group_is_cut_only_when_it_is_over_its_keep_plus_the_trigger_and_then_down_to_keep \
+            engine::window_reduce_rollup::tier_tests::the_tier_count_the_order_and_the_widths_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_rollup::tier_tests::truncation_and_cap_controls_are_bounded_at_exactly_the_limit \
+            engine::window_reduce_rollup::tier_tests::samples_below_the_first_cutoff_are_bounded_at_exactly_the_limit_whatever_the_tiers \
+            engine::tests::a_window_reduce_rollup_is_a_command::a_ranking_over_the_rolled_buckets_answers_what_it_answered_over_the_samples_they_replaced \
+            engine::tests::a_window_reduce_rollup_is_a_command::a_cold_reload_reads_the_rolled_bytes_and_rolling_again_changes_nothing \
+            engine::tests::a_window_reduce_rollup_is_a_command::replaying_the_log_reaches_the_bytes_the_live_engine_reached \
+            engine::tests::a_window_reduce_rollup_is_a_command::the_same_request_on_two_engines_leaves_the_same_bytes \
+            engine::tests::a_window_reduce_rollup_is_a_command::a_request_the_key_cannot_serve_is_refused_and_writes_nothing \
+            engine::tests::a_window_reduce_rollup_is_a_command::each_bound_is_accepted_at_exactly_the_limit_and_refused_one_past_it \
+            engine::tests::a_window_reduce_rollup_is_a_command::an_absent_key_and_an_expired_key_roll_nothing_up \
+            engine::tests::a_window_reduce_rollup_is_a_command::a_rollup_is_a_write_the_log_can_carry_in_every_score_spelling \
+            engine::tests::a_window_reduce_rollup_is_a_command::a_worked_example_of_a_rollup \
+            engine::tests::a_window_reduce_rollup_is_a_command::a_tiered_request_coarsens_old_history_in_one_command_and_ranks_the_same \
+            engine::tests::a_window_reduce_rollup_is_a_command::an_age_resolves_against_the_newest_stored_sample_and_follows_it \
+            engine::tests::a_window_reduce_rollup_is_a_command::a_truncation_acts_over_its_trigger_and_keeps_the_newest_samples \
+            engine::tests::a_window_reduce_rollup_is_a_command::a_protected_share_of_the_newest_members_and_a_cap_trigger_act_through_the_engine \
+            engine::tests::a_window_reduce_rollup_is_a_command::replaying_the_log_reaches_the_tiered_truncated_bytes_the_live_engine_reached \
+            engine::tests::a_window_reduce_rollup_is_a_command::a_new_control_that_cannot_be_served_is_refused_and_writes_nothing_and_each_bound_is_exact \
+            engine::tests::a_window_reduce_rollup_is_a_command::a_request_with_none_of_the_new_fields_keeps_its_wire_and_json_bytes \
+            engine::cell_retry_ring::tests::a_remembered_token_replays_its_first_receipt_and_a_new_one_is_fresh \
+            engine::cell_retry_ring::tests::the_capacity_is_sixteen_and_a_full_ring_holds_exactly_that_many \
+            engine::cell_retry_ring::tests::the_token_past_the_limit_evicts_the_oldest_and_nothing_else \
+            engine::cell_retry_ring::tests::eviction_follows_arrival_order_over_a_long_run \
+            engine::cell_retry_ring::tests::a_token_already_held_is_refused_and_changes_nothing \
+            engine::cell_retry_ring::tests::two_tokens_interleaved_and_one_token_twice_apart_each_apply_once \
+            engine::cell_retry_ring::tests::the_same_requests_give_the_same_bytes_and_a_decoded_ring_continues_as_the_original_would \
+            engine::cell_retry_ring::tests::an_empty_ring_holds_nothing_and_stores_no_bytes \
+            engine::cell_retry_ring::tests::the_stored_bytes_are_the_hand_written_ones_and_round_trip \
+            engine::cell_retry_ring::tests::a_stored_ring_of_sixteen_is_read_and_one_of_seventeen_is_refused \
+            engine::cell_retry_ring::tests::a_token_twice_in_one_stored_ring_is_refused \
+            engine::cell_retry_ring::tests::a_value_that_is_not_the_canonical_spelling_is_refused \
+            engine::cell_retry_ring::tests::a_truncated_or_corrupt_value_is_an_error_and_never_a_panic \
+            engine::cell_retry_ring::tests::a_logged_entry_is_the_four_fields_a_ring_stores_and_reads_back_only_in_that_spelling \
+            engine::tests::a_logged_retry_token_is_installed_on_replay::a_logged_token_is_filed_and_the_retry_after_it_answers_the_first_receipt \
+            engine::tests::a_logged_retry_token_is_installed_on_replay::installing_an_entry_twice_changes_nothing_and_the_ring_holds_sixteen \
+            engine::tests::a_logged_retry_token_is_installed_on_replay::a_key_that_holds_no_sample_remembers_no_token \
+            engine::tests::a_logged_retry_token_is_installed_on_replay::a_value_that_is_not_one_entry_in_its_spelling_is_refused_and_touches_nothing \
+            engine::tests::a_logged_retry_token_is_installed_on_replay::the_item_survives_the_protobuf_record_with_its_kind_and_value \
+            engine::tests::a_tokened_append_is_recovered_with_its_token::a_tokened_append_written_after_the_last_flush_is_replayed_with_its_token \
+            engine::tests::a_tokened_append_is_recovered_with_its_token::a_synchronous_engine_recovers_the_token_of_an_append_after_its_last_flush_the_same_way \
+            engine::tests::a_tokened_append_is_recovered_with_its_token::a_key_deleted_after_its_token_was_filed_is_not_given_the_ring_back_by_replay \
+            engine::tests::a_tokened_append_is_recovered_with_its_token::a_tokenless_append_logs_no_item_and_a_tokened_one_logs_exactly_one_whose_size_is_measured \
+            engine::window_reduce_protocol::tests::the_add_request_wire_bytes_follow_the_established_field_numbers \
+            engine::window_reduce_protocol::tests::an_unknown_field_is_skipped_and_the_rest_reads_the_same \
+            engine::window_reduce_protocol::tests::a_query_and_its_answer_round_trip_through_the_wire \
+            engine::window_reduce_protocol::tests::a_wide_lane_value_keeps_its_low_32_bits_for_a_narrow_reader \
+            engine::window_reduce_protocol::tests::an_add_becomes_one_merge_reduce_append_per_key_that_decodes_back_to_its_cells \
+            engine::window_reduce_protocol::tests::a_shorthand_pair_fills_the_pair_and_a_list_shorter_than_the_lanes_is_padded_with_zeros \
+            engine::window_reduce_protocol::tests::a_request_with_a_wrong_shape_an_unknown_table_or_a_duplicate_is_refused_with_its_own_code \
+            engine::window_reduce_protocol::tests::an_unreadable_channel_or_label_is_refused_not_wrapped \
+            engine::window_reduce_protocol::tests::cells_per_request_are_accepted_at_the_limit_and_refused_one_past_it \
+            engine::window_reduce_protocol::tests::queries_per_batch_are_accepted_at_the_limit_and_refused_one_past_it \
+            engine::window_reduce_protocol::tests::a_batch_names_the_position_of_the_query_that_refused_it \
+            engine::window_reduce_protocol::tests::the_table_name_is_accepted_at_64_bytes_and_refused_at_65 \
+            engine::window_reduce_protocol::tests::the_limit_of_a_read_is_accepted_at_1000_and_refused_at_1001 \
+            engine::window_reduce_protocol::tests::weighted_lanes_are_accepted_at_8_and_refused_at_9 \
+            engine::window_reduce_protocol::tests::member_lists_and_extra_entities_are_accepted_at_the_limit_and_refused_one_past_it \
+            engine::window_reduce_protocol::tests::a_member_set_round_trips_the_wire_and_becomes_the_include_and_exclude_filter \
+            engine::window_reduce_protocol::tests::a_flagged_empty_include_set_is_refused_and_an_unflagged_one_restricts_nothing \
+            engine::window_reduce_protocol::tests::a_window_anchored_on_the_newest_sample_becomes_the_newest_anchor_and_the_clock_one_does_not \
+            engine::window_reduce_protocol::tests::a_quota_names_lanes_by_position_and_its_first_count_is_also_the_others_count \
+            engine::window_reduce_protocol::tests::a_quota_whose_wire_counts_sum_to_500_reserves_1000_and_one_more_is_refused \
+            engine::window_reduce_protocol::tests::a_quota_is_accepted_at_16_lanes_and_refused_at_17_and_a_malformed_one_is_refused \
+            engine::window_reduce_protocol::tests::a_decayed_lane_takes_its_half_life_from_decay_made_whole_by_its_rounding \
+            engine::window_reduce_protocol::tests::a_half_life_is_accepted_at_one_and_at_ten_years_and_refused_outside_them \
+            engine::window_reduce_protocol::tests::more_entities_become_one_merged_read_over_every_key_in_request_order \
+            engine::window_reduce_protocol::tests::a_merged_read_refuses_a_key_named_twice_and_an_entity_that_is_not_an_id \
+            engine::window_reduce_protocol::tests::a_merged_answer_reports_how_many_keys_held_a_sample \
+            engine::window_reduce_protocol::tests::a_batch_becomes_one_batch_command_that_the_engine_admits_and_a_merged_read_has_no_place_in_it \
+            engine::window_reduce_protocol::tests::a_batch_answer_holds_one_answer_per_query_in_order_each_with_its_own_status \
+            engine::window_reduce_protocol::tests::the_accepted_timestamp_range_is_open_at_both_ends \
+            engine::window_reduce_protocol::tests::each_translated_rank_mode_becomes_the_score_it_names \
+            engine::window_reduce_protocol::tests::first_and_last_say_what_the_window_scanned_except_for_the_reads_that_select_by_member_or_lane_value \
+            engine::window_reduce_protocol::tests::the_selector_label_becomes_an_equality_predicate_and_the_key_names_channel_and_kind \
+            engine::tests::a_newest_rows_window_reads_stored_rows::a_recent_read_over_a_rows_window_returns_exactly_the_stored_cells_the_window_holds \
+            engine::tests::a_newest_rows_window_reads_stored_rows::a_rows_window_applies_to_each_key_of_a_merged_read \
+            engine::tests::a_newest_rows_window_reads_stored_rows::a_rows_window_is_bounded_at_admission_and_by_the_samples_it_reaches_and_each_bound_is_exact \
+            engine::tests::a_newest_rows_window_reads_stored_rows::a_rows_window_reads_the_newest_stored_rows_and_cuts_the_sample_that_crosses_its_count \
+            engine::tests::a_newest_rows_window_reads_stored_rows::the_rows_window_is_one_new_spelling_and_the_other_windows_keep_their_own \
+            engine::window::tests::a_rows_window_hands_back_samples_up_to_the_cap_and_never_asks_for_the_newest_instant \
+            engine::window::tests::a_rows_window_takes_whole_samples_and_cuts_only_the_one_that_crosses_its_count \
+            engine::window_reduce_protocol::tests::a_newest_rows_window_counts_rows_and_its_bounds_are_exact \
+            engine::window_reduce_rank::flat_tests::a_sample_read_without_its_first_cells_ranks_as_the_plain_sample_without_them \
+            engine::window_reduce_protocol::tests::recent_is_the_stored_cell_read_with_the_selectors_label_and_limit \
+            engine::window_reduce_protocol::tests::match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_say \
+            engine::window_reduce_protocol::tests::a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_sample \
+            engine::window_reduce_protocol::tests::a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time \
+            engine::window_reduce_protocol::tests::a_window_from_a_start_covers_whole_milliseconds_and_excludes_its_end \
+            engine::window_reduce_protocol::tests::an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time \
+            engine::window_reduce_protocol::tests::the_skip_existing_flag_is_carried_and_refused_with_a_message_that_says_what_to_use \
+            engine::window_reduce_protocol::tests::a_retry_token_on_the_wire_rides_on_every_key_of_the_append_and_a_zero_token_is_none \
+            engine::window_reduce_protocol::tests::the_token_and_the_replayed_flag_have_the_established_field_numbers \
+            engine::window_reduce_protocol::tests::a_replayed_receipt_is_reported_with_the_counts_of_the_first_application \
+            engine::window_reduce_protocol::tests::a_restore_never_carries_a_token \
+            engine::tests::a_read_can_say_which_samples_it_used::a_merged_read_says_the_samples_of_every_key_in_stamp_order \
+            engine::tests::a_read_can_say_which_samples_it_used::a_read_that_asks_says_which_samples_it_used_and_how_many_cells_each_held_live_and_after_a_restart \
+            engine::tests::a_read_can_say_which_samples_it_used::a_read_that_does_not_ask_answers_what_it_always_answered_and_its_json_has_no_new_field \
+            engine::tests::a_read_can_say_which_samples_it_used::a_rows_window_counts_only_the_cells_it_holds_of_the_sample_at_its_edge \
+            engine::window_reduce_protocol::tests::a_selector_that_asks_for_a_member_limit_is_refused_naming_the_field \
+            engine::window_reduce_protocol::tests::a_selector_that_wants_sample_info_asks_the_read_for_it_and_changes_nothing_else \
+            engine::window_reduce_protocol::tests::an_answer_says_which_samples_the_read_used_in_microseconds_and_leaves_the_field_out_when_not_asked \
+            engine::window_reduce_protocol::tests::a_selector_that_sets_them_off_is_translated_to_exactly_the_read_it_was_without_them \
+            engine::window_reduce_protocol::wire_tests::the_golden_bytes_of_every_message_decode_and_re_encode_identically \
+            engine::window_reduce_protocol::wire_tests::every_golden_value_sets_every_field_its_message_has_so_no_field_escapes_the_comparison \
+            engine::window_reduce_protocol::wire_tests::the_field_numbers_wire_types_labels_enum_values_and_reserved_numbers_are_those_the_proto_had_before \
+            engine::window_reduce_protocol::wire_tests::the_proto_names_no_snapshot_for_this_unit_and_the_stored_key_tag_is_still_cells \
+            sdk::window_reduce_wire_tests::the_golden_bytes_of_every_touched_command_message_decode_and_re_encode_identically \
+            sdk::window_reduce_wire_tests::the_oneof_field_numbers_of_the_two_commands_are_69_and_75_under_their_new_names \
+            sdk::window_reduce_wire_tests::every_golden_command_value_sets_the_fields_it_states_and_together_they_cover_every_declared_field \
+            sdk::window_reduce_wire_tests::the_command_proto_field_numbers_wire_types_labels_and_enum_values_are_those_it_had_before \
+            sdk::window_reduce_wire_tests::the_command_proto_names_no_cell_rollup_or_cell_remove_and_no_snapshot_count_field \
+            engine::window::tests::a_range_stops_at_its_cap_newest_first_and_a_newest_n_is_not_capped_by_it \
+            engine::window::tests::a_window_is_resolved_against_the_clock_and_the_anchor_it_names \
+            engine::window::tests::every_window_kind_names_the_samples_the_walk_it_replaced_named \
             engine::tests::what_a_high_cardinality_distinct_holds::an_unbounded_distinct_holds_every_member_and_the_bound_holds_a_fixed_sketch \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::an_ordered_read_answers_by_score_whatever_the_window \
             engine::tests::an_ordered_zset_read_pays_for_its_answer::a_score_update_reorders_an_ordered_read \
@@ -600,6 +998,153 @@ jobs:
               exit 1
             fi
             grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/gate.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+
+      - name: cargo test (loop ordering and quarantine grace guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # The periodic loop runs no stage on a shard that is still replaying, and holds a quarantined
+          # slab for its grace. Pinned by exact name: they ran only in the advisory suite above.
+          for t in \
+            data_node::tests::part3::the_loop_runs_no_stage_on_a_shard_that_is_still_replaying \
+            data_node::tests::part3::the_periodic_loop_holds_a_quarantined_slab_for_a_day \
+            data_node::tests::part3::a_quiet_shard_with_every_bucket_clean_can_reclaim_its_log \
+            data_node::tests::part3::the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable \
+            data_node::round_budget::tests::the_whole_round_loop_is_the_default_and_the_tick_loop_is_opt_in
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-loop.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-loop.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-loop.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+      - name: cargo test (expire, evict and cache-bound stage guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # A shard's round expires only that shard's keys, the expire and evict counts are each stage's
+          # own runs, the runtime counts what expiry removed and what it left overdue, the cache-bound
+          # stage drops the cache and dumps nothing, a long run of due cold keys does not starve a hot
+          # one, and a shard that finishes recovery has its due keys removed by its own next round.
+          # Pinned by exact name: they ran only in the advisory suite above.
+          for t in \
+            data_node::tests::loop_report::a_shards_round_expires_only_that_shards_keys \
+            data_node::tests::loop_report::the_expire_and_evict_counts_are_each_stages_own_runs \
+            data_node::tests::loop_report::the_runtime_counts_the_keys_the_expire_stage_removed \
+            data_node::tests::loop_report::the_overdue_count_is_what_a_bounded_round_leaves_due \
+            data_node::tests::loop_report::the_cache_bound_stage_drops_the_cache_and_dumps_nothing \
+            engine::tests::expiry_scale::a_long_run_of_due_cold_keys_does_not_starve_a_due_hot_key \
+            data_node::tests::part3::a_shard_that_finishes_recovery_has_its_due_keys_removed_by_its_own_next_round
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-memory-stages.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-memory-stages.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-memory-stages.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+      - name: cargo test (index stage and dump floor guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # The index stage gates on bytes and on the floor, and the dump decision takes the larger of
+          # the floor and the last image. Pinned by exact name: they ran only in the advisory suite above.
+          for t in \
+            data_node::tests::part3::the_index_stage_below_the_gate_and_the_floor_writes_no_manifest \
+            data_node::tests::part3::the_index_stage_dumps_once_the_byte_gate_is_met_and_reports_the_image \
+            data_node::tests::part3::a_reopen_after_gated_rounds_replays_only_the_gated_bytes_and_loses_nothing \
+            data_node::runtime_storage::index_log_forces_dump_guards::a_log_shorter_than_the_last_image_does_not_force_a_dump \
+            data_node::runtime_storage::index_log_forces_dump_guards::the_floor_bounds_the_decision_from_below
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-index.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-index.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-index.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+      - name: cargo test (compaction hold and drain guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # A failed compaction keeps the slabs the disk index names, a drain round asks only about keys
+          # that hold a block on the drain slab, and a round keeps every bucket's dirty generation.
+          # Pinned by exact name: they ran only in the advisory suite above.
+          for t in \
+            engine::recovery_sweep_compact::compaction_execution_tests::a_compaction_whose_index_publish_failed_keeps_the_slabs_the_disk_index_names \
+            engine::recovery_sweep_compact::compaction_execution_tests::a_compaction_whose_barrier_failed_keeps_the_slabs_the_disk_index_names \
+            engine::recovery_sweep_compact::compaction_execution_tests::a_partial_compaction_whose_barrier_failed_keeps_the_slabs_the_disk_index_names \
+            engine::recovery_sweep_compact::compaction_execution_tests::unloading_a_shard_drops_its_unpublished_compaction_hold \
+            engine::recovery_sweep_compact::compaction_execution_tests::a_failed_compaction_barrier_followed_by_reclaim_and_a_restart_loses_no_key \
+            engine::recovery_sweep_compact::compaction_execution_tests::two_failed_compaction_rounds_keep_the_slabs_of_the_first \
+            engine::recovery_sweep_compact::compaction_execution_tests::a_drain_round_asks_only_about_keys_that_hold_a_block_on_the_drain_slab \
+            engine::recovery_sweep_compact::compaction_execution_tests::a_compaction_round_keeps_every_buckets_dirty_generation \
+            data_node::runtime_storage::maintenance_report_tests::a_compaction_step_returns_when_its_budget_is_spent_and_the_pass_resumes
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-compact.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-compact.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-compact.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+      - name: cargo test (writer wait by stage window guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # A write is charged to the stage window it began in, the percentile is nearest-rank, and
+          # the loop report's stage rows tile the round with a start offset on the clock of their
+          # duration. Pinned by exact name: they would otherwise run only in the advisory suite.
+          for t in \
+            engine::writer_stall_probe::window_math_tests::a_write_is_charged_to_the_window_it_began_in \
+            engine::writer_stall_probe::window_math_tests::nearest_rank_percentiles_of_a_known_sample \
+            data_node::tests::loop_report::a_writers_waits_are_attributed_to_the_stage_window_it_began_in
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-stall-window.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-stall-window.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-stall-window.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+      - name: cargo test (async reopen finds every acknowledged key guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # A reopen after capped dumps and a log reclaim finds every acknowledged key, through each
+          # async write path. Pinned by exact name: they ran only in the advisory suite above.
+          for t in \
+            engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_key_written_through_the_single_command_async_path \
+            engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_key_written_through_the_batch_path \
+            engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_live_key_after_async_deadline_keys_expire_between_cycles \
+            engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_live_key_after_async_expire_commands_on_clean_keys
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-reopen.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-reopen.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-reopen.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
@@ -693,6 +1238,26 @@ jobs:
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
+      # A restart after maintenance rounds has to serve everything it acknowledged. With async
+      # storage a block's only copy can sit inside a log record until a dump and a move make it
+      # durable elsewhere, so every path that trims the log must have set the retention floor
+      # first. These three drive the periodic loop (draining and at its default cap) and the
+      # on-demand cycle over a durable engine, restart it, and read every key back. They are in
+      # the lib suite, which reports without gating, so they are named here.
+      - name: A restart after maintenance rounds serves every acknowledged write
+        run: |
+          set -o pipefail
+          for t in             data_node::tests::a_reopen_after_rounds_with_deadlines_serves_every_key_and_list_element::a_reopen_after_loop_rounds_with_deadlines_serves_every_key_and_list_element             data_node::tests::a_reopen_after_rounds_with_deadlines_serves_every_key_and_list_element::a_reopen_after_default_cap_loop_rounds_with_deadlines_serves_every_key_and_list_element             data_node::tests::a_reopen_after_rounds_with_deadlines_serves_every_key_and_list_element::a_reopen_after_cycle_rounds_with_deadlines_serves_every_key_and_list_element ; do
+            echo "--- $t ---"
+            cargo test --release -p temporalstore-rust --lib "$t"               -- --exact --test-threads=1 2>&1 | tee /tmp/reopen-gate.log
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/reopen-gate.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/reopen-gate.log               || { echo "::error::$t did not pass"; exit 1; }
+          done
+
       # The published write and space ratios are only falsifiable at a consumer if the identities
       # tying each ratio to its published terms actually run. They are NOT covered by the suite
       # step above, which carries continue-on-error AND has been observed timing out at its limit,
@@ -781,11 +1346,53 @@ jobs:
             shared_store::a_staged_blocks_name_keeps_its_tag::the_frame_of_a_named_block_round_trips_byte_for_byte \
             engine::tests::a_feature_sum_reads_each_point_in_place::with_feature_point_value_answers_what_the_decoder_answers \
             engine::tests::a_feature_sum_reads_each_point_in_place::a_sum_answers_what_the_collected_values_summed_to \
-            engine::tests::a_feature_sum_reads_each_point_in_place::page_keys_equal_the_constructors_keys \
-            engine::tests::a_hash_get_all_shares_its_page_keys::a_whole_hash_read_answers_what_the_per_field_reads_answer \
+            engine::tests::a_feature_sum_reads_each_point_in_place::block_keys_equal_the_constructors_keys \
+            engine::tests::a_cached_feature_query_sees_a_sequence_add::a_cached_feature_query_sees_a_sequence_add \
+            engine::tests::a_cached_feature_query_sees_a_sequence_add::a_cached_feature_query_sees_a_sequence_add_after_expiry \
+            engine::tests::a_sequence_query_decodes_each_row_where_it_sits::an_in_place_read_answers_what_the_decoder_answered \
+            engine::tests::a_sequence_query_decodes_each_row_where_it_sits::a_sequence_query_answers_the_rows_that_were_added \
+            engine::tests::a_resident_map_read_takes_the_shared_lock::each_resident_map_read_answers_while_the_shared_lock_is_held \
+            engine::tests::a_resident_map_read_takes_the_shared_lock::the_fast_reads_answer_what_the_maps_hold \
+            engine::tests::a_feature_range_read_takes_the_shared_lock::each_range_read_answers_while_the_shared_lock_is_held \
+            engine::tests::a_feature_range_read_takes_the_shared_lock::a_range_read_answers_what_was_appended \
+            engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::each_point_read_answers_while_the_shared_lock_is_held \
+            engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::the_fast_reads_answer_what_the_ordinary_reads_answer \
+            engine::tests::a_restating_write_names_one_bucket_not_the_shard::a_bucket_projection_names_what_the_whole_shard_inversion_names \
+            engine::tests::a_string_length_and_range_do_not_copy_the_value::length_and_range_answer_what_the_whole_read_answers \
+            engine::tests::a_string_length_and_range_do_not_copy_the_value::a_lapsed_string_has_no_length_and_no_range \
+            engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::an_outcome_kind_serializes_as_the_plain_string_for_every_kind_in_use \
+            engine::tests::a_hash_field_presence_is_read_from_its_row::presence_answers_what_the_point_read_answers \
+            engine::tests::a_hash_field_presence_is_read_from_its_row::the_door_answers_hexists_and_hsetnx_as_it_did \
+            engine::tests::a_timestamped_point_names_itself_once::the_staged_items_are_what_they_were \
+            engine::tests::a_write_into_a_live_series_borrows_its_key::a_slot_keeps_the_key_it_has_and_mints_the_key_it_lacks \
+            engine::tests::a_write_into_a_live_series_borrows_its_key::a_history_through_every_borrowing_arm_answers_what_an_oracle_answers \
+            engine::tests::a_write_into_a_live_series_borrows_its_key::no_arm_mints_a_key_before_it_looks_the_key_up \
+            engine::tests::a_distinct_count_compares_its_members_where_they_are::a_distinct_count_answers_the_size_of_the_union \
+            engine::tests::a_counter_window_read_reduces_where_it_sits::a_window_read_answers_what_an_independent_reduction_answers \
+            engine::tests::a_series_at_its_cap_trims_without_a_victim_list::a_bounded_series_keeps_its_newest_points_whatever_the_write_order \
+            engine::tests::a_feature_series_at_its_cap_files_only_what_changed::a_captured_series_is_written_in_the_bytes_the_value_was \
+            engine::tests::a_feature_series_at_its_cap_files_only_what_changed::a_write_that_leaves_a_block_one_live_point_keeps_it \
+            engine::tests::a_feature_series_at_its_cap_files_only_what_changed::the_blocks_filed_are_the_blocks_the_points_name_after_every_write \
+            engine::tests::a_feature_series_at_its_cap_files_only_what_changed::the_capture_of_a_key_names_the_series_it_holds \
+            engine::tests::a_feature_series_at_its_cap_files_only_what_changed::the_old_and_the_new_filing_store_the_same \
+            engine::tests::a_string_set_does_not_copy_the_value_it_replaces::a_conditional_write_answers_what_it_always_answered \
+            engine::tests::a_string_set_does_not_copy_the_value_it_replaces::the_value_a_write_leaves_is_the_value_a_read_returns \
+            engine::tests::a_feature_range_read_decodes_each_point_where_it_sits::the_cursor_answers_what_the_decoder_answers \
+            engine::tests::a_feature_range_read_decodes_each_point_where_it_sits::a_range_read_answers_what_was_appended \
+            engine::tests::a_hash_get_all_shares_its_block_keys::a_whole_hash_read_answers_what_the_per_field_reads_answer \
             engine::tests::a_whole_container_read_shares_its_work::a_list_range_answers_the_pushes_it_was_given \
             engine::tests::a_whole_container_read_shares_its_work::a_list_element_name_spells_what_the_formatted_name_spells \
-            wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
+            engine::tests::a_container_point_read_searches_without_building_its_key::the_borrowed_key_is_the_key_each_spelling_has_always_built \
+            engine::tests::a_container_point_read_searches_without_building_its_key::a_point_selection_answers_what_it_always_answered \
+            engine::tests::a_container_point_read_searches_without_building_its_key::a_whole_hash_read_answers_the_fields_a_hash_holds_in_order \
+            wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier \
+            wal::group_write_tests::group_write_one_barrier_writes_every_buffered_record_in_one_call \
+            wal::group_write_tests::group_write_a_record_that_was_never_acknowledged_is_not_on_disk \
+            wal::group_write_tests::group_write_torn_batch_loses_no_acked_record_and_promotes_no_unacked_one \
+            wal::group_write_tests::group_write_a_failed_batch_is_retried_whole_and_never_duplicated \
+            wal::group_write_tests::group_write_a_failed_batch_does_not_let_a_later_writer_be_told_it_is_durable \
+            wal::group_write_tests::group_write_readers_see_records_that_are_still_buffered \
+            wal::group_write_tests::group_write_concurrent_writers_share_writes_and_every_acked_record_is_durable ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
@@ -844,6 +1451,12 @@ jobs:
           # installing the counting allocator process-wide turns a number of other tests red, and
           # a filtered run never reaches them.
           #
+          # a_block_lookup_allocates_only_its_answer pins that picking one element out of a framed hash
+          # or list block builds no key to search with: an absent element costs no allocation and a
+          # present one costs its value copy alone (a set, whose member must be decoded, is the
+          # control and still allocates). a_whole_hash_read_spends_no_allocation_on_a_name_it_does_not_return
+          # pins the slope of a warm whole-hash read at the three allocations a field's answer needs
+          # plus a margin; it was 5.02 per field.
           # an_element_write_into_a_live_object_does_not_copy_its_key pins that an install into an
           # object that ALREADY EXISTS reaches it through a borrow. `Arc::from(&str)` always mallocs
           # and copies and `entry()` takes its key by value, so the pre-fix path allocated, copied
@@ -858,6 +1471,11 @@ jobs:
           # that resolves no named element. The guard varies the FIELD COUNT and carries a control:
           # a read of the whole hash must grow with it, or the probe cannot see that dimension.
           #
+          # a_container_add_does_not_pay_for_the_elements_it_already_has pins that a set add, a zset add
+          # and a list push allocate the same number of times into a container of 16 elements and one
+          # of 1,024 (about 68, 61 and 58), with a ceiling per operation. It carries a control: a
+          # read of the whole set must grow with its members, or the probe cannot see that dimension.
+          #
           # a_write_does_not_pay_for_the_objects_it_did_not_touch pins that the walk which builds a
           # write's index-log rows names the blocks of the objects the write touched and not the
           # blocks of the whole shard. The whole-shard inversion costs 19 KB at 20 objects and 1.2 MB
@@ -868,27 +1486,80 @@ jobs:
           # built in one allocation and that a cell costs the same allocations at a 16-byte and a
           # 256-byte member. Each carries a control: the byte count must grow with the size, or
           # the probe cannot see the dimension it claims is flat.
-          # a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many pins that
+          # a_rollup_allocates_the_same_over_few_samples_and_many_and_few_members_and_many pins that
           # a rollup of old cell snapshots allocates the same number of times over 4 and over 64
           # snapshots in a bucket and over 50 and over 4,000 members, because the cells are moved
           # and the fold buffers are sized once. It carries a control: the table of cloned cells an
           # obvious implementation builds must grow with both, or the probe cannot see them.
+          # a_ranked_read_through_the_engine_does_not_allocate_per_cell and
+          # a_fan_in_read_through_the_engine_does_not_allocate_per_cell pin that a read of stored
+          # snapshots allocates the same number of times at 50 and at 800 cells a snapshot, because a
+          # snapshot is decoded into a few vectors and not two per cell. Each carries a control: the
+          # bytes allocated must grow with the cell count, or the probe cannot see it.
+          # a_merge_write_reads_a_stored_sample_in_place_whatever_its_block_holds pins that a merge write
+          # reads the sample it merges into where it sits in the cached block and keeps one copy: the
+          # same 24 samples stored as one block and as 24 blocks cost the same allocations a write and
+          # leave the same series to the byte. Its control is a plain read of the series, which must
+          # allocate once a sample so that the probe can see the sample count. No absolute ceiling.
+          # a_merge_request_that_carries_the_stored_header_bytes_is_not_decoded_again pins that a
+          # merge-reduce write whose header bytes are the stored header's is not decoded and compared
+          # again: it costs fewer allocations than a request that spells the same header differently
+          # and takes the full path, and both leave the same stored snapshot to the byte. There is no
+          # absolute ceiling; the guard is the difference, which only the shortcut makes positive.
+          # a_rollup_through_the_engine_does_not_allocate_per_cell pins that a rollup of stored snapshots
+          # allocates the same number of times at 50 and at 400 cells a snapshot, because each snapshot
+          # is decoded, folded and written back in a few vectors and not two per cell. Its control is
+          # the bytes allocated, which must grow with the cell count.
+          # a_fan_in_allocates_the_same_over_a_hundred_members_and_over_two_thousand pins that a ranked
+          # read over several keys allocates the same number of times over 100 and over 2,000 members
+          # (three keys of eight snapshots), because only the snapshot count sizes anything. It carries
+          # a control: the table of members an obvious implementation builds must grow with them.
+          # a_tiered_rollup_allocates_the_same_over_few_samples_and_many_and_few_members_and_many pins
+          # the same for a request with tiers and a cap that protects its newest members: the buffers that
+          # follow each cell's newest stamp are sized once per bucket, so allocations still do not move
+          # with the snapshots in a bucket or the members. Its control is the same cloning table.
           for t in \
             engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key \
+            engine::tests::a_container_add_does_not_pay_for_the_elements_it_already_has::probe::a_container_add_does_not_pay_for_the_elements_it_already_has \
             engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has \
             engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::probe::a_write_does_not_pay_for_the_objects_it_did_not_touch \
             engine::tests::a_feature_sum_reads_each_point_in_place::probe::a_feature_sum_does_not_allocate_per_point \
-            engine::tests::a_hash_get_all_shares_its_page_keys::probe::a_whole_hash_read_does_not_pay_three_allocations_a_field_for_its_key \
+            engine::tests::a_sequence_query_decodes_each_row_where_it_sits::probe::a_sequence_query_does_not_allocate_per_row \
+            engine::tests::a_restating_write_names_one_bucket_not_the_shard::probe::a_restating_write_does_not_allocate_with_the_shard \
+            engine::tests::a_string_length_and_range_do_not_copy_the_value::probe::a_length_and_a_range_do_not_allocate_per_byte \
+            engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::probe::a_known_outcome_kind_allocates_nothing \
+            engine::tests::a_hash_field_presence_is_read_from_its_row::probe::a_presence_check_does_not_copy_the_value \
+            engine::tests::a_timestamped_point_names_itself_once::probe::a_staged_point_does_not_copy_its_name \
+            engine::tests::a_distinct_count_compares_its_members_where_they_are::probe::a_distinct_count_does_not_copy_its_members \
+            engine::tests::a_counter_window_read_reduces_where_it_sits::probe::a_window_read_does_not_allocate_per_bucket \
+            engine::tests::a_series_at_its_cap_trims_without_a_victim_list::probe::a_write_at_the_cap_allocates_what_a_write_below_it_allocates \
+            engine::tests::a_feature_series_at_its_cap_files_only_what_changed::probe::an_append_at_the_cap_allocates_the_same_whatever_the_series_length \
+            engine::tests::a_string_set_does_not_copy_the_value_it_replaces::probe::a_string_overwrite_does_not_copy_the_old_value \
+            engine::tests::a_feature_range_read_decodes_each_point_where_it_sits::probe::a_feature_range_read_does_not_allocate_per_point_of_the_block \
+            engine::tests::a_hash_get_all_shares_its_block_keys::probe::a_whole_hash_read_does_not_pay_three_allocations_a_field_for_its_key \
             engine::tests::a_whole_container_read_shares_its_work::probe::a_list_range_does_not_pay_for_its_key_name_and_frame_copy_per_element \
             engine::tests::a_whole_container_read_shares_its_work::probe::a_whole_hash_read_does_not_copy_the_frame_for_each_field \
+            engine::tests::a_container_point_read_searches_without_building_its_key::probe::a_block_lookup_allocates_only_its_answer \
+            engine::tests::a_container_point_read_searches_without_building_its_key::probe::a_whole_hash_read_spends_no_allocation_on_a_name_it_does_not_return \
+            engine::tests::a_set_door_asks_one_member_not_the_set::probe::the_door_allocates_the_same_over_twenty_members_and_over_two_thousand \
+            engine::tests::a_set_pop_and_random_member_read_the_first_members::probe::a_prefix_read_allocates_the_same_over_twenty_members_and_over_two_thousand \
+            engine::tests::the_window_reduce_allocations_are_counted_per_operation::a_ranked_read_through_the_engine_does_not_allocate_per_cell \
+            engine::tests::the_window_reduce_allocations_are_counted_per_operation::a_fan_in_read_through_the_engine_does_not_allocate_per_cell \
+            engine::tests::the_window_reduce_allocations_are_counted_per_operation::a_rollup_through_the_engine_does_not_allocate_per_cell \
+            engine::tests::the_window_reduce_allocations_are_counted_per_operation::a_merge_request_that_carries_the_stored_header_bytes_is_not_decoded_again \
+            engine::tests::the_window_reduce_allocations_are_counted_per_operation::a_merge_write_reads_a_stored_sample_in_place_whatever_its_block_holds \
             engine::window_aggregate::probe::the_reducers_do_not_allocate_per_point \
             engine::cell_set::tests::probe::a_cell_set_key_costs_one_allocation_whatever_its_size \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_does_not_allocate_more_for_a_longer_key \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_write_does_not_allocate_per_cell \
             engine::cell_set::tests::probe::a_merge_request_costs_the_same_allocations_at_any_cell_count \
-            engine::cell_rank::tests::probe::a_ranked_read_allocates_the_same_over_a_hundred_members_and_over_twenty_thousand \
-            engine::cell_rank::tests::options::probe::a_member_set_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
-            engine::cell_rollup::tests::probe::a_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many \
+            engine::window_reduce_fan_in::tests::probe::a_fan_in_allocates_the_same_over_a_hundred_members_and_over_two_thousand \
+            engine::window_reduce_rank::tests::probe::a_ranked_read_allocates_the_same_over_a_hundred_members_and_over_twenty_thousand \
+            engine::window_reduce_rank::tests::options::probe::a_member_set_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
+            engine::window_reduce_rank::tests::decay::probe::a_decay_read_allocates_the_same_over_a_thousand_members_and_over_twenty_thousand \
+            engine::window_reduce_rollup::tests::probe::a_rollup_allocates_the_same_over_few_samples_and_many_and_few_members_and_many \
+            engine::cell_retry_ring::tests::probe::a_retry_ring_allocates_once_when_started_and_never_again \
+            engine::window_reduce_rollup::tier_tests::probe::a_tiered_rollup_allocates_the_same_over_few_samples_and_many_and_few_members_and_many \
             engine::cell_set::tests::probe::a_cell_costs_the_same_allocations_at_any_member_size ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \

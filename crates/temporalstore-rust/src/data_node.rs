@@ -63,6 +63,8 @@ mod shard_lifecycle;
 mod task_execution;
 mod runtime_reports;
 mod runtime_storage;
+mod compaction_stage;
+mod round_budget;
 mod task_output;
 #[path = "data_node/data_node_worker.rs"]
 mod worker;
@@ -80,6 +82,7 @@ enum SharedWriteExecution {
 }
 
 pub use lifecycle::{decode_lifecycle_snapshot_file, encode_lifecycle_snapshot_file};
+pub use round_budget::storage_manager_tick_ms;
 use lifecycle::{
     final_loaded_lifecycle_state, lifecycle_persistence_report_for_path, lifecycle_snapshot_inner,
     lifecycle_snapshot_path_from_env, persist_lifecycle_snapshot_inner,
@@ -209,6 +212,10 @@ pub struct DataNodeRuntimeStats {
     /// completed, so a node whose dump keeps failing showed no dumps and no error.
     #[serde(default)]
     pub storage_dump_failures: u64,
+    /// Expiry sweeps that failed. `expiry_sweeps` counts the rounds that ran, whatever each
+    /// shard's sweep returned, so a node whose sweep keeps failing showed rounds and no error.
+    #[serde(default)]
+    pub expiry_sweep_failures: u64,
     /// Rounds that ended with a non-ok status (a compaction or block-GC stage reported failure).
     /// The all-shards scheduler used to drop the round report, so this was visible nowhere.
     #[serde(default)]
@@ -220,6 +227,12 @@ pub struct DataNodeRuntimeStats {
     /// Rounds that took longer than the loop interval, so the loop never idled.
     #[serde(default)]
     pub storage_manager_overrun_rounds: u64,
+    /// How many of the loop's retention-owner inputs (shared-store cursors, snapshot refs, a
+    /// checkpoint floor, an install floor) were non-empty on the last round. A gauge, not a
+    /// counter: 0 means the loop was told of no owner, so nothing but the live set and the retained
+    /// manifests holds a slab back on this server.
+    #[serde(default)]
+    pub storage_manager_retention_owners_configured: u64,
     /// Wall time spent inside rounds, and the longest single round, in microseconds.
     #[serde(default)]
     pub storage_manager_round_us_total: u64,
@@ -230,6 +243,28 @@ pub struct DataNodeRuntimeStats {
     /// could not say which stage its round time went to.
     #[serde(default)]
     pub storage_manager_stage_timing: std::collections::BTreeMap<String, StorageManagerStageTiming>,
+    /// What the loop's dumps wrote, summed over rounds: the buckets they covered, the logical bytes
+    /// of those buckets, and the time inside the dump call (total and longest single dump, in
+    /// microseconds). The reclaim stage's time includes the dump; this is the dump alone.
+    #[serde(default)]
+    pub storage_manager_dump_buckets: u64,
+    #[serde(default)]
+    pub storage_manager_dump_logical_bytes: u64,
+    #[serde(default)]
+    pub storage_manager_dump_us_total: u64,
+    #[serde(default)]
+    pub storage_manager_dump_us_max: u64,
+    /// The loop's own backlog reading from the last round it ran: the log above the oldest
+    /// undumped write, the records since the last dump, the dirty buckets and the index log's size.
+    /// The on-demand cycle report carries the same signals and a running server never runs one.
+    #[serde(default)]
+    pub storage_manager_loop_wal_bytes: u64,
+    #[serde(default)]
+    pub storage_manager_loop_undumped_wal_records: u64,
+    #[serde(default)]
+    pub storage_manager_loop_dirty_buckets: u64,
+    #[serde(default)]
+    pub storage_manager_loop_index_log_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -391,13 +426,11 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
     );
     metrics.insert(
         "storage_manager_evict_count".to_string(),
-        stats.storage_manager_reclaim_memory_runs,
+        stats.storage_manager_evict_runs,
     );
     metrics.insert(
         "storage_manager_expire_count".to_string(),
-        stats
-            .storage_manager_expire_runs
-            .saturating_add(stats.expiry_sweeps),
+        stats.storage_manager_expire_runs,
     );
     metrics.insert(
         "storage_manager_page_gc_count".to_string(),
@@ -938,6 +971,30 @@ pub struct GcRequest {
     /// it. It is harder to defend on a loop that runs every thirty seconds.
     #[serde(default)]
     pub block_gc_invalidate_removed_slabs_only: bool,
+    /// Retention owners the dependency plan holds a slab for. The loop fills them from its
+    /// options; an operator reclaim leaves them empty, which asks nothing beyond the live set and
+    /// the retained manifests it has always honoured.
+    ///
+    /// Any owner present narrows the slabs offered for quarantine to the ones the dependency plan
+    /// calls reclaimable, so a slab one of them still names is never set aside. Quarantine renames
+    /// the slab out of the store, so holding the purge back is not enough: a reader of the pinned
+    /// slab would find it gone for the whole grace.
+    #[serde(default)]
+    pub block_gc_shared_store_cursors: Vec<crate::engine::reports::StorageBlockGcReplayCursor>,
+    #[serde(default)]
+    pub block_gc_raft_snapshot_refs: Vec<crate::engine::reports::BucketDumpRaftSnapshotRef>,
+    #[serde(default)]
+    pub block_gc_checkpoint_floor_slab_id: Option<u64>,
+    #[serde(default)]
+    pub block_gc_raft_install_floor_slab_id: Option<u64>,
+    /// Build the shard's lifecycle plan after the reclaim and return it in the response.
+    ///
+    /// Off by default. The plan is a survey of the whole shard, and building it at the end of every
+    /// round put a pass over every index entry after work that had often found nothing to do. The
+    /// periodic loop surveys the shard once per round for its own decisions and does not read this
+    /// one; an operator who wants the post-reclaim picture asks for it.
+    #[serde(default)]
+    pub include_lifecycle_plan: bool,
     /// Slabs one round may destroy. 0 means NO BOUND.
     ///
     /// THREE BOUNDS THAT EXISTED ONLY ON THE OTHER PIPELINE. `StorageManagerCycleRequest` has
@@ -1032,7 +1089,7 @@ pub struct StorageManagerOptions {
     /// Durable write-ahead log bytes that release the dump whatever the record count says.
     #[serde(default = "default_storage_manager_min_undumped_wal_bytes")]
     pub min_undumped_wal_bytes: u64,
-    #[serde(default)]
+    #[serde(default = "default_storage_manager_dirty_bucket_pressure")]
     pub dirty_bucket_pressure: usize,
     #[serde(default)]
     pub stale_block_slab_pressure: usize,
@@ -1297,6 +1354,19 @@ pub struct StorageManagerOptions {
     /// Garbage floor for the block-GC stage, in basis points. 0 collects every eligible slab.
     #[serde(default = "default_storage_manager_block_gc_min_slab_garbage_basis_points")]
     pub block_gc_min_slab_garbage_basis_points: u64,
+    /// Shared-store readers whose replay position still names block slabs. A slab at or above a
+    /// cursor's `retain_from_block_slab_id` is neither set aside nor destroyed by the loop. Empty
+    /// means no such reader, which is the behaviour before this field existed.
+    #[serde(default)]
+    pub block_gc_shared_store_cursors: Vec<crate::engine::reports::StorageBlockGcReplayCursor>,
+    /// A checkpoint image reads slabs from this id up; the loop neither sets them aside nor destroys
+    /// them. `None` means no checkpoint floor.
+    #[serde(default)]
+    pub block_gc_checkpoint_floor_slab_id: Option<u64>,
+    /// A Raft snapshot install reads slabs from this id up; the loop neither sets them aside nor
+    /// destroys them. `None` means no install in flight.
+    #[serde(default)]
+    pub block_gc_raft_install_floor_slab_id: Option<u64>,
 }
 
 /// Victims one evict stage may take in total, across repeated batches.
@@ -1371,8 +1441,22 @@ fn default_storage_manager_min_undumped_wal_records() -> u64 {
 /// much log a restart can face -- raising it lengthens the replay window and lowers the round
 /// cost, lowering it does the reverse. It bounds the quantity that actually matters: a record
 /// count says nothing about how many bytes those records are.
+fn default_storage_manager_dirty_bucket_pressure() -> usize {
+    usize::MAX
+}
+
 fn default_storage_manager_min_undumped_wal_bytes() -> u64 {
     128 * 1024 * 1024
+}
+
+impl StorageManagerOptions {
+    /// How many of the retention-owner inputs are non-empty.
+    pub fn retention_owner_input_count(&self) -> usize {
+        usize::from(!self.block_gc_shared_store_cursors.is_empty())
+            + usize::from(!self.raft_snapshot_refs.is_empty())
+            + usize::from(self.block_gc_checkpoint_floor_slab_id.is_some())
+            + usize::from(self.block_gc_raft_install_floor_slab_id.is_some())
+    }
 }
 
 impl Default for StorageManagerOptions {
@@ -1381,7 +1465,8 @@ impl Default for StorageManagerOptions {
             max_dump_buckets_per_round: default_storage_manager_max_dump_buckets_per_round(),
             min_undumped_wal_records: default_storage_manager_min_undumped_wal_records(),
             min_undumped_wal_bytes: default_storage_manager_min_undumped_wal_bytes(),
-            dirty_bucket_pressure: 1,
+            // Off: the log bytes decide. See `default_storage_manager_min_undumped_wal_bytes`.
+            dirty_bucket_pressure: default_storage_manager_dirty_bucket_pressure(),
             stale_block_slab_pressure: 1,
             reclaimable_physical_bytes_pressure: 1,
             // OFF BY DEFAULT: the stage these open drops every cached block of the shard, so a
@@ -1479,6 +1564,9 @@ impl Default for StorageManagerOptions {
                 crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND,
             block_gc_min_slab_garbage_basis_points:
                 crate::engine::reports::DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
         }
     }
 }
@@ -1788,6 +1876,13 @@ pub struct StorageManagerLoopReport {
 pub struct StorageManagerLoopStageSpan {
     pub stage: String,
     pub executed: bool,
+    /// Where this row's interval begins, in microseconds after the start of the round, on the same
+    /// clock as `duration_us`. The rows tile the round, so row `i` covers
+    /// `[start_offset_us, start_offset_us + duration_us)` and the next row starts where it ends. A
+    /// reader who knows when the round began can place any other timestamped event, such as a
+    /// writer's acknowledgement, inside the stage that was running.
+    #[serde(default)]
+    pub start_offset_us: u64,
     #[serde(default)]
     pub duration_us: u64,
     #[serde(default)]
@@ -2189,9 +2284,18 @@ struct MutableRuntimeStats {
     storage_manager_failed_rounds: u64,
     storage_manager_stage_skips: u64,
     storage_manager_overrun_rounds: u64,
+    storage_manager_retention_owners_configured: u64,
     storage_manager_round_us_total: u64,
     storage_manager_round_us_max: u64,
     storage_manager_stage_timing: std::collections::BTreeMap<String, StorageManagerStageTiming>,
+    storage_manager_dump_buckets: u64,
+    storage_manager_dump_logical_bytes: u64,
+    storage_manager_dump_us_total: u64,
+    storage_manager_dump_us_max: u64,
+    storage_manager_loop_wal_bytes: u64,
+    storage_manager_loop_undumped_wal_records: u64,
+    storage_manager_loop_dirty_buckets: u64,
+    storage_manager_loop_index_log_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -2421,6 +2525,8 @@ impl ShardTaskQueues {
 struct DirtyTracker {
     next_object_id: u64,
     by_key: HashMap<(ShardId, String), DirtyObjectState>,
+    // Maintained with by_key under the same tracker lock.
+    by_shard: HashMap<ShardId, usize>,
 }
 
 #[derive(Debug)]

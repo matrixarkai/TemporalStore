@@ -47,6 +47,80 @@
 //! would need none of that, was measured and made no difference: the cost is persisting the size,
 //! not allocating the blocks.
 
+/// How many appended bytes pass between two marks of the byte-by-sequence index.
+const BYTE_MARK_STRIDE: u64 = 256 * 1024;
+/// Marks kept per shard: 4,096 of them span a gigabyte of log, past any dump gate.
+const BYTE_MARK_CAP: usize = 4096;
+
+/// Record a byte mark when `stride` bytes have passed since the last one.
+///
+/// At the cap the marks are THINNED, every other one dropped, rather than the oldest dropped: the
+/// oldest mark is the one a long-undumped write is looked up against, and losing it sent the figure
+/// back to a counter that a capped dump zeroes.
+fn push_byte_mark(
+    marks: &mut std::collections::VecDeque<(u64, u64)>,
+    sequence: u64,
+    total: u64,
+    stride: u64,
+    cap: usize,
+) {
+    if marks.back().map_or(true, |(_, through)| total - through >= stride) {
+        if marks.len() >= cap {
+            let kept: std::collections::VecDeque<(u64, u64)> =
+                marks.iter().copied().step_by(2).collect();
+            *marks = kept;
+        }
+        marks.push_back((sequence, total));
+    }
+}
+
+/// Count one appended record's bytes: the dump counter, the never-reset total, and the byte marks a
+/// figure relative to a sequence is read from. Every path that appends calls this, the buffered
+/// group-commit path and the unbuffered one alike; a path that counted only the dump counter left
+/// the total behind, so the figure read as zero while the log grew.
+fn note_appended_bytes(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+    sequence: u64,
+    size: u64,
+) {
+    let total = inner.appended_bytes_by_shard.entry(shard_id).or_default();
+    *total += size;
+    let total = *total;
+    let marks = inner.byte_marks_by_shard.entry(shard_id).or_default();
+    push_byte_mark(marks, sequence, total, BYTE_MARK_STRIDE, BYTE_MARK_CAP);
+    *inner.undumped_bytes_by_shard.entry(shard_id).or_default() += size;
+}
+
+/// Bytes of log above `sequence`, to the granularity of a piece: the same walk as
+/// `log_id_after_sequence`, measured to where the records end.
+fn log_bytes_above_sequence(
+    root: &std::path::Path,
+    shard_id: ShardId,
+    sequence: u64,
+) -> Result<u64, WriteAheadLogError> {
+    let mut start = 0u64;
+    let mut end = 0u64;
+    let mut found = false;
+    for path in wal_segment_paths(root, shard_id) {
+        if !path.exists() {
+            continue;
+        }
+        let (last, record_end) = last_wal_sequence_in(&path)?;
+        let (base, header_len) = read_wal_base(&path)?;
+        let piece_end = base.saturating_add(record_end.saturating_sub(header_len));
+        if !found && last > 0 && last > sequence {
+            found = true;
+        }
+        if !found {
+            start = piece_end;
+        }
+        end = piece_end;
+    }
+    Ok(end.saturating_sub(start))
+}
+
+pub use crate::wal_outcome_kind::OutcomeKind;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -108,6 +182,8 @@ pub fn encode_wal_line_for_test(
 #[path = "wal/packed_frames.rs"]
 mod packed_frames;
 mod point_readers;
+#[path = "wal/point_reads.rs"]
+mod point_reads;
 
 /// Read one complete physical record, including any continuation envelope and footer slots.
 fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Option<packed_frames::ReadRecord>> {
@@ -472,7 +548,7 @@ mod every_result_can_be_found_again_tests {
     /// A result that names an address and states nothing about itself.
     fn names_only_an_address(object_id: u64, element_name: &str) -> WalOutcomeItem {
         WalOutcomeItem {
-            kind: "page".to_string(),
+            kind: "page".into(),
             object_key: format!("object/{object_id}"),
             element_name: Some(element_name.to_string()),
             object_id,
@@ -607,14 +683,9 @@ pub fn wal_outcome_items_enabled() -> bool {
     // Default ON. Recording stopped costing the group-commit coalescing once results travelled
     // through the reserve-only append, and recovery prefers installing them over re-running an
     // operation wherever it has them. The variable now opts OUT.
-    !matches!(
-        std::env::var("TS_WAL_OUTCOME_ITEMS")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
+    crate::env_flag::cached_flag(crate::env_flag::Slot::OutcomeItems, || {
+        !crate::env_flag::is_off_word(std::env::var("TS_WAL_OUTCOME_ITEMS").ok().as_deref())
+    })
 }
 
 fn outcome_not_deleted(deleted: &bool) -> bool {
@@ -665,7 +736,7 @@ mod outcome_address_serde {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WalOutcomeItem {
     #[serde(rename = "k")]
-    pub kind: String,
+    pub kind: OutcomeKind,
     #[serde(rename = "o")]
     pub object_key: String,
     /// WHICH ELEMENT OF THAT OBJECT, FOR EVERY KEYED KIND THAT HAS NO BLOCK TO ASK.
@@ -1116,6 +1187,10 @@ pub const WRITE_AHEAD_LOG_FORMAT_VERSION: u32 = 1;
 mod group_commit_generation_tests;
 
 #[cfg(test)]
+#[path = "wal_group_write_tests.rs"]
+mod group_write_tests;
+
+#[cfg(test)]
 thread_local! {
     static AFTER_GROUP_COMMIT_SYNC: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -1124,6 +1199,7 @@ thread_local! {
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
     inner: Arc<Mutex<WriteAheadLogInner>>,
+    read_retention: Arc<Mutex<ReadRetentions>>,
     // Group-commit coordinators, one per shard, so writers for one shard share a durability
     // barrier without serializing an unrelated shard's fsync behind it. Always consulted --
     // `group_commit_configured` returns true, and `TS_GROUP_COMMIT`, which this comment used to
@@ -1135,6 +1211,8 @@ pub struct LocalWriteAheadLogStore {
     /// on every execute, so it is an atomic beside the lock rather than a field inside it -- the
     /// engine asks without taking the log's lock.
     flat_append: Arc<AtomicBool>,
+    /// Whether this store's 2 ms loop flusher thread has been started (see `ensure_flusher`).
+    flusher_started: Arc<AtomicBool>,
 }
 
 /// Identifies one log owner without extending its files' lifetime through a derived cache.
@@ -1142,6 +1220,65 @@ pub struct LocalWriteAheadLogStore {
 pub(crate) struct WriteAheadLogIdentity {
     inner: std::sync::Weak<Mutex<WriteAheadLogInner>>,
 }
+
+/// Keeps an in-flight snapshot's records readable without retaining the log owner.
+#[derive(Debug)]
+pub(crate) struct WriteAheadLogReadLease {
+    identity: WriteAheadLogIdentity,
+    retention: std::sync::Weak<Mutex<ReadRetentions>>,
+    slot: usize,
+    shard: ShardId,
+    sequence: u64,
+}
+
+#[derive(Debug, Default)]
+struct ReadRetentions {
+    slots: Vec<Option<(ShardId, u64)>>,
+    registrations: registration_records::RegistrationRecords,
+}
+
+impl WriteAheadLogReadLease {
+    pub(crate) fn same_log(&self, store: &LocalWriteAheadLogStore) -> bool {
+        self.identity.same_log(store)
+    }
+
+    pub(crate) fn retain_earlier(&mut self, sequence: u64) {
+        if sequence >= self.sequence {
+            return;
+        }
+        if let Some(owner) = self.retention.upgrade() {
+            let mut retention = owner.lock().expect("read retention lock poisoned");
+            debug_assert_eq!(retention.slots[self.slot], Some((self.shard, self.sequence)));
+            retention.slots[self.slot] = Some((self.shard, sequence));
+            self.sequence = sequence;
+        }
+    }
+}
+
+impl Drop for WriteAheadLogReadLease {
+    fn drop(&mut self) {
+        if let Some(owner) = self.retention.upgrade() {
+            if let Ok(mut retention) = owner.lock() {
+                debug_assert_eq!(retention.slots[self.slot], Some((self.shard, self.sequence)));
+                retention.slots[self.slot] = None;
+            };
+        }
+    }
+}
+
+fn retained_block_floor(inner: &WriteAheadLogInner, readers: &ReadRetentions, shard: ShardId) -> Option<u64> {
+    inner.block_retention_floor_by_shard.get(&shard).copied().into_iter()
+        .chain(readers.slots.iter().filter_map(|slot| {
+            slot.filter(|(held, _)| *held == shard).map(|(_, sequence)| sequence)
+        })).min()
+}
+
+#[cfg(test)]
+#[path = "wal/read_retention_tests.rs"]
+mod read_retention_tests;
+
+#[path = "wal/registration_records.rs"]
+mod registration_records;
 
 impl WriteAheadLogIdentity {
     pub(crate) fn same_log(&self, store: &LocalWriteAheadLogStore) -> bool {
@@ -1171,12 +1308,21 @@ struct GroupCommitState {
     // workload can alternate writers through the state lock yet arrive at the barrier one at a
     // time, forgetting the concurrency between every pair of calls.
     adaptive_until: Option<std::time::Instant>,
+    // A write+sync is in flight for this shard (set while one write is running).
+    inflight: bool,
 }
 
 #[derive(Debug, Default)]
 struct GroupCommitCoordinator {
     state: Mutex<GroupCommitState>,
     pending: AtomicUsize,
+    // Commit waiters sleep here until `durable_seq` covers them (the commit waiters).
+    wake: std::sync::Condvar,
+    // Test hook: the adaptive window in microseconds for THIS coordinator, 0 = use the setting.
+    // Per coordinator, not global, because the writers it coalesces run on other threads and the
+    // tests run in parallel.
+    #[cfg(test)]
+    adaptive_delay_us_for_test: std::sync::atomic::AtomicU64,
 }
 
 struct PendingGroupCommit<'a>(&'a AtomicUsize);
@@ -1225,7 +1371,7 @@ struct WriteAheadLogInner {
     /// whole record again every time -- four kilobytes an append at a four-kilobyte value. Kept
     /// here so its capacity survives; a steady workload stops allocating for it entirely.
     encode_scratch: Vec<u8>,
-    indexed_records: crate::wal_proto::indexed::Cache,
+    point_reads: Arc<point_reads::State>,
     point_readers: point_readers::Cache,
     // Set only by Default: the store owns its minted scratch directory, and the last
     // clone's drop removes it. Never set for a caller-supplied root.
@@ -1240,6 +1386,15 @@ struct WriteAheadLogInner {
     /// saturates to zero, so the threshold never fires again. Counting growth is immune to that,
     /// and growth is what the threshold is about.
     undumped_bytes_by_shard: HashMap<ShardId, u64>,
+    /// Every byte appended for each shard since this process opened it. Never reset.
+    ///
+    /// `undumped_bytes_by_shard` is zeroed by ANY dump, including one capped at a few hundred
+    /// buckets that leaves most of the dirty set undumped. This is the quantity a byte figure
+    /// RELATIVE TO A SEQUENCE is read from, so the gate can ask how much log sits above the oldest
+    /// write nobody has dumped, which a capped dump does not move.
+    appended_bytes_by_shard: HashMap<ShardId, u64>,
+    /// `(sequence, appended bytes through that record)`, one mark per `BYTE_MARK_STRIDE` bytes.
+    byte_marks_by_shard: HashMap<ShardId, std::collections::VecDeque<(u64, u64)>>,
     /// OBJECT MUTATIONS in the undumped log suffix, beside the bytes above.
     ///
     /// Neither quantity the dump budget compares today survives a change in how the writer groups
@@ -1302,7 +1457,110 @@ struct WriteAheadLogInner {
     // with it. The roll does not pay for that barrier itself: it records the debt here and the next
     // durable barrier, which was going to run anyway, settles it.
     dir_sync_owed_by_shard: HashSet<ShardId>,
+    /// Framed records appended by group-commit writers that have not been written to the file
+    /// yet, per shard. See [`PendingWrite`].
+    pending_by_shard: HashMap<ShardId, PendingWrite>,
+    /// Total buffered bytes over every shard, so the common "nothing is buffered" answer is one
+    /// load and not a map walk.
+    pending_total: usize,
+    /// Calls to `write(2)` made for buffered batches, and records they carried. Observability for
+    /// the tests and the A/B: `records / writes` is the batch size writers actually achieved.
+    group_writes: u64,
+    group_records: u64,
 }
+
+/// The log's write buffer for one shard: the bytes of records that have been sequenced and
+/// framed, and not yet written.
+///
+/// This is the in-memory half of a group commit. Writers append here under the log's lock --
+/// a copy, no system call -- and whichever writer next needs durability writes EVERYTHING
+/// buffered in one `write` and one `fdatasync`; the writers whose records that covered return
+/// together. While that write is in flight the next batch accumulates here, which is what makes
+/// the batch as large as the load is concurrent, with no timer on the commit path.
+///
+/// Invariant: `bytes` belong at file offset `start`, which is the shard's `verified_len` (the
+/// end of the records ON DISK) at the moment the first of them was buffered. Anything that reads
+/// or rewrites the file takes the lock through [`LocalWriteAheadLogStore::lock_inner`], which
+/// flushes first, so no reader ever sees a log that is missing a record it has a sequence for.
+#[derive(Debug, Default)]
+struct PendingWrite {
+    start: u64,
+    bytes: Vec<u8>,
+}
+
+/// TS_WAL_GROUP_WRITE (default ON): buffer the records of concurrent synchronous writers and
+/// write them as one batch. Off restores one write per record.
+fn wal_group_write_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(forced) = GROUP_WRITE_OVERRIDE.with(|value| value.get()) {
+        return forced;
+    }
+    crate::engine::env_flag_default_on("TS_WAL_GROUP_WRITE")
+}
+
+/// TS_WAL_GROUP_FLUSH_BYTES: buffered bytes at which an appender writes the batch itself instead
+/// of leaving it for the next commit. 512 KiB, the size at which a full batch is
+/// written without waiting for the timer.
+fn wal_group_flush_bytes() -> usize {
+    std::env::var("TS_WAL_GROUP_FLUSH_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|bytes: &usize| *bytes > 0)
+        .unwrap_or(512 * 1024)
+}
+
+/// TS_WAL_GROUP_LOOP_INTERVAL_MS (default 2): the loop flusher's tick.
+fn wal_group_loop_interval() -> std::time::Duration {
+    #[cfg(test)]
+    {
+        let forced = LOOP_INTERVAL_MS_OVERRIDE.load(AtomicOrdering::SeqCst);
+        if forced > 0 {
+            return std::time::Duration::from_millis(forced);
+        }
+    }
+    let ms = std::env::var("TS_WAL_GROUP_LOOP_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+        .unwrap_or(2);
+    std::time::Duration::from_millis(ms)
+}
+
+#[cfg(test)]
+thread_local! {
+    static GROUP_WRITE_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Test hook: forces the loop flusher's tick (ms); tests that inject write failures park the
+/// flusher so only the barrier under test retries.
+#[cfg(test)]
+pub(crate) static LOOP_INTERVAL_MS_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Test hook: when `>= 0`, the next batch write stops after that many bytes and fails, the way a
+/// process killed or a disk failing part-way through a `write` leaves the file. Shared across
+/// threads because the write runs on whichever writer led the batch.
+#[cfg(test)]
+pub(crate) static TORN_BATCH_WRITE_BYTES: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(-1);
+
+#[cfg(test)]
+static TORN_BATCH_OWNER: std::sync::Mutex<Option<std::thread::ThreadId>> =
+    std::sync::Mutex::new(None);
+
+/// Arms (limit >= 0) or clears (limit < 0) the torn-write fault for the CALLING thread only.
+#[cfg(test)]
+pub(crate) fn set_torn_batch_write(limit: i64) {
+    *TORN_BATCH_OWNER.lock().unwrap_or_else(|p| p.into_inner()) =
+        if limit >= 0 { Some(std::thread::current().id()) } else { None };
+    TORN_BATCH_WRITE_BYTES.store(limit, AtomicOrdering::SeqCst);
+}
+
+#[cfg(test)]
+fn torn_batch_owner_is_current_thread() -> bool {
+    *TORN_BATCH_OWNER.lock().unwrap_or_else(|p| p.into_inner()) == Some(std::thread::current().id())
+}
+
 
 impl LocalWriteAheadLogStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -1314,12 +1572,14 @@ impl LocalWriteAheadLogStore {
                 active_path_by_shard: HashMap::new(),
                 append_lock_by_shard: HashMap::new(),
                 encode_scratch: Vec::new(),
-                indexed_records: crate::wal_proto::indexed::Cache::default(),
+                point_reads: Arc::default(),
                 point_readers: point_readers::Cache::default(),
                 scratch: None,
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
                 undumped_bytes_by_shard: HashMap::new(),
+                appended_bytes_by_shard: HashMap::new(),
+                byte_marks_by_shard: HashMap::new(),
                 undumped_objects_by_shard: HashMap::new(),
                 durable_active_bytes_by_shard: HashMap::new(),
                 block_last_record_by_shard: HashMap::new(),
@@ -1330,9 +1590,15 @@ impl LocalWriteAheadLogStore {
                 base_by_shard: HashMap::new(),
                 prealloc_physical_by_shard: HashMap::new(),
                 dir_sync_owed_by_shard: HashSet::new(),
+                pending_by_shard: HashMap::new(),
+                pending_total: 0,
+                group_writes: 0,
+                group_records: 0,
             })),
+            read_retention: Arc::new(Mutex::new(ReadRetentions::default())),
             sync_coord: Arc::new(Mutex::new(HashMap::new())),
             flat_append: Arc::new(AtomicBool::new(true)),
+            flusher_started: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1449,7 +1715,7 @@ impl LocalWriteAheadLogStore {
         let next_sequence;
         let log_id;
         {
-            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            let mut inner = self.lock_inner();
             // Acquiring the append lock creates the directory the first time it opens the lock
             // file; doing it again on every append was a syscall to learn something unchanged.
             let _append_lock = WalAppendLock::acquire(&mut inner, shard_id)?;
@@ -1539,6 +1805,39 @@ impl LocalWriteAheadLogStore {
             .map(|(record, _)| record)
     }
 
+    /// Lock the log for anything that reads or rewrites its file.
+    ///
+    /// Group-commit writers leave their records in a memory buffer until the next barrier (see
+    /// [`PendingWrite`]). Every other operation -- a scan, a read at a log id, a roll, reclaim,
+    /// a legacy append -- assumes the file holds every record it has a sequence for, so each takes
+    /// the lock through here and the buffer is written first. A failure is logged and the bytes
+    /// stay buffered: the writers waiting on them fail at their own barrier, and the append paths
+    /// refuse to write past them.
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, WriteAheadLogInner> {
+        let mut inner = self.lock_inner_raw();
+        if inner.pending_total > 0 {
+            let shards: Vec<ShardId> = inner.pending_by_shard.keys().copied().collect();
+            for shard_id in shards {
+                if let Err(err) = flush_pending_locked(&mut inner, shard_id) {
+                    tracing::error!(shard_id, error = %err, "WAL batch write failed");
+                }
+            }
+        }
+        inner
+    }
+
+    /// The lock without the flush: only for the group-commit append, the barrier that does its own
+    /// flush, and accessors that read nothing but in-memory counters.
+    fn lock_inner_raw(&self) -> std::sync::MutexGuard<'_, WriteAheadLogInner> {
+        self.inner.lock().expect("write-ahead log lock poisoned")
+    }
+
+    /// `(write calls, records)` made for buffered batches so far. Their ratio is the batch size.
+    pub fn group_write_counts(&self) -> (u64, u64) {
+        let inner = self.lock_inner_raw();
+        (inner.group_writes, inner.group_records)
+    }
+
     pub(crate) fn append_for_group_commit_with_location(
         &self,
         shard_id: ShardId,
@@ -1546,7 +1845,96 @@ impl LocalWriteAheadLogStore {
         outcomes: Vec<WalOutcomeItem>,
         staged_blocks: Vec<StagedBlock>,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        if !wal_group_write_enabled() {
+            return self.append_for_group_commit_unbuffered(shard_id, command, outcomes, staged_blocks);
+        }
+        let mut inner = self.lock_inner_raw();
+        let batch_open = inner
+            .pending_by_shard
+            .get(&shard_id)
+            .is_some_and(|pending| !pending.bytes.is_empty());
+        // The cross-process append lock and the on-disk probes establish where the log really
+        // ends, and they are needed ONCE per batch: while a batch is open this process already
+        // owns the tail, so the cached sequence and the logical end are authoritative and the
+        // `flock` pair, the two `stat`s and the one-byte probe are skipped. The lock is taken
+        // again, around the write, when the batch is flushed.
+        let _append_lock = if batch_open {
+            None
+        } else {
+            let lock = WalAppendLock::acquire(&mut inner, shard_id)?;
+            let known_len = ensure_active_wal_segment_len(&mut inner, shard_id)?;
+            let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append_known(
+                &mut inner,
+                shard_id,
+                self.flat_append(),
+                known_len,
+            )?;
+            inner.last_sequence_by_shard.insert(shard_id, last_sequence);
+            Some(lock)
+        };
+        let last_sequence = inner
+            .last_sequence_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or_default();
+        let seq = last_sequence.saturating_add(1);
+        let rec = WriteAheadLogRecord {
+            shard_id,
+            sequence: seq,
+            metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
+            command: record_command(command, &outcomes, !staged_blocks.is_empty()),
+            staged_blocks,
+            outcomes,
+        };
+        let offset = match buffer_record_locked(&mut inner, &rec)? {
+            Some(offset) => offset,
+            None => {
+                // The record crosses a block boundary, where a footer has to be written at a
+                // computed offset: rare (once per block), so it takes the unbuffered path
+                // after what is already buffered has been written.
+                flush_pending_locked(&mut inner, shard_id)?;
+                let report = append_record_locked(&mut inner, &rec, false, None)?;
+                inner.verified_len_by_shard.insert(shard_id, report.persistent_bytes);
+                report.offset
+            }
+        };
+        inner.stats.last_sequence = seq;
+        inner.last_sequence_by_shard.insert(shard_id, seq);
+        let (base, header_len) = cached_wal_base(&mut inner, shard_id)?;
+        let log_id = base.saturating_add(offset.saturating_sub(header_len));
+        // Size trigger: a batch that has grown past the threshold is written by the appender that
+        // grew it. Roll trigger: a piece that this record filled is sealed, and sealing needs
+        // the bytes on disk. Both write only; the fdatasync stays with the barrier.
+        let buffered = inner
+            .pending_by_shard
+            .get(&shard_id)
+            .map_or(0, |pending| pending.bytes.len());
+        let logical_end = inner
+            .verified_len_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(buffered as u64);
+        let segment_bytes = wal_segment_bytes();
+        let roll_due = segment_bytes > 0 && logical_end.saturating_sub(header_len) >= segment_bytes;
+        if buffered >= wal_group_flush_bytes() || roll_due {
+            flush_pending_locked(&mut inner, shard_id)?;
+            if roll_due {
+                let end = inner.verified_len_by_shard.get(&shard_id).copied();
+                roll_wal_segment_if_due(&mut inner, shard_id, end)?;
+            }
+        }
+        Ok((rec, log_id))
+    }
+
+    fn append_for_group_commit_unbuffered(
+        &self,
+        shard_id: ShardId,
+        command: Command,
+        outcomes: Vec<WalOutcomeItem>,
+        staged_blocks: Vec<StagedBlock>,
+    ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
+        let mut inner = self.lock_inner();
         // Acquiring the append lock creates the directory the first time it opens the lock
         // file; doing it again on every append was a syscall to learn something unchanged.
         let _append_lock = WalAppendLock::acquire(&mut inner, shard_id)?;
@@ -1657,7 +2045,7 @@ impl LocalWriteAheadLogStore {
         staged_blocks: Vec<StagedBlock>,
         sync: bool,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner();
         let _append_lock = WalAppendLock::acquire(&mut inner, shard_id)?;
         // Start a piece if a crash left none, exactly as every other append entry point does.
         // Without it the record creates the file with no base header, so it reads as starting at
@@ -1762,7 +2150,7 @@ impl LocalWriteAheadLogStore {
         let last_sequence;
         let mut batch_end: Option<u64> = None;
         {
-            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            let mut inner = self.lock_inner();
             // Acquiring the append lock creates the directory the first time it opens the lock
             // file; doing it again on every append was a syscall to learn something unchanged.
             let _append_lock = WalAppendLock::acquire(&mut inner, shard_id)?;
@@ -1812,7 +2200,7 @@ impl LocalWriteAheadLogStore {
                     // Commands remain present. The last record also captures the full
                     // batch's outcomes so its carried frames have exact addresses.
                     command: Some(command),
-                    // The final record commits the entire batch. Carry derived pages
+                    // The final record commits the entire batch. Carry derived blocks
                     // there even when replay uses commands rather than outcomes.
                     staged_blocks: if index + 1 == batch_size as usize {
                         std::mem::take(&mut staged_blocks)
@@ -1883,12 +2271,269 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         required_sequence: u64,
     ) -> Result<(), WriteAheadLogError> {
+        if wal_group_write_enabled() {
+            return self.stream_commit(shard_id, required_sequence);
+        }
         self.group_commit_sync_with_policy(
             shard_id,
             required_sequence,
             group_commit_delay(),
             adaptive_group_commit_delay(),
         )
+    }
+
+    /// Group commit per shard: register as a waiter, try to start a write, and return when the
+    /// write covering this sequence has completed.
+    ///
+    /// A commit that finds NO write in flight starts one at once with everything buffered; a
+    /// commit that finds one in flight only waits. When a write completes, every waiter it covers
+    /// returns; what was buffered meanwhile waits for the next loop tick (2 ms) or for 512 KiB.
+    fn stream_commit(
+        &self,
+        shard_id: ShardId,
+        required_sequence: u64,
+    ) -> Result<(), WriteAheadLogError> {
+        let coordinator = self.group_commit_coordinator(shard_id);
+        {
+            let st = coordinator.state.lock().expect("wal shard sync coordinator poisoned");
+            if st.durable_seq >= required_sequence {
+                return Ok(());
+            }
+        }
+        // Registered for as long as this commit is waiting: `stream_try_append` reads the count to
+        // learn whether another writer is queued behind the write it is about to start.
+        coordinator.pending.fetch_add(1, AtomicOrdering::AcqRel);
+        let _pending = PendingGroupCommit(&coordinator.pending);
+        self.ensure_flusher();
+        self.stream_try_append(shard_id, required_sequence)?;
+        let mut st = coordinator.state.lock().expect("wal shard sync coordinator poisoned");
+        let mut self_ticks = 0u32;
+        while st.durable_seq < required_sequence {
+            let (guard, timeout) = coordinator
+                .wake
+                .wait_timeout(st, std::time::Duration::from_millis(20))
+                .expect("wal shard sync coordinator poisoned");
+            st = guard;
+            if timeout.timed_out() && st.durable_seq < required_sequence && !st.inflight {
+                // The loop flusher should have run long ago (2 ms); drive the write here rather
+                // than wait on a thread that is not there.
+                self_ticks += 1;
+                drop(st);
+                self.stream_try_append(shard_id, required_sequence)?;
+                st = coordinator.state.lock().expect("wal shard sync coordinator poisoned");
+                if self_ticks > 1000 {
+                    break;
+                }
+            }
+        }
+        if st.durable_seq < required_sequence {
+            return Err(WriteAheadLogError::Corruption(
+                "wal commit waiter gave up before its record was durable".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return at once when a write is in flight; otherwise write and sync everything buffered as
+    /// one task, complete the waiters, and go again while a full batch (512 KiB) has piled up
+    /// behind it.
+    fn stream_try_append(
+        &self,
+        shard_id: ShardId,
+        required_sequence: u64,
+    ) -> Result<(), WriteAheadLogError> {
+        let coordinator = self.group_commit_coordinator(shard_id);
+        loop {
+            {
+                let mut st = coordinator.state.lock().expect("wal shard sync coordinator poisoned");
+                if st.inflight {
+                    return Ok(());
+                }
+                st.inflight = true;
+            }
+            let window = group_commit_delay();
+            if !window.is_zero() {
+                std::thread::sleep(window);
+            } else if self.stream_writers_are_concurrent(shard_id, &coordinator) {
+                // The adaptive window. A commit that finds nobody else queued writes at once, as
+                // an isolated writer must; one that finds concurrent writers holds the write for
+                // `stream_adaptive_window` so the records those writers append meanwhile leave in
+                // the SAME write and share its sync. OFF by default: measured on the 32-client
+                // single-shard rig a 1 ms window cut syncs per set by a third and CPU per set by
+                // about 10%, and cost 9-22% of throughput and ~1 ms of median latency.
+                #[cfg(test)]
+                let forced = coordinator.adaptive_delay_us_for_test.load(AtomicOrdering::SeqCst);
+                #[cfg(not(test))]
+                let forced = 0u64;
+                let adaptive = if forced > 0 {
+                    std::time::Duration::from_micros(forced)
+                } else {
+                    stream_adaptive_window()
+                };
+                if !adaptive.is_zero() {
+                    std::thread::sleep(adaptive);
+                }
+            }
+            let outcome = self.stream_write_and_sync(shard_id, &coordinator, required_sequence);
+            let again;
+            {
+                let mut st = coordinator.state.lock().expect("wal shard sync coordinator poisoned");
+                st.inflight = false;
+                if let Ok(snapshot) = &outcome {
+                    st.durable_seq = st.durable_seq.max(*snapshot);
+                }
+                coordinator.wake.notify_all();
+                again = outcome.is_ok() && {
+                    let inner = self.lock_inner_raw();
+                    inner
+                        .pending_by_shard
+                        .get(&shard_id)
+                        .is_some_and(|p| p.bytes.len() >= wal_group_flush_bytes())
+                };
+            }
+            outcome?;
+            if !again {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Whether a second writer is already in sight of this shard's log: another commit waiting
+    /// on the coordinator, or more than one appended record not yet durable. Either one means the
+    /// write about to start can carry more than one record if it is held for a moment.
+    fn stream_writers_are_concurrent(
+        &self,
+        shard_id: ShardId,
+        coordinator: &GroupCommitCoordinator,
+    ) -> bool {
+        if coordinator.pending.load(AtomicOrdering::Acquire) > 1 {
+            return true;
+        }
+        let durable = coordinator
+            .state
+            .lock()
+            .expect("wal shard sync coordinator poisoned")
+            .durable_seq;
+        let appended = self
+            .lock_inner_raw()
+            .last_sequence_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(durable);
+        appended.saturating_sub(durable) > 1
+    }
+
+    /// One write task: ONE `write` of every buffered byte, ONE `fdatasync`. Returns the highest
+    /// sequence the sync covered. Bookkeeping mirrors `group_commit_sync_with_policy`.
+    fn stream_write_and_sync(
+        &self,
+        shard_id: ShardId,
+        coordinator: &GroupCommitCoordinator,
+        required_sequence: u64,
+    ) -> Result<u64, WriteAheadLogError> {
+        let (path, snapshot, record_end, generation, written) = {
+            let mut inner = self.lock_inner_raw();
+            let written = flush_pending_locked_file(&mut inner, shard_id)?;
+            let path = active_wal_path(&mut inner, shard_id);
+            let snapshot = inner
+                .last_sequence_by_shard
+                .get(&shard_id)
+                .copied()
+                .unwrap_or(required_sequence)
+                .max(required_sequence);
+            let record_end = inner.verified_len_by_shard.get(&shard_id).copied().unwrap_or(0);
+            let generation = inner.base_by_shard.get(&shard_id).copied();
+            (path, snapshot, record_end, generation, written)
+        };
+        // The handle this write went through when this call wrote; otherwise (a record was
+        // already written by an appender, or the loop tick) open the piece by its path as before.
+        let file = match written {
+            Some(file) => file,
+            None => {
+                #[cfg(test)]
+                WAL_BARRIER_REOPENS.with(|opens| opens.set(opens.get() + 1));
+                match OpenOptions::new().read(true).write(true).open(path.as_path()) {
+                    Ok(file) => file,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(snapshot),
+                    Err(err) => return Err(err.into()),
+                }
+            }
+        };
+        crate::durability_metrics::record_barrier("engine_wal_group_commit");
+        file.sync_data()?;
+        #[cfg(test)]
+        AFTER_GROUP_COMMIT_SYNC.with(|slot| {
+            let observer = slot.borrow_mut().take();
+            if let Some(observer) = observer {
+                observer();
+            }
+        });
+        let owed = self.lock_inner_raw().dir_sync_owed_by_shard.contains(&shard_id);
+        let dir_synced = coordinator
+            .state
+            .lock()
+            .expect("wal shard sync coordinator poisoned")
+            .dir_synced;
+        if !dir_synced || owed {
+            sync_parent_dir(path.as_path())?;
+            coordinator.state.lock().expect("wal shard sync coordinator poisoned").dir_synced = true;
+            self.lock_inner_raw().dir_sync_owed_by_shard.remove(&shard_id);
+        }
+        let mut inner = self.lock_inner_raw();
+        inner.stats.flushes += 1;
+        inner.stats.syncs += 1;
+        if snapshot > inner.stats.last_flushed_sequence {
+            inner.stats.last_flushed_sequence = snapshot;
+        }
+        if inner.base_by_shard.get(&shard_id).copied() == generation {
+            note_durable_record_end(&mut inner, shard_id, record_end, true);
+        }
+        let sequence_entry = inner.durable_sequence_by_shard.entry(shard_id).or_default();
+        *sequence_entry = (*sequence_entry).max(snapshot);
+        Ok(snapshot)
+    }
+
+    /// The loop flusher: a thread that tries a write every 2 ms
+    /// (`TS_WAL_GROUP_LOOP_INTERVAL_MS`), so what accumulated behind a completed write
+    /// is written within one tick even when no new commit arrives. Holds only weak handles and
+    /// exits when the store is dropped.
+    fn ensure_flusher(&self) {
+        if self.flusher_started.swap(true, AtomicOrdering::AcqRel) {
+            return;
+        }
+        let inner = Arc::downgrade(&self.inner);
+        let retention = Arc::downgrade(&self.read_retention);
+        let coord = Arc::downgrade(&self.sync_coord);
+        let flat = Arc::downgrade(&self.flat_append);
+        let started = Arc::downgrade(&self.flusher_started);
+        let spawned = std::thread::Builder::new()
+            .name("wal-loop-flush".to_string())
+            .spawn(move || loop {
+                std::thread::sleep(wal_group_loop_interval());
+                let (Some(inner), Some(read_retention), Some(sync_coord), Some(flat_append), Some(flusher_started)) =
+                    (inner.upgrade(), retention.upgrade(), coord.upgrade(), flat.upgrade(), started.upgrade())
+                else {
+                    return;
+                };
+                let store = LocalWriteAheadLogStore { inner, read_retention, sync_coord, flat_append, flusher_started };
+                let shards: Vec<ShardId> = {
+                    let guard = store.lock_inner_raw();
+                    guard
+                        .pending_by_shard
+                        .iter()
+                        .filter(|(_, p)| !p.bytes.is_empty())
+                        .map(|(shard, _)| *shard)
+                        .collect()
+                };
+                for shard in shards {
+                    if let Err(err) = store.stream_try_append(shard, 0) {
+                        tracing::error!(shard_id = shard, error = %err, "WAL loop flush failed");
+                    }
+                }
+            });
+        if spawned.is_err() {
+            self.flusher_started.store(false, AtomicOrdering::Release);
+        }
     }
 
     fn group_commit_coordinator(&self, shard_id: ShardId) -> Arc<GroupCommitCoordinator> {
@@ -2010,7 +2655,15 @@ impl LocalWriteAheadLogStore {
             std::thread::sleep(adaptive_window);
         }
         let (path, snapshot, record_end, generation) = {
-            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            let mut inner = self.lock_inner_raw();
+            // THE BATCH WRITE. Everything buffered since the previous barrier -- this caller's
+            // record and every concurrent writer's that arrived while the previous write was in
+            // flight -- goes to the file in ONE `write`, here, before the snapshot below names it
+            // durable. Writers whose records this covers find `durable_seq` already past their own sequence
+            // when they reach the coordinator and return without a write or a sync of their own.
+            // A failure leaves the bytes buffered and fails this barrier, so no waiter can be
+            // told its record is durable because an earlier writer's write was lost.
+            flush_pending_locked(&mut inner, shard_id)?;
             // The CACHED name, not a rebuilt one. `write_ahead_log_path` decides which of the
             // two piece names a store uses by asking whether each exists, so rebuilding it here
             // spent a `statx` per barrier re-deriving a name that cannot move while the log is
@@ -2070,7 +2723,7 @@ impl LocalWriteAheadLogStore {
             }
         });
         let owed = {
-            let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            let inner = self.lock_inner_raw();
             inner.dir_sync_owed_by_shard.contains(&shard_id)
         };
         if !entry.dir_synced || owed {
@@ -2090,7 +2743,7 @@ impl LocalWriteAheadLogStore {
             entry.contention_seen = true;
         }
         {
-            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            let mut inner = self.lock_inner_raw();
             inner.stats.flushes += 1;
             inner.stats.syncs += 1;
             if snapshot > inner.stats.last_flushed_sequence {
@@ -2111,7 +2764,7 @@ impl LocalWriteAheadLogStore {
         &self,
         record: WriteAheadLogRecord,
     ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner();
         fs::create_dir_all(&inner.root)?;
         // Start a piece if a crash left none, before anything reads where the log ends. Replay
         // writes a record whose sequence is already decided, so creating the file without a base
@@ -2163,7 +2816,7 @@ impl LocalWriteAheadLogStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner();
         // `offset` is a log id: a position in the log's whole history, not in whichever file
         // happens to hold it. That is the only position that means anything once the log is in
         // pieces, and unlike a file offset it survives reclaim.
@@ -2330,7 +2983,7 @@ impl LocalWriteAheadLogStore {
         start_record_aligned: bool,
         mut take: impl FnMut(u64, Vec<u8>, Option<WriteAheadLogRecord>) -> Option<T>,
     ) -> Result<(Vec<T>, bool, u64), WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner();
         let segments = wal_segment_pieces(&inner.root, shard_id);
         // No file at all is "nothing to scan", not an error. Distinguishing it here lets recovery
         // treat a missing log as "nothing to replay" while still surfacing a genuine decode failure
@@ -2540,7 +3193,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         sequence: u64,
     ) -> Result<u64, WriteAheadLogError> {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let inner = self.lock_inner();
         let mut start = 0u64;
         for path in wal_segment_paths(&inner.root, shard_id) {
             if !path.exists() {
@@ -2560,7 +3213,7 @@ impl LocalWriteAheadLogStore {
     }
 
     pub fn flush(&self, shard_id: ShardId) -> Result<WriteAheadLogFlushReport, WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner();
         fs::create_dir_all(&inner.root)?;
         let path = active_wal_path(&mut inner, shard_id);
         // The record end comes back from this scan. It used to be discarded and the file's
@@ -2621,20 +3274,36 @@ impl LocalWriteAheadLogStore {
     }
 
     pub fn set_block_retention_floor(&self, shard_id: ShardId, sequence: u64) {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner_raw();
         inner.block_retention_floor_by_shard.insert(shard_id, sequence);
     }
 
     /// The shard's block-retention floor, if one is registered.
     pub fn block_retention_floor(&self, shard_id: ShardId) -> Option<u64> {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        inner.block_retention_floor_by_shard.get(&shard_id).copied()
+        let inner = self.lock_inner_raw();
+        let readers = self.read_retention.lock().expect("read retention lock poisoned");
+        retained_block_floor(&inner, &readers, shard_id)
+    }
+
+    /// Called before releasing the index scope whose live floor already protects this sequence.
+    pub(crate) fn retain_read_sequence(&self, shard_id: ShardId, sequence: u64) -> WriteAheadLogReadLease {
+        let mut readers = self.read_retention.lock().expect("read retention lock poisoned");
+        let slot = match readers.slots.iter().position(Option::is_none) {
+            Some(slot) => slot,
+            None => {
+                let slot = readers.slots.len();
+                readers.slots.push(None);
+                slot
+            }
+        };
+        readers.slots[slot] = Some((shard_id, sequence));
+        WriteAheadLogReadLease { identity: self.weak_identity(), retention: Arc::downgrade(&self.read_retention), slot, shard: shard_id, sequence }
     }
 
     /// Drop the shard's floor, letting GC reclaim freely again. Call this only once no block
     /// resolves inside this shard's WAL.
     pub fn clear_block_retention_floor(&self, shard_id: ShardId) {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner_raw();
         inner.block_retention_floor_by_shard.remove(&shard_id);
     }
 
@@ -2644,7 +3313,7 @@ impl LocalWriteAheadLogStore {
     /// when the head is reclaimed. This is the difference between that and where the record
     /// physically sits now.
     pub fn base_offset(&self, shard_id: ShardId) -> Result<u64, WriteAheadLogError> {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let inner = self.lock_inner();
         let path = write_ahead_log_path(&inner.root, shard_id);
         Ok(read_wal_base(&path)?.0)
     }
@@ -2659,7 +3328,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         log_id: u64,
     ) -> Result<Option<u64>, WriteAheadLogError> {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let inner = self.lock_inner();
         Ok(locate_log_id(&inner.root, shard_id, log_id)?.map(|(_, physical)| physical))
     }
 
@@ -2670,7 +3339,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         physical_offset: u64,
     ) -> Result<u64, WriteAheadLogError> {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let inner = self.lock_inner();
         let path = write_ahead_log_path(&inner.root, shard_id);
         let (base, header_len) = read_wal_base(&path)?;
         Ok(base.saturating_add(physical_offset.saturating_sub(header_len)))
@@ -2685,7 +3354,7 @@ impl LocalWriteAheadLogStore {
         log_id: u64,
         size: u64,
     ) -> Result<Option<Vec<u8>>, WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner();
         let Some((path, physical)) = locate_log_id(&inner.root, shard_id, log_id)? else {
             return Ok(None);
         };
@@ -2709,7 +3378,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         log_id: u64,
     ) -> Result<Option<Vec<u8>>, WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner();
         let Some((path, physical)) = locate_log_id(&inner.root, shard_id, log_id)? else {
             return Ok(None);
         };
@@ -2724,44 +3393,69 @@ impl LocalWriteAheadLogStore {
         Ok(raw.map(|record| record.bytes))
     }
 
+    /// Read the framed records at many stable log ids, resolving the segment layout ONCE.
+    ///
+    /// [`read_frame_at_log_id`](Self::read_frame_at_log_id) lists and stats the shard's segment
+    /// files on every call, which is the right cost for one record and the wrong one for a load
+    /// that re-registers every log-resident value: 100,000 values over a log of 1,200 segments is
+    /// 100,000 directory listings, measured at about 100 s. This lists once, orders the segments
+    /// by the offsets they hold, and finds each id's segment by binary search. Ids sorted
+    /// ascending reuse the open file. The answer for an id is the answer the single read gives
+    /// (`None` when it is reclaimed or ahead of the log), in the order of `log_ids`.
+    pub fn read_frames_at_log_ids(
+        &self,
+        shard_id: ShardId,
+        log_ids: &[u64],
+    ) -> Result<Vec<Option<Vec<u8>>>, WriteAheadLogError> {
+        let mut inner = self.lock_inner();
+        // (path, base offset, header length, bytes of records) of every non-empty piece, in order.
+        let mut spans: Vec<(PathBuf, u64, u64, u64)> = Vec::new();
+        for piece in wal_segment_pieces(&inner.root, shard_id) {
+            if !piece.path.exists() {
+                continue;
+            }
+            let (base, header_len) = read_wal_base(&piece.path)?;
+            let length = piece.path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            if length <= header_len {
+                continue;
+            }
+            spans.push((piece.path.clone(), base, header_len, length - header_len));
+        }
+        let mut open: Option<(usize, File)> = None;
+        let mut out = Vec::with_capacity(log_ids.len());
+        for &log_id in log_ids {
+            // The last span whose base is at or below the id, if the id falls inside it.
+            let after = spans.partition_point(|span| span.1 <= log_id);
+            let hit = after
+                .checked_sub(1)
+                .filter(|&index| log_id - spans[index].1 < spans[index].3);
+            let Some(index) = hit else {
+                out.push(None);
+                continue;
+            };
+            if open.as_ref().map(|(held, _)| *held) != Some(index) {
+                open = Some((index, File::open(&spans[index].0)?));
+            }
+            let (_, file) = open.as_mut().expect("opened above");
+            file.seek(SeekFrom::Start(spans[index].2 + (log_id - spans[index].1)))?;
+            let mut reader = BufReader::with_capacity(1024, &mut *file);
+            let raw = read_raw_record(&mut reader)?;
+            if let Some(record) = raw.as_ref() {
+                inner.stats.reads += 1;
+                inner.stats.bytes_read += record.physical_bytes;
+            }
+            out.push(raw.map(|record| record.bytes));
+        }
+        Ok(out)
+    }
+
     /// Select one carried block when the compressed record has a directory. Older encodings
     /// return the complete checked record from the same file handle for the existing decoder.
     pub(crate) fn read_carried_block_at_log_id(
         &self, shard_id: ShardId, log_id: u64, sequence: u64, index: usize,
         object_id: u64, element_name: Option<&str>,
     ) -> Result<Option<CarriedBlockRead>, WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        let source = {
-            let WriteAheadLogInner { root, point_readers, .. } = &mut *inner;
-            point_readers.take(root, shard_id, log_id)?
-        };
-        let Some(mut source) = source else {
-            return Ok(None);
-        };
-        let mut bytes_read = 0;
-        let result = (|| {
-            let selected = match packed_frames::PointReader::new(&mut source.file, source.physical)? {
-                Some(mut reader) => {
-                    let result = crate::wal_proto::indexed::read(
-                        &mut reader, 0, &mut inner.indexed_records, shard_id, log_id,
-                        sequence, index, object_id, element_name, &mut 0,
-                    );
-                    bytes_read = reader.physical_bytes;
-                    result
-                }
-                None => Ok(None),
-            };
-            if let Some(block) = selected? { return Ok(Some(CarriedBlockRead::Block(block))); }
-            source.file.seek(SeekFrom::Start(source.physical))?;
-            let mut reader = BufReader::with_capacity(1024, &mut source.file);
-            let raw = read_raw_record(&mut reader)?;
-            if let Some(record) = raw.as_ref() { bytes_read += record.physical_bytes; }
-            Ok(raw.map(|record| CarriedBlockRead::Record(record.bytes)))
-        })();
-        inner.stats.reads += 1;
-        inner.stats.bytes_read += bytes_read;
-        if result.is_ok() { inner.point_readers.put(source); }
-        result
+        point_reads::read(self, shard_id, log_id, sequence, index, object_id, element_name)
     }
 
     /// Reclaim this shard's WAL prefix below `retain_from_sequence`, never going past what the
@@ -2805,7 +3499,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         retain_from_sequence: u64,
     ) -> Result<WriteAheadLogGcReport, WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner();
         fs::create_dir_all(&inner.root)?;
         let path = active_wal_path(&mut inner, shard_id);
         if !path.exists() {
@@ -2832,11 +3526,10 @@ impl LocalWriteAheadLogStore {
         // only copy of a block's bytes -- a block in the WAL has no copy in a slab until it is
         // dumped -- so removing it loses data that the served index still points at, and the
         // read fails at some later, unrelated moment.
-        let floor = inner
-            .block_retention_floor_by_shard
-            .get(&shard_id)
-            .copied()
-            .unwrap_or(u64::MAX);
+        let floor = {
+            let readers = self.read_retention.lock().expect("read retention lock poisoned");
+            retained_block_floor(&inner, &readers, shard_id).unwrap_or(u64::MAX)
+        };
         let clamped_by_block_retention = effective_retain > floor;
         let effective_retain = effective_retain.min(floor);
         // Whole pieces below the retain point go without being read or copied. This uses the
@@ -3067,7 +3760,7 @@ impl LocalWriteAheadLogStore {
     /// threshold is anchored on the durable manifest sequence and so survives a restart intact;
     /// the two are read together and either can release the dump.
     pub fn undumped_len_since_dump(&self, shard_id: ShardId) -> u64 {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let inner = self.lock_inner_raw();
         inner
             .undumped_bytes_by_shard
             .get(&shard_id)
@@ -3078,7 +3771,7 @@ impl LocalWriteAheadLogStore {
     /// Object mutations appended since this shard's last dump. See
     /// `undumped_objects_by_shard`.
     pub fn undumped_objects_since_dump(&self, shard_id: ShardId) -> u64 {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let inner = self.lock_inner_raw();
         inner
             .undumped_objects_by_shard
             .get(&shard_id)
@@ -3086,18 +3779,59 @@ impl LocalWriteAheadLogStore {
             .unwrap_or(0)
     }
 
+    /// Bytes appended at and above `sequence`, to within one mark stride (`BYTE_MARK_STRIDE`).
+    ///
+    /// `None` when no mark reaches back that far (the process opened the shard after that record,
+    /// or the marks aged out), which tells the caller to fall back to the whole undumped figure.
+    pub fn appended_len_since_sequence(&self, shard_id: ShardId, sequence: u64) -> Option<u64> {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let marks = inner.byte_marks_by_shard.get(&shard_id)?;
+        let at = marks.partition_point(|(mark_sequence, _)| *mark_sequence <= sequence);
+        let (_, through) = *marks.get(at.checked_sub(1)?)?;
+        let total = inner.appended_bytes_by_shard.get(&shard_id).copied().unwrap_or(0);
+        Some(total.saturating_sub(through))
+    }
+
+    /// Seed the undumped-bytes counter from what is already on disk above `sequence`.
+    ///
+    /// The counter counts appends in this process, so a shard opened over a log that a previous
+    /// process left undumped read 0 and waited a whole further gate of appends before anything
+    /// reclaimed the old tail. Called by the load path once it knows where replay started.
+    pub fn seed_undumped_from_sequence(&self, shard_id: ShardId, sequence: u64) {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let Ok(bytes) = log_bytes_above_sequence(&inner.root, shard_id, sequence) else {
+            return;
+        };
+        let counter = inner.undumped_bytes_by_shard.entry(shard_id).or_default();
+        *counter = (*counter).max(bytes);
+    }
+
     /// Record that a dump captured this shard's log, resetting its undumped growth to 0.
     ///
     /// Called only once the dump manifest is durably written, so the counter never clears past
     /// state a crash could lose -- a restart mid-dump re-dumps rather than skipping.
     pub fn mark_dumped(&self, shard_id: ShardId) {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner_raw();
         inner.undumped_bytes_by_shard.insert(shard_id, 0);
         inner.undumped_objects_by_shard.insert(shard_id, 0);
+        // A mark at EXACTLY the dump boundary, so a write made after the dump is measured from the
+        // dump and not from the last stride mark, which can sit up to a whole stride before it.
+        let total = inner.appended_bytes_by_shard.get(&shard_id).copied().unwrap_or(0);
+        if let Some(sequence) = inner.last_sequence_by_shard.get(&shard_id).copied() {
+            let marks = inner.byte_marks_by_shard.entry(shard_id).or_default();
+            if marks.back().map_or(true, |(last, _)| *last < sequence) {
+                if marks.len() >= BYTE_MARK_CAP {
+                    let kept: std::collections::VecDeque<(u64, u64)> =
+                        marks.iter().copied().step_by(2).collect();
+                    *marks = kept;
+                }
+                marks.push_back((sequence, total));
+            }
+        }
     }
 
     pub fn stats(&self, shard_id: ShardId) -> WriteAheadLogStats {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner();
         inner.stats.stats_full_scans = inner.stats.stats_full_scans.saturating_add(1);
         let path = active_wal_path(&mut inner, shard_id);
         // Durable bytes, not written bytes. An append puts a record in the file whether or not
@@ -3124,7 +3858,7 @@ impl LocalWriteAheadLogStore {
                 .unwrap_or_default(),
             persistent_bytes: sealed_bytes.saturating_add(durable_active),
             last_flushed_sequence: durable_sequence,
-            ..inner.stats
+            ..inner.point_reads.stats(inner.stats)
         }
     }
 
@@ -3160,7 +3894,7 @@ impl LocalWriteAheadLogStore {
     /// `persistent_bytes` is computed exactly as `stats` computes it. The segment walk behind it
     /// measured a flat 497 B, so there is nothing to win by changing it and a number to lose.
     pub fn stats_without_rescan(&self, shard_id: ShardId) -> WriteAheadLogStats {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.lock_inner();
         // CACHE FIRST, AND THE COUNTER ONLY MOVES WHEN A SCAN ACTUALLY HAPPENS. `stats`
         // increments `stats_full_scans` unconditionally; doing that here would report scans this
         // path no longer performs to the four probes that read the counter.
@@ -3192,7 +3926,7 @@ impl LocalWriteAheadLogStore {
             last_sequence,
             persistent_bytes: sealed_bytes.saturating_add(durable_active),
             last_flushed_sequence: durable_sequence,
-            ..inner.stats
+            ..inner.point_reads.stats(inner.stats)
         }
     }
 
@@ -3203,7 +3937,7 @@ impl LocalWriteAheadLogStore {
     /// outside without them. Neither door is reachable in a release build.
     #[cfg(any(test, feature = "alloc-probe"))]
     pub fn probe_last_sequence_scan(&self, shard_id: ShardId) -> u64 {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let inner = self.lock_inner();
         last_wal_sequence_at(&inner.root, shard_id)
             .map(|(sequence, _)| sequence)
             .unwrap_or_default()
@@ -3211,19 +3945,19 @@ impl LocalWriteAheadLogStore {
 
     #[cfg(any(test, feature = "alloc-probe"))]
     pub fn probe_all_segment_bytes(&self, shard_id: ShardId) -> u64 {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let inner = self.lock_inner();
         wal_all_segment_bytes(&inner.root, shard_id)
     }
 
     pub fn raw_stats(&self, shard_id: ShardId) -> WriteAheadLogStats {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let inner = self.lock_inner_raw();
         WriteAheadLogStats {
             last_sequence: inner
                 .last_sequence_by_shard
                 .get(&shard_id)
                 .copied()
                 .unwrap_or(inner.stats.last_sequence),
-            ..inner.stats
+            ..inner.point_reads.stats(inner.stats)
         }
     }
 
@@ -3236,7 +3970,7 @@ impl LocalWriteAheadLogStore {
     /// off this cached value instead. Returns 0 if this store has not yet observed the shard (no
     /// append and no scan); the write path always has, so the value equals the on-disk maximum.
     pub fn cached_last_sequence(&self, shard_id: ShardId) -> u64 {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let inner = self.lock_inner_raw();
         inner
             .last_sequence_by_shard
             .get(&shard_id)
@@ -3245,7 +3979,7 @@ impl LocalWriteAheadLogStore {
     }
 
     pub fn info(&self, shard_id: ShardId) -> Result<WriteAheadLogInfo, WriteAheadLogError> {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let inner = self.lock_inner();
         let path = write_ahead_log_path(&inner.root, shard_id);
         let (tail_sequence, _) = last_wal_sequence_at(&inner.root, shard_id)?;
         if !path.exists() {
@@ -3534,6 +4268,16 @@ fn ensure_active_wal_segment(
     inner: &mut WriteAheadLogInner,
     shard_id: ShardId,
 ) -> Result<(), WriteAheadLogError> {
+    ensure_active_wal_segment_len(inner, shard_id).map(|_| ())
+}
+
+/// [`ensure_active_wal_segment`], handing back the length of the piece it found when it was
+/// already started. The append that follows asks the same question of the same file under the
+/// same lock, so it can take this answer instead of a second `statx`.
+fn ensure_active_wal_segment_len(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+) -> Result<Option<u64>, WriteAheadLogError> {
     let path = active_wal_path(inner, shard_id);
     // A piece of zero length is one that was created and never got its header, which a crash
     // between the two leaves behind. It has to be treated as absent: `read_wal_base` reads an
@@ -3543,13 +4287,13 @@ fn ensure_active_wal_segment(
     // Absent and empty take the same branch, so ONE answer decides both. Asking `metadata()`
     // for the length and `exists()` for the presence was the same `statx` issued twice about
     // the same file, back to back, under the same append lock.
-    if wal_path_len(path.as_path()).is_some_and(|length| length > 0) {
-        return Ok(());
+    if let Some(length) = wal_path_len(path.as_path()).filter(|length| *length > 0) {
+        return Ok(Some(length));
     }
     let start = log_id_after_sealed(&inner.root, shard_id)?;
     if start == 0 {
         // No sealed pieces: a log that starts at the beginning needs no header, exactly as before.
-        return Ok(());
+        return Ok(None);
     }
     let header = crate::log_framing::encode_base_header(start);
     let mut file = File::create(path.as_path())?;
@@ -3563,7 +4307,7 @@ fn ensure_active_wal_segment(
     inner
         .verified_len_by_shard
         .insert(shard_id, header.len() as u64);
-    Ok(())
+    Ok(None)
 }
 
 fn roll_wal_segment_if_due(
@@ -4059,6 +4803,17 @@ fn resolve_last_sequence_for_append(
     shard_id: ShardId,
     flat_append: bool,
 ) -> Result<(u64, u64), WriteAheadLogError> {
+    resolve_last_sequence_for_append_known(inner, shard_id, flat_append, None)
+}
+
+/// [`resolve_last_sequence_for_append`] with the active piece's length when the caller has just
+/// measured it under the same append lock, which saves the `statx` that would measure it again.
+fn resolve_last_sequence_for_append_known(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+    flat_append: bool,
+    known_len: Option<u64>,
+) -> Result<(u64, u64), WriteAheadLogError> {
     let cached_last_sequence = inner
         .last_sequence_by_shard
         .get(&shard_id)
@@ -4070,7 +4825,10 @@ fn resolve_last_sequence_for_append(
             inner.verified_len_by_shard.get(&shard_id),
         ) {
             let path = active_wal_path(inner, shard_id);
-            let on_disk_len = wal_path_len(path.as_path()).unwrap_or(0);
+            let on_disk_len = match known_len {
+                Some(length) => length,
+                None => wal_path_len(path.as_path()).unwrap_or(0),
+            };
             // Under preallocation the file is allowed to be longer than the records; unchanged
             // means "still exactly the size this process grew it to". Either way, the offset
             // handed back is where the RECORDS end, which is where the next one goes.
@@ -4195,6 +4953,17 @@ pub fn group_commit_delay() -> std::time::Duration {
     std::time::Duration::from_micros(micros)
 }
 
+/// The window the group-write barrier holds a write for when other writers are in sight
+/// (`TS_WAL_STREAM_WINDOW_US`, microseconds, default 0 = start the write at once). Separate from
+/// `adaptive_group_commit_delay`, whose 1 ms default belongs to the per-record barrier.
+pub fn stream_adaptive_window() -> std::time::Duration {
+    let micros = std::env::var("TS_WAL_STREAM_WINDOW_US")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    std::time::Duration::from_micros(micros)
+}
+
 /// A short batch window used only after same-shard barrier contention has been observed.
 ///
 /// Unlike [`group_commit_delay`], this does not tax an isolated writer: the first uncovered
@@ -4290,6 +5059,8 @@ fn shard_uses_blocks(
 thread_local! {
     pub(crate) static WAL_FILE_OPENS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     pub(crate) static WAL_FILE_STATS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Opens the barrier made by path because no handle came from the write it covers.
+    pub(crate) static WAL_BARRIER_REOPENS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// How many times a walk LISTS the log's directory, and how many pieces it reads a HEADER from.
@@ -4659,6 +5430,192 @@ fn append_record_locked(
     append_record_locked_on(inner, record, sync, known_offset, None)
 }
 
+/// Frame `record` and add it to the shard's write buffer. Returns the file offset it will occupy,
+/// or `None` when it has to take the unbuffered path (it crosses a block boundary, where a footer
+/// is written at a computed offset, or the log's end is not known yet).
+///
+/// Everything the unbuffered primitive maintains per record is maintained here at the same moment,
+/// except the facts about the FILE, which change when the batch is written: `verified_len` (the
+/// end of the records on disk), the write counters and `persistent_bytes`.
+fn buffer_record_locked(
+    inner: &mut WriteAheadLogInner,
+    record: &WriteAheadLogRecord,
+) -> Result<Option<u64>, WriteAheadLogError> {
+    let shard_id = record.shard_id;
+    let Some(flushed_end) = inner.verified_len_by_shard.get(&shard_id).copied() else {
+        return Ok(None);
+    };
+    let pending_len = inner
+        .pending_by_shard
+        .get(&shard_id)
+        .map_or(0, |pending| pending.bytes.len() as u64);
+    let offset = flushed_end.saturating_add(pending_len);
+    let path = active_wal_path(inner, shard_id);
+    let mut bytes = std::mem::take(&mut inner.encode_scratch);
+    if crate::log_framing::binary_frame_enabled() {
+        if let Err(err) = crate::wal_proto::encode_binary_frame_into(record, &mut bytes) {
+            recycle_encode_scratch(inner, bytes);
+            return Err(WriteAheadLogError::Corruption(format!(
+                "engine wal record encode failed: {err}"
+            )));
+        }
+    } else {
+        let payload = encode_wal_payload(record)?;
+        crate::log_framing::encode_record_into(&payload, &mut bytes);
+    }
+    let uses_blocks = shard_uses_blocks(inner, shard_id, &path)?;
+    if uses_blocks {
+        let (_, header_len) = cached_wal_base(inner, shard_id)?;
+        if offset >= header_len {
+            let relative = offset - header_len;
+            let data_end = block_data_end(block_of(relative));
+            if relative + bytes.len() as u64 > data_end && relative <= data_end {
+                recycle_encode_scratch(inner, bytes);
+                return Ok(None);
+            }
+        }
+    }
+    let size = bytes.len();
+    let pending = inner.pending_by_shard.entry(shard_id).or_default();
+    if pending.bytes.is_empty() {
+        pending.start = flushed_end;
+    }
+    pending.bytes.extend_from_slice(&bytes);
+    inner.pending_total += size;
+    if inner.block_mode_by_shard.get(&shard_id).copied().unwrap_or(false) {
+        inner
+            .block_last_record_by_shard
+            .insert(shard_id, (offset, record.sequence));
+    }
+    inner.group_records += 1;
+    // Counted when the record is buffered, as the unbuffered primitive counts it when written:
+    // these are growth counters for the dump budget and nothing reads them mid-batch.
+    note_appended_bytes(inner, shard_id, record.sequence, size as u64);
+    *inner.undumped_objects_by_shard.entry(shard_id).or_default() +=
+        record.outcomes.len().max(1) as u64;
+    recycle_encode_scratch(inner, bytes);
+    Ok(Some(offset))
+}
+
+/// Write a shard's buffered records to its log file in one `write`.
+///
+/// Under the cross-process append lock, at the offset the first buffered byte was assigned. A
+/// positioned write, so a retry after a partial failure rewrites the same bytes over the same
+/// place instead of appending a second copy after the torn part. On failure the bytes stay
+/// buffered (and `verified_len` does not move): nothing is lost, and the barrier that asked
+/// reports the error instead of a success.
+fn flush_pending_locked(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+) -> Result<(), WriteAheadLogError> {
+    flush_pending_locked_file(inner, shard_id).map(|_| ())
+}
+
+/// [`flush_pending_locked`], handing back the handle the batch was written through (`None` when
+/// there was nothing buffered). The barrier that follows syncs THAT handle: it is the file the
+/// bytes went into, and it spares the second `open` of the same path.
+fn flush_pending_locked_file(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+) -> Result<Option<File>, WriteAheadLogError> {
+    let Some(pending) = inner.pending_by_shard.get_mut(&shard_id) else {
+        return Ok(None);
+    };
+    if pending.bytes.is_empty() {
+        return Ok(None);
+    }
+    let start = pending.start;
+    let bytes = std::mem::take(&mut pending.bytes);
+    let path = active_wal_path(inner, shard_id);
+    match write_batch_bytes(inner, shard_id, path.as_path(), start, &bytes) {
+        Ok(file) => {
+            let end = start.saturating_add(bytes.len() as u64);
+            inner.pending_total = inner.pending_total.saturating_sub(bytes.len());
+            inner.verified_len_by_shard.insert(shard_id, end);
+            inner.stats.writes += 1;
+            inner.stats.bytes_written += bytes.len() as u64;
+            inner.stats.persistent_bytes = end;
+            inner.group_writes += 1;
+            // Keep the allocation for the next batch.
+            let mut recycled = bytes;
+            recycled.clear();
+            if let Some(pending) = inner.pending_by_shard.get_mut(&shard_id) {
+                pending.start = end;
+                pending.bytes = recycled;
+            }
+            Ok(Some(file))
+        }
+        Err(err) => {
+            if let Some(pending) = inner.pending_by_shard.get_mut(&shard_id) {
+                pending.bytes = bytes;
+            }
+            Err(err)
+        }
+    }
+}
+
+fn write_batch_bytes(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+    path: &Path,
+    start: u64,
+    bytes: &[u8],
+) -> Result<File, WriteAheadLogError> {
+    let _append_lock = WalAppendLock::acquire(inner, shard_id)?;
+    #[cfg(test)]
+    WAL_FILE_OPENS.with(|opens| opens.set(opens.get() + 1));
+    let file = OpenOptions::new().create(true).write(true).open(path)?;
+    if wal_preallocate_enabled() {
+        let needed = start.saturating_add(bytes.len() as u64);
+        let physical = file.metadata()?.len();
+        let physical = if physical < needed {
+            // Grown to a chunk boundary, as the unbuffered primitive does, so the barrier persists
+            // a size once per chunk rather than once per batch.
+            let chunk = wal_preallocate_chunk();
+            let target = needed
+                .saturating_add(chunk.saturating_sub(1))
+                .saturating_div(chunk)
+                .saturating_mul(chunk);
+            file.set_len(target)?;
+            target
+        } else {
+            physical
+        };
+        inner.prealloc_physical_by_shard.insert(shard_id, physical);
+    }
+    #[cfg(test)]
+    {
+        // Only the thread that armed the fault may consume it: the suite runs tests in parallel
+        // and any of them that writes a batch would otherwise take another test's injected fault.
+        let limit = if torn_batch_owner_is_current_thread() {
+            TORN_BATCH_WRITE_BYTES.swap(-1, AtomicOrdering::SeqCst)
+        } else {
+            -1
+        };
+        if limit >= 0 {
+            let torn = (limit as usize).min(bytes.len());
+            write_all_at_offset(&file, &bytes[..torn], start)?;
+            return Err(WriteAheadLogError::Io(std::io::Error::other(
+                "injected: write torn part-way through a batch",
+            )));
+        }
+    }
+    write_all_at_offset(&file, bytes, start)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn write_all_at_offset(file: &File, bytes: &[u8], offset: u64) -> std::io::Result<()> {
+    std::os::unix::fs::FileExt::write_all_at(file, bytes, offset)
+}
+
+#[cfg(not(unix))]
+fn write_all_at_offset(file: &File, bytes: &[u8], offset: u64) -> std::io::Result<()> {
+    let mut file = file.try_clone()?;
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(bytes)
+}
+
 fn recycle_encode_scratch(inner: &mut WriteAheadLogInner, bytes: Vec<u8>) {
     // Compression reserves for the input bound; retain at most twice the final frame or 1 MiB.
     let useful_capacity = bytes.len().saturating_mul(2).max(1024 * 1024);
@@ -4682,6 +5639,10 @@ fn append_record_locked_on(
     known_offset: Option<u64>,
     reuse: Option<(&mut std::fs::File, &mut u64)>,
 ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
+    // This primitive places a record at the end of the records ON DISK. Buffered group-commit
+    // records that are not on disk yet would be overwritten by it, so they are written first -- and
+    // if they cannot be, this append fails rather than writing past them.
+    flush_pending_locked(inner, record.shard_id)?;
     let path = active_wal_path(inner, record.shard_id);
     // The caller has usually just measured this under the same append lock, so taking its answer
     // costs nothing and asking again costs a stat. With no answer in hand, the record end comes
@@ -4914,12 +5875,9 @@ fn append_record_locked_on(
         *durable_sequence = (*durable_sequence).max(record.sequence);
     }
     let size = bytes.len() as u64;
-    // Every append path funnels through here, so this is the one place the undumped growth has
-    // to be counted for all of them.
-    *inner
-        .undumped_bytes_by_shard
-        .entry(record.shard_id)
-        .or_default() += size;
+    // The unbuffered primitive's own accounting; the buffered group-commit path calls the same
+    // helper when it buffers a record.
+    note_appended_bytes(inner, record.shard_id, record.sequence, size);
     // The same funnel, in the quantity the writer's batching cannot move. A record built from
     // outcomes carries one per object it mutated (`append_batch_as_one_record` is the whole batch
     // in one record); a record that carries none is one command, so one mutation. `max(1)` is not
@@ -5923,7 +6881,7 @@ mod tests {
     fn eight_records_against_one_record_holding_eight() {
         fn item(index: usize) -> WalOutcomeItem {
             WalOutcomeItem {
-                kind: "string".to_string(),
+                kind: "string".into(),
                 object_key: format!("ingest-00042/{index}"),
                 element_name: None,
                 object_id: 1000 + index as u64,
@@ -7202,7 +8160,7 @@ mod tests {
                     }),
                     staged_blocks: Vec::new(),
                     outcomes: vec![WalOutcomeItem {
-                        kind: "string".to_string(),
+                        kind: "string".into(),
                         object_key: KEY.to_string(),
                         element_name: None,
                         object_id: crate::engine::hashing::stable_block_object_id(
@@ -8255,6 +9213,8 @@ mod tests {
         ("StringSetEx", std::mem::size_of::<(String, Vec<u8>, u64)>()),
         ("StringSetConditional", std::mem::size_of::<(String, Vec<u8>, Option<u64>, StringSetCondition, bool, bool)>()),
         ("StringGet", std::mem::size_of::<(String)>()),
+        ("StringLen", std::mem::size_of::<(String)>()),
+        ("StringGetRange", std::mem::size_of::<(String, i64, i64)>()),
         ("StringDelete", std::mem::size_of::<(String)>()),
         ("HashSet", std::mem::size_of::<(String, String, Vec<u8>)>()),
         ("HashGet", std::mem::size_of::<(String, String)>()),
@@ -8263,6 +9223,7 @@ mod tests {
         ("HashIncrBy", std::mem::size_of::<(String, String, i64)>()),
         ("HashGetAll", std::mem::size_of::<(String)>()),
         ("HashLen", std::mem::size_of::<(String)>()),
+        ("HashFieldExists", std::mem::size_of::<(String, String)>()),
         ("HashDelete", std::mem::size_of::<(String, String)>()),
         ("SetAdd", std::mem::size_of::<(String, Vec<u8>)>()),
         ("ZSetAdd", std::mem::size_of::<(String, Vec<u8>, f64)>()),
@@ -8282,10 +9243,15 @@ mod tests {
         ("ListPop", std::mem::size_of::<(String, bool)>()),
         ("ListRange", std::mem::size_of::<(String, i64, i64)>()),
         ("ListLen", std::mem::size_of::<(String)>()),
+        ("ListSet", std::mem::size_of::<(String, i64, Vec<u8>)>()),
+        ("ListRemove", std::mem::size_of::<(String, i64, Vec<u8>)>()),
+        ("ListTrim", std::mem::size_of::<(String, i64, i64)>()),
         ("SetMembers", std::mem::size_of::<(String)>()),
+        ("SetCard", std::mem::size_of::<(String)>()),
+        ("SetIsMember", std::mem::size_of::<(String, Vec<u8>)>()),
         ("SetRemove", std::mem::size_of::<(String, Vec<u8>)>()),
         ("FeatureAppend", std::mem::size_of::<(String, Vec<FeaturePoint>)>()),
-        ("FeatureAppendWithPolicy", std::mem::size_of::<(String, Vec<FeaturePoint>, FeatureWritePolicy)>()),
+        ("FeatureAppendWithPolicy", std::mem::size_of::<(String, Vec<FeaturePoint>, FeatureWritePolicy, Option<u64>)>()),
         ("FeatureQuery", std::mem::size_of::<(String, u64, u64, Option<usize>)>()),
         ("FeatureQueryFiltered", std::mem::size_of::<(String, u64, u64, Option<usize>, Vec<FeatureFilter>)>()),
         ("FeatureReplace", std::mem::size_of::<(String, u64, u64, Vec<FeaturePoint>)>()),
@@ -8294,8 +9260,11 @@ mod tests {
         ("SequenceAdd", std::mem::size_of::<(String, Vec<SequenceFeatureRow>)>()),
         ("SequenceQuery", std::mem::size_of::<(String, u64, u64, usize, Vec<FeatureFilter>)>()),
         ("SequenceBatchQuery", std::mem::size_of::<(Vec<SequenceQuerySpec>)>()),
-        ("CellRankQuery", std::mem::size_of::<(String, CellRankSpec)>()),
-        ("CellRollup", std::mem::size_of::<(String, CellRollupSpec)>()),
+        ("WindowReduceRank", std::mem::size_of::<(String, WindowReduceRankSpec)>()),
+        ("WindowReduceRollup", std::mem::size_of::<(String, WindowReduceRollupSpec)>()),
+        ("WindowReduceRemove", std::mem::size_of::<(String, WindowReduceRemoveSpec)>()),
+        ("WindowReduceFanInRank", std::mem::size_of::<(Vec<String>, WindowReduceRankSpec)>()),
+        ("WindowReduceRankBatch", std::mem::size_of::<(Vec<WindowReduceRankBatchItem>)>()),
         ("ControlStateIncrement", std::mem::size_of::<(String, u64, i64)>()),
         ("ControlStateIncrementWithOptions", std::mem::size_of::<(String, u64, i64, Option<u64>, Option<u64>)>()),
         ("ControlStateChangeAdd", std::mem::size_of::<(String, u64, Vec<u8>, Option<u64>, Option<u64>)>()),
@@ -9021,7 +9990,7 @@ mod tests {
                 let path = write_ahead_log_path(dir.path(), 1);
                 let outcomes = (0..items)
                     .map(|index| WalOutcomeItem {
-                        kind: "string".to_string(),
+                        kind: "string".into(),
                         object_key: format!("batch-key-{index:09}"),
                         element_name: None,
                         object_id: index as u64,
@@ -10202,8 +11171,8 @@ mod tests {
         // And the door itself: one definition, three barrier paths.
         let calls = source.matches(&format!("{door}(")).count();
         assert_eq!(
-            calls, 5,
-            "one definition, three barrier paths and the reclaim call the single writer; found \
+            calls, 6,
+            "one definition, four barrier paths (the stream write task is the fourth) and the reclaim call the single writer; found \
              {calls} mentions. Another one is fine -- update this number and make sure it \
              passes a record end, not a file length"
         );
@@ -13502,5 +14471,33 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod byte_mark_tests {
+    use super::push_byte_mark;
+    use std::collections::VecDeque;
+
+    /// Past the cap the OLDEST mark must still be there: it is what a long-undumped write is
+    /// looked up against. Dropping the front sent that lookup back to a counter a dump zeroes.
+    #[test]
+    fn thinning_at_the_cap_keeps_the_oldest_mark_reachable() {
+        let mut marks: VecDeque<(u64, u64)> = VecDeque::new();
+        let (stride, cap) = (10u64, 8usize);
+        let mut total = 0u64;
+        for sequence in 1..=500u64 {
+            total += 10;
+            push_byte_mark(&mut marks, sequence, total, stride, cap);
+        }
+        // NON-VACUITY: far more marks were due than the cap holds.
+        assert!(marks.len() <= cap, "the cap did not hold: {}", marks.len());
+        assert_eq!(
+            marks.front().copied(),
+            Some((1, 10)),
+            "the oldest mark was dropped, so the oldest undumped write has nothing to read from"
+        );
+        let sequences: Vec<u64> = marks.iter().map(|(sequence, _)| *sequence).collect();
+        assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]), "marks out of order");
     }
 }

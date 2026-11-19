@@ -341,6 +341,9 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     ("objects/field_name", Scale::PerShard, Nature::Envelope, ""),
     ("objects/field_tail", Scale::PerShard, Nature::Envelope, ""),
     ("objects/subtree", Scale::PerShard, Nature::Payload, ""),
+    ("container_maps/field_name", Scale::PerShard, Nature::Envelope, ""),
+    ("container_maps/field_tail", Scale::PerShard, Nature::Envelope, ""),
+    ("container_maps/subtree", Scale::PerShard, Nature::Payload, ""),
     ("bucket_map/field_tail", Scale::PerShard, Nature::Envelope, ""),
     ("bucket_map/open_brace", Scale::PerShard, Nature::Envelope, ""),
     // ---- per-bucket: the map entry, the node envelope and the node's own eleven fields ----
@@ -384,7 +387,7 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     ("block/map_key/kind", Scale::PerBlock, Nature::Identity, ""),
     ("block/map_key/object_key", Scale::PerBlock, Nature::Identity, ""),
     (
-        "block/map_key/component_slot",
+        "block/map_key/element_name_slot",
         Scale::PerBlock,
         Nature::Envelope,
         "",
@@ -445,7 +448,7 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
 ];
 
 /// The one term that is structurally empty and is asserted EXACTLY zero rather than non-zero.
-const STRUCTURALLY_EMPTY: &str = "block/map_key/component_slot";
+const STRUCTURALLY_EMPTY: &str = "block/map_key/element_name_slot";
 
 /// The declared scale and nature of a label, or a panic naming the label.
 fn declared(label: &str) -> (Scale, Nature, &'static str) {
@@ -538,7 +541,7 @@ const BLOCK_KEY_TERMS: &[&str] = &[
     "block/map_key_quotes",
     "block/map_key/kind",
     "block/map_key/object_key",
-    "block/map_key/component_slot",
+    "block/map_key/element_name_slot",
     "block/map_key/block_slab_id",
     "block/map_key/offset",
     "block/map_key/length",
@@ -647,6 +650,10 @@ struct Reading {
     json_len: usize,
     msgpack_len: usize,
     container_len: usize,
+    /// The shipped msgpack payload framed again at zstd-3, the level the codec-1 counterfactual is
+    /// taken at. The shipped container is written at a lower level, so the two container arms
+    /// differ by the level as well as by the format unless they are compared on this figure.
+    container_at_counterfactual_level_len: usize,
     /// Every block's written map key paired with the handle the live map files it under, joined on
     /// the renderer the encoder itself uses. Used to price a handle-keyed block index; NOT used for
     /// the reconstruction claim, which goes the other way, from the entry's written bytes.
@@ -742,6 +749,14 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
 
     let container = crate::engine::encode_index_bytes(shard);
     let msgpack = msgpack_payload_of(&container);
+    let frame_start = container
+        .windows(4)
+        .position(|window| window == [0x28, 0xb5, 0x2f, 0xfd])
+        .expect("the container must hold a zstd frame");
+    let container_at_counterfactual_level_len = frame_start
+        + zstd::stream::encode_all(msgpack.as_slice(), COUNTERFACTUAL_ZSTD_LEVEL)
+            .expect("the payload compresses")
+            .len();
     let json = serde_json::to_vec(shard).expect("the index must serialize as JSON");
     let value = serde_json::to_value(shard).expect("the index must serialize as a value");
 
@@ -755,6 +770,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
         json_len: json.len(),
         msgpack_len: msgpack.len(),
         container_len: container.len(),
+        container_at_counterfactual_level_len,
         handles_by_written_key,
     }
 }
@@ -879,6 +895,9 @@ fn node_field_label(name: &str) -> &'static str {
     }
 }
 
+/// The four container maps the core index writes beside `objects`.
+const CONTAINER_MAPS: [&str; 4] = ["hashes", "sets", "zsets", "lists"];
+
 /// An address slot that is not one of the five the wire declares is a PANIC naming it.
 fn address_field_label(name: &str) -> &'static str {
     match name {
@@ -933,19 +952,35 @@ fn walk(reading: &Reading) -> Walked {
     let core = slot_index.as_object().expect("the core index writes an object");
     for name in core.keys() {
         assert!(
-            name == "bucket_map" || name == "objects",
+            name == "bucket_map"
+                || name == "objects"
+                || CONTAINER_MAPS.contains(&name.as_str()),
             "[CLAUSE no-unclassified] the core index writes the key `{name}`, which this \
              decomposition does not name"
         );
     }
+    let container_maps_present: Vec<&str> =
+        CONTAINER_MAPS.iter().copied().filter(|name| core.contains_key(*name)).collect();
     assert_eq!(
         core.len(),
-        2,
+        2 + container_maps_present.len(),
         "[CLAUSE no-unclassified] the core index writes {} key(s); this walk charges the \
-         punctuation of exactly two -- `bucket_map` and `objects`, the latter since \
-         `SHARD_INDEX_FORMAT_VERSION` 30 moved the consolidated object map in from the top level",
-        core.len()
+         punctuation of `bucket_map`, `objects` and the container maps it finds ({:?})",
+        core.len(),
+        container_maps_present
     );
+    // THE FOUR CONTAINER MAPS, EACH CHARGED WHOLE. A store of string objects writes them empty,
+    // so they cost a fixed handful of bytes per shard; a store of containers charges their rows
+    // to `container_maps/subtree` and is not decomposed further here.
+    // ONE CHARGE PER TERM: a per-shard term is one instance, so the four maps are summed first.
+    let names_len: usize = container_maps_present.iter().map(|n| klen(n) + 1).sum();
+    let subtrees_len: usize = container_maps_present
+        .iter()
+        .map(|n| jlen(core.get(*n).expect("present")))
+        .sum();
+    tally.add("container_maps/field_name", names_len, names_len);
+    tally.add("container_maps/field_tail", container_maps_present.len(), 0);
+    tally.add("container_maps/subtree", subtrees_len, 0);
     // THE OBJECT ROWS, AS ONE SUBTREE. See the term table on why this is charged whole.
     let objects = core
         .get("objects")
@@ -1062,7 +1097,7 @@ fn walk(reading: &Reading) -> Walked {
             let slots = split_written_key(block_key);
             tally.add("block/map_key/kind", slots.kind.len(), 0);
             tally.add("block/map_key/object_key", slots.object_key.len(), 0);
-            tally.add("block/map_key/component_slot", slots.element_name.len(), 0);
+            tally.add("block/map_key/element_name_slot", slots.element_name.len(), 0);
             tally.add("block/map_key/block_slab_id", slots.block_slab_id.len(), 0);
             tally.add("block/map_key/offset", slots.offset.len(), 0);
             tally.add("block/map_key/length", slots.length.len(), 0);
@@ -1287,6 +1322,10 @@ fn report(reading: &Reading, walked: &Walked) {
 // THE COUNTERFACTUAL SURFACES
 // =================================================================================================
 
+/// The zstd level the codec-1 counterfactual is encoded at. The shipped container is written at a
+/// different, lower level, so any comparison between the two arms is made at THIS level.
+const COUNTERFACTUAL_ZSTD_LEVEL: i32 = 3;
+
 /// The container `TSIDX\x01` codec 1 writes: the magic, the codec id, and a zstd-3 frame over the
 /// struct's JSON.
 ///
@@ -1304,7 +1343,7 @@ fn report(reading: &Reading, walked: &Walked) {
 fn json_container_bytes(value: &serde_json::Value) -> usize {
     const MAGIC: &[u8] = b"TSIDX\x01";
     const CODEC_BYTE: usize = 1;
-    const ZSTD_LEVEL: i32 = 3;
+    const ZSTD_LEVEL: i32 = COUNTERFACTUAL_ZSTD_LEVEL;
     let json = serde_json::to_vec(value).expect("the doctored index serializes");
     let payload =
         zstd::stream::encode_all(json.as_slice(), ZSTD_LEVEL).expect("the payload compresses");
@@ -1758,7 +1797,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
         (tally.bytes_of("block/map_key_quotes")
             + tally.bytes_of("block/map_key/kind")
             + tally.bytes_of("block/map_key/object_key")
-            + tally.bytes_of("block/map_key/component_slot")
+            + tally.bytes_of("block/map_key/element_name_slot")
             + tally.bytes_of("block/map_key/block_slab_id")
             + tally.bytes_of("block/map_key/offset")
             + tally.bytes_of("block/map_key/length")
@@ -2003,7 +2042,13 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
     // The step is charged to one term, `objects/subtree`, and deliberately not decomposed: this
     // walk is a decomposition of the BLOCK index, and the object rows are a different structure
     // with their own arms. `one_record_per_object` is where their bytes are accounted.
-    let published = 242.51f64;
+    // 242.51 -> 218.51 B/OBJECT AT 8,000 OBJECTS: exactly 24.00 B/object less, and the cause is
+    // #3073, which wrote an object's row by position. The row was a keyed map
+    // `{"r":{"a":..,"n":..,"f":..,"m":..,"u":..}}` and is now `[[..,..,..,..,..]]`: 26 bytes of
+    // wrapper and field names are gone and 2 brackets are added, a net 24 per object. The figure is
+    // the measured division. The clause went unseen because the walk above panicked on the
+    // unnamed container maps before it reached this line.
+    let published = 218.51f64;
     assert!(
         (division - published).abs() / published < 0.005,
         "[CLAUSE matches-the-published-division] `slot_index` divides to {division:.2} B/object at \
@@ -2127,8 +2172,13 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
         let baseline_stream = slot_index_entry_bytes_of(&reading.value);
         let baseline_container = json_container_bytes(&reading.value);
         let shipped_container = reading.container_len;
-        let apart = (baseline_container as f64 - shipped_container as f64).abs()
-            / shipped_container as f64;
+        let shipped_at_counterfactual_level = reading.container_at_counterfactual_level_len;
+        // THE ARMS ARE COMPARED AT ONE COMPRESSION LEVEL. The shipped container moved from zstd-3
+        // to zstd-1, which grew it by up to 18% with the payload unchanged, so a comparison against
+        // the zstd-3 counterfactual was measuring the level and calling it the format. The limit
+        // below is unchanged; what moved is the figure it is applied to.
+        let apart = (baseline_container as f64 - shipped_at_counterfactual_level as f64).abs()
+            / shipped_at_counterfactual_level as f64;
 
         println!();
         println!(
@@ -2140,7 +2190,8 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
             "  baseline: json_stream `slot_index` {baseline_stream} B = {:.2} B/object; whole \
              json_stream {} B; codec-1 container {baseline_container} B = {:.2} B/object; SHIPPED \
              msgpack container {shipped_container} B = {:.2} B/object -- the two container arms are \
-             {:.2}% apart.",
+             {:.2}% apart at zstd-3 (the shipped payload at zstd-3 is \
+             {shipped_at_counterfactual_level} B).",
             baseline_stream as f64 / reading.objects as f64,
             reading.json_len,
             baseline_container as f64 / reading.objects as f64,

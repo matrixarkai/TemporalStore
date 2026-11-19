@@ -15,6 +15,10 @@ struct CrashHarnessSummary {
 
 #[test]
 fn storage_crash_harness_recovers_after_abrupt_process_abort() {
+    // Asserts an artefact of the two-copy placement (a block segment on disk, a per-write index-log
+    // delta, an advancing index-log sequence). The single-copy placement has none of them by design,
+    // and has its own crash tests in `engine/tests/sync_value_once.rs`.
+    std::env::set_var("TS_SYNC_VALUE_ONCE", "0");
     let bin = env!("CARGO_BIN_EXE_storage_crash_harness");
     let dir = tempfile::tempdir().unwrap();
 
@@ -65,6 +69,10 @@ fn storage_crash_harness_recovers_after_abrupt_process_abort() {
 
 #[test]
 fn storage_crash_harness_reports_corrupt_block_after_process_abort() {
+    // Asserts an artefact of the two-copy placement (a block segment on disk, a per-write index-log
+    // delta, an advancing index-log sequence). The single-copy placement has none of them by design,
+    // and has its own crash tests in `engine/tests/sync_value_once.rs`.
+    std::env::set_var("TS_SYNC_VALUE_ONCE", "0");
     let bin = env!("CARGO_BIN_EXE_storage_crash_harness");
     let dir = tempfile::tempdir().unwrap();
 

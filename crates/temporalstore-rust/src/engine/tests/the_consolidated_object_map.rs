@@ -471,10 +471,12 @@ fn the_owned_element_array_reaches_the_stored_image() {
         "an element-free slot stored an `e` key ({bare_text}), so `skip_serializing_if` is not \
          taking and every slot in the shard pays for an empty array"
     );
+    // THE SLOT IS WRITTEN BY POSITION: `[record]`, the record itself an array, so a record-only slot
+    // opens with two brackets. A bare record would open with one, which is what claim (c) refuses.
     assert!(
-        bare_text.contains("\"r\""),
-        "the slot's image carries no `r` ({bare_text}), so it is not the new shape and claim (c) \
-         below would be comparing the old shape with itself"
+        bare_text.starts_with("[["),
+        "the slot's image is not a slot array holding a record array ({bare_text}), so it is not \
+         the new shape and claim (c) below would be comparing the old shape with itself"
     );
 
     // --- (c) THE OLD SHAPE IS REFUSED, NOT MIS-PARSED. This is the stamp move's safety argument.

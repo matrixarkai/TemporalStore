@@ -70,7 +70,7 @@ fn record_registration_hashing_cost() {
             fields.iter().map(move |field| (object, Some(field.clone())))
         }).collect();
         let mut standard = HashMap::new();
-        let mut selected = ShardRegistrations::default();
+        let mut selected = HashMap::<_, _, ahash::RandomState>::default();
         for key in &keys {
             standard.insert(key.clone(), location.clone());
             selected.insert(key.clone(), location.clone());

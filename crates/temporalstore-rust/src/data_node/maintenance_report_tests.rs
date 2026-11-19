@@ -78,6 +78,41 @@ fn timer_execution_preserves_actions_and_counters_without_exposing_partial_diagn
 }
 
 #[test]
+fn timer_pressure_plans_preserve_work_without_bucket_reports() {
+    for threshold in [1, u64::MAX] {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = seeded(dir.path());
+        let options = StorageManagerOptions {
+            min_undumped_wal_records: threshold,
+            min_undumped_wal_bytes: u64::MAX,
+            ..options()
+        };
+        crate::engine::reset_live_block_scan_entries();
+        let (mut detailed_pressure, mut detailed_plan) =
+            runtime.storage_manager_pressure_snapshot(1, &options);
+        let detailed_work = crate::engine::live_block_scan_entries();
+        crate::engine::reset_live_block_scan_entries();
+        let (pressure, plan) =
+            runtime.storage_manager_pressure_snapshot_with_report_details(1, &options, false);
+        let execution_work = crate::engine::live_block_scan_entries();
+
+        assert!(detailed_pressure.live_block_summaries_measured);
+        assert!(detailed_pressure.expired_bucket_object_scan_debt > 0);
+        assert!(!pressure.live_block_summaries_measured);
+        assert_eq!(pressure.expired_bucket_object_scan_debt, 0);
+        assert!(detailed_plan.bucket_summaries.is_some());
+        assert!(plan.bucket_summaries.is_none());
+        detailed_pressure.live_block_summaries_measured = false;
+        detailed_pressure.expired_bucket_object_scan_debt = 0;
+        detailed_plan.bucket_summaries = None;
+        assert_eq!(pressure, detailed_pressure);
+        assert_eq!(plan, detailed_plan);
+        assert!(detailed_work > execution_work,
+            "detailed={detailed_work} execution={execution_work}");
+    }
+}
+
+#[test]
 fn explicit_manager_and_lifecycle_requests_still_return_full_diagnostics() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = seeded(dir.path());
@@ -124,6 +159,127 @@ fn background_compaction_task_preserves_counters_and_error_status() {
     assert!(!status.ok);
     assert_eq!(status.code, "shard_not_loaded");
     assert_eq!(runtime.stats().compaction_runs, 2);
+}
+
+/// The draining stage runs a whole round unless the sliced pass is switched on. A sliced pass pauses
+/// between slices, so a boundary callback that never fires is a pass that was not sliced; the
+/// control is the same drain run through the sliced entry point, which must fire it.
+#[test]
+fn the_draining_stage_runs_a_whole_round_unless_the_sliced_pass_is_switched_on() {
+    assert!(
+        !crate::engine::sliced_compaction_enabled(),
+        "the sliced pass must be off unless TS_SLICED_COMPACTION asks for it"
+    );
+    let boundaries = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let count = |boundaries: &std::rc::Rc<std::cell::Cell<usize>>| {
+        let boundaries = std::rc::Rc::clone(boundaries);
+        crate::engine::set_slice_boundary_for_test(Some(Box::new(move |_| {
+            boundaries.set(boundaries.get() + 1);
+        })));
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded(dir.path());
+    let drain: BTreeSet<u64> = runtime.engine().live_block_slab_ids(1).into_iter().collect();
+    count(&boundaries);
+    let status = task_execution::run_compaction_background_draining(&runtime.inner, 1, drain);
+    assert!(status.ok, "{status:?}");
+    assert_eq!(boundaries.get(), 0, "the draining stage paused between slices without being asked to");
+
+    // Control: the instrument fires when the pass is sliced.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded(dir.path());
+    let drain: BTreeSet<u64> = runtime.engine().live_block_slab_ids(1).into_iter().collect();
+    runtime
+        .engine()
+        .compact_shard_blocks_draining_sliced(1, drain, 8)
+        .unwrap();
+    crate::engine::set_slice_boundary_for_test(None);
+    assert!(boundaries.get() > 0, "the control never fired the boundary callback, so the check above proves nothing");
+}
+
+/// A compaction step returns when its budget is spent, not when the pass is over: with room for one
+/// slice it moves one slice and reports `More`, the pass stays in flight, and stepping on finishes
+/// it with every key still readable. A step that ignored its budget would finish the pass in one
+/// call and report `Done` the first time.
+#[test]
+fn a_compaction_step_returns_when_its_budget_is_spent_and_the_pass_resumes() {
+    use super::compaction_stage::{CompactionCursor, CompactionStage};
+    use super::round_budget::{BoundedStage, StageBudget, StageContext, StageProgress};
+
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded(dir.path());
+    runtime.engine().block_store().roll_slab().unwrap();
+    for i in 0..16 {
+        assert!(
+            runtime
+                .engine()
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("key-{i}"),
+                        value: vec![42; 96]
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+    let options = StorageManagerOptions {
+        enable_block_compaction: true,
+        stale_block_slab_pressure: 1,
+        reclaimable_physical_bytes_pressure: 1,
+        ..options()
+    };
+    let context = StageContext { options: &options, plan: None };
+    let mut stage = CompactionStage::new(&runtime);
+    stage.keys_per_slice = 2;
+    let mut cursor = CompactionCursor::default();
+
+    // Room for one slice: one slice is moved and the pass is left in flight.
+    let mut budget = StageBudget::new(std::time::Duration::from_secs(60), 1);
+    let first = stage.step(1, &mut cursor, &mut budget, &context);
+    assert_eq!(first.progress, StageProgress::More, "the step ran past its budget");
+    assert_eq!(first.work_done, 2, "a step with room for one slice moved more or less than one");
+    assert!(first.status.ok, "{:?}", first.status);
+    assert!(
+        runtime.engine().compaction_pass_in_flight(1),
+        "a step that returned More must leave the pass in flight"
+    );
+
+    // Stepping on finishes the pass, in more than one further step.
+    let mut steps = 1;
+    loop {
+        let mut budget = StageBudget::new(std::time::Duration::from_secs(60), 1);
+        let step = stage.step(1, &mut cursor, &mut budget, &context);
+        assert!(step.status.ok, "{:?}", step.status);
+        steps += 1;
+        if step.progress != StageProgress::More {
+            assert_eq!(step.progress, StageProgress::Done);
+            break;
+        }
+        assert!(steps < 100, "the pass never finished");
+    }
+    assert!(steps > 2, "the pass was not spread over steps: {steps}");
+    assert!(!runtime.engine().compaction_pass_in_flight(1));
+    for i in 0..32 {
+        let response = runtime.engine().execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: format!("key-{i}") },
+        });
+        let expected = if i < 16 { vec![42; 96] } else { vec![i as u8; 96] };
+        assert!(
+            matches!(response.response, CommandResponse::Bytes { value: Some(value) } if value == expected),
+            "key-{i} lost its value across the stepped pass"
+        );
+    }
+
+    // Nothing to compact: a step with compaction off is Idle and starts no pass.
+    let off = StorageManagerOptions { enable_block_compaction: false, ..options.clone() };
+    let mut idle_cursor = CompactionCursor::default();
+    let mut budget = StageBudget::new(std::time::Duration::from_secs(60), 200);
+    let idle = stage.step(1, &mut idle_cursor, &mut budget, &StageContext { options: &off, plan: None });
+    assert_eq!(idle.progress, StageProgress::Idle);
 }
 
 #[test]

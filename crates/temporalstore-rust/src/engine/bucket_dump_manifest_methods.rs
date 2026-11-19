@@ -47,23 +47,18 @@ impl TemporalEngine {
         selected_buckets: impl IntoIterator<Item = u32>,
     ) -> Result<BucketDumpManifest, Status> {
         let selected_buckets = selected_buckets.into_iter().collect::<BTreeSet<_>>();
-        let summaries = self.bucket_storage_summaries(shard_id);
-        if summaries.is_empty()
-            && !self
-                .shards
-                .read()
-                .expect("engine lock poisoned")
-                .contains_key(&shard_id)
+        if !self
+            .shards
+            .read()
+            .expect("engine lock poisoned")
+            .contains_key(&shard_id)
         {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         }
-        let mut bucket_summaries = summaries
-            .into_iter()
-            .filter(|summary| {
-                selected_buckets.is_empty() || selected_buckets.contains(&summary.routing_bucket)
-            })
-            .collect::<Vec<_>>();
-        bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
+        // Bulk ingest dumps an exported image whose summaries are volatile, so only that path asks
+        // the live shard for them. Every other dump summarises the CAPTURED state off the one
+        // listing taken of it below, instead of listing the live shard first and the capture again.
+        let live_summaries = bulk_ingest_mode().then(|| self.bucket_storage_summaries(shard_id));
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let (mut dump_index_state, mut captured_bytes, publication) = if bulk_ingest_mode() {
             let publication = {
@@ -84,11 +79,53 @@ impl TemporalEngine {
                     "shard is unloaded or its WAL application is incomplete"))?;
             (snapshot, None, publication)
         };
-        let dump_live_block_entries = collect_live_block_entries(&dump_index_state);
-        let mut retained_objects = dump_live_block_entries.iter()
-            .filter(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()))
-            .map(|entry| stable_block_object_id(shard_id, entry.kind.as_str(), &entry.object_key))
-            .collect::<std::collections::HashSet<_>>();
+        let mut retained_objects = std::collections::HashSet::new();
+        let mut block_slab_ids = BTreeSet::new();
+        let mut described_wal_blocks = 0usize;
+        let mut lifecycle = ObjectLifecycleAccumulator::default();
+        // Consume block facts once without retaining a temporary row per field in the shard.
+        let mut observe_entry = |entry: &LiveBlockEntry| {
+            let slab = entry.address.block_slab_id();
+            block_slab_ids.insert(slab);
+            if crate::wal_record::is_wal_resident(slab) {
+                retained_objects.insert(expected_live_block_object_id(shard_id, entry));
+                if !dump_index_state.bucket_index.released_buckets.contains(&entry.filed_routing_bucket) {
+                    described_wal_blocks += 1;
+                }
+            }
+            let bucket = entry.filed_bucket().unwrap_or_else(|| self.routing_bucket_for_key(shard_id, &entry.object_key));
+            if selected_buckets.is_empty() || selected_buckets.contains(&bucket) {
+                lifecycle.observe(shard_id, entry);
+            }
+        };
+        let summaries = match live_summaries {
+            Some(live) => {
+                visit_live_block_entries(&dump_index_state, |entry| observe_entry(&entry));
+                live
+            }
+            None => {
+                let (start, end) = self
+                    .infos
+                    .read()
+                    .expect("info lock poisoned")
+                    .get(&shard_id)
+                    .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
+                    .unwrap_or((0, u32::MAX));
+                bucket_storage_summaries_from_visit(&dump_index_state, start, end, |consume| {
+                    visit_live_block_entries(&dump_index_state, |entry| {
+                        consume(&entry);
+                        observe_entry(&entry);
+                    });
+                })
+            }
+        };
+        let mut bucket_summaries = summaries
+            .into_iter()
+            .filter(|summary| {
+                selected_buckets.is_empty() || selected_buckets.contains(&summary.routing_bucket)
+            })
+            .collect::<Vec<_>>();
+        bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
         let mut retirements = if bulk_ingest_mode() {
             Vec::new()
         } else {
@@ -104,10 +141,25 @@ impl TemporalEngine {
         if !retirements.is_empty() {
             // Released bucket markers are memory-only. Their serialized model maps
             // still own frames even when the decoded bucket has no block entries.
-            retained_objects.extend(storage_bucket_internals::collect_model_live_block_entries(&dump_index_state)
-                .into_iter()
-                .filter(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()))
-                .map(|entry| stable_block_object_id(shard_id, entry.kind.as_str(), &entry.object_key)));
+            //
+            // Only the objects that still have a block inside the log matter here, so the walk
+            // asks for exactly those. It used to materialise every live block of the dump's model
+            // maps into owned entries -- the whole store, once more per dirty round -- and then
+            // throw all but the log-resident ones away. The filter runs before the walk's own
+            // per-block dedup, and blocks the dedup merges share a slab, offset and length and so
+            // share residency, so the set of objects found is the same.
+            storage_bucket_internals::visit_model_live_blocks(
+                &dump_index_state,
+                storage_bucket_internals::ModelWalkTally::WholeShardEntries,
+                |_, address| crate::wal_record::is_wal_resident(address.block_slab_id()),
+                |kind, object_key, _element_name, _address| {
+                    retained_objects.insert(stable_block_object_id(
+                        shard_id,
+                        kind.as_str(),
+                        object_key.as_str(),
+                    ));
+                },
+            );
             retirements = block_in_wal::unreferenced_registrations(
                 &self.block_store, shard_id, &self.wal_store, &retained_objects,
             );
@@ -135,10 +187,6 @@ impl TemporalEngine {
                     crate::wal_record::is_wal_resident(block.address.block_slab_id())
                 }).count();
             storage_bucket_internals::note_bucket_block_visits(visited);
-            let described_wal_blocks = dump_live_block_entries.iter().filter(|entry| {
-                crate::wal_record::is_wal_resident(entry.address.block_slab_id())
-                    && !dump_index_state.bucket_index.released_buckets.contains(&entry.filed_routing_bucket)
-            }).count();
             if dump_index_state.bucket_index.bucket_map.is_empty()
                 || indexed_wal_blocks != described_wal_blocks
             {
@@ -204,19 +252,12 @@ impl TemporalEngine {
         // this against -- under bulk ingest the exported index and the volatile summaries are not
         // the same state. The index walk above is shared with the object-lifecycle report.
         // Retirement additionally checks the model maps when unused registrations need proof.
-        let block_slab_ids = dump_live_block_entries
-            .iter()
-            .map(|entry| entry.address.block_slab_id())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
+        let block_slab_ids = block_slab_ids.into_iter().collect::<Vec<_>>();
         // Dirty-object bookkeeping is process-local and was absent from the decoded
         // checkpoint previously used for this durable report.
         dump_index_state.dirty_objects.clear();
-        let object_lifecycle = object_lifecycle_report_from_entries(
-            shard_id,
+        let object_lifecycle = lifecycle.finish(
             &dump_index_state,
-            dump_live_block_entries,
             &selected_buckets,
             |key| self.routing_bucket_for_key(shard_id, key),
         );
@@ -229,6 +270,7 @@ impl TemporalEngine {
             source_manifest_ids: Vec::new(),
             source_manifest_coverage: Vec::new(),
             parent_manifest_id,
+            base_manifest_id: None,
             load_version_handoff: None,
             created_unix_ms,
             bucket_ids: bucket_summaries
@@ -407,6 +449,14 @@ impl TemporalEngine {
         self.persist_bucket_dump_manifest(&manifest)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         Ok(manifest)
+    }
+
+    /// Length in bytes of the index image embedded in the newest dump manifest of this shard,
+    /// 0 when none exists. A dump writes about this many bytes, whatever number of buckets it names.
+    pub fn latest_bucket_dump_image_bytes(&self, shard_id: ShardId) -> u64 {
+        latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id)
+            .map(|manifest| manifest.index_bytes.len() as u64)
+            .unwrap_or(0)
     }
 
     #[track_caller]
@@ -746,13 +796,15 @@ impl TemporalEngine {
                 "slot dump manifest is missing dump generation id",
             ));
         }
-        if manifest.index_bytes.is_empty() {
+        let image = installable_image(manifest)
+            .map_err(|err| Status::error("slot_dump_delta_unreadable", err.to_string()))?;
+        if image.is_empty() {
             return Err(Status::error(
                 "slot_dump_partial_manifest",
                 "slot dump manifest is missing index bytes",
             ));
         }
-        let actual_index_sha256 = sha256_hex_bytes(&manifest.index_bytes);
+        let actual_index_sha256 = sha256_hex_bytes(image);
         if manifest.index_sha256 != actual_index_sha256 {
             return Err(Status::error(
                 "slot_dump_index_checksum_mismatch",
@@ -777,7 +829,7 @@ impl TemporalEngine {
                 format!("slot dump references missing block segments: {missing:?}"),
             ));
         }
-        let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
+        let mut restored = crate::engine::decode_index_bytes(image)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
         // THE STAMP, ON THIS DOOR TOO, AND IT IS THE DECODE'S. Every install calls this function
         // first (`install_bucket_dump_manifest` line 1 of its body), and `decode_index_bytes` refuses
@@ -1051,8 +1103,15 @@ impl TemporalEngine {
         let mut unreadable_block_ref_count = 0usize;
         let mut unreadable_block_bytes = 0u64;
         let mut restored_index = None;
-        if !manifest.index_bytes.is_empty() && missing_block_slab_ids.is_empty() {
-            if let Ok(restored) = crate::engine::decode_index_bytes(&manifest.index_bytes) {
+        let preflight_image: &[u8] = match installable_image(manifest) {
+            Ok(image) => image,
+            Err(err) => {
+                blockers.push(format!("delta_manifest_unreadable:{err}"));
+                &[]
+            }
+        };
+        if !preflight_image.is_empty() && missing_block_slab_ids.is_empty() {
+            if let Ok(restored) = crate::engine::decode_index_bytes(preflight_image) {
                 let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
                 let mut probed_block_refs = 0usize;
                 for entry in collect_live_block_entries(&restored) {
@@ -1250,7 +1309,7 @@ impl TemporalEngine {
                 self.routing_bucket_for_key(manifest.shard_id, key)
             })
         };
-        // bucket_dump_entries_by_key keys pages by "kind:object_key:element name:page_id",
+        // bucket_dump_entries_by_key keys blocks by "kind:object_key:element name:page_id",
         // so a value update (which allocates a new page_id) shows up as a removed block
         // plus a new block for the same object. Classify at the object level (strip the
         // trailing :page_id): a block whose object still exists on the other side is a
@@ -1561,8 +1620,11 @@ impl TemporalEngine {
                 ),
             ));
         }
-        let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
-            .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        let mut restored = crate::engine::decode_index_bytes(
+            installable_image(manifest)
+                .map_err(|err| Status::error("slot_dump_delta_unreadable", err.to_string()))?,
+        )
+        .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
         // Rebuild the unserialized model maps from the durable bucket index BEFORE rebuilding
         // ownership. `rebuild_bucket_block_ownership` clears the bucket map and repopulates it
         // from the model maps, so running it against a state whose `hashes` map never survived

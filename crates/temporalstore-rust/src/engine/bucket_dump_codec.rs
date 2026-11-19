@@ -126,6 +126,7 @@ fn manifest_head_to_proto(manifest: &BucketDumpManifest) -> v1::DurableBucketDum
             })
             .collect(),
         parent_manifest_id: manifest.parent_manifest_id.clone(),
+        base_manifest_id: manifest.base_manifest_id.clone(),
         load_version_handoff: manifest.load_version_handoff.as_ref().map(|handoff| {
             v1::DurableBucketDumpLoadVersionHandoff {
                 previous_load_version: handoff.previous_load_version,
@@ -172,6 +173,7 @@ fn manifest_from_proto(manifest: v1::DurableBucketDumpManifest) -> BucketDumpMan
             })
             .collect(),
         parent_manifest_id: manifest.parent_manifest_id,
+        base_manifest_id: manifest.base_manifest_id,
         load_version_handoff: manifest.load_version_handoff.map(|handoff| {
             BucketDumpLoadVersionHandoff {
                 previous_load_version: handoff.previous_load_version,

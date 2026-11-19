@@ -20,7 +20,7 @@ coordinated disclosure.
 
 Please include:
 
-- affected component or crate
+- affected module or crate
 - reproduction steps
 - impact and exploitability notes
 - whether credentials, private data, or service availability are affected

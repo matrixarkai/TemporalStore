@@ -127,6 +127,7 @@ fn main() {
                 value: args[4].as_bytes().to_vec(),
             }],
             policy: temporalstore_rust::types::FeatureWritePolicy::InsertIfAbsent,
+            retry_token: None,
         },
         "fappendxx" if args.len() == 5 => Command::FeatureAppendWithPolicy {
             key: args[2].clone(),
@@ -135,6 +136,7 @@ fn main() {
                 value: args[4].as_bytes().to_vec(),
             }],
             policy: temporalstore_rust::types::FeatureWritePolicy::ReplaceExisting,
+            retry_token: None,
         },
         "fquery" if args.len() == 5 => Command::FeatureQuery {
             key: args[2].clone(),

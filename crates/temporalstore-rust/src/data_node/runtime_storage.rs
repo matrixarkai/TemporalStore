@@ -3,6 +3,7 @@
 
 //! DataNodeRuntime storage-manager scheduling/lifecycle methods, extracted from data_node.rs.
 
+use super::round_budget::{options_for_slot, HeavySlot, ShardRoundState};
 use super::*;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -306,10 +307,12 @@ impl LoopSpans {
     /// and in order, so no earlier entry can be mistaken for it.
     fn close(&mut self, stage: &str, executed: &[String]) {
         let elapsed = self.clock.elapsed();
+        let start_offset = self.clock.saturating_duration_since(self.started);
         self.clock = std::time::Instant::now();
         self.rows.push(StorageManagerLoopStageSpan {
             stage: stage.to_string(),
             executed: executed.last().map(String::as_str) == Some(stage),
+            start_offset_us: start_offset.as_micros() as u64,
             duration_us: elapsed.as_micros() as u64,
             walk: crate::engine::take_stage_walk_charges(),
         });
@@ -325,10 +328,19 @@ impl DataNodeRuntime {
         shard_id: ShardId,
         options: &StorageManagerOptions,
     ) -> (StorageManagerPressureSnapshot, StorageLifecyclePlan) {
+        self.storage_manager_pressure_snapshot_with_report_details(shard_id, options, true)
+    }
+
+    fn storage_manager_pressure_snapshot_with_report_details(
+        &self,
+        shard_id: ShardId,
+        options: &StorageManagerOptions,
+        detailed_report: bool,
+    ) -> (StorageManagerPressureSnapshot, StorageLifecyclePlan) {
         let plan = self
             .inner
             .engine
-            .storage_lifecycle_plan(StorageLifecycleRequest {
+            .storage_lifecycle_plan_with_report_details(StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
                 selected_dump_buckets: Vec::new(),
@@ -340,14 +352,17 @@ impl DataNodeRuntime {
                 prune_bucket_dump_manifests: options.enable_index_gc,
                 roll_forward_bucket_dump_installs: options.enable_index_gc,
                 follower_replay_cursors: options.follower_replay_cursors.clone(),
-                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
                 block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                block_gc_checkpoint_floor_slab_id: None,
-                block_gc_raft_install_floor_slab_id: None,
-                block_gc_delayed_destroy_grace_ms: 0,
+                block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
+                block_gc_raft_install_floor_slab_id: options.block_gc_raft_install_floor_slab_id,
+                // The grace the apply holds, so the plan's purgeable figure is not an upper bound
+                // the purge never reaches.
+                block_gc_delayed_destroy_grace_ms:
+                    crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
                 invalidate_cache: false,
                 warm_cache: false,
-            });
+            }, detailed_report);
         let cache = self.inner.engine.cache().stats();
         // THE NUMBER THAT WAS MISSING. Every memory term below was a cache term, so a shard whose
         // bucket index is large and whose cache is small -- the exact shape eviction exists for --
@@ -388,7 +403,9 @@ impl DataNodeRuntime {
                 dirty_bucket_count: plan.dirty_buckets.len(),
                 selected_dirty_bucket_count: plan.selected_dump_buckets.len(),
                 undumped_wal_records: plan.undumped_wal_records,
-                wal_bytes: plan.undumped_wal_records,
+                // BYTES, as the field says. This was the record count copied into a field named for
+                // bytes, which is what the byte gate would have read had anything read it.
+                wal_bytes: self.inner.engine.undumped_wal_bytes_above_oldest_dirty(shard_id),
                 index_log_bytes: log_pressure.index_log_bytes,
                 stale_block_slab_count: plan.stale_block_slab_ids.len(),
                 reclaim_candidate_count: plan.reclaim_candidates.len(),
@@ -446,10 +463,52 @@ impl DataNodeRuntime {
         options: StorageManagerOptions,
         detailed_report: bool,
     ) -> StorageManagerLoopReport {
+        // A SHARD STILL REPLAYING ITS LOG GETS NO ROUND. The all-shards scheduler visits every
+        // key of `shards`, and a shard is inserted there BEFORE its replay and flagged
+        // `recovering` until the replay ends. The plan, the dump, compaction and the index-log
+        // truncation below all read a half-reconstructed index in that window: a dump would
+        // persist it, compaction would relocate against it, and a block the replay has not yet
+        // re-filed looks dead. The cycle path and the block GC already decline such a shard;
+        // this loop did not, and the stages it runs are the ones that change the most.
+        // Declined, not failed: the next round after recovery runs normally.
+        if self.inner.engine.shard_is_recovering(shard_id) {
+            self.inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_stage_skips += 1;
+            return StorageManagerLoopReport {
+                shard_id,
+                pressure: StorageManagerPressureSnapshot::default(),
+                executed_stages: Vec::new(),
+                skipped_stages: vec!["shard_recovering".to_string()],
+                pressure_decisions: Vec::new(),
+                lifecycle_plan: StorageLifecyclePlan::default(),
+                lifecycle_report: None,
+                expired_records_removed: 0,
+                metrics_reap: None,
+                compaction_report: None,
+                gc_report: None,
+                eviction: None,
+                status: Status::ok(),
+                stage_spans: Vec::new(),
+                duration_us: 0,
+            };
+        }
         // The stage walk counters are read-and-cleared at each stage boundary, so the first span
         // must not inherit whatever ran before this round.
         let mut spans = LoopSpans::start();
-        let (pressure, lifecycle_plan) = self.storage_manager_pressure_snapshot(shard_id, &options);
+        let (pressure, lifecycle_plan) = self.storage_manager_pressure_snapshot_with_report_details(
+            shard_id, &options, detailed_report,
+        );
+        {
+            // The backlog the loop just read, kept where a scrape can see it.
+            let mut stats = self.inner.stats.lock().expect("runtime stats lock poisoned");
+            stats.storage_manager_loop_wal_bytes = pressure.wal_bytes;
+            stats.storage_manager_loop_undumped_wal_records = pressure.undumped_wal_records;
+            stats.storage_manager_loop_dirty_buckets = pressure.dirty_bucket_count as u64;
+            stats.storage_manager_loop_index_log_bytes = pressure.index_log_bytes;
+        }
         spans.close("pressure_snapshot", &["pressure_snapshot".to_string()]);
         let mut executed_stages = Vec::new();
         let mut skipped_stages = Vec::new();
@@ -526,16 +585,26 @@ impl DataNodeRuntime {
             (!options.enable_prepare).then(|| "prepare_disabled".to_string()),
         ));
 
+        // THE LOG BYTES ARE A TRIGGER OF THEIR OWN, and on a default deployment the only one.
+        // Until the undumped log reaches the byte gate nothing here needs to look at a dirty bucket.
+        // This stage used to run its dump, two plans and a reclaim on every round that found one
+        // dirty bucket, because `dirty_bucket_pressure` shipped at 1.
+        let wal_bytes_pressure = options.min_undumped_wal_bytes > 0
+            && pressure.wal_bytes >= options.min_undumped_wal_bytes;
         let dump_pressure = pressure.dirty_bucket_count >= options.dirty_bucket_pressure.max(1)
-            || pressure.undumped_wal_records >= options.min_undumped_wal_records.max(1);
+            || pressure.undumped_wal_records >= options.min_undumped_wal_records.max(1)
+            || wal_bytes_pressure;
         let cache_pressure = pressure.cache_memory_bytes
             >= options.cache_memory_bytes_pressure.max(1)
             || pressure.cache_disk_bytes >= options.cache_disk_bytes_pressure.max(1);
-        let stale_block_pressure = pressure.stale_block_slab_count
-            >= options.stale_block_slab_pressure.max(1)
-            || pressure.reclaim_candidate_count >= options.stale_block_slab_pressure.max(1)
-            || pressure.reclaimable_physical_bytes
-                >= options.reclaimable_physical_bytes_pressure.max(1);
+        self.inner
+            .stats
+            .lock()
+            .expect("runtime stats lock poisoned")
+            .storage_manager_retention_owners_configured =
+            options.retention_owner_input_count() as u64;
+        let stale_block_pressure =
+            super::compaction_stage::stale_block_pressure(&pressure, &options);
 
         // A shard with no writer has no dump pressure, and for that reason alone this stage
         // used to vanish from `executed_stages` after the first round and never come back --
@@ -577,8 +646,11 @@ impl DataNodeRuntime {
                 .map(|(_, reclaimable)| *reclaimable)
         });
         let unchanged_since_nothing_to_reclaim = memo_hit.is_some();
+        // A SHARD WITH DIRTY BUCKETS IS NOT IDLE, so it waits for the byte gate like any other. The
+        // probe is the idle shard's question and costs a walk of every live block.
         let probe_safe = (options.enable_wal_reclaim
             && !dump_pressure
+            && pressure.dirty_bucket_count == 0
             && !unchanged_since_nothing_to_reclaim)
             .then(|| {
                 self.inner
@@ -604,6 +676,7 @@ impl DataNodeRuntime {
         // pressure -- it just has nothing to free -- so the record must not read as "no pressure".
         let wal_reclaim_reported = wal_reclaim_pressure || memo_hit == Some(true);
         if options.enable_wal_reclaim && wal_reclaim_pressure {
+            let dump_started = std::time::Instant::now();
             let response = self.apply_storage_lifecycle_with_report_details(StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
@@ -616,10 +689,10 @@ impl DataNodeRuntime {
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
                 follower_replay_cursors: options.follower_replay_cursors.clone(),
-                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
                 block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                block_gc_checkpoint_floor_slab_id: None,
-                block_gc_raft_install_floor_slab_id: None,
+                block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
+                block_gc_raft_install_floor_slab_id: options.block_gc_raft_install_floor_slab_id,
                 block_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
@@ -638,6 +711,16 @@ impl DataNodeRuntime {
                     .expect("runtime stats lock poisoned");
                 stats.dump_runs += 1;
                 stats.storage_manager_reclaim_wal_runs += 1;
+                let dump_us = dump_started.elapsed().as_micros() as u64;
+                stats.storage_manager_dump_buckets = stats
+                    .storage_manager_dump_buckets
+                    .saturating_add(manifest.bucket_ids.len() as u64);
+                stats.storage_manager_dump_logical_bytes = stats
+                    .storage_manager_dump_logical_bytes
+                    .saturating_add(manifest.logical_bytes);
+                stats.storage_manager_dump_us_total =
+                    stats.storage_manager_dump_us_total.saturating_add(dump_us);
+                stats.storage_manager_dump_us_max = stats.storage_manager_dump_us_max.max(dump_us);
             }
             let dumped = response.report.dump_manifest.is_some();
             lifecycle_report = Some(response.report);
@@ -785,6 +868,7 @@ impl DataNodeRuntime {
 
         if options.enable_expire {
             expired_records_removed = self.sweep_expired_records_bounded(
+                shard_id,
                 options.max_expire_hot_buckets_per_round,
                 options.max_expire_cold_buckets_per_round,
             );
@@ -1019,38 +1103,24 @@ impl DataNodeRuntime {
         // lowering the bound below the threshold lands on the wide arm, whose input this
         // invalidation would zero.
         if options.enable_memory_reclaim && cache_pressure {
-            let response = self.apply_storage_lifecycle_with_report_details(StorageLifecycleRequest {
-                item_amplification_full_dump_ppm: 0,
-                shard_id,
-                selected_dump_buckets: Vec::new(),
-                // The cap, not 0. This stage dumps before it invalidates, and an unbounded dump
-                // here made the cap `reclaim_wal` respects meaningless: measured, one round with
-                // every stage on dumped 1,280 of 1,280 dirty buckets, while `reclaim_wal` alone
-                // dumped exactly 64. Bounding is safe -- invalidation drops CACHED blocks, and the
-                // data is in the write-ahead log whether or not its bucket was dumped this round.
-                max_dump_buckets_per_round: options.max_dump_buckets_per_round,
-                min_undumped_wal_records: 0,
-                min_undumped_wal_bytes: 0,
-                purge_delayed_destroy: false,
-                purge_delayed_destroy_slab_ids: None,
-                prune_bucket_dump_manifests: false,
-                roll_forward_bucket_dump_installs: false,
-                follower_replay_cursors: options.follower_replay_cursors.clone(),
-                block_gc_shared_store_cursors: Vec::new(),
-                block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                block_gc_checkpoint_floor_slab_id: None,
-                block_gc_raft_install_floor_slab_id: None,
-                block_gc_delayed_destroy_grace_ms: 0,
-                invalidate_cache: true,
-                warm_cache: false,
-            }, detailed_report);
+            // NO DUMP AND NO PLAN. This stage used to run a whole lifecycle request with
+            // `invalidate_cache: true`: a plan walking the shard, then up to
+            // `max_dump_buckets_per_round` bucket dumps, then the invalidation. The invalidation
+            // drops COPIES -- every cached block is also in the resident index or a slab, and every
+            // write is in the log whether or not its bucket was dumped -- so the dump bought
+            // nothing here and the plan only named what it would dump. Relieving memory by
+            // dumping is what the reclaim_wal stage's bound is for.
+            //
+            // The retain floors of the stages after this one read the last `lifecycle_report`'s
+            // dump manifest. This stage no longer replaces it, so they read an older manifest:
+            // a lower floor, which retains more and never less.
+            self.inner.engine.invalidate_shard_cache(shard_id);
             let mut stats = self
                 .inner
                 .stats
                 .lock()
                 .expect("runtime stats lock poisoned");
             stats.storage_manager_reclaim_memory_runs += 1;
-            lifecycle_report = Some(response.report);
             executed_stages.push("reclaim_memory".to_string());
         } else if !options.enable_memory_reclaim {
             skipped_stages.push("reclaim_memory_disabled".to_string());
@@ -1179,14 +1249,18 @@ impl DataNodeRuntime {
                     retain_block_slabs_from_id,
                     // Quarantine rather than unlink, as the cycle has always done. This stage
                     // deleted a slab outright, so if the retain floor above was ever computed too
-                    // generously there was nothing left to recover from. The prepare stage passes
-                    // `purge_delayed_destroy` whenever block GC is on, so quarantined slabs are
-                    // still collected -- an hour later, not never.
+                    // generously there was nothing left to recover from. The index stage purges
+                    // what this sets aside, and this stage purges it itself when that stage is
+                    // off, so a quarantined slab is collected after its grace and not never.
                     block_gc_delayed_destroy: true,
                     // This stage ran every round block pressure held, and each run emptied the
                     // shard's cache outright -- memory, pmem and disk tiers alike -- however few
                     // slabs it went on to reclaim. Invalidate what was reclaimed instead.
                     block_gc_invalidate_removed_slabs_only: true,
+                    block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
+                    block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
+                    block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
+                    block_gc_raft_install_floor_slab_id: options.block_gc_raft_install_floor_slab_id,
                     // THE THREE BOUNDS THIS STAGE RAN WITHOUT. They existed on the cycle request
                     // and reached `BlockStoreGcPolicy` from there; this request had no field for
                     // them, so the stage called the policy-free reclaim entries and destroyed
@@ -1199,6 +1273,7 @@ impl DataNodeRuntime {
                         .block_gc_max_destroy_physical_bytes_per_round,
                     block_gc_min_slab_garbage_basis_points: options
                         .block_gc_min_slab_garbage_basis_points,
+                    include_lifecycle_plan: false,
                 },
             );
             if !response.status.ok {
@@ -1215,6 +1290,27 @@ impl DataNodeRuntime {
             skipped_stages.push("reclaim_page_disabled".to_string());
         } else {
             skipped_stages.push("reclaim_page_no_pressure".to_string());
+        }
+        // THE PURGE HAS ONE OWNER PER ROUND. The index stage runs it when it is enabled; with that
+        // stage off, nothing else would, and every slab this stage sets aside would stay in
+        // quarantine for ever. Owners and grace are the ones the index stage passes.
+        if options.enable_block_gc && !options.enable_index_gc {
+            let _ = self
+                .inner
+                .engine
+                .purge_storage_delayed_destroy(&StorageLifecycleRequest {
+                    shard_id,
+                    purge_delayed_destroy: true,
+                    follower_replay_cursors: options.follower_replay_cursors.clone(),
+                    block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
+                    block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
+                    block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
+                    block_gc_raft_install_floor_slab_id: options
+                        .block_gc_raft_install_floor_slab_id,
+                    block_gc_delayed_destroy_grace_ms:
+                        crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
+                    ..StorageLifecycleRequest::default()
+                });
         }
         spans.close("reclaim_page", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
@@ -1284,10 +1380,22 @@ impl DataNodeRuntime {
         // in this same round is therefore seen one round later, which is a delay of one period and
         // not a missed purge: the next round's plan lists it.
         let index_log_floor = StorageManagerCycleRequest::default().index_gc_index_log_bytes_threshold;
+        //
+        // NO DUMP TO MAKE has two forms: nothing dirty and nothing undumped, or a dirty shard that
+        // the byte gate holds back. The second is the busy shard under the gate, which used to pay
+        // three whole-shard plan builds a round to learn that the gate would decline. The decision
+        // is the one the plan itself makes (`dump_gate_delays`), read off the round's own counters.
+        // A log below the floor also rules out the forced dump, which needs at least the floor.
+        let index_dump_held_back = crate::engine::dump_gate_delays(
+            options.min_undumped_wal_records,
+            options.min_undumped_wal_bytes,
+            pressure.undumped_wal_records,
+            pressure.wal_bytes,
+        );
         let index_gc_has_no_work = options.enable_index_gc
             && index_log_floor != 0
-            && pressure.dirty_bucket_count == 0
-            && pressure.undumped_wal_records == 0
+            && ((pressure.dirty_bucket_count == 0 && pressure.undumped_wal_records == 0)
+                || index_dump_held_back)
             && !index_gc_pressure
             && lifecycle_plan.delayed_destroy_block_slab_ids.is_empty()
             && self
@@ -1304,6 +1412,36 @@ impl DataNodeRuntime {
                 .storage_manager_index_gc_runs += 1;
             executed_stages.push("reclaim_index".to_string());
         } else if options.enable_index_gc {
+            // THE DUMP IS GATED LIKE THE WAL STAGE'S, NOT FORCED EVERY ROUND.
+            //
+            // A manifest embeds the whole shard index, so every dump this stage forced cost
+            // O(shard) bytes however few buckets were dirty: measured per-SET bytes written
+            // grew with run length (one dump per round, each larger than the last) while the
+            // per-op families stayed flat. So the shipped byte gate decides here, as it does
+            // in the WAL stage, and a dump is forced only when the index log itself has
+            // outgrown the floor the collector declines below, which is the one case where
+            // waiting would let that log grow without bound (its truncation rides on the
+            // dump frontier). Replay bound: the index log can reach max(1 MiB, last image)
+            // before a forced dump.
+            //
+            // The floor scales with the last image. A dump costs about one image of bytes, so
+            // forcing one per fixed 1 MiB of index log made bytes written per SET grow with the
+            // key count again. Waiting until the log is as long as the image keeps the dump to
+            // at most one byte written per index-log byte, which is flat per operation.
+            let last_image_bytes = self
+                .inner
+                .engine
+                .latest_bucket_dump_image_bytes(shard_id);
+            let index_log_over_floor = index_log_forces_dump(
+                self.inner.engine.index_log_store().log_len_bytes(shard_id),
+                index_log_floor,
+                last_image_bytes,
+            );
+            let (dump_min_records, dump_min_bytes) = if index_log_over_floor {
+                (0, 0)
+            } else {
+                (options.min_undumped_wal_records, options.min_undumped_wal_bytes)
+            };
             let index_gc_request = StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
@@ -1324,8 +1462,8 @@ impl DataNodeRuntime {
                 // floor, so the cap is now reachable and its effect is measurable rather than
                 // assumed. Defaults to 0, which is exactly the behaviour above.
                 max_dump_buckets_per_round: options.index_gc_max_dump_buckets_per_round,
-                min_undumped_wal_records: 0,
-                min_undumped_wal_bytes: 0,
+                min_undumped_wal_records: dump_min_records,
+                min_undumped_wal_bytes: dump_min_bytes,
                 purge_delayed_destroy: true,
                 purge_delayed_destroy_slab_ids: None,
                 prune_bucket_dump_manifests: true,
@@ -1340,11 +1478,16 @@ impl DataNodeRuntime {
                 // dump -- loses the thing it would have restored from, and unlike a reclaimed log
                 // record nothing regenerates it.
                 follower_replay_cursors: options.follower_replay_cursors.clone(),
-                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
                 block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                block_gc_checkpoint_floor_slab_id: None,
-                block_gc_raft_install_floor_slab_id: None,
-                block_gc_delayed_destroy_grace_ms: 0,
+                block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
+                block_gc_raft_install_floor_slab_id: options.block_gc_raft_install_floor_slab_id,
+                // A DAY, NOT THE STORE'S ONE-HOUR FLOOR. This was 0, which the purge raises to
+                // `DELAYED_DESTROY_MIN_AGE_MS` (one hour), so a quarantined slab was destroyed an
+                // hour after it was set aside. The cycle request already defaulted to this
+                // constant; only the periodic loop, the path a server actually runs, did not.
+                block_gc_delayed_destroy_grace_ms:
+                    crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
                 invalidate_cache: false,
                 warm_cache: false,
             };
@@ -1375,7 +1518,19 @@ impl DataNodeRuntime {
                     "storage manager reclaimed index-log records"
                 );
             }
-            lifecycle_report = Some(response.report);
+            // A round's report names the manifest the round wrote, whichever stage wrote it: this
+            // stage no longer dumps below its gate, so its own report would otherwise erase the
+            // manifest the WAL stage just produced.
+            let mut stage_report = response.report;
+            if stage_report.dump_manifest.is_none() {
+                if let Some(earlier) = lifecycle_report
+                    .as_mut()
+                    .and_then(|earlier| earlier.dump_manifest.take())
+                {
+                    stage_report.dump_manifest = Some(earlier);
+                }
+            }
+            lifecycle_report = Some(stage_report);
             self.inner
                 .stats
                 .lock()
@@ -1458,7 +1613,7 @@ impl DataNodeRuntime {
         //
         // The question below is answered PER OBJECT: does any object still hold a block on a slab
         // someone wants emptied? A slab holding nothing but dead space answers no -- no object has
-        // a page there, nothing can be relocated off it, and destroying it is `reclaim_page`'s
+        // a block there, nothing can be relocated off it, and destroying it is `reclaim_page`'s
         // job, not this stage's. That is the distinction three shard-wide predicates could not
         // make, which is why they were each refused by the suite (#1550, #1553): they asked about
         // the shard's staleness, and the shard is stale either way.
@@ -1804,6 +1959,111 @@ impl DataNodeRuntime {
             stop,
             handle: Some(handle),
         }
+    }
+
+    /// The loop as short ticks. Every `tick` it does the cheap work for each loaded shard, and at
+    /// most one heavy stage per shard per tick, each heavy stage falling due once per `period`
+    /// and the five spread across the period (see `round_budget`). Where
+    /// `start_storage_manager_scheduler_for_all_shards` runs every stage to completion in one
+    /// round every interval, a request here can wait behind at most ONE stage, not all of them.
+    pub fn start_storage_manager_tick_scheduler_for_all_shards(
+        &self,
+        tick: Duration,
+        period: Duration,
+        options: StorageManagerOptions,
+    ) -> StorageLifecycleScheduler {
+        let runtime = self.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let scheduler_stop = Arc::clone(&stop);
+        let tick = tick.max(Duration::from_millis(1));
+        let handle = thread::spawn(move || {
+            let mut states: std::collections::HashMap<ShardId, ShardRoundState> =
+                std::collections::HashMap::new();
+            while !scheduler_stop.load(Ordering::Relaxed) {
+                let started = std::time::Instant::now();
+                let shard_ids = runtime.inner.engine.loaded_shard_ids();
+                states.retain(|shard_id, _| shard_ids.contains(shard_id));
+                for shard_id in shard_ids {
+                    if scheduler_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let state = states
+                        .entry(shard_id)
+                        .or_insert_with(|| ShardRoundState::new(started, period));
+                    runtime.run_storage_manager_tick(shard_id, &options, state, period);
+                }
+                // The next tick is one `tick` after this one STARTED, not after it ended, so a
+                // tick that did a stage does not push the cheap work of every other shard back.
+                if let Some(rest) = tick.checked_sub(started.elapsed()) {
+                    thread::sleep(rest);
+                }
+            }
+        });
+        StorageLifecycleScheduler {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    /// One tick for one shard: the cheap work, then the heavy slot that is due, if any. Returns
+    /// the slot's round report when one ran.
+    ///
+    /// A shard still replaying its log gets nothing. The cheap work builds no plan: it is the
+    /// slab pre-allocation, which is a lock and a comparison, and one bounded expiry sweep of this
+    /// shard.
+    pub(crate) fn run_storage_manager_tick(
+        &self,
+        shard_id: ShardId,
+        options: &StorageManagerOptions,
+        state: &mut ShardRoundState,
+        period: Duration,
+    ) -> Option<(HeavySlot, StorageManagerLoopReport)> {
+        if self.inner.engine.shard_is_recovering(shard_id) {
+            return None;
+        }
+        if options.enable_prepare {
+            if let Err(error) = self.inner.engine.block_store().prepare_next_slab() {
+                tracing::warn!(
+                    %error,
+                    "storage manager could not pre-allocate the next data slab; \
+                     the next append will roll inline"
+                );
+            }
+            self.inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_prepare_runs += 1;
+        }
+        if options.enable_expire {
+            let removed = self
+                .inner
+                .engine
+                .sweep_expired_records_with_request(crate::engine::reports::ShardExpirySweepRequest {
+                    shard_id,
+                    max_hot_buckets_per_round: options.max_expire_hot_buckets_per_round,
+                    max_cold_buckets_per_round: options.max_expire_cold_buckets_per_round,
+                    load_cold_buckets: true,
+                })
+                .map(|report| report.expired_records_removed)
+                .unwrap_or(0);
+            let mut stats = self.inner.stats.lock().expect("runtime stats lock poisoned");
+            stats.storage_manager_expire_runs += 1;
+            stats.expired_records_removed += removed as u64;
+        }
+        let slot = state.due_slot(std::time::Instant::now())?;
+        if slot == HeavySlot::Compaction {
+            return Some((slot, self.run_compaction_step(shard_id, options, state, period)));
+        }
+        let started = std::time::Instant::now();
+        let report = self.run_storage_manager_once_with_report_details(
+            shard_id,
+            options_for_slot(options, slot),
+            false,
+        );
+        self.note_round_overrun(started.elapsed(), period);
+        state.finished(slot, std::time::Instant::now(), period);
+        Some((slot, report))
     }
 
     /// A round that outlasts the interval means the loop never idles: the next round starts the
@@ -2155,22 +2415,27 @@ impl DataNodeRuntime {
     /// `hot_limit` / `cold_limit` of 0 mean no limit. With a bound a round takes at most that many
     /// due keys from the front of the deadline-ordered view, so there is nothing to resume: what
     /// is due is always the front, and a key not reached this round is still there next round.
-    pub fn sweep_expired_records_bounded(&self, hot_limit: usize, cold_limit: usize) -> usize {
-        let shard_ids = self.inner.engine.loaded_shard_ids();
-        let mut removed = 0usize;
-        for shard_id in shard_ids {
-            let Ok(report) = self.inner.engine.sweep_expired_records_with_request(
-                crate::engine::reports::ShardExpirySweepRequest {
-                    shard_id,
-                    max_hot_buckets_per_round: hot_limit,
-                    max_cold_buckets_per_round: cold_limit,
-                    load_cold_buckets: true,
-                },
-            ) else {
-                continue;
-            };
-            removed = removed.saturating_add(report.expired_records_removed);
-        }
+    pub fn sweep_expired_records_bounded(
+        &self,
+        shard_id: ShardId,
+        hot_limit: usize,
+        cold_limit: usize,
+    ) -> usize {
+        // THIS SHARD ONLY. The storage manager runs one round per shard, and this used to sweep
+        // every loaded shard from each of them: with S shards a tick took S sweeps of the whole
+        // table, each under the shard-table write guard, and the removals of the other shards
+        // were counted in this shard's report.
+        let removed = self
+            .inner
+            .engine
+            .sweep_expired_records_with_request(crate::engine::reports::ShardExpirySweepRequest {
+                shard_id,
+                max_hot_buckets_per_round: hot_limit,
+                max_cold_buckets_per_round: cold_limit,
+                load_cold_buckets: true,
+            })
+            .map(|report| report.expired_records_removed)
+            .unwrap_or(0);
         let mut stats = self
             .inner
             .stats
@@ -2181,6 +2446,8 @@ impl DataNodeRuntime {
         removed
     }
 
+    /// Test-only: sweeps every loaded shard, unbounded. The loop's expire stage sweeps its own
+    /// shard through `sweep_expired_records_bounded`.
     pub fn sweep_expired_records(&self) -> usize {
         let reports = self.inner.engine.sweep_all_expired_records();
         let removed = reports
@@ -2197,6 +2464,8 @@ impl DataNodeRuntime {
         removed
     }
 
+    /// Test-only: a second driver that sweeps every loaded shard on its own timer. Nothing in the
+    /// server starts it; the storage manager's expire stage is the driver.
     pub fn start_expiry_sweep_scheduler(&self, interval: Duration) -> ExpirySweepScheduler {
         let runtime = self.clone();
         let stop = Arc::new(AtomicBool::new(false));
@@ -2218,6 +2487,51 @@ impl DataNodeRuntime {
     }
 }
 
+/// Whether the index stage must dump now, whatever the byte gate says: the index log has grown to
+/// the larger of the collector's floor and the last dump's image.
+///
+/// The invariant is that a dump costs about one image of bytes, so waiting until the log is as long
+/// as the image keeps the bytes written per index-log byte at or below one. A fixed floor alone
+/// would force a dump per floor's worth of log however large the image had grown, which makes bytes
+/// written per operation grow with the key count. Below the floor the collector declines anyway, so
+/// the floor is the lower bound and the image the scaling term.
+fn index_log_forces_dump(index_log_bytes: u64, floor: u64, last_image_bytes: u64) -> bool {
+    index_log_bytes >= floor.max(last_image_bytes)
+}
+
+#[cfg(test)]
+mod index_log_forces_dump_guards {
+    use super::index_log_forces_dump;
+
+    const FLOOR: u64 = 1 << 20;
+
+    /// A log between the floor and a larger image must not force a dump; one at the image must.
+    ///
+    /// Planted fault: comparing against the floor alone (`index_log_bytes >= floor`) makes the
+    /// first assertion fail, because the log is past the floor and the image is not yet matched.
+    #[test]
+    fn a_log_shorter_than_the_last_image_does_not_force_a_dump() {
+        let image = 8 * FLOOR;
+        assert!(
+            !index_log_forces_dump(2 * FLOOR, FLOOR, image),
+            "a log past the floor but shorter than the image forced a dump"
+        );
+        assert!(!index_log_forces_dump(image - 1, FLOOR, image));
+        assert!(index_log_forces_dump(image, FLOOR, image));
+    }
+
+    /// With no image (or a small one) the floor decides, so a log below it never forces a dump.
+    ///
+    /// Planted fault: comparing against the image alone makes a zero image force a dump on an
+    /// empty log, and this fails on the first assertion.
+    #[test]
+    fn the_floor_bounds_the_decision_from_below() {
+        assert!(!index_log_forces_dump(0, FLOOR, 0));
+        assert!(!index_log_forces_dump(FLOOR - 1, FLOOR, 0));
+        assert!(index_log_forces_dump(FLOOR, FLOOR, 0));
+        assert!(!index_log_forces_dump(FLOOR - 1, FLOOR, FLOOR / 2));
+    }
+}
 
 #[cfg(test)]
 #[path = "maintenance_report_tests.rs"]

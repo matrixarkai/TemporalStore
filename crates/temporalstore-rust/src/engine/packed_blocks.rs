@@ -8,11 +8,11 @@ use crate::types::{FeaturePoint, ShardId};
 use matrixcache::{CacheKey, MultiLayerCache};
 
 use super::constants::{FEATURE_BLOCK_BINARY_MAGIC, FEATURE_BLOCK_MAGIC};
-use super::state::{PackedFeatureBlock, PackedFeatureBlockDecode};
+use super::state::PackedFeatureBlockDecode;
 use super::hashing::BlockIdentity;
 use super::{
     append_value, read_block_bytes, read_block_bytes_cold, read_block_shared_keyed,
-    stable_block_object_id, PageKeys,
+    stable_block_object_id, BlockKeys,
 };
 use crate::storage_config::context_block_target_bytes;
 pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
@@ -30,8 +30,7 @@ pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<Featur
 }
 
 /// Borrows the points instead of owning them, so the block can be serialised without first
-/// copying every value. Mirrors `PackedFeatureBlock` field for field -- same names, same order,
-/// same types -- and neither carries a serde attribute, so the two produce identical bytes.
+/// copying every value.
 #[derive(serde::Serialize)]
 struct PackedFeatureBlockRef<'a> {
     version: u8,
@@ -102,7 +101,7 @@ pub(super) fn timestamped_element_name(stored_key: u64, identity: Option<u64>) -
     }
 }
 
-fn stage_timestamped_outcomes(
+pub(super) fn stage_timestamped_outcomes(
     kind: &str,
     key: &str,
     object_id: u64,
@@ -116,9 +115,10 @@ fn stage_timestamped_outcomes(
     for (timestamp_ms, address) in refs {
         let element_name = timestamped_element_name(*timestamp_ms, identity);
         super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-            kind: kind.to_string(),
+            kind: kind.into(),
             object_key: key.to_string(),
-            element_name: Some(element_name.clone()),
+            // MOVED, NOT CLONED: the name is built for this item and read by nothing after it.
+            element_name: Some(element_name),
             object_id,
             routing_bucket,
             address: Some(address.clone()),
@@ -134,7 +134,7 @@ fn stage_timestamped_outcomes(
 ///
 /// The insert above records where a point landed; without this its removal is invisible, and a
 /// shard rebuilt from records alone would keep points the shard itself has dropped.
-fn stage_timestamped_removal(
+pub(super) fn stage_timestamped_removal(
     kind: &str,
     key: &str,
     object_id: u64,
@@ -143,9 +143,10 @@ fn stage_timestamped_removal(
 ) {
     let element_name = timestamp_ms.to_string();
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-        kind: kind.to_string(),
+        kind: kind.into(),
         object_key: key.to_string(),
-        element_name: Some(element_name.clone()),
+        // MOVED, NOT CLONED: the name is built for this item and read by nothing after it.
+        element_name: Some(element_name),
         object_id,
         routing_bucket,
         address: None,
@@ -184,7 +185,7 @@ fn stage_timestamped_boundary_removal(
     through: u64,
 ) {
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-        kind: kind.to_string(),
+        kind: kind.into(),
         object_key: key.to_string(),
         element_name: Some(timestamped_boundary_element_name(through)),
         object_id: stable_block_object_id(shard_id, kind, key),
@@ -209,10 +210,35 @@ pub(super) fn drop_timestamped_points(
     series: &mut impl super::timestamped_series::TimestampedSeriesWrite,
     timestamps: &[u64],
 ) -> bool {
+    drop_timestamped_points_naming_what_left(
+        shard_id,
+        kind,
+        key,
+        routing_bucket,
+        series,
+        timestamps,
+        None,
+    )
+}
+
+/// [`drop_timestamped_points`], and every address the dropped points held is pushed onto
+/// `vacated` (see [`trim_timestamped_series_naming_what_left`]).
+pub(super) fn drop_timestamped_points_naming_what_left(
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    routing_bucket: u32,
+    series: &mut impl super::timestamped_series::TimestampedSeriesWrite,
+    timestamps: &[u64],
+    mut vacated: Option<&mut Vec<ElementEntry>>,
+) -> bool {
     let mut dropped = false;
     let mut object_id = None;
     for timestamp_ms in timestamps {
-        if series.get(*timestamp_ms).is_some() {
+        if let Some(address) = series.get(*timestamp_ms) {
+            if let Some(vacated) = vacated.as_deref_mut() {
+                vacated.push(address.clone());
+            }
             series.clear(*timestamp_ms);
             let object_id = *object_id
                 .get_or_insert_with(|| stable_block_object_id(shard_id, kind, key));
@@ -237,14 +263,49 @@ pub(super) fn trim_timestamped_series(
     max_size: usize,
     boundary_record: bool,
 ) -> bool {
+    trim_timestamped_series_naming_what_left(
+        shard_id,
+        kind,
+        key,
+        routing_bucket,
+        series,
+        max_size,
+        boundary_record,
+        None,
+    )
+}
+
+/// [`trim_timestamped_series`], and every address the dropped points held is pushed onto
+/// `vacated`.
+///
+/// A block can be named by several points, so a dropped point does not say its block is gone: the
+/// caller asks [`addresses_no_point_names`] which of these no live point still maps to.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn trim_timestamped_series_naming_what_left(
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    routing_bucket: u32,
+    series: &mut impl super::timestamped_series::TimestampedSeriesWrite,
+    max_size: usize,
+    boundary_record: bool,
+    mut vacated: Option<&mut Vec<ElementEntry>>,
+) -> bool {
     let mut newest_dropped = None;
     let mut object_id = None;
     while series.len() > max_size {
         // THE OLDEST POINT IS THE FIRST, because `points` promises ascending order. A
         // representation that could not promise it is not a timestamped series.
-        let Some(oldest) = series.points().next().map(|(instant, _)| instant) else {
+        let Some((oldest, address)) = series
+            .points()
+            .next()
+            .map(|(instant, address)| (instant, vacated.is_some().then(|| address.clone())))
+        else {
             break;
         };
+        if let (Some(vacated), Some(address)) = (vacated.as_deref_mut(), address) {
+            vacated.push(address);
+        }
         series.clear(oldest);
         if !boundary_record {
             let object_id = *object_id
@@ -264,6 +325,50 @@ pub(super) fn trim_timestamped_series(
         stage_timestamped_boundary_removal(shard_id, kind, key, routing_bucket, through);
     }
     true
+}
+
+/// Of the addresses a write vacated, those no point of the series maps to any more.
+///
+/// A POINT DROPPED OR REPLACED DOES NOT SAY ITS BLOCK IS GONE. A block holds every point of the
+/// chunk it was written with, so the block outlives the points that leave it for as long as one
+/// of its points stays -- and the points of one block are not contiguous once a later write has
+/// replaced some of them, so "the oldest block is the dead one" is not a rule the series keeps.
+/// The only sound answer is to ask the series, which this does in one allocation-free pass that
+/// stops as soon as every candidate has been seen alive. A candidate nobody names costs the whole
+/// pass, because absence is only proved by reading to the end.
+///
+/// The addresses come back sorted by identity and without repeats.
+pub(super) fn addresses_no_point_names(
+    series: &impl super::timestamped_series::TimestampedSeries,
+    mut vacated: Vec<ElementEntry>,
+) -> Vec<ElementEntry> {
+    use super::storage_bucket_internals::block_physical_identity_key as identity;
+    vacated.sort_unstable_by_key(identity);
+    vacated.dedup_by_key(|address| identity(address));
+    if vacated.is_empty() {
+        return vacated;
+    }
+    let mut seen_alive = vec![false; vacated.len()];
+    let mut unseen = vacated.len();
+    for address in series.addresses() {
+        let held = identity(address);
+        if let Ok(at) = vacated.binary_search_by_key(&held, |candidate| identity(candidate)) {
+            if !seen_alive[at] {
+                seen_alive[at] = true;
+                unseen -= 1;
+                if unseen == 0 {
+                    return Vec::new();
+                }
+            }
+        }
+    }
+    let mut at = 0;
+    vacated.retain(|_| {
+        let dead = !seen_alive[at];
+        at += 1;
+        dead
+    });
+    vacated
 }
 
 pub(super) fn append_timestamped_kv_blocks(
@@ -436,7 +541,7 @@ pub(super) fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<
     // computed and never read -- and computing it is a FULL `serde_json` serialisation of the
     // point, the same work `encode_feature_block` is about to do again on the way to the block.
     //
-    // A page carries its value as a `Vec<u8>`, which serde_json writes as an array of decimal
+    // A block carries its value as a `Vec<u8>`, which serde_json writes as an array of decimal
     // numbers, so that measurement costs several times the value it measures. Every context write
     // path -- summary, event, index, audit, child, compression -- passes exactly one point.
     if points.len() == 1 {
@@ -482,19 +587,11 @@ pub(super) fn decode_feature_block_strict(bytes: &[u8]) -> PackedFeatureBlockDec
     if let Some(payload) = bytes.strip_prefix(FEATURE_BLOCK_BINARY_MAGIC) {
         return decode_binary_feature_block(payload);
     }
-    if let Some(payload) = bytes.strip_prefix(FEATURE_BLOCK_MAGIC) {
-        // A block written before the byte format. Kept so a store that already exists keeps
-        // reading; nothing writes this shape any more, and this arm goes when those stores do.
-        return match serde_json::from_slice::<PackedFeatureBlock>(payload) {
-            Ok(block) if block.version == 1 => PackedFeatureBlockDecode::Packed(block.points),
-            Ok(block) => PackedFeatureBlockDecode::Corrupt(format!(
-                "unsupported packed feature block version {}",
-                block.version
-            )),
-            Err(err) => PackedFeatureBlockDecode::Corrupt(format!(
-                "invalid packed feature page payload: {err}"
-            )),
-        };
+    if bytes.starts_with(FEATURE_BLOCK_MAGIC) {
+        // The JSON shape of a packed block. Nothing writes it and nothing reads it: it is refused.
+        return PackedFeatureBlockDecode::Corrupt(
+            "packed feature block is in a retired JSON shape".to_string(),
+        );
     }
     PackedFeatureBlockDecode::Legacy
 }
@@ -695,45 +792,81 @@ pub(super) fn with_feature_point_value<R>(
     timestamp_ms: u64,
     with: impl FnOnce(&[u8]) -> R,
 ) -> Option<R> {
+    match feature_point_in_place(bytes, timestamp_ms, with) {
+        PointRead::Found(found) => Some(found),
+        PointRead::Absent | PointRead::Corrupt => None,
+    }
+}
+
+/// How reading one point out of a block's bytes ended.
+///
+/// `with_feature_point_value` folds the last two into `None`. A reader that must count a damaged
+/// block, and say nothing about a point a sound block simply does not hold, needs them apart.
+pub(super) enum PointRead<R> {
+    /// The point is there; this is what the caller made of its value.
+    Found(R),
+    /// The block is sound and holds no point at that instant.
+    Absent,
+    /// The block does not decode: torn, trailing bytes, or a forged count.
+    Corrupt,
+}
+
+/// [`with_feature_point_value`] with the two reasons for no answer kept apart.
+pub(super) fn feature_point_in_place<R>(
+    bytes: &[u8],
+    timestamp_ms: u64,
+    with: impl FnOnce(&[u8]) -> R,
+) -> PointRead<R> {
     let Some(payload) = bytes.strip_prefix(FEATURE_BLOCK_BINARY_MAGIC) else {
         // The JSON shape and the unframed legacy value keep the allocating reader: nothing writes
         // the first any more, and the second is the block's own bytes.
         return match decode_feature_block_strict(bytes) {
-            PackedFeatureBlockDecode::Packed(points) => points
-                .into_iter()
-                .find(|point| point.timestamp_ms == timestamp_ms)
-                .map(|point| with(&point.value)),
-            PackedFeatureBlockDecode::Legacy => Some(with(bytes)),
-            PackedFeatureBlockDecode::Corrupt(_) => None,
+            PackedFeatureBlockDecode::Packed(points) => {
+                match points.into_iter().find(|point| point.timestamp_ms == timestamp_ms) {
+                    Some(point) => PointRead::Found(with(&point.value)),
+                    None => PointRead::Absent,
+                }
+            }
+            PackedFeatureBlockDecode::Legacy => PointRead::Found(with(bytes)),
+            PackedFeatureBlockDecode::Corrupt(_) => PointRead::Corrupt,
         };
     };
-    let (count_bytes, mut rest) = split_at_checked(payload, 4)?;
+    let Some((count_bytes, mut rest)) = split_at_checked(payload, 4) else {
+        return PointRead::Corrupt;
+    };
     let count = u32::from_le_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]])
         as usize;
     if count.saturating_mul(FEATURE_POINT_HEADER_BYTES) > rest.len() {
-        return None;
+        return PointRead::Corrupt;
     }
     let mut found: Option<&[u8]> = None;
     for _ in 0..count {
-        let (header, tail) = split_at_checked(rest, FEATURE_POINT_HEADER_BYTES)?;
+        let Some((header, tail)) = split_at_checked(rest, FEATURE_POINT_HEADER_BYTES) else {
+            return PointRead::Corrupt;
+        };
         let point_timestamp = u64::from_le_bytes([
             header[0], header[1], header[2], header[3], header[4], header[5], header[6], header[7],
         ]);
         let length = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
-        let (value, tail) = split_at_checked(tail, length)?;
+        let Some((value, tail)) = split_at_checked(tail, length) else {
+            return PointRead::Corrupt;
+        };
         if found.is_none() && point_timestamp == timestamp_ms {
             found = Some(value);
         }
         rest = tail;
     }
     if !rest.is_empty() {
-        return None;
+        return PointRead::Corrupt;
     }
-    found.map(with)
+    match found {
+        Some(value) => PointRead::Found(with(value)),
+        None => PointRead::Absent,
+    }
 }
 
 /// The value of one feature point, read in place: the shared cache bytes are inspected, not copied,
-/// and the page key reuses the record key of the slab it shares with the previous point.
+/// and the block key reuses the record key of the slab it shares with the previous point.
 ///
 /// Same answer as [`read_feature_point`], see [`with_feature_point_value`].
 #[allow(clippy::too_many_arguments)]
@@ -745,7 +878,7 @@ pub(super) fn read_feature_value_with<R>(
     address: &ElementEntry,
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
-    keys: &mut PageKeys,
+    keys: &mut BlockKeys,
     with: impl FnOnce(&[u8]) -> R,
 ) -> Option<R> {
     let cache_key = keys.key(shard_id, address, routing_bucket);
@@ -753,88 +886,163 @@ pub(super) fn read_feature_value_with<R>(
     with_feature_point_value(&bytes, timestamp_ms, with)
 }
 
+/// Where a run of ascending reads has got to in one sound binary block.
+pub(super) struct AscendingCursor {
+    /// Byte offset of the first point header.
+    body: usize,
+    /// Points the block holds.
+    count: usize,
+    /// Byte offset of the next header to look at, and how many points precede it.
+    offset: usize,
+    index: usize,
+    /// The instant the last read asked for. A read at or below it starts the block over.
+    last: Option<u64>,
+}
+
+/// The sound binary block whose instants strictly ascend, as the cursor to walk it with.
+///
+/// `None` for anything else -- the JSON shape, an unframed value, a torn or forged block, a repeated
+/// or descending instant -- and those are read by [`feature_point_in_place`], which answers for all
+/// of them. The strict walk here is the decoder's: a block with a torn tail or bytes after the last
+/// point is refused, so a point is never served out of a block the strict decoder would reject.
+pub(super) fn ascending_cursor(bytes: &[u8]) -> Option<AscendingCursor> {
+    let payload = bytes.strip_prefix(FEATURE_BLOCK_BINARY_MAGIC)?;
+    let (count_bytes, mut rest) = split_at_checked(payload, 4)?;
+    let count = u32::from_le_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]])
+        as usize;
+    if count.saturating_mul(FEATURE_POINT_HEADER_BYTES) > rest.len() {
+        return None;
+    }
+    let mut previous: Option<u64> = None;
+    for _ in 0..count {
+        let (header, tail) = split_at_checked(rest, FEATURE_POINT_HEADER_BYTES)?;
+        let instant = u64::from_le_bytes([
+            header[0], header[1], header[2], header[3], header[4], header[5], header[6], header[7],
+        ]);
+        let length = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
+        let (_, tail) = split_at_checked(tail, length)?;
+        if previous.is_some_and(|before| before >= instant) {
+            return None;
+        }
+        previous = Some(instant);
+        rest = tail;
+    }
+    if !rest.is_empty() {
+        return None;
+    }
+    let body = FEATURE_BLOCK_HEADER_BYTES;
+    Some(AscendingCursor {
+        body,
+        count,
+        offset: body,
+        index: 0,
+        last: None,
+    })
+}
+
+impl AscendingCursor {
+    /// The value stored at `instant`, found by stepping forward from where the last read stopped.
+    ///
+    /// The block was checked whole when the cursor was made, so every header read here is in bounds.
+    pub(super) fn value_at<'b>(&mut self, bytes: &'b [u8], instant: u64) -> Option<&'b [u8]> {
+        if self.last.is_some_and(|last| instant <= last) {
+            self.offset = self.body;
+            self.index = 0;
+        }
+        self.last = Some(instant);
+        while self.index < self.count {
+            let header = &bytes[self.offset..self.offset + FEATURE_POINT_HEADER_BYTES];
+            let stored = u64::from_le_bytes([
+                header[0], header[1], header[2], header[3], header[4], header[5], header[6],
+                header[7],
+            ]);
+            let length = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
+            let value_at = self.offset + FEATURE_POINT_HEADER_BYTES;
+            if stored > instant {
+                return None;
+            }
+            self.offset = value_at + length;
+            self.index += 1;
+            if stored == instant {
+                return Some(&bytes[value_at..value_at + length]);
+            }
+        }
+        None
+    }
+}
+
+/// One block of a run of feature points, held between them.
+struct HeldFeatureBlock {
+    address: ElementEntry,
+    bytes: std::sync::Arc<[u8]>,
+    /// `Some` for a sound ascending binary block; every other shape is read point by point.
+    cursor: Option<AscendingCursor>,
+}
+
+/// Feature points read in order out of the blocks they sit in.
+///
+/// A range read used to copy each block out of the cache, decode the whole of it into a
+/// `Vec<FeaturePoint>` (a value `Vec` per point), keep that in a table keyed by the block's address,
+/// and clone the wanted point out of it: two allocations per point of the block, and a third copy for
+/// each point it returned. The block's shared bytes are walked where they sit instead, and the value
+/// is handed to the caller as a slice of them, so the caller allocates only for what it keeps.
+///
+/// The last block read is held, so the points of one block read it from the cache once.
+pub(super) struct FeatureRangeReader {
+    keys: BlockKeys,
+    held: Option<HeldFeatureBlock>,
+}
+
+impl FeatureRangeReader {
+    pub(super) fn new() -> Self {
+        Self {
+            keys: BlockKeys::new(),
+            held: None,
+        }
+    }
+
+    /// Hand `with` the value of the point at `timestamp_ms` in the block `address` names, borrowed
+    /// from the block's bytes. `None` for a point the block does not hold, for a block that does not
+    /// decode, and for a block that cannot be read: the answers `read_feature_point_cached` gave.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn with_point<R>(
+        &mut self,
+        cache: &MultiLayerCache,
+        block_store: &BlockStore,
+        shard_id: ShardId,
+        timestamp_ms: u64,
+        address: &ElementEntry,
+        identity: BlockIdentity<'_>,
+        routing_bucket: Option<u32>,
+        with: impl FnOnce(&[u8]) -> R,
+    ) -> Option<R> {
+        let held_here = self.held.as_ref().is_some_and(|held| held.address == *address);
+        if !held_here {
+            let cache_key = self.keys.key(shard_id, address, routing_bucket);
+            let bytes =
+                read_block_shared_keyed(cache, block_store, shard_id, address, identity, cache_key)?;
+            let cursor = ascending_cursor(&bytes);
+            self.held = Some(HeldFeatureBlock {
+                address: address.clone(),
+                bytes,
+                cursor,
+            });
+        }
+        let held = self.held.as_mut()?;
+        match &mut held.cursor {
+            Some(cursor) => cursor.value_at(&held.bytes, timestamp_ms).map(with),
+            None => match feature_point_in_place(&held.bytes, timestamp_ms, with) {
+                PointRead::Found(found) => Some(found),
+                PointRead::Absent | PointRead::Corrupt => None,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod block_encoding_tests {
     use super::*;
     use crate::types::FeaturePoint;
-
-    /// What the block format costs to write and to read, measured on the code that ships.
-    ///
-    /// A block was JSON, and a value is a `Vec<u8>`, which JSON writes as an array of decimal
-    /// numbers. That is paid twice per block -- once encoding, once decoding -- on every write and
-    /// every read that misses the cache, and it is the half of this change that compression cannot
-    /// give back: bytes the encoder never writes are bytes the compressor never reads.
-    ///
-    /// Reports rather than asserts a threshold: a timing assertion on shared hardware is a flake
-    /// generator, and the correctness of both paths is pinned by the tests above.
-    #[test]
-    fn what_the_block_format_costs() {
-        use std::time::Instant;
-
-        let value: Vec<u8> = (0..400u32).map(|i| (i % 251) as u8).collect();
-        let points = vec![FeaturePoint { timestamp_ms: 1_789_007_622_131, value }];
-        let rounds = 20_000;
-
-        // Warm both paths so the first does not pay for what the second reuses.
-        let _ = encode_feature_block(&points);
-        let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
-        let _ = serde_json::to_vec(&owned).expect("serialises");
-
-        let started = Instant::now();
-        let mut json_bytes = 0usize;
-        for _ in 0..rounds {
-            let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
-            let mut block = FEATURE_BLOCK_MAGIC.to_vec();
-            block.append(&mut serde_json::to_vec(&owned).expect("serialises"));
-            json_bytes = block.len();
-        }
-        let json_encode_ns = started.elapsed().as_nanos();
-
-        let started = Instant::now();
-        let mut binary_bytes = 0usize;
-        for _ in 0..rounds {
-            binary_bytes = encode_feature_block(&points).len();
-        }
-        let binary_encode_ns = started.elapsed().as_nanos();
-
-        let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
-        let mut json_block = FEATURE_BLOCK_MAGIC.to_vec();
-        json_block.append(&mut serde_json::to_vec(&owned).expect("serialises"));
-        let binary_block = encode_feature_block(&points);
-
-        let started = Instant::now();
-        for _ in 0..rounds {
-            assert!(matches!(
-                decode_feature_block_strict(&json_block),
-                PackedFeatureBlockDecode::Packed(_)
-            ));
-        }
-        let json_decode_ns = started.elapsed().as_nanos();
-
-        let started = Instant::now();
-        for _ in 0..rounds {
-            assert!(matches!(
-                decode_feature_block_strict(&binary_block),
-                PackedFeatureBlockDecode::Packed(_)
-            ));
-        }
-        let binary_decode_ns = started.elapsed().as_nanos();
-
-        let saved = |before: u128, after: u128| {
-            if before == 0 { 0.0 } else { (before as f64 - after as f64) / before as f64 * 100.0 }
-        };
-        println!(
-            "  block of one 400 B point: {json_bytes} B as JSON, {binary_bytes} B as bytes"
-        );
-        println!(
-            "  encode x{rounds}: json {json_encode_ns} ns, bytes {binary_encode_ns} ns, {:.1}% saved",
-            saved(json_encode_ns, binary_encode_ns)
-        );
-        println!(
-            "  decode x{rounds}: json {json_decode_ns} ns, bytes {binary_decode_ns} ns, {:.1}% saved",
-            saved(json_decode_ns, binary_decode_ns)
-        );
-    }
 
     fn fixtures() -> Vec<Vec<FeaturePoint>> {
         vec![
@@ -858,25 +1066,6 @@ mod block_encoding_tests {
                 decode_feature_block(&encoded).as_deref(),
                 Some(points.as_slice()),
                 "a block of {} point(s) did not decode back",
-                points.len()
-            );
-        }
-    }
-
-    /// A block written before the byte format still reads.
-    ///
-    /// Stores exist that were written as JSON. Nothing writes that shape now, and this is what
-    /// lets those stores keep serving until they are gone.
-    #[test]
-    fn a_block_written_as_json_still_reads() {
-        for points in fixtures() {
-            let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
-            let mut json_block = FEATURE_BLOCK_MAGIC.to_vec();
-            json_block.append(&mut serde_json::to_vec(&owned).expect("owned block serialises"));
-            assert_eq!(
-                decode_feature_block(&json_block).as_deref(),
-                Some(points.as_slice()),
-                "a JSON block of {} point(s) stopped reading",
                 points.len()
             );
         }
@@ -937,20 +1126,6 @@ mod block_encoding_tests {
                 overhead,
                 FEATURE_BLOCK_HEADER_BYTES + FEATURE_POINT_HEADER_BYTES,
                 "a {payload_len} B payload should cost a fixed header, not a multiple"
-            );
-
-            // Against what it used to cost, so the comparison is in the test rather than a note.
-            let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
-            let json_len = FEATURE_BLOCK_MAGIC.len()
-                + serde_json::to_vec(&owned).expect("serialises").len();
-            // At least halved. A small payload saves less than a large one because the
-            // header is the same 23 bytes either way: 48 B costs 71 B against 168 B as JSON,
-            // while 4 KiB costs 4,119 B against roughly four times that.
-            assert!(
-                encoded.len() * 2 < json_len,
-                "{payload_len} B payload: {} B now against {json_len} B as JSON, which is not the \
-                 saving this change exists for",
-                encoded.len()
             );
         }
     }

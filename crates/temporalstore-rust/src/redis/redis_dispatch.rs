@@ -437,15 +437,9 @@ pub fn execute_redis_command_with_state(
         "PTTL" if args.len() == 2 => integer_response(execute(Command::CommonTtl {
             key: name_arg(&args[1]),
         })),
-        "STRLEN" if args.len() == 2 => match execute(Command::StringGet {
+        "STRLEN" if args.len() == 2 => integer_response(execute(Command::StringLen {
             key: name_arg(&args[1]),
-        }) {
-            Ok(CommandResponse::Bytes { value }) => {
-                RespValue::Integer(value.map(|value| value.len() as i64).unwrap_or_default())
-            }
-            Ok(_) => RespValue::Error("ERR invalid strlen response".to_string()),
-            Err(err) => RespValue::Error(format!("ERR {err}")),
-        },
+        })),
         "GETRANGE" if args.len() == 4 => string_getrange_response(&args, &mut execute),
         "SETRANGE" if args.len() == 4 => {
             let response = string_setrange_response(&args, &mut execute);
@@ -455,20 +449,16 @@ pub fn execute_redis_command_with_state(
             response
         }
         "APPEND" if args.len() == 3 => {
+            // ONE COMMAND: the shard appends while it holds the key, so two clients appending to
+            // one string cannot both read the old value and drop each other's bytes.
             let key = name_arg(&args[1]);
-            match execute(Command::StringGet { key: key.clone() }) {
-                Ok(CommandResponse::Bytes { value }) => {
-                    let mut new_value = value.unwrap_or_default();
-                    new_value.extend_from_slice(&args[2]);
-                    let new_len = new_value.len() as i64;
-                    if let Err(err) = execute(Command::StringSet {
-                        key: key.clone(),
-                        value: new_value,
-                    }) {
-                        return RespValue::Error(format!("ERR {err}"));
-                    }
+            match execute(Command::StringAppend {
+                key: key.clone(),
+                value: args[2].clone(),
+            }) {
+                Ok(CommandResponse::Integer { value }) => {
                     state.keyspace.insert(key);
-                    RespValue::Integer(new_len)
+                    RespValue::Integer(value)
                 }
                 Ok(_) => RespValue::Error("ERR invalid append response".to_string()),
                 Err(err) => RespValue::Error(format!("ERR {err}")),
@@ -534,13 +524,15 @@ pub fn execute_redis_command_with_state(
             let mut added = 0;
             for pair in args[2..].chunks(2) {
                 let field = name_arg(&pair[0]);
-                match execute(Command::HashGet {
+                // Whether the field is there is a question the field map answers; the value is not
+                // wanted, so no block is read for it.
+                match execute(Command::HashFieldExists {
                     key: key.clone(),
                     field,
                 }) {
-                    Ok(CommandResponse::Bytes { value: None }) => added += 1,
-                    Ok(CommandResponse::Bytes { value: Some(_) }) => {}
-                    Ok(_) => return RespValue::Error("ERR invalid hget response".to_string()),
+                    Ok(CommandResponse::Integer { value: 0 }) => added += 1,
+                    Ok(CommandResponse::Integer { value: 1 }) => {}
+                    Ok(_) => return RespValue::Error("ERR invalid hexists response".to_string()),
                     Err(err) => return RespValue::Error(format!("ERR {err}")),
                 }
             }
@@ -559,12 +551,12 @@ pub fn execute_redis_command_with_state(
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
         }
-        "HSETNX" if args.len() == 4 => match execute(Command::HashGet {
+        "HSETNX" if args.len() == 4 => match execute(Command::HashFieldExists {
             key: name_arg(&args[1]),
             field: name_arg(&args[2]),
         }) {
-            Ok(CommandResponse::Bytes { value: Some(_) }) => RespValue::Integer(0),
-            Ok(CommandResponse::Bytes { value: None }) => match execute(Command::HashSet {
+            Ok(CommandResponse::Integer { value: 1 }) => RespValue::Integer(0),
+            Ok(CommandResponse::Integer { value: 0 }) => match execute(Command::HashSet {
                 key: name_arg(&args[1]),
                 field: name_arg(&args[2]),
                 value: args[3].clone(),
@@ -608,14 +600,10 @@ pub fn execute_redis_command_with_state(
             Ok(_) => RespValue::Error("ERR invalid hstrlen response".to_string()),
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
-        "HEXISTS" if args.len() == 3 => match execute(Command::HashGet {
+        "HEXISTS" if args.len() == 3 => integer_response(execute(Command::HashFieldExists {
             key: name_arg(&args[1]),
             field: name_arg(&args[2]),
-        }) {
-            Ok(CommandResponse::Bytes { value }) => RespValue::Integer(i64::from(value.is_some())),
-            Ok(_) => RespValue::Error("ERR invalid hget response".to_string()),
-            Err(err) => RespValue::Error(format!("ERR {err}")),
-        },
+        })),
         "HMGET" if args.len() >= 3 => {
             match execute(Command::HashMultiGet {
                 key: name_arg(&args[1]),
@@ -715,11 +703,12 @@ pub fn execute_redis_command_with_state(
             let mut removed = 0;
             for field in args.iter().skip(2) {
                 let field = name_arg(field);
-                match execute(Command::HashGet {
+                // Presence is the field map's to say, so the value is not read to count a removal.
+                match execute(Command::HashFieldExists {
                     key: key.clone(),
                     field: field.clone(),
                 }) {
-                    Ok(CommandResponse::Bytes { value: Some(_) }) => {
+                    Ok(CommandResponse::Integer { value: 1 }) => {
                         if let Err(err) = execute(Command::HashDelete {
                             key: key.clone(),
                             field,
@@ -728,8 +717,8 @@ pub fn execute_redis_command_with_state(
                         }
                         removed += 1;
                     }
-                    Ok(CommandResponse::Bytes { value: None }) => {}
-                    Ok(_) => return RespValue::Error("ERR invalid hget response".to_string()),
+                    Ok(CommandResponse::Integer { value: 0 }) => {}
+                    Ok(_) => return RespValue::Error("ERR invalid hexists response".to_string()),
                     Err(err) => return RespValue::Error(format!("ERR {err}")),
                 }
             }
@@ -749,13 +738,19 @@ pub fn execute_redis_command_with_state(
                     Err(err) => return RespValue::Error(err),
                 }
             }
+            // One command per run of members, each added in order, so the answer counts what
+            // the same number of single adds would. A command takes a bounded number of members,
+            // so a longer call is several.
             let mut added = 0;
-            for (score, member) in pairs {
-                match execute(Command::ZSetAdd {
-                    key: key.clone(),
-                    member,
-                    score,
-                }) {
+            for run in pairs.chunks(crate::types::MAX_ZSET_MEMBERS_PER_COMMAND) {
+                let members = run
+                    .iter()
+                    .map(|(score, member)| crate::types::ZSetScoredMember {
+                        member: member.clone(),
+                        score: *score,
+                    })
+                    .collect();
+                match execute(Command::ZSetAddMany { key: key.clone(), members }) {
                     Ok(CommandResponse::Integer { value }) => added += value,
                     Ok(_) => return RespValue::Error("ERR invalid zadd response".to_string()),
                     Err(err) => return RespValue::Error(format!("ERR {err}")),
@@ -775,10 +770,10 @@ pub fn execute_redis_command_with_state(
         "ZREM" if args.len() >= 3 => {
             let key = name_arg(&args[1]);
             let mut removed = 0;
-            for member in args.iter().skip(2) {
-                match execute(Command::ZSetRemove {
+            for members in args[2..].chunks(crate::types::MAX_ZSET_MEMBERS_PER_COMMAND) {
+                match execute(Command::ZSetRemoveMany {
                     key: key.clone(),
-                    member: member.clone(),
+                    members: members.to_vec(),
                 }) {
                     Ok(CommandResponse::Integer { value }) => removed += value,
                     Ok(_) => return RespValue::Error("ERR invalid zrem response".to_string()),
@@ -825,18 +820,34 @@ pub fn execute_redis_command_with_state(
                 (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
             }
         }
-        "ZRANGEBYSCORE" | "ZREVRANGEBYSCORE" if args.len() == 4 || args.len() == 5 => {
+        "ZRANGEBYSCORE" | "ZREVRANGEBYSCORE" if args.len() >= 4 => {
             let rev = command == "ZREVRANGEBYSCORE";
-            let withscores = match args.get(4) {
-                None => false,
-                Some(flag) if name_arg(flag).eq_ignore_ascii_case("WITHSCORES") => true,
-                Some(other) => {
-                    return RespValue::Error(format!(
-                        "ERR syntax error near {}",
-                        name_arg(other)
-                    ))
+            let mut withscores = false;
+            // LIMIT offset count: a negative count means "to the end"; a negative offset
+            // selects nothing (Redis semantics).
+            let mut limit: Option<(i64, i64)> = None;
+            let mut idx = 4;
+            while idx < args.len() {
+                match name_arg(&args[idx]).to_ascii_uppercase().as_str() {
+                    "WITHSCORES" => {
+                        withscores = true;
+                        idx += 1;
+                    }
+                    "LIMIT" if idx + 2 < args.len() => {
+                        match (
+                            parse_i64_arg(&args[idx + 1], "offset"),
+                            parse_i64_arg(&args[idx + 2], "count"),
+                        ) {
+                            (Ok(offset), Ok(count)) => limit = Some((offset, count)),
+                            (Err(err), _) | (_, Err(err)) => return RespValue::Error(err),
+                        }
+                        idx += 3;
+                    }
+                    other => {
+                        return RespValue::Error(format!("ERR syntax error near {other}"))
+                    }
                 }
-            };
+            }
             // ZREVRANGEBYSCORE takes (max, min); the engine always takes (min, max).
             let (low_raw, high_raw) = if rev {
                 (&args[3], &args[2])
@@ -854,7 +865,10 @@ pub fn execute_redis_command_with_state(
                         rev,
                     }) {
                         Ok(CommandResponse::Members { members }) => {
-                            interleaved_members_response(members, withscores)
+                            interleaved_members_response(
+                                limit_member_pairs(members, limit),
+                                withscores,
+                            )
                         }
                         Ok(_) => {
                             RespValue::Error("ERR invalid zrangebyscore response".to_string())
@@ -865,6 +879,104 @@ pub fn execute_redis_command_with_state(
                 (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
             }
         }
+        "ZREMRANGEBYSCORE" if args.len() == 4 => {
+            match (parse_score_arg(&args[2]), parse_score_arg(&args[3])) {
+                (Ok((min, min_exclusive, _)), Ok((max, max_exclusive, _))) => {
+                    let key = name_arg(&args[1]);
+                    match execute(Command::ZSetRangeByScore {
+                        key: key.clone(),
+                        min,
+                        max,
+                        min_exclusive,
+                        max_exclusive,
+                        rev: false,
+                    }) {
+                        Ok(CommandResponse::Members { members }) => {
+                            remove_zset_members(&key, members, &mut execute)
+                        }
+                        Ok(_) => RespValue::Error(
+                            "ERR invalid zremrangebyscore response".to_string(),
+                        ),
+                        Err(err) => RespValue::Error(format!("ERR {err}")),
+                    }
+                }
+                (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
+            }
+        }
+        "ZREMRANGEBYRANK" if args.len() == 4 => {
+            match (
+                parse_i64_arg(&args[2], "start"),
+                parse_i64_arg(&args[3], "stop"),
+            ) {
+                (Ok(start), Ok(stop)) => {
+                    let key = name_arg(&args[1]);
+                    match execute(Command::ZSetRange {
+                        key: key.clone(),
+                        start,
+                        stop,
+                        rev: false,
+                    }) {
+                        Ok(CommandResponse::Members { members }) => {
+                            remove_zset_members(&key, members, &mut execute)
+                        }
+                        Ok(_) => RespValue::Error(
+                            "ERR invalid zremrangebyrank response".to_string(),
+                        ),
+                        Err(err) => RespValue::Error(format!("ERR {err}")),
+                    }
+                }
+                (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
+            }
+        }
+        "ZMSCORE" if args.len() >= 3 => {
+            let key = name_arg(&args[1]);
+            let mut scores = Vec::with_capacity(args.len() - 2);
+            for member in args.iter().skip(2) {
+                match execute(Command::ZSetScore {
+                    key: key.clone(),
+                    member: member.clone(),
+                }) {
+                    Ok(CommandResponse::Bytes { value }) => scores.push(RespValue::Bulk(value)),
+                    Ok(_) => return RespValue::Error("ERR invalid zmscore response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            RespValue::Array(scores)
+        }
+        "QUIT" => {
+            state.closing = true;
+            RespValue::SimpleString("OK".to_string())
+        }
+        "CLIENT" if args.len() >= 2 => match name_arg(&args[1]).to_ascii_uppercase().as_str() {
+            "SETNAME" if args.len() == 3 => {
+                if args[2].iter().any(|b| *b <= b' ' || *b > b'~') {
+                    RespValue::Error(
+                        "ERR Client names cannot contain spaces, newlines or special characters."
+                            .to_string(),
+                    )
+                } else {
+                    state.client_name = args[2].clone();
+                    RespValue::SimpleString("OK".to_string())
+                }
+            }
+            "GETNAME" if args.len() == 2 => {
+                if state.client_name.is_empty() {
+                    RespValue::Bulk(None)
+                } else {
+                    RespValue::Bulk(Some(state.client_name.clone()))
+                }
+            }
+            "ID" if args.len() == 2 => RespValue::Integer(state.client_id as i64),
+            "SETINFO" if args.len() == 4 => {
+                match name_arg(&args[2]).to_ascii_uppercase().as_str() {
+                    "LIB-NAME" | "LIB-VER" => RespValue::SimpleString("OK".to_string()),
+                    other => RespValue::Error(format!("ERR Unrecognized option '{other}'")),
+                }
+            }
+            _ => RespValue::Error(
+                "ERR unknown subcommand or wrong number of arguments for 'CLIENT'".to_string(),
+            ),
+        },
         "ZINCRBY" if args.len() == 4 => match parse_score_arg(&args[2]) {
             Ok((increment, false, _)) => match execute(Command::ZSetIncrBy {
                 key: name_arg(&args[1]),
@@ -945,11 +1057,14 @@ pub fn execute_redis_command_with_state(
         "LPUSH" | "RPUSH" if args.len() >= 3 => {
             let key = name_arg(&args[1]);
             let left = command == "LPUSH";
+            // One command per run of elements, each pushed in order, so the list ends as the same
+            // number of single pushes leaves it. A command takes a bounded number of elements, so
+            // a longer call is several.
             let mut length = 0;
-            for member in args.iter().skip(2) {
-                match execute(Command::ListPush {
+            for members in args[2..].chunks(crate::types::MAX_LIST_ELEMENTS_PER_COMMAND) {
+                match execute(Command::ListPushMany {
                     key: key.clone(),
-                    member: member.clone(),
+                    members: members.to_vec(),
                     left,
                 }) {
                     Ok(CommandResponse::Integer { value }) => length = value,
@@ -973,18 +1088,28 @@ pub fn execute_redis_command_with_state(
             } else {
                 None
             };
-            let mut popped = Vec::new();
-            let want = count.unwrap_or(1);
-            for _ in 0..want {
-                match execute(Command::ListPop {
+            // One command per run of elements, so a count of many is a few commands rather than one
+            // per element. A run that comes back short means the list is empty.
+            let mut popped: Vec<Vec<u8>> = Vec::new();
+            let mut remaining = usize::try_from(count.unwrap_or(1)).unwrap_or(usize::MAX);
+            while remaining > 0 {
+                let take = remaining.min(crate::types::MAX_LIST_ELEMENTS_PER_COMMAND);
+                match execute(Command::ListPopMany {
                     key: key.clone(),
                     left,
+                    count: take,
                 }) {
-                    Ok(CommandResponse::Bytes { value: Some(value) }) => popped.push(value),
-                    Ok(CommandResponse::Bytes { value: None }) => break,
+                    Ok(CommandResponse::Members { members }) => {
+                        let short = members.len() < take;
+                        popped.extend(members);
+                        if short {
+                            break;
+                        }
+                    }
                     Ok(_) => return RespValue::Error("ERR invalid lpop response".to_string()),
                     Err(err) => return RespValue::Error(format!("ERR {err}")),
                 }
+                remaining -= take;
             }
             match count {
                 None => match popped.pop() {
@@ -1022,6 +1147,90 @@ pub fn execute_redis_command_with_state(
                 (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
             }
         }
+        "LINDEX" if args.len() == 3 => match parse_i64_arg(&args[2], "index") {
+            // One element is a one-element range: LRANGE already resolves a negative index
+            // from the tail and answers empty when it falls outside the list.
+            Ok(index) => match execute(Command::ListRange {
+                key: name_arg(&args[1]),
+                start: index,
+                stop: index,
+            }) {
+                Ok(CommandResponse::Members { mut members }) => {
+                    RespValue::Bulk(if members.is_empty() { None } else { Some(members.remove(0)) })
+                }
+                Ok(_) => RespValue::Error("ERR invalid lindex response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            },
+            Err(err) => RespValue::Error(err),
+        },
+        "LPUSHX" | "RPUSHX" if args.len() >= 3 => {
+            let key = name_arg(&args[1]);
+            let left = command == "LPUSHX";
+            // Push only onto a list that already exists; otherwise answer 0 and write nothing.
+            match execute(Command::ListLen { key: key.clone() }) {
+                Ok(CommandResponse::Integer { value }) if value > 0 => {}
+                Ok(CommandResponse::Integer { .. }) => return RespValue::Integer(0),
+                Ok(_) => return RespValue::Error("ERR invalid llen response".to_string()),
+                Err(err) => return RespValue::Error(format!("ERR {err}")),
+            }
+            let mut length = 0;
+            for member in args.iter().skip(2) {
+                match execute(Command::ListPush {
+                    key: key.clone(),
+                    member: member.clone(),
+                    left,
+                }) {
+                    Ok(CommandResponse::Integer { value }) => length = value,
+                    Ok(_) => return RespValue::Error("ERR invalid lpushx response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            RespValue::Integer(length)
+        }
+        "LSET" if args.len() == 4 => match parse_i64_arg(&args[2], "index") {
+            Ok(index) => match execute(Command::ListSet {
+                key: name_arg(&args[1]),
+                index,
+                member: args[3].clone(),
+            }) {
+                Ok(CommandResponse::Integer { value: 1 }) => RespValue::SimpleString("OK".to_string()),
+                Ok(CommandResponse::Integer { .. }) => {
+                    RespValue::Error("ERR index out of range".to_string())
+                }
+                Ok(_) => RespValue::Error("ERR invalid lset response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            },
+            Err(err) => RespValue::Error(err),
+        },
+        "LREM" if args.len() == 4 => match parse_i64_arg(&args[2], "count") {
+            Ok(count) => match execute(Command::ListRemove {
+                key: name_arg(&args[1]),
+                count,
+                member: args[3].clone(),
+            }) {
+                Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+                Ok(_) => RespValue::Error("ERR invalid lrem response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            },
+            Err(err) => RespValue::Error(err),
+        },
+        "LTRIM" if args.len() == 4 => {
+            match (
+                parse_i64_arg(&args[2], "start"),
+                parse_i64_arg(&args[3], "stop"),
+            ) {
+                (Ok(start), Ok(stop)) => match execute(Command::ListTrim {
+                    key: name_arg(&args[1]),
+                    start,
+                    stop,
+                }) {
+                    Ok(CommandResponse::Integer { .. }) => RespValue::SimpleString("OK".to_string()),
+                    Ok(_) => RespValue::Error("ERR invalid ltrim response".to_string()),
+                    Err(err) => RespValue::Error(format!("ERR {err}")),
+                },
+                (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
+            }
+        }
         "LLEN" if args.len() == 2 => match execute(Command::ListLen {
             key: name_arg(&args[1]),
         }) {
@@ -1031,25 +1240,22 @@ pub fn execute_redis_command_with_state(
         },
         "SADD" if args.len() >= 3 => {
             let key = name_arg(&args[1]);
-            let mut existing = match execute(Command::SetMembers { key: key.clone() }) {
-                Ok(CommandResponse::Members { members }) => {
-                    members.into_iter().collect::<HashSet<_>>()
-                }
-                Ok(_) => return RespValue::Error("ERR invalid smembers response".to_string()),
-                Err(err) => return RespValue::Error(format!("ERR {err}")),
-            };
+            // One command per run of members, each member asked about and added in order, so a
+            // member named twice in one call counts once. A command takes a bounded number of
+            // members, so a longer call is several.
             let mut added = 0;
-            for member in args.iter().skip(2) {
-                if existing.insert(member.clone()) {
-                    if let Err(err) = execute(Command::SetAdd {
-                        key: key.clone(),
-                        member: member.clone(),
-                    }) {
-                        return RespValue::Error(format!("ERR {err}"));
-                    }
-                    state.keyspace.insert(key.clone());
-                    added += 1;
+            for members in args[2..].chunks(crate::types::MAX_SET_MEMBERS_PER_COMMAND) {
+                match execute(Command::SetAddMany {
+                    key: key.clone(),
+                    members: members.to_vec(),
+                }) {
+                    Ok(CommandResponse::Integer { value }) => added += value,
+                    Ok(_) => return RespValue::Error("ERR invalid sadd response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
                 }
+            }
+            if added > 0 {
+                state.keyspace.insert(key);
             }
             RespValue::Integer(added)
         }
@@ -1065,56 +1271,51 @@ pub fn execute_redis_command_with_state(
             Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
-        "SCARD" if args.len() == 2 => match execute(Command::SetMembers {
+        "SCARD" if args.len() == 2 => match execute(Command::SetCard {
             key: name_arg(&args[1]),
         }) {
-            Ok(CommandResponse::Members { members }) => RespValue::Integer(members.len() as i64),
-            Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
+            Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+            Ok(_) => RespValue::Error("ERR invalid scard response".to_string()),
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
-        "SISMEMBER" if args.len() == 3 => match execute(Command::SetMembers {
+        "SISMEMBER" if args.len() == 3 => match execute(Command::SetIsMember {
             key: name_arg(&args[1]),
+            member: args[2].clone(),
         }) {
-            Ok(CommandResponse::Members { members }) => {
-                RespValue::Integer(i64::from(members.iter().any(|member| member == &args[2])))
+            Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+            Ok(_) => RespValue::Error("ERR invalid sismember response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
+        "SMISMEMBER" if args.len() >= 3 => {
+            let key = name_arg(&args[1]);
+            let mut answers = Vec::with_capacity(args.len() - 2);
+            for member in args.iter().skip(2) {
+                match execute(Command::SetIsMember {
+                    key: key.clone(),
+                    member: member.clone(),
+                }) {
+                    Ok(CommandResponse::Integer { value }) => {
+                        answers.push(RespValue::Integer(value));
+                    }
+                    Ok(_) => {
+                        return RespValue::Error("ERR invalid sismember response".to_string());
+                    }
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
             }
-            Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
-            Err(err) => RespValue::Error(format!("ERR {err}")),
-        },
-        "SMISMEMBER" if args.len() >= 3 => match execute(Command::SetMembers {
-            key: name_arg(&args[1]),
-        }) {
-            Ok(CommandResponse::Members { members }) => {
-                let existing = members.into_iter().collect::<HashSet<_>>();
-                RespValue::Array(
-                    args.iter()
-                        .skip(2)
-                        .map(|member| RespValue::Integer(i64::from(existing.contains(member))))
-                        .collect(),
-                )
-            }
-            Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
-            Err(err) => RespValue::Error(format!("ERR {err}")),
-        },
+            RespValue::Array(answers)
+        }
         "SREM" if args.len() >= 3 => {
             let key = name_arg(&args[1]);
-            let mut existing = match execute(Command::SetMembers { key: key.clone() }) {
-                Ok(CommandResponse::Members { members }) => {
-                    members.into_iter().collect::<HashSet<_>>()
-                }
-                Ok(_) => return RespValue::Error("ERR invalid smembers response".to_string()),
-                Err(err) => return RespValue::Error(format!("ERR {err}")),
-            };
             let mut removed = 0;
-            for member in args.iter().skip(2) {
-                if existing.remove(member) {
-                    if let Err(err) = execute(Command::SetRemove {
-                        key: key.clone(),
-                        member: member.clone(),
-                    }) {
-                        return RespValue::Error(format!("ERR {err}"));
-                    }
-                    removed += 1;
+            for members in args[2..].chunks(crate::types::MAX_SET_MEMBERS_PER_COMMAND) {
+                match execute(Command::SetRemoveMany {
+                    key: key.clone(),
+                    members: members.to_vec(),
+                }) {
+                    Ok(CommandResponse::Integer { value }) => removed += value,
+                    Ok(_) => return RespValue::Error("ERR invalid srem response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
                 }
             }
             RespValue::Integer(removed)
@@ -1128,14 +1329,10 @@ pub fn execute_redis_command_with_state(
                 },
                 None => None,
             };
-            let members = match sorted_set_members(&key, &mut execute) {
+            let selected = match first_set_members(&key, count.unwrap_or(1), &mut execute) {
                 Ok(members) => members,
                 Err(err) => return RespValue::Error(err),
             };
-            let selected = members
-                .into_iter()
-                .take(count.unwrap_or(1))
-                .collect::<Vec<_>>();
             for member in &selected {
                 if let Err(err) = execute(Command::SetRemove {
                     key: key.clone(),
@@ -1162,23 +1359,29 @@ pub fn execute_redis_command_with_state(
                 },
                 None => None,
             };
-            match sorted_set_members(&name_arg(&args[1]), &mut execute) {
+            // ONLY AS MANY MEMBERS AS THE ANSWER CAN NAME, in byte order. A negative count
+            // repeats members, but never needs more distinct ones than it asks for, and cycling
+            // the first `take` of them gives what cycling the whole set gave: index < take.
+            let wanted = match count {
+                Some(count) if count >= 0 => count as usize,
+                Some(count) => count.checked_neg().map(|n| n as usize).unwrap_or(0),
+                None => 1,
+            };
+            match first_set_members(&name_arg(&args[1]), wanted, &mut execute) {
                 Ok(members) => match count {
                     Some(count) if count >= 0 => RespValue::Array(
                         members
                             .into_iter()
-                            .take(count as usize)
                             .map(|member| RespValue::Bulk(Some(member)))
                             .collect(),
                     ),
-                    Some(count) => {
+                    Some(_) => {
                         // Negative count = |count| members WITH repetition. computes
                         // n = -count; for i64::MIN that overflows to a negative n so the
                         // fill loop runs zero times. unsigned_abs() would instead yield
                         // 2^63 here and attempt an unbounded allocation (hang / OOM DoS).
-                        let take = count.checked_neg().map(|n| n as usize).unwrap_or(0);
                         let mut out = Vec::new();
-                        for index in 0..take {
+                        for index in 0..wanted {
                             if members.is_empty() {
                                 break;
                             }
@@ -1219,10 +1422,8 @@ pub fn execute_redis_command_with_state(
             let source = name_arg(&args[1]);
             let destination = name_arg(&args[2]);
             let member = args[3].clone();
-            match execute(Command::SetMembers {
-                key: source.clone(),
-            }) {
-                Ok(CommandResponse::Members { members }) if members.contains(&member) => {
+            match set_has_member(&source, &member, &mut execute) {
+                Ok(true) => {
                     if let Err(err) = execute(Command::SetRemove {
                         key: source,
                         member: member.clone(),
@@ -1238,9 +1439,8 @@ pub fn execute_redis_command_with_state(
                     state.keyspace.insert(destination);
                     RespValue::Integer(1)
                 }
-                Ok(CommandResponse::Members { .. }) => RespValue::Integer(0),
-                Ok(_) => RespValue::Error("ERR invalid smove response".to_string()),
-                Err(err) => RespValue::Error(format!("ERR {err}")),
+                Ok(false) => RespValue::Integer(0),
+                Err(err) => RespValue::Error(err),
             }
         }
         "SDIFF" if args.len() >= 2 => {
@@ -1280,16 +1480,20 @@ pub fn execute_redis_command_with_state(
                     value: args[3].clone(),
                 }],
                 policy,
+                // The text protocol has no way to name a token: a request through it is the
+                // request every client sent before tokens existed.
+                retry_token: None,
             });
             // A merge-reduce append answers with what landed rather than a changed/unchanged flag:
-            // [snapshots written, cells created, cells merged].
+            // [samples written, cells created, cells merged].
             match result {
                 Ok(CommandResponse::CellMergeReceipt {
-                    snapshots_written,
+                    samples_written,
                     cells_created,
                     cells_merged,
+                    ..
                 }) => RespValue::Array(vec![
-                    RespValue::Integer(snapshots_written as i64),
+                    RespValue::Integer(samples_written as i64),
                     RespValue::Integer(cells_created as i64),
                     RespValue::Integer(cells_merged as i64),
                 ]),
@@ -1890,4 +2094,41 @@ fn interleaved_members_response(members: Vec<Vec<u8>>, withscores: bool) -> Resp
         .map(|value| RespValue::Bulk(Some(value)))
         .collect();
     RespValue::Array(values)
+}
+
+/// Apply a ZRANGEBYSCORE `LIMIT offset count` to interleaved [member, score, ...] pairs.
+fn limit_member_pairs(members: Vec<Vec<u8>>, limit: Option<(i64, i64)>) -> Vec<Vec<u8>> {
+    let Some((offset, count)) = limit else {
+        return members;
+    };
+    if offset < 0 {
+        return Vec::new();
+    }
+    let take = if count < 0 { usize::MAX } else { count as usize };
+    members
+        .chunks(2)
+        .skip(offset as usize)
+        .take(take)
+        .flat_map(|pair| pair.iter().cloned())
+        .collect()
+}
+
+/// Remove every member of an interleaved [member, score, ...] answer; replies the count removed.
+fn remove_zset_members(
+    key: &str,
+    members: Vec<Vec<u8>>,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let mut removed = 0;
+    for pair in members.chunks(2) {
+        match execute(Command::ZSetRemove {
+            key: key.to_string(),
+            member: pair[0].clone(),
+        }) {
+            Ok(CommandResponse::Integer { value }) => removed += value,
+            Ok(_) => return RespValue::Error("ERR invalid zrem response".to_string()),
+            Err(err) => return RespValue::Error(format!("ERR {err}")),
+        }
+    }
+    RespValue::Integer(removed)
 }

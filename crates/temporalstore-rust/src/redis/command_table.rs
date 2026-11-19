@@ -26,6 +26,16 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: ADMIN,
         },
         RedisCommandDescriptor {
+            name: "CLIENT",
+            arity: -2,
+            flags: ADMIN,
+        },
+        RedisCommandDescriptor {
+            name: "QUIT",
+            arity: -1,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "COMMAND",
             arity: -1,
             flags: ADMIN,
@@ -226,9 +236,39 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "LINDEX",
+            arity: 3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "LLEN",
             arity: 2,
             flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "LPUSHX",
+            arity: -3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "LREM",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "LSET",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "LTRIM",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "RPUSHX",
+            arity: -3,
+            flags: WRITE,
         },
         RedisCommandDescriptor {
             name: "LPOP",
@@ -530,6 +570,21 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             name: "ZREVRANGEBYSCORE",
             arity: -4,
             flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZMSCORE",
+            arity: -3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZREMRANGEBYRANK",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZREMRANGEBYSCORE",
+            arity: 4,
+            flags: WRITE,
         },
         RedisCommandDescriptor {
             name: "ZSCORE",

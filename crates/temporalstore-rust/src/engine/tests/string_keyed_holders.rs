@@ -399,7 +399,7 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
 /// takes, where it does not -- a separate finding with a cause still to be found.
 ///
 /// Every measurement here so far used a FRESH engine, where each map takes its handle from the
-/// page index as the write happens. A reload is a different path: `serde` gives every occurrence
+/// block index as the write happens. A reload is a different path: `serde` gives every occurrence
 /// of a key its own allocation on the way back in, and something has to put the sharing back.
 ///
 /// For ORDERED maps something does. `adopt_canonical_key_allocations` walks `expires_at_ms` after

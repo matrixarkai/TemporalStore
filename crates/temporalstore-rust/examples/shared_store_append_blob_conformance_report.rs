@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-// The read-cache counters this report reads are named for PAGES on the store's side and for
+// The read-cache counters this report reads are named for BLOCKS on the store's side and for
 // BLOCKS here, because `page` and `block` are one tier under two spellings and `block` is the
 // canonical one in this crate. That is why the fields below read `*_pages` into `*_blocks`.
 //
 // `rustc` suggests `*_bytes` for the missing `*_blocks`, which compiles and is WRONG: it would
-// file a byte count in a field every reader takes for a count of pages. This target carries
+// file a byte count in a field every reader takes for a count of blocks. This target carries
 // `required-features = ["matrixobject"]`, so no default `cargo check --all-targets` builds it and
 // nothing caught the three broken field names until something built it with the feature on.
 
@@ -1226,7 +1226,7 @@ fn key_for(shard_id: u64, index: u64, phase: &str) -> String {
 }
 
 fn blob_key(shard_id: u64) -> String {
-    format!("cluster-a/shards/{shard_id}/shared/wal/wal.protobuf.blob")
+    format!("cluster-a/shards/{shard_id}/shared/wal/seg_00000000000000000001.wal.protobuf.blob")
 }
 
 fn offsets_monotonic(receipts: &[AppendBlobReceipt]) -> bool {

@@ -46,6 +46,7 @@ fn mark_dirty_in(
     };
     if inserted {
         dirty.next_object_id = next_object_id;
+        *dirty.by_shard.entry(shard_id).or_default() += 1;
     }
 }
 
@@ -65,20 +66,37 @@ pub(super) fn clear_dirty_shard_buckets(
         *dirty_shard_id != shard_id
             || !selected_buckets.contains(&engine.routing_bucket_for_key(shard_id, key))
     });
-    before - dirty.by_key.len()
+    let removed = before - dirty.by_key.len();
+    if removed != 0 {
+        let count = dirty
+            .by_shard
+            .get_mut(&shard_id)
+            .expect("removed dirty objects must have a shard count");
+        *count = count
+            .checked_sub(removed)
+            .expect("dirty shard count must cover removed objects");
+        if *count == 0 {
+            dirty.by_shard.remove(&shard_id);
+        }
+    }
+    removed
 }
 
 pub(super) fn dirty_shards(dirty: &Mutex<DirtyTracker>) -> Vec<ShardId> {
     dirty
         .lock()
         .expect("dirty tracker lock poisoned")
-        .by_key
+        .by_shard
         .keys()
-        .map(|(shard_id, _)| *shard_id)
+        .copied()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
 }
+
+#[cfg(test)]
+#[path = "dirty_count_tests.rs"]
+mod dirty_count_tests;
 
 pub(super) fn mark_dirty_for_successful_commands(
     dirty: &Mutex<DirtyTracker>,

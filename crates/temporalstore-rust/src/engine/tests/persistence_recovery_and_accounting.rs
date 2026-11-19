@@ -6668,7 +6668,12 @@ fn the_index_wire_keys_are_what_they_were() {
             "layout",
             "lists",
             "loading",
-            "m",
+            // "m", "n", "r" and "u" are GONE, and they are the four keys the positional object row
+            // removes: a row is now `[record, elements?]` and a record `[address, block_size,
+            // flags, model_id, size_class?]`, so there is no `r` wrapper and no name on a slot.
+            // They are named here rather than quietly absent, which is this list's own rule. An
+            // index that still spells them is refused at the stamp (32), not read: there is no
+            // reader for the named row, and `an_old_named_row_is_refused` pins that.
             // "log_backed" is GONE, and it is the only key this change removes. The entry shed the
             // flag nothing maintained -- the log-resident fact is derived from the address by an
             // accessor -- so the stored form is one key lighter.
@@ -6679,7 +6684,6 @@ fn the_index_wire_keys_are_what_they_were() {
             // own bucket. So neither appears in this list, and this list is what would have caught
             // them if they did.
             "meta_loaded",
-            "n",
             // "model_id" and "object_key" are GONE, and this list has been red since they went.
             // A block entry used to restate both as named fields; it now reads them back out of
             // the composite key it is filed under, which is the key's own second and first slots.
@@ -6697,14 +6701,12 @@ fn the_index_wire_keys_are_what_they_were() {
             // was retired: it is still ACCEPTED, and an index on disk that spells it still loads.
             // It is listed at the top under its canonical spelling.
             "pi",
-            "r",
             // "routing_slot" here is the BUCKET NODE's own key, not the address's retired "rs" --
             // two different things that read alike. The node still records which bucket it is.
             "routing_slot",
             "sets",
             "string",
             "ttl_ms",
-            "u",
             "wire",
             "wire-hash",
             "zsets",
@@ -10770,6 +10772,30 @@ fn what_each_command_recorded_describes_everything_it_changed() {
             },
         ),
         (
+            "StringIncrBy-keeps-deadline",
+            vec![Command::StringSetEx {
+                key: "pc-incr".to_string(),
+                value: b"40".to_vec(),
+                ttl_ms: 600_000,
+            }],
+            Command::StringIncrBy {
+                key: "pc-incr".to_string(),
+                increment: 2,
+            },
+        ),
+        (
+            "StringAppend-keeps-deadline",
+            vec![Command::StringSetEx {
+                key: "pc-append".to_string(),
+                value: b"ab".to_vec(),
+                ttl_ms: 600_000,
+            }],
+            Command::StringAppend {
+                key: "pc-append".to_string(),
+                value: b"cd".to_vec(),
+            },
+        ),
+        (
             "HashSet",
             Vec::new(),
             Command::HashSet {
@@ -13118,8 +13144,11 @@ fn what_eight_records_per_ingest_cost() {
 /// deletion policy. Every value written is read back after the sweeps have run.
 #[test]
 fn registrations_plateau_instead_of_tracking_writes() {
-    let previous = std::env::var("TS_WAL_RESIDENT_PAGES").ok();
-    std::env::set_var("TS_WAL_RESIDENT_PAGES", "64");
+    let _env = crate::engine::WAL_RESIDENT_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous = std::env::var("TS_WAL_RESIDENT_BLOCKS").ok();
+    std::env::set_var("TS_WAL_RESIDENT_BLOCKS", "64");
     let before_sweeps = crate::engine::RESIDENT_SWEEPS.load(std::sync::atomic::Ordering::Relaxed);
 
     let dir = tempfile::tempdir().unwrap();
@@ -13161,8 +13190,8 @@ fn registrations_plateau_instead_of_tracking_writes() {
     }
     let after_sweeps = crate::engine::RESIDENT_SWEEPS.load(std::sync::atomic::Ordering::Relaxed);
     match previous {
-        Some(value) => std::env::set_var("TS_WAL_RESIDENT_PAGES", value),
-        None => std::env::remove_var("TS_WAL_RESIDENT_PAGES"),
+        Some(value) => std::env::set_var("TS_WAL_RESIDENT_BLOCKS", value),
+        None => std::env::remove_var("TS_WAL_RESIDENT_BLOCKS"),
     }
 
     println!("  writes -> registrations held (limit 64)");
@@ -17833,6 +17862,7 @@ fn feature_append_cost_stays_bounded_by_request() {
                     key: "fp".to_string(),
                     points: vec![FeaturePoint { timestamp_ms: ts, value: vec![b'v'; 8] }],
                     policy: FeatureWritePolicy::Upsert,
+                    retry_token: None,
                 },
                 "FeatureReplace" => Command::FeatureReplace {
                     key: "fr".to_string(),

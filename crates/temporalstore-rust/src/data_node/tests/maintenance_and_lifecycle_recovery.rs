@@ -1235,6 +1235,11 @@ fn gc_does_not_clear_the_dirty_scheduling_tracker() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2248,6 +2253,11 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2267,7 +2277,12 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
     // appearing or the invalidation missing one.
     assert_eq!(output.cache_entries_removed, 1);
     assert!(output.cache_disk_bytes_removed > 0);
-    assert_eq!(output.wal_records_removed, 2);
+    // NO WAL RECORD GOES. The three writes above register their blocks against the log, and a
+    // truncation takes the retention floor from those registrations. This used to expect 2
+    // records removed, because the /gc path truncated against whatever floor was last stored --
+    // nothing here -- and freed records that live registrations still pointed into. The index-log
+    // and slab counts below are unaffected.
+    assert_eq!(output.wal_records_removed, 0);
     assert_eq!(output.index_log_records_removed, 1);
     assert_eq!(output.block_slabs_removed, 1);
     assert!(output.block_slabs_removed_physical_bytes > 0);
@@ -2343,6 +2358,11 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2519,6 +2539,11 @@ fn runtime_honors_inflight_cancellation_before_gc_side_effects() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         }),
     };
     runtime
@@ -2635,6 +2660,11 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -4832,12 +4862,13 @@ fn the_dump_cap_bounds_a_stage_but_not_a_round() {
         "reclaim_wal alone must dump exactly its cap: {before} -> {after}"
     );
 
-    // A whole round does not, because reclaim_index dumps the rest on purpose.
+    // A whole round does not dump more: reclaim_index waits for its own gate instead of forcing
+    // the rest of the dirty set out, so the round dumps the stage's cap and no more.
     let (before, after) = dirty_after_one_round(keys, cadence());
     assert_eq!(
-        after, 0,
-        "a default round dumps the whole dirty set, because index GC needs the coverage: \
-         {before} -> {after}"
+        before.saturating_sub(after),
+        cap,
+        "a whole round must dump the stage's cap and leave the rest to the gate: {before} -> {after}"
     );
 }
 
@@ -5702,6 +5733,526 @@ fn the_periodic_reclaim_quarantines_what_it_collects() {
     );
 }
 
+/// A slab the periodic loop quarantined is kept for 24 hours, not one.
+///
+/// The loop passed a grace of 0, which the purge raises to the store's one-hour floor, so a
+/// quarantined slab was destroyed an hour after it was set aside. The bound is pinned from both
+/// sides, just under and just over: at 23 hours old the shipped loop must still hold every
+/// slab, and at 25 hours (the second backdate is cumulative) it must destroy at least one. A
+/// probe at two hours alone would pass a grace of twelve; a probe at twenty-six would pass a
+/// grace of twenty-five.
+#[test]
+fn the_periodic_loop_holds_a_quarantined_slab_for_a_day() {
+    const KEYSPACE: usize = 100;
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let options = StorageManagerOptions::default();
+    let mut written = 0usize;
+    for _ in 0..6 {
+        let engine = runtime.engine();
+        for index in 0..400usize {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("grace-{:06}", (written + index) % KEYSPACE),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += 400;
+        runtime.run_storage_manager_once(1, options.clone());
+    }
+    let quarantined = |runtime: &DataNodeRuntime| {
+        runtime
+            .engine()
+            .block_store()
+            .delayed_destroy_slab_ids()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<u64>>()
+    };
+    let before = quarantined(&runtime);
+    assert!(!before.is_empty(), "nothing was quarantined, so the grace is unmeasured");
+
+    let backdated = runtime
+        .engine()
+        .block_store()
+        .backdate_delayed_destroy_stamps_for_test(23 * 60 * 60 * 1_000)
+        .expect("backdating the quarantine stamps");
+    assert!(backdated > 0, "nothing was backdated");
+    runtime.run_storage_manager_once(1, options.clone());
+    // A round may quarantine MORE slabs; what it must not do is destroy one of these.
+    let after_23_hours = quarantined(&runtime);
+    assert!(
+        before.is_subset(&after_23_hours),
+        "slabs 23 hours old were destroyed by the loop: the grace is shorter than 24 hours"
+    );
+
+    let backdated = runtime
+        .engine()
+        .block_store()
+        .backdate_delayed_destroy_stamps_for_test(2 * 60 * 60 * 1_000)
+        .expect("backdating the quarantine stamps");
+    assert!(backdated > 0, "nothing was backdated");
+    runtime.run_storage_manager_once(1, options.clone());
+    let after_25_hours = quarantined(&runtime);
+    assert!(
+        before.iter().any(|id| !after_25_hours.contains(id)),
+        "slabs 25 hours old were not destroyed: the grace is longer than 24 hours or the purge never fires"
+    );
+}
+
+/// Loop options naming one retention owner at floor 0, so it pins every slab. "none" names nobody.
+fn retention_owner_options(owner: &str) -> StorageManagerOptions {
+    match owner {
+        "cursor" => StorageManagerOptions {
+            block_gc_shared_store_cursors: vec![crate::engine::reports::StorageBlockGcReplayCursor {
+                cursor_id: "reader-1".to_string(),
+                shard_id: 1,
+                retain_from_block_slab_id: 0,
+                reason: String::new(),
+            }],
+            ..StorageManagerOptions::default()
+        },
+        "checkpoint" => StorageManagerOptions {
+            block_gc_checkpoint_floor_slab_id: Some(0),
+            ..StorageManagerOptions::default()
+        },
+        "raft" => StorageManagerOptions {
+            block_gc_raft_install_floor_slab_id: Some(0),
+            ..StorageManagerOptions::default()
+        },
+        _ => StorageManagerOptions::default(),
+    }
+}
+
+/// The periodic loop never destroys a quarantined slab that a retention owner still names.
+///
+/// The loop's options carried follower cursors and snapshot refs but nothing for a shared-store
+/// reader, a checkpoint floor or a Raft install floor, and the loop passed none at every purge
+/// site, so those owners could not protect a slab on the path a server runs. Each arm below
+/// backdates every quarantined slab past the grace (so age cannot be what holds it) and runs the
+/// shipped loop: with an owner set no slab may be destroyed (it stays quarantined or is restored);
+/// with none set at least one must be, which keeps the arms from passing because nothing is ever
+/// purged.
+#[test]
+fn the_periodic_loop_keeps_a_slab_a_retention_owner_names() {
+    fn quarantined(runtime: &DataNodeRuntime) -> std::collections::BTreeSet<u64> {
+        runtime
+            .engine()
+            .block_store()
+            .delayed_destroy_slab_ids()
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    }
+    let run_arm = |owner: &str| {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let mut written = 0usize;
+        for _ in 0..6 {
+            let engine = runtime.engine();
+            for index in 0..400usize {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("owner-{:06}", (written + index) % 100),
+                        value: vec![b'v'; 96],
+                    },
+                });
+            }
+            written += 400;
+            runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        }
+        let before = quarantined(&runtime);
+        assert!(!before.is_empty(), "arm {owner}: nothing was quarantined");
+        let backdated = runtime
+            .engine()
+            .block_store()
+            .backdate_delayed_destroy_stamps_for_test(26 * 60 * 60 * 1_000)
+            .expect("backdating the quarantine stamps");
+        assert!(backdated > 0, "arm {owner}: nothing was backdated");
+        let options = retention_owner_options(owner);
+        runtime.run_storage_manager_once(1, options);
+        // A slab an owner names is restored to the store, not left in quarantine, so what must
+        // survive is the union: still set aside, or back among the live slabs.
+        let mut kept = quarantined(&runtime);
+        kept.extend(runtime.engine().block_store().slab_ids().unwrap_or_default());
+        (before, kept)
+    };
+    for owner in ["cursor", "checkpoint", "raft"] {
+        let (before, after) = run_arm(owner);
+        assert!(
+            before.is_subset(&after),
+            "arm {owner}: the loop destroyed a slab a retention owner names"
+        );
+    }
+    let (before, after) = run_arm("none");
+    assert!(
+        before.iter().any(|id| !after.contains(id)),
+        "control arm: with no owner the loop destroyed nothing, so the arms above prove nothing"
+    );
+}
+
+/// The periodic loop does not even set aside a slab that a retention owner names.
+///
+/// Quarantine renames the slab file out of the store, so a reader that still needs the slab finds
+/// it gone for the whole grace even though nothing has been destroyed. The owner is set from the
+/// first round here, so the slabs it pins go stale with the owner already in place; the control arm
+/// runs the same writes with no owner and must quarantine something, which keeps the arms from
+/// passing because no slab ever goes stale.
+#[test]
+fn the_periodic_loop_does_not_quarantine_a_slab_a_retention_owner_names() {
+    let run_arm = |owner: &str| {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let mut written = 0usize;
+        for _ in 0..6 {
+            let engine = runtime.engine();
+            for index in 0..400usize {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("owner-{:06}", (written + index) % 100),
+                        value: vec![b'v'; 96],
+                    },
+                });
+            }
+            written += 400;
+            runtime.run_storage_manager_once(1, retention_owner_options(owner));
+        }
+        runtime
+            .engine()
+            .block_store()
+            .delayed_destroy_slab_ids()
+            .unwrap_or_default()
+    };
+    for owner in ["cursor", "checkpoint", "raft"] {
+        let quarantined = run_arm(owner);
+        assert!(
+            quarantined.is_empty(),
+            "arm {owner}: the loop quarantined slabs {quarantined:?} that a retention owner names"
+        );
+    }
+    assert!(
+        !run_arm("none").is_empty(),
+        "control arm: with no owner nothing was quarantined, so the arms above prove nothing"
+    );
+}
+
+/// A slab set aside before any owner existed is pulled back when an owner comes to name it.
+///
+/// Quarantine renames the slab out of the store, so a reader the owner stands for cannot read it
+/// until it is restored, and the purge that would restore it must not wait for the grace. The
+/// slabs are quarantined by rounds that name no owner; the next round names one, and none of them
+/// may still be quarantined. The control round names nobody and must leave them where they were,
+/// which keeps the first half from passing because the purge restores everything.
+#[test]
+fn the_periodic_loop_restores_a_quarantined_slab_an_owner_comes_to_name() {
+    let run_arm = |owner: &str| {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let mut written = 0usize;
+        for _ in 0..6 {
+            let engine = runtime.engine();
+            for index in 0..400usize {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("late-{:06}", (written + index) % 100),
+                        value: vec![b'v'; 96],
+                    },
+                });
+            }
+            written += 400;
+            runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        }
+        let quarantined = |runtime: &DataNodeRuntime| {
+            runtime
+                .engine()
+                .block_store()
+                .delayed_destroy_slab_ids()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<u64>>()
+        };
+        let before = quarantined(&runtime);
+        assert!(!before.is_empty(), "arm {owner}: nothing was quarantined");
+        runtime.run_storage_manager_once(1, retention_owner_options(owner));
+        (before, quarantined(&runtime))
+    };
+    for owner in ["cursor", "checkpoint", "raft"] {
+        let (before, after) = run_arm(owner);
+        assert!(
+            before.is_disjoint(&after),
+            "arm {owner}: slabs {:?} stayed quarantined after an owner named them",
+            before.intersection(&after).collect::<Vec<_>>()
+        );
+    }
+    let (before, after) = run_arm("none");
+    assert!(
+        before.is_subset(&after),
+        "control arm: with no owner the round moved quarantined slabs, so the arms above prove nothing"
+    );
+}
+
+/// The count of retention-owner inputs the loop was given is published, so a server that was told
+/// of none is distinguishable from one that was.
+#[test]
+fn the_loop_publishes_how_many_retention_owner_inputs_it_was_given() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert_eq!(runtime.stats().storage_manager_retention_owners_configured, 0);
+    runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            block_gc_checkpoint_floor_slab_id: Some(0),
+            block_gc_raft_install_floor_slab_id: Some(0),
+            ..retention_owner_options("cursor")
+        },
+    );
+    assert_eq!(runtime.stats().storage_manager_retention_owners_configured, 3);
+}
+
+/// A GC request names no owner in its fields, yet a reader registered with the engine still holds
+/// the slabs it needs.
+///
+/// The collection step builds the dependency plan only when some owner is named, so the registry
+/// has to count as one. Driven through the request directly: in the loop the purge restores a
+/// slab in the same round it was set aside, which hides a collection step that ignored the
+/// registry. The control is the same request after the lease is dropped, which must set the same
+/// slabs aside, so the first half cannot pass because nothing was ever collectable.
+#[test]
+fn a_gc_request_with_no_owner_fields_still_honours_a_registered_reader() {
+    let run = |hold: bool| {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        engine.block_store().install_slab(1, b"one").unwrap();
+        engine.block_store().install_slab(2, b"two").unwrap();
+        // Slab 2 is the newest and stays in either arm; slab 1 is the one that can be collected.
+        let lease = hold.then(|| {
+            engine.register_replay_reader(1, "follower-1", 0, std::time::Duration::from_secs(600))
+        });
+        let runtime = DataNodeRuntime::new(
+            engine.clone(),
+            DataNodeRuntimeOptions {
+                worker_threads: 1,
+                max_queue_depth: 8,
+                max_background_queue_depth: 8,
+            },
+        );
+        let submitted = runtime.submit_gc(
+            GcRequest {
+                shard_id: 1,
+                retain_wal_from_sequence: None,
+                retain_index_log_from_sequence: None,
+                retain_block_slabs_from_id: Some(3),
+                block_gc_delayed_destroy: false,
+                block_gc_invalidate_removed_slabs_only: false,
+                block_gc_max_destroy_slabs_per_round: 0,
+                block_gc_max_destroy_physical_bytes_per_round: 0,
+                block_gc_min_slab_garbage_basis_points: 0,
+                block_gc_shared_store_cursors: Vec::new(),
+                block_gc_raft_snapshot_refs: Vec::new(),
+                block_gc_checkpoint_floor_slab_id: None,
+                block_gc_raft_install_floor_slab_id: None,
+                include_lifecycle_plan: false,
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        assert!(wait_for_job(&runtime, submitted.job_id).status.ok);
+        drop(lease);
+        engine.block_store().slab_ids().unwrap()
+    };
+    let held = run(true);
+    assert!(
+        held.contains(&1),
+        "a registered reader's slab was collected: {held:?}"
+    );
+    let free = run(false);
+    assert!(
+        !free.contains(&1),
+        "control: with no reader the slab was not collected, so the first half proves nothing: {free:?}"
+    );
+}
+
+/// With the index stage off, the loop still destroys a quarantined slab once its grace has passed.
+///
+/// The purge ran only inside the index stage, so a server that turned that stage off quarantined
+/// slabs and never collected them. The control arm leaves the index stage on, where the purge has
+/// always run, and must also destroy: that keeps the first arm from passing because no slab is ever
+/// old enough.
+#[test]
+fn the_loop_destroys_a_quarantined_slab_with_the_index_stage_off() {
+    let run_arm = |index_gc: bool| {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let options = StorageManagerOptions {
+            enable_index_gc: index_gc,
+            ..StorageManagerOptions::default()
+        };
+        let mut written = 0usize;
+        for _ in 0..6 {
+            let engine = runtime.engine();
+            for index in 0..400usize {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("purge-{:06}", (written + index) % 100),
+                        value: vec![b'v'; 96],
+                    },
+                });
+            }
+            written += 400;
+            runtime.run_storage_manager_once(1, options.clone());
+        }
+        let quarantined = |runtime: &DataNodeRuntime| {
+            runtime
+                .engine()
+                .block_store()
+                .delayed_destroy_slab_ids()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<u64>>()
+        };
+        let before = quarantined(&runtime);
+        assert!(!before.is_empty(), "index_gc {index_gc}: nothing was quarantined");
+        runtime
+            .engine()
+            .block_store()
+            .backdate_delayed_destroy_stamps_for_test(26 * 60 * 60 * 1_000)
+            .expect("backdating the quarantine stamps");
+        runtime.run_storage_manager_once(1, options);
+        let mut kept = quarantined(&runtime);
+        kept.extend(runtime.engine().block_store().slab_ids().unwrap_or_default());
+        before.iter().any(|id| !kept.contains(id))
+    };
+    assert!(
+        run_arm(false),
+        "with the index stage off no quarantined slab was destroyed after its grace"
+    );
+    assert!(
+        run_arm(true),
+        "control arm: with the index stage on nothing was destroyed, so the arm above proves nothing"
+    );
+}
+
+/// A reader registered with the engine holds its slabs against the periodic loop, with no option
+/// set, and releasing the lease lets the next round collect them.
+///
+/// The loop's options are static, so a reader whose position moves cannot be expressed there. The
+/// engine's own registry is read by the dependency plan every caller shares. The control is the
+/// same runtime after the lease is dropped: the slabs that were held must then be quarantined, which
+/// keeps the first half from passing because no slab ever went stale.
+#[test]
+fn a_registered_reader_holds_its_slabs_against_the_periodic_loop_until_it_is_dropped() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    // The purge is part of the index stage and would restore a slab in the same round it was
+    // set aside, which leaves nothing for the check below to see. With it off, the only thing
+    // between a stale slab and quarantine is the collection step this test is about.
+    let no_purge = StorageManagerOptions {
+        enable_index_gc: false,
+        ..StorageManagerOptions::default()
+    };
+    let lease = runtime.engine().register_replay_reader(
+        1,
+        "follower-1",
+        0,
+        std::time::Duration::from_secs(600),
+    );
+    let quarantined = |runtime: &DataNodeRuntime| {
+        runtime
+            .engine()
+            .block_store()
+            .delayed_destroy_slab_ids()
+            .unwrap_or_default()
+    };
+    let mut written = 0usize;
+    for _ in 0..6 {
+        let engine = runtime.engine();
+        for index in 0..400usize {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("reader-{:06}", (written + index) % 100),
+                    value: vec![b'v'; 96],
+                },
+            });
+        }
+        written += 400;
+        runtime.run_storage_manager_once(1, no_purge.clone());
+    }
+    assert!(
+        quarantined(&runtime).is_empty(),
+        "the loop quarantined slabs a registered reader holds: {:?}",
+        quarantined(&runtime)
+    );
+    drop(lease);
+    runtime.run_storage_manager_once(1, no_purge.clone());
+    assert!(
+        !quarantined(&runtime).is_empty(),
+        "control: with the lease dropped nothing was quarantined, so the first half proves nothing"
+    );
+}
+
 /// The maintenance round runs its stages in the intended order.
 ///
 /// Every other assertion about stages in this suite asks whether one RAN -- `.any(|s| s == ..)` --
@@ -6413,8 +6964,11 @@ fn can_the_index_dump_be_capped_now() {
                 max_background_queue_depth: 2,
             },
         );
+        // The index stage dumps through the shipped byte gate, so this fixture crosses it: the
+        // property under test is that a capped dump reclaims, which needs a dump to happen.
         let options = StorageManagerOptions {
             index_gc_max_dump_buckets_per_round: cap,
+            min_undumped_wal_bytes: 1,
             ..StorageManagerOptions::default()
         };
         let mut written = 0usize;
@@ -6492,8 +7046,14 @@ fn a_capped_index_dump_still_reclaims() {
                 max_background_queue_depth: 2,
             },
         );
+        // The index stage dumps through the shipped byte gate, so this fixture crosses it: the
+        // property under test is that a capped dump reclaims, which needs a dump to happen.
         let options = StorageManagerOptions {
             index_gc_max_dump_buckets_per_round: cap,
+            // The old trigger, on purpose: these rounds exist to reclaim a small fixture's log, which
+            // the shipped byte gate would (correctly) leave alone.
+            dirty_bucket_pressure: 1,
+            min_undumped_wal_bytes: 1,
             ..StorageManagerOptions::default()
         };
         let mut written = 0usize;
@@ -6585,7 +7145,12 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
             });
         }
     }
-    runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    let gate_crossed = StorageManagerOptions {
+        dirty_bucket_pressure: 1,
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
+    runtime.run_storage_manager_once(1, gate_crossed.clone());
 
     // Phase two: keep writing, but only to a handful of keys. Every bucket the wide phase touched
     // and this one does not is now CLEAN, holding a manifest from phase one.
@@ -6602,7 +7167,7 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
             });
         }
         written += BATCH;
-        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        runtime.run_storage_manager_once(1, gate_crossed.clone());
     }
 
     let engine = runtime.engine();
@@ -7832,7 +8397,11 @@ fn an_idle_shard_collects_the_slab_compaction_vacated() {
         },
     );
     let engine = runtime.engine();
-    let options = StorageManagerOptions::default();
+    let options = StorageManagerOptions {
+        // The index stage dumps through the byte gate, so this fixture crosses it.
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
 
     let mut compacting_rounds = 0_usize;
     let mut went_stale = std::collections::BTreeSet::<u64>::new();
@@ -8477,7 +9046,7 @@ fn a_quiet_shard_with_every_bucket_clean_can_reclaim_its_log() {
     }
     // The overwrite is load-bearing, not decoration. Without it no slot reaches the branch this
     // test exists for.
-    for index in 0..666usize {
+    for index in 0..2_000usize {
         engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
@@ -8494,9 +9063,18 @@ fn a_quiet_shard_with_every_bucket_clean_can_reclaim_its_log() {
             max_background_queue_depth: 2,
         },
     );
-    // One round to dump everything, then the writer stops for good.
-    runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    // Exercise reclaim after a dump, independent of the production byte threshold.
+    runtime.run_storage_manager_once(1, StorageManagerOptions {
+        min_undumped_wal_records: 1,
+        max_dump_buckets_per_round: 0,
+        ..StorageManagerOptions::default()
+    });
     let engine = runtime.engine();
+
+    assert!(engine.storage_lifecycle_plan(StorageLifecycleRequest {
+        shard_id: 1,
+        ..StorageLifecycleRequest::default()
+    }).dirty_buckets.is_empty(), "the fixture must durably dump every dirty bucket");
 
     let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
 
@@ -8599,7 +9177,12 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
         },
     );
     // Round 0 dumps. After it the writer is gone and every later round is an idle one.
-    let first = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    let options = StorageManagerOptions {
+        dirty_bucket_pressure: 1,
+        min_undumped_wal_records: 1,
+        ..StorageManagerOptions::default()
+    };
+    let first = runtime.run_storage_manager_once(1, options.clone());
     assert!(
         first
             .executed_stages
@@ -8618,7 +9201,7 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
             .storage_wal_reclaim_plan(1, Vec::new(), Vec::new())
             .safe_to_reclaim;
         drop(engine);
-        let report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        let report = runtime.run_storage_manager_once(1, options.clone());
         if !reclaimable {
             continue;
         }
@@ -9021,7 +9604,15 @@ fn the_change_that_moves_only_this_flag_cannot_close_its_gate() {
 
     // CONTROL, RESTATED: the shipped default REACHES the stage -- it is on -- and the stage
     // declines, because the bound is the bar. This used to assert `evict_disabled`.
-    let shipped = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    // The control round crosses the byte gate so that it writes these buckets out, which is what
+    // makes them clean by the time the treatment round picks victims.
+    let shipped = runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            min_undumped_wal_bytes: 1,
+            ..StorageManagerOptions::default()
+        },
+    );
     let shipped_eviction = shipped
         .eviction
         .as_ref()
@@ -9603,6 +10194,11 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         },
         RequestController { timeout_ms: 5000 },
     );
@@ -9875,7 +10471,11 @@ fn drive_long_footprint_run(records: usize, tail_rounds: usize, inject_age: bool
         },
     );
     let engine = runtime.engine();
-    let options = StorageManagerOptions::default();
+    let options = StorageManagerOptions {
+        // The index stage dumps through the byte gate, so this fixture crosses it.
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
 
     // FROM HERE ON NOTHING WRITES. `objects` is carried as a column so that is checkable rather
     // than asserted in prose: a run whose object count moves had a writer, and every "did not
@@ -10005,7 +10605,7 @@ cap {max_rounds}"
     let injected_age_purge = inject_age.then(|| {
         let backdated = engine
             .block_store()
-            .backdate_delayed_destroy_stamps_for_test(2 * 60 * 60 * 1_000)
+            .backdate_delayed_destroy_stamps_for_test(25 * 60 * 60 * 1_000)
             .expect("backdating the quarantine stamps");
         let by_round = runtime
             .run_storage_manager_once(1, options.clone())
@@ -11655,6 +12255,11 @@ fn reclaim_is_refused_while_the_shard_is_recovering() {
             block_gc_max_destroy_slabs_per_round: 0,
             block_gc_max_destroy_physical_bytes_per_round: 0,
             block_gc_min_slab_garbage_basis_points: 0,
+            block_gc_shared_store_cursors: Vec::new(),
+            block_gc_raft_snapshot_refs: Vec::new(),
+            block_gc_checkpoint_floor_slab_id: None,
+            block_gc_raft_install_floor_slab_id: None,
+            include_lifecycle_plan: false,
         },
         RequestController { timeout_ms: 5_000 },
     );
@@ -12034,4 +12639,298 @@ fn the_runtime_counts_skipped_stages_round_time_and_overruns_across_rounds() {
     runtime.note_round_overrun(std::time::Duration::from_millis(31), interval);
     runtime.note_round_overrun(std::time::Duration::from_secs(52), interval);
     assert_eq!(runtime.stats().storage_manager_overrun_rounds, 2);
+}
+
+/// The index stage does not dump on every round: a round under the byte gate and under the
+/// index-log floor writes no manifest.
+///
+/// Every dump embeds the whole shard index, so a dump per round wrote bytes per operation that
+/// grew with the key count (measured 220 KB per dump at the start of a 60,000-SET run, 1.5 MB at
+/// the end, 46% of all bytes written). The stage is gated like the WAL stage and forced only by an
+/// index log past its floor.
+///
+/// Planted fault: restoring `min_undumped_wal_records: 0, min_undumped_wal_bytes: 0` in the
+/// `reclaim_index` request makes the first round dump and this fail.
+#[test]
+fn the_index_stage_below_the_gate_and_the_floor_writes_no_manifest() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    assert_eq!(runtime.engine().latest_bucket_dump_image_bytes(1), 0);
+    for round in 0..4usize {
+        for index in 0..200usize {
+            runtime.engine().execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("gated-{:04}", round * 200 + index),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    }
+    let manifests = runtime.engine().list_bucket_dump_manifests(1);
+    assert!(
+        manifests.is_empty(),
+        "{} manifest(s) written by rounds that were under the byte gate and the log floor",
+        manifests.len()
+    );
+    assert_eq!(runtime.engine().latest_bucket_dump_image_bytes(1), 0);
+}
+
+/// The gate is not a way to never dump: once the gate is met the stage dumps, and the accessor
+/// the scaled floor reads reports the image that dump embedded.
+#[test]
+fn the_index_stage_dumps_once_the_byte_gate_is_met_and_reports_the_image() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    for index in 0..300usize {
+        runtime.engine().execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("gate-met-{index:04}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    let options = StorageManagerOptions {
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
+    runtime.run_storage_manager_once(1, options);
+    let manifests = runtime.engine().list_bucket_dump_manifests(1);
+    assert!(!manifests.is_empty(), "a met byte gate produced no manifest");
+    let newest = manifests.last().expect("one manifest");
+    assert_eq!(
+        runtime.engine().latest_bucket_dump_image_bytes(1),
+        newest.index_bytes.len() as u64
+    );
+    assert!(newest.index_bytes.len() > 0);
+}
+
+/// A reopen after gated rounds replays only what the gate allowed to stay undumped, and loses
+/// nothing.
+///
+/// Two arms over the same writes. Under a gate no round crosses, nothing is dumped, so the whole
+/// write-ahead log is the replay and it is bounded by the gate by construction: this arm pins
+/// that the stage did not truncate a log no dump covers. Under a gate every round crosses, a dump
+/// covers the log and the reclaim truncates it, so the replay is a fraction of the writes. BOTH
+/// arms must reopen with every key readable: the log is never cut past what a dump covers.
+///
+/// Planted fault: truncating the write-ahead log without a covering dump loses keys in the first
+/// arm; restoring the always-dump request makes the first arm's log shrink and its assertion fail.
+#[test]
+fn a_reopen_after_gated_rounds_replays_only_the_gated_bytes_and_loses_nothing() {
+    const KEYS: usize = 600;
+    const ROUNDS: usize = 4;
+    // Overwrites, so records genuinely become garbage and the index log has something to reclaim.
+    const SPACE: usize = 100;
+
+    fn run(gate_bytes: u64) -> (usize, usize, usize, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let open = || {
+            let engine = TemporalEngine::with_local_dirs(
+                16 * 1024 * 1024,
+                dir.path().join("cache"),
+                dir.path().join("blocks"),
+                dir.path().join("indexes"),
+            );
+            let response = engine.load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "reopen-gated".to_string(),
+                shard_uri: "local://reopen-gated/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: u32::MAX,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            });
+            assert!(response.status.ok, "load shard 1: {:?}", response.status);
+            engine
+        };
+        let wal_records;
+        let index_records;
+        let manifests;
+        {
+            let runtime = DataNodeRuntime::new_without_workers_with_options(
+                open(),
+                DataNodeRuntimeOptions {
+                    worker_threads: 0,
+                    max_queue_depth: 4,
+                    max_background_queue_depth: 2,
+                },
+            );
+            let options = StorageManagerOptions {
+                min_undumped_wal_bytes: gate_bytes,
+                ..StorageManagerOptions::default()
+            };
+            for round in 0..ROUNDS {
+                for index in 0..KEYS / ROUNDS {
+                    let response = runtime.engine().execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: format!("reopen-{:05}", (round * (KEYS / ROUNDS) + index) % SPACE),
+                            value: vec![b'v'; 64],
+                        },
+                    });
+                    assert!(response.status.ok, "write: {:?}", response.status);
+                }
+                runtime.run_storage_manager_once(1, options.clone());
+            }
+            wal_records = runtime
+                .engine()
+                .write_ahead_log_store()
+                .scan(1, 0, u64::MAX, u64::MAX)
+                .map(|records| records.len())
+                .unwrap_or(0);
+            index_records = runtime
+                .engine()
+                .index_log_store()
+                .scan(1, 0, u64::MAX, u64::MAX)
+                .map(|records| records.len())
+                .unwrap_or(0);
+            manifests = runtime.engine().list_bucket_dump_manifests(1).len();
+        }
+        let reopened = open();
+        let mut readable = 0usize;
+        for index in 0..SPACE {
+            let response = reopened.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("reopen-{index:05}"),
+                },
+            });
+            if response.status.ok {
+                readable += 1;
+            }
+        }
+        (wal_records, readable, index_records, manifests)
+    }
+
+    let (ungated_wal, ungated_readable, ungated_index, ungated_manifests) = run(u64::MAX);
+    let (gated_wal, gated_readable, gated_index, gated_manifests) = run(1);
+    eprintln!("ungated wal={ungated_wal} index={ungated_index} manifests={ungated_manifests}; gated wal={gated_wal} index={gated_index} manifests={gated_manifests}");
+    assert_eq!(ungated_readable, SPACE, "a reopen lost keys under a gate no round crossed");
+    assert_eq!(gated_readable, SPACE, "a reopen lost keys under a gate every round crossed");
+    assert!(
+        ungated_wal >= SPACE,
+        "the log was cut to {ungated_wal} records with no dump covering it (live keys {SPACE})"
+    );
+    assert!(
+        gated_wal < ungated_wal,
+        "a dump covered the log and it was not reclaimed ({gated_wal} against {ungated_wal})"
+    );
+    // The index log and the manifests ride on the same dump: once the gate is crossed both must
+    // advance, and below it neither may.
+    assert_eq!(ungated_manifests, 0, "a manifest was written below the gate");
+    assert!(gated_manifests >= 1, "the gate was crossed and no manifest was written");
+    assert!(
+        gated_index < ungated_index,
+        "a dump covered the index log and it was not reclaimed ({gated_index} against {ungated_index})"
+    );
+}
+
+/// A shard that is still replaying its log gets no round from the periodic loop: the plan, the
+/// dump, compaction and the index-log truncation all read an index the replay has not finished
+/// building. Once the replay ends the same shard gets a normal round.
+#[test]
+fn the_loop_runs_no_stage_on_a_shard_that_is_still_replaying() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for index in 0..16 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("replaying-{index:02}"),
+                value: vec![b'v'; 32],
+            },
+        });
+        assert!(response.status.ok);
+    }
+    let watermark = engine.test_publish_recovering_shard(1);
+    assert!(engine.shard_is_recovering(1), "the fixture must park the shard mid-recovery");
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let declined = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert!(
+        declined.executed_stages.is_empty(),
+        "a recovering shard ran stages: {:?}",
+        declined.executed_stages
+    );
+    assert_eq!(declined.skipped_stages, vec!["shard_recovering".to_string()]);
+    assert!(declined.status.ok, "declining a round is not a failed round");
+    assert_eq!(runtime.stats().storage_manager_failed_rounds, 0);
+    assert_eq!(runtime.stats().storage_manager_stage_skips, 1);
+
+    runtime.inner.engine.test_finish_recovery(1, watermark);
+    let ran = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert!(
+        ran.executed_stages.iter().any(|stage| stage == "prepare"),
+        "after recovery the same shard must get a normal round: {:?}",
+        ran.executed_stages
+    );
+}
+
+/// A shard that was parked mid-recovery and then finishes recovery has its due keys removed by its
+/// own next round.
+///
+/// The expire stage sweeps only the shard whose round it is, and a recovering shard's round is
+/// declined, so for as long as a shard is parked nothing sweeps it. This pins that the declined
+/// round strands nothing: the key written before the park is due after recovery, the declined round
+/// removes nothing, and the shard's own next round removes it.
+#[test]
+fn a_shard_that_finishes_recovery_has_its_due_keys_removed_by_its_own_next_round() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSetEx {
+            key: "due-after-recovery".to_string(),
+            value: vec![b'v'; 32],
+            ttl_ms: 200,
+        },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    let watermark = engine.test_publish_recovering_shard(1);
+    assert!(engine.shard_is_recovering(1), "the fixture must park the shard mid-recovery");
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let declined = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert!(declined.executed_stages.is_empty(), "{:?}", declined.executed_stages);
+    assert_eq!(declined.expired_records_removed, 0);
+
+    runtime.inner.engine.test_finish_recovery(1, watermark);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let own = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert_eq!(
+        own.expired_records_removed, 1,
+        "the shard's own round after recovery did not remove its due key"
+    );
 }

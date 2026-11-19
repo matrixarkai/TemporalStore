@@ -721,6 +721,21 @@ impl Probe {
     }
 }
 
+/// A fixed two-buffer-per-item control, independent of storage reader optimizations.
+#[cfg(all(test, feature = "alloc-probe"))]
+pub(crate) fn owned_buffer_control_allocations(operations: usize, items: usize) -> f64 {
+    assert!(operations > 0);
+    let probe = Probe::start();
+    for _ in 0..operations {
+        for _ in 0..items {
+            let decoded = std::hint::black_box(vec![0u8; 8]);
+            let copied = std::hint::black_box(decoded.clone());
+            std::hint::black_box((&decoded, &copied));
+        }
+    }
+    probe.stop().allocs as f64 / operations as f64
+}
+
 // These assert the counters MOVE, which they only do when this module is actually installed as the
 // global allocator -- and it is installed only under the `alloc-probe` feature. Without that gate
 // they fail in every ordinary `cargo test`, asserting a property the build deliberately does not

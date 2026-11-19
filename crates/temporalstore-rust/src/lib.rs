@@ -46,6 +46,8 @@ pub mod client;
 pub mod context_workflow;
 pub mod control;
 pub mod data_node;
+pub mod metaserver_files;
+pub mod metaserver_files_proto;
 pub mod e2e;
 pub mod durability_metrics;
 pub mod flush_gate;
@@ -91,17 +93,22 @@ mod wal_scale;
 /// What one log RECORD costs to build and to decode -- tests only.
 mod record_cost;
 mod wal_proto;
+mod wal_outcome_kind;
 pub mod record_framing;
 pub mod index_log_record;
 pub mod index_log_wire;
 pub mod stream_format;
 pub mod block_image;
 pub mod wal_record;
+/// The streams the design we studied writes for data, read and reproduced from captured files -- tests only.
+mod real_capture_tests;
 /// NO FOREIGN TYPE NAMES IN RUST SOURCE -- a repo-wide scan, tests only. The vendor-vocabulary
 /// scrub covers product and company names; this covers another implementation's IDENTIFIERS,
 /// which is a different failure and had no gate at all until this module.
 #[cfg(test)]
 mod foreign_type_name_guard;
+#[cfg(test)]
+pub(crate) mod wire_check;
 
 pub use block_store::{
     ElementEntry, BlockStoreSlabDescriptor, BlockStoreSlabState, BlockStoreSlabSummary,

@@ -312,6 +312,7 @@ pub(crate) fn context_summaries_for_extract(
         ContextProviderKind::OpenAiCompatible => {
             let content = call_openai_compatible_context_provider(&provider, request)?;
             let (l0, l1, entities) = parse_provider_summary_content(&content, request);
+            let (l0, l1) = repair_label_only_summaries(l0, l1, request)?;
             let l2_ref = format!(
                 "tsctx://tenant/{}/model/{}/source/{}",
                 request.tenant_hash, provider.provider_name, request.source_id
@@ -328,6 +329,7 @@ pub(crate) fn context_summaries_for_extract(
         ContextProviderKind::Ollama => {
             let output = call_ollama_context_provider(&provider, request)?;
             let (l0, l1, entities) = normalize_ollama_summary(output, request);
+            let (l0, l1) = repair_label_only_summaries(l0, l1, request)?;
             let l2_ref = format!(
                 "tsctx://tenant/{}/model/{}/source/{}",
                 request.tenant_hash, provider.provider_name, request.source_id
@@ -436,6 +438,13 @@ fn context_summaries_for_extract_batch_with_limit(
             match output {
                 Ok(output) => {
                     let (l0, l1, entities) = normalize_ollama_summary(output, request);
+                    let (l0, l1) = match repair_label_only_summaries(l0, l1, request) {
+                        Ok(pair) => pair,
+                        Err(status) => {
+                            results.push(Err(status));
+                            continue;
+                        }
+                    };
                     results.push(Ok(ContextExtractSummaries {
                         status: Status::ok(),
                         provider: provider.clone(),
@@ -508,11 +517,16 @@ fn context_summaries_for_extract_batch_with_limit(
                     continue;
                 }
                 let request = chunk[item.source_index];
+                let Ok((l0, l1)) = repair_label_only_summaries(
+                    truncate_words(&item.l0, 32), truncate_words(&item.l1, 96), request,
+                ) else {
+                    continue;
+                };
                 results[start + item.source_index] = Some(Ok(ContextExtractSummaries {
                     status: Status::ok(),
                     provider: provider.clone(),
-                    l0: truncate_words(&item.l0, 32),
-                    l1: truncate_words(&item.l1, 96),
+                    l0,
+                    l1,
                     l2_ref: format!(
                         "tsctx://tenant/{}/model/{}/source/{}",
                         request.tenant_hash, provider.provider_name, request.source_id
@@ -1062,6 +1076,34 @@ fn normalize_ollama_summary(
     (l0, l1, entities)
 }
 
+fn repair_label_only_summaries(
+    l0: String,
+    l1: String,
+    request: &ContextExtractRequest,
+) -> Result<(String, String), Status> {
+    let title = request.title.trim();
+    if title.is_empty() || request.body.trim().is_empty()
+        || request.body.trim().eq_ignore_ascii_case(title)
+    {
+        return Ok((l0, l1));
+    }
+    let short_is_label = l0.trim().eq_ignore_ascii_case(title);
+    let long_is_label = l1.trim().eq_ignore_ascii_case(title);
+    match (short_is_label, long_is_label) {
+        (true, true) => Err(Status::error(
+            "model_provider_label_only_summary",
+            "model returned the source title instead of summarizing its body",
+        )),
+        // Reuse model-generated content, never an invented or heuristic summary.
+        (true, false) => Ok((
+            truncate_words(&l1, 32).chars().take(MAX_SUMMARY_L0_CHARS).collect(),
+            l1,
+        )),
+        (false, true) => Ok((l0.clone(), l0)),
+        (false, false) => Ok((l0, l1)),
+    }
+}
+
 fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
     let value = value.trim();
     if value.len() <= max_bytes {
@@ -1486,6 +1528,10 @@ pub(crate) fn parse_provider_summary_content(
 #[cfg(test)]
 #[path = "model_output_live_tests.rs"]
 mod model_output_live_tests;
+
+#[cfg(test)]
+#[path = "model_summary_level_tests.rs"]
+mod summary_level_tests;
 
 #[cfg(test)]
 mod entity_extraction_tests {

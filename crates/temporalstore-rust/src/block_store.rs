@@ -23,6 +23,10 @@ mod append;
 mod read;
 #[path = "block_store/block_store_gc.rs"]
 mod gc;
+mod read_retention;
+#[cfg(test)]
+mod quarantine_probe_tests;
+pub(crate) use read_retention::BlockStoreReadSnapshot;
 mod slab_ids;
 mod slab_backend;
 pub use slab_backend::block_store_file_read_counts;
@@ -478,7 +482,7 @@ impl TryFrom<BlockAddressWire> for ElementEntry {
                 return Err(format!(
                     "stored address generation {:?} disagrees with block_id.or(object_id) {:?} \
                      at slab {} offset {}: this index was written in a shape this binary cannot \
-                     reproduce, and loading it would recompute every page handle",
+                     reproduce, and loading it would recompute every block handle",
                     wire.generation, derived, block_slab_id, offset
                 ));
             }
@@ -517,6 +521,27 @@ impl TryFrom<BlockAddressWire> for ElementEntry {
 /// risk in dropping a slot here is not a loud refusal of every stored row -- it is a SILENT
 /// reinterpretation of every stored row by a reader that still expects the slot, which is worse
 /// and was being counted as the safe case.
+impl ElementEntry {
+    /// Serialize this address as the MAP `serde_json::to_value(self)` builds and encodes: the same
+    /// five names in the order a `Value` object keeps them (sorted), a `None` as nil, every number
+    /// as an unsigned integer. A streaming writer that has to agree with a `Value` byte for byte,
+    /// in every encoder, without building the `Value`.
+    pub(crate) fn serialize_as_sorted_map<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let wire = BlockAddressWire::from(self.clone());
+        let mut map = serializer.serialize_map(Some(5))?;
+        map.serialize_entry("a", &wire.address)?;
+        map.serialize_entry("g", &wire.generation)?;
+        map.serialize_entry("l", &wire.length)?;
+        map.serialize_entry("oi", &wire.object_id)?;
+        map.serialize_entry("pi", &wire.block_id)?;
+        map.end()
+    }
+}
+
 impl From<ElementEntry> for BlockAddressWire {
     fn from(entry: ElementEntry) -> Self {
         Self {
@@ -1779,7 +1804,22 @@ pub struct BlockStoreRollReport {
 #[derive(Debug, Clone)]
 pub struct BlockStore {
     inner: Arc<Mutex<BlockStoreInner>>,
+    /// What a read needs, held OUTSIDE `inner` so a read never takes its mutex.
+    read_view: Arc<ReadView>,
     identity: usize,
+}
+
+/// The parts of the store a read reaches, none of which the mutex has to protect.
+///
+/// The root is set when the store opens and never reassigned. The shared-slab source is attached
+/// at most once, after a metadata-only restore, so it sits behind a reader-writer lock that only
+/// that one attach ever takes for writing. The counters are atomics folded into
+/// [`BlockStore::stats`].
+#[derive(Debug)]
+struct ReadView {
+    root: PathBuf,
+    source: std::sync::RwLock<Option<Arc<dyn SharedSlabSource>>>,
+    counters: slab_backend::ReadCounters,
 }
 
 #[derive(Debug)]
@@ -1821,6 +1861,7 @@ impl BlockStore {
 #[derive(Debug)]
 struct BlockStoreInner {
     _identity: BlockStoreIdentity,
+    read_pins: BTreeMap<u64, usize>,
     root: PathBuf,
     root_created: bool,
     active_append_file: Option<std::fs::File>,
@@ -1863,10 +1904,6 @@ struct BlockStoreInner {
     /// have retained.
     live_block_bytes: Option<BTreeMap<u64, BlockStoreSlabLive>>,
     stats: BlockStoreStats,
-    // Optional shared-storage read-through (on-demand lazy recovery): set by
-    // attach_shared_slab_source() after a metadata-only restore. When present, a
-    // read that misses a slab locally fetches it from here, caches it, then serves.
-    shared_slab_source: Option<Arc<dyn SharedSlabSource>>,
     /// The earliest moment any slab now in quarantine was set aside -- when this process KNOWS it.
     ///
     /// WHAT IT BUYS. A quarantined slab waits `DELAYED_DESTROY_MIN_AGE_MS` -- an hour -- and for
@@ -2050,10 +2087,17 @@ impl BlockStore {
             let _ = persist_slab_manifest(&root, &slabs, &mut stats);
         }
         let identity = BlockStoreIdentity::new();
+        let read_view = Arc::new(ReadView {
+            root: root.clone(),
+            source: std::sync::RwLock::new(None),
+            counters: slab_backend::ReadCounters::default(),
+        });
         Self {
             identity: identity.0,
+            read_view,
             inner: Arc::new(Mutex::new(BlockStoreInner {
                 _identity: identity,
+                read_pins: BTreeMap::new(),
                 root,
                 root_created,
                 active_append_file: None,
@@ -2070,7 +2114,6 @@ impl BlockStore {
                 open_file_reads,
                 live_block_bytes: None,
                 stats,
-                shared_slab_source: None,
                 // A FRESH PROCESS KNOWS NOTHING ABOUT THE QUARANTINE IT INHERITED, and that is
                 // the state this has to open in: the directory on disk may hold slabs this
                 // manifest never learned about, so the first purge round must walk.
@@ -2085,17 +2128,18 @@ impl BlockStore {
     /// lets a later read fetch a missing old slab on demand from shared storage,
     /// cache it locally, and serve it — instead of installing every slab up front.
     pub fn attach_shared_slab_source(&self, source: Arc<dyn SharedSlabSource>) {
-        self.inner
-            .lock()
-            .expect("block store lock poisoned")
-            .shared_slab_source = Some(source);
+        *self
+            .read_view
+            .source
+            .write()
+            .expect("shared slab source lock poisoned") = Some(source);
     }
 
     pub fn has_shared_slab_source(&self) -> bool {
-        self.inner
-            .lock()
-            .expect("block store lock poisoned")
-            .shared_slab_source
+        self.read_view
+            .source
+            .read()
+            .expect("shared slab source lock poisoned")
             .is_some()
     }
 
@@ -2230,16 +2274,20 @@ impl BlockStore {
     /// on-demand fetch. A no-op when the slab already exists locally or no source is
     /// attached; in the latter case the normal read path surfaces the miss.
     fn ensure_slab_present(&self, block_slab_id: u64) -> Result<(), BlockStoreError> {
-        let (root, source) = {
-            let inner = self.inner.lock().expect("block store lock poisoned");
-            (inner.root.clone(), inner.shared_slab_source.clone())
-        };
-        if slab_path(&root, block_slab_id).exists() {
-            return Ok(());
-        }
+        // With no source attached there is nothing to fetch from, so the answer is the same
+        // whether or not the file exists: ask that first and a read skips the existence check.
+        let source = self
+            .read_view
+            .source
+            .read()
+            .expect("shared slab source lock poisoned")
+            .clone();
         let Some(source) = source else {
             return Ok(());
         };
+        if slab_path(&self.read_view.root, block_slab_id).exists() {
+            return Ok(());
+        }
         if let Some(bytes) = source.fetch_slab(block_slab_id)? {
             self.install_slab(block_slab_id, &bytes)?;
             self.inner
@@ -2249,6 +2297,14 @@ impl BlockStore {
                 .shared_slab_fetches += 1;
         }
         Ok(())
+    }
+
+    /// The slab appends are landing in now. Collection never removes it.
+    pub fn current_block_slab_id(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("block store lock poisoned")
+            .block_slab_id
     }
 
     pub fn roll_slab(&self) -> Result<BlockStoreRollReport, BlockStoreError> {
@@ -2348,6 +2404,21 @@ impl BlockStore {
         )
     }
 
+
+    pub(crate) fn has_delayed_destroy_slabs(&self) -> Result<bool, BlockStoreError> {
+        let root = self.inner.lock().expect("block store lock poisoned").root.clone();
+        let entries = match std::fs::read_dir(delayed_destroy_dir(&root)) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        for entry in entries {
+            if delayed_destroy_slab_id_from_name(&entry?.file_name()).is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 
     pub fn delayed_destroy_slab_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
         let root = self
@@ -2519,8 +2590,9 @@ impl BlockStore {
         selected_block_slab_ids: Option<BTreeSet<u64>>,
         max_slabs_per_round: usize,
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
-        let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
+        let mut live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
+        live_block_slab_ids.extend(inner.read_pins.keys().copied());
         let trash_dir = delayed_destroy_dir(&inner.root);
         let mut purged = Vec::new();
         let mut purged_physical_bytes = 0;
@@ -2884,7 +2956,9 @@ impl BlockStore {
     }
 
     pub fn stats(&self) -> BlockStoreStats {
-        self.inner.lock().expect("block store lock poisoned").stats
+        let mut stats = self.inner.lock().expect("block store lock poisoned").stats;
+        self.read_view.counters.merge_into(&mut stats);
+        stats
     }
 
     /// Validate every record without retaining a per-block inspection inventory.
@@ -3744,7 +3818,7 @@ mod address_size_tests {
             text.contains("disagrees with block_id.or(object_id)"),
             "the refusal must say what disagreed, got: {text}"
         );
-        assert!(text.contains("recompute every page handle"), "and why it matters, got: {text}");
+        assert!(text.contains("recompute every block handle"), "and why it matters, got: {text}");
 
         // THE ABSENT CASE, which must LOAD rather than be refused. This is the shape of an index
         // written before the generation existed: an identity, and no generation key at all. It
@@ -9852,3 +9926,6 @@ impl ElementEntry {
 /// UNMOVED BY THE WORD SHRINKING, which is the point worth keeping here: the address went from 16
 /// to 8 and this pair did not move, because the seven bytes came here instead.
 const _: () = assert!(std::mem::size_of::<(String, ElementEntry)>() == 40);
+
+#[cfg(test)]
+mod reads_do_not_take_the_store_mutex;

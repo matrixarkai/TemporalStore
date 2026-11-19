@@ -313,10 +313,22 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
 
     // Settle: the first rounds do the shard's real work (dump, reclaim). Bound the wait so a stage
     // that never settles fails here instead of hanging the suite.
+    //
+    // THE SEEDED WRITES ARE RELEASED WITH A ONE-BYTE GATE. A dirty shard below the byte gate is
+    // deliberately left undumped, so settling under the shipped gate would never finish: the seed
+    // is a few kilobytes of log. The quiet rounds below then run under `options`, where nothing
+    // is dirty and the memory alone decides.
+    let settling = StorageManagerOptions {
+        min_undumped_wal_records: 1,
+        min_undumped_wal_bytes: 1,
+        ..options.clone()
+    };
     let mut settled_after = None;
     for round in 1..=12 {
-        let report = runtime.run_storage_manager_once(1, options.clone());
-        if wal_stage_walk(&report) == 0 {
+        let report = runtime.run_storage_manager_once(1, settling.clone());
+        // Settled means IDLE and not asking: a round that skips the stage because the shard is
+        // still dirty below the byte gate walks nothing either, and is not the memory at work.
+        if wal_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
             settled_after = Some(round);
             break;
         }
@@ -336,7 +348,8 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
         );
     }
 
-    // A WRITE changes what the stage reads, so the very next round must ask again.
+    // A WRITE makes the shard dirty, and a dirty shard below the byte gate is not idle: the stage
+    // does not ask the question at all (no walk), because the log bytes decide, not the memory.
     let response = runtime.inner.engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
@@ -346,24 +359,33 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
     });
     assert!(response.status.ok, "write after the quiet rounds: {:?}", response.status);
     let report = runtime.run_storage_manager_once(1, options.clone());
-    assert!(
-        wal_stage_walk(&report) > 0,
-        "a write after the quiet rounds did not make the WAL-reclaim stage ask again, so it is \
-         skipping on a stale answer"
+    assert_eq!(
+        wal_stage_walk(&report),
+        0,
+        "a dirty shard below the byte gate asked the WAL-reclaim question"
     );
 
-    // QUIET AGAIN, then change only what the CALLER passes. A reader that appears registers no
-    // write, so nothing on the shard moves; the retention inputs are the only part of the memory's
-    // key that can notice, and a stage that answered from the old key would keep skipping.
+    // Release the write with a one-byte gate until the shard is clean again, then QUIET AGAIN.
+    let releasing = StorageManagerOptions {
+        min_undumped_wal_records: 1,
+        min_undumped_wal_bytes: 1,
+        ..options.clone()
+    };
+    for _ in 0..12 {
+        runtime.run_storage_manager_once(1, releasing.clone());
+    }
     let mut quiet_again = false;
     for _ in 0..12 {
         let report = runtime.run_storage_manager_once(1, options.clone());
-        if wal_stage_walk(&report) == 0 {
+        if wal_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
             quiet_again = true;
             break;
         }
     }
     assert!(quiet_again, "the stage never went quiet again after the write");
+    // Change only what the CALLER passes. A reader that appears registers no write, so nothing on
+    // the shard moves; the retention inputs are the only part of the memory's key that can notice,
+    // and a stage that answered from the old key would keep skipping.
     let with_a_reader = StorageManagerOptions {
         follower_replay_cursors: vec![crate::BucketDumpFollowerReplayCursor {
             follower_id: "a-reader-that-just-appeared".to_string(),
@@ -407,7 +429,12 @@ fn index_stage_walk(report: &StorageManagerLoopReport) -> u64 {
 fn a_shard_with_nothing_for_the_index_stage_stops_paying_for_it_and_a_dirty_one_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = seeded_runtime(dir.path(), 200);
-    let options = StorageManagerOptions::default();
+    // The stage dumps through the shipped byte gate, so this fixture crosses it; below the gate a
+    // dirty shard is left undumped on purpose and keeps walking, which is a different property.
+    let options = StorageManagerOptions {
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
 
     // Settle: the first round dumps the whole dirty set through this stage. Bound the wait so a
     // stage that never settles fails here and does not hang the suite.
@@ -451,6 +478,39 @@ fn a_shard_with_nothing_for_the_index_stage_stops_paying_for_it_and_a_dirty_one_
         "a dirty shard's round did not do the index stage's work, so the gate is skipping a stage \
          that had something to dump"
     );
+}
+
+/// A DIRTY SHARD THE BYTE GATE HOLDS BACK STOPS PAYING FOR THE INDEX STAGE TOO.
+///
+/// With the shipped gate and a log under the collector's floor, the stage has no dump to make and
+/// no log to collect, so a round must not walk the shard to find that out. The shard is dirty, so
+/// the older "nothing dirty" shortcut does not apply; the gate decision is what lets the round skip.
+/// The stage must still count as having run.
+///
+/// Planted fault: reverting the stage's idle test to "nothing dirty and nothing undumped" makes the
+/// first assertion fail, because the dirty shard then walks on every round.
+#[test]
+fn a_dirty_shard_below_the_byte_gate_does_not_walk_for_the_index_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let options = StorageManagerOptions::default();
+    for round in 0..4 {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        assert!(
+            report.pressure.dirty_bucket_count > 0,
+            "round {round}: the fixture must keep the shard dirty under the shipped gate"
+        );
+        assert_eq!(
+            index_stage_walk(&report),
+            0,
+            "round {round}: a dirty shard below the gate and the floor walked for the index stage"
+        );
+        assert!(
+            report.executed_stages.iter().any(|stage| stage == "reclaim_index"),
+            "round {round}: the index stage left the stage list: {:?}",
+            report.executed_stages
+        );
+    }
 }
 
 
@@ -681,6 +741,214 @@ fn a_warm_cache_survives_a_default_round_and_an_explicit_bound_still_drops_it() 
     );
 }
 
+/// THE CACHE-BOUND STAGE DUMPS NOTHING.
+///
+/// `reclaim_memory` invalidates cached blocks, which are copies; the data is in the log and the
+/// resident index whether or not a bucket was dumped. It used to run a whole lifecycle request that
+/// also dumped up to `max_dump_buckets_per_round` dirty buckets, so a stage named for memory spent
+/// the dump stage's I/O. Every other stage is switched off here, so the only thing that could
+/// shrink the dirty set is this one, and the count has to be the same on both sides while the cache
+/// is emptied.
+#[test]
+fn the_cache_bound_stage_drops_the_cache_and_dumps_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 400);
+    let engine = runtime.engine();
+    for index in 0..50 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("loop-{index:06}"),
+            },
+        });
+        assert!(response.status.ok);
+    }
+    let only_this_stage = StorageManagerOptions {
+        enable_prepare: false,
+        enable_wal_reclaim: false,
+        enable_expire: false,
+        enable_block_gc: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        enable_metrics_reap: false,
+        enable_evict: false,
+        cache_memory_bytes_pressure: 1,
+        ..StorageManagerOptions::default()
+    };
+    let (before, _) = runtime.storage_manager_pressure_snapshot(1, &only_this_stage);
+    assert!(before.dirty_bucket_count > 0, "the fixture has no dirty bucket, so a dump would show nothing");
+    assert!(before.cache_memory_bytes > 0, "the fixture never warmed the cache");
+    let report = runtime.run_storage_manager_once(1, only_this_stage.clone());
+    assert!(
+        report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
+        "the stage did not run: {:?}",
+        report.executed_stages
+    );
+    let (after, _) = runtime.storage_manager_pressure_snapshot(1, &only_this_stage);
+    assert_eq!(after.cache_memory_bytes, 0, "the cache was not dropped");
+    assert_eq!(
+        after.dirty_bucket_count, before.dirty_bucket_count,
+        "the cache-bound stage dumped dirty buckets"
+    );
+}
+
+/// The runtime's expired-key count is what the loop's expire stage removed, summed over rounds.
+///
+/// The metrics endpoint publishes `expired_records_removed` from the runtime stats, so this is the
+/// number an operator reads to tell whether expiry keeps up. Three keys with a one-millisecond
+/// deadline are made due and one round runs: the count must read exactly three, and a second round
+/// with nothing due must leave it at three.
+#[test]
+fn the_runtime_counts_the_keys_the_expire_stage_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 10);
+    let engine = runtime.engine();
+    for index in 0..3 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: format!("due-{index}"),
+                value: vec![b'v'; 16],
+                ttl_ms: 1,
+            },
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(runtime.stats().expired_records_removed, 0);
+    let first = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert_eq!(first.expired_records_removed, 3);
+    assert_eq!(runtime.stats().expired_records_removed, 3);
+    runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    assert_eq!(
+        runtime.stats().expired_records_removed,
+        3,
+        "a round with nothing due moved the expired-key count"
+    );
+}
+
+/// The overdue count is the backlog a bounded round leaves behind.
+///
+/// Three keys are made due and the round may remove one hot key, so one is removed, two remain
+/// overdue, and the count reads two; the next two rounds drain it to zero. A gauge that read zero
+/// whatever the backlog would report expiry as keeping up on a server where it is not.
+#[test]
+fn the_overdue_count_is_what_a_bounded_round_leaves_due() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 10);
+    let engine = runtime.engine();
+    for index in 0..3 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: format!("due-{index}"),
+                value: vec![b'v'; 16],
+                ttl_ms: 1,
+            },
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(engine.expiry_overdue_keys(), 3);
+    let one_per_round = StorageManagerOptions {
+        max_expire_hot_buckets_per_round: 1,
+        ..StorageManagerOptions::default()
+    };
+    runtime.run_storage_manager_once(1, one_per_round.clone());
+    assert_eq!(engine.expiry_overdue_keys(), 2, "one removed, two still overdue");
+    runtime.run_storage_manager_once(1, one_per_round.clone());
+    runtime.run_storage_manager_once(1, one_per_round);
+    assert_eq!(engine.expiry_overdue_keys(), 0);
+}
+
+/// A shard's round expires that shard's keys and no other shard's.
+///
+/// The expire stage used to sweep every loaded shard from each shard's round, so with two shards a
+/// round for shard 1 removed shard 2's due key and reported it as its own. Shard 2 holds the only
+/// due key here; shard 1's round must remove nothing and shard 2's own round must remove it.
+#[test]
+fn a_shards_round_expires_only_that_shards_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 10);
+    let engine = runtime.engine();
+    engine.load_shard(2);
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 2,
+        command: Command::StringSetEx {
+            key: "other-shard-due".to_string(),
+            value: vec![b'v'; 16],
+            ttl_ms: 1,
+        },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let options = StorageManagerOptions::default();
+    let own = runtime.run_storage_manager_once(1, options.clone());
+    assert_eq!(
+        own.expired_records_removed, 0,
+        "shard 1's round removed a key that belongs to shard 2"
+    );
+    let other = runtime.run_storage_manager_once(2, options);
+    assert_eq!(
+        other.expired_records_removed, 1,
+        "shard 2's own round did not remove its due key"
+    );
+}
+
+/// The evict and expire counts are each stage's own run count, once per round.
+///
+/// `storage_manager_evict_count` read the reclaim-memory run count, so it stayed at zero on a
+/// server where eviction ran every round, and `storage_manager_expire_count` added a second counter
+/// that the same round also bumped, so it read two per round.
+#[test]
+fn the_expire_and_evict_counts_are_each_stages_own_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let options = StorageManagerOptions::default();
+    for _ in 0..3 {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        assert!(report.executed_stages.iter().any(|stage| stage == "expire"));
+        assert!(report.executed_stages.iter().any(|stage| stage == "evict"));
+        assert!(!report.executed_stages.iter().any(|stage| stage == "reclaim_memory"));
+    }
+    let metrics = data_node_storage_lifecycle_metrics(&runtime.stats());
+    assert_eq!(metrics["storage_manager_expire_count"], 3);
+    assert_eq!(metrics["storage_manager_evict_count"], 3);
+
+    // The evict count moves only on evict: a round with eviction off and the cache bound set runs
+    // reclaim_memory and must leave it where it was.
+    // Eviction has two gates: `enable_evict` and the per-shard index bound, which opens the stage
+    // on its own. Both are off here, or the evict stage runs and its count legitimately moves.
+    let reclaim_only = StorageManagerOptions {
+        enable_evict: false,
+        index_resident_limit_bytes: 0,
+        cache_memory_bytes_pressure: 1,
+        ..StorageManagerOptions::default()
+    };
+    let engine = runtime.engine();
+    // Warm the cache the way the sibling test does, or the one-byte bound has nothing to open on.
+    for index in 0..50 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("loop-{index:06}"),
+            },
+        });
+        assert!(response.status.ok);
+    }
+    let report = runtime.run_storage_manager_once(1, reclaim_only);
+    assert!(
+        report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
+        "the reclaim_memory arm did not run: {:?}",
+        report.executed_stages
+    );
+    let after = data_node_storage_lifecycle_metrics(&runtime.stats());
+    assert_eq!(
+        after["storage_manager_evict_count"], 3,
+        "a reclaim_memory round moved the evict count"
+    );
+}
+
 /// Measurement harness, not a gate: `--ignored --nocapture`, one test thread, `LOOP_KEYS=<n>`,
 /// `LOOP_WRITES=<writes per round>`. A shard that takes writes between rounds is dirty at every
 /// round, so this prices what a round pays then, stage by stage and by the call site that walked.
@@ -776,7 +1044,14 @@ fn a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound() {
     let writes = 20usize;
     let dir = tempfile::tempdir().unwrap();
     let runtime = seeded_runtime(dir.path(), keys);
-    let options = StorageManagerOptions::default();
+    // THE GATE IS CROSSED, because the control below is that the round dumped. Under the shipped
+    // byte gate a shard this small is left undumped and the stages skip their walks, so a round that
+    // listed nothing would fail the floor for the right reason and say nothing about the bound.
+    let options = StorageManagerOptions {
+        dirty_bucket_pressure: 1,
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
     for _ in 0..6 {
         runtime.run_storage_manager_once(1, options.clone());
     }
@@ -810,4 +1085,143 @@ fn a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound() {
         checked += 1;
     }
     assert_eq!(checked, 3);
+}
+
+/// A DIRTY ROUND UNDER THE BYTE GATE LISTS NOTHING FOR THE INDEX STAGE.
+///
+/// The other arm of `a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound`: the same
+/// fixture with the shipped gate, where the round has no dump to make. In every round where the
+/// index log is below its floor and the plan names no prune, roll-forward or destroy, the index
+/// stage's own span must list zero live blocks. The round total stays under the dumping arm's 18
+/// listings in every round.
+///
+/// Planted fault: reverting the index stage's idle test to "nothing dirty and nothing undumped"
+/// makes the stage list the shard and fails the zero assertion.
+#[test]
+fn a_dirty_round_under_the_byte_gate_lists_less_than_a_dumping_round_does() {
+    let keys = 300usize;
+    let writes = 20usize;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    let options = StorageManagerOptions::default();
+    for _ in 0..6 {
+        runtime.run_storage_manager_once(1, options.clone());
+    }
+    let engine = runtime.engine();
+    let mut checked = 0;
+    for round in 0..4usize {
+        for write in 0..writes {
+            let index = (round * writes + write) % keys;
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("loop-{index:06}"),
+                    value: vec![b'w'; 96],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        // The index log is read before the round: once it reaches the floor the stage collects it by
+        // design, and only below the floor is "lists nothing" the claim.
+        let log_below_floor = engine.index_log_store().log_len_bytes(1)
+            < StorageManagerCycleRequest::default().index_gc_index_log_bytes_threshold;
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let walked: u64 = report.stage_spans.iter().map(|s| s.walk.live_block_entries).sum();
+        // The stage also has work when the round's own plan names a manifest to prune, an install to
+        // roll forward or a slab to destroy; those rounds are the stage doing its job, not a walk
+        // the gate should have saved.
+        let plan = &report.lifecycle_plan;
+        let other_work = plan.reasons.iter().any(|reason| {
+            reason == "slot_dump_manifest_prune" || reason == "slot_dump_install_roll_forward_check"
+        }) || !plan.delayed_destroy_block_slab_ids.is_empty();
+        eprintln!(
+            "gated dirty round {round}: walk_entries={walked} ({:.1} listings), index stage walk={}, \
+             log below floor={log_below_floor}, other work={other_work}, reasons={:?}",
+            walked as f64 / keys as f64,
+            index_stage_walk(&report),
+            plan.reasons
+        );
+        assert!(
+            report.pressure.dirty_bucket_count > 0,
+            "round {round}: the fixture must keep the shard dirty under the shipped gate"
+        );
+        if log_below_floor && !other_work {
+            assert_eq!(
+                index_stage_walk(&report),
+                0,
+                "round {round}: the index stage listed live blocks although the gate holds its dump back"
+            );
+            checked += 1;
+        }
+        // Other stages may still list, so the round total is only held under the dumping arm's
+        // measured level (18 listings), not under a floor of its own.
+        assert!(
+            walked < keys as u64 * 18,
+            "round {round}: a dirty round the gate holds back listed {walked} entries, at the dumping \
+             round's level of {}",
+            keys * 18
+        );
+    }
+    assert!(checked >= 1, "no round had an idle index stage under the gate, so nothing was checked");
+}
+
+/// The stage rows say where in the round each stage began, on the round's own clock: the first row
+/// begins at zero, each row begins where the one before it ended, and the last one ends inside the
+/// round. That is what lets a writer's acknowledgements, timestamped on any other clock, be placed
+/// inside the stage that was running, so a stage's effect on writers can be read from one run.
+/// With a writer attached, every write is charged to exactly one of the stage windows or to the
+/// idle baseline, so no write is dropped and none is counted twice.
+#[test]
+fn a_writers_waits_are_attributed_to_the_stage_window_it_began_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 300);
+    let engine = std::sync::Arc::new(runtime.engine());
+
+    let (stall, report) = crate::engine::writer_stall_probe::measure_writer_stall_with(
+        &engine,
+        1,
+        || runtime.run_storage_manager_once(1, StorageManagerOptions::default()),
+    );
+
+    let spans = &report.stage_spans;
+    assert!(!spans.is_empty(), "the round reported no stage rows");
+    assert_eq!(spans[0].start_offset_us, 0, "the first stage row does not begin at the round's start");
+    for pair in spans.windows(2) {
+        let end = pair[0].start_offset_us + pair[0].duration_us;
+        // The next row begins where this one ended, to within the microsecond truncation of two
+        // separate conversions.
+        assert!(
+            pair[1].start_offset_us.abs_diff(end) <= 2,
+            "row {} begins at {} but row {} ended at {end}",
+            pair[1].stage,
+            pair[1].start_offset_us,
+            pair[0].stage
+        );
+    }
+    let last = spans.last().unwrap();
+    assert!(
+        last.start_offset_us + last.duration_us <= report.duration_us + 2,
+        "the last stage row ends after the round did"
+    );
+
+    let windows: Vec<(String, u64, u64)> = spans
+        .iter()
+        .map(|span| (span.stage.clone(), span.start_offset_us, span.duration_us))
+        .collect();
+    let by_window = stall.window_stalls(&windows);
+    let idle = stall.idle_baseline();
+    let charged: usize = by_window.iter().map(|w| w.writes).sum::<usize>() + idle.writes;
+    // A write that began in the few microseconds between the probe calling the round and the round
+    // taking its first timestamp, or between the last row and the end of the call, belongs to no
+    // window and to no idle count; there can only be a handful of them.
+    assert!(
+        charged <= stall.samples.len() && stall.samples.len() - charged <= 4,
+        "{} writes were issued but {charged} were charged to a window or to the idle baseline",
+        stall.samples.len()
+    );
+    assert!(idle.writes > 0, "the writer issued nothing outside the round to read the windows against");
+    println!("PROBE round_us={} idle={idle:?}", stall.round_us);
+    for window in &by_window {
+        println!("PROBE {window:?}");
+    }
 }

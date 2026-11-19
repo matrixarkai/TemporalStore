@@ -7,8 +7,13 @@
 //! same stream layer:
 //!
 //! ```text
-//! varint32(payload_len) | little_endian_u32(crc32c) | payload
+//! varint32(payload_len) | little_endian_u32(raw_castagnoli(payload)) | payload
 //! ```
+//!
+//! The checksum is the Castagnoli polynomial with an initial value of 0 and no final inversion
+//! ([`crate::stream_format::stream_crc`]); the standard inverting CRC-32C is a different value
+//! on every payload. The frame is checked byte for byte against records captured from real
+//! stream files in `real_capture_tests`.
 //!
 //! This module is that layer. It is shared rather than duplicated because the two streams
 //! differ in what they carry, not in how a record is delimited or verified, and a second
@@ -20,7 +25,7 @@
 
 use prost::Message;
 
-use crate::checksum::crc32c;
+use crate::stream_format::stream_crc;
 
 /// A framing or integrity failure.
 ///
@@ -39,14 +44,20 @@ impl std::fmt::Display for RecordFramingError {
 
 impl std::error::Error for RecordFramingError {}
 
-/// Frame one record: `varint32(payload_len) | little_endian_u32(crc32c) | payload`.
+/// Frame one record: `varint32(payload_len) | little_endian_u32(checksum) | payload`.
 pub fn encode_framed<M: Message>(record: &M) -> Vec<u8> {
-    let payload = record.encode_to_vec();
-    let checksum = crc32c(&payload);
+    frame_payload(&record.encode_to_vec())
+}
+
+/// Frame payload bytes that are already encoded.
+///
+/// One allocation, sized exactly: the longest header is a five-byte length and the four-byte
+/// checksum.
+pub fn frame_payload(payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(payload.len() + 9);
     encode_varint32(payload.len() as u32, &mut out);
-    out.extend_from_slice(&checksum.to_le_bytes());
-    out.extend_from_slice(&payload);
+    out.extend_from_slice(&stream_crc(0, payload).to_le_bytes());
+    out.extend_from_slice(payload);
     out
 }
 
@@ -86,7 +97,7 @@ pub fn decode_framed_at<M: Message + Default>(
             .expect("checksum slice is 4 bytes"),
     );
     let payload = &rest[header_len..end];
-    let actual = crc32c(payload);
+    let actual = stream_crc(0, payload);
     if declared != actual {
         return Err(RecordFramingError(format!(
             "record at {offset} checksum mismatch: declared {declared:08x}, actual {actual:08x}"

@@ -1,0 +1,318 @@
+syntax = "proto3";
+
+package temporalstore.windowreduce.v1;
+
+// The window reducer protocol: add, restore, remove, delete and batched ranked reads over merged cell
+// samples. Field numbers and wire types are fixed so existing clients of this message shape are
+// understood; every name here is ours. Numbers below 16 in a message are the established ones,
+// numbers from 16 up are additive and unknown to older clients (which skip them).
+// See docs/WINDOW_REDUCE_PROTOCOL.md for the semantics of every field.
+
+enum WindowReduceOperation {
+  WINDOW_REDUCE_OPERATION_ADD = 0;
+  WINDOW_REDUCE_OPERATION_BATCH_QUERY = 1;
+  WINDOW_REDUCE_OPERATION_REMOVE = 2;
+  WINDOW_REDUCE_OPERATION_RESTORE = 3;
+  WINDOW_REDUCE_OPERATION_DELETE = 4;
+}
+
+enum WindowReduceStatusCode {
+  WINDOW_REDUCE_STATUS_CODE_OK = 0;
+  WINDOW_REDUCE_STATUS_CODE_ERROR = 1;
+  WINDOW_REDUCE_STATUS_CODE_STORAGE_ERROR = 2;
+  WINDOW_REDUCE_STATUS_CODE_OUT_OF_MEMORY = 3;
+  WINDOW_REDUCE_STATUS_CODE_NO_DATA = 4;
+  WINDOW_REDUCE_STATUS_CODE_QUOTA_EXHAUSTED = 5;
+  WINDOW_REDUCE_STATUS_CODE_REQUEST_ILLEGAL = 6;
+  WINDOW_REDUCE_STATUS_CODE_NO_SUCH_TABLE = 7;
+  WINDOW_REDUCE_STATUS_CODE_INVALID_ARGUMENT = 8;
+  WINDOW_REDUCE_STATUS_CODE_DUPLICATE_REFUSED = 9;
+}
+
+// Lanes of a pair-shaped table. Values are 64 bit; a reader that declares them 32 bit sees the
+// low 32 bits, which is the same bytes on the wire.
+message PairLanes {
+  int64 first = 1;
+  int64 second = 2;
+  int64 timestamp_us = 3;
+}
+
+message LaneList {
+  int64 timestamp_us = 1;
+  repeated int64 values = 2;
+}
+
+enum CellShape {
+  CELL_SHAPE_PAIR = 0;
+  CELL_SHAPE_LIST = 1;
+}
+
+message CellEntry {
+  int64 member = 1;
+  int64 shorthand_first = 2;
+  int64 shorthand_second = 3;
+  CellShape shape = 4;
+  PairLanes pair = 5;
+  LaneList list = 6;
+  int32 label = 7;
+  bool has_label = 8;
+  // Additive: a member that is bytes, not a 64 bit id. Set at most one of member_bytes and a
+  // non-zero member.
+  bytes member_bytes = 16;
+}
+
+message Observation {
+  int64 entity = 1;
+  int64 timestamp_us = 2;
+  int32 kind = 3;
+  int32 channel = 4;
+  repeated CellEntry entries = 5;
+  reserved 6;
+  // Additive: an entity that is text or bytes. At most one of the three entity forms is set.
+  string entity_text = 16;
+  bytes entity_bytes = 17;
+}
+
+message RestoredObservation {
+  int64 entity = 1;
+  int64 latest_us = 2;
+  int64 earliest_us = 3;
+  int32 kind = 4;
+  int32 channel = 5;
+  repeated CellEntry entries = 6;
+  reserved 7;
+  string entity_text = 16;
+  bytes entity_bytes = 17;
+}
+
+message WindowReduceAddRequest {
+  bytes table = 1;
+  repeated Observation observations = 2;
+  bool group_on_server = 3;
+  bool skip_existing = 4;
+  // Additive: a retry token; a repeated token answers the first receipt and writes nothing.
+  uint64 retry_token = 16;
+}
+
+message WindowReduceAddResponse {
+  WindowReduceStatusCode code = 1;
+  string message = 2;
+  // Additive receipt.
+  uint64 samples_written = 16;
+  uint64 cells_created = 17;
+  uint64 cells_merged = 18;
+  bool replayed = 19;
+}
+
+message WindowReduceRestoreRequest {
+  bytes table = 1;
+  repeated RestoredObservation observations = 2;
+  bool group_on_server = 3;
+  bool skip_existing = 4;
+}
+
+message WindowReduceRestoreResponse {
+  WindowReduceStatusCode code = 1;
+  string message = 2;
+}
+
+enum RankMode {
+  RANK_MODE_FIRST_LANE = 0;
+  RANK_MODE_SECOND_LANE = 1;
+  RANK_MODE_RATIO = 2;
+  RANK_MODE_MEMBER = 3;
+  RANK_MODE_RECENT = 4;
+  RANK_MODE_NAMED_LANE = 5;
+  RANK_MODE_MATCH_LANE = 6;
+  RANK_MODE_WEIGHTED = 7;
+  RANK_MODE_MEMBERS_ONLY = 8;
+  RANK_MODE_WILSON = 9;
+  // Additive: the lane at `sort_lane` (the first when absent), each value halved for every
+  // `decay` milliseconds of age (a half-life), summed. `decay` is made a whole number of
+  // milliseconds by `decay_rounding`.
+  RANK_MODE_DECAYED_LANE = 10;
+}
+
+enum Rounding {
+  ROUNDING_FLOOR = 0;
+  ROUNDING_CEIL = 1;
+  ROUNDING_ROUND = 2;
+}
+
+message WindowReduceSelector {
+  int32 channel = 1;
+  int32 kind = 2;
+  int32 label = 3;
+  RankMode mode = 4;
+  int32 limit = 5;
+  bool has_limit = 6;
+  int32 sort_lane = 7;
+  int64 match_lane = 8;
+  int64 match_value = 9;
+  double decay = 10;
+  Rounding decay_rounding = 11;
+  int32 limit_members = 12;
+  bool has_limit_members = 13;
+  repeated int32 quota_lanes = 14;
+  repeated int32 quota_counts = 15;
+  repeated int32 weighted_lanes = 16;
+  repeated int32 weights = 17;
+  repeated int64 members = 18;
+  bool want_sample_info = 19;
+  double wilson_z = 20;
+  bool has_sort_lane = 21;
+  bool has_quota_counts = 22;
+  bool has_quota_lanes = 23;
+  bool has_members = 24;
+  bool has_match_lane = 25;
+  bool has_match_value = 26;
+  bool has_wilson_z = 27;
+  bool has_weighted_lanes = 28;
+  bool has_weights = 29;
+  bool has_want_sample_info = 30;
+  // `members` (with `has_members`) is the include set: only these members are read; a present,
+  // empty include set is refused. `quota_lanes[i]` is a lane position and `quota_counts[i]` how
+  // many members must have a non-zero value in it; `quota_counts[0]` is also the count of members
+  // that fit no lane (see docs/WINDOW_REDUCE_PROTOCOL.md, Quota).
+  // Additive: members to leave out; wins over `members`.
+  repeated int64 excluded_members = 40;
+}
+
+enum WindowKind {
+  // The trailing span ending at the instant the read runs.
+  WINDOW_KIND_TRAILING_FROM_NOW = 0;
+  // The trailing span ending at the newest stored sample of the key (the newest sample is
+  // inside it; a span of S ms covers exactly S stamps).
+  WINDOW_KIND_TRAILING_FROM_NEWEST = 1;
+  // The newest `span` stored rows (timestamp, member pairs).
+  WINDOW_KIND_NEWEST_ROWS = 2;
+  // [start, start + span).
+  WINDOW_KIND_FROM_START = 3;
+  // As TRAILING_FROM_NEWEST: both end the window at the newest stored sample of the key.
+  WINDOW_KIND_TRAILING_FROM_NEWEST_OF_KIND = 4;
+}
+
+message Window {
+  WindowKind kind = 1;
+  int64 span = 2;
+  int64 start_us = 3;
+}
+
+message WindowReduceQuery {
+  int64 entity = 1;
+  Window window = 2;
+  WindowReduceSelector selector = 3;
+  bool echo = 4;
+  bytes table = 5;
+  bool has_echo = 6;
+  // Additive: more entities whose keys are read together with `entity`, as one merged read;
+  // at most 63, none repeated, 64 bit ids only.
+  repeated int64 more_entities = 20;
+  string entity_text = 16;
+  bytes entity_bytes = 17;
+}
+
+message WindowReduceBatchQuery {
+  repeated WindowReduceQuery queries = 1;
+}
+
+message SampleInfo {
+  repeated int64 starts_us = 1;
+  repeated int64 ends_us = 2;
+  repeated int64 member_counts = 3;
+}
+
+message WindowReduceAnswer {
+  int64 entity = 1;
+  int64 first_us = 3;
+  int64 last_us = 4;
+  reserved 5;
+  repeated CellEntry entries = 6;
+  SampleInfo sample_info = 7;
+  WindowReduceSelector echoed_selector = 8;
+  Window echoed_window = 9;
+  // Additive: a status for this answer alone.
+  WindowReduceStatusCode code = 16;
+  string message = 17;
+  uint64 samples = 18;
+  uint64 unscored = 19;
+  // Keys that held a sample in the window: 1 for a one-key read that had some, and for a read
+  // over `more_entities` how many of the keys did.
+  uint64 keys = 20;
+}
+
+message WindowReduceBatchAnswer {
+  repeated WindowReduceAnswer answers = 1;
+  WindowReduceStatusCode code = 2;
+  string message = 3;
+}
+
+message TimeSpan {
+  int64 start_us = 1;
+  int64 end_us = 2;
+}
+
+message KeyFilter {
+  int32 label = 1;
+  int32 kind = 2;
+  int32 channel = 3;
+}
+
+message WindowReduceRemoveRequest {
+  int64 entity = 1;
+  TimeSpan span = 2;
+  bytes table = 3;
+  KeyFilter key_filter = 4;
+  // Additive: the members to remove (the include set; with `has_members` or when non-empty) and
+  // the members to spare; a member in both is spared. 64 bit ids, at most 1024 a side.
+  repeated int64 members = 16;
+  bool has_members = 17;
+  repeated int64 excluded_members = 18;
+}
+
+message WindowReduceRemoveResponse {
+  WindowReduceStatusCode code = 1;
+  TimeSpan span = 2;
+  string message = 3;
+  bool has_message = 4;
+  // Additive receipt: samples the key held before and after, cells in the removed span before,
+  // and cells removed.
+  uint64 samples_before = 16;
+  uint64 samples_after = 17;
+  uint64 cells_before = 18;
+  uint64 cells_removed = 19;
+}
+
+message WindowReduceDeleteRequest {
+  int64 entity = 1;
+  WindowReduceSelector selector = 2;
+  bytes table = 3;
+}
+
+message WindowReduceDeleteResponse {
+  WindowReduceStatusCode code = 1;
+  string message = 2;
+  // Additive receipt, as for a removal.
+  uint64 samples_before = 16;
+  uint64 samples_after = 17;
+  uint64 cells_before = 18;
+  uint64 cells_removed = 19;
+}
+
+// The thin envelope of a call: which module and operation, and the encoded request.
+message WindowReduceCall {
+  uint32 module_id = 1;
+  uint32 operation_id = 2;
+  bytes payload = 3;
+}
+
+message CallStatus {
+  int32 code = 1;
+  string message = 2;
+}
+
+message WindowReduceReply {
+  CallStatus status = 1;
+  CallStatus response_status = 2;
+  bytes payload = 3;
+}

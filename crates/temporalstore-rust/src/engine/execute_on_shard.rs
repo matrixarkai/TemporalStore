@@ -155,7 +155,7 @@ fn stage_element_name_outcome(
     value: Option<Vec<u8>>,
 ) {
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-        kind: kind.to_string(),
+        kind: kind.into(),
         object_key: object_key.to_string(),
         // MOVED, NOT CLONED. `element_name` is taken BY VALUE -- it is already the caller's
         // allocation handed over -- and this function ends here, so nothing reads it after.
@@ -184,7 +184,7 @@ fn stage_meta_outcome(
     deleted: bool,
 ) {
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-        kind: kind.to_string(),
+        kind: kind.into(),
         object_key: object_key.to_string(),
         element_name: None,
         object_id: stable_block_object_id(shard_id, kind, object_key),
@@ -247,7 +247,7 @@ fn load_context_node(
     shard: &ShardState,
     object_key: &str,
 ) -> Option<ContextNode> {
-    // THE BUCKET THE PAGE CACHE IS KEYED BY, derived the way the write path derives it.
+    // THE BUCKET the block cache is keyed by, derived the way the write path derives it.
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     let routing_bucket = Some(block_routing_bucket(
         object_key,
@@ -394,10 +394,43 @@ fn write_context_node(
 /// all, and otherwise examines only the key it is given plus the three control-state families
 /// derived from it. It never walks the keyspace, so the O(due) cost of an expiry round is
 /// untouched. Cache retirement runs only when a record was actually dropped and uses
-/// record-scoped indexes, so unrelated payload pages are not scanned.
+/// record-scoped indexes, so unrelated payload blocks are not scanned.
 ///
 /// THE CACHE GOES WITH THE RECORD. Dropping the record and leaving its cached copy would let
 /// the very next read answer from the copy, which is the bug this exists to close.
+/// Removes a key's whole feature series in one log record: the series went, not one point. Returns
+/// whether anything changed.
+///
+/// THE BLOCKS ARE MARKED DELETED BEFORE THE SERIES IS REMOVED, not after, and `StringDelete` has the
+/// same two lines in this order for the same reason: `mark_bucket_index_object_deleted` finds an
+/// object's blocks by NAMING each one through the object's row and the block lookup, and keeps any
+/// block it cannot name. Removing the series first took the row the names come from, so the marker
+/// named nothing, kept every block, and left them LIVE in `bucket_map` with no object naming them:
+/// the index writer then refuses the shard ("holds a block whose stored key would name no object").
+///
+/// THE RETRY RING GOES WITH THE SERIES: a key written again afterwards is a new key, and a token it
+/// saw before is not a replay. THE NUMERIC VIEW GOES TOO: this is the one feature write that does not
+/// publish blocks, so the invalidation in `sync_bucket_index_object_blocks_with_mode` does not cover
+/// it, and a key re-created with the same number of points would answer with the sums of the deleted
+/// series.
+fn delete_whole_feature_series(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) -> bool {
+    let mut mutated = false;
+    stage_meta_outcome(shard_id, "feature", key, start_routing_bucket, end_routing_bucket, None, None, true);
+    mutated |= mark_bucket_index_object_deleted(shard, key);
+    mutated |= shard.features_mut().remove(key).is_some();
+    shard.forget_retry_ring(key);
+    control_rollup::feature_forget(shard, key);
+    let _ = cache.invalidate_record(shard_id, "feature", key);
+    mutated
+}
+
 fn drop_if_expired(
     cache: &MultiLayerCache,
     shard_id: ShardId,
@@ -517,6 +550,15 @@ static GATED_LISTING_DECLINED: std::sync::atomic::AtomicU64 = std::sync::atomic:
 /// to tell "the fold served" from "something cheaper served", and without this the map path
 /// is indistinguishable from a cache hit -- both leave the fold counters at zero.
 static SET_LISTING_FROM_MAP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// How many `SetCard` / `SetIsMember` answers were read straight from the durable member map,
+/// without building a listing. A listing answer and a point answer are the same integer, so a
+/// test needs this to tell which one produced it.
+static SET_POINT_FROM_MAP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Point answers (`SetCard`, `SetIsMember`) read from the member map so far.
+pub fn set_point_answers_from_map() -> u64 {
+    SET_POINT_FROM_MAP.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// (derived, declined, from_map) for gated container listings. The third exists so a test can
 /// still tell WHICH mechanism answered once the durable map became the preferred one: a map
@@ -672,6 +714,10 @@ pub(super) fn execute_hash_multi_get(
     }
 }
 
+#[path = "prepared_hash_reads.rs"]
+mod prepared_hash_reads;
+pub(super) use prepared_hash_reads::{PreparedHashBatch, PreparedHashRead};
+
 pub(super) fn execute_hash_multi_get_projected(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -683,159 +729,9 @@ pub(super) fn execute_hash_multi_get_projected(
     projection_plan: &container_blocks::Utf8ProjectionPlan<'_>,
     projection_scratch: &mut container_blocks::Utf8ProjectionScratch,
 ) -> ProjectedHashValues {
-    if let [field] = fields {
-        if let Some(bytes) = shard.bucket_index.hashes.cached_timestamp_bytes(key, field) {
-            #[cfg(test)]
-            PROJECTED_FIELD_CACHE_HITS.with(|count| count.set(count.get().saturating_add(1)));
-            return ProjectedHashValues::Owned(vec![Some(bytes.to_vec())]);
-        }
-    }
-    let Some(hash_fields) = shard.bucket_index.hashes.get(key) else {
-        return ProjectedHashValues::Missing(fields.len());
-    };
-    // Point reads and conditional writes share this invalidated-under-lock field cache.
-    // An indexed field must still exist; negative, old or malformed cache entries do
-    // not replace the authoritative packed-row lookup.
-    if let [field] = fields {
-        if hash_fields.get(field).is_some() {
-            let cached = crate::alloc_probe::in_class(
-                crate::alloc_probe::AllocClass::CacheRead,
-                || cache.get_shared(&CacheKey::hash(shard_id, key, field)),
-            );
-            if let Ok(Some(frame)) = cached {
-                if let Some(Some(value)) =
-                    super::command_validation::decode_borrowed_cached_bytes(&frame)
-                {
-                    let range = if value.is_empty() {
-                        Some(0..0)
-                    } else {
-                        (value.as_ptr() as usize)
-                            .checked_sub(frame.as_ptr() as usize)
-                            .and_then(|start| {
-                                start.checked_add(value.len())
-                                    .filter(|end| *end <= frame.len())
-                                    .map(|end| start..end)
-                            })
-                    };
-                    if let Some(range) = range {
-                        #[cfg(test)]
-                        PROJECTED_FIELD_CACHE_HITS.with(|count| {
-                            count.set(count.get().saturating_add(1));
-                        });
-                        return ProjectedHashValues::Shared {
-                            frame,
-                            ranges: vec![Some(range)],
-                        };
-                    }
-                }
-            }
-        }
-    }
-    // A packed row gives every present field the same address. Detect that common case
-    // without allocating a per-command address map, fetch its frame once, and project all
-    // requested fields from the retained bytes. Distinct legacy/per-field addresses keep
-    // the established independent-read path. Both collections are sorted by field name, so
-    // merge them once and retain presence in reusable scratch instead of binary-searching the
-    // field map twice per requested slot.
-    let mut shared: Option<(&ElementEntry, &str)> = None;
-    let mut distinct_addresses = false;
-    projection_scratch.reset_index_presence(fields.len());
-    let mut stored = hash_fields.entries().peekable();
-    for &index in projection_plan.positions_by_name() {
-        let field = fields[index].as_str();
-        while stored.peek().is_some_and(|(name, _)| &name[..] < field) {
-            stored.next();
-        }
-        let Some(&(name, address)) = stored.peek() else {
-            break;
-        };
-        if &name[..] != field {
-            continue;
-        }
-        projection_scratch.mark_present_in_index(index);
-        match shared {
-            None => shared = Some((address, field)),
-            Some((held, _)) if held == address => {}
-            Some(_) => {
-                distinct_addresses = true;
-                break;
-            }
-        }
-    }
-    if !distinct_addresses {
-        if let Some((address, first_field)) = shared {
-            #[cfg(test)]
-            PROJECTED_FRAME_FETCHES.with(|count| count.set(count.get().saturating_add(1)));
-            let frame = read_block_frame_shared(
-                cache,
-                block_store,
-                shard_id,
-                address,
-                BlockIdentity::of(shard_id, "hash", key, Some(first_field)),
-                Some(routing_bucket),
-            );
-            let Some(frame) = frame else {
-                return ProjectedHashValues::Missing(fields.len());
-            };
-            match container_blocks::project_utf8_container_element_ranges_with_plan(
-                frame.as_ref(),
-                projection_plan,
-                projection_scratch,
-            ) {
-                container_blocks::Utf8ContainerRangeProjection::Values(mut ranges) => {
-                    for (index, range) in ranges.iter_mut().enumerate() {
-                        if !projection_scratch.is_present_in_index(index) {
-                            *range = None;
-                        }
-                    }
-                    ProjectedHashValues::Shared { frame, ranges }
-                }
-                container_blocks::Utf8ContainerRangeProjection::Corrupt(_) => {
-                    note_corrupt_container_block();
-                    ProjectedHashValues::Missing(fields.len())
-                }
-                container_blocks::Utf8ContainerRangeProjection::NotFramed
-                | container_blocks::Utf8ContainerRangeProjection::OtherSpelling => {
-                    ProjectedHashValues::Owned(
-                        fields
-                            .iter()
-                            .enumerate()
-                            .map(|(index, field)| {
-                                projection_scratch
-                                    .is_present_in_index(index)
-                                    .then(|| select_container_value(frame.as_ref(), field))
-                                    .flatten()
-                            })
-                            .collect(),
-                    )
-                }
-            }
-        } else {
-            ProjectedHashValues::Missing(fields.len())
-        }
-    } else {
-        ProjectedHashValues::Owned(
-            fields
-                .iter()
-                .map(|field| {
-                    hash_fields.get(field).and_then(|address| {
-                        #[cfg(test)]
-                        PROJECTED_FRAME_FETCHES.with(|count| {
-                            count.set(count.get().saturating_add(1));
-                        });
-                        read_block_bytes(
-                            cache,
-                            block_store,
-                            shard_id,
-                            address,
-                            BlockIdentity::of(shard_id, "hash", key, Some(field.as_str())),
-                            Some(routing_bucket),
-                        )
-                    })
-                })
-                .collect(),
-        )
-    }
+    PreparedHashRead::prepare(cache, shard_id, shard, key, fields, projection_plan,
+        projection_scratch, false, usize::MAX)
+        .load(cache, block_store, shard_id, routing_bucket, key, fields, projection_plan, projection_scratch)
 }
 
 fn deduplicate_hash_entries(mut entries: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
@@ -1373,7 +1269,7 @@ mod packed_hash_entry_tests {
 
 /// Replaces every point of `key`'s series stamped in `[start_ms, end_ms]` with `points`, trims
 /// to the feature ceiling and restates the bucket index with the live blocks. Returns whether
-/// anything changed, OR-ed with `mutated`. `FeatureReplace` and `CellRollup` replace a range the
+/// anything changed, OR-ed with `mutated`. `FeatureReplace` and `WindowReduceRollup` replace a range the
 /// same way.
 #[allow(clippy::too_many_arguments)]
 fn replace_feature_range(
@@ -1413,15 +1309,18 @@ fn replace_feature_range(
         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
         .map(|(timestamp_ms, _)| timestamp_ms)
         .collect::<Vec<_>>();
-    mutated |= drop_timestamped_points(
+    let mut vacated: Vec<ElementEntry> = Vec::new();
+    mutated |= drop_timestamped_points_naming_what_left(
         shard_id,
         "feature",
         key,
         routing_bucket,
         series,
         &replaced,
+        Some(&mut vacated),
     );
     let points = sorted_feature_points(points);
+    let mut published: Vec<ElementEntry> = Vec::new();
     if let Ok(addresses) = append_timestamped_kv_blocks(
         cache,
         block_store,
@@ -1435,11 +1334,17 @@ fn replace_feature_range(
         next_block_index,
     ) {
         for (timestamp_ms, address) in addresses {
+            // The range was emptied above, but a point of the request outside it can still land
+            // on a point the series holds, and that point's block may be left with none.
+            if let Some(superseded) = series.get(timestamp_ms) {
+                vacated.push(superseded.clone());
+            }
+            published.push(address.clone());
             series.set(timestamp_ms, address);
             mutated = true;
         }
     }
-    mutated |= trim_timestamped_series(
+    mutated |= trim_timestamped_series_naming_what_left(
         shard_id,
         "feature",
         key,
@@ -1447,17 +1352,106 @@ fn replace_feature_range(
         series,
         feature_max_size,
         trim_boundary_record,
+        Some(&mut vacated),
     );
-    let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-    sync_bucket_index_object_blocks(
-        shard,
-        shard_id,
-        "feature",
-        key,
-        live_addresses,
-        mutated,
-    );
+    file_series_blocks_after_write(shard, shard_id, "feature", key, published, vacated, mutated);
     mutated
+}
+
+/// What a read-modify-write on one string does to the value it finds.
+enum StringChange {
+    /// `INCRBY`: add a signed amount to the integer the value spells.
+    Add(i64),
+    /// `APPEND`: put these bytes after the value.
+    Append(Vec<u8>),
+}
+
+/// `INCRBY` and `APPEND` as ONE command: read the value, compute the new one and store it while
+/// the caller holds the shard, so two writers on a key cannot both read the old value.
+///
+/// THE STORE IS THE EXISTING ONE. The write is handed to `execute_on_shard` as an unconditional
+/// `StringSetConditional` that keeps the deadline, so the block, the index entry, the logical
+/// size, the logged outcome and the cache drop are the ones every string write already makes --
+/// the bytes this puts on disk are the bytes a `SET ... KEEPTTL` of the same value puts there.
+/// Only the answer differs: the new integer, or the new length.
+///
+/// A stored value that is not an integer, or a sum past the `i64` range, was refused before this
+/// ran (`validate_command_preconditions`); if one still arrives it is answered with nothing and
+/// writes nothing.
+#[allow(clippy::too_many_arguments)]
+fn execute_string_read_modify_write(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    feature_max_size: usize,
+    async_storage: bool,
+    control_rollup_enabled: bool,
+    control_coalesce_persist: bool,
+    control_state_max_size: usize,
+    control_distinct_sketch: bool,
+    trim_boundary_record: bool,
+    set_listing_from_map: bool,
+    shard_id: ShardId,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    shard: &mut ShardState,
+    key: String,
+    change: StringChange,
+) -> ExecuteOutcome {
+    // A lapsed key is collected first, so the read below finds nothing and the write starts a
+    // fresh value, exactly as `StringSetConditional` treats it.
+    let mut mutated = false;
+    mutated |= drop_if_expired(cache, shard_id, shard, &key);
+    let old = read_bucket_index_value(cache, block_store, shard_id, shard, "string", &key, None);
+    let (new_value, answer) = match change {
+        StringChange::Add(increment) => {
+            let current = match old.as_deref() {
+                None => Some(0_i64),
+                Some(bytes) => parse_i64_slice(bytes),
+            };
+            match current.and_then(|current| current.checked_add(increment)) {
+                Some(sum) => (sum.to_string().into_bytes(), sum),
+                None => {
+                    return ExecuteOutcome {
+                        response: CommandResponse::Empty,
+                        mutated,
+                    }
+                }
+            }
+        }
+        StringChange::Append(tail) => {
+            let mut joined = old.unwrap_or_default();
+            joined.extend_from_slice(&tail);
+            let length = joined.len() as i64;
+            (joined, length)
+        }
+    };
+    let mut outcome = execute_on_shard(
+        cache,
+        block_store,
+        feature_max_size,
+        async_storage,
+        control_rollup_enabled,
+        control_coalesce_persist,
+        control_state_max_size,
+        control_distinct_sketch,
+        trim_boundary_record,
+        set_listing_from_map,
+        shard_id,
+        start_routing_bucket,
+        end_routing_bucket,
+        shard,
+        Command::StringSetConditional {
+            key,
+            value: new_value,
+            ttl_ms: None,
+            condition: StringSetCondition::Always,
+            return_old: false,
+            keep_ttl: true,
+        },
+    );
+    outcome.mutated |= mutated;
+    outcome.response = CommandResponse::Integer { value: answer };
+    outcome
 }
 
 pub(crate) fn execute_on_shard(
@@ -1509,6 +1503,46 @@ pub(crate) fn execute_on_shard(
                 entries,
             )
             .0
+        }
+        Command::StringIncrBy { key, increment } => {
+            return execute_string_read_modify_write(
+                cache,
+                block_store,
+                feature_max_size,
+                async_storage,
+                control_rollup_enabled,
+                control_coalesce_persist,
+                control_state_max_size,
+                control_distinct_sketch,
+                trim_boundary_record,
+                set_listing_from_map,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                key,
+                StringChange::Add(increment),
+            );
+        }
+        Command::StringAppend { key, value } => {
+            return execute_string_read_modify_write(
+                cache,
+                block_store,
+                feature_max_size,
+                async_storage,
+                control_rollup_enabled,
+                control_coalesce_persist,
+                control_state_max_size,
+                control_distinct_sketch,
+                trim_boundary_record,
+                set_listing_from_map,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                key,
+                StringChange::Append(value),
+            );
         }
         command => command,
     };
@@ -1744,23 +1778,48 @@ pub(crate) fn execute_on_shard(
             keep_ttl,
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let old_value = shard.string_address(key.as_str()).and_then(|address| {
-                read_block_bytes(
-                    cache,
-                    block_store,
-                    shard_id,
-                    &address,
-                    // `shard.strings`: a whole-object block, so the element is `None` and the
-                    // object is the key itself.
-                    BlockIdentity::of(shard_id, "string", &key, None),
-                    Some(block_routing_bucket(
-                        &key,
-                        start_routing_bucket,
-                        end_routing_bucket,
-                    )),
-                )
-            });
-            let exists = old_value.is_some();
+            // THE OLD VALUE IS COPIED OUT ONLY FOR A CALLER THAT ASKED FOR IT.
+            //
+            // A write that answers "did it land" used to read the whole old value into a `Vec`
+            // first -- a copy of every byte of the value it was about to replace, and a block-store
+            // read when the old frame was not cached -- and then dropped it unread. What the write
+            // needs from the old value is one bit, and only under NX/XX: whether the key is there,
+            // which its row says without a block read. An unconditional write that does not return
+            // the old value needs nothing from it.
+            let string_identity = BlockIdentity::of(shard_id, "string", &key, None);
+            let string_bucket = Some(block_routing_bucket(
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+            ));
+            let old_value = if return_old {
+                shard.string_address(key.as_str()).and_then(|address| {
+                    read_block_bytes(
+                        cache,
+                        block_store,
+                        shard_id,
+                        &address,
+                        // `shard.strings`: a whole-object block, so the element is `None` and the
+                        // object is the key itself.
+                        string_identity,
+                        string_bucket,
+                    )
+                })
+            } else {
+                None
+            };
+            let exists = if return_old {
+                old_value.is_some()
+            } else if condition == StringSetCondition::Always {
+                // Not consulted below: `Always` sets whatever is there.
+                false
+            } else {
+                // PRESENCE IS THE ROW. `string_address` answers from the key's row in memory, with no
+                // block read: NX and XX ask whether the key is there, which the row says. A row
+                // whose block cannot be read still counts as there (a read of it answers nothing,
+                // and `EXISTS` and `TYPE` already agree with the row).
+                shard.string_address(key.as_str()).is_some()
+            };
             let should_set = match condition {
                 StringSetCondition::Always => true,
                 StringSetCondition::IfExists => exists,
@@ -1908,6 +1967,57 @@ pub(crate) fn execute_on_shard(
                 ),
             }
         }
+        Command::StringLen { key } => {
+            if drop_if_expired(cache, shard_id, shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            // THE LENGTH IS TAKEN FROM THE CACHE'S SHARED BYTES, NOT FROM A COPY OF THEM. A string
+            // block is the whole value, so its length is the value's.
+            CommandResponse::Integer {
+                value: read_bucket_index_value_shared(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard,
+                    "string",
+                    &key,
+                    None,
+                )
+                .map_or(0, |bytes| bytes.len() as i64),
+            }
+        }
+        Command::StringGetRange { key, start, end } => {
+            if drop_if_expired(cache, shard_id, shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
+                return ExecuteOutcome {
+                    response: CommandResponse::Bytes { value: None },
+                    mutated,
+                };
+            }
+            // ONLY THE SLICE IS COPIED. The whole value used to be copied out of the cache and the
+            // door then copied the range out of that copy.
+            CommandResponse::Bytes {
+                value: read_bucket_index_value_shared(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard,
+                    "string",
+                    &key,
+                    None,
+                )
+                .map(|bytes| {
+                    let (from, to) = crate::redis::normalize_range(start, end, bytes.len());
+                    bytes[from..to].to_vec()
+                }),
+            }
+        }
         Command::StringDelete { key } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             stage_meta_outcome(
@@ -1921,7 +2031,7 @@ pub(crate) fn execute_on_shard(
                 true,
             );
             mutated |= delete_record(shard, &key);
-            let _ = cache.invalidate_record(shard_id, "string", &key);
+            invalidate_records_all_batched(cache, shard_id, &[key.as_str()], &CACHE_SWEEP_COUNTS);
             CommandResponse::Empty
         }
         Command::HashSet { key, field, value } => {
@@ -1985,6 +2095,28 @@ pub(crate) fn execute_on_shard(
             }
             invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
             CommandResponse::Empty
+        }
+        Command::HashFieldExists { key, field } => {
+            if drop_if_expired(cache, shard_id, shard, &key) {
+                mutated = true;
+                invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            // THE FIELD MAP IS THE SOURCE `HashGet` READS A FIELD'S ADDRESS FROM, so asking it
+            // whether the field is there answers what `HashGet` would answer `Some` or `None` to,
+            // without opening the field's block and copying its value out to be dropped.
+            CommandResponse::Integer {
+                value: i64::from(
+                    shard
+                        .bucket_index
+                        .hashes
+                        .get(&key)
+                        .is_some_and(|fields| fields.contains_key(&field)),
+                ),
+            }
         }
         Command::HashGet { key, field } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
@@ -2092,6 +2224,9 @@ pub(crate) fn execute_on_shard(
         }
         Command::HashMultiSetIfTimestampOlder { .. } => unreachable!(
             "conditional hash writes are handled before command dispatch"
+        ),
+        Command::StringIncrBy { .. } | Command::StringAppend { .. } => unreachable!(
+            "string read-modify-write commands are handled before command dispatch"
         ),
         Command::HashIncrBy {
             key,
@@ -2215,19 +2350,11 @@ pub(crate) fn execute_on_shard(
             // answered, so a divergence is OBSERVED rather than SUFFERED and no read is lost
             // while the measurement is being taken.
             let indexed = bucket_index_element_name_block_addresses(shard, "hash", &key);
-            // Copied out before the block reads: those borrow the cache and the block store while
-            // this borrows the shard, and the addresses are what both halves of the union need.
-            let contained: Vec<(String, crate::block_store::ElementEntry)> = shard
-                .bucket_index
-                .hashes
-                .get(&key)
-                .map(|fields| {
-                    fields
-                        .iter()
-                        .map(|(name, address)| (name.to_string(), address.clone()))
-                        .collect()
-                })
-                .unwrap_or_default();
+            // READ IN PLACE. The block reads below take the cache and the block store and nothing
+            // from the shard, so the container is borrowed for the whole answer instead of being
+            // copied out first: that copy was a name `String` and an address per field, spent
+            // before the first block was read and then spent again to build the answer.
+            let container = shard.bucket_index.hashes.get(&key);
 
             // THE UNION, KEYED ON THE FIELD NAME, AND WHICH SIDE WINS A TIE.
             //
@@ -2236,14 +2363,35 @@ pub(crate) fn execute_on_shard(
             // the index does not name. A union that preferred the container would change the
             // address served for every read in the store, and a change whose purpose is to
             // measure is not entitled to do that.
-            let mut resolved: Vec<(
-                String,
-                Option<std::sync::Arc<str>>,
-                crate::block_store::ElementEntry,
-            )> = Vec::with_capacity(indexed.len() + contained.len());
-            let mut named_by_index: std::collections::HashSet<String> =
+            //
+            // BORROWED, NOT COPIED. Each name below is held as a `&str` of the entry or the
+            // container it came from, and the only `String` built per field is the one the answer
+            // returns. The union used to spell every container field three times -- once to copy it
+            // out, once as an `Arc<str>` to name its block, once more to return -- and to key a
+            // set with a clone of each index name.
+            let routing_bucket =
+                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let mut block_keys = crate::engine::BlockKeys::new();
+            let mut entries: Vec<(String, Vec<u8>)> =
+                Vec::with_capacity(indexed.len() + container.map_or(0, |fields| fields.len()));
+            let mut read_field =
+                |name: &str, address: &crate::block_store::ElementEntry| {
+                    let cache_key = block_keys.key(shard_id, address, Some(routing_bucket));
+                    if let Some(value) = read_block_value_keyed(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        // The element the whole-object door handed back beside this address.
+                        BlockIdentity::of(shard_id, "hash", &key, Some(name)),
+                        cache_key,
+                    ) {
+                        entries.push((name.to_string(), value));
+                    }
+                };
+            let mut named_by_index: std::collections::HashSet<&str> =
                 std::collections::HashSet::with_capacity(indexed.len());
-            for (element_name, address) in indexed {
+            for (element_name, address) in &indexed {
                 // A `None` ELEMENT NAMES NO FIELD, SO IT IS NOT SERVED AS ONE.
                 //
                 // THIS USED TO DEFAULT IT TO `""` AND SERVE IT. The paragraph here said a nameless
@@ -2266,22 +2414,20 @@ pub(crate) fn execute_on_shard(
                 // carry, arriving on the READ path. The field a nameless block holds is named inside
                 // the block's own frame and in `shard.bucket_index.hashes`, and the union below serves it from
                 // there -- so nothing is lost by skipping, only a name that was never written.
-                let Some(name) = element_name.as_deref().map(str::to_string) else {
+                let Some(name) = element_name.as_deref() else {
                     continue;
                 };
-                named_by_index.insert(name.clone());
-                resolved.push((name, element_name, address));
+                named_by_index.insert(name);
+                read_field(name, address);
             }
 
             // THE MEASUREMENT. See `hash_read_divergence` for what a zero from it does and does
             // not mean; the short form is that a zero is a statement about the routes traffic
             // took and NOT a proof of completeness on the routes it did not.
             {
-                let held: std::collections::HashSet<&str> =
-                    contained.iter().map(|(name, _)| name.as_str()).collect();
                 for name in named_by_index
                     .iter()
-                    .filter(|name| !held.contains(name.as_str()))
+                    .filter(|name| !container.is_some_and(|fields| fields.contains_key(name)))
                 {
                     hash_read_divergence::note(&key, name);
                 }
@@ -2291,34 +2437,16 @@ pub(crate) fn execute_on_shard(
             // The container's own fields that the index does not name. These are the reads the
             // union ADDS: without it they are not served at all, which is why the union is the
             // part that makes observing a divergence safe rather than merely informative.
-            for (name, address) in contained {
-                if !named_by_index.contains(&name) {
-                    let element_name: std::sync::Arc<str> = std::sync::Arc::from(name.as_str());
-                    resolved.push((name, Some(element_name), address));
+            //
+            // The routing bucket is the object's, so it is one value for every field; and the
+            // fields of one hash sit in few slabs, so the block keys share their record key.
+            if let Some(fields) = container {
+                for (name, address) in fields.iter() {
+                    if !named_by_index.contains(&**name) {
+                        read_field(&**name, address);
+                    }
                 }
             }
-
-            // The routing bucket is the object's, so it is one value for every field; and the
-            // fields of one hash sit in few slabs, so the page keys share their record key.
-            let routing_bucket =
-                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            let mut page_keys = crate::engine::PageKeys::new();
-            let entries = resolved
-                .into_iter()
-                .filter_map(|(name, element_name, address)| {
-                    let cache_key = page_keys.key(shard_id, &address, Some(routing_bucket));
-                    read_block_value_keyed(
-                        cache,
-                        block_store,
-                        shard_id,
-                        &address,
-                        // The element the whole-object door handed back beside this address.
-                        BlockIdentity::of(shard_id, "hash", &key, element_name.as_deref()),
-                        cache_key,
-                    )
-                    .map(|value| (name, value))
-                })
-                .collect();
             CommandResponse::HashEntries { entries }
         }
         Command::HashLen { key } => {
@@ -2461,6 +2589,83 @@ pub(crate) fn execute_on_shard(
             let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty
         }
+        Command::SetAddMany { key, members } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            // Each member goes through the single-member commands, so what it asks the set and what it
+            // writes are exactly what a `SetIsMember` and a `SetAdd` (or `SetRemove`) issued one at a
+            // time would ask and write: the same elements, the same blocks, in the same order.
+            let run = |shard: &mut ShardState, command: Command| {
+                execute_on_shard(
+                    cache,
+                    block_store,
+                    feature_max_size,
+                    async_storage,
+                    control_rollup_enabled,
+                    control_coalesce_persist,
+                    control_state_max_size,
+                    control_distinct_sketch,
+                    trim_boundary_record,
+                    set_listing_from_map,
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                )
+            };
+            let mut added = 0i64;
+            for member in members {
+                let asked = run(
+                    shard,
+                    Command::SetIsMember { key: key.clone(), member: member.clone() },
+                );
+                mutated |= asked.mutated;
+                // Each add lands before the next question, so a member named twice counts once.
+                if !matches!(asked.response, CommandResponse::Integer { value: 1 }) {
+                    mutated |= run(shard, Command::SetAdd { key: key.clone(), member }).mutated;
+                    added += 1;
+                }
+            }
+            CommandResponse::Integer { value: added }
+        }
+        Command::ZSetAddMany { key, members } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            // Each member goes through `ZSetAdd`, so what it writes is what the same number of
+            // `ZSetAdd` commands written one at a time would write, in the same order.
+            let run = |shard: &mut ShardState, command: Command| {
+                execute_on_shard(
+                    cache,
+                    block_store,
+                    feature_max_size,
+                    async_storage,
+                    control_rollup_enabled,
+                    control_coalesce_persist,
+                    control_state_max_size,
+                    control_distinct_sketch,
+                    trim_boundary_record,
+                    set_listing_from_map,
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                )
+            };
+            let mut added = 0i64;
+            for member in members {
+                let outcome = run(
+                    shard,
+                    Command::ZSetAdd { key: key.clone(), member: member.member, score: member.score },
+                );
+                mutated |= outcome.mutated;
+                if let CommandResponse::Integer { value } = outcome.response {
+                    added += value;
+                }
+            }
+            CommandResponse::Integer { value: added }
+        }
         Command::ZSetAdd { key, member, score } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let biased = zset_score_bits(score);
@@ -2532,7 +2737,7 @@ pub(crate) fn execute_on_shard(
                 // `RecordedKind::outcome_value`) -- a replay of the OTHER, standalone-filed
                 // outcome would have found no score to install and refused the whole shard load.
                 // One call now does both, record first.
-                super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
+                super::recorded_map::install_appended_element::<super::recorded_map::ZSetKind>(
                     shard,
                     shard_id,
                     &key,
@@ -2556,14 +2761,39 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            CommandResponse::Bytes {
-                value: shard
-                    .bucket_index
-                    .zsets
-                    .get(&key)
-                    .and_then(|members| members.get(&member))
-                    .map(|(biased, _)| zset_score_string(*biased).into_bytes()),
+            zset_score_answer(shard, &key, &member)
+        }
+        Command::ZSetRemoveMany { key, members } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let run = |shard: &mut ShardState, command: Command| {
+                execute_on_shard(
+                    cache,
+                    block_store,
+                    feature_max_size,
+                    async_storage,
+                    control_rollup_enabled,
+                    control_coalesce_persist,
+                    control_state_max_size,
+                    control_distinct_sketch,
+                    trim_boundary_record,
+                    set_listing_from_map,
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                )
+            };
+            let mut removed = 0i64;
+            for member in members {
+                let outcome = run(shard, Command::ZSetRemove { key: key.clone(), member });
+                mutated |= outcome.mutated;
+                if let CommandResponse::Integer { value } = outcome.response {
+                    removed += value;
+                }
             }
+            CommandResponse::Integer { value: removed }
         }
         Command::ZSetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
@@ -2609,9 +2839,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            CommandResponse::Integer {
-                value: shard.bucket_index.zsets.get(&key).map_or(0, BTreeMap::len) as i64,
-            }
+            zset_card_answer(shard, &key)
         }
         Command::ZSetRange {
             key,
@@ -2680,32 +2908,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let members = shard
-                .bucket_index
-                .zsets
-                .get(&key)
-                .map(|members| {
-                    if after.is_empty() {
-                        members
-                            .iter()
-                            .take(limit)
-                            .flat_map(|(member, (biased, _))| {
-                                [member.clone(), zset_score_string(*biased).into_bytes()]
-                            })
-                            .collect::<Vec<_>>()
-                    } else {
-                        use std::ops::Bound::{Excluded, Unbounded};
-                        members
-                            .range::<[u8], _>((Excluded(after.as_slice()), Unbounded))
-                            .take(limit)
-                            .flat_map(|(member, (biased, _))| {
-                                [member.clone(), zset_score_string(*biased).into_bytes()]
-                            })
-                            .collect::<Vec<_>>()
-                    }
-                })
-                .unwrap_or_default();
-            CommandResponse::Members { members }
+            zset_scan_answer(shard, &key, &after, limit)
         }
         Command::SeenCheck {
             key,
@@ -2733,10 +2936,7 @@ pub(crate) fn execute_on_shard(
                 Some(now),
                 false,
             );
-            let seen = shard
-                .seen
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default();
+            let seen = slot_for_write(&mut shard.seen, &key);
             // Bounded sweep from the time-ordered front: enough to keep pace with any
             // sustained rate, never enough to stall a hot call on a huge backlog.
             for _ in 0..128 {
@@ -2850,7 +3050,7 @@ pub(crate) fn execute_on_shard(
                 None,
                 false,
             );
-            shard.buckets.insert(std::sync::Arc::from(&key[..]), next);
+            store_for_write(&mut shard.buckets, &key, next);
             mutated = true;
             CommandResponse::Members {
                 members: bucket_answer(allowed, remaining, retry_after_ms),
@@ -2938,7 +3138,7 @@ pub(crate) fn execute_on_shard(
                 // resident map and THEN filed the bucket-index entry, so a panic between them left
                 // a mutation with no record -- the exact defect class this container removes, found
                 // in the engine rather than argued from. One call now does both, record first.
-                super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
+                super::recorded_map::install_appended_element::<super::recorded_map::ZSetKind>(
                     shard,
                     shard_id,
                     &key,
@@ -3021,7 +3221,7 @@ pub(crate) fn execute_on_shard(
                     async_storage,
                     block_ordinal,
                 ) {
-                    super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
+                    super::recorded_map::install_appended_element::<super::recorded_map::ZSetKind>(
                         shard,
                         shard_id,
                         &key,
@@ -3121,6 +3321,40 @@ pub(crate) fn execute_on_shard(
                 }),
             }
         }
+        Command::ListPushMany { key, members, left } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            // Each element goes through `ListPush`, so what it writes is what the same number of
+            // `ListPush` commands written one at a time would write, in the same order.
+            let run = |shard: &mut ShardState, command: Command| {
+                execute_on_shard(
+                    cache,
+                    block_store,
+                    feature_max_size,
+                    async_storage,
+                    control_rollup_enabled,
+                    control_coalesce_persist,
+                    control_state_max_size,
+                    control_distinct_sketch,
+                    trim_boundary_record,
+                    set_listing_from_map,
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                )
+            };
+            let mut length = 0i64;
+            for member in members {
+                let outcome = run(shard, Command::ListPush { key: key.clone(), member, left });
+                mutated |= outcome.mutated;
+                if let CommandResponse::Integer { value } = outcome.response {
+                    length = value;
+                }
+            }
+            CommandResponse::Integer { value: length }
+        }
         Command::ListPush { key, member, left } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             // READ, NOT `entry().or_default()`, WHICH CLOSES #2087 BY CONSTRUCTION.
@@ -3200,6 +3434,39 @@ pub(crate) fn execute_on_shard(
             let length = shard.bucket_index.lists.get(&key).map_or(0, BTreeMap::len) as i64;
             CommandResponse::Integer { value: length }
         }
+        Command::ListPopMany { key, left, count } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let run = |shard: &mut ShardState, command: Command| {
+                execute_on_shard(
+                    cache,
+                    block_store,
+                    feature_max_size,
+                    async_storage,
+                    control_rollup_enabled,
+                    control_coalesce_persist,
+                    control_state_max_size,
+                    control_distinct_sketch,
+                    trim_boundary_record,
+                    set_listing_from_map,
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                )
+            };
+            let mut popped: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..count {
+                let outcome = run(shard, Command::ListPop { key: key.clone(), left });
+                mutated |= outcome.mutated;
+                match outcome.response {
+                    CommandResponse::Bytes { value: Some(value) } => popped.push(value),
+                    _ => break,
+                }
+            }
+            CommandResponse::Members { members: popped }
+        }
         Command::ListPop { key, left } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
@@ -3255,6 +3522,175 @@ pub(crate) fn execute_on_shard(
                 }
             }
         }
+        Command::ListSet { key, index, member } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            // AN OVERWRITE IS A PUSH THAT NAMES ITS SEQUENCE. The element keeps its biased sequence
+            // word, so a new block is appended under the SAME element name -- the shape `HashSet`
+            // uses to overwrite a field -- and the resident map's address for that sequence is
+            // replaced. Replay therefore needs no new record kind: the later block wins the fold.
+            let target = shard.bucket_index.lists.get(&key).and_then(|list| {
+                let length = list.len() as i64;
+                let resolved = if index < 0 { length + index } else { index };
+                if resolved < 0 || resolved >= length {
+                    None
+                } else {
+                    list.keys().nth(resolved as usize).copied()
+                }
+            });
+            match target {
+                None => CommandResponse::Integer { value: 0 },
+                Some(seq) => {
+                    let element_name = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+                    let object_id = stable_block_object_id(shard_id, "list", &key);
+                    let routing_bucket =
+                        block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+                    let block_ordinal = crate::engine::state::container_block_ordinal(
+                        shard,
+                        "list",
+                        &key,
+                        &element_name,
+                    );
+                    let block = crate::engine::container_blocks::single_element_block(
+                        "list",
+                        &element_name,
+                        &member,
+                    );
+                    if let Ok(address) = append_value_of_object(
+                        cache,
+                        block_store,
+                        shard_id,
+                        &block,
+                        Some(object_id),
+                        Some(element_name.as_str()),
+                        Some(routing_bucket),
+                        async_storage,
+                        block_ordinal,
+                    ) {
+                        upsert_bucket_index_block(
+                            shard,
+                            shard_id,
+                            "list",
+                            &key,
+                            Some(element_name.clone()),
+                            address.clone(),
+                            true,
+                        );
+                        super::recorded_map::install_element::<super::recorded_map::ListKind>(
+                            shard,
+                            shard_id,
+                            &key,
+                            Some(element_name.clone()),
+                            seq,
+                            address.clone(),
+                            true,
+                            address,
+                        );
+                        mutated = true;
+                        CommandResponse::Integer { value: 1 }
+                    } else {
+                        CommandResponse::Integer { value: 0 }
+                    }
+                }
+            }
+        }
+        Command::ListRemove { key, count, member } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let entries: Vec<(i64, _)> = shard
+                .bucket_index
+                .lists
+                .get(&key)
+                .map(|list| list.iter().map(|(seq, address)| (*seq, address.clone())).collect())
+                .unwrap_or_default();
+            let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let limit = if count == 0 { usize::MAX } else { count.unsigned_abs() as usize };
+            let matches = |seq: i64, address: &_| -> bool {
+                let element_name = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+                read_block_bytes(
+                    cache,
+                    block_store,
+                    shard_id,
+                    address,
+                    BlockIdentity::of(shard_id, "list", &key, Some(element_name.as_str())),
+                    Some(routing_bucket),
+                ) == Some(member.clone())
+            };
+            // Positive count scans from the head, negative from the tail, zero removes every match.
+            let mut doomed: Vec<i64> = Vec::new();
+            if count >= 0 {
+                for (seq, address) in entries.iter() {
+                    if doomed.len() >= limit {
+                        break;
+                    }
+                    if matches(*seq, address) {
+                        doomed.push(*seq);
+                    }
+                }
+            } else {
+                for (seq, address) in entries.iter().rev() {
+                    if doomed.len() >= limit {
+                        break;
+                    }
+                    if matches(*seq, address) {
+                        doomed.push(*seq);
+                    }
+                }
+            }
+            for seq in &doomed {
+                let element_name = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
+                mutated = true;
+                super::recorded_map::remove_element::<super::recorded_map::ListKind>(
+                    cache,
+                    block_store,
+                    shard,
+                    shard_id,
+                    &key,
+                    &element_name,
+                    *seq,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    async_storage,
+                );
+            }
+            CommandResponse::Integer { value: doomed.len() as i64 }
+        }
+        Command::ListTrim { key, start, stop } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let seqs: Vec<i64> = shard
+                .bucket_index
+                .lists
+                .get(&key)
+                .map(|list| list.keys().copied().collect())
+                .unwrap_or_default();
+            let length = seqs.len() as i64;
+            let resolve = |index: i64| if index < 0 { length + index } else { index };
+            let from = resolve(start).max(0);
+            let to = resolve(stop).min(length - 1);
+            // The window is the elements to KEEP; an empty window removes them all, and removing
+            // the last element is what deletes the list (`remove_element` lets the key go).
+            let mut removed = 0_i64;
+            for (position, seq) in seqs.iter().enumerate() {
+                let position = position as i64;
+                if from <= to && position >= from && position <= to {
+                    continue;
+                }
+                let element_name = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
+                mutated = true;
+                removed += 1;
+                super::recorded_map::remove_element::<super::recorded_map::ListKind>(
+                    cache,
+                    block_store,
+                    shard,
+                    shard_id,
+                    &key,
+                    &element_name,
+                    *seq,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    async_storage,
+                );
+            }
+            CommandResponse::Integer { value: removed }
+        }
         Command::ListRange { key, start, stop } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
@@ -3299,7 +3735,7 @@ pub(crate) fn execute_on_shard(
                 // `String` per entry.
                 let routing_bucket =
                     block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-                let mut page_keys = crate::engine::PageKeys::new();
+                let mut block_keys = crate::engine::BlockKeys::new();
                 list.map(|list| {
                     list.iter()
                         .skip(from as usize)
@@ -3309,7 +3745,7 @@ pub(crate) fn execute_on_shard(
                             // for this list were filed under.
                             let mut name = [0_u8; 16];
                             let element_name = list_element_name(*seq, &mut name);
-                            let cache_key = page_keys.key(shard_id, address, Some(routing_bucket));
+                            let cache_key = block_keys.key(shard_id, address, Some(routing_bucket));
                             read_block_value_keyed(
                                 cache,
                                 block_store,
@@ -3335,9 +3771,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            CommandResponse::Integer {
-                value: shard.bucket_index.lists.get(&key).map_or(0, BTreeMap::len) as i64,
-            }
+            list_len_answer(shard, &key)
         }
         Command::SetMembers { key } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
@@ -3449,6 +3883,85 @@ pub(crate) fn execute_on_shard(
                 }
             })
         }
+        Command::SetCard { key } => {
+            if drop_if_expired(cache, shard_id, shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            // THE LENGTH OF THE MAP THE MEMBERS LIVE IN. The listing this replaces cloned every
+            // member into a vector (and into the cache) to take its length.
+            if let Some(response) = set_card_answer(shard, &key) {
+                return ExecuteOutcome { response, mutated };
+            }
+            // No resident entry, or the map is switched off for listings: the listing decides,
+            // so a key whose blocks say otherwise is counted from them exactly as it is listed.
+            let listed = execute_on_shard(
+                cache,
+                block_store,
+                feature_max_size,
+                async_storage,
+                control_rollup_enabled,
+                control_coalesce_persist,
+                control_state_max_size,
+                control_distinct_sketch,
+                trim_boundary_record,
+                set_listing_from_map,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                Command::SetMembers { key },
+            );
+            let value = match listed.response {
+                CommandResponse::Members { members } => members.len() as i64,
+                _ => 0,
+            };
+            mutated |= listed.mutated;
+            CommandResponse::Integer { value }
+        }
+        Command::SetIsMember { key, member } => {
+            if drop_if_expired(cache, shard_id, shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            // ONE LOOKUP IN THE ORDERED MAP, keyed by member bytes.
+            if let Some(response) = set_is_member_answer(shard, &key, &member) {
+                return ExecuteOutcome { response, mutated };
+            }
+            let listed = execute_on_shard(
+                cache,
+                block_store,
+                feature_max_size,
+                async_storage,
+                control_rollup_enabled,
+                control_coalesce_persist,
+                control_state_max_size,
+                control_distinct_sketch,
+                trim_boundary_record,
+                set_listing_from_map,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                Command::SetMembers { key },
+            );
+            let value = match listed.response {
+                CommandResponse::Members { members } => {
+                    i64::from(members.iter().any(|listed| *listed == member))
+                }
+                _ => 0,
+            };
+            mutated |= listed.mutated;
+            CommandResponse::Integer { value }
+        }
         Command::SetScan { key, after, limit } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
@@ -3459,24 +3972,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let members = shard
-                .bucket_index
-                .sets
-                .get(&key)
-                .map(|members| {
-                    if after.is_empty() {
-                        members.keys().take(limit).cloned().collect::<Vec<_>>()
-                    } else {
-                        use std::ops::Bound::{Excluded, Unbounded};
-                        members
-                            .range::<[u8], _>((Excluded(after.as_slice()), Unbounded))
-                            .take(limit)
-                            .map(|(member, _)| member.clone())
-                            .collect::<Vec<_>>()
-                    }
-                })
-                .unwrap_or_default();
-            CommandResponse::Members { members }
+            set_scan_answer(shard, &key, &after, limit)
         }
         Command::SetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
@@ -3508,6 +4004,45 @@ pub(crate) fn execute_on_shard(
             let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty
         }
+        Command::SetRemoveMany { key, members } => {
+            // A key past its deadline reads as absent before anything is asked of it.
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            // Each member goes through the single-member commands, so what it asks the set and what it
+            // writes are exactly what a `SetIsMember` and a `SetAdd` (or `SetRemove`) issued one at a
+            // time would ask and write: the same elements, the same blocks, in the same order.
+            let run = |shard: &mut ShardState, command: Command| {
+                execute_on_shard(
+                    cache,
+                    block_store,
+                    feature_max_size,
+                    async_storage,
+                    control_rollup_enabled,
+                    control_coalesce_persist,
+                    control_state_max_size,
+                    control_distinct_sketch,
+                    trim_boundary_record,
+                    set_listing_from_map,
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                )
+            };
+            let mut removed = 0i64;
+            for member in members {
+                let asked = run(
+                    shard,
+                    Command::SetIsMember { key: key.clone(), member: member.clone() },
+                );
+                mutated |= asked.mutated;
+                if matches!(asked.response, CommandResponse::Integer { value: 1 }) {
+                    mutated |= run(shard, Command::SetRemove { key: key.clone(), member }).mutated;
+                    removed += 1;
+                }
+            }
+            CommandResponse::Integer { value: removed }
+        }
         append_command @ (Command::FeatureAppend { .. }
         | Command::FeatureAppendWithTtl { .. }) => {
             let (key, points, ttl_ms) = match append_command {
@@ -3537,7 +4072,8 @@ pub(crate) fn execute_on_shard(
                 .or_default();
             let points = sorted_feature_points(points);
             let mut published: Vec<ElementEntry> = Vec::new();
-            let mut replaced_any = false;
+            // THE ADDRESSES THIS WRITE TOOK A POINT OFF: replaced points here, trimmed ones below.
+            let mut vacated: Vec<ElementEntry> = Vec::new();
             // feature_append_chunks_and_persists_timestamped_kv_blocks: append each
             // timestamped feature point through the block-backed KV layout, then
             // publish the resulting block addresses into the bucket index below.
@@ -3554,19 +4090,19 @@ pub(crate) fn execute_on_shard(
                 next_block_index,
             ) {
                 for (timestamp_ms, address) in addresses {
-                    // A replaced timestamp supersedes a block, and a superseded block must be
-                    // dropped rather than joined -- so record it and take the restating path.
-                    // `set` returns nothing where `insert` returned the superseded value,
-                    // so the question has to be asked BEFORE the write rather than read off it.
-                    if series.get(timestamp_ms).is_some() {
-                        replaced_any = true;
+                    // A replaced timestamp may leave its old block with no point, so the address
+                    // it held is noted. `set` returns nothing where `insert` returned the
+                    // superseded value, so the question has to be asked BEFORE the write rather
+                    // than read off it.
+                    if let Some(superseded) = series.get(timestamp_ms) {
+                        vacated.push(superseded.clone());
                     }
                     series.set(timestamp_ms, address.clone());
                     published.push(address);
                     mutated = true;
                 }
             }
-            let trimmed = trim_timestamped_series(
+            let trimmed = trim_timestamped_series_naming_what_left(
                 shard_id,
                 "feature",
                 &key,
@@ -3574,27 +4110,15 @@ pub(crate) fn execute_on_shard(
                 series,
                 feature_max_size,
                 trim_boundary_record,
+                Some(&mut vacated),
             );
             mutated |= trimmed;
-            if replaced_any || trimmed {
-                // Something was superseded or evicted: the live set has to be restated in full.
-                let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-                sync_bucket_index_object_blocks(
-                    shard,
-                    shard_id,
-                    "feature",
-                    &key,
-                    live_addresses,
-                    mutated,
-                );
-            } else {
-                // A pure append. Publishing only the new blocks leaves the index in the same
-                // state, and stops an append costing the length of the series it joins:
-                // restating every address measured 4.07 MB for one point on a 3,200-point series.
-                sync_bucket_index_object_blocks_with_mode(
-                    shard, shard_id, "feature", &key, published, mutated, false,
-                );
-            }
+            // Publish the blocks written and retire the ones left with no point. Restating the
+            // whole live set instead cost the length of the series on every append at its cap
+            // (and 4.07 MB for one point on a 3,200-point series before a pure append stopped it).
+            file_series_blocks_after_write(
+                shard, shard_id, "feature", &key, published, vacated, mutated,
+            );
             if let Some(ttl_ms) = ttl_ms {
                 if shard.features().get(&key[..]).is_some_and(|series| series.len() > 0) {
                     let expires_at = resolve_now_ms().saturating_add(ttl_ms);
@@ -3619,12 +4143,40 @@ pub(crate) fn execute_on_shard(
             key,
             points,
             policy,
+            retry_token,
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            // RETRY TOKEN ADMISSION, BEFORE ANYTHING IS PLANNED OR WRITTEN. A token the key still
+            // remembers answers the receipt its first application landed, marked as a replay, and
+            // returns here: no plan, no block, no series change, no new ring entry. The decision
+            // is a function of the key's stored ring and the request alone -- no clock -- so a
+            // follower applying the entry and a replay after a restart answer the same. A token
+            // under any other policy cannot reach here (validation refuses it) and is ignored.
+            let retry_token = retry_token.filter(|_| policy == FeatureWritePolicy::MergeReduce);
+            if let Some(token) = retry_token {
+                // A ring belongs to a series: a key that holds none remembers nothing. The
+                // deletes clear the ring where they remove the series; this states the same rule
+                // where the ring is read.
+                let live = shard.features().get(&key[..]).is_some_and(|series| series.len() > 0);
+                if let (true, Some(crate::engine::cell_retry_ring::Admission::Replay(first))) = (
+                    live,
+                    shard.retry_ring(&key).map(|ring| ring.admit(token)),
+                ) {
+                    return ExecuteOutcome {
+                        response: CommandResponse::CellMergeReceipt {
+                            samples_written: first.samples_written,
+                            cells_created: first.cells_created,
+                            cells_merged: first.cells_merged,
+                            replayed: true,
+                        },
+                        mutated,
+                    };
+                }
+            }
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // MERGE-REDUCE: the request's cells are merged into what is stored BEFORE the series
-            // is borrowed for writing, and what is appended below is the merged snapshot at each
+            // is borrowed for writing, and what is appended below is the merged sample at each
             // timestamp -- an ordinary upsert of it. See `cell_merge_append` for where a violation
             // is refused (validation) and why this plan cannot fail here for a validated command.
             let mut merge_receipt = None;
@@ -3650,9 +4202,10 @@ pub(crate) fn execute_on_shard(
                     Err(_) => {
                         return ExecuteOutcome {
                             response: CommandResponse::CellMergeReceipt {
-                                snapshots_written: 0,
+                                samples_written: 0,
                                 cells_created: 0,
                                 cells_merged: 0,
+                                replayed: false,
                             },
                             mutated,
                         };
@@ -3679,7 +4232,10 @@ pub(crate) fn execute_on_shard(
             let mut accepted_points = Vec::new();
             let mut accepted_timestamps = BTreeSet::new();
             let mut published: Vec<ElementEntry> = Vec::new();
-            let mut replaced_any = false;
+            let mut vacated: Vec<ElementEntry> = Vec::new();
+            // Whether THIS command wrote a point. `mutated` can already be set by the expiry
+            // above, so it cannot say.
+            let mut appended = false;
             // Process points in REQUEST order, NOT pre-collapsed by timestamp. feature ADD
             // FIRST policy walks the point list in order and
             // skips any ts already present, so for an in-batch duplicate timestamp the FIRST
@@ -3694,7 +4250,7 @@ pub(crate) fn execute_on_shard(
                     FeatureWritePolicy::InsertIfAbsent => !exists,
                     FeatureWritePolicy::ReplaceExisting => exists,
                     FeatureWritePolicy::Block => false,
-                    // The point is already the merged snapshot: an upsert of it.
+                    // The point is already the merged sample: an upsert of it.
                     FeatureWritePolicy::MergeReduce => true,
                 };
                 if should_write {
@@ -3716,16 +4272,17 @@ pub(crate) fn execute_on_shard(
                     next_block_index,
                 ) {
                     for (timestamp_ms, address) in addresses {
-                        if series.get(timestamp_ms).is_some() {
-                            replaced_any = true;
+                        if let Some(superseded) = series.get(timestamp_ms) {
+                            vacated.push(superseded.clone());
                         }
                         series.set(timestamp_ms, address.clone());
                         published.push(address);
                         mutated = true;
+                        appended = true;
                     }
                 }
             }
-            let trimmed = trim_timestamped_series(
+            let trimmed = trim_timestamped_series_naming_what_left(
                 shard_id,
                 "feature",
                 &key,
@@ -3733,37 +4290,66 @@ pub(crate) fn execute_on_shard(
                 series,
                 feature_max_size,
                 trim_boundary_record,
+                Some(&mut vacated),
             );
             mutated |= trimmed;
-            if replaced_any || trimmed {
-                let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-                sync_bucket_index_object_blocks(
-                    shard,
-                    shard_id,
-                    "feature",
-                    &key,
-                    live_addresses,
-                    mutated,
-                );
-            } else {
-                sync_bucket_index_object_blocks_with_mode(
-                    shard, shard_id, "feature", &key, published, mutated, false,
-                );
+            file_series_blocks_after_write(
+                shard, shard_id, "feature", &key, published, vacated, mutated,
+            );
+            // THE TOKEN IS FILED AFTER THE SERIES IS DONE WITH, because the ring lives in the shard
+            // and the series borrows the whole of it until here. It is filed only when this command
+            // wrote, and only while the key still holds a series: an append that the trim emptied
+            // leaves no key for a ring to belong to, so the ring goes with it.
+            if let (Some(token), Some((samples_written, cells_created, cells_merged))) =
+                (retry_token, merge_receipt)
+            {
+                let live = shard.features().get(&key[..]).is_some_and(|series| series.len() > 0);
+                if !live {
+                    shard.forget_retry_ring(&key);
+                } else if appended {
+                    let filed = crate::engine::cell_retry_ring::RetryReceipt {
+                        samples_written,
+                        cells_created,
+                        cells_merged,
+                    };
+                    // THE ENTRY GOES INTO THE LOG RECORD TOO. The ring lives in the index image,
+                    // which is flushed now and then, so an append that reached only the log is
+                    // replayed from its outcomes and would lose the token a retry needs. The item
+                    // is the entry in the ring's own spelling and replay files it where the
+                    // write did (see the `cell_retry` arm of `apply_outcome_item_inner`). Staged
+                    // only when the ring took the token, so a request without one (or a replay,
+                    // which returned above) records exactly what it always recorded.
+                    if shard.record_retry_token(&key, token, filed).is_ok() {
+                        stage_meta_outcome(
+                            shard_id,
+                            // The item kind text is stored in the log, so it keeps its original spelling: it is a storage tag, not a name.
+                            "cell_retry",
+                            &key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            Some(crate::engine::cell_retry_ring::encode_entry(token, &filed)),
+                            None,
+                            false,
+                        );
+                    }
+                }
             }
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             match merge_receipt {
                 // A plan that was never appended reports nothing landed.
-                Some((snapshots_written, cells_created, cells_merged)) if mutated => {
+                Some((samples_written, cells_created, cells_merged)) if mutated => {
                     CommandResponse::CellMergeReceipt {
-                        snapshots_written,
+                        samples_written,
                         cells_created,
                         cells_merged,
+                        replayed: false,
                     }
                 }
                 Some(_) => CommandResponse::CellMergeReceipt {
-                    snapshots_written: 0,
+                    samples_written: 0,
                     cells_created: 0,
                     cells_merged: 0,
+                    replayed: false,
                 },
                 None => CommandResponse::Integer {
                     value: if mutated { 1 } else { 0 },
@@ -3801,26 +4387,29 @@ pub(crate) fn execute_on_shard(
                         .features()
                         .get(&key[..])
                         .map(|series| {
-                            let mut block_cache = HashMap::new();
                             // feature_append_keeps_oversized_single_timestamped_value_readable:
-                            // range queries rehydrate each timestamp through the packed
-                            // block reader, so a large single timestamped value remains
-                            // readable when it occupies its own block.
+                            // each point is read out of the block it sits in, so a large single
+                            // timestamped value remains readable when it occupies its own block.
+                            // The value is copied once, into the point the answer keeps.
+                            let mut reader = crate::engine::packed_blocks::FeatureRangeReader::new();
                             series
                                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                                 // Default read bound follows feature_max_size so raising the
                                 // retention cap (long-sequence use) also lifts the read limit.
                                 .take(count.unwrap_or(feature_max_size))
                                 .filter_map(|(timestamp_ms, address)| {
-                                    read_feature_point_cached(
+                                    reader.with_point(
                                         cache,
                                         block_store,
                                         shard_id,
                                         timestamp_ms,
                                         address,
                                         identity,
-                                        &mut block_cache,
                                         routing_bucket,
+                                        |value| FeaturePoint {
+                                            timestamp_ms,
+                                            value: value.to_vec(),
+                                        },
                                     )
                                 })
                                 .collect()
@@ -3859,31 +4448,40 @@ pub(crate) fn execute_on_shard(
                 .features()
                 .get(&key[..])
                 .map(|series| {
-                    let mut block_cache = HashMap::new();
+                    // EACH POINT IS DECODED WHERE IT SITS, AND ONLY THE ONES THAT PASS ARE COPIED.
+                    // A point the filters refuse used to be built first -- block decoded, value
+                    // copied -- and then dropped. The row is read straight from the cached block's
+                    // bytes and the point's value is copied only if every filter holds. The window
+                    // is still `limit` points BEFORE the filters, exactly as it was.
+                    let mut reader = crate::engine::packed_blocks::FeatureRangeReader::new();
                     series
                         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                         .take(limit)
                         .filter_map(|(timestamp_ms, address)| {
-                            read_feature_point_cached(
-                                cache,
-                                block_store,
-                                shard_id,
-                                timestamp_ms,
-                                address,
-                                identity,
-                                &mut block_cache,
-                                routing_bucket,
-                            )
-                            .and_then(|point| {
-                                let row = crate::engine::decode_or_count_sequence_row(
-                                    point.timestamp_ms,
-                                    &point.value,
-                                )?;
-                                filters
-                                    .iter()
-                                    .all(|filter| sequence_filter_matches(&row, filter))
-                                    .then_some(point)
-                            })
+                            reader
+                                .with_point(
+                                    cache,
+                                    block_store,
+                                    shard_id,
+                                    timestamp_ms,
+                                    address,
+                                    identity,
+                                    routing_bucket,
+                                    |value| {
+                                        let row = crate::engine::decode_or_count_sequence_row(
+                                            timestamp_ms,
+                                            value,
+                                        )?;
+                                        filters
+                                            .iter()
+                                            .all(|filter| sequence_filter_matches(&row, filter))
+                                            .then(|| FeaturePoint {
+                                                timestamp_ms,
+                                                value: value.to_vec(),
+                                            })
+                                    },
+                                )
+                                .flatten()
                         })
                         .collect()
                 })
@@ -3918,39 +4516,14 @@ pub(crate) fn execute_on_shard(
         }
         Command::FeatureDelete { key } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            // A removal with no element name: the whole series went, not one point.
-            stage_meta_outcome(
+            mutated |= delete_whole_feature_series(
+                cache,
                 shard_id,
-                "feature",
+                shard,
                 &key,
                 start_routing_bucket,
                 end_routing_bucket,
-                None,
-                None,
-                true,
             );
-            // THE BLOCKS ARE MARKED DELETED BEFORE THE SERIES IS REMOVED, not after, and `StringDelete`
-            // above has the same two lines in this order for the same reason.
-            //
-            // `mark_bucket_index_object_deleted` finds an object's blocks by NAMING each one through
-            // the object's row and the block lookup, and keeps any block it cannot name. Removing the
-            // series first took the row the names come from, so the marker named nothing, kept every
-            // block, and left them LIVE in `bucket_map` with no object naming them: the index writer
-            // then refuses the shard ("holds a block whose stored key would name no object"), and
-            // that is an error in a release build too, not an assertion. Every
-            // `FeatureDelete` in the conformance sequences that leave the index unwritable is this
-            // one; no other command is.
-            mutated |= mark_bucket_index_object_deleted(shard, &key);
-            mutated |= shard.features_mut().remove(&key[..]).is_some();
-            // THE ONE FEATURE WRITE THAT DOES NOT PUBLISH BLOCKS, so the invalidation in
-            // `sync_bucket_index_object_blocks_with_mode` does not cover it. The expiry path's
-            // `forget_object` already drops the view beside its own `features_mut().remove`; this
-            // arm removed the series and left the view behind. The length test hid it in the
-            // common case -- an emptied series reads as length 0 against a non-empty view -- but
-            // not when the key is re-created with the same number of points, which then answers
-            // with the sums of the DELETED series.
-            control_rollup::feature_forget(shard, &key);
-            let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
         aggregate_command @ (Command::FeatureAggQuery { .. }
@@ -4008,7 +4581,7 @@ pub(crate) fn execute_on_shard(
                     // Each value is read IN PLACE and parsed where it sits: a point's number is
                     // `parse_i64` of its bytes, or 0 when it is not a number, which is what summing
                     // the one-element slice came to. No `FeaturePoint` or value copy is built.
-                    let mut page_keys = crate::engine::PageKeys::new();
+                    let mut block_keys = crate::engine::BlockKeys::new();
                     let identity = BlockIdentity::of(shard_id, "feature", &key, None);
                     let routing_bucket = Some(block_routing_bucket(
                         &key,
@@ -4030,7 +4603,7 @@ pub(crate) fn execute_on_shard(
                                         address,
                                         identity,
                                         routing_bucket,
-                                        &mut page_keys,
+                                        &mut block_keys,
                                         |value| parse_i64_slice(value).unwrap_or(0),
                                     )
                                     .map(|number| (timestamp_ms, number))
@@ -4049,7 +4622,7 @@ pub(crate) fn execute_on_shard(
                     value: control_rollup::feature_windowed_sum(shard, &key, start_ms, end_ms),
                 }
             } else {
-                let mut page_keys = crate::engine::PageKeys::new();
+                let mut block_keys = crate::engine::BlockKeys::new();
                 let count_only = matches!(
                     crate::engine::window_aggregate::AggName::parse(&aggregator),
                     None | Some(
@@ -4077,7 +4650,7 @@ pub(crate) fn execute_on_shard(
                                 address,
                                 identity,
                                 routing_bucket,
-                                &mut page_keys,
+                                &mut block_keys,
                                 |value| {
                                     if count_only {
                                         None
@@ -4142,10 +4715,7 @@ pub(crate) fn execute_on_shard(
                 "feature",
                 &key,
             );
-            let series = shard
-                .features_mut()
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default();
+            let series = slot_for_write(shard.features_mut(), &key);
             // PROTOBUF ONLY: the same wire form `FeatureAppend` rows hold, so both read paths decode
             // it. There is no JSON encode path here; see `sequence_row_value`.
             let points = rows
@@ -4157,7 +4727,7 @@ pub(crate) fn execute_on_shard(
                 .collect::<Vec<_>>();
             let points = sorted_feature_points(points);
             let mut published: Vec<ElementEntry> = Vec::new();
-            let mut replaced_any = false;
+            let mut vacated: Vec<ElementEntry> = Vec::new();
             if let Ok(addresses) = append_timestamped_kv_blocks(
                 cache,
                 block_store,
@@ -4171,19 +4741,19 @@ pub(crate) fn execute_on_shard(
                 next_block_index,
             ) {
                 for (timestamp_ms, address) in addresses {
-                    // A replaced timestamp supersedes a block, and a superseded block must be
-                    // dropped rather than joined -- so record it and take the restating path.
-                    // `set` returns nothing where `insert` returned the superseded value, so
-                    // the question has to be asked BEFORE the write rather than read off it.
-                    if series.get(timestamp_ms).is_some() {
-                        replaced_any = true;
+                    // A replaced timestamp may leave its old block with no point, so the address
+                    // it held is noted. `set` returns nothing where `insert` returned the
+                    // superseded value, so the question has to be asked BEFORE the write rather
+                    // than read off it.
+                    if let Some(superseded) = series.get(timestamp_ms) {
+                        vacated.push(superseded.clone());
                     }
                     series.set(timestamp_ms, address.clone());
                     published.push(address);
                     mutated = true;
                 }
             }
-            let trimmed = trim_timestamped_series(
+            let trimmed = trim_timestamped_series_naming_what_left(
                 shard_id,
                 "feature",
                 &key,
@@ -4191,26 +4761,14 @@ pub(crate) fn execute_on_shard(
                 series,
                 feature_max_size,
                 trim_boundary_record,
+                Some(&mut vacated),
             );
             mutated |= trimmed;
-            if replaced_any || trimmed {
-                // Something was superseded or evicted: the live set has to be restated in full.
-                let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-                sync_bucket_index_object_blocks(
-                    shard,
-                    shard_id,
-                    "feature",
-                    &key,
-                    live_addresses,
-                    mutated,
-                );
-            } else {
-                // A pure append. Publishing only the new blocks leaves the index in the same
-                // state, and stops a row append costing the length of the series it joins.
-                sync_bucket_index_object_blocks_with_mode(
-                    shard, shard_id, "feature", &key, published, mutated, false,
-                );
-            }
+            file_series_blocks_after_write(
+                shard, shard_id, "feature", &key, published, vacated, mutated,
+            );
+            // A sequence row is a feature point: retire cached feature answers, as the append does.
+            let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
         Command::SequenceQuery {
@@ -4233,7 +4791,7 @@ pub(crate) fn execute_on_shard(
                 start_routing_bucket,
                 end_routing_bucket,
             ));
-            let mut packed_block_cache = HashMap::new();
+            let mut reader = crate::engine::product_model::SequenceBlockReader::new();
             let rows = shard
                 .features()
                 .get(&key[..])
@@ -4242,7 +4800,7 @@ pub(crate) fn execute_on_shard(
                         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                         .take(count)
                         .filter_map(|(timestamp_ms, address)| {
-                            read_sequence_row_cached(
+                            read_sequence_row_in_place(
                                 cache,
                                 block_store,
                                 shard_id,
@@ -4250,7 +4808,7 @@ pub(crate) fn execute_on_shard(
                                 address,
                                 identity,
                                 routing_bucket,
-                                &mut packed_block_cache,
+                                &mut reader,
                             )
                         })
                         .filter(|row| {
@@ -4295,19 +4853,19 @@ pub(crate) fn execute_on_shard(
                 .collect();
             CommandResponse::SequenceRowGroups { groups }
         }
-        Command::CellRankQuery { key, spec } => {
+        Command::WindowReduceRank { key, spec } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "feature", &key);
                 return ExecuteOutcome {
-                    response: CommandResponse::CellRanking {
+                    response: CommandResponse::WindowReduceRanking {
                         ranked: crate::types::RankedCells::default(),
                     },
                     mutated,
                 };
             }
-            CommandResponse::CellRanking {
-                ranked: cell_rank_read::serve(
+            CommandResponse::WindowReduceRanking {
+                ranked: window_reduce_rank_read::serve(
                     cache,
                     block_store,
                     shard_id,
@@ -4320,13 +4878,13 @@ pub(crate) fn execute_on_shard(
                 ),
             }
         }
-        Command::CellRollup { key, spec } => {
+        Command::WindowReduceRollup { key, spec } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // THE SAME PLANNER AS ADMISSION, over the same series, so a follower and a replay
             // reach the leader's bytes. A plan that fails here passed validation on the leader:
             // that is a divergence, not a bad request, so it writes nothing and receipts zeros.
-            let plan = crate::engine::cell_rollup_apply::plan_cell_rollup(
+            let plan = crate::engine::window_reduce_rollup_apply::plan_window_reduce_rollup(
                 cache,
                 block_store,
                 shard_id,
@@ -4338,7 +4896,7 @@ pub(crate) fn execute_on_shard(
             .ok();
             let receipt = match plan {
                 Some(plan) => {
-                    // The stored snapshots below the cutoff are exactly `plan.replaced`; the
+                    // The stored samples below the cutoff are exactly `plan.replaced`; the
                     // range from the first to the last of them holds nothing else.
                     if let (true, Some(&first), Some(&last)) =
                         (plan.changed, plan.replaced.first(), plan.replaced.last())
@@ -4364,23 +4922,147 @@ pub(crate) fn execute_on_shard(
                         control_rollup::feature_forget(shard, &key);
                         let _ = cache.invalidate_record(shard_id, "feature", &key);
                     }
-                    CommandResponse::CellRollupReceipt {
-                        snapshots_before: plan.snapshots_before,
-                        snapshots_after: plan.snapshots_after,
+                    CommandResponse::WindowReduceRollupReceipt {
+                        samples_before: plan.samples_before,
+                        samples_after: plan.samples_after,
                         cells_before: plan.cells_before,
                         cells_after: plan.cells_after,
                         cells_dropped: plan.cells_dropped,
                     }
                 }
-                None => CommandResponse::CellRollupReceipt {
-                    snapshots_before: 0,
-                    snapshots_after: 0,
+                None => CommandResponse::WindowReduceRollupReceipt {
+                    samples_before: 0,
+                    samples_after: 0,
                     cells_before: 0,
                     cells_after: 0,
                     cells_dropped: 0,
                 },
             };
             receipt
+        }
+        Command::WindowReduceRemove { key, spec } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            // THE SAME PLANNER AS ADMISSION, over the same series, so a follower and a replay
+            // reach the leader's bytes. A plan that fails here passed validation on the leader:
+            // that is a divergence, not a bad request, so it writes nothing and receipts zeros.
+            let plan = crate::engine::window_reduce_remove_apply::plan_window_reduce_remove(
+                cache,
+                block_store,
+                shard_id,
+                shard.features().get(&key[..]),
+                &key,
+                routing_bucket,
+                &spec,
+            )
+            .ok();
+            match plan {
+                Some(plan) if plan.delete_key => {
+                    // Every cell goes: the whole series in one record, as `FeatureDelete` does.
+                    mutated |= delete_whole_feature_series(
+                        cache,
+                        shard_id,
+                        shard,
+                        &key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    );
+                    CommandResponse::WindowReduceRemoveReceipt {
+                        samples_before: plan.samples_before,
+                        samples_after: 0,
+                        cells_before: 0,
+                        cells_removed: 0,
+                    }
+                }
+                Some(plan) => {
+                    // The samples from the first change to the last are exactly `plan.replaced`;
+                    // the range holds nothing else.
+                    if let (true, Some(&first), Some(&last)) =
+                        (plan.changed, plan.replaced.first(), plan.replaced.last())
+                    {
+                        mutated = replace_feature_range(
+                            cache,
+                            block_store,
+                            shard_id,
+                            shard,
+                            &key,
+                            first,
+                            last,
+                            plan.points,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            async_storage,
+                            feature_max_size,
+                            trim_boundary_record,
+                            mutated,
+                        );
+                        // The numeric view of the series is rebuilt only when its length moves; a
+                        // removal can change the values and keep the length.
+                        control_rollup::feature_forget(shard, &key);
+                        let _ = cache.invalidate_record(shard_id, "feature", &key);
+                    }
+                    CommandResponse::WindowReduceRemoveReceipt {
+                        samples_before: plan.samples_before,
+                        samples_after: plan.samples_after,
+                        cells_before: plan.cells_before,
+                        cells_removed: plan.cells_removed,
+                    }
+                }
+                None => CommandResponse::WindowReduceRemoveReceipt {
+                    samples_before: 0,
+                    samples_after: 0,
+                    cells_before: 0,
+                    cells_removed: 0,
+                },
+            }
+        }
+        Command::WindowReduceRankBatch { queries } => {
+            // Each read is the one-key read: an expired key is dropped and answers empty, a read
+            // that cannot be served answers with its reason, and neither touches the others.
+            let mut rankings = Vec::with_capacity(queries.len());
+            for crate::types::WindowReduceRankBatchItem { key, spec } in queries {
+                if drop_if_expired(cache, shard_id, shard, &key) {
+                    mutated = true;
+                    let _ = cache.invalidate_record(shard_id, "feature", &key);
+                    rankings.push(crate::types::RankedCells::default());
+                    continue;
+                }
+                rankings.push(window_reduce_rank_read::serve(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard,
+                    &key,
+                    &spec,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    resolve_now_ms(),
+                ));
+            }
+            CommandResponse::WindowReduceRankings { rankings }
+        }
+        Command::WindowReduceFanInRank { keys, spec } => {
+            // An expired key is dropped exactly as a one-key read drops it, and then holds
+            // nothing: it contributes no sample and is not counted as read.
+            for key in &keys {
+                if drop_if_expired(cache, shard_id, shard, key) {
+                    mutated = true;
+                    let _ = cache.invalidate_record(shard_id, "feature", key);
+                }
+            }
+            CommandResponse::WindowReduceRanking {
+                ranked: window_reduce_rank_read::serve_many(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard,
+                    &keys,
+                    &spec,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    resolve_now_ms(),
+                ),
+            }
         }
         Command::ControlStateIncrement {
             key,
@@ -4389,10 +5071,7 @@ pub(crate) fn execute_on_shard(
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let resulting = {
-                let counter = shard
-                    .control_state_mut()
-                    .entry(std::sync::Arc::from(&key[..]))
-                    .or_default()
+                let counter = slot_for_write(shard.control_state_mut(), &key)
                     .entry(timestamp_ms)
                     .or_default();
                 *counter += amount;
@@ -4431,10 +5110,7 @@ pub(crate) fn execute_on_shard(
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
             let resulting = {
-                let counter = shard
-                    .control_state_mut()
-                    .entry(std::sync::Arc::from(&key[..]))
-                    .or_default()
+                let counter = slot_for_write(shard.control_state_mut(), &key)
                     .entry(bucket_ms)
                     .or_default();
                 *counter += amount;
@@ -4577,18 +5253,8 @@ pub(crate) fn execute_on_shard(
                     value: control_rollup::windowed_sum(shard, &key, start_ms, end_ms),
                 }
             } else {
-                let values = shard
-                    .control_state()
-                    .get(&key[..])
-                    .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            .map(|(_, value)| *value)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
                 CommandResponse::Integer {
-                    value: aggregate_control_state_values(&values, &aggregator),
+                    value: control_state_window_value(shard, &key, start_ms, end_ms, &aggregator),
                 }
             }
         }
@@ -4630,10 +5296,7 @@ pub(crate) fn execute_on_shard(
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let key = control_state_family_key(family, &key);
             let resulting = {
-                let counter = shard
-                    .control_state_mut()
-                    .entry(std::sync::Arc::from(&key[..]))
-                    .or_default()
+                let counter = slot_for_write(shard.control_state_mut(), &key)
                     .entry(timestamp_ms)
                     .or_default();
                 *counter += amount;
@@ -4668,19 +5331,20 @@ pub(crate) fn execute_on_shard(
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let key = control_state_family_key(family, &key);
-            let series = shard
-                .control_state_mut()
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default();
+            let series = slot_for_write(shard.control_state_mut(), &key);
             let resulting = {
                 let counter = series.entry(timestamp_ms).or_default();
                 *counter += amount;
                 *counter
             };
-            let values = series
-                .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                .map(|(_, value)| *value)
-                .collect::<Vec<_>>();
+            // Reduced where it sits. The window is read before `record_counter_result` trims the
+            // series, as the collected copy was, so the answer is the same.
+            let value = aggregate_control_state_values(
+                series
+                    .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                    .map(|(_, value)| *value),
+                &aggregator,
+            );
             record_counter_result(
                 cache,
                 block_store,
@@ -4697,9 +5361,7 @@ pub(crate) fn execute_on_shard(
                 control_rollup::record_increment(shard, &key, timestamp_ms, amount);
             }
             mutated = true;
-            CommandResponse::Integer {
-                value: aggregate_control_state_values(&values, &aggregator),
-            }
+            CommandResponse::Integer { value }
         }
         Command::ControlStateSetAndGetWithOptions {
             family,
@@ -4741,10 +5403,7 @@ pub(crate) fn execute_on_shard(
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
-            let series = shard
-                .control_state_mut()
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default();
+            let series = slot_for_write(shard.control_state_mut(), &key);
             // A duplicate adds nothing and so has no result to state; it keeps writing the block,
             // which is what makes the record one a replay installs.
             let resulting = if is_duplicate {
@@ -4757,17 +5416,7 @@ pub(crate) fn execute_on_shard(
             let value = if is_control_state_change_aggregator(&aggregator) {
                 count_control_state_changes(shard, &key, start_ms, end_ms)
             } else {
-                let values = shard
-                    .control_state()
-                    .get(&key[..])
-                    .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            .map(|(_, value)| *value)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                aggregate_control_state_values(&values, &aggregator)
+                control_state_window_value(shard, &key, start_ms, end_ms, &aggregator)
             };
             match resulting {
                 Some(resulting) => {
@@ -4847,18 +5496,8 @@ pub(crate) fn execute_on_shard(
                     value: control_rollup::windowed_sum(shard, &key, start_ms, end_ms),
                 }
             } else {
-                let values = shard
-                    .control_state()
-                    .get(&key[..])
-                    .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            .map(|(_, value)| *value)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
                 CommandResponse::Integer {
-                    value: aggregate_control_state_values(&values, &aggregator),
+                    value: control_state_window_value(shard, &key, start_ms, end_ms, &aggregator),
                 }
             }
         }
@@ -4903,8 +5542,9 @@ pub(crate) fn execute_on_shard(
                     None,
                     Some(value.clone()),
                 );
-                shard.control_state_selection.insert(
-                    std::sync::Arc::from(&key[..]),
+                store_for_write(
+                    &mut shard.control_state_selection,
+                    &key,
                     ControlStateSelectionValue {
                         occur_time_ms,
                         value,
@@ -6875,6 +7515,111 @@ pub(super) fn zset_score_from_bits(biased: u64) -> f64 {
     } else {
         f64::from_bits(!biased)
     }
+}
+
+/// The answers of the reads the resident maps alone can give. ONE copy: the exclusive-lock arms
+/// above call these after their expiry check, and the shared-lock path in `engine.rs` calls the
+/// same functions, so the two cannot answer differently.
+pub(super) fn zset_score_answer(shard: &ShardState, key: &str, member: &[u8]) -> CommandResponse {
+    CommandResponse::Bytes {
+        value: shard
+            .bucket_index
+            .zsets
+            .get(key)
+            .and_then(|members| members.get(member))
+            .map(|(biased, _)| zset_score_string(*biased).into_bytes()),
+    }
+}
+
+pub(super) fn zset_card_answer(shard: &ShardState, key: &str) -> CommandResponse {
+    CommandResponse::Integer {
+        value: shard.bucket_index.zsets.get(key).map_or(0, BTreeMap::len) as i64,
+    }
+}
+
+pub(super) fn list_len_answer(shard: &ShardState, key: &str) -> CommandResponse {
+    CommandResponse::Integer {
+        value: shard.bucket_index.lists.get(key).map_or(0, BTreeMap::len) as i64,
+    }
+}
+
+/// A set's length from the member map, where the shard lets the map answer and holds the key;
+/// `None` leaves the question to the listing. Counted, so a test can tell the map from the fold.
+pub(super) fn set_card_answer(shard: &ShardState, key: &str) -> Option<CommandResponse> {
+    if !shard.set_listing_from_map {
+        return None;
+    }
+    let members = shard.bucket_index.sets.get(key)?;
+    SET_POINT_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Some(CommandResponse::Integer {
+        value: members.len() as i64,
+    })
+}
+
+/// One member's presence, under the same rule as [`set_card_answer`].
+pub(super) fn set_is_member_answer(
+    shard: &ShardState,
+    key: &str,
+    member: &[u8],
+) -> Option<CommandResponse> {
+    if !shard.set_listing_from_map {
+        return None;
+    }
+    let members = shard.bucket_index.sets.get(key)?;
+    SET_POINT_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Some(CommandResponse::Integer {
+        value: i64::from(members.contains_key(member)),
+    })
+}
+
+pub(super) fn zset_scan_answer(
+    shard: &ShardState,
+    key: &str,
+    after: &[u8],
+    limit: usize,
+) -> CommandResponse {
+    use std::ops::Bound::{Excluded, Unbounded};
+    let members = shard
+        .bucket_index
+        .zsets
+        .get(key)
+        .map(|members| {
+            let from = if after.is_empty() {
+                members.range::<[u8], _>(..)
+            } else {
+                members.range::<[u8], _>((Excluded(after), Unbounded))
+            };
+            from.take(limit)
+                .flat_map(|(member, (biased, _))| {
+                    [member.clone(), zset_score_string(*biased).into_bytes()]
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    CommandResponse::Members { members }
+}
+
+pub(super) fn set_scan_answer(
+    shard: &ShardState,
+    key: &str,
+    after: &[u8],
+    limit: usize,
+) -> CommandResponse {
+    use std::ops::Bound::{Excluded, Unbounded};
+    let members = shard
+        .bucket_index
+        .sets
+        .get(key)
+        .map(|members| {
+            let from = if after.is_empty() {
+                members.range::<[u8], _>(..)
+            } else {
+                members.range::<[u8], _>((Excluded(after), Unbounded))
+            };
+            from.take(limit).map(|(member, _)| member.clone()).collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    CommandResponse::Members { members }
 }
 
 pub(super) fn zset_score_string(biased: u64) -> String {

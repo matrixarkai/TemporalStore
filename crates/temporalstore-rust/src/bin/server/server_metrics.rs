@@ -65,6 +65,7 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
         ("timed_out", stats.timed_out_total),
         ("dump", stats.dump_runs),
         ("dump_failed", stats.storage_dump_failures),
+        ("expiry_sweep_failed", stats.expiry_sweep_failures),
         ("compaction", stats.compaction_runs),
         ("gc", stats.gc_runs),
         ("storage_manager", stats.storage_manager_runs),
@@ -104,6 +105,27 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
             timing.max_us as f64 / 1e6
         ));
     }
+    // Cumulative counts a loop-only server never had: the stage timers above say how long expire
+    // and evict ran, not how much they did. Rate of the first against the rate of writes that
+    // carry a deadline says whether expiry keeps up.
+    out.push_str("# HELP temporalstore_storage_manager_expired_records_total Keys the expire stage has removed.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_expired_records_total counter\n");
+    out.push_str(&format!(
+        "temporalstore_storage_manager_expired_records_total {}\n",
+        stats.expired_records_removed
+    ));
+    out.push_str("# HELP temporalstore_storage_manager_expiry_overdue_keys Keys whose deadline has passed and that the expire stage has not removed yet.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_expiry_overdue_keys gauge\n");
+    out.push_str(&format!(
+        "temporalstore_storage_manager_expiry_overdue_keys {}\n",
+        runtime.engine().expiry_overdue_keys()
+    ));
+    out.push_str("# HELP temporalstore_storage_manager_evict_runs_total Rounds in which the evict stage ran.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_evict_runs_total counter\n");
+    out.push_str(&format!(
+        "temporalstore_storage_manager_evict_runs_total {}\n",
+        stats.storage_manager_evict_runs
+    ));
     out.push_str("# HELP temporalstore_data_node_runtime_queue_depth Current data node runtime queue depth.\n");
     out.push_str("# TYPE temporalstore_data_node_runtime_queue_depth gauge\n");
     out.push_str("temporalstore_data_node_runtime_queue_depth ");
@@ -170,13 +192,60 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
         out.push_str(&value.to_string());
         out.push('\n');
     }
+    append_storage_manager_loop_metrics(out, &stats);
     if let Some(report) = runtime.last_storage_manager_cycle_report() {
         append_storage_manager_cycle_metrics(out, &report);
     }
 }
 
+/// What the shipped loop reports each round, from the runtime's own counters. The on-demand cycle
+/// report below carries the same backlog signals, but a running server never runs one, so a scrape
+/// could not say how close the log was to the dump gate or what a dump cost.
+fn append_storage_manager_loop_metrics(out: &mut String, stats: &temporalstore_rust::DataNodeRuntimeStats) {
+    out.push_str("# HELP temporalstore_storage_manager_pressure_loop Backlog the periodic loop read on its last round that ran, by signal. A round that does not run (a shard still replaying its log) leaves the value unchanged, and the loop covers every shard in turn, so this is the last shard it ran, not a sum.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_pressure_loop gauge\n");
+    for (signal, value) in [
+        ("wal_bytes", stats.storage_manager_loop_wal_bytes),
+        ("undumped_wal_records", stats.storage_manager_loop_undumped_wal_records),
+        ("dirty_slots", stats.storage_manager_loop_dirty_buckets),
+        ("index_log_bytes", stats.storage_manager_loop_index_log_bytes),
+    ] {
+        out.push_str(&format!(
+            "temporalstore_storage_manager_pressure_loop{{signal=\"{signal}\"}} {value}\n"
+        ));
+    }
+    for (name, help, kind, value) in [
+        (
+            "temporalstore_storage_manager_dump_buckets_total",
+            "Buckets covered by the loop's dumps.",
+            "counter",
+            stats.storage_manager_dump_buckets as f64,
+        ),
+        (
+            "temporalstore_storage_manager_dump_logical_bytes_total",
+            "Logical bytes of the buckets the loop's dumps covered.",
+            "counter",
+            stats.storage_manager_dump_logical_bytes as f64,
+        ),
+        (
+            "temporalstore_storage_manager_dump_seconds_total",
+            "Time inside the loop's dump call, summed over dumps.",
+            "counter",
+            stats.storage_manager_dump_us_total as f64 / 1e6,
+        ),
+        (
+            "temporalstore_storage_manager_dump_max_seconds",
+            "Longest single dump the loop took.",
+            "gauge",
+            stats.storage_manager_dump_us_max as f64 / 1e6,
+        ),
+    ] {
+        out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} {kind}\n{name} {value}\n"));
+    }
+}
+
 fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManagerCycleReport) {
-    out.push_str("# HELP temporalstore_storage_manager_pressure Last StorageManager pressure snapshot by shard and signal.\n");
+    out.push_str("# HELP temporalstore_storage_manager_pressure Pressure snapshot of the last on-demand storage cycle, by signal. The periodic loop reports its own in temporalstore_storage_manager_pressure_loop.\n");
     out.push_str("# TYPE temporalstore_storage_manager_pressure gauge\n");
     let pressure = &report.pressure_snapshot;
     for (signal, value) in [

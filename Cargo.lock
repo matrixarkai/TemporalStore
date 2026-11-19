@@ -839,7 +839,7 @@ checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 [[package]]
 name = "matrixcache"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/MatrixCache.git?rev=30a4fb9f36ffecc425049a181e6591973d42a1f2#30a4fb9f36ffecc425049a181e6591973d42a1f2"
+source = "git+https://github.com/matrixarkai/MatrixCache.git?rev=5db2696701f3900e8d88f19977c02e1de2369c6f#5db2696701f3900e8d88f19977c02e1de2369c6f"
 dependencies = [
  "ahash",
  "core_affinity",
@@ -853,12 +853,13 @@ dependencies = [
 [[package]]
 name = "matrixobjectstore-rs"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/MatrixObject.git?rev=b2c9f5a832ba9e7c5b23f970f3b57730e0cec50f#b2c9f5a832ba9e7c5b23f970f3b57730e0cec50f"
+source = "git+https://github.com/matrixarkai/MatrixObject.git?rev=5da31a97ac9a2779eaa7e450bb7666b47267697b#5da31a97ac9a2779eaa7e450bb7666b47267697b"
 dependencies = [
  "fs2",
  "libc",
  "prost 0.11.9",
  "raft",
+ "ring",
 ]
 
 [[package]]
@@ -1405,6 +1406,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "ring"
+version = "0.17.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "getrandom 0.2.17",
+ "libc",
+ "untrusted",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "rmp"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1676,6 +1691,7 @@ dependencies = [
  "matrixcache",
  "matrixobjectstore-rs",
  "matrixraft",
+ "parking_lot",
  "prost 0.13.5",
  "protoc-bin-vendored",
  "rmp-serde",
@@ -1984,6 +2000,12 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "untrusted"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "uuid"

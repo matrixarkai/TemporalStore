@@ -79,6 +79,8 @@ jobs:
             integrations/feast/tests/*.py \
             integrations/feast/benchmarks/*.py
           python integrations/feast/run_tests.py
+          python -m pip install 'msgpack>=1.0' 'aiohttp>=3.9,<4'
+          python integrations/feast/feast_temporalstore_command/tests/test_async_transport.py
 
       - name: Nothing claims the project is closed
         run: |

@@ -122,3 +122,8 @@ ingestion, memory-limited configurations, replay, consensus apply, generic comma
 batches, missing timestamp columns, and stored timestamp values over 64 bytes keep
 eager caching. Set `TS_HASH_WRITE_AROUND=0` before startup to retain eager caching
 on every path. No WAL encoding, cache capacity, or synchronization policy changes.
+
+Eligible shared hash writes also use one physical WAL locator per carried frame,
+with bounded retirement and exact-address validation for mixed legacy reads.
+See [hash frame locators](hash-frame-locators.md) for metadata costs, replay,
+reclamation, and index-reader upgrade boundaries.

@@ -33,7 +33,7 @@ pub enum FeatureWritePolicy {
 #[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
 pub struct CellMergeReceipt {
     /// Snapshots written: one per distinct timestamp in the request.
-    pub snapshots_written: u64,
+    pub samples_written: u64,
     /// Cells that did not exist at their timestamp before.
     pub cells_created: u64,
     /// Cells folded into a member already stored, or repeated within the request.

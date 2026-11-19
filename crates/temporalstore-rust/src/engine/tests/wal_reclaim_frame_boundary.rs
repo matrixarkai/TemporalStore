@@ -70,7 +70,7 @@ const SEARCH_TRIES: usize = 512;
 fn outcomes(count: usize) -> Vec<WalOutcomeItem> {
     (0..count)
         .map(|index| WalOutcomeItem {
-            kind: "string".to_string(),
+            kind: "string".into(),
             object_key: format!("batch-key-{index:09}"),
             element_name: None,
             object_id: index as u64,

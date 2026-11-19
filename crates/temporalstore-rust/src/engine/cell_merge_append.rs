@@ -2,15 +2,15 @@
 // Copyright 2026 MatrixArkAI
 
 //! The merge-reduce write policy of the feature append: what the request becomes once its cells
-//! are merged into the snapshots already stored.
+//! are merged into the samples already stored.
 //!
 //! # WHERE A VIOLATION IS REFUSED
 //!
 //! At VALIDATION, before the command reaches the log, the same place `Block` is refused. A refused
 //! request writes nothing: no block, no log record, no index entry. Validation can reach the
-//! stored snapshot (it is handed the cache and the block store, as the hash-increment precheck
+//! stored sample (it is handed the cache and the block store, as the hash-increment precheck
 //! is), so the checks that need stored state -- the header against the newest stored header, the
-//! merged snapshot against its cell limit, a stored value that is not a cell snapshot -- sit beside
+//! merged sample against its cell limit, a stored value that is not a cell sample -- sit beside
 //! the ones that do not.
 //!
 //! Execution runs the SAME planner again. It is a pure function of the command and the state the
@@ -51,7 +51,9 @@ fn refuse(key: &str, message: impl std::fmt::Display) -> Status {
     Status::error("invalid_argument", format!("{key}: {message}"))
 }
 
-/// The value stored at `timestamp_ms`, read the way a feature query reads it.
+/// The value stored at `timestamp_ms`: the one copy of it the merge keeps. It is read where it sits
+/// in the cached block, so the block's other points are not decoded into vectors of their own and
+/// the block is not held in a table for a second read.
 fn stored_value(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -60,26 +62,27 @@ fn stored_value(
     key: &str,
     timestamp_ms: u64,
     routing_bucket: u32,
+    block_keys: &mut BlockKeys,
 ) -> Result<Option<Vec<u8>>, Status> {
     let Some(address) = series.get(timestamp_ms) else {
         return Ok(None);
     };
-    let mut scratch = HashMap::new();
-    read_feature_point_cached(
+    read_feature_value_with(
         cache,
         block_store,
         shard_id,
         timestamp_ms,
         address,
         BlockIdentity::of(shard_id, "feature", key, None),
-        &mut scratch,
         Some(routing_bucket),
+        block_keys,
+        |value| value.to_vec(),
     )
-    .map(|point| Some(point.value))
+    .map(Some)
     .ok_or_else(|| {
         Status::error(
             "data_loss",
-            format!("{key}: the snapshot stored at {timestamp_ms} cannot be read"),
+            format!("{key}: the sample stored at {timestamp_ms} cannot be read"),
         )
     })
 }
@@ -92,18 +95,18 @@ fn stored_value(
 pub(super) enum PlanOutput {
     /// Count what lands; write no values.
     CountOnly,
-    /// Also encode the value of each snapshot.
+    /// Also encode the value of each sample.
     Values,
 }
 
-/// The newest stored snapshot of a key: where it is, its bytes, and its header read once.
+/// The newest stored sample of a key: where it is, its bytes, and its header read once.
 struct NewestStored {
     timestamp_ms: u64,
     value: Vec<u8>,
     header: Rc<CellHeader>,
 }
 
-/// Merges `points` into the snapshots `series` holds. `series` is `None` for a key that does not
+/// Merges `points` into the samples `series` holds. `series` is `None` for a key that does not
 /// exist (or whose deadline has passed).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan_cell_merge(
@@ -119,7 +122,9 @@ pub(super) fn plan_cell_merge(
     if points.is_empty() {
         return Err(refuse(key, "a merge-reduce append needs at least one point"));
     }
-    // The newest stored snapshot is read ONCE: its header is the one every request is checked
+    // Every read of a stored sample in this plan shares one key for the block it sits in.
+    let mut block_keys = BlockKeys::new();
+    // The newest stored sample is read ONCE: its header is the one every request is checked
     // against, and a request point at that timestamp merges into its cells.
     let newest_stored: Option<NewestStored> = match series.and_then(|s| s.range(..).next_back()) {
         None => None,
@@ -128,17 +133,18 @@ pub(super) fn plan_cell_merge(
                 cache,
                 block_store,
                 shard_id,
-                series.expect("a newest snapshot implies a series"),
+                series.expect("a newest sample implies a series"),
                 key,
                 timestamp_ms,
                 routing_bucket,
+                &mut block_keys,
             )?
             .expect("the newest timestamp has an address");
             let (header_bytes, _) = cell_set::split_value_raw(&value).map_err(|err| {
-                refuse(key, format!("the newest stored value ({timestamp_ms}) is not a cell snapshot: {err}"))
+                refuse(key, format!("the newest stored value ({timestamp_ms}) is not a cell sample: {err}"))
             })?;
             let header = CellHeader::decode(header_bytes).map_err(|err| {
-                refuse(key, format!("the newest stored value ({timestamp_ms}) is not a cell snapshot: {err}"))
+                refuse(key, format!("the newest stored value ({timestamp_ms}) is not a cell sample: {err}"))
             })?;
             Some(NewestStored { timestamp_ms, value, header: Rc::new(header) })
         }
@@ -156,7 +162,7 @@ pub(super) fn plan_cell_merge(
         let timestamp_ms = point.timestamp_ms;
         // The request's own value for this timestamp merges into what is stored there -- or into
         // what an earlier point of this request already merged there -- under one entry point
-        // that owns the header check, the upgrade of an older snapshot and the merge.
+        // that owns the header check, the upgrade of an older sample and the merge.
         let loaded: Option<Vec<u8>>;
         let own: CellHeader;
         let existing = match merged.remove(&timestamp_ms) {
@@ -165,9 +171,9 @@ pub(super) fn plan_cell_merge(
                 None => cell_set::Existing::Nothing,
                 Some(series) => match newest_stored.as_ref().filter(|n| n.timestamp_ms == timestamp_ms) {
                     Some(stored) => {
-                        let (_, snapshot) = cell_set::split_value_raw(&stored.value)
+                        let (_, sample) = cell_set::split_value_raw(&stored.value)
                             .map_err(|err| refuse(key, format!("point at {timestamp_ms}: {err}")))?;
-                        cell_set::Existing::Stored { header: &*stored.header, snapshot }
+                        cell_set::Existing::Stored { header: &*stored.header, sample }
                     }
                     None => {
                         loaded = stored_value(
@@ -178,21 +184,30 @@ pub(super) fn plan_cell_merge(
                             key,
                             timestamp_ms,
                             routing_bucket,
+                            &mut block_keys,
                         )?;
                         match loaded.as_deref() {
                             None => cell_set::Existing::Nothing,
                             Some(value) => {
-                                let (header, snapshot) = cell_set::split_value(value)
+                                let (header, sample) = cell_set::split_value(value)
                                     .map_err(|err| refuse(key, format!("point at {timestamp_ms}: {err}")))?;
                                 own = header;
-                                cell_set::Existing::Stored { header: &own, snapshot }
+                                cell_set::Existing::Stored { header: &own, sample }
                             }
                         }
                     }
                 },
             },
         };
-        let (effective, cells, counts) = cell_set::merge_point(newest.as_ref(), existing, &point.value)
+        // While the header in force is the newest stored one itself, its bytes are at hand: a
+        // request that carries the same bytes is not decoded a second time.
+        let newest_raw = match (&newest, &newest_stored) {
+            (Some(in_force), Some(stored)) if Rc::ptr_eq(in_force, &stored.header) => {
+                cell_set::split_value_raw(&stored.value).ok().map(|(head, _)| head)
+            }
+            _ => None,
+        };
+        let (effective, cells, counts) = cell_set::merge_point_known(newest.as_ref(), newest_raw, existing, &point.value)
             .map_err(|err| refuse(key, format!("point at {timestamp_ms}: {err}")))?;
         // The stored key must be the one the declared spec builds, or two spellings of one entity
         // would file under different keys and never merge.
@@ -203,6 +218,15 @@ pub(super) fn plan_cell_merge(
         }
         created += counts.created as u64;
         folded += counts.merged as u64;
+        // Every cell of the point was either created or merged, so the two sum to what the
+        // command has carried so far. Refused here, before anything is written, and early enough
+        // that the points after the one that crossed the limit are not decoded.
+        cell_set::within(
+            "cells per merge command",
+            (created + folded) as usize,
+            cell_set::MAX_CELLS_PER_MERGE_COMMAND,
+        )
+        .map_err(|err| refuse(key, format!("point at {timestamp_ms}: {err}")))?;
         newest = Some(Rc::clone(&effective));
         merged.insert(timestamp_ms, (effective, cells));
     }

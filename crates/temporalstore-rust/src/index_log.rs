@@ -13,6 +13,9 @@ use thiserror::Error;
 use crate::block_store::ElementEntry;
 use crate::types::ShardId;
 
+#[path = "index_log_compression_policy.rs"]
+mod compression_policy;
+
 /// Counters for the scale probes, tests only.
 ///
 /// Every quantity here is a COUNT, not a duration. This box sits between load 2 and load 30 for
@@ -408,9 +411,9 @@ pub struct IndexAnchorRecord {
 /// Measured on a one-box log of 14.4 MB: 24.8% of the bytes were long decimal ids and the
 /// six most repeated key strings were another 20%, and the whole file compressed 11.1x.
 ///
-/// A reader always understands this codec; a writer only emits it when asked, so a store
-/// can be rolled forward and back without a format migration. An older binary refuses it
-/// as an unknown codec rather than misreading it, which is what the codec byte is for.
+/// Reading this codec is unconditional. The writer is opt-in and
+/// can be disabled explicitly. A binary without codec support refuses it as unknown rather
+/// than misreading it; disabling future compression does not rewrite existing records.
 pub(crate) const INDEX_LOG_CODEC_MSGPACK_ZSTD: u8 = 2;
 
 /// Payload codec: the protobuf schema of the design being followed, in its superset form
@@ -436,19 +439,12 @@ pub(crate) const INDEX_LOG_CODEC_PROTOBUF: u8 = 3;
 /// Both append paths go through here so the whole-index record and the delta record cannot
 /// drift into different shapes -- the reader tells them apart by their fields, which only
 /// works while both are encoded the same way.
-/// Whether new index-log payloads are written compressed. Off by default.
+/// Compression remains opt-in; its level and minimum record size are configurable.
 ///
 /// Reading codec 2 is unconditional; only writing it is gated, so a store can be rolled
 /// forward and back without a migration.
-fn index_log_compression_enabled() -> bool {
-    matches!(
-        std::env::var("TS_INDEX_LOG_COMPRESSION_ENABLED")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+fn index_log_compression_policy() -> compression_policy::CompressionPolicy {
+    compression_policy::CompressionPolicy::from_env()
 }
 
 /// Whether new DELTA records are written in the protobuf codec. OFF by default.
@@ -488,8 +484,8 @@ thread_local! {
 }
 
 /// One delta record as protobuf payload bytes: the container byte for codec 3, then the message.
-fn encode_delta_protobuf_into(
-    record: &IndexDeltaRecord,
+fn encode_delta_protobuf_into<K: serde::Serialize>(
+    record: &IndexDeltaRecord<K>,
     out: &mut Vec<u8>,
 ) -> Result<(), IndexLogError> {
     out.clear();
@@ -498,17 +494,6 @@ fn encode_delta_protobuf_into(
         &crate::index_log_wire::encode_delta_record(record).map_err(IndexLogError::Encoding)?,
     );
     Ok(())
-}
-
-/// Payloads below this many bytes are stored uncompressed.
-///
-/// zstd on a very small record spends a frame header to save little; the block tier draws
-/// the same line at 256 bytes for the same reason.
-fn index_log_compression_min_bytes() -> usize {
-    std::env::var("TS_INDEX_LOG_COMPRESSION_MIN_BYTES")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(256)
 }
 
 /// The same encoding, into a buffer the caller owns and reuses.
@@ -554,8 +539,9 @@ pub(crate) fn encode_index_payload_into<T: serde::Serialize>(
     // `out` is the container byte plus the packed record, so the packed length -- the number the
     // two conditions below are written in terms of -- is one less than it.
     let packed_len = out.len() - 1;
-    if index_log_compression_enabled() && packed_len >= index_log_compression_min_bytes() {
-        if let Ok(squeezed) = zstd::stream::encode_all(&out[1..], 3) {
+    let compression = index_log_compression_policy();
+    if compression.should_compress(packed_len) {
+        if let Ok(squeezed) = zstd::stream::encode_all(&out[1..], compression.level()) {
             // Only when it actually helps, and the comparison is between the PACKED forms,
             // exactly as it was: both shapes carry one container byte, so comparing `squeezed`
             // against `packed_len` and comparing the two whole payloads are the same test.
@@ -601,8 +587,9 @@ pub(crate) fn encode_index_payload<T: serde::Serialize>(
             "index-log record could not be packed: {error}"
         )));
     }
-    if index_log_compression_enabled() && packed.len() >= index_log_compression_min_bytes() {
-        if let Ok(squeezed) = zstd::stream::encode_all(packed.as_slice(), 3) {
+    let compression = index_log_compression_policy();
+    if compression.should_compress(packed.len()) {
+        if let Ok(squeezed) = zstd::stream::encode_all(packed.as_slice(), compression.level()) {
             // Only when it actually helps: a record that does not compress would otherwise pay
             // the frame overhead for nothing.
             if squeezed.len() < packed.len() {
@@ -703,7 +690,7 @@ impl Default for IndexItemKind {
 /// One delta item: the smallest change to the served index a write can produce. The
 /// field set is the native Rust page-index projection -- `routing_bucket`/`page_ref_key`
 /// locate the entry in the bucket map, and `address`/`size`/`in_log`/`deleted`/`model_id`/
-/// `object_id`/`page_id` mirror the durable page metadata so replay reconstructs the same
+/// `object_id`/`page_id` mirror the durable block metadata so replay reconstructs the same
 /// `BlockIndex` the whole-index serialization would have produced. `deleted` is a
 /// tombstone: replaying it removes the entry.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1972,12 +1959,121 @@ pub struct MetaItem {
     pub slab_version: u64,
 }
 
+/// A per-key state blob on its way to the log.
+///
+/// `Json` is the blob as a `serde_json::Value`, which is what every reader gets back. `Captured`
+/// is a blob whose `features` series is held as the points themselves and written straight to the
+/// encoder, because turning a series into a `Value` first built a map, five keys and a node per
+/// point on every write that trimmed one -- 7 allocations a point, 95.7% of what an append at its
+/// cap allocated. Both serialize to the SAME bytes in every encoder: a `Captured` writes the keys
+/// of `rest` and `features` merged in sorted order, as a `Value` object keeps them, with the
+/// series keys in the order of their decimal spelling (a `Value` object sorts its keys as text).
+#[derive(Debug, Clone)]
+pub enum KeyState {
+    Json(serde_json::Value),
+    Captured {
+        /// Every field but `features`, including `key`.
+        rest: serde_json::Map<String, serde_json::Value>,
+        /// The series, ordered by the decimal spelling of the instant.
+        features: Vec<(u64, crate::block_store::ElementEntry)>,
+    },
+}
+
+impl From<serde_json::Value> for KeyState {
+    fn from(value: serde_json::Value) -> Self {
+        KeyState::Json(value)
+    }
+}
+
+impl KeyState {
+    /// The blob as the `Value` a reader would decode.
+    pub fn to_value(&self) -> serde_json::Value {
+        match self {
+            KeyState::Json(value) => value.clone(),
+            captured => serde_json::to_value(captured).expect("a key state serializes"),
+        }
+    }
+}
+
+impl PartialEq for KeyState {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_value() == other.to_value()
+    }
+}
+
+/// The decimal digits of `n`, in a caller's buffer: the spelling a `Value` object key has.
+fn decimal_digits(n: u64, buf: &mut [u8; 20]) -> &str {
+    let mut at = buf.len();
+    let mut rest = n;
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    std::str::from_utf8(&buf[at..]).expect("digits are ascii")
+}
+
+/// Order instants as the text their `Value` object keys would sort by.
+pub fn compare_instants_as_text(left: u64, right: u64) -> std::cmp::Ordering {
+    let (mut a, mut b) = ([0u8; 20], [0u8; 20]);
+    decimal_digits(left, &mut a).cmp(decimal_digits(right, &mut b))
+}
+
+struct CapturedSeries<'a>(&'a [(u64, crate::block_store::ElementEntry)]);
+
+struct StoredAddress<'a>(&'a crate::block_store::ElementEntry);
+
+impl serde::Serialize for StoredAddress<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize_as_sorted_map(serializer)
+    }
+}
+
+impl serde::Serialize for CapturedSeries<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        let mut buf = [0u8; 20];
+        for (instant, address) in self.0 {
+            map.serialize_entry(decimal_digits(*instant, &mut buf), &StoredAddress(address))?;
+        }
+        map.end()
+    }
+}
+
+impl serde::Serialize for KeyState {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            KeyState::Json(value) => value.serialize(serializer),
+            KeyState::Captured { rest, features } => {
+                let mut map = serializer.serialize_map(Some(rest.len() + 1))?;
+                let mut written = false;
+                for (name, value) in rest {
+                    if !written && name.as_str() > "features" {
+                        map.serialize_entry("features", &CapturedSeries(features))?;
+                        written = true;
+                    }
+                    map.serialize_entry(name, value)?;
+                }
+                if !written {
+                    map.serialize_entry("features", &CapturedSeries(features))?;
+                }
+                map.end()
+            }
+        }
+    }
+}
+
 /// One appended delta record: either a batch of block/object item deltas (BLOCK/OBJECT) or
 /// a compaction anchor (META). Written one JSON line per record to the same append-only
 /// log file as `IndexLogRecord`; the two are distinguished on read by the presence of the
 /// `items`/`meta` fields, so legacy whole-index records replay untouched.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IndexDeltaRecord {
+pub struct IndexDeltaRecord<K = serde_json::Value> {
     #[serde(rename = "s")]
     pub shard_id: ShardId,
     #[serde(rename = "q")]
@@ -2010,7 +2106,7 @@ pub struct IndexDeltaRecord {
     /// engine builds and applies them. Replaying these on load pins the exact membership a
     /// write produced, so reconstruction from physical blocks cannot resurrect evicted data.
     #[serde(rename = "ks", default)]
-    pub key_states: Vec<serde_json::Value>,
+    pub key_states: Vec<K>,
     /// The one object key every item carries, when at least two items carry the same one.
     ///
     /// A timestamped write stages ONE ITEM PER REF -- all for the same object, differing only in
@@ -2185,7 +2281,7 @@ fn canonical_decimal(text: &str) -> Option<u64> {
 /// The eight slots are SLICES of the key taken at the separator offsets, so concatenating them
 /// with the seven separators reproduces the input byte for byte without anything having to check
 /// it -- provided each decimal slot is in the one spelling the renderer writes, which
-/// [`canonical_decimal`] is what enforces. A verification string built per page would cost an
+/// [`canonical_decimal`] is what enforces. A verification string built per block would cost an
 /// allocation per block on every load to re-establish what the index arithmetic already gives.
 /// `the_renderer_and_the_parse_are_inverse_on_every_page_of_the_shipped_corpus` drives the
 /// property on 8,000 real blocks and
@@ -3040,7 +3136,7 @@ impl LocalIndexLogStore {
         &self,
         shard_id: ShardId,
         items: Vec<IndexItem>,
-        key_states: Vec<serde_json::Value>,
+        key_states: Vec<KeyState>,
         applied_wal_sequence: Option<u64>,
         meta: Option<MetaItem>,
         upsert: bool,
@@ -3069,7 +3165,7 @@ impl LocalIndexLogStore {
         &self,
         shard_id: ShardId,
         items: Vec<IndexItem>,
-        key_states: Vec<serde_json::Value>,
+        key_states: Vec<KeyState>,
         applied_wal_sequence: Option<u64>,
         meta: Option<MetaItem>,
         upsert: bool,
@@ -4832,7 +4928,7 @@ fn delta_record_carries_content(payload: &[u8]) -> Result<bool, IndexLogError> {
 /// meets it. Split out of [`delta_record_carries_content`] rather than written twice: the sweep
 /// reads raw payloads and the fold reads records, and "what the fold would apply" has to mean
 /// the same thing to both or the two drift about which records matter.
-pub(crate) fn delta_record_carries_content_of(record: &IndexDeltaRecord) -> bool {
+pub(crate) fn delta_record_carries_content_of<K>(record: &IndexDeltaRecord<K>) -> bool {
     !record.items.is_empty() || record.meta.is_some() || !record.key_states.is_empty()
 }
 
@@ -4959,7 +5055,7 @@ mod tests {
             .append_delta(
                 9,
                 Vec::new(),
-                vec![serde_json::json!({"key": "second"})],
+                vec![serde_json::json!({"key": "second"}).into()],
                 None,
                 None,
                 false,
@@ -5484,7 +5580,7 @@ mod tests {
     fn a_delta_record_still_announces_itself_by_its_items_key() {
         // The property the discriminator depends on: a written delta record carries a literal
         // `items` key, which is how a reader tells it from a whole-index line.
-        let record = IndexDeltaRecord {
+        let record: IndexDeltaRecord = IndexDeltaRecord {
             shard_id: 7,
             sequence: 1,
             items: vec![block_item(1, "a", false)],
@@ -5920,7 +6016,7 @@ mod tests {
             .append_delta(
                 3,
                 Vec::new(),
-                vec![serde_json::json!({"key": "expired"})],
+                vec![serde_json::json!({"key": "expired"}).into()],
                 None,
                 None,
                 false,
@@ -6017,7 +6113,7 @@ mod tests {
                 .append_delta(
                     3,
                     Vec::new(),
-                    vec![serde_json::json!({ "key": format!("expired-{round:03}") })],
+                    vec![serde_json::json!({ "key": format!("expired-{round:03}") }).into()],
                     None,
                     None,
                     false,
@@ -6167,7 +6263,7 @@ mod tests {
             .append_delta(
                 6,
                 Vec::new(),
-                vec![serde_json::json!({ "key": "hidden-tombstone" })],
+                vec![serde_json::json!({ "key": "hidden-tombstone" }).into()],
                 None,
                 None,
                 false,
@@ -6238,7 +6334,7 @@ mod tests {
             .append_delta(
                 2,
                 Vec::new(),
-                vec![serde_json::json!({ "key": "tombstone" })],
+                vec![serde_json::json!({ "key": "tombstone" }).into()],
                 None,
                 None,
                 false,
@@ -6460,7 +6556,7 @@ mod tests {
             .append_delta(
                 7,
                 Vec::new(),
-                vec![serde_json::json!({ "key": "first" })],
+                vec![serde_json::json!({ "key": "first" }).into()],
                 None,
                 None,
                 false,
@@ -6484,7 +6580,7 @@ mod tests {
             .append_delta(
                 7,
                 Vec::new(),
-                vec![serde_json::json!({ "key": "last" })],
+                vec![serde_json::json!({ "key": "last" }).into()],
                 None,
                 None,
                 false,
@@ -6984,7 +7080,7 @@ mod tests {
         let mut blanked = item.clone();
         blanked.object_key = empty_object_key();
 
-        let record = |item, shared_object_key| IndexDeltaRecord {
+        let record = |item, shared_object_key| IndexDeltaRecord::<serde_json::Value> {
             shard_id: 11,
             sequence: 1,
             items: vec![item],
@@ -7052,7 +7148,7 @@ mod tests {
             item.object_key = empty_object_key();
         }
         let before = encode_index_payload(
-            &IndexDeltaRecord {
+            &IndexDeltaRecord::<serde_json::Value> {
                 shard_id: 11,
                 sequence: 1,
                 items,
@@ -7067,7 +7163,7 @@ mod tests {
         .unwrap()
         .len();
         let after = encode_index_payload(
-            &IndexDeltaRecord {
+            &IndexDeltaRecord::<serde_json::Value> {
                 shard_id: 11,
                 sequence: 1,
                 items: hoisted,
@@ -7810,7 +7906,7 @@ mod tests {
     /// sniff were wrong this is where it would show.
     #[test]
     fn one_log_file_can_hold_both_shapes() {
-        let json_record = IndexDeltaRecord {
+        let json_record: IndexDeltaRecord = IndexDeltaRecord {
             shard_id: 1,
             sequence: 1,
             items: vec![block_item(1, "a", false)],
@@ -7866,7 +7962,7 @@ mod tests {
             applied_wal_sequence: Option<u64>,
         }
 
-        let record = IndexDeltaRecord {
+        let record: IndexDeltaRecord = IndexDeltaRecord {
             shard_id: 4,
             sequence: 77,
             items: vec![block_item(5, "c", false)],
@@ -9390,7 +9486,7 @@ flag exists to say",
                     item
                 })
                 .collect();
-            let record = IndexDeltaRecord {
+            let record: IndexDeltaRecord = IndexDeltaRecord {
                 shard_id: shard,
                 sequence: 1,
                 items,
@@ -10016,7 +10112,7 @@ flag exists to say",
                     .append_delta(
                         9,
                         vec![block_item(position as u32 + 1, key, position % 2 == 1)],
-                        vec![serde_json::json!({"n": position})],
+                        vec![serde_json::json!({"n": position}).into()],
                         Some(position as u64 + 10),
                         None,
                         position % 2 == 0,
@@ -10071,7 +10167,7 @@ flag exists to say",
     /// The protobuf codec is for deltas: any other shape is refused rather than guessed at.
     #[test]
     fn the_protobuf_codec_refuses_a_shape_it_does_not_carry() {
-        let record = IndexDeltaRecord {
+        let record: IndexDeltaRecord = IndexDeltaRecord {
             shard_id: 1,
             sequence: 1,
             items: Vec::new(),
@@ -10475,7 +10571,7 @@ flag exists to say",
                 .append_delta(
                     12,
                     Vec::new(),
-                    vec![serde_json::json!({ "key": format!("expired-{round:03}") })],
+                    vec![serde_json::json!({ "key": format!("expired-{round:03}") }).into()],
                     None,
                     None,
                     false,
@@ -11166,7 +11262,7 @@ flag exists to say",
         let mut short_row = vec![0x90 | (INDEX_ITEM_SLOTS - 1) as u8];
         short_row.extend_from_slice(&row[1..row.len() - 1]);
 
-        let record = IndexDeltaRecord {
+        let record: IndexDeltaRecord = IndexDeltaRecord {
             shard_id: shard,
             sequence: 1,
             items: vec![item],

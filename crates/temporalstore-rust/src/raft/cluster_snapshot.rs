@@ -1111,7 +1111,7 @@ impl RaftCluster {
         O: ObjectStore + 'static,
     {
         let snapshot = self.create_snapshot()?;
-        let snapshot_bytes = serde_json::to_vec(&snapshot)
+        let snapshot_bytes = wal_proto::encode_snapshot_object(&snapshot)
             .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
         let last_log_id = format!(
             "term:{}:index:{}",
@@ -1201,7 +1201,7 @@ impl RaftCluster {
             &local_snapshot.manifest,
             &snapshot_bytes,
         )?;
-        let mut snapshot = serde_json::from_slice::<RaftSnapshot>(&snapshot_bytes)
+        let mut snapshot = wal_proto::decode_snapshot_object(&snapshot_bytes)
             .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
         snapshot.external_snapshot_ref = Some(RaftExternalSnapshotRef {
             uri: snapshot_ref.uri.clone(),

@@ -10,7 +10,7 @@
 //! the engine's execute path; this module is the read/aggregation side.
 
 use super::timestamped_series::TimestampedSeries as _;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::block_store::{ElementEntry, BlockStore};
 use crate::types::{
@@ -19,12 +19,13 @@ use crate::types::{
 };
 use matrixcache::MultiLayerCache;
 
-use super::packed_blocks::{
-    decode_feature_block_strict, read_feature_point_cached, CachedFeatureBlock,
-};
+use super::packed_blocks::{decode_feature_block_strict, feature_point_in_place, PointRead};
 use super::state::PackedFeatureBlockDecode;
 use super::hashing::BlockIdentity;
-use super::{decode_or_count_sequence_row, note_unreadable_sequence_row, parse_i64, read_block_bytes, ShardState};
+use super::{
+    decode_or_count_sequence_row, note_unreadable_sequence_row, parse_i64, read_block_bytes,
+    read_block_shared_keyed, BlockKeys, ShardState,
+};
 pub(super) fn read_sequence_row(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -54,7 +55,34 @@ pub(super) fn read_sequence_row(
     }
 }
 
-pub(super) fn read_sequence_row_cached(
+/// The block a run of sequence rows is being read from, kept between rows.
+///
+/// A write of many rows at once files them in ONE block, so a range over them meets the same
+/// block row after row. The last block read is held, and an address equal to it is answered from
+/// the held bytes: no block key built, no cache lookup. Only a block that was READ is held; one that
+/// could not be read is asked for again, as before.
+pub(super) struct SequenceBlockReader {
+    keys: BlockKeys,
+    last: Option<(ElementEntry, std::sync::Arc<[u8]>)>,
+}
+
+impl SequenceBlockReader {
+    pub(super) fn new() -> Self {
+        Self {
+            keys: BlockKeys::new(),
+            last: None,
+        }
+    }
+}
+
+/// One sequence row, decoded where it sits in the cached block.
+///
+/// The block's shared bytes are walked in place and the row is decoded straight from the value's
+/// slice: no `Vec<FeaturePoint>`, no copy of the value, no per-block table. A damaged block is
+/// still COUNTED, once for each row asked of it, and a sound block that holds no point at that
+/// instant answers nothing and counts nothing -- the two cases `PointRead` keeps apart.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn read_sequence_row_in_place(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
@@ -62,22 +90,32 @@ pub(super) fn read_sequence_row_cached(
     address: &ElementEntry,
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
-    packed_block_cache: &mut HashMap<ElementEntry, Option<CachedFeatureBlock>>,
+    reader: &mut SequenceBlockReader,
 ) -> Option<SequenceFeatureRow> {
-    let point = read_feature_point_cached(
-        cache,
-        block_store,
-        shard_id,
-        timestamp_ms,
-        address,
-        identity,
-        packed_block_cache,
-        routing_bucket,
-    );
-    if point.is_none() && matches!(packed_block_cache.get(address), Some(None)) {
-        note_unreadable_sequence_row(timestamp_ms, "the block is corrupt");
+    let held = match &reader.last {
+        Some((held, bytes)) if held == address => Some(std::sync::Arc::clone(bytes)),
+        _ => None,
+    };
+    let bytes = match held {
+        Some(bytes) => bytes,
+        None => {
+            let cache_key = reader.keys.key(shard_id, address, routing_bucket);
+            let bytes =
+                read_block_shared_keyed(cache, block_store, shard_id, address, identity, cache_key)?;
+            reader.last = Some((address.clone(), std::sync::Arc::clone(&bytes)));
+            bytes
+        }
+    };
+    match feature_point_in_place(&bytes, timestamp_ms, |value| {
+        decode_or_count_sequence_row(timestamp_ms, value)
+    }) {
+        PointRead::Found(row) => row,
+        PointRead::Absent => None,
+        PointRead::Corrupt => {
+            note_unreadable_sequence_row(timestamp_ms, "the block is corrupt");
+            None
+        }
     }
-    point.and_then(|point| decode_or_count_sequence_row(timestamp_ms, &point.value))
 }
 
 pub(super) fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &FeatureFilter) -> bool {
@@ -119,7 +157,7 @@ pub(super) fn sequence_rows_in_range(
     let routing_bucket =
         crate::engine::hashing::block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     let identity = BlockIdentity::of(shard_id, "feature", key, None);
-    let mut packed_block_cache = HashMap::new();
+    let mut reader = SequenceBlockReader::new();
     shard
         .features()
         .get(key)
@@ -128,7 +166,7 @@ pub(super) fn sequence_rows_in_range(
                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .take(count)
                 .filter_map(|(timestamp_ms, address)| {
-                    read_sequence_row_cached(
+                    read_sequence_row_in_place(
                         cache,
                         block_store,
                         shard_id,
@@ -136,7 +174,7 @@ pub(super) fn sequence_rows_in_range(
                         address,
                         identity,
                         Some(routing_bucket),
-                        &mut packed_block_cache,
+                        &mut reader,
                     )
                 })
                 .filter(|row| {
@@ -153,8 +191,71 @@ pub(super) fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> 
     super::window_aggregate::feature_legacy(aggregator, values.iter().map(parse_i64), values.len())
 }
 
-pub(super) fn aggregate_control_state_values(values: &[i64], aggregator: &str) -> i64 {
+pub(super) fn aggregate_control_state_values(
+    values: impl Iterator<Item = i64>,
+    aggregator: &str,
+) -> i64 {
     super::window_aggregate::counter_legacy(aggregator, values)
+}
+
+/// The entry of a `ModelKey`-keyed map for `key`, reached through a BORROW when it exists.
+///
+/// `entry(Arc::from(key))` mints the key's `Arc` BEFORE the lookup: `Arc::from(&str)` always
+/// mallocs and copies, and `entry()` takes its key by value, so every write into a series that
+/// already exists built a key, copied the text into it and dropped it again, on counter increments,
+/// seen checks, token-bucket takes, distinct adds and sequence appends alike. Only a key that is
+/// NOT in the map is minted, once per object instead of once per write; that costs one extra hash
+/// of the key on the miss.
+///
+/// ONE HOME FOR THE RULE, so the borrow cannot be right in one arm and forgotten in the next.
+pub(super) fn slot_for_write<'m, V: Default>(
+    map: &'m mut std::collections::HashMap<super::state::ModelKey, V>,
+    key: &str,
+) -> &'m mut V {
+    if !map.contains_key(key) {
+        map.insert(std::sync::Arc::from(key), V::default());
+    }
+    map.get_mut(key).expect("the slot was just found or inserted")
+}
+
+/// Replace the value stored under `key`, minting the key's `Arc` only when the map has no entry.
+/// The overwrite twin of [`slot_for_write`], for a slot whose whole value is rebuilt by the write
+/// (a token bucket's state, a selection's winner).
+pub(super) fn store_for_write<V>(
+    map: &mut std::collections::HashMap<super::state::ModelKey, V>,
+    key: &str,
+    value: V,
+) {
+    match map.get_mut(key) {
+        Some(slot) => *slot = value,
+        None => {
+            map.insert(std::sync::Arc::from(key), value);
+        }
+    }
+}
+
+/// A counter series reduced over `[start_ms, end_ms]` by `aggregator`, where it sits in the stored
+/// series. A key with no series reduces the empty window, which is what an empty collected vector
+/// answered.
+pub(super) fn control_state_window_value(
+    shard: &ShardState,
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+    aggregator: &str,
+) -> i64 {
+    aggregate_control_state_values(
+        shard
+            .control_state()
+            .get(key)
+            .into_iter()
+            .flat_map(|series| {
+                series
+                    .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                    .map(|(_, value)| *value)
+            }),
+        aggregator,
+    )
 }
 
 pub(super) fn is_control_state_change_aggregator(aggregator: &str) -> bool {

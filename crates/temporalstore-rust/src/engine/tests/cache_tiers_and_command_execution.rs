@@ -4509,23 +4509,16 @@ fn feature_recovery_reports_corrupt_packed_timestamped_block() {
     assert!(
         readiness.feature_block_layout.corrupt_packed_feature_blocks[0]
             .error
-            .contains("invalid packed feature page payload")
+            .contains("retired JSON shape")
     );
 }
 
 #[test]
-fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
+fn feature_recovery_reports_a_packed_timestamped_block_in_the_retired_json_shape() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
-    let block = PackedFeatureBlock {
-        version: 2,
-        points: vec![FeaturePoint {
-            timestamp_ms: 10,
-            value: b"ten".to_vec(),
-        }],
-    };
     let mut bytes = FEATURE_BLOCK_MAGIC.to_vec();
-    bytes.extend_from_slice(&serde_json::to_vec(&block).unwrap());
+    bytes.extend_from_slice(br#"{"version":1,"points":[]}"#);
     let address = engine
         .block_store()
         .append_with_block_metadata(
@@ -4555,7 +4548,7 @@ fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
     assert!(
         readiness.feature_block_layout.corrupt_packed_feature_blocks[0]
             .error
-            .contains("unsupported packed feature block version 2")
+            .contains("retired JSON shape")
     );
 }
 

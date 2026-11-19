@@ -288,7 +288,19 @@ message Command {
     HashMultiSetWithTtl hash_multi_set_with_ttl = 66;
     ZSetCountAdjust zset_count_adjust = 67;
     ZSetScan zset_scan = 68;
-    CellRollup cell_rollup = 69;
+    WindowReduceRollup window_reduce_rollup = 69;
+    StringIncrBy string_incr_by = 70;
+    StringAppend string_append = 71;
+    ListSet list_set = 72;
+    ListRemove list_remove = 73;
+    ListTrim list_trim = 74;
+    WindowReduceRemove window_reduce_remove = 75;
+    SetAddMany set_add_many = 76;
+    SetRemoveMany set_remove_many = 77;
+    ZSetAddMany zset_add_many = 78;
+    ZSetRemoveMany zset_remove_many = 79;
+    ListPushMany list_push_many = 80;
+    ListPopMany list_pop_many = 81;
   }
 }
 
@@ -301,14 +313,20 @@ message CommandResponse {
   repeated ContextNode context_nodes = 6;
   uint64 count = 7;
   bool exists = 8;
-  // A merge-reduce feature append reports what landed. `count` stays the snapshots written.
+  // A merge-reduce feature append reports what landed. `count` stays the samples written.
   uint64 cells_created = 9;
   uint64 cells_merged = 10;
-  // A rollup reports what it did: `count` is the snapshots after, these are the rest.
-  uint64 snapshots_before = 11;
+  // Set when the append carried a retry token the key still remembered: the counts are the first
+  // application's and nothing was written.
+  bool replayed = 15;
+  // A rollup reports what it did: `count` is the samples after, these are the rest.
+  uint64 samples_before = 11;
   uint64 cells_before = 12;
   uint64 cells_after = 13;
   uint64 cells_dropped = 14;
+  // A removal reports what it did: `count` is the samples after, `samples_before` and
+  // `cells_before` as for a rollup, and this is the cells it took out.
+  uint64 cells_removed = 16;
 }
 
 message StringSet {
@@ -578,11 +596,24 @@ message WalStateImage {
   optional uint32 end_routing_bucket = 5;
 }
 
-// An installed snapshot, split so the image's bytes stay bytes: everything else about the
-// snapshot travels in its existing encoding in `snapshot_sans_image`.
+// An installed snapshot. The image's bytes stay bytes, and every other field of the snapshot is a
+// field here. Tag 1 held the rest of the snapshot as an encoded text document; it is retired, not
+// reused.
+//
+// A reader skips a field it does not know, so a record written with tag 1 alone would decode as a
+// snapshot of shard 0 at index 0 -- a plausible empty one. `format_version` is what prevents it:
+// the writer sets 1, the reader refuses anything else by name, and an absent field reads as 0.
 message WalInstalledSnapshot {
-  bytes snapshot_sans_image = 1;
+  reserved 1;
   WalStateImage state_image = 2;
+  uint64 shard_id = 3;
+  uint64 last_included_term = 4;
+  uint64 last_included_index = 5;
+  optional WalExternalSnapshotRef external_snapshot_ref = 6;
+  repeated WalLogEntry entries = 7;
+  // True when the image lives in its own file beside the log rather than inside this record.
+  bool state_image_externalized = 8;
+  uint32 format_version = 9;
 }
 
 message WalPipelineState {
@@ -884,6 +915,9 @@ message EngineWalMetadata {
 // The entries carry the values, which is where the bytes are; the rest of the message is a
 // handful of integers.
 message RaftAppendEntriesRequest {
+  // Tag 9 held the tracing metadata as an encoded text document. It is retired, not reused. A
+  // reader skips it, which costs only the tracing metadata: nothing else here depends on it.
+  reserved 9;
   uint64 shard_id = 1;
   uint64 term = 2;
   uint64 leader_id = 3;
@@ -892,9 +926,14 @@ message RaftAppendEntriesRequest {
   uint64 prev_log_term = 6;
   repeated WalLogEntry entries = 7;
   uint64 leader_commit = 8;
-  // Set only when the caller attached tracing metadata, and carried in its existing encoding so
-  // none of its fields depend on this schema keeping up.
-  bytes rpc = 9;
+  // Set only when the caller attached tracing metadata.
+  optional RaftRpcMetadata rpc = 10;
+}
+
+message RaftRpcMetadata {
+  optional string auth_token = 1;
+  optional uint64 deadline_ms = 2;
+  string request_id = 3;
 }
 
 // Just enough of an engine log record to decide whether it is wanted.
@@ -930,9 +969,38 @@ message ListPop {
   bool left = 2;
 }
 
+message ListSet {
+  string key = 1;
+  int64 index = 2;
+  bytes member = 3;
+}
+
+message ListRemove {
+  string key = 1;
+  int64 count = 2;
+  bytes member = 3;
+}
+
+message ListTrim {
+  string key = 1;
+  int64 start = 2;
+  int64 stop = 3;
+}
+
 message SetRemove {
   string key = 1;
   bytes member = 2;
+}
+
+// Several members of one set in one command: the answer is how many were absent (add) or present (remove).
+message SetAddMany {
+  string key = 1;
+  repeated bytes members = 2;
+}
+
+message SetRemoveMany {
+  string key = 1;
+  repeated bytes members = 2;
 }
 
 message ZSetAdd {
@@ -944,6 +1012,35 @@ message ZSetAdd {
 message ZSetRemove {
   string key = 1;
   bytes member = 2;
+}
+
+// Several elements of one list in one command: the answer is the new length (push) or the elements popped (pop).
+message ListPushMany {
+  string key = 1;
+  repeated bytes members = 2;
+  bool left = 3;
+}
+
+message ListPopMany {
+  string key = 1;
+  bool left = 2;
+  uint64 count = 3;
+}
+
+// Several members of one sorted set in one command: the answer is how many were new (add) or present (remove).
+message ZSetScoredMember {
+  bytes member = 1;
+  double score = 2;
+}
+
+message ZSetAddMany {
+  string key = 1;
+  repeated ZSetScoredMember members = 2;
+}
+
+message ZSetRemoveMany {
+  string key = 1;
+  repeated bytes members = 2;
 }
 
 message ZSetIncrBy {
@@ -1160,48 +1257,76 @@ message FeatureAppendWithPolicy {
   string key = 1;
   repeated FeaturePoint points = 2;
   FeatureWritePolicy policy = 3;
+  // A caller-chosen retry token, honoured under the merge-reduce policy only. Absent is the
+  // request every client sent before tokens existed; zero is a token like any other.
+  optional uint64 retry_token = 16;
 }
 
-// Rolls the cell snapshots of `key` stamped strictly below `older_than_ms` up into buckets of
-// `bucket_ms`, each stored at its bucket start, and optionally caps each rolled snapshot.
-message CellRollup {
+// Rolls the cell samples of `key` stamped strictly below `older_than_ms` up into buckets of
+// `bucket_ms`, each stored at its bucket start, and optionally caps each rolled sample.
+message WindowReduceRollup {
   string key = 1;
   uint64 older_than_ms = 2;
   uint64 bucket_ms = 3;
-  CellRollupCap cap = 4;
+  WindowReduceRollupCap cap = 4;
+  // Absent (the first value) is the original request, whose older_than_ms is a stamp.
+  WindowReduceRollupAnchor anchor = 5;
+  // Tiers coarser than the first pair, finest first.
+  repeated WindowReduceRollupTier coarser_tiers = 6;
+  WindowReduceRollupTruncate truncate = 7;
+}
+
+enum WindowReduceRollupAnchor {
+  WINDOW_REDUCE_ROLLUP_ANCHOR_REQUEST = 0;
+  WINDOW_REDUCE_ROLLUP_ANCHOR_NEWEST_MINUS_AGE = 1;
+}
+
+message WindowReduceRollupTier {
+  uint64 older_than_ms = 1;
+  uint64 bucket_ms = 2;
+}
+
+// Keep the newest keep_last samples, acting only over the trigger (absent: over keep_last).
+message WindowReduceRollupTruncate {
+  uint64 keep_last = 1;
+  optional uint64 trigger = 2;
 }
 
 // Keep the best `keep` cells of each group. Absent `group_by`: every cell is one group.
-message CellRollupCap {
+message WindowReduceRollupCap {
   optional string group_by = 1;
-  CellRollupScore score = 2;
+  WindowReduceRollupScore score = 2;
   uint64 keep = 3;
+  // Parts per million of keep reserved for the most recently seen members; 0 protects none.
+  uint32 protect_newest_ppm = 4;
+  // A group is cut only when it holds more than keep + trigger_over members; 0 cuts any over keep.
+  uint64 trigger_over = 5;
 }
 
 // What a cap orders cells by. Lanes are named, never numbered.
-message CellRollupScore {
+message WindowReduceRollupScore {
   oneof kind {
     string lane = 1;
-    CellRollupRatio ratio = 2;
-    CellRollupWilson wilson = 3;
+    WindowReduceRollupRatio ratio = 2;
+    WindowReduceRollupWilson wilson = 3;
     bool member = 4;
     bool time = 5;
-    CellRollupWeighted weighted = 6;
+    WindowReduceRollupWeighted weighted = 6;
   }
 }
 
-message CellRollupRatio {
+message WindowReduceRollupRatio {
   string numerator = 1;
   string denominator = 2;
 }
 
-message CellRollupWilson {
+message WindowReduceRollupWilson {
   string successes = 1;
   string trials = 2;
   double z = 3;
 }
 
-message CellRollupWeighted {
+message WindowReduceRollupWeighted {
   repeated string lanes = 1;
   repeated double weights = 2;
 }
@@ -1238,6 +1363,22 @@ message StringSetConditional {
   StringSetCondition condition = 4;
   bool return_old = 5;
   bool keep_ttl = 6;
+}
+
+// Add a signed amount to a string that holds a base-10 integer, in one step under the shard's
+// lock. A missing key counts as zero. A value that is not an integer, or a sum that does not fit
+// in an int64, is refused and the stored value is left alone. The deadline the key already holds
+// is kept.
+message StringIncrBy {
+  string key = 1;
+  int64 increment = 2;
+}
+
+// Add bytes to the end of a string in one step under the shard's lock, creating it when missing.
+// The answer is the new length. The deadline the key already holds is kept.
+message StringAppend {
+  string key = 1;
+  bytes value = 2;
 }
 
 // ===========================================================================================
@@ -1841,8 +1982,11 @@ message DurableBucketDumpManifest {
   // Absent means the all-zero report, which is what a manifest without one has always meant.
   optional DurableStorageObjectLifecycle object_lifecycle = 19;
   string index_sha256 = 20;
-  // Field 21 is not used.
-  // The whole-shard index image. Second-highest tag: see the note above.
+  // The manifest this one builds on, for a DELTA manifest; absent for a whole one. Tag 21, below the
+  // index image's tag 22, so it is written ahead of the image and the digest's streamed layout
+  // (every other field, then the image, then the checksum) is unchanged.
+  optional string base_manifest_id = 21;
+  // The whole-shard index image (empty for a delta manifest). Second-highest tag: see the note above.
   bytes index_bytes = 22;
   // Highest tag, and EMPTY while the digest is computed.
   string checksum = 23;
@@ -1961,12 +2105,47 @@ message DurableControlStateSeries {
   repeated sint64 values = 2;
 }
 
-// Compact durable records for the LLM-context memory client. Metadata is MessagePack
-// inside protobuf so arbitrary caller metadata remains typed without JSON storage.
+// The Raft WAL's per-node segment runtime state: advisory counters read back after a restart. The
+// file opens with the container byte 0x01; a file that does not, or is absent, reads as the default.
+message DurableRaftWalSegmentRuntimeState {
+  uint64 released_segment_count = 1;
+  uint64 last_fsync_elapsed_ms = 2;
+  bool slow_fsync_backpressure_observed = 3;
+}
+
+// Compact durable records for the LLM-context memory client. Caller metadata is an arbitrary JSON
+// document in memory, and on disk it is a typed value tree: no JSON text and no MessagePack.
+//
+// Integers and floats stay distinct (an `int_value` is never read back as a double), and an empty
+// list differs from an empty map and from null, as they do in the document.
+message LlmMetadataValue {
+  oneof kind {
+    bool null_value = 1;
+    bool bool_value = 2;
+    int64 int_value = 3;
+    uint64 uint_value = 4;
+    double double_value = 5;
+    string string_value = 6;
+    LlmMetadataList list_value = 7;
+    LlmMetadataMap map_value = 8;
+  }
+}
+
+message LlmMetadataList {
+  repeated LlmMetadataValue items = 1;
+}
+
+message LlmMetadataMap {
+  map<string, LlmMetadataValue> entries = 1;
+}
+
+// Tag 3 held the metadata as MessagePack bytes; it is retired, not reused. A reader skips a field it
+// does not know, so a record written that way would read as one with no metadata: `format_version`
+// is what prevents it. The writer sets 1 and the reader refuses anything else.
 message LlmMemoryRecord {
+  reserved 3;
   string id = 1;
   string memory = 2;
-  bytes metadata_msgpack = 3;
   string tenant_id = 4;
   string account_id = 5;
   string user_id = 6;
@@ -1975,16 +2154,22 @@ message LlmMemoryRecord {
   uint64 created_at_ms = 9;
   uint64 updated_at_ms = 10;
   string context_ref = 11;
+  LlmMetadataValue metadata = 12;
+  uint32 format_version = 13;
 }
 
+// Tag 5 held the metadata as MessagePack bytes; retired as above. An absent `metadata` is no
+// metadata, which differs from a present null.
 message LlmMemoryHistoryRecord {
+  reserved 5;
   string id = 1;
   string event = 2;
   uint64 at_ms = 3;
   optional string memory = 4;
-  bytes metadata_msgpack = 5;
   optional string feedback = 6;
   optional string feedback_reason = 7;
+  LlmMetadataValue metadata = 8;
+  uint32 format_version = 9;
 }
 
 enum LlmContextProviderKind {
@@ -2065,4 +2250,551 @@ message ContextMemorySourceReceipt {
 message ContextMemoryIngestResponse {
   ContextExplicitIngestResponse acknowledgment = 1;
   repeated ContextMemorySourceReceipt sources = 2;
+}
+
+// Removes cells from the samples of `key`: a cell goes when its sample is stamped in
+// [start_ms, end_ms] (an absent bound is open), its member is in `include` (absent: any member)
+// and not in `exclude`, and every predicate in `filters` holds on it. A request that restricts
+// nothing is refused. A sample left with no cell is removed.
+message WindowReduceRemove {
+  string key = 1;
+  optional uint64 start_ms = 2;
+  optional uint64 end_ms = 3;
+  CellMemberSet include = 4;
+  repeated CellMember exclude = 5;
+  repeated CellPredicate filters = 6;
+}
+
+// A set of members whose presence, even when empty, is a statement (an empty include set is
+// refused, an absent one restricts nothing), which a repeated field alone cannot carry.
+message CellMemberSet {
+  repeated CellMember members = 1;
+}
+
+message CellMember {
+  oneof kind {
+    uint64 id = 1;
+    bytes bytes = 2;
+  }
+}
+
+// A test on a label, a lane or `member` of a cell: `field op value`.
+message CellPredicate {
+  string field = 1;
+  CellPredicateOp op = 2;
+  uint64 value = 3;
+}
+
+enum CellPredicateOp {
+  CELL_PREDICATE_OP_EQUAL = 0;
+  CELL_PREDICATE_OP_NOT_EQUAL = 1;
+  CELL_PREDICATE_OP_GREATER_THAN = 2;
+  CELL_PREDICATE_OP_GREATER_OR_EQUAL = 3;
+  CELL_PREDICATE_OP_LESS_THAN = 4;
+  CELL_PREDICATE_OP_LESS_OR_EQUAL = 5;
+}
+
+// BEGIN GENERATED metaserver-files (tools/gen_proto_converters.py: do not edit)
+
+message MfMetaSnapshot {
+  uint32 format_version = 1;
+  uint64 created_at_ms = 2;
+  map<uint64, MfShardLocation> shards = 3;
+  map<string, MfServerMetaInfo> servers = 4;
+  map<string, MfProxyMetaInfo> proxies = 5;
+  map<string, MfProxyGroupInfo> proxy_groups = 6;
+  map<string, MfMetaEntityState> namespaces = 7;
+  repeated MfTableMetaInfo tables = 8;
+  MfMetaStats stats = 9;
+  uint64 next_table_id = 10;
+  uint64 topology_version = 11;
+  map<string, uint64> scheduler_finish_generations = 12;
+  map<string, uint64> dropped_since_ms = 13;
+  bool meta_change_muted = 14;
+  map<string, uint64> frozen_since_ms = 15;
+  repeated MfTopologyChangeEvent topology_events = 16;
+  MfReservedNames reserved_names = 17;
+}
+
+message MfTaskSchedulerSnapshot {
+  repeated MfSchedulerTask tasks = 1;
+  uint64 next_task_id = 2;
+}
+
+message MfStatus {
+  bool ok = 1;
+  string code = 2;
+  string message = 3;
+}
+
+message MfSchedulerLifecycleToken {
+  uint64 task_id = 1;
+  uint64 shard_id = 2;
+  string operation = 3;
+  uint64 load_version = 4;
+  uint64 generation = 5;
+}
+
+message MfDataNodeShardLifecycleState {
+  uint64 shard_id = 1;
+  string state = 2;
+  string operation = 3;
+  uint64 load_version = 4;
+  uint64 updated_at_ms = 5;
+  MfStatus last_status = 6;
+  optional uint64 scheduler_task_id = 7;
+  optional uint64 scheduler_generation = 8;
+}
+
+message MfRaftMembershipChangeReport {
+  MfRaftMembershipChangePlan plan = 1;
+  MfJointConsensusMembership joint_membership = 2;
+  MfRaftMembership committed_membership = 3;
+  repeated uint64 caught_up_voters = 4;
+  uint64 leader_id = 5;
+  uint64 commit_index = 6;
+}
+
+enum MfSchedulerTaskResult {
+  MF_SCHEDULER_TASK_RESULT_ZERO_UNUSED = 0;
+  MF_SCHEDULER_TASK_RESULT_OK = 1;
+  MF_SCHEDULER_TASK_RESULT_RETRY_LATER = 2;
+  MF_SCHEDULER_TASK_RESULT_ABORTED = 3;
+}
+
+message MfShardLocation {
+  uint64 shard_id = 1;
+  string server_addr = 2;
+  MfMetaEntityState state = 3;
+  MfShardSnapshotRef latest_snapshot = 4;
+  uint64 registered_at_ms = 5;
+  string preferred_location = 6;
+}
+
+message MfServerMetaInfo {
+  string server_addr = 1;
+  uint64 node_id = 2;
+  string location = 3;
+  repeated MfNumaNode numa_nodes = 4;
+  MfMetaEntityState state = 5;
+  uint64 last_heartbeat_ms = 6;
+  uint64 frozen_since_ms = 7;
+  uint64 freeze_cooldown_until_ms = 8;
+  MfFreezeReason freeze_reason = 9;
+  uint64 boot_time_ms = 10;
+  uint64 reported_boot_time_ms = 11;
+  bool reboot_detected = 12;
+  bool reports_shard_states = 13;
+  uint64 registered_at_ms = 14;
+  uint64 load_key_count = 15;
+  uint64 load_memory_bytes = 16;
+  uint32 worst_shard_state_penalty = 17;
+  uint64 reported_record_count = 18;
+  uint64 reported_storage_bytes = 19;
+  string binary_version = 20;
+  repeated MfShardLoad shard_loads = 21;
+  repeated MfShardStatLoad shard_stat_loads = 22;
+  MfServerRuntimeLoad runtime_load = 23;
+  repeated MfServerShardServingState shard_states = 24;
+}
+
+message MfProxyMetaInfo {
+  string proxy_addr = 1;
+  string namespace = 2;
+  string group = 3;
+  string location = 4;
+  MfMetaEntityState state = 5;
+  uint64 config_version = 6;
+  uint64 last_heartbeat_ms = 7;
+  uint64 heartbeats_total = 8;
+  uint64 frozen_since_ms = 9;
+  uint64 freeze_cooldown_until_ms = 10;
+  MfFreezeReason freeze_reason = 11;
+  string binary_version = 12;
+  uint64 registered_at_ms = 13;
+  uint64 boot_time_ms = 14;
+  uint64 restart_count = 15;
+}
+
+message MfProxyGroupInfo {
+  string group = 1;
+  string namespace = 2;
+  string location = 3;
+  uint64 instance_num = 4;
+  uint64 config_version = 5;
+  uint32 drop_percent = 6;
+  MfMetaEntityState state = 7;
+}
+
+enum MfMetaEntityState {
+  MF_META_ENTITY_STATE_ZERO_UNUSED = 0;
+  MF_META_ENTITY_STATE_NORMAL = 1;
+  MF_META_ENTITY_STATE_FROZEN = 2;
+  MF_META_ENTITY_STATE_DROPPED = 3;
+}
+
+message MfTableMetaInfo {
+  uint64 table_id = 1;
+  string namespace = 2;
+  string table_name = 3;
+  MfMetaEntityState state = 4;
+  uint64 topology_version = 5;
+  uint64 first_shard_id = 6;
+  uint64 shard_count = 7;
+  uint64 replica_count = 8;
+  uint32 partition_version = 9;
+  MfTableServingOptions serving_options = 10;
+}
+
+message MfMetaStats {
+  uint64 register_shard_total = 1;
+  uint64 get_shard_total = 2;
+  uint64 server_register_total = 3;
+  uint64 server_heartbeat_total = 4;
+  uint64 proxy_register_total = 5;
+  uint64 proxy_heartbeat_total = 6;
+  uint64 namespace_create_total = 7;
+  uint64 table_create_total = 8;
+  uint64 topology_query_total = 9;
+  uint64 load_finish_total = 10;
+  uint64 topology_version = 11;
+  uint64 server_count = 12;
+  uint64 proxy_count = 13;
+  uint64 namespace_count = 14;
+  uint64 table_count = 15;
+  uint64 shard_count = 16;
+  uint64 frozen_shard_count = 17;
+}
+
+message MfTopologyChangeEvent {
+  uint64 topology_version = 1;
+  uint64 timestamp_ms = 2;
+  string kind = 3;
+  string resource = 4;
+  string detail = 5;
+}
+
+message MfReservedNames {
+  repeated string namespaces = 1;
+  repeated string tables = 2;
+}
+
+message MfSchedulerTask {
+  uint64 id = 1;
+  int32 priority = 2;
+  uint64 create_time_ms = 3;
+  uint64 next_run_time_ms = 4;
+  uint64 last_run_time_ms = 5;
+  uint64 retry_times = 6;
+  MfSchedulerTaskKind kind = 7;
+}
+
+message MfRaftMembershipChangePlan {
+  uint64 shard_id = 1;
+  MfRaftMembershipChangeKind kind = 2;
+  repeated uint64 old_voters = 3;
+  repeated uint64 new_voters = 4;
+  repeated uint64 add_voters = 5;
+  repeated uint64 remove_voters = 6;
+}
+
+message MfJointConsensusMembership {
+  repeated uint64 old_voters = 1;
+  repeated uint64 new_voters = 2;
+}
+
+message MfRaftMembership {
+  uint64 shard_id = 1;
+  repeated uint64 voters = 2;
+  uint64 leader_id = 3;
+}
+
+message MfShardSnapshotRef {
+  string uri = 1;
+  string checksum = 2;
+  uint64 byte_size = 3;
+  uint64 last_log_index = 4;
+  uint64 created_at_ms = 5;
+}
+
+message MfNumaNode {
+  uint64 id = 1;
+  string cpu_list = 2;
+  uint64 memory_size_mb = 3;
+}
+
+enum MfFreezeReason {
+  MF_FREEZE_REASON_ZERO_UNUSED = 0;
+  MF_FREEZE_REASON_UNSPECIFIED = 1;
+  MF_FREEZE_REASON_OPERATOR = 2;
+  MF_FREEZE_REASON_UNRESPONSIVE = 3;
+  MF_FREEZE_REASON_RESTARTED = 4;
+  MF_FREEZE_REASON_STOPPING = 5;
+}
+
+message MfShardLoad {
+  uint64 shard_id = 1;
+  uint64 key_count = 2;
+  uint64 memory_bytes = 3;
+}
+
+message MfShardStatLoad {
+  uint64 shard_id = 1;
+  MfShardStatInfo shard_stat_info = 2;
+}
+
+message MfServerRuntimeLoad {
+  uint64 queue_depth = 1;
+  uint64 background_queue_depth = 2;
+  uint64 queued_shard_count = 3;
+  uint64 running_shard_count = 4;
+  uint64 dirty_object_count = 5;
+  uint64 dirty_shard_count = 6;
+  uint64 rejected_total = 7;
+  uint64 rejected_background_total = 8;
+  uint64 timed_out_total = 9;
+  uint64 canceled_total = 10;
+  uint64 dump_runs = 11;
+  uint64 compaction_runs = 12;
+  uint64 gc_runs = 13;
+  uint64 storage_lifecycle_runs = 14;
+  uint64 last_meta_topology_version = 15;
+  uint64 meta_heartbeat_consecutive_failures = 16;
+  bool meta_forbid_auto_register = 17;
+  repeated string degraded_reasons = 18;
+}
+
+message MfServerShardServingState {
+  uint64 shard_id = 1;
+  string serving_state = 2;
+  uint64 worker_index = 3;
+  uint64 worker_threads = 4;
+  bool loaded = 5;
+  bool readonly = 6;
+  uint64 load_version = 7;
+  string table_name = 8;
+  string shard_uri = 9;
+  uint32 start_routing_bucket = 10;
+  uint32 end_routing_bucket = 11;
+  uint64 total_records = 12;
+  uint64 storage_bytes = 13;
+  uint64 cache_memory_bytes = 14;
+  MfShardCanonicalStorageStats storage = 15;
+  uint64 block_store_bytes_written = 16;
+  uint64 wal_sequence = 17;
+  uint64 dirty_object_count = 18;
+  uint64 dirty_bucket_count = 19;
+}
+
+message MfTableServingOptions {
+  bool pin_primary = 1;
+  string replica_read_policy = 2;
+  string preferred_location = 3;
+  uint32 drop_percent = 4;
+  uint32 max_read_retries = 5;
+  uint32 max_write_retries = 6;
+  uint64 retry_backoff_ms = 7;
+  uint64 continuous_failed_time_ms = 8;
+  uint64 io_timeout_ms = 9;
+  uint64 connect_timeout_ms = 10;
+  repeated string set_fields = 11;
+}
+
+message MfSchedulerTaskKindUpdateMembership {
+  MfMembershipUpdateTaskPlan f0 = 1;
+}
+
+message MfSchedulerTaskKindRebalanceStep {
+  MfRebalanceStep f0 = 1;
+}
+
+message MfSchedulerTaskKind {
+  oneof kind {
+    MfSchedulerTaskKindUpdateMembership update_membership = 1;
+    MfSchedulerTaskKindRebalanceStep rebalance_step = 2;
+  }
+}
+
+enum MfRaftMembershipChangeKind {
+  MF_RAFT_MEMBERSHIP_CHANGE_KIND_ZERO_UNUSED = 0;
+  MF_RAFT_MEMBERSHIP_CHANGE_KIND_ADD_VOTER = 1;
+  MF_RAFT_MEMBERSHIP_CHANGE_KIND_REMOVE_VOTER = 2;
+  MF_RAFT_MEMBERSHIP_CHANGE_KIND_REPLACE_VOTER = 3;
+}
+
+message MfShardStatInfo {
+  uint64 shard_id = 1;
+  bool loaded = 2;
+  bool readonly = 3;
+  uint64 load_version = 4;
+  string table_name = 5;
+  string shard_uri = 6;
+  uint32 start_routing_bucket = 7;
+  uint32 end_routing_bucket = 8;
+  uint64 total_records = 9;
+  uint64 storage_bytes = 10;
+  MfObjectManagerStats object_manager = 11;
+}
+
+message MfShardCanonicalStorageStats {
+  uint64 block_index_entries = 1;
+  uint64 object_index_entries = 2;
+  uint64 bucket_entries = 3;
+  uint64 bucket_index_resident_bytes_floor = 4;
+  uint64 bucket_index_resident_bytes = 5;
+  uint64 bucket_index_resident_entries = 6;
+  uint64 storage_slab_count = 7;
+  uint64 active_storage_slabs = 8;
+  uint64 sealed_storage_slabs = 9;
+  uint64 stream_slab_count = 10;
+  uint64 storage_slab_total_bytes = 11;
+  uint64 logical_write_amplification_ppm = 12;
+  uint64 storage_write_amplification_ppm = 13;
+  uint64 lifetime_write_amplification_ppm = 14;
+  uint64 write_amplification_since_compaction_ppm = 15;
+  uint64 bytes_written_since_compaction = 16;
+  uint64 user_write_amplification_ppm = 17;
+  uint64 live_user_bytes = 18;
+  uint64 live_objects_with_logical_size = 19;
+  uint64 item_space_amplification_ppm = 20;
+  uint64 space_amplification_ppm = 21;
+  uint64 block_space_amplification_ppm = 22;
+  uint64 stale_bytes_recorded = 23;
+  uint64 pending_discard_bytes = 24;
+  uint64 discard_backlog_ppm = 25;
+  uint64 discard_candidate_bytes = 26;
+  uint64 discard_candidate_slabs = 27;
+  uint64 merged_discard_range_count = 28;
+  uint64 fragmented_range_count = 29;
+  uint64 compaction_candidate_bytes = 30;
+  uint64 compaction_candidate_slabs = 31;
+  bool compaction_recommended = 32;
+  uint64 stale_bytes_by_overwrite = 33;
+  uint64 recorded_space_amplification_ppm = 34;
+  uint64 stale_bytes_discarded = 35;
+  uint64 pending_discard_block_refs = 36;
+  uint64 compaction_candidate_range_count = 37;
+  uint64 best_compaction_candidate_bytes = 38;
+  uint64 best_compaction_candidate_ratio_ppm = 39;
+  uint64 dropped_discard_range_count = 40;
+  uint64 stale_slabs_tracked = 41;
+  uint64 stale_slabs_pruned = 42;
+  uint64 stale_bytes_by_removal = 43;
+  uint64 stale_bytes_by_sweep = 44;
+  uint64 storage_slab_used_bytes = 45;
+  uint64 storage_slab_stale_bytes = 46;
+  uint64 block_reads = 47;
+  uint64 block_writes = 48;
+  uint64 bytes_read = 49;
+  uint64 bytes_written = 50;
+  uint64 logical_bytes_written = 51;
+  uint64 live_block_bytes = 52;
+  uint64 non_purged_physical_bytes = 53;
+  uint64 live_bytes_ppm = 54;
+  uint64 stale_bytes_ppm = 55;
+  uint64 append_watermark = 56;
+  uint64 compaction_watermark = 57;
+}
+
+message MfMembershipUpdateTaskPlan {
+  uint64 shard_id = 1;
+  uint64 self_replica_id = 2;
+  repeated uint64 active_replica_ids = 3;
+  uint64 primary_replica_id = 4;
+  uint64 membership_version = 5;
+  repeated MfMembershipUpdatePeerRequest requests = 6;
+}
+
+message MfRebalanceStepLoadTarget {
+  uint64 shard_id = 1;
+  uint64 replica_id = 2;
+  uint64 node_id = 3;
+  uint64 load_version = 4;
+}
+
+message MfRebalanceStepReloadTarget {
+  uint64 shard_id = 1;
+  uint64 replica_id = 2;
+  uint64 node_id = 3;
+  uint64 load_version = 4;
+}
+
+message MfRebalanceStepUpdateMembership {
+  uint64 shard_id = 1;
+  repeated uint64 active_replica_ids = 2;
+  uint64 primary_replica_id = 3;
+  uint64 membership_version = 4;
+}
+
+message MfRebalanceStepFreezeSource {
+  uint64 shard_id = 1;
+  uint64 replica_id = 2;
+  uint64 node_id = 3;
+}
+
+message MfRebalanceStepUnloadSource {
+  uint64 shard_id = 1;
+  uint64 replica_id = 2;
+  uint64 node_id = 3;
+}
+
+message MfRebalanceStep {
+  oneof kind {
+    MfRebalanceStepLoadTarget load_target = 1;
+    MfRebalanceStepReloadTarget reload_target = 2;
+    MfRebalanceStepUpdateMembership update_membership = 3;
+    MfRebalanceStepFreezeSource freeze_source = 4;
+    MfRebalanceStepUnloadSource unload_source = 5;
+  }
+}
+
+message MfObjectManagerStats {
+  uint64 object_count = 1;
+  uint64 block_ref_count = 2;
+  uint64 dirty_object_count = 3;
+  uint64 dirty_bucket_count = 4;
+  uint32 routing_bucket_count = 5;
+}
+
+message MfMembershipUpdatePeerRequest {
+  uint64 replica_id = 1;
+  uint64 node_id = 2;
+  MfMembershipUpdateRequest request = 3;
+}
+
+message MfMembershipUpdateRequest {
+  uint64 shard_id = 1;
+  uint64 membership_version = 2;
+  uint64 replica_membership_version = 3;
+  repeated uint64 replica_node_ids = 4;
+  optional uint64 leader_node_id = 5;
+}
+
+// END GENERATED metaserver-files
+
+// The metaserver's durable scheduler file: the scheduler's queue and the executions it has recorded.
+// The queue is the generated `MfTaskSchedulerSnapshot`; these three are the binary's own types.
+message MetaSchedulerNodeCall {
+  string path = 1;
+  bool skipped = 2;
+  MfStatus status = 3;
+}
+
+message MetaSchedulerExecutionRecord {
+  uint64 task_id = 1;
+  string node_addr = 2;
+  MfStatus status = 3;
+  MfSchedulerTaskResult scheduler_result = 4;
+  uint64 retry_times = 5;
+  optional uint64 next_run_time_ms = 6;
+  repeated MetaSchedulerNodeCall calls = 7;
+  MfSchedulerLifecycleToken lifecycle_token = 8;
+  MfDataNodeShardLifecycleState lifecycle_state = 9;
+  MfRaftMembershipChangeReport raft_membership_report = 10;
+  uint64 queue_len = 11;
+}
+
+message MetaSchedulerDurableSnapshot {
+  MfTaskSchedulerSnapshot scheduler = 1;
+  repeated MetaSchedulerExecutionRecord executions = 2;
 }

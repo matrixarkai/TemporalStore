@@ -106,7 +106,7 @@
 //! the question was worth asking. #2005's resurrection came from `fold_carried_container_elements`
 //! putting an element into the durable map that a later record's block removal then contradicted --
 //! an input BUILT during the load. #2017's comes from the PERSISTED map itself,
-//! `set_index_serde`'s `(member bytes, address)` pairs, being older than the page index it is merged
+//! `set_index_serde`'s `(member bytes, address)` pairs, being older than the block index it is merged
 //! with -- an input READ off disk. One is a fold ordering bug and it is fixed; the other is a
 //! snapshot-age property of the durable map and `fill_absent_elements` had no filter for it at all.
 //! `both_inputs_to_the_merge_now_answer_the_same_live_block_question` drives the two side by side.

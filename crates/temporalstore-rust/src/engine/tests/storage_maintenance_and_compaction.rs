@@ -2493,7 +2493,7 @@ fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_mem
         let shard = shards.get(&1).expect("loaded shard");
         let address = shard.string_address("cold-key").expect("indexed block address");
         assert_ne!(address.block_slab_id(), HOT_BLOCK_SLAB_ID);
-        // THE SAME DERIVATION THE READ PATH USES: the page cache key's slot is the KEY's bucket
+        // THE SAME DERIVATION THE READ PATH USES: the block cache key's slot is the KEY's bucket
         // over the range the shard is stamped with, not a field on the address.
         let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
@@ -3655,7 +3655,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     }
     shard.bucket_index.hashes.insert_element_for_test(
         "hash-object",
-        std::sync::Arc::from("component"),
+        std::sync::Arc::from("attribute"),
         ElementEntry::from_parts(9, 1, 2, None, None),
     );
     shard.applied_wal_sequence = Some(4242);
@@ -6607,7 +6607,7 @@ fn what_capturing_a_writes_key_states_costs() {
     let warm = super::capture_key_states(shard, &keys);
     assert_eq!(warm.len(), 1, "one key in, one blob out");
     assert!(
-        warm[0].get("context_nodes").is_some() || warm[0].get("key").is_some(),
+        { let blob = warm[0].to_value(); blob.get("context_nodes").is_some() || blob.get("key").is_some() },
         "the blob must actually describe the key, or this measures an empty object"
     );
 
@@ -8190,9 +8190,13 @@ fn what_apply_storage_lifecycle_walks() {
 /// `collect_live_block_entries`, and this round makes two whole-shard passes that go around it:
 /// `rebuild_bucket_block_ownership` and `rebuild_bucket_first_index` both call
 /// `collect_model_live_block_entries` directly. The sharing work was real and the progression is
-/// real; the absolute numbers were 11.0x, 9.0x and 6.0x. The bound below now sits between 6 and
-/// 9, so losing any of that sharing still fails it. The per-site split is PRINTED above the
+/// real; the absolute numbers were 11.0x, 9.0x and 6.0x. The per-site split is PRINTED above the
 /// assertion, so the next person reading a moved bound sees which site moved it.
+///
+/// THE ROUND NO LONGER REBUILDS THE BUCKET INDEX, it updates the entry of each block it moved, so
+/// the whole-shard model walk the rebuild paid is gone: a round measures 3.0x (validation's listing
+/// and the two registration walks at the publish) and the bound sits just above it. Putting a
+/// rebuild back, or a second listing, moves the figure by a whole 1.0x and fails it.
 ///
 /// It is a BOUND and not an equality, unlike `the_object_lifecycle_snapshot_walks_the_shard_once`.
 /// That one owns every walk in its function and can name the exact number; this round also walks
@@ -8247,13 +8251,12 @@ fn a_compaction_round_shares_one_walk_across_its_live_block_consumers() {
 
     let multiple = walked as f64 / live_blocks as f64;
     assert!(
-        multiple <= 7.0,
+        multiple <= 3.5,
         "a compaction round walked {multiple:.1}x the shard ({walked} entries for {live_blocks} \
 live blocks) from {} site(s). Its ownership validation, utility report, object lifecycle report \
 and object-manager report all share ONE `collect_live_page_entries`: 11.0x when each walked for \
-itself, 9.0x with three sharing, 6.0x with all four, the last two of the six being the bucket \
-ownership and first-index rebuilds. If a new preamble report needs the live-block set, pass it \
-the existing slice rather than calling `collect_live_page_entries` again -- the split printed \
+itself, 9.0x with three sharing, 3.0x now that the bucket index is updated in place rather than \
+rebuilt. If a new preamble report needs the live-block set, pass it the existing slice rather than calling `collect_live_page_entries` again -- the split printed \
 above names whichever site moved this.",
         sites.len(),
     );
@@ -9040,7 +9043,9 @@ before the dump.",
 fn one_call_walks_the_live_blocks_a_known_number_of_times() {
     const RECORDS: usize = 1_000;
     // 6 -> 5: the plan's summaries and digests come off one listing (`a_plan_lists_the_shards_blocks_once`).
-    const EXPECTED_MULTIPLE: u64 = 5;
+    // 5 -> 4: the dump manifest's bucket summaries come off the capture's listing
+    // (`a_dump_manifest_lists_the_shard_once`).
+    const EXPECTED_MULTIPLE: u64 = 4;
 
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -10569,8 +10574,8 @@ fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
 /// because that report is taken whether or not the round has work, which is exactly why the idle
 /// half is measured separately.
 const EXPECTED_IDLE_MULTIPLE: u64 = 2;
-// 6 -> 5 for the same reason as `EXPECTED_MULTIPLE` in `one_call_walks_the_live_blocks_a_known_number_of_times`.
-const EXPECTED_DIRTY_MULTIPLE: u64 = 5;
+// 6 -> 5 -> 4 for the same reasons as `EXPECTED_MULTIPLE` in `one_call_walks_the_live_blocks_a_known_number_of_times`.
+const EXPECTED_DIRTY_MULTIPLE: u64 = 4;
 
 /// What one round walked, at one corpus size.
 struct RoundWalkMeasurement {

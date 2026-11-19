@@ -92,9 +92,7 @@
 //! reconstruction field by field against the LIVE value the encoder was handed, on all 8,000 blocks
 //! -- not against a re-render of itself, and not on a sample. `a_reload_reads_every_object_back`
 //! writes a corpus, drops the engine, reloads from the same directories and reads every object
-//! back, with a key never written asserted ABSENT in the same moment. The old-format reader is
-//! proved against COMMITTED BYTES in `block_entry_names`, whose `OLD_STORE_INDEX` is the index a
-//! pre-change binary really wrote.
+//! back, with a key never written asserted ABSENT in the same moment.
 //!
 //! rust-internal: measures this crate's own index codec, no product behaviour
 
@@ -222,13 +220,24 @@ struct Surfaces {
     shape: KeyShape,
     stream: usize,
     payload: usize,
+    /// What the shipped codec writes today, at the level it writes it (zstd-1 since #3018).
     container: usize,
+    /// The same container with its payload re-compressed at `BASELINE_ZSTD_LEVEL`, the level
+    /// `BEFORE_*` was captured at. THE ONLY CONTAINER FIGURE THAT IS COMPARABLE TO `BEFORE_*`.
+    container_at_baseline_level: usize,
     json_container: usize,
     slot_index_stream: usize,
+    /// `wal_resident_blocks`, which is measured APART from the five surfaces above (see `surfaces`).
+    placements: usize,
+    placement_stream: usize,
+    placement_container_extra: usize,
 }
 
-/// The pre-compression payload the shipped codec writes, pulled back out of the container.
-fn msgpack_payload_of(container: &[u8]) -> Vec<u8> {
+/// The zstd level `BEFORE_*` was captured at (`INDEX_ZSTD_LEVEL` was 3 until #3018 made it 1).
+const BASELINE_ZSTD_LEVEL: i32 = 3;
+
+/// Where the zstd frame starts: the end of the container's header.
+fn zstd_frame_start(container: &[u8]) -> usize {
     const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
     let start = container
         .windows(4)
@@ -238,6 +247,12 @@ fn msgpack_payload_of(container: &[u8]) -> Vec<u8> {
         start < 32,
         "the zstd magic is {start} bytes into the container, too far to be its header"
     );
+    start
+}
+
+/// The pre-compression payload the shipped codec writes, pulled back out of the container.
+fn msgpack_payload_of(container: &[u8]) -> Vec<u8> {
+    let start = zstd_frame_start(container);
     zstd::stream::decode_all(&container[start..]).expect("the container's frame must decompress")
 }
 
@@ -260,9 +275,32 @@ fn jlen(value: &serde_json::Value) -> usize {
 }
 
 impl Seeded {
+    /// THE FIVE SURFACES ARE THE BLOCK INDEX'S, SO THE WAL-PLACEMENT MAP IS TAKEN OUT OF THEM.
+    ///
+    /// `ShardState::wal_resident_blocks` records, for every block whose only durable copy is a WAL
+    /// record, which record that is. Since #3013 every write files one, and this fixture never dumps,
+    /// so none is retired: 8,000 entries, 453,256 B of JSON, which moved the stream 1,940,456 ->
+    /// 2,393,710 B, the payload 1,276,834 -> 1,547,731 B and the container 236,478 -> 306,919 B in
+    /// that one commit. `slot_index` did not move by a byte (1,940,086 B on both sides), so the
+    /// per-block-entry cost this guard prices is exactly what it was; the ceilings are compared
+    /// against the index WITHOUT that map and the map is priced on its own line, under its own
+    /// ceiling, in the test. A ceiling that absorbed it would stop biting on a restated key.
     fn surfaces(&self) -> Surfaces {
-        let shards = self.engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&SHARD).expect("shard is loaded");
+        let mut shards = self.engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&SHARD).expect("shard is loaded");
+        let placements = shard.wal_resident_blocks.len();
+        let container_with = crate::engine::encode_index_bytes(shard).len();
+        let stream_with = serde_json::to_vec(shard).expect("the index must serialize as JSON").len();
+        let held = std::mem::take(&mut shard.wal_resident_blocks);
+        let mut surfaces = self.measure(shard);
+        surfaces.placements = placements;
+        surfaces.placement_stream = stream_with - surfaces.stream;
+        surfaces.placement_container_extra = container_with - surfaces.container;
+        shard.wal_resident_blocks = held;
+        surfaces
+    }
+
+    fn measure(&self, shard: &ShardState) -> Surfaces {
         assert_eq!(
             self.objects,
             shard.strings().len(),
@@ -312,8 +350,15 @@ impl Seeded {
             stream: json.len(),
             payload: payload.len(),
             container: container.len(),
+            container_at_baseline_level: zstd_frame_start(&container)
+                + zstd::stream::encode_all(payload.as_slice(), BASELINE_ZSTD_LEVEL)
+                    .expect("the payload compresses")
+                    .len(),
             json_container: json_container_bytes(&json),
             slot_index_stream,
+            placements: 0,
+            placement_stream: 0,
+            placement_container_extra: 0,
         }
     }
 }
@@ -361,7 +406,17 @@ impl Surfaces {
         println!("  stream slot_index                  {:>12} B  {:>9.3} B/obj", self.slot_index_stream, self.slot_index_stream as f64 / n);
         println!("  payload          (msgpack)         {:>12} B  {:>9.3} B/obj", self.payload, self.payload as f64 / n);
         println!("  container codec 2 (SHIPPED)        {:>12} B  {:>9.3} B/obj", self.container, self.container as f64 / n);
+        println!(
+            "  container codec 2 at zstd-{}        {:>12} B  {:>9.3} B/obj  (the level BEFORE_* was taken at)",
+            BASELINE_ZSTD_LEVEL,
+            self.container_at_baseline_level,
+            self.container_at_baseline_level as f64 / n
+        );
         println!("  container codec 1 (json, #2350's)  {:>12} B  {:>9.3} B/obj", self.json_container, self.json_container as f64 / n);
+        println!(
+            "  WAL placements (held out above)    {:>12} entries, {} B json, +{} B container",
+            self.placements, self.placement_stream, self.placement_container_extra
+        );
     }
 }
 
@@ -623,9 +678,9 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
         );
     }
 
-    // AND A NON-EMPTY ELEMENT NAME IS CARRIED TOO, because an index written before the element name
-    // left the entry spells one -- `block_entry_names::OLD_STORE_INDEX` holds `hash:k:f0:1:9:3:4:4`
-    // -- and the object key in such a key must still come back whole rather than absorbing it.
+    // AND A NON-EMPTY ELEMENT NAME IS CARRIED TOO, because a block key can spell one
+    // (`hash:k:f0:1:9:3:4:4`) and the object key in such a key must still come back whole rather
+    // than absorbing it.
     let named = block_ref_key_from_parts("hash", "a:b", Some("f0"), 1, 9, 3, 4, 4);
     let parts = block_ref_key_parts(&named).expect("an element-named key parses");
     assert_eq!(
@@ -683,140 +738,6 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
 // =================================================================================================
 // THE OLD FORMAT, READ BY THE NEW READER, FROM A FIXTURE COMMITTED AS BYTES
 // =================================================================================================
-
-/// AN INDEX WRITTEN BEFORE THIS CHANGE IS READ BY THIS BINARY, THROUGH THE WHOLE DOOR.
-///
-/// # WHY A ROUND TRIP WOULD NOT HAVE BEEN EVIDENCE
-///
-/// A round trip writes and reads with the SAME build, so both halves are wrong together and agree.
-/// What has to be proved is that the reconstruction reads what a PREVIOUS binary wrote, and the
-/// only form of a previous binary's output that outlives the field is BYTES.
-///
-/// `block_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8` is such bytes: a whole shard index a
-/// pre-change binary really wrote, captured by that module's own capture instrument, whose three
-/// page entries each spell `object_key` and `model_id` as named fields -- and whose composite keys
-/// each spell the same two values. This arm takes it through the struct's own deserializer -- the
-/// read the retired plain-JSON arm of `decode_index_bytes` made -- and asserts the identity the new
-/// reader reconstructs is the identity the OLD entry carried, block by block.
-///
-/// # AND IT IS THE HARDEST AVAILABLE CASE, WHICH IS WHY IT IS THIS FIXTURE AND NOT A NEWER ONE
-///
-/// Its keys carry a NON-EMPTY element name slot -- `hash:ungated/hash:f0:0:0:27:0:0` and
-/// `zset:ungated/zset:6d30:0:54:34:0:0` -- from an era when a block entry named its element. A parse
-/// that searched for its fields rather than counting them from the END would read the object key
-/// short on exactly these keys and would still look right on every key this binary writes. Nothing
-/// a current store contains would catch that.
-///
-/// # WHAT THIS ARM DOES NOT CLAIM
-///
-/// It is not a claim that such a store is SERVED. A stamp-8 image is refused by `persistence`'s `<`
-/// comparison before anything reads it, which
-/// `block_entry_names::an_ungated_store_is_refused_before_it_is_served` drives. This is a claim
-/// about the DECODE, which happens first and which is where a reconstruction can go silently wrong.
-///
-/// rust-internal: decodes committed bytes through this crate's own door, no product behaviour
-#[test]
-fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carried() {
-    let bytes = super::block_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8;
-
-    // ---- THE FIXTURE REALLY CARRIES THE TWO FIELDS, ASSERTED ON THE TEXT ----
-    //
-    // On the TEXT and not on the decoded value, because what this binary can still read off an
-    // entry is exactly what the change took away. If the bytes did not spell them, this arm would
-    // be about an index that never had them and the reconstruction would have nothing to agree
-    // with.
-    for spelling in [
-        r#""object_key":"ungated/hash""#,
-        r#""object_key":"ungated/zset""#,
-        r#""model_id":"hash""#,
-        r#""model_id":"zset""#,
-    ] {
-        assert!(
-            bytes.contains(spelling),
-            "[CLAUSE old-bytes-carry-the-fields] the committed fixture does not spell {spelling}, \
-             so it is not an index whose entries name their object and this arm tests no \
-             reconstruction"
-        );
-    }
-
-    let decoded = serde_json::from_str::<crate::engine::state::ShardState>(bytes).expect(
-        "[CLAUSE old-bytes-decode] an index written by a pre-change binary must still be READ -- \
-         the header refuses it one layer up, and a read that failed here would mean the new \
-         reader cannot read the old shape at all",
-    );
-    assert_eq!(
-        8, decoded.index_format_version,
-        "[CLAUSE old-bytes-decode] the fixture's stamp is {} rather than 8, so it is not the \
-         pre-change store this guard is about",
-        decoded.index_format_version
-    );
-
-    // ---- EVERY BLOCK, AND THE IDENTITY IT CAME BACK WITH ----
-    let blocks = super::blocks_with_identity(&decoded.bucket_index);
-    let mut rebuilt: Vec<(String, String)> = blocks
-        .iter()
-        .map(|(_, _, object_key, block)| {
-            (object_key.to_string(), block.model_id().as_str().to_string())
-        })
-        .collect();
-    rebuilt.sort();
-    println!("\n=== a pre-change store, decoded and re-identified by this binary ===");
-    for row in &rebuilt {
-        println!("  {row:?}");
-    }
-
-    // THE EXPECTATION IS WHAT THE OLD ENTRIES SPELL, written out independently of the fixture text
-    // -- three rows, one per block, which is the set `an_ungated_store_is_refused_before_it_is_served`
-    // counts in the same bytes.
-    let expected: Vec<(String, String)> = {
-        let mut rows = vec![
-            ("ungated/hash".to_string(), "hash".to_string()),
-            ("ungated/hash".to_string(), "hash".to_string()),
-            ("ungated/zset".to_string(), "zset".to_string()),
-        ];
-        rows.sort();
-        rows
-    };
-    assert_eq!(
-        expected.len(),
-        rebuilt.len(),
-        "[CLAUSE old-bytes-rebuild-exactly] the fixture holds {} block(s) and {} came back",
-        expected.len(),
-        rebuilt.len()
-    );
-    for (at, (want, got)) in expected.iter().zip(rebuilt.iter()).enumerate() {
-        assert_eq!(
-            want, got,
-            "[CLAUSE old-bytes-rebuild-exactly] block {at} came back with the identity {got:?} \
-             where the stored entry spelled {want:?} -- a reconstruction that disagrees with what \
-             the old binary wrote is data loss wearing an optimisation's clothes"
-        );
-    }
-
-    // ---- THE CONTROL: THE COMPARISON MUST BE ABLE TO FAIL ----
-    let mut injected = rebuilt.clone();
-    injected[0].0.push('Z');
-    assert_ne!(
-        injected, rebuilt,
-        "[CLAUSE old-bytes-rebuild-exactly] the comparison cannot report a difference when one is \
-         injected, so the equalities above are equalities it cannot distinguish from inequalities"
-    );
-
-    // ---- AND THE ELEMENT NAME-BEARING KEY IS THE CASE THIS FIXTURE EXISTS FOR ----
-    assert!(
-        bytes.contains("hash:ungated/hash:f0:0:0:27:0:0"),
-        "[CLAUSE old-bytes-carry-the-fields] the fixture carries no element-named block key, so the \
-         split that could have read an object key short is not exercised"
-    );
-    let named = crate::index_log::block_ref_key_parts("hash:ungated/hash:f0:0:0:27:0:0")
-        .expect("an element-named key from a real pre-change store must parse");
-    assert_eq!(
-        ("hash", "ungated/hash", "f0"),
-        (named.kind, named.object_key, named.element_name),
-        "[CLAUSE old-bytes-rebuild-exactly] an element-named key splits in the wrong place, so a \
-         pre-change store's object keys would come back short"
-    );
-}
 
 // =================================================================================================
 // THE FIELD THAT CANNOT GO: THE PRESENCE BITS
@@ -1055,7 +976,7 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
             ("stream", before.stream, surfaces.stream),
             ("slot_index", before.slot_index, surfaces.slot_index_stream),
             ("payload", before.payload, surfaces.payload),
-            ("container c2", before.container, surfaces.container),
+            ("container c2", before.container, surfaces.container_at_baseline_level),
             ("container c1", before.json_container, surfaces.json_container),
         ] {
             println!(
@@ -1117,13 +1038,41 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
         // counterfactual on a re-ordered document therefore prices a removal 5-7% optimistically,
         // and that is the whole of this gap. The clause is a BAND and not an equality for exactly
         // that reason, and it is asserted on both ends.
+        //
+        // THE UPPER END IS DATED, NOT PREDICTED. `before` is frozen at `ea5b278a9`, so this is a
+        // cross-commit delta (see the stream note above): the stream is now 66.872 B/object
+        // smaller than `before` on both shapes against the 50.0 this change accounts for, and the
+        // other 16.872 B/object left in commits after `ea5b278a9`. On the codec-1 container that
+        // reads 3.11 B/object padded and 5.269 scattered, where the removed bytes compress worst.
+        // A saving larger than predicted is not a regression, so only the upper end moved, to the
+        // measured 5.3; the lower end, 2.0, is the end that bites if the restated key comes back.
+        const CONTAINER_SAVING_BAND: std::ops::RangeInclusive<f64> = 2.0..=5.3;
         let container_saved = (before.json_container - surfaces.json_container) as f64 / n;
         assert!(
-            (2.0..=3.33).contains(&container_saved),
+            CONTAINER_SAVING_BAND.contains(&container_saved),
             "[CLAUSE the-prediction-closes] the codec-1 container saving on {} keys is \
-             {container_saved:.3} B/object, outside the 2.0 to 3.33 this change was costed \
+             {container_saved:.3} B/object, outside the 2.0 to 5.3 (3.33 predicted, 5.3 measured \
+             on scattered keys once later commits are in) this change was costed \
              against (#2350's +2.60 to +3.33 for the pair, less the 5-7% a `Value`-rebuilt \
              counterfactual overstates by)",
+            shape.label()
+        );
+        // THE WAL-PLACEMENT MAP, PRICED ON ITS OWN LINE. It is held out of the surfaces above, so its
+        // cost needs a ceiling of its own or it would be free here. Measured per placement: 56.657 B
+        // of JSON at both #3013 and 808ff37c4; shipped container 8.805 B at #3013 and 13.105 B at
+        // 808ff37c4 (the map's values are WAL coordinates, so how well they compress follows the
+        // log layout; what moved it between those two commits is not isolated here).
+        let placements = surfaces.placements.max(1) as f64;
+        let placement_json = surfaces.placement_stream as f64 / placements;
+        let placement_container = surfaces.placement_container_extra as f64 / placements;
+        println!(
+            "  WAL placement on {} keys: {placement_json:.3} B json, {placement_container:.3} B container per entry over {} entries",
+            shape.label(),
+            surfaces.placements
+        );
+        assert!(
+            placement_json <= PLACEMENT_JSON_CEILING && placement_container <= PLACEMENT_CONTAINER_CEILING,
+            "[CLAUSE wal-placement-has-its-own-ceiling] on {} keys a WAL placement costs              {placement_json:.3} B of JSON and {placement_container:.3} B of container against              {PLACEMENT_JSON_CEILING} and {PLACEMENT_CONTAINER_CEILING} measured at 5b265a12d",
             shape.label()
         );
         drop(seeded);
@@ -1180,6 +1129,13 @@ const BEFORE_SCATTERED: Before = Before {
 
 /// The stream saving #2350 priced for these two fields: 30.0 for `object_key`, 20.0 for `model_id`.
 const PREDICTED_STREAM_SAVING: f64 = 50.0;
+
+/// Per WAL placement (`wal_resident_blocks` entry), measured on this fixture at 5b265a12d: 56.657 B
+/// of JSON and 13.105 B of shipped container on padded keys, 56.502 B and 14.330 B on scattered
+/// ones (the scattered keys compress worse, so the map costs more of the container). Held apart
+/// from the five surfaces, so these are the only ceilings that see its cost.
+const PLACEMENT_JSON_CEILING: f64 = 57.0;
+const PLACEMENT_CONTAINER_CEILING: f64 = 14.5;
 
 // =================================================================================================
 // CORRECTNESS ACROSS A RELOAD

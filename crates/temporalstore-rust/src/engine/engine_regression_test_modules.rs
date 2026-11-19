@@ -40,6 +40,14 @@ mod a_container_write_asks_its_own_slot;
 mod reclaim_dump;
 #[path = "tests/claim_stamp_hold.rs"]
 mod claim_stamp_hold;
+#[path = "tests/a_resp_hash_write_asks_the_field_map.rs"]
+mod a_resp_hash_write_asks_the_field_map;
+#[path = "tests/a_set_command_can_name_many_members.rs"]
+mod a_set_command_can_name_many_members;
+#[path = "tests/a_sorted_set_command_can_name_many_members.rs"]
+mod a_sorted_set_command_can_name_many_members;
+#[path = "tests/a_list_command_can_name_many_elements.rs"]
+mod a_list_command_can_name_many_elements;
 #[path = "tests/command_surface.rs"]
 mod command_surface;
 #[path = "tests/expiry_command_boundaries.rs"]
@@ -126,10 +134,14 @@ mod reclaiming_space_is_its_own_pass;
 mod cache_invalidation_cost;
 #[path = "tests/cache_read_cost.rs"]
 mod cache_read_cost;
+#[path = "tests/a_timestamped_point_names_itself_once.rs"]
+mod a_timestamped_point_names_itself_once;
 #[path = "tests/a_hash_write_files_only_what_it_wrote.rs"]
 mod a_hash_write_files_only_what_it_wrote;
 #[path = "tests/a_write_names_only_the_blocks_of_the_objects_it_touched.rs"]
 mod a_write_names_only_the_blocks_of_the_objects_it_touched;
+#[path = "tests/a_delete_names_only_the_blocks_of_its_own_bucket.rs"]
+mod a_delete_names_only_the_blocks_of_its_own_bucket;
 #[path = "tests/a_plan_learns_a_log_tail_from_its_appenders.rs"]
 mod a_plan_learns_a_log_tail_from_its_appenders;
 #[path = "tests/a_removal_states_no_block_rows.rs"]
@@ -138,14 +150,18 @@ mod a_removal_states_no_block_rows;
 mod a_hash_delete_files_nothing;
 #[path = "tests/a_sequence_write_states_the_rows_it_wrote.rs"]
 mod a_sequence_write_states_the_rows_it_wrote;
+#[path = "tests/a_cached_feature_query_sees_a_sequence_add.rs"]
+mod a_cached_feature_query_sees_a_sequence_add;
+#[path = "tests/a_sequence_query_decodes_each_row_where_it_sits.rs"]
+mod a_sequence_query_decodes_each_row_where_it_sits;
 #[path = "tests/a_compaction_does_not_lose_a_dirty_objects_dump.rs"]
 mod a_compaction_does_not_lose_a_dirty_objects_dump;
 #[path = "tests/a_counter_increment_writes_its_series_when_due.rs"]
 mod a_counter_increment_writes_its_series_when_due;
 #[path = "tests/a_manifest_is_fingerprinted_once_not_once_per_plan.rs"]
 mod a_manifest_is_fingerprinted_once_not_once_per_plan;
-#[path = "tests/a_hash_get_all_shares_its_page_keys.rs"]
-mod a_hash_get_all_shares_its_page_keys;
+#[path = "tests/a_hash_get_all_shares_its_block_keys.rs"]
+mod a_hash_get_all_shares_its_block_keys;
 #[path = "tests/a_feature_sum_reads_each_point_in_place.rs"]
 mod a_feature_sum_reads_each_point_in_place;
 #[path = "tests/feature_serving_key_work.rs"]
@@ -487,6 +503,8 @@ mod what_the_slot_index_floor_is;
 mod what_each_maintenance_bound_costs_per_round;
 #[path = "tests/what_one_hash_field_write_costs_durably.rs"]
 mod what_one_hash_field_write_costs_durably;
+#[path = "tests/what_a_feature_point_costs_durably_against_the_captured_oplog.rs"]
+mod what_a_feature_point_costs_durably_against_the_captured_oplog;
 #[path = "tests/a_reconstruct_prunes_the_refs_it_invalidates.rs"]
 mod a_reconstruct_prunes_the_refs_it_invalidates;
 #[path = "tests/a_windowed_aggregate_must_be_current_and_bounded.rs"]
@@ -521,13 +539,91 @@ mod the_sequence_row_is_protobuf_only;
 mod a_plan_lists_the_shards_blocks_once;
 #[path = "tests/a_feature_append_merges_cells_by_lane_reducer.rs"]
 mod a_feature_append_merges_cells_by_lane_reducer;
-#[path = "tests/a_ranked_cell_read_is_a_command.rs"]
-mod a_ranked_cell_read_is_a_command;
-#[path = "tests/a_cell_rollup_is_a_command.rs"]
-mod a_cell_rollup_is_a_command;
+#[path = "tests/a_retried_merge_append_answers_its_first_receipt.rs"]
+mod a_retried_merge_append_answers_its_first_receipt;
+#[path = "tests/a_logged_retry_token_is_installed_on_replay.rs"]
+mod a_logged_retry_token_is_installed_on_replay;
+#[path = "tests/a_tokened_append_is_recovered_with_its_token.rs"]
+mod a_tokened_append_is_recovered_with_its_token;
+#[path = "tests/a_newest_rows_window_reads_stored_rows.rs"]
+mod a_newest_rows_window_reads_stored_rows;
+#[path = "tests/a_read_can_say_which_samples_it_used.rs"]
+mod a_read_can_say_which_samples_it_used;
+#[path = "tests/a_window_reduce_ranked_read_is_a_command.rs"]
+mod a_window_reduce_ranked_read_is_a_command;
+#[path = "tests/a_window_reduce_rollup_is_a_command.rs"]
+mod a_window_reduce_rollup_is_a_command;
+#[path = "tests/a_window_reduce_removal_is_a_command.rs"]
+mod a_window_reduce_removal_is_a_command;
 #[path = "tests/a_whole_container_read_shares_its_work.rs"]
 mod a_whole_container_read_shares_its_work;
-#[path = "tests/a_worked_example_of_cells.rs"]
-mod a_worked_example_of_cells;
+#[path = "tests/a_worked_example_of_window_reduce.rs"]
+mod a_worked_example_of_window_reduce;
 #[path = "tests/a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key.rs"]
 mod a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key;
+
+#[path = "tests/a_container_point_read_searches_without_building_its_key.rs"]
+mod a_container_point_read_searches_without_building_its_key;
+#[path = "tests/the_undumped_byte_figure_survives_one_claimless_bucket.rs"]
+mod the_undumped_byte_figure_survives_one_claimless_bucket;
+#[path = "tests/a_window_reduce_read_over_several_keys.rs"]
+mod a_window_reduce_read_over_several_keys;
+#[cfg(feature = "alloc-probe")]
+#[path = "tests/the_window_reduce_allocations_are_counted_per_operation.rs"]
+mod the_window_reduce_allocations_are_counted_per_operation;
+#[path = "tests/the_window_reduce_bytes_are_counted_per_operation.rs"]
+mod the_window_reduce_bytes_are_counted_per_operation;
+#[path = "tests/a_ranked_cell_read_takes_the_shared_shard_lock.rs"]
+mod a_ranked_cell_read_takes_the_shared_shard_lock;
+#[path = "tests/a_window_reduce_removal_does_not_allocate_a_value_per_cell.rs"]
+mod a_window_reduce_removal_does_not_allocate_a_value_per_cell;
+#[path = "tests/a_string_increment_and_append_are_one_step.rs"]
+mod a_string_increment_and_append_are_one_step;
+#[path = "tests/a_set_length_and_membership_read_the_member_map.rs"]
+mod a_set_length_and_membership_read_the_member_map;
+#[path = "tests/an_expiry_sweep_that_fails_is_counted.rs"]
+mod an_expiry_sweep_that_fails_is_counted;
+#[path = "tests/the_figure_after_a_dump_is_the_bytes_appended_since_it.rs"]
+mod the_figure_after_a_dump_is_the_bytes_appended_since_it;
+#[path = "tests/a_hash_field_presence_is_read_from_its_row.rs"]
+mod a_hash_field_presence_is_read_from_its_row;
+#[path = "tests/sync_value_once.rs"]
+mod sync_value_once;
+#[path = "tests/a_write_into_a_live_series_borrows_its_key.rs"]
+mod a_write_into_a_live_series_borrows_its_key;
+#[path = "tests/a_distinct_count_compares_its_members_where_they_are.rs"]
+mod a_distinct_count_compares_its_members_where_they_are;
+#[path = "tests/a_counter_window_read_reduces_where_it_sits.rs"]
+mod a_counter_window_read_reduces_where_it_sits;
+#[path = "tests/a_set_door_asks_one_member_not_the_set.rs"]
+mod a_set_door_asks_one_member_not_the_set;
+#[path = "tests/a_set_pop_and_random_member_read_the_first_members.rs"]
+mod a_set_pop_and_random_member_read_the_first_members;
+#[path = "tests/a_container_add_does_not_pay_for_the_elements_it_already_has.rs"]
+mod a_container_add_does_not_pay_for_the_elements_it_already_has;
+#[path = "tests/a_series_at_its_cap_trims_without_a_victim_list.rs"]
+mod a_series_at_its_cap_trims_without_a_victim_list;
+#[path = "tests/a_string_set_does_not_copy_the_value_it_replaces.rs"]
+mod a_string_set_does_not_copy_the_value_it_replaces;
+#[path = "tests/a_feature_range_read_decodes_each_point_where_it_sits.rs"]
+mod a_feature_range_read_decodes_each_point_where_it_sits;
+#[path = "tests/an_outcome_kind_holds_a_known_kind_without_allocating.rs"]
+mod an_outcome_kind_holds_a_known_kind_without_allocating;
+#[path = "tests/a_delta_manifest_is_never_read_as_a_whole_image.rs"]
+mod a_delta_manifest_is_never_read_as_a_whole_image;
+#[path = "tests/a_feature_series_at_its_cap_files_only_what_changed.rs"]
+mod a_feature_series_at_its_cap_files_only_what_changed;
+#[path = "tests/a_dump_manifest_lists_the_shard_once.rs"]
+mod a_dump_manifest_lists_the_shard_once;
+#[path = "tests/a_string_length_and_range_do_not_copy_the_value.rs"]
+mod a_string_length_and_range_do_not_copy_the_value;
+#[path = "tests/a_latency_and_throughput_harness.rs"]
+mod a_latency_and_throughput_harness;
+#[path = "tests/a_hash_and_string_point_read_takes_the_shared_lock.rs"]
+mod a_hash_and_string_point_read_takes_the_shared_lock;
+#[path = "tests/a_feature_range_read_takes_the_shared_lock.rs"]
+mod a_feature_range_read_takes_the_shared_lock;
+#[path = "tests/a_restating_write_names_one_bucket_not_the_shard.rs"]
+mod a_restating_write_names_one_bucket_not_the_shard;
+#[path = "tests/a_resident_map_read_takes_the_shared_lock.rs"]
+mod a_resident_map_read_takes_the_shared_lock;

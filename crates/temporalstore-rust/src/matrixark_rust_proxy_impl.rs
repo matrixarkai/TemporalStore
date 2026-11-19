@@ -1418,7 +1418,7 @@ fn render_prometheus_metrics(
          matrixark_backend_command_latency_max_ms{{backend=\"rust\"}} {}\n",
         latency_max_ms, latency_max_ms
     ));
-    // The engine's own series, which include the page-cache counters. Appended rather than
+    // The engine's own series, which include the block-cache counters. Appended rather than
     // re-rendered: see engine_prometheus_metrics.
     output.push_str(&serving_cache_prometheus_metrics());
     output.push_str(&engine_prometheus_metrics());
@@ -4874,7 +4874,7 @@ fn engine_cache() -> &'static Mutex<BTreeMap<PathBuf, RecordStore>> {
 
 /// The engine's own Prometheus text, for the engine this process holds open.
 ///
-/// `TemporalEngine::prometheus_metrics` already renders the page-cache counters and the engine
+/// `TemporalEngine::prometheus_metrics` already renders the block-cache counters and the engine
 /// binary serves them on its own `/metrics`. A onebox does not run that binary -- it runs this
 /// proxy -- so those counters existed and nothing published them here. Appending what the engine
 /// already renders keeps ONE set of names across both surfaces: a dashboard or alert written
@@ -4929,7 +4929,7 @@ fn engine_prometheus_metrics() -> String {
     };
     let mut local = cache.values().filter_map(|store| match store {
         RecordStore::Local(engine) => Some(engine),
-        // A remote table keeps no local page cache, so it has nothing to report.
+        // A remote table keeps no local block cache, so it has nothing to report.
         RecordStore::Remote(_) => None,
     });
     let engine = match (local.next(), local.next()) {
@@ -4949,7 +4949,7 @@ fn clear_engine_cache() {
     }
 }
 
-/// Page-cache capacity already handed out across every engine this process has opened.
+/// Block-cache capacity already handed out across every engine this process has opened.
 static ENGINE_CACHE_GRANTED_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 /// MemTotal in bytes, or None where /proc is not available.
@@ -4966,7 +4966,7 @@ fn system_memory_bytes() -> Option<usize> {
     None
 }
 
-/// Page-cache capacity for a newly opened engine.
+/// Block-cache capacity for a newly opened engine.
 ///
 /// The old fixed 128 MiB default is smaller than the working set of any store past a few hundred
 /// megabytes, and every block read that misses it pays a second-layer read AND a cache fill. That
@@ -5054,7 +5054,7 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
         matrixark_proxy_block_store_options(),
     );
     // Hook-mode startup must publish serving state quickly after a normal local
-    // restart. Rebuild decoded serving maps during load, then warm the page cache
+    // restart. Rebuild decoded serving maps during load, then warm the block cache
     // in the background so first requests can read through storage instead of
     // waiting for a full synchronous cache promotion pass.
     if env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err() {
@@ -5110,7 +5110,7 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
             load.status.message
         ));
     }
-    // Warm the page cache on a background thread. `MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD`
+    // Warm the block cache on a background thread. `MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD`
     // could stop this and defaulted on; nothing set it, so every proxy that loaded a record-log
     // root warmed, and this is simply what loading one does.
     {
@@ -5286,8 +5286,6 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
             &[
                 "MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_ENABLED",
                 "TS_BLOCK_STORE_COMPRESSION_ENABLED",
-                "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED",
-                "TS_PAGE_STORE_COMPRESSION_ENABLED",
             ],
             defaults.compression_enabled,
         ),
@@ -5295,8 +5293,6 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
             &[
                 "MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_MIN_BYTES",
                 "TS_BLOCK_STORE_COMPRESSION_MIN_BYTES",
-                "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES",
-                "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
             ],
             // Was 4096, and every index write an add makes is smaller than that: the postings, the
             // placement rows, the locator entries. Those are also the most repetitive bytes in the
@@ -5313,8 +5309,6 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
             &[
                 "MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_LEVEL",
                 "TS_BLOCK_STORE_COMPRESSION_LEVEL",
-                "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL",
-                "TS_PAGE_STORE_COMPRESSION_LEVEL",
             ],
             defaults.compression_level,
         ),
@@ -5397,7 +5391,8 @@ fn execute_empty(engine: &RecordStore, command: Command) -> Result<(), String> {
         ));
     }
     match response.response {
-        CommandResponse::Empty => {
+        // A field delete answers the 0/1 count of fields it removed (#3050).
+        CommandResponse::Empty | CommandResponse::Integer { .. } => {
             if let Some((key, value)) = record_count_update {
                 update_record_count_cache(&key, &value);
             }
@@ -5513,7 +5508,12 @@ fn execute_empty_batch_runtime(
         if !item.status.ok {
             return Err(format!("{}: {}", item.status.code, item.status.message));
         }
-        if !matches!(item.response, CommandResponse::Empty) {
+        // A field delete answers the 0/1 count of fields it removed (#3050); every
+        // other write in the batch answers Empty.
+        if !matches!(
+            item.response,
+            CommandResponse::Empty | CommandResponse::Integer { .. }
+        ) {
             return Err(format!(
                 "unexpected response for batch write: {:?}",
                 item.response
@@ -9907,12 +9907,12 @@ mod tests {
     #[test]
     fn matrixark_proxy_block_store_options_default_to_throughput_threshold() {
         let _guard = env_guard();
-        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED");
-        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES");
-        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL");
-        env::remove_var("TS_PAGE_STORE_COMPRESSION_ENABLED");
-        env::remove_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES");
-        env::remove_var("TS_PAGE_STORE_COMPRESSION_LEVEL");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_ENABLED");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_MIN_BYTES");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_LEVEL");
+        env::remove_var("TS_BLOCK_STORE_COMPRESSION_ENABLED");
+        env::remove_var("TS_BLOCK_STORE_COMPRESSION_MIN_BYTES");
+        env::remove_var("TS_BLOCK_STORE_COMPRESSION_LEVEL");
 
         let options = matrixark_proxy_block_store_options();
         assert!(options.compression_enabled);
@@ -9929,20 +9929,40 @@ mod tests {
             BlockStoreOptions::default().compression_level
         );
 
-        env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED", "false");
-        env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES", "8192");
-        env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL", "3");
+        env::set_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_ENABLED", "false");
+        env::set_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_MIN_BYTES", "8192");
+        env::set_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_LEVEL", "3");
         let overridden = matrixark_proxy_block_store_options();
         assert!(!overridden.compression_enabled);
         assert_eq!(overridden.compression_min_bytes, 8192);
         assert_eq!(overridden.compression_level, 3);
 
-        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED");
-        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES");
-        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL");
-        env::remove_var("TS_PAGE_STORE_COMPRESSION_ENABLED");
-        env::remove_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES");
-        env::remove_var("TS_PAGE_STORE_COMPRESSION_LEVEL");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_ENABLED");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_MIN_BYTES");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_COMPRESSION_LEVEL");
+        env::remove_var("TS_BLOCK_STORE_COMPRESSION_ENABLED");
+        env::remove_var("TS_BLOCK_STORE_COMPRESSION_MIN_BYTES");
+        env::remove_var("TS_BLOCK_STORE_COMPRESSION_LEVEL");
+
+        // The older spellings are retired: setting them changes nothing, and the values here
+        // differ from the defaults so that "ignored" cannot pass as "read and equal".
+        let retired = [
+            ("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED", "false"),
+            ("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES", "8192"),
+            ("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL", "3"),
+            ("TS_PAGE_STORE_COMPRESSION_ENABLED", "false"),
+            ("TS_PAGE_STORE_COMPRESSION_MIN_BYTES", "8192"),
+            ("TS_PAGE_STORE_COMPRESSION_LEVEL", "3"),
+        ];
+        for (name, value) in retired {
+            env::set_var(name, value);
+        }
+        let ignored = matrixark_proxy_block_store_options();
+        assert!(ignored.compression_enabled, "a retired spelling turned compression off");
+        assert_eq!(ignored.compression_min_bytes, 256);
+        for (name, _) in retired {
+            env::remove_var(name);
+        }
     }
 
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend

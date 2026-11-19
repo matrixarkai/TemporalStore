@@ -535,15 +535,43 @@ async fn main() {
                 n.fetched_bytes,
                 n.cache_misses
             );
-            // The cache is cleared before each replay, so every lookup is a first touch and
-            // must miss. This is what fails if the clear is ever removed, which would put the
-            // read columns back to describing cache hits.
-            assert_eq!(
-                n.cache_misses, n.chunk_reads,
-                "{} at {} entries served {} of its {} lookups from cache, and a replay that                  starts with a cleared cache has nothing to hit",
+            // The cache is cleared before each replay, so a lookup can hit only when the replay
+            // looks up a chunk it has itself already fetched: a whole-object read of an appended
+            // object reads a chunk once per run of extents, so a second run inside one chunk is a
+            // repeat lookup and hits. Misses are the first touches and account for the fetches
+            // above; hits must stay a minority of the lookups. If the clear is ever removed the
+            // replay is served mostly from cache, hits dominate, and this fails.
+            assert!(
+                n.cache_misses <= n.chunk_reads,
+                "{} at {} entries counted {} misses over {} lookups",
                 n.node,
                 r.entries,
-                n.chunk_reads - n.cache_misses,
+                n.cache_misses,
+                n.chunk_reads
+            );
+            let hits = n.chunk_reads - n.cache_misses;
+            // Misses are the distinct chunks the replay fetched, so they track the entries:
+            // measured 200 misses at 200 entries and 402 at 400 on every node, the extra few
+            // being chunk-boundary re-reads. A cleared cache that is bypassed puts misses
+            // below the entries; an extra fetch per lookup puts them above the allowance, which
+            // grows as a fiftieth of the entries and not as the lookup count.
+            let entries = r.entries as u64;
+            let allowance = (entries / 50).max(8);
+            assert!(
+                n.cache_misses >= entries && n.cache_misses <= entries + allowance,
+                "{} at {} entries fetched {} distinct chunks, outside {}..={}",
+                n.node,
+                r.entries,
+                n.cache_misses,
+                entries,
+                entries + allowance
+            );
+            assert!(
+                hits * 2 <= n.chunk_reads,
+                "{} at {} entries served {} of its {} lookups from cache, and a replay that                  starts with a cleared cache has only its own repeat lookups to hit",
+                n.node,
+                r.entries,
+                hits,
                 n.chunk_reads
             );
         }
@@ -817,7 +845,7 @@ async fn main() {
     println!("    It is MatrixObject's per-mutation bookkeeping, not this log's shape: begin/end of a");
     println!("    chunk mutation batch builds a replica status whose `physical_bytes` and");
     println!("    `discarded_bytes` fold over EVERY block the replica holds, and begin exports an undo");
-    println!("    whose page map is now filled one page per first touch -- that copy is gone -- but");
+    println!("    whose block map is now filled one block per first touch -- that copy is gone -- but");
     println!("    whose CHUNK map is still copied whole, and a chunk record is a deep value with two");
     println!("    range vectors. Raising the chunk tier to 64 MiB changes it by 2.7%, so it");
     println!("    is block-count and not chunk-count; raising the block tier to 1 MiB makes it 16x worse,");

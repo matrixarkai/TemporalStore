@@ -169,11 +169,9 @@ pub(crate) fn record_change(shard: &mut ShardState, key: &str, bucket_ms: u64, v
     // this write belongs to is not filed yet at this point, so there is no handle to borrow --
     // `adopt_object_key_allocations` runs once the bucket index holds one and re-keys this map
     // onto it. Asking for the handle here is what went 0 for 40,040 the first time a sharing
-    // mechanism was wired before its source existed.
-    let bucket = shard
-        .control_state_changes
-        .entry(super::state::ModelKey::from(key))
-        .or_default()
+    // mechanism was wired before its source existed. A key that is ALREADY here is reached through
+    // a borrow: only a new one mints.
+    let bucket = super::product_model::slot_for_write(&mut shard.control_state_changes, key)
         .entry(bucket_ms)
         .or_default();
     match bucket {
@@ -210,11 +208,35 @@ pub(crate) fn count_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms
         .range(bounds)
         .any(|(_, bucket)| matches!(bucket, DistinctBucket::Sketch(_)));
     if !any_sketch {
-        let mut unique = BTreeSet::new();
-        for (_, bucket) in series.range(bounds) {
-            if let DistinctBucket::Exact(values) = bucket {
-                unique.extend(values.iter().cloned());
-            }
+        // THE UNION HOLDS BORROWS. Cloning every member of every bucket into a fresh set to
+        // count them allocated one `Vec` per member per read; the members are already in the
+        // buckets and are only compared. One bucket in the window is its own length and builds
+        // nothing, which is the common read.
+        let mut sets = series.range(bounds).filter_map(|(_, bucket)| match bucket {
+            DistinctBucket::Exact(values) => Some(values),
+            DistinctBucket::Sketch(_) => None,
+        });
+        let Some(first) = sets.next() else {
+            return 0;
+        };
+        let Some(second) = sets.next() else {
+            return first.len() as i64;
+        };
+        // SIZED ONCE FOR EVERY MEMBER THE WINDOW HOLDS, and a hash set rather than an ordered one:
+        // only membership is asked of it. An ordered set allocated a node for every few members
+        // and paid a comparison chain per insert (about 225 ns a member at ten thousand), where
+        // the table below is one allocation and one hash per member.
+        let capacity: usize = series
+            .range(bounds)
+            .map(|(_, bucket)| match bucket {
+                DistinctBucket::Exact(values) => values.len(),
+                DistinctBucket::Sketch(_) => 0,
+            })
+            .sum();
+        let mut unique: std::collections::HashSet<&[u8], ahash::RandomState> =
+            std::collections::HashSet::with_capacity_and_hasher(capacity, ahash::RandomState::new());
+        for values in [first, second].into_iter().chain(sets) {
+            unique.extend(values.iter().map(Vec::as_slice));
         }
         return unique.len() as i64;
     }

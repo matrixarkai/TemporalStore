@@ -508,7 +508,7 @@ fn the_two_fallback_ranges_are_different_functions_of_the_same_key() {
 /// THE FIXTURE mx#1938 MEASURED ON COULD NOT HAVE REPORTED ANYTHING BUT ZERO.
 ///
 /// Its shard is loaded by `engine.load_shard(1)`, which is `0..u32::MAX`. The two placements are
-/// then the same expression, so "zero misfiled pages at both sizes" is an identity. This asserts
+/// then the same expression, so "zero misfiled blocks at both sizes" is an identity. This asserts
 /// BOTH halves -- the zero, and the identity that explains it -- so the reading is attributable.
 ///
 /// rust-internal: prices the engine's own bucket placement, no product behaviour

@@ -48,6 +48,7 @@ mod production_runtime;
 mod local_wal;
 pub(crate) mod follower_pipeline;
 pub(crate) mod wal_proto;
+pub use wal_proto::{decode_snapshot_object, encode_snapshot_object};
 mod cluster_meta;
 mod cluster_meta_inner;
 mod cluster_inner;
@@ -288,6 +289,23 @@ const DATA_RAFT_COMMAND_HEADER_LEN: usize = 40;
 /// voted_for, commit_index, the log, membership, snapshots, or the apply/storage fences still
 /// flips the fingerprint and forces a durable persist.
 fn raft_durable_fingerprint(record: &RaftWalRecord) -> u64 {
+    raft_durable_fingerprint_of(
+        record,
+        record.entries.len(),
+        record.entries.first().map(|entry| (entry.index, entry.term)),
+        record.entries.last().map(|entry| (entry.index, entry.term)),
+    )
+}
+
+/// The same fingerprint from a record that does not carry its log, and the three numbers that
+/// summarise the log: a caller that only wants to know whether anything changed need not copy
+/// every entry to find out.
+fn raft_durable_fingerprint_of(
+    record: &RaftWalRecord,
+    entry_count: usize,
+    first: Option<(u64, u64)>,
+    last: Option<(u64, u64)>,
+) -> u64 {
     // Everything Raft must persist participates, but the log is SUMMARISED rather than
     // serialised. Hashing every entry made this check -- which runs on every persist, for
     // every node -- cost O(log length), the very cost incremental WAL records exist to
@@ -310,10 +328,10 @@ fn raft_durable_fingerprint(record: &RaftWalRecord) -> u64 {
     let bytes = serde_json::to_vec(&reduced).unwrap_or_default();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::hash::Hasher::write(&mut hasher, &bytes);
-    std::hash::Hasher::write_u64(&mut hasher, record.entries.len() as u64);
-    for entry in [record.entries.first(), record.entries.last()].into_iter().flatten() {
-        std::hash::Hasher::write_u64(&mut hasher, entry.index);
-        std::hash::Hasher::write_u64(&mut hasher, entry.term);
+    std::hash::Hasher::write_u64(&mut hasher, entry_count as u64);
+    for (index, term) in [first, last].into_iter().flatten() {
+        std::hash::Hasher::write_u64(&mut hasher, index);
+        std::hash::Hasher::write_u64(&mut hasher, term);
     }
     std::hash::Hasher::finish(&hasher)
 }
@@ -1360,13 +1378,10 @@ struct RaftWalEntryDelta {
     log_last_index: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct RaftWalSegmentRuntimeState {
-    #[serde(default)]
     released_segment_count: u64,
-    #[serde(default)]
     last_fsync_elapsed_ms: u64,
-    #[serde(default)]
     slow_fsync_backpressure_observed: bool,
 }
 
@@ -5910,7 +5925,13 @@ fn append_entry(node: &mut RaftNode, entry: RaftLogEntry) {
     // truncating on index<=last (a stale/duplicate/reordered AppendEntries that is a
     // prefix of the committed log) would delete committed suffix entries, rewind
     // applied state, and double-execute non-idempotent commands on re-apply.
-    if let Some(existing) = node.log.iter().find(|existing| existing.index == entry.index) {
+    // A log is ordered by index, so an entry past the last one cannot already be in it: the
+    // common append, which a scan of the whole log used to confirm one entry at a time.
+    let existing = match node.log.last() {
+        Some(last) if last.index < entry.index => None,
+        _ => node.log.iter().find(|existing| existing.index == entry.index),
+    };
+    if let Some(existing) = existing {
         if existing.term == entry.term {
             return;
         }
@@ -5938,10 +5959,36 @@ fn append_entry(node: &mut RaftNode, entry: RaftLogEntry) {
     node.log.push(entry);
 }
 
+/// A writer that keeps only how many bytes were written to it.
+struct ByteCounter(u64);
+
+impl std::io::Write for ByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len() as u64);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// How many bytes `value` is as JSON, counted while it is written and not kept.
+///
+/// This is `serde_json::to_vec(value).len()` -- `to_vec` is `to_writer` into a `Vec` -- without
+/// the `Vec`: no buffer is grown, filled and thrown away to learn a length. A command that carries
+/// hundreds of rows made every size question an allocation and a copy of the whole command. A
+/// value that fails to serialize counts as zero, as it did.
+fn json_size_bytes<T: serde::Serialize + ?Sized>(value: &T) -> u64 {
+    let mut counter = ByteCounter(0);
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => counter.0,
+        Err(_) => 0,
+    }
+}
+
 fn command_size_bytes(command: &Command) -> u64 {
-    serde_json::to_vec(command)
-        .map(|bytes| bytes.len() as u64)
-        .unwrap_or_default()
+    json_size_bytes(command)
 }
 
 fn raft_log_bytes_after(log: &[RaftLogEntry], index: u64) -> u64 {
@@ -5954,11 +6001,7 @@ fn raft_log_bytes_after(log: &[RaftLogEntry], index: u64) -> u64 {
 fn meta_log_bytes_after(log: &[MetaLogEntry], index: u64) -> u64 {
     log.iter()
         .filter(|entry| entry.index > index)
-        .map(|entry| {
-            serde_json::to_vec(&entry.command)
-                .map(|bytes| bytes.len() as u64)
-                .unwrap_or_default()
-        })
+        .map(|entry| json_size_bytes(&entry.command))
         .sum()
 }
 
@@ -5969,18 +6012,25 @@ fn split_command_for_raft_limit(command: Command, limit: u64) -> Result<Vec<Comm
     }
     match command {
         Command::SequenceAdd { key, rows } if rows.len() > 1 => {
+            // A `SequenceAdd` of k rows is the command with no rows, plus each row's own JSON, plus
+            // the k-1 commas between them. Each row is measured once and the total is kept, instead
+            // of building and serializing the whole candidate command for every row.
+            let bare = command_size_bytes(&Command::SequenceAdd {
+                key: key.clone(),
+                rows: Vec::new(),
+            });
             let mut chunks = Vec::new();
             let mut current = Vec::new();
+            let mut current_row_bytes = 0u64;
             for row in rows {
-                let mut candidate = current.clone();
-                candidate.push(row.clone());
-                let candidate_command = Command::SequenceAdd {
-                    key: key.clone(),
-                    rows: candidate,
-                };
-                let candidate_bytes = command_size_bytes(&candidate_command);
+                let row_bytes = json_size_bytes(&row);
+                let candidate_bytes = bare
+                    .saturating_add(current_row_bytes)
+                    .saturating_add(row_bytes)
+                    .saturating_add(current.len() as u64);
                 if candidate_bytes <= limit {
                     current.push(row);
+                    current_row_bytes = current_row_bytes.saturating_add(row_bytes);
                     continue;
                 }
                 if current.is_empty() {
@@ -5993,11 +6043,7 @@ fn split_command_for_raft_limit(command: Command, limit: u64) -> Result<Vec<Comm
                     key: key.clone(),
                     rows: std::mem::take(&mut current),
                 });
-                let single_command = Command::SequenceAdd {
-                    key: key.clone(),
-                    rows: vec![row.clone()],
-                };
-                let single_bytes = command_size_bytes(&single_command);
+                let single_bytes = bare.saturating_add(row_bytes);
                 if single_bytes > limit {
                     return Err(RaftError::LogEntryTooLarge {
                         bytes: single_bytes,
@@ -6005,6 +6051,7 @@ fn split_command_for_raft_limit(command: Command, limit: u64) -> Result<Vec<Comm
                     });
                 }
                 current.push(row);
+                current_row_bytes = row_bytes;
             }
             if !current.is_empty() {
                 chunks.push(Command::SequenceAdd { key, rows: current });
@@ -8125,3 +8172,10 @@ fn install_meta_leader_snapshot_tail(
 #[cfg(test)]
 #[path = "raft/raft_regression_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "raft/command_size_tests.rs"]
+mod command_size_tests;
+#[cfg(test)]
+#[path = "raft/split_tests.rs"]
+mod split_tests;

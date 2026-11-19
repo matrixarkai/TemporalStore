@@ -308,6 +308,22 @@ pub(super) struct CompactionRewriteStats {
     pub(super) skipped_off_drain_set: usize,
     /// Blocks whose bytes could not be read, left where they are while the round carries on.
     pub(super) skipped_unreadable: usize,
+    /// Blocks `should_relocate` was asked about. A drain round is bounded by what its drain set
+    /// names, and this is what shows it: keys with no block on a drain slab are never asked.
+    pub(super) decisions: usize,
+    /// Every block this round moved, old address beside new. The bucket index is updated for
+    /// exactly these blocks, so a round no longer rebuilds the whole index from the model maps.
+    pub(super) moved: Vec<MovedBlock>,
+}
+
+/// One block a round relocated: the object it belongs to, the model that holds it, and where it
+/// was and now is. The index entry that named `old` is the one the round has to replace.
+#[derive(Debug, Clone)]
+pub(super) struct MovedBlock {
+    pub(super) model_id: String,
+    pub(super) object_key: String,
+    pub(super) old: ElementEntry,
+    pub(super) new: ElementEntry,
 }
 
 #[derive(Debug, Default)]
@@ -363,6 +379,7 @@ impl CompactionRewriteStats {
     /// open for the next one -- and a round kept open by blocks nobody will ever want moved never
     /// closes.
     pub(super) fn should_relocate(&mut self, address: &ElementEntry) -> bool {
+        self.decisions = self.decisions.saturating_add(1);
         if address.block_slab_id() == self.target_block_slab_id {
             return false;
         }
@@ -1003,6 +1020,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
                 shard_id,
                 model_id,
                 spelling,
+                object_key,
                 routing_bucket,
                 object_id,
                 batches,
@@ -1028,6 +1046,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
             shard_id,
             model_id,
             spelling,
+            object_key,
             routing_bucket,
             object_id,
             batches,
@@ -1095,6 +1114,7 @@ fn flush_container_batch(
     shard_id: ShardId,
     model_id: &str,
     spelling: super::container_blocks::ElementKeySpelling,
+    object_key: &str,
     routing_bucket: u32,
     object_id: Option<u64>,
     batch_ordinal: usize,
@@ -1139,6 +1159,12 @@ fn flush_container_batch(
                 rewrite_stats.retired_container_wal_blocks.push((object_id, element_name));
             }
         }
+        rewrite_stats.moved.push(MovedBlock {
+            model_id: model_id.to_string(),
+            object_key: object_key.to_string(),
+            old: destination.clone(),
+            new: new_address.clone(),
+        });
         *destination = new_address.clone();
         rewrite_stats.record(model_id, *cold_in_batch);
     }
@@ -1232,6 +1258,12 @@ pub(super) fn compact_block_addresses<'a>(
                 address.block_id().unwrap_or_default() as u32,
             )
             .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
+        rewrite_stats.moved.push(MovedBlock {
+            model_id: model_id.to_string(),
+            object_key: object_key.to_string(),
+            old: address.clone(),
+            new: new_address.clone(),
+        });
         *address = new_address.clone();
         let _ = cache.put(
             CacheKey::page_with_slot_generation(
@@ -1302,6 +1334,12 @@ pub(super) fn compact_feature_block_addresses(
             ),
             bytes,
         );
+        rewrite_stats.moved.push(MovedBlock {
+            model_id: model_id.to_string(),
+            object_key: object_key.to_string(),
+            old: old_address.clone(),
+            new: new_address.clone(),
+        });
         rewritten.insert(old_address, new_address);
         rewrite_stats.record(model_id, cold_block);
     }
@@ -1487,7 +1525,7 @@ pub(super) fn compaction_relocation_hint_per_object(
 
 /// The same count, off the reclaim plan the maintenance round has already built.
 ///
-/// `live_page_refs` on a candidate is the tally of live page addresses that landed on that slab,
+/// `live_page_refs` on a candidate is the tally of live block addresses that landed on that slab,
 /// summed over the same live block set `compaction_relocation_hint_per_object` walks -- so summing
 /// it over the drain set is the per-object answer, aggregated, for no extra walk of the shard.
 /// The round runs eight of those already; a ninth to ask whether it should run is not a trade
@@ -1547,7 +1585,7 @@ mod compaction_selection_tests {
     /// selection was ordered, a round spread its budget across every holed slab and finished
     /// NONE of them, so nothing was reclaimed at all; this slab is not something that used to
     /// be collected and now is not. And a WARM slab climbs out on its own: its live refs only
-    /// FALL as its pages are overwritten onto newer slabs, so its ratio rises until it is
+    /// FALL as its blocks are overwritten onto newer slabs, so its ratio rises until it is
     /// selected. The uncovered case is specifically the slab that is both cold and partly dead.
     ///
     /// WHY AN ARM AND NOT A COMMENT. A comment cannot fail. If ageing is ever added -- forcing

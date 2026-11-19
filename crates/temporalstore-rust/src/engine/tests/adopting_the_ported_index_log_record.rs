@@ -231,10 +231,17 @@ fn the_ported_frame_is_the_live_binary_frame_minus_its_marker_byte() {
         crate::log_framing::FRAME_MAGIC_V3,
         "the ported frame has no marker at all -- its first byte is the length"
     );
-    assert_eq!(
-        &live[1..],
-        &ported[..],
-        "behind the marker the two frames are byte-identical: varint length, le crc32c, payload"
+    // Behind the marker the two frames have the same shape -- varint length, four checksum bytes,
+    // payload -- and carry DIFFERENT checksum values: the ported frame uses the raw Castagnoli
+    // checksum and the live one the standard inverting CRC-32C.
+    assert_eq!(live.len() - 1, ported.len());
+    let length_bytes = live.len() - 1 - 4 - payload.len();
+    assert_eq!(&live[1..1 + length_bytes], &ported[..length_bytes], "the length prefix");
+    assert_eq!(&live[live.len() - payload.len()..], &ported[ported.len() - payload.len()..], "the payload");
+    assert_ne!(
+        &live[1 + length_bytes..live.len() - payload.len()],
+        &ported[length_bytes..ported.len() - payload.len()],
+        "the checksum values differ"
     );
 
     // CONTROL ONE -- the live reader is not simply broken: it round-trips its own frame.

@@ -8427,7 +8427,7 @@ fn the_amplification_set_in_the_published_format() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    // READ EVERY KEY BACK BEFORE MEASURING THE MEMORY SIDE. The page cache populates on READS,
+    // READ EVERY KEY BACK BEFORE MEASURING THE MEMORY SIDE. The block cache populates on READS,
     // not on writes, so a payload resident figure taken after a write-only workload is zero -- and
     // a zero numerator makes the quadrant vacuous rather than small. The symmetry assertion below
     // is what caught that: the first version of this arm reported 0 ppm for payload memory and

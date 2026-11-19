@@ -672,6 +672,19 @@ impl ObjectStore for ScaleObjectStore {
             Self::MatrixObject(store) => store.get_range(key, offset, length).await,
         }
     }
+
+    // The tail read the incremental offset-index load depends on: both backends override
+    // it, and a wrapper that dropped it would fall back to a whole-object read per call.
+    async fn get_range_from(
+        &self,
+        key: &str,
+        offset: u64,
+    ) -> Result<Option<Bytes>, ObjectStoreError> {
+        match self {
+            Self::File(store) => store.get_range_from(key, offset).await,
+            Self::MatrixObject(store) => store.get_range_from(key, offset).await,
+        }
+    }
 }
 
 #[derive(Debug)]

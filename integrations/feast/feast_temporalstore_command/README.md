@@ -35,8 +35,8 @@ an online store, which is the normal arrangement; nothing here replaces
 ## Install and configure
 
 ```bash
-pip install feast
-export PYTHONPATH=$PWD/integrations/feast
+pip install feast msgpack 'aiohttp>=3.9,<4'
+export PYTHONPATH="$PWD/integrations/feast${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
 ```yaml
@@ -62,6 +62,13 @@ online_store:
 Bring a single-node TemporalStore up with
 `docker compose -f docker-compose.single-node.yml up`, which serves the command
 surface on port 17102.
+
+Keep your existing Feast entities, feature views, and offline sources; this
+online-store configuration does not register or populate them. Run `feast apply`
+and materialize the selected views before serving. The
+[public API example](../../../README.md#read-features-with-feast) shows synchronous
+and asynchronous reads from a configured Feast repository. MessagePack enables
+the binary transport; it does not change the configured durability policy.
 
 ## Why the command surface and not the RESP port
 
@@ -114,6 +121,15 @@ different command counts and storage costs; they are not one benchmark workload.
 | Cleanup amplification | `track_keys_for_teardown` adds tracking writes. TTL or logical deletion does not establish that physical files have been reclaimed; account for maintenance and retained storage separately. |
 | Allocation pressure | Shared projections, request-local planning, binary values, and deferred ownership on eligible conditional writes reduce specific copies. Entity keys, protobuf serialization, response values, and server metadata still allocate. Neither request limits nor payload-cache capacity are process-RSS limits. |
 
+Public Feast reads populate their final protobuf response columns directly rather
+than retaining an intermediate feature dictionary per entity and copying a second
+set of response vectors. Duplicate destinations still own independent messages;
+timestamp normalization, missing-value statuses, and view metadata are preserved.
+The common bounded binary request path also sizes its initial encoding arena to
+the estimated request size, capped at 256 KiB. The encoder can grow when needed,
+and the existing encoded-byte limit remains enforced. These changes reduce
+specific temporary allocations, not all native allocations or process memory.
+
 ### Keep the latency states separate
 
 Measure end-to-end Feast calls, not only a node command or an in-process cache hit.
@@ -144,6 +160,33 @@ faster than another store. Work under qualification is not a shipped guarantee.
 
 ## Reads
 
+`get_online_features_async` and `online_read_async` use pooled native async HTTP
+on supported shared-field read routes. The blocking and async paths share request
+planning, wire encoders, result decoders, and response construction. Reads do not
+occupy one worker thread per socket. Older nodes and source checkouts without
+`aiohttp` retain the blocking-worker fallback; async writes still use workers.
+Response construction above 256 output cells or 256 KiB of projected payload,
+and MessagePack decoding above 1 MiB, run in workers so large replies do not
+monopolize the event loop. Duplicate output positions count toward that budget.
+The configured socket timeout remains a connection/read-inactivity timeout,
+not a new total-duration limit on a progressing large response.
+
+Each event loop owns its connection pool, with at most 32 acquired connections.
+Admission across a client is bounded to 256 outstanding native async reads and
+an encoded-body budget of `max(64 MiB, max_batch_request_bytes)`.
+Local admission failures use `async_read_overloaded`. These limits do
+not bound response size or process memory. Cancellation releases admission and
+does not retry the read. Only the two shared-field read routes use this transport;
+writes are never routed through its bounded read-retry policy.
+
+In an async serving lifecycle, await the provider's `aclose()` before stopping
+its event loops. Synchronous `close()` still closes blocking connections and
+initiates async cleanup on the owning loops; it does not wait for that cleanup.
+`asyncio.run()` also closes registered session lifetimes during async-generator
+shutdown. Applications managing loops manually must call
+`loop.shutdown_asyncgens()` before `loop.close()`, including when a client is
+reused across loops. Stopping a loop without normal async shutdown is unsupported.
+
 Feature views with matching entities and join-key aliases reuse one entity
 deduplication and protobuf plan within each serving request. Different alias
 maps remain separate. The plan is discarded after the request, so later calls
@@ -167,6 +210,16 @@ orchestrated reads.
 
 An entity that was never written reads back as `(None, None)`, not as a dict of
 empty values.
+
+Known read-only requests reconnect once if a pooled connection closes, reusing
+the same encoded request. A truncated response is released before the retry
+starts, so recovery does not retain that partial body alongside the new response.
+The blocking retry path also covers history and numeric aggregate reads
+and the older command-batch routes. Timeouts, invalid decoded payloads, and server
+refusals are not retried. Writes, mixed read/write batches, and unknown command
+kinds are never automatically resent: a lost write response does not prove the
+write was not applied. A retried read can observe a newer concurrent update;
+this does not make a multi-request caller batch a snapshot transaction.
 
 ## Writes
 
@@ -217,6 +270,38 @@ fresh batch after stale traffic may pay a pre-read plus a write. Set the option 
 `false` to keep the nonadaptive path. History, teardown tracking and `skip_dedup`
 do not use this policy. Mixed-layout and older-node fallbacks retain their existing
 read-then-write concurrency limits.
+
+### Interleaved materialization
+
+`interleave_materialization: true` is the default for eligible latest-only
+timestamp-conditioned rows. Supporting nodes apply at most 64 rows or about
+256 KiB of estimated row data per application slice, then release the engine
+guard so queued projected reads and other batches can run. A single oversized
+row is not split; normal HTTP body and expansion limits still apply. These are
+work bounds, not process-memory limits or a latency guarantee.
+
+Each row's fields, event timestamp and TTL remain atomic. Different row groups
+may become visible independently before the call returns. Every slice appends
+and registers its complete WAL frames before releasing the guard; synchronous
+requests await a final durability barrier before success is returned. This does
+not enable asynchronous storage or add a durability barrier per slice. It can
+produce more WAL records, so measure appended bytes, records and syncs separately.
+
+Set `interleave_materialization: false` to retain the original atomic batch
+route. Existing data-node routes are unchanged. An unsupported new route falls
+back only after a route-level 404 before an attempted response, and capability
+discovery is cached per client. Application errors, unknown outcomes and errors
+after earlier acknowledged chunks never trigger that fallback. A failed call can
+have a durable prefix; it does not prove that no row was applied.
+
+Mirrored requests and incompatible storage modes retain their existing path.
+Lifecycle authorization is checked before every slice; row-level quotas,
+timestamp suppression, readonly/recovery gates and TTL rules still apply. A WAL
+commit failure on the interleaved path fences serving until shard recovery.
+History and teardown-augmented materialization retain their existing write paths.
+Batch/projection admission is FIFO, but background maintenance and single-command
+paths do not thereby acquire a global fairness guarantee. Snapshot overflow keeps
+the existing under-lock streaming behavior.
 
 ### Payload copies and persistence
 
@@ -320,7 +405,8 @@ Partial is written as partial below. Nothing here is rounded up.
 | `teardown` | **abstract** | **partial** — exact only with `track_keys_for_teardown`, which spreads keys over 1,024 deterministic sets and is off by default because it adds one write per row. Async commit is supported. With tracking off, teardown logs that it cannot enumerate instead of claiming success |
 | `online_read_async` | optional, **base raises** | **implemented** — without it `get_online_features_async` fails outright |
 | `online_write_batch_async` | optional, **base raises** | **implemented** |
-| `close` | optional, base is `pass` | **implemented** — the base no-op leaks a keep-alive connection per thread |
+| `close` | optional, base is `pass` | **implemented** — closes blocking connections and initiates async cleanup |
+| `aclose` | provider extension | **implemented** — awaits loop-owned async pool cleanup |
 | `plan` | optional, base returns `[]` | **inherited, and correct** — a schemaless surface needs no infra objects |
 | `initialize` | optional, base is `pass` | inherited; nothing to initialise |
 | `retrieve_online_documents`, `retrieve_online_documents_v2` | optional, **base raises** | **not implemented — vector search is not supported by this provider** |
@@ -466,9 +552,14 @@ python integrations/feast/run_tests.py
 cd integrations/feast && PYTHONPATH="$PWD" python feast_temporalstore_command/tests/test_online_store.py
 ```
 
-**The current offline run executes 52 checks:** 45 command-provider tests plus
-7 wire tests. The transport is replaced with a recording stub in that tier;
-the five-case Feast API conformance tier runs separately against a live node.
+With Feast, MessagePack, and aiohttp installed, the offline run executes **150 checks:**
+143 client/provider checks plus 7 wire checks. The 28 native async HTTP checks
+exercise local sockets, cancellation, fallback, admission, and loop shutdown.
+Most other checks use a recording transport. The five-case
+public Feast API conformance tier additionally needs a live data node. Set
+`FEAST_CONFORMANCE_REQUIRED=1` to fail rather than accept an unavailable live
+tier. Without optional dependencies, the runner reports the actual executed
+and skipped counts.
 
 The runner asserts the **executed** count, not the collected one, and that
 distinction is the whole guard: `unittest` collects a class decorated with

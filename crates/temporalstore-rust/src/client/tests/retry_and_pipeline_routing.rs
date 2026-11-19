@@ -761,3 +761,76 @@ fn a_routed_write_sends_the_fencing_token_when_the_topology_gives_one() {
         "a write with no token must keep the unchecked path"
     );
 }
+
+#[test]
+fn a_merge_append_sends_its_retry_token_and_reports_a_replayed_receipt() {
+    let proxy_addr = free_local_addr();
+    let seen: Arc<std::sync::Mutex<Vec<crate::types::Command>>> = Arc::default();
+    let seen_for_server = seen.clone();
+    let addr_for_server = proxy_addr.clone();
+    std::thread::spawn(move || {
+        serve(&addr_for_server, move |request| match request.path.as_str() {
+            "/execute" | "/execute_checked" => {
+                let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                let mut seen = seen_for_server.lock().expect("seen lock poisoned");
+                seen.push(req.command);
+                // The node answers the first application's counts, and from the second request on
+                // says it was a replay: what a key does for a token it still remembers.
+                json_response(
+                    200,
+                    &ExecuteResponse {
+                        status: Status::ok(),
+                        response: CommandResponse::CellMergeReceipt {
+                            samples_written: 1,
+                            cells_created: 2,
+                            cells_merged: 3,
+                            replayed: seen.len() > 1,
+                        },
+                    },
+                )
+            }
+            _ => json_response(404, &Status::error("not_found", "not found")),
+        })
+        .unwrap();
+    });
+    wait_for_http(&proxy_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: proxy_addr.clone(),
+        ..ClientOptions::default()
+    });
+    let table = client.open_table("ns", "tbl", TableOptions::default());
+    let point = crate::types::FeaturePoint { timestamp_ms: 5, value: vec![1, 2, 3] };
+
+    // Zero is a token like any other: it must reach the node, not be read as "no token".
+    let first = table
+        .feature_merge_cells_with_token("k", vec![point.clone()], 0)
+        .unwrap();
+    assert_eq!(
+        crate::types::CellMergeSummary {
+            samples_written: 1,
+            cells_created: 2,
+            cells_merged: 3,
+            replayed: false,
+        },
+        first
+    );
+    let again = table
+        .feature_merge_cells_with_token("k", vec![point.clone()], 0)
+        .unwrap();
+    assert!(again.replayed, "the replayed flag was dropped on the way back");
+    assert_eq!((1, 2, 3), (again.samples_written, again.cells_created, again.cells_merged));
+    // CONTROL: the tokenless method puts no token on the command.
+    table.feature_merge_cells("k", vec![point.clone()]).unwrap();
+
+    let command = |retry_token| crate::types::Command::FeatureAppendWithPolicy {
+        key: "k".to_string(),
+        points: vec![point.clone()],
+        policy: crate::types::FeatureWritePolicy::MergeReduce,
+        retry_token,
+    };
+    assert_eq!(
+        vec![command(Some(0)), command(Some(0)), command(None)],
+        *seen.lock().expect("seen lock poisoned")
+    );
+}

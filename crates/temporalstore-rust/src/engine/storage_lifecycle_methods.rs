@@ -214,13 +214,35 @@ fn oldest_dirty_buckets(
     summaries: &[BucketStorageSummary],
     claims: &BTreeMap<u32, (u64, u64)>,
 ) -> Vec<u32> {
-    let mut ranked = Vec::with_capacity(summaries.len().min(claims.len()));
-    for summary in summaries {
+    rank_dirty_buckets(summaries.iter().map(|summary| {
+        (summary.routing_bucket, summary.last_dump_sequence)
+    }), claims)
+}
+
+fn oldest_dirty_bucket_claims(
+    claims: &BTreeMap<u32, (u64, u64)>,
+    manifest: Option<&BucketDumpManifest>,
+) -> Vec<u32> {
+    let covered = manifest.map(|manifest| {
+        manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>()
+    }).unwrap_or_default();
+    let sequence = manifest.map_or(0, |manifest| manifest.index_log_sequence);
+    rank_dirty_buckets(claims.keys().map(|&bucket| {
+        (bucket, if covered.contains(&bucket) { sequence } else { 0 })
+    }), claims)
+}
+
+fn rank_dirty_buckets(
+    candidates: impl Iterator<Item = (u32, u64)>,
+    claims: &BTreeMap<u32, (u64, u64)>,
+) -> Vec<u32> {
+    let mut ranked = Vec::with_capacity(candidates.size_hint().0.min(claims.len()));
+    for (bucket, last_dump_sequence) in candidates {
         #[cfg(test)]
         DUMP_RANK_LOOKUPS.with(|count| count.set(count.get() + 1));
-        if let Some(&(wal, _)) = claims.get(&summary.routing_bucket) {
+        if let Some(&(wal, _)) = claims.get(&bucket) {
             let oldest = if wal == 0 { u64::MAX } else { wal };
-            ranked.push((oldest, summary.last_dump_sequence, summary.routing_bucket));
+            ranked.push((oldest, last_dump_sequence, bucket));
         }
     }
     // Bucket ID is the final key, so equal ranks have identical output IDs. No stable sort
@@ -230,12 +252,43 @@ fn oldest_dirty_buckets(
     ranked.iter().map(|&(_, _, bucket)| bucket).collect()
 }
 
+/// Whether the dump gate holds a dump back: both thresholds agree there is not enough undumped log
+/// yet. Each threshold can only RELEASE a dump, never hold it alone, because requiring both to be
+/// crossed would let one suppress a dump the other had already earned.
+///
+/// ZERO MEANS DIFFERENT THINGS. Bytes at 0 never fires (the byte arm says wait). Records at 0 fails
+/// the `> 0` guard, so the record arm says go: a dump every round, which callers that want exactly
+/// that pass on purpose, and why the record arm is switched off with `u64::MAX` and not with 0.
+///
+/// This is the one definition: the plan decides with it whether to select buckets, and the index
+/// stage decides with it whether the round has any dump to make, so the two cannot disagree.
+pub(crate) fn dump_gate_delays(
+    min_undumped_wal_records: u64,
+    min_undumped_wal_bytes: u64,
+    undumped_wal_records: u64,
+    undumped_wal_bytes: u64,
+) -> bool {
+    let records_say_wait =
+        min_undumped_wal_records > 0 && undumped_wal_records < min_undumped_wal_records;
+    let bytes_say_wait =
+        min_undumped_wal_bytes == 0 || undumped_wal_bytes < min_undumped_wal_bytes;
+    records_say_wait && bytes_say_wait
+}
+
 #[cfg(test)]
 #[path = "planning_order_tests.rs"]
 mod planning_order_tests;
 
 impl TemporalEngine {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
+        self.storage_lifecycle_plan_with_report_details(request, true)
+    }
+
+    pub(crate) fn storage_lifecycle_plan_with_report_details(
+        &self,
+        request: StorageLifecycleRequest,
+        detailed_report: bool,
+    ) -> StorageLifecyclePlan {
         LIFECYCLE_PLAN_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // DO NOT WALK THE SHARD TO FIND OUT THERE IS NOTHING TO DO.
         //
@@ -268,17 +321,22 @@ impl TemporalEngine {
         // were materialised at all -- with no summaries the filter selects nothing either way.
         // THE ITEM COUNTS COME OUT OF THE SAME LOCK ACQUISITION as the dirty state. Taking a
         // second read lock to answer one ratio would be two acquisitions for one decision.
-        let (shard_has_dirty_objects, dirty_claims, durable_items, live_items) = self
+        let (shard_has_dirty_objects, dirty_claims, durable_items, live_items, claims_are_summarized) = self
             .shards
             .read()
             .expect("engine lock poisoned")
             .get(&request.shard_id)
             .map(|shard| {
+                let claims = crate::engine::storage_reporting::dirty_bucket_claims(shard);
+                let claims_are_summarized = detailed_report || claims.keys().all(|bucket| {
+                    shard.bucket_index.bucket_map.get(bucket).is_some_and(|node| node.dirty())
+                });
                 (
                     !shard.dirty_objects.is_empty(),
-                    crate::engine::storage_reporting::dirty_bucket_claims(shard),
+                    claims,
                     shard.durable_items(),
                     shard.live_item_count(),
+                    claims_are_summarized,
                 )
             })
             .unwrap_or_default();
@@ -296,7 +354,10 @@ impl TemporalEngine {
             > 0
             && live_items > 0
             && item_amplification_ppm >= request.item_amplification_full_dump_ppm;
-        let mut bucket_summaries: Option<Vec<BucketStorageSummary>> = shard_has_dirty_objects
+        // Checked dirty nodes always appear in detailed summaries, so internal execution
+        // can rank their claims without reconstructing every live block's report.
+        let mut bucket_summaries: Option<Vec<BucketStorageSummary>> = (shard_has_dirty_objects
+            && (detailed_report || !claims_are_summarized))
             .then(|| self.bucket_storage_summaries(request.shard_id));
         // Select the least-recently-dumped (most overdue) dirty buckets first, matching the
         // WAL-reclaim routine's oldest-first-dirty ordering (dirty buckets are consumed
@@ -327,9 +388,7 @@ impl TemporalEngine {
         // Left as it is rather than repointed at the node: this is a TIEBREAKER behind
         // `first_dirty_rank` below, which is the key that decides the order for every bucket that
         // can name its oldest undumped write.
-        // Empty EXACTLY when the dirty index is empty, which is the case that skipped the walk
-        // above -- so this selects the same buckets it always did, without a fallback that could
-        // mistake "did not look" for "looked and found none".
+        // Execution plans may leave these unmeasured and rank the checked claims below.
         let dirty_bucket_source: &[BucketStorageSummary] = bucket_summaries.as_deref().unwrap_or(&[]);
         // THE BUCKET'S OWN FLAG DECIDES WHETHER IT IS DUMPED. The error this can make is the SAFE
         // one: a bucket reading dirty that holds nothing is a bucket dumped for no reason, where
@@ -353,9 +412,13 @@ impl TemporalEngine {
         // Read off the dirty claims the plan already took under its one lock acquisition. This was
         // a second lock and a `HashMap` over every bucket, consulted only for the dirty summaries
         // selected above -- which are exactly the buckets `dirty_claims` names.
-        let dirty_buckets = oldest_dirty_buckets(dirty_bucket_source, &dirty_claims);
         let latest_bucket_dump_manifest =
             latest_bucket_dump_manifest_shared_at(&self.index_dir, request.shard_id);
+        let dirty_buckets = if shard_has_dirty_objects && bucket_summaries.is_none() {
+            oldest_dirty_bucket_claims(&dirty_claims, latest_bucket_dump_manifest.as_deref())
+        } else {
+            oldest_dirty_buckets(dirty_bucket_source, &dirty_claims)
+        };
         let latest_dump_wal_sequence = latest_bucket_dump_manifest
             .as_ref()
             .map(|manifest| manifest.wal_sequence)
@@ -371,7 +434,8 @@ impl TemporalEngine {
         // log across every segment, so a log that is large but fully dumped cleared this
         // threshold on every round: a shard that had written one record since its last dump
         // earned another whole-index serialize, which is the cost this cadence exists to avoid.
-        let undumped_wal_bytes = self.wal_store.undumped_len_since_dump(request.shard_id);
+        let undumped_wal_bytes =
+            self.undumped_wal_bytes_from_claims(request.shard_id, &dirty_claims);
         // Reported, not compared. See `StorageLifecyclePlan::undumped_wal_objects`.
         let undumped_wal_objects = self.wal_store.undumped_objects_since_dump(request.shard_id);
         // Each threshold can only RELEASE the dump, never hold it: a delay needs both to agree
@@ -386,16 +450,14 @@ impl TemporalEngine {
         // ship, a shard under ordinary traffic crossed the record arm continuously and every round
         // took a dump, so the byte threshold never got a turn.
         //
-        // NOTE THE ASYMMETRY IN WHAT ZERO MEANS, because it is why the record arm is disabled with
-        // `u64::MAX` and not with 0. Bytes at 0 makes `bytes_say_wait` true, which is "this trigger
-        // never fires". Records at 0 fails the `> 0` guard, which makes `records_say_wait` FALSE --
-        // a dump on every round. Callers that want exactly that pass 0 on purpose, so 0 is not
-        // available as an off switch.
-        let records_say_wait = request.min_undumped_wal_records > 0
-            && undumped_wal_records < request.min_undumped_wal_records;
-        let bytes_say_wait = request.min_undumped_wal_bytes == 0
-            || undumped_wal_bytes < request.min_undumped_wal_bytes;
-        let dump_delayed = !explicit_buckets && records_say_wait && bytes_say_wait;
+        // What zero means for each threshold is on `dump_gate_delays`.
+        let dump_delayed = !explicit_buckets
+            && dump_gate_delays(
+                request.min_undumped_wal_records,
+                request.min_undumped_wal_bytes,
+                undumped_wal_records,
+                undumped_wal_bytes,
+            );
         let mut selected_dump_buckets = if explicit_buckets {
             request.selected_dump_buckets.clone()
         } else if full_dump_forced_by_item_amplification {
@@ -555,23 +617,23 @@ impl TemporalEngine {
         if request.purge_delayed_destroy && !delayed_destroy_reports.is_empty() {
             reasons.push("delayed_destroy_purge".to_string());
         }
-        let block_gc_dependency_plan = self.storage_block_gc_dependency_plan(
-            request.shard_id,
-            reclaim_candidates
-                .iter()
-                .map(|candidate| candidate.block_slab_id),
-            request.block_gc_shared_store_cursors.clone(),
-            request.block_gc_raft_snapshot_refs.clone(),
-            request.block_gc_checkpoint_floor_slab_id,
-            request.block_gc_raft_install_floor_slab_id,
-            request.block_gc_delayed_destroy_grace_ms,
-        );
-        if !block_gc_dependency_plan
-            .candidate_block_slab_ids
-            .is_empty()
-            && !block_gc_dependency_plan.safe_to_reclaim
-        {
-            reasons.push("block_gc_dependency_blocked".to_string());
+        if !reclaim_candidates.is_empty() {
+            let block_gc_dependency_plan = self.storage_block_gc_dependency_plan(
+                request.shard_id,
+                reclaim_candidates
+                    .iter()
+                    .map(|candidate| candidate.block_slab_id),
+                request.block_gc_shared_store_cursors.clone(),
+                request.block_gc_raft_snapshot_refs.clone(),
+                request.block_gc_checkpoint_floor_slab_id,
+                request.block_gc_raft_install_floor_slab_id,
+                request.block_gc_delayed_destroy_grace_ms,
+            );
+            if !block_gc_dependency_plan.candidate_block_slab_ids.is_empty()
+                && !block_gc_dependency_plan.safe_to_reclaim
+            {
+                reasons.push("block_gc_dependency_blocked".to_string());
+            }
         }
         let manifest_prune_plan = self.bucket_dump_manifest_prune_plan_with_follower_cursors(
             request.shard_id,
@@ -654,7 +716,10 @@ impl TemporalEngine {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let shared_store_cursors = shared_store_cursors.into_iter().collect::<Vec<_>>();
+        // Registered readers are merged here, in the one place every caller's plan is built, so
+        // the cycle, the loop's collection and the purge all honour them without each being told.
+        let mut shared_store_cursors = shared_store_cursors.into_iter().collect::<Vec<_>>();
+        shared_store_cursors.extend(self.registered_replay_cursors(shard_id));
         let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
         let delayed_destroy_reports = self
             .block_store
@@ -979,7 +1044,7 @@ impl TemporalEngine {
         request: StorageLifecycleRequest,
         detailed_report: bool,
     ) -> StorageLifecycleReport {
-        let plan = self.storage_lifecycle_plan(request.clone());
+        let plan = self.storage_lifecycle_plan_with_report_details(request.clone(), detailed_report);
         let dump_manifest = if plan.selected_dump_buckets.is_empty() {
             None
         } else {
@@ -1150,12 +1215,25 @@ impl TemporalEngine {
         report
     }
 
-    pub(super) fn purge_storage_delayed_destroy(
+    pub(crate) fn purge_storage_delayed_destroy(
         &self,
         request: &StorageLifecycleRequest,
     ) -> crate::block_store::BlockStorePurgeDelayedDestroyReport {
         if !request.purge_delayed_destroy {
             return Default::default();
+        }
+        // Nothing can be purged or restored without a quarantine entry. A concurrent
+        // quarantine is left for the next round, never deleted without the checks below.
+        match self.block_store.has_delayed_destroy_slabs() {
+            Ok(false) => return crate::block_store::BlockStorePurgeDelayedDestroyReport {
+                max_slabs_per_round: crate::block_store::DELAYED_DESTROY_MAX_SLABS_PER_ROUND,
+                ..Default::default()
+            },
+            Ok(true) => (),
+            Err(error) => {
+                tracing::warn!(shard_id = request.shard_id, %error, "purge deferred: quarantine unavailable");
+                return Default::default();
+            }
         }
         let mut live_block_slab_ids = self.live_block_slab_ids_all_shards();
         let manifests = match list_reclaim_manifests_at(&self.index_dir) {
@@ -1175,6 +1253,7 @@ impl TemporalEngine {
             .map(|ids| ids.iter().copied().collect::<BTreeSet<_>>());
         // Direct lifecycle calls must honor the same retention owners as scheduled cycles.
         if !request.block_gc_shared_store_cursors.is_empty()
+            || self.has_registered_replay_readers(request.shard_id)
             || !request.block_gc_raft_snapshot_refs.is_empty()
             || request.block_gc_checkpoint_floor_slab_id.is_some()
             || request.block_gc_raft_install_floor_slab_id.is_some()
@@ -1192,6 +1271,11 @@ impl TemporalEngine {
                 request.block_gc_raft_install_floor_slab_id,
                 0,
             );
+            // A slab a retention owner names while it sits in quarantine is pulled back, not just
+            // kept: quarantine renamed it out of the store, so it is unreadable for as long as it
+            // stays. Adding the blocked slabs to the live set is what asks the store-level check to
+            // restore them, at any age.
+            live_block_slab_ids.extend(dependencies.blocked_block_slab_ids.iter().copied());
             // Live slabs are restored, never deleted, by the final store-level check.
             let allowed = dependencies.reclaimable_block_slab_ids.into_iter()
                 .chain(live_block_slab_ids.iter().copied()).collect::<BTreeSet<_>>();
@@ -1208,6 +1292,55 @@ impl TemporalEngine {
                 selected,
             )
             .unwrap_or_default()
+    }
+
+    /// Undumped log bytes, measured from the OLDEST UNDUMPED WRITE rather than from the last dump.
+    ///
+    /// The WAL's own counter is zeroed by any dump manifest, including one capped at a few hundred
+    /// buckets while thousands stay dirty. Gated on that figure, a capped dump re-armed the byte
+    /// threshold in full and the rest of the dirty set waited another whole threshold of log. Here
+    /// the figure is the log above the lowest first-dirty claim any bucket still holds, which a
+    /// capped dump moves only as far as it actually dumped. A dirty bucket with no claim, or a
+    /// claim older than the byte marks reach, falls back to the counter, which is the larger
+    /// answer on a fresh process and so errs toward dumping.
+    pub fn undumped_wal_bytes_above_oldest_dirty(&self, shard_id: ShardId) -> u64 {
+        let claims = self
+            .shards
+            .read()
+            .expect("shards lock poisoned")
+            .get(&shard_id)
+            .map(crate::engine::storage_reporting::dirty_bucket_claims)
+            .unwrap_or_default();
+        self.undumped_wal_bytes_from_claims(shard_id, &claims)
+    }
+
+    /// [`Self::undumped_wal_bytes_above_oldest_dirty`] for a caller that already holds the claims.
+    pub(super) fn undumped_wal_bytes_from_claims(
+        &self,
+        shard_id: ShardId,
+        claims: &BTreeMap<u32, (u64, u64)>,
+    ) -> u64 {
+        let counter = self.wal_store.undumped_len_since_dump(shard_id);
+        if claims.is_empty() {
+            return counter;
+        }
+        // A claim of 0 is "no claim recorded": that bucket cannot be placed in the log, so the
+        // figure from the buckets that CAN be placed is a lower bound. The counter is a lower bound
+        // too (a capped dump zeroes it), so the larger of the two is the tighter one and is never
+        // below what the counter alone said.
+        let placed_oldest = claims
+            .values()
+            .map(|(wal_claim, _)| *wal_claim)
+            .filter(|wal_claim| *wal_claim > 0)
+            .min();
+        let from_claims = placed_oldest.and_then(|oldest| {
+            self.wal_store.appended_len_since_sequence(shard_id, oldest)
+        });
+        match from_claims {
+            Some(bytes) if claims.values().all(|(wal_claim, _)| *wal_claim > 0) => bytes,
+            Some(bytes) => bytes.max(counter),
+            None => counter,
+        }
     }
 
     pub fn storage_wal_reclaim_plan(
@@ -1352,8 +1485,9 @@ impl TemporalEngine {
                             shard_id,
                             manifest,
                             || {
-                                crate::engine::decode_index_bytes(&manifest.index_bytes)
+                                installable_image(manifest)
                                     .ok()
+                                    .and_then(|image| crate::engine::decode_index_bytes(image).ok())
                                     // A MANIFEST WHOSE IMAGE NAMES ANOTHER STRUCT VERSION FINGERPRINTS
                                     // NOTHING, exactly as an undecodable one -- the decode refuses it, so
                                     // it is the same `None`. Not counted: this is a plan, and it installs
@@ -1628,6 +1762,56 @@ impl TemporalEngine {
         }
     }
 
+    /// Compute and install the block-retention floor, immediately before a truncation.
+    ///
+    /// The floor is a side entry in the log store that the truncation reads, so a caller that
+    /// truncates without refreshing it truncates against whatever was stored last, which can be
+    /// nothing: every record goes while live registrations still point into the log. Every path that
+    /// removes WAL records calls this first, and an image that cannot be read refuses the truncation.
+    ///
+    /// The floor is the lowest of: the live registrations, what each retained dump manifest names,
+    /// and what the persisted served index names. An image counts only when a served block in it
+    /// still names a WAL-resident address; placement metadata that outlived its frames does not.
+    pub(crate) fn refresh_wal_retention_floor(&self, shard_id: ShardId) -> Result<(), ()> {
+        let persisted = self.persisted_images_wal_floor(shard_id)?;
+        let registered =
+            super::block_in_wal::min_registered_sequence(&self.block_store, shard_id, &self.wal_store);
+        match registered.into_iter().chain(persisted).min() {
+            Some(sequence) => self.wal_store.set_block_retention_floor(shard_id, sequence),
+            None => self.wal_store.clear_block_retention_floor(shard_id),
+        }
+        Ok(())
+    }
+
+    /// The lowest WAL sequence any PERSISTED image still needs, or `None` when none needs the log.
+    ///
+    /// Every retained dump manifest's embedded index and the persisted served index are what a
+    /// restart can load, and each names WAL-resident blocks by placement. `Err` means an image could
+    /// not be read, which a caller truncating the log must treat as "keep everything".
+    pub(super) fn persisted_images_wal_floor(&self, shard_id: ShardId) -> Result<Option<u64>, ()> {
+        let manifests =
+            list_bucket_dump_manifests_shared_at(&self.index_dir, shard_id).map_err(|_| ())?;
+        let mut floor: Option<u64> = None;
+        for manifest in &manifests {
+            let image = bucket_dump_io::manifest_wal_floor_memoised(manifest, || {
+                let snapshot = decode_index_bytes(installable_image(manifest).map_err(|_| ())?)
+                    .map_err(|_| ())?;
+                Ok(wal_floor_of_index_image(&snapshot))
+            })?;
+            if let Some(sequence) = image {
+                floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
+            }
+        }
+        let base = std::fs::read(self.index_path(shard_id))
+            .ok()
+            .and_then(|bytes| decode_index_bytes(&bytes).ok())
+            .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
+        if let Some(sequence) = base {
+            floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
+        }
+        Ok(floor)
+    }
+
     pub fn apply_storage_wal_reclaim(
         &self,
         mut plan: StorageWalReclaimPlan,
@@ -1664,22 +1848,9 @@ impl TemporalEngine {
         let mut manifest_floor = None;
         for manifest in &manifests {
             let floor = bucket_dump_io::manifest_wal_floor_memoised(manifest, || {
-                let snapshot = decode_index_bytes(&manifest.index_bytes).map_err(|_| ())?;
-                let floor = snapshot.wal_resident_blocks.values().map(|placement| placement.sequence).min();
-                let mut visited = 0;
-                let indexed_wal = snapshot.bucket_index.bucket_map.values()
-                    .flat_map(|bucket| bucket.block_index.values()).any(|block| {
-                        visited += 1;
-                        crate::wal_record::is_wal_resident(block.address.block_slab_id())
-                    });
-                storage_bucket_internals::note_bucket_block_visits(visited);
-                let needs_wal = indexed_wal
-                    || storage_bucket_internals::collect_model_live_block_entries(&snapshot).iter().any(|entry| {
-                    crate::wal_record::is_wal_resident(entry.address.block_slab_id())
-                });
-                // Placement metadata can outlive its frames. A legacy frame without
-                // a placement, however, cannot prove a narrower retention floor.
-                Ok(if needs_wal { Some(floor.unwrap_or(0)) } else { None })
+                let snapshot = decode_index_bytes(installable_image(manifest).map_err(|_| ())?)
+                    .map_err(|_| ())?;
+                Ok(wal_floor_of_index_image(&snapshot))
             });
             match floor {
                 Ok(Some(sequence)) => manifest_floor = Some(manifest_floor.map_or(sequence, |old: u64| old.min(sequence))),
@@ -1691,6 +1862,23 @@ impl TemporalEngine {
                     };
                 },
             }
+        }
+        // THE PERSISTED SERVED INDEX NAMES PLACEMENTS TOO. A restart loads it when no newer dump
+        // manifest exists, and the loop rewrites it on its own cadence, so a value that lives only in
+        // a WAL record and is named by that image has to keep the record, exactly as one named by a
+        // retained manifest does. The floor used to read the manifests and the live registrations
+        // only: a placement superseded after the image was written was held by neither, the record
+        // was freed, and the next load refused with `wal_resident_block_missing`.
+        //
+        // The same reading a load makes -- the file as it is, no delta folded -- and the same answer
+        // a manifest gives. An image that is absent names nothing; one that will not decode is not
+        // what a load would use either (it falls back to the log), so neither narrows the floor.
+        let base_floor = std::fs::read(self.index_path(plan.shard_id))
+            .ok()
+            .and_then(|bytes| decode_index_bytes(&bytes).ok())
+            .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
+        if let Some(sequence) = base_floor {
+            manifest_floor = Some(manifest_floor.map_or(sequence, |old: u64| old.min(sequence)));
         }
         let registered_floor = super::block_in_wal::min_registered_sequence(
             &self.block_store,
@@ -2219,6 +2407,19 @@ impl TemporalEngine {
         report
     }
 
+    /// Drop this shard's cached blocks and nothing else.
+    ///
+    /// The cache holds copies: every block it serves is also in the shard's resident index or its
+    /// slab, and every write is in the write-ahead log whether or not its bucket has been dumped.
+    /// Invalidating it therefore needs no dump first and no lifecycle plan, which walks the shard
+    /// to say what it would dump. Returns (memory entries removed, disk bytes removed).
+    pub fn invalidate_shard_cache(&self, shard_id: ShardId) -> (usize, u64) {
+        self.cache
+            .invalidate_shard(shard_id)
+            .map(|report| (report.memory_entries_removed, report.disk_bytes_removed))
+            .unwrap_or_default()
+    }
+
     pub fn apply_storage_eviction(
         &self,
         shard_id: ShardId,
@@ -2227,6 +2428,9 @@ impl TemporalEngine {
         dump_before_evict: bool,
         delete_drop: bool,
     ) -> StorageEvictionReport {
+        // Reads served under the shared shard lock left their recency stamps aside; bring them into
+        // the shards before any bucket is ranked, or a bucket read all day would look idle.
+        self.fold_fast_read_recency();
         // THE SIGNAL, AND IT IS THIS SHARD'S. One term, `bucket_index_resident_bytes(shard_id)`,
         // and that is the whole input.
         //
@@ -5020,4 +5224,36 @@ mod eviction_round_scale {
             );
         }
     }
+}
+
+
+/// The lowest WAL sequence an index image still needs, or `None` when it needs none.
+///
+/// An image names a WAL-resident block by a placement, and a block whose only durable copy is a log
+/// record needs that record until a newer image stops naming it. A resident block with no placement
+/// cannot prove a narrower floor, so it reads as 0.
+fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
+    let floor = snapshot
+        .wal_resident_blocks
+        .values()
+        .map(|placement| placement.sequence)
+        .min();
+    let mut visited = 0;
+    let indexed_wal = snapshot
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.block_index.values())
+        .any(|block| {
+            visited += 1;
+            crate::wal_record::is_wal_resident(block.address.block_slab_id())
+        });
+    storage_bucket_internals::note_bucket_block_visits(visited);
+    let needs_wal = indexed_wal
+        || storage_bucket_internals::collect_model_live_block_entries(snapshot)
+            .iter()
+            .any(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()));
+    // Placement metadata can outlive its frames. A legacy frame without a placement, however,
+    // cannot prove a narrower retention floor.
+    if needs_wal { Some(floor.unwrap_or(0)) } else { None }
 }

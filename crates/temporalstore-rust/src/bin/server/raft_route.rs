@@ -553,11 +553,16 @@ fn is_raft_read_command(command: &Command) -> bool {
         Command::CommonTtl { .. }
             | Command::CommonExists { .. }
             | Command::StringGet { .. }
+            | Command::StringLen { .. }
+            | Command::StringGetRange { .. }
             | Command::HashGet { .. }
             | Command::HashMultiGet { .. }
             | Command::HashGetAll { .. }
             | Command::HashLen { .. }
+            | Command::HashFieldExists { .. }
             | Command::SetMembers { .. }
+            | Command::SetCard { .. }
+            | Command::SetIsMember { .. }
             | Command::SetScan { .. }
             | Command::ZSetScan { .. }
             | Command::FeatureQuery { .. }
@@ -566,7 +571,9 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::FeatureProtoAggQuery { .. }
             | Command::SequenceQuery { .. }
             | Command::SequenceBatchQuery { .. }
-            | Command::CellRankQuery { .. }
+            | Command::WindowReduceRank { .. }
+            | Command::WindowReduceFanInRank { .. }
+            | Command::WindowReduceRankBatch { .. }
             | Command::ControlStateCount { .. }
             | Command::ControlStateQuery { .. }
             | Command::ControlStateDetail { .. }

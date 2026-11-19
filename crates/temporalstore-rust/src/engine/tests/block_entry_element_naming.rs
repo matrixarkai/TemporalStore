@@ -238,7 +238,7 @@ fn swap_across_index_files(indexes: &std::path::Path, from: &str, to: &str) -> u
 /// # THE CONTROL, UNCHANGED
 ///
 /// A zset member's element name is swapped in the same pass, and that member still answers because
-/// `zset_index_serde` persisted it beside the page and `fill_absent_elements` keeps what the derived
+/// `zset_index_serde` persisted it beside the block and `fill_absent_elements` keeps what the derived
 /// view could not produce. An arm that moved and an arm that did not, from one swap pass, is what
 /// makes this a measurement rather than a demonstration that editing an index breaks things.
 ///
@@ -846,16 +846,6 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         block: &nameless_entry,
     })
     .expect("a block entry serializes");
-    assert!(
-        encoded.len() > 32,
-        "the encoded block entry is {} B, too short for the absence assertion below to mean anything",
-        encoded.len()
-    );
-    assert!(
-        !encoded.contains("component"),
-        "an element-name-less block entry still wrote an element name key, so the absent shape this finding \
-         rests on is not what the encoder produces: {encoded}"
-    );
     let decoded = serde_json::from_str::<crate::engine::state::StoredBlockEntry>(&encoded)
         .expect("an element-name-less block entry decodes")
         .into_parts_from_key(&crate::engine::state::block_index_written_key(

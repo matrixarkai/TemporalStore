@@ -27,6 +27,7 @@ impl TemporalStoreTable {
                 key: key.into(),
                 points,
                 policy,
+                retry_token: None,
             })?
             .response
         {
@@ -39,7 +40,7 @@ impl TemporalStoreTable {
     }
 
     /// Appends cell-set requests under the merge-reduce policy and says what landed:
-    /// `(snapshots written, cells created, cells merged)`. A request that disagrees with the
+    /// `(samples written, cells created, cells merged)`. A request that disagrees with the
     /// header stored for the key is refused and nothing is written.
     pub fn feature_merge_cells(
         &self,
@@ -51,16 +52,55 @@ impl TemporalStoreTable {
                 key: key.into(),
                 points,
                 policy: FeatureWritePolicy::MergeReduce,
+                retry_token: None,
             })?
             .response
         {
             CommandResponse::CellMergeReceipt {
-                snapshots_written,
+                samples_written,
                 cells_created,
                 cells_merged,
-            } => Ok((snapshots_written, cells_created, cells_merged)),
+                ..
+            } => Ok((samples_written, cells_created, cells_merged)),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "feature_merge_cells",
+                response,
+            }),
+        }
+    }
+
+    /// The same append, sent so that sending it again is safe: a key that already applied
+    /// `retry_token` answers the first application's counts with `replayed` set and writes
+    /// nothing, so a client that lost the answer can resend without summing a lane twice. A key
+    /// remembers its last 16 tokens; zero is a token like any other.
+    pub fn feature_merge_cells_with_token(
+        &self,
+        key: impl Into<String>,
+        points: Vec<FeaturePoint>,
+        retry_token: u64,
+    ) -> Result<crate::types::CellMergeSummary, ClientError> {
+        match self
+            .execute(Command::FeatureAppendWithPolicy {
+                key: key.into(),
+                points,
+                policy: FeatureWritePolicy::MergeReduce,
+                retry_token: Some(retry_token),
+            })?
+            .response
+        {
+            CommandResponse::CellMergeReceipt {
+                samples_written,
+                cells_created,
+                cells_merged,
+                replayed,
+            } => Ok(crate::types::CellMergeSummary {
+                samples_written,
+                cells_created,
+                cells_merged,
+                replayed,
+            }),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "feature_merge_cells_with_token",
                 response,
             }),
         }
@@ -211,55 +251,120 @@ impl TemporalStoreTable {
         }
     }
 
-    /// The ranked windowed read over the cell snapshots stored under `key`. A read the key could
+    /// The ranked windowed read over the cell samples stored under `key`. A read the key could
     /// not serve (an unknown name, a window over the bound) is an error naming why; a key with
     /// nothing to rank is an empty answer.
-    pub fn cell_rank_query(
+    pub fn window_reduce_rank(
         &self,
         key: impl Into<String>,
-        spec: crate::types::CellRankSpec,
+        spec: crate::types::WindowReduceRankSpec,
     ) -> Result<crate::types::RankedCells, ClientError> {
         match self
-            .execute(Command::CellRankQuery { key: key.into(), spec })?
+            .execute(Command::WindowReduceRank { key: key.into(), spec })?
             .response
         {
-            CommandResponse::CellRanking { ranked } if ranked.refused.is_empty() => Ok(ranked),
-            CommandResponse::CellRanking { ranked } => Err(ClientError::Status(ranked.refused)),
+            CommandResponse::WindowReduceRanking { ranked } if ranked.refused.is_empty() => Ok(ranked),
+            CommandResponse::WindowReduceRanking { ranked } => Err(ClientError::Status(ranked.refused)),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "cell_rank_query",
+                operation: "window_reduce_rank",
                 response,
             }),
         }
     }
 
-    /// Rolls the cell snapshots under `key` stamped strictly below `spec.older_than_ms` up into
-    /// buckets, optionally capping each rolled snapshot, and says what it did. A request the key
+    /// Rolls the cell samples under `key` stamped strictly below `spec.older_than_ms` up into
+    /// buckets, optionally capping each rolled sample, and says what it did. A request the key
     /// cannot serve is refused and nothing is written; rolling up again with the same arguments
     /// changes nothing.
-    pub fn cell_rollup(
+    pub fn window_reduce_rollup(
         &self,
         key: impl Into<String>,
-        spec: crate::types::CellRollupSpec,
-    ) -> Result<crate::types::CellRollupSummary, ClientError> {
+        spec: crate::types::WindowReduceRollupSpec,
+    ) -> Result<crate::types::WindowReduceRollupSummary, ClientError> {
         match self
-            .execute(Command::CellRollup { key: key.into(), spec })?
+            .execute(Command::WindowReduceRollup { key: key.into(), spec })?
             .response
         {
-            CommandResponse::CellRollupReceipt {
-                snapshots_before,
-                snapshots_after,
+            CommandResponse::WindowReduceRollupReceipt {
+                samples_before,
+                samples_after,
                 cells_before,
                 cells_after,
                 cells_dropped,
-            } => Ok(crate::types::CellRollupSummary {
-                snapshots_before,
-                snapshots_after,
+            } => Ok(crate::types::WindowReduceRollupSummary {
+                samples_before,
+                samples_after,
                 cells_before,
                 cells_after,
                 cells_dropped,
             }),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "cell_rollup",
+                operation: "window_reduce_rollup",
+                response,
+            }),
+        }
+    }
+
+    /// Removes cells from the samples under `key` by time window, member set and predicate, and
+    /// says what it removed. A request the key cannot serve is refused and nothing is written; a
+    /// request that matches no cell writes nothing and reports zero removed.
+    pub fn window_reduce_remove(
+        &self,
+        key: impl Into<String>,
+        spec: crate::types::WindowReduceRemoveSpec,
+    ) -> Result<crate::types::WindowReduceRemoveSummary, ClientError> {
+        match self
+            .execute(Command::WindowReduceRemove { key: key.into(), spec })?
+            .response
+        {
+            CommandResponse::WindowReduceRemoveReceipt {
+                samples_before,
+                samples_after,
+                cells_before,
+                cells_removed,
+            } => Ok(crate::types::WindowReduceRemoveSummary {
+                samples_before,
+                samples_after,
+                cells_before,
+                cells_removed,
+            }),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "window_reduce_remove",
+                response,
+            }),
+        }
+    }
+
+    /// The ranked windowed read over the cell samples of several keys that share one spec: the
+    /// answer one key holding all of their samples would give. The keys must live on one shard
+    /// (the request is routed by the first); `RankedCells::keys` says how many held a sample in
+    /// the window, so an answer missing a key the shard did not hold is visible.
+    pub fn window_reduce_fan_in_rank(
+        &self,
+        keys: Vec<String>,
+        spec: crate::types::WindowReduceRankSpec,
+    ) -> Result<crate::types::RankedCells, ClientError> {
+        match self.execute(Command::WindowReduceFanInRank { keys, spec })?.response {
+            CommandResponse::WindowReduceRanking { ranked } if ranked.refused.is_empty() => Ok(ranked),
+            CommandResponse::WindowReduceRanking { ranked } => Err(ClientError::Status(ranked.refused)),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "window_reduce_fan_in_rank",
+                response,
+            }),
+        }
+    }
+
+    /// N independent ranked cell reads in one request, answered in request order. A read that
+    /// cannot be served carries its reason in `refused` and does not fail the others. The keys
+    /// must live on one shard (the request is routed by the first).
+    pub fn window_reduce_rank_batch(
+        &self,
+        queries: Vec<crate::types::WindowReduceRankBatchItem>,
+    ) -> Result<Vec<crate::types::RankedCells>, ClientError> {
+        match self.execute(Command::WindowReduceRankBatch { queries })?.response {
+            CommandResponse::WindowReduceRankings { rankings } => Ok(rankings),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "window_reduce_rank_batch",
                 response,
             }),
         }

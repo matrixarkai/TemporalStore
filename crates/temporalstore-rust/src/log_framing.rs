@@ -111,14 +111,9 @@ pub(crate) const MAX_RESERVED_RECORD_BYTES: usize = 1024 * 1024;
 /// be thrown over an existing binary-framed log and it never was; what was wrong is the sentence
 /// that said it could be.
 pub(crate) fn binary_frame_enabled() -> bool {
-    !matches!(
-        std::env::var("TS_WAL_BINARY_FRAME")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
+    crate::env_flag::cached_flag(crate::env_flag::Slot::BinaryFrame, || {
+        !crate::env_flag::is_off_word(std::env::var("TS_WAL_BINARY_FRAME").ok().as_deref())
+    })
 }
 
 fn write_varint(value: u64, out: &mut impl bytes::BufMut) {

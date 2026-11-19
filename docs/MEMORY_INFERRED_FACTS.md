@@ -131,5 +131,5 @@ Seven input-ownership checks cover text/object inputs, Unicode trimming, field
 precedence, role filtering, empty inputs, protobuf round trips and fact projection
 after the raw body is moved. In the eight-source, 32-KiB-per-source fixture, the
 request reuses the original 256 KiB of body buffers while the temporary records
-retain zero body capacity. Pointer/capacity checks establish that component-level
+retain zero body capacity. Pointer/capacity checks establish that buffer-level
 ownership property; they are not process RSS or end-to-end CPU measurements.

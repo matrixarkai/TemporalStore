@@ -19,6 +19,7 @@ not notice.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import sys
@@ -64,6 +65,7 @@ class RecordingClient(TemporalStoreClient):
         self._shared_field_ttl_write_supported = False
         self._conditional_shared_field_write_supported = False
         self._conditional_shared_field_ttl_write_supported = False
+        self._interleaved_conditional_write_supported = False
         self.sent = []
         self.shared_reads = []
         self.shared_writes = []
@@ -547,6 +549,26 @@ class ClientProtocolTest(unittest.TestCase):
         )
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_bounded_shared_encoder_sizes_its_initial_arena_without_changing_bytes(self):
+        client = TemporalStoreClient()
+        real_pack = msgpack.packb
+        for document, upper_bound in (({"keys": ["\u4e00" * 20], "fields": ["f"]}, 256),
+                                      ({"keys": ["entity"], "fields": ["f"]}, 1024),
+                                      ({"values": [b"v" * 300000]}, 400000)):
+            expected = real_pack(document, use_bin_type=True)
+            with self.subTest(upper_bound=upper_bound):
+                with mock.patch("feast_temporalstore_command.client.msgpack.packb", wraps=real_pack) as pack:
+                    actual = client._pack_bounded_shared_request(document, upper_bound)
+                    self.assertEqual(actual, expected)
+                    pack.assert_called_once()
+                    self.assertEqual(pack.call_args.kwargs["buf_size"], min(256 * 1024, max(256, upper_bound)))
+        with mock.patch("feast_temporalstore_command.client.msgpack.packb", wraps=real_pack) as pack:
+            self.assertIsNone(client._pack_bounded_shared_request({}, client.max_batch_request_bytes + 1))
+            pack.assert_not_called()
+        client.max_batch_request_bytes = 64
+        self.assertIsNone(client._pack_bounded_shared_request({"values": [b"v" * 100]}, 1))
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_shared_batch_fast_path_keeps_the_encoded_byte_limit(self):
         client = TemporalStoreClient(
             max_batch_commands=4,
@@ -893,6 +915,63 @@ class ClientProtocolTest(unittest.TestCase):
         self.assertEqual(client.attempts, 2)
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_interleaved_write_keeps_ttl_and_binary_rows(self):
+        client = TemporalStoreClient()
+        client._request_encoded = mock.Mock(return_value=msgpack.packb({
+            "status": {"ok": True}, "applied": 1, "skipped": 0, "errors": []
+        }, use_bin_type=True))
+        rows = [("a", 20, 0, [b"timestamp", b"\x00\xffvalue"])]
+        self.assertEqual(client.batch_hash_timestamp_set_interleaved(
+            ["ts", "f"], "ts", rows, ttl_ms=60_000), (1, 0))
+        path, raw, content_type = client._request_encoded.call_args.args
+        self.assertEqual(path, "/batch_hash_timestamp_set_interleaved_msgpack")
+        self.assertEqual(content_type, "application/msgpack")
+        document = msgpack.unpackb(raw, raw=False)
+        self.assertEqual(document["ttl_ms"], 60_000)
+        self.assertEqual(document["rows"][0], ["a", 20, 0, [b"timestamp", b"\x00\xffvalue"]])
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_missing_interleaved_route_falls_back_once_to_the_atomic_route(self):
+        client = TemporalStoreClient()
+        paths = []
+        def request(path, body, content_type):
+            paths.append(path)
+            if "interleaved" in path:
+                raise TemporalStoreCommandError("http_404", "not found")
+            return msgpack.packb({"status": {"ok": True}, "applied": 1, "skipped": 0, "errors": []})
+        client._request_encoded = request
+        rows = [("a", 20, 0, [b"timestamp", b"value"])]
+        for _ in range(2):
+            self.assertEqual(client.batch_hash_timestamp_set_interleaved(["ts", "f"], "ts", rows), (1, 0))
+        self.assertEqual(paths, ["/batch_hash_timestamp_set_interleaved_msgpack",
+                                "/batch_hash_timestamp_set_msgpack", "/batch_hash_timestamp_set_msgpack"])
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_interleaved_application_errors_never_trigger_route_fallback(self):
+        for code in ["http_404", "wal_commit_failed", "interleaved_write_unavailable"]:
+            with self.subTest(code=code):
+                client = TemporalStoreClient()
+                client._request_encoded = mock.Mock(return_value=msgpack.packb({
+                    "status": {"ok": False, "code": code, "message": "injected"}
+                }))
+                with self.assertRaises(TemporalStoreCommandError) as error:
+                    client.batch_hash_timestamp_set_interleaved(["ts"], "ts", [("a", 1, 0, [b"timestamp"])])
+                self.assertEqual(error.exception.code, code)
+                self.assertEqual(client._request_encoded.call_count, 1)
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_interleaved_route_failure_after_an_acknowledged_chunk_does_not_fall_back(self):
+        client = TemporalStoreClient(max_write_batch_commands=1)
+        client._request_encoded = mock.Mock(side_effect=[
+            msgpack.packb({"status": {"ok": True}, "applied": 1, "skipped": 0, "errors": []}),
+            TemporalStoreCommandError("http_404", "route disappeared"),
+        ])
+        with self.assertRaises(TemporalStoreCommandError):
+            client.batch_hash_timestamp_set_interleaved(["ts"], "ts",
+                [("a", 1, 0, [b"timestamp"]), ("b", 1, 0, [b"timestamp"])])
+        self.assertEqual(client._request_encoded.call_count, 2)
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_missing_shared_field_write_endpoint_falls_back_once(self):
         class OlderNodeClient(RecordingClient):
             attempts = 0
@@ -1015,6 +1094,214 @@ class ClientProtocolTest(unittest.TestCase):
         # assumed, because a dict here would be accepted by json and refused by
         # the node.
         self.assertIn('[["f","dg=="]]', json.dumps(document, separators=(",", ":")))
+
+
+class ClosedReadConnectionTest(unittest.TestCase):
+    @staticmethod
+    def connection(body, status=200):
+        conn = mock.Mock()
+        conn.getresponse.return_value.status = status
+        conn.getresponse.return_value.read.return_value = body
+        return conn
+
+    def test_known_read_reconnects_with_the_same_body_and_forgets_the_old_socket(self):
+        expected = {"kind": "bytes", "value": encode_bytes(b"value")}
+        body = json.dumps(ok(expected)).encode()
+        failures = [BrokenPipeError("closed"), ConnectionResetError("closed"),
+                    http.client.RemoteDisconnected("closed"), http.client.IncompleteRead(b"part", 4)]
+        for error in failures:
+            with self.subTest(error=type(error).__name__):
+                client = TemporalStoreClient()
+                first, second = self.connection(body), self.connection(body)
+                if isinstance(error, http.client.IncompleteRead):
+                    first.getresponse.return_value.read.side_effect = error
+                else:
+                    first.request.side_effect = error
+                with mock.patch("http.client.HTTPConnection", side_effect=[first, second]) as opened:
+                    self.assertEqual(client.execute({"kind": "hash_get", "key": "k", "field": "f"}), expected)
+                    self.assertEqual(opened.call_count, 2)
+                    self.assertIs(first.request.call_args.kwargs["body"], second.request.call_args.kwargs["body"])
+                    self.assertEqual(len(client._all_connections), 1)
+                    self.assertIs(client._all_connections[0], second)
+                    first.close.assert_called_once()
+                client.close()
+
+    def test_closed_read_retries_at_most_once(self):
+        client = TemporalStoreClient()
+        first, second = self.connection(b""), self.connection(b"")
+        first.request.side_effect = BrokenPipeError("first")
+        second.request.side_effect = ConnectionResetError("second")
+        with mock.patch("http.client.HTTPConnection", side_effect=[first, second]) as opened:
+            with self.assertRaises(ConnectionResetError):
+                client.execute({"kind": "hash_get", "key": "k", "field": "f"})
+            self.assertEqual(opened.call_count, 2)
+        self.assertEqual(client._all_connections, [])
+        client.close()
+
+    def test_incomplete_response_is_released_before_retry(self):
+        import weakref
+
+        class PartialBody:
+            def __init__(self):
+                self.data = bytearray(2 * 1024 * 1024)
+
+            def __len__(self):
+                return len(self.data)
+
+        for method in ("_request_read_encoded", "_post_read_encoded"):
+            with self.subTest(method=method):
+                partial = []
+
+                def interrupted_read():
+                    body = PartialBody()
+                    partial.append(weakref.ref(body))
+                    raise http.client.IncompleteRead(body, 1)
+
+                def retry_request(*args, **kwargs):
+                    self.assertEqual(len(partial), 1)
+                    self.assertIsNone(partial[0](), "failed response retained during retry")
+
+                client = TemporalStoreClient()
+                first, second = self.connection(b"{}"), self.connection(b"{}")
+                first.getresponse.return_value.read.side_effect = interrupted_read
+                second.request.side_effect = retry_request
+                with mock.patch("http.client.HTTPConnection", side_effect=[first, second]):
+                    try:
+                        answer = getattr(client, method)("/execute", b"{}")
+                        self.assertEqual(answer, b"{}" if method == "_request_read_encoded" else {})
+                        self.assertIs(first.request.call_args.kwargs["body"], second.request.call_args.kwargs["body"])
+                    finally:
+                        client.close()
+
+    def test_timeouts_protocol_errors_and_refusals_are_not_retried(self):
+        cases = [
+            (TimeoutError("late"), b"", 200, TimeoutError),
+            (http.client.BadStatusLine("invalid"), b"", 200, http.client.BadStatusLine),
+            (None, b"busy", 503, TemporalStoreCommandError),
+            (None, b"{", 200, json.JSONDecodeError),
+            (None, json.dumps({"status": {"ok": False, "code": "busy"}}).encode(), 200, TemporalStoreCommandError),
+        ]
+        for error, body, status, expected in cases:
+            with self.subTest(error=error, status=status):
+                client = TemporalStoreClient()
+                conn = self.connection(body, status)
+                conn.request.side_effect = error
+                with mock.patch("http.client.HTTPConnection", return_value=conn) as opened:
+                    with self.assertRaises(expected):
+                        client.execute({"kind": "hash_get", "key": "k", "field": "f"})
+                    self.assertEqual(opened.call_count, 1)
+                    self.assertEqual(conn.request.call_count, 1)
+                client.close()
+
+    def test_writes_mixed_batches_and_unknown_kinds_never_replay(self):
+        for operation in ("execute", "mixed", "unknown", "batch_write", "shared_write"):
+            with self.subTest(operation=operation):
+                client = TemporalStoreClient()
+                client._binary_batch_supported = False
+                client._binary_write_supported = False
+                conn = self.connection(b"")
+                conn.request.side_effect = BrokenPipeError("ambiguous write")
+                write = {"kind": "feature_append", "key": "k", "points": []}
+                with mock.patch("http.client.HTTPConnection", return_value=conn) as opened:
+                    with self.assertRaises(BrokenPipeError):
+                        if operation == "execute":
+                            client.execute(write)
+                        elif operation == "mixed":
+                            client.batch_execute([{"kind": "hash_get", "key": "k", "field": "f"}, write])
+                        elif operation == "unknown":
+                            client.execute({"kind": "future_query", "key": "k"})
+                        elif operation == "batch_write":
+                            client.batch_write([write])
+                        else:
+                            client.batch_hash_multi_set(["f"], [("k", [b"v"])])
+                    self.assertEqual(opened.call_count, 1)
+                    self.assertEqual(conn.request.call_count, 1)
+                client.close()
+
+    @unittest.skipUnless(msgpack is not None, "msgpack is not installed")
+    def test_compact_and_shared_hash_reads_reconnect_without_changing_capabilities(self):
+        for compact in (True, False):
+            with self.subTest(compact=compact):
+                client = TemporalStoreClient()
+                client._compact_shared_field_read_supported = None if compact else False
+                envelope = ({"status": {"ok": True}, "rows": [[b"v"]], "errors": []} if compact else
+                            {"status": {"ok": True}, "responses": [ok({"kind": "values", "values": [b"v"]})]})
+                body = msgpack.packb(envelope, use_bin_type=True)
+                first, second = self.connection(body), self.connection(body)
+                first.request.side_effect = BrokenPipeError("closed")
+                with mock.patch("http.client.HTTPConnection", side_effect=[first, second]) as opened:
+                    self.assertEqual(client.batch_hash_multi_get(["k"], ["f"]), [[b"v"]])
+                    self.assertEqual(opened.call_count, 2)
+                    self.assertEqual(first.request.call_args.args, second.request.call_args.args)
+                    self.assertIs(first.request.call_args.kwargs["body"], second.request.call_args.kwargs["body"])
+                self.assertIs(client._compact_shared_field_read_supported, True if compact else False)
+                if not compact:
+                    self.assertIs(client._shared_field_read_supported, True)
+                client.close()
+
+    def test_command_batches_recover_only_when_every_command_is_known_read_only(self):
+        for binary in ((False, True) if msgpack is not None else (False,)):
+            with self.subTest(binary=binary):
+                client = TemporalStoreClient()
+                client._binary_batch_supported = None if binary else False
+                commands = [{"kind": "feature_agg_query", "key": "k", "start_ms": 0, "end_ms": 10, "aggregator": "sum"}]
+                envelope = {"status": {"ok": True}, "responses": [ok({"kind": "integer", "value": 7})]}
+                body = msgpack.packb(envelope, use_bin_type=True) if binary else json.dumps(envelope).encode()
+                first, second = self.connection(body), self.connection(body)
+                first.request.side_effect = http.client.RemoteDisconnected("closed")
+                with mock.patch("http.client.HTTPConnection", side_effect=[first, second]) as opened:
+                    self.assertEqual(client.batch_execute(commands), [{"kind": "integer", "value": 7}])
+                    self.assertEqual(opened.call_count, 2)
+                    self.assertIs(first.request.call_args.kwargs["body"], second.request.call_args.kwargs["body"])
+                client.close()
+
+    def test_a_real_closed_keepalive_socket_is_replaced_before_the_next_read_returns(self):
+        import http.server
+        import socket
+        import threading
+
+        expected = {"kind": "bytes", "value": encode_bytes(b"value")}
+        body = json.dumps(ok(expected)).encode()
+        closed = threading.Event()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.server.received.append(self.client_address)
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                self.wfile.write(body)
+                self.wfile.flush()
+                if len(self.server.received) == 1:
+                    self.close_connection = True
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                    closed.set()
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.received = []
+        worker = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
+        worker.start()
+        client = TemporalStoreClient(host="127.0.0.1", port=server.server_port, timeout_seconds=2)
+        try:
+            command = {"kind": "hash_get", "key": "k", "field": "f"}
+            self.assertEqual(client.execute(command), expected)
+            self.assertTrue(closed.wait(2))
+            self.assertEqual(client.execute(command), expected)
+            self.assertEqual(len(server.received), 2)
+            self.assertNotEqual(server.received[0], server.received[1])
+            self.assertEqual(len(client._all_connections), 1)
+        finally:
+            client.close()
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
 
 
 class ConnectionLifetimeTest(unittest.TestCase):
@@ -1205,6 +1492,26 @@ class OnlineStoreTest(unittest.TestCase):
                 raise AssertionError("survivors must retain their atomic timestamp guard")
 
         return self._install(client=TimestampClient())
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_materialization_selects_interleaved_rows_unless_explicitly_disabled(self):
+        class NativeClient(RecordingClient):
+            def __init__(self):
+                super().__init__()
+                self._interleaved_conditional_write_supported = None
+                self._conditional_shared_field_write_supported = None
+            def _request_encoded(self, path, body, content_type="application/json"):
+                document = msgpack.unpackb(body, raw=False)
+                self.sent.append((path, document))
+                return msgpack.packb({"status": {"ok": True}, "applied": len(document["rows"]),
+                                     "skipped": 0, "errors": []})
+        for enabled in [True, False]:
+            client = self._install(client=NativeClient())
+            self.config.online_store.interleave_materialization = enabled
+            self.store.online_write_batch(self.config, self.view, self._timestamp_rows(20, range(1)), None)
+            self.assertEqual(len(client.sent), 1)
+            expected = "/batch_hash_timestamp_set_interleaved_msgpack" if enabled else "/batch_hash_timestamp_set_msgpack"
+            self.assertEqual(client.sent[0][0], expected)
 
     def _timestamp_rows(self, seconds, ids=range(8), value=None):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
@@ -2140,8 +2447,75 @@ class OnlineStoreTest(unittest.TestCase):
                 self.store._entity_key_hex(self.config, integer_key)
                 self.assertEqual(encode.call_count, 1)
 
+    def test_single_view_plan_skips_cross_view_identity_serialization(self):
+        entity_keys = [object(), object()]
+        indexes = [[2, 0], [1]]
+        with mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_unique_entities",
+            return_value=(["entities"], indexes, 3),
+        ), mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
+            return_value=entity_keys,
+        ), mock.patch.object(self.store, "_entity_hash_key", side_effect=["row1", "row2"]) as hash_key:
+            plans = list(self.store._grouped_read_plans(
+                self.config, [(self.view, ["trips", "trips", "other"])], {}, {}
+            ))
+        self.assertEqual(hash_key.call_count, 2)
+        self.assertEqual(len(plans), 1)
+        keys, fields, specs, layouts = plans[0]
+        self.assertEqual(keys, ["row1", "row2"])
+        self.assertEqual(fields, ["stats:trips", "stats:other", "_ts:stats"])
+        self.assertEqual(layouts, [(["trips", "trips", "other"], [0, 0, 1, 2])])
+        self.assertIs(specs[0][2], indexes)
+        self.assertEqual(specs[0][3], 3)
+        self.assertIs(specs[0][4], entity_keys)
+
+    def test_projection_cache_preserves_order_and_bounds_admission(self):
+        from feast_temporalstore_command.online_store import _cached_view_projection, _view_projection
+
+        _cached_view_projection.cache_clear()
+        self.addCleanup(_cached_view_projection.cache_clear)
+        first = _view_projection("stats@1", ("f", "f", "g"))
+        self.assertEqual(first, (("stats@1:f", "stats@1:g", "_ts:stats@1"), (0, 0, 1, 2)))
+        self.assertIs(_view_projection("stats@1", ("f", "f", "g")), first)
+        self.assertNotEqual(_view_projection("stats@2", ("f", "f", "g")), first)
+        self.assertNotEqual(_view_projection("stats@1", ("g", "f")), first)
+        before = _cached_view_projection.cache_info().currsize
+        for view, features in (("stats", tuple(str(i) for i in range(129))),
+                               ("stats", ("f" * 4096,)), ("s" * 4096, ("f",))):
+            fields, positions = _view_projection(view, features)
+            self.assertEqual(len(positions), len(features) + 1)
+            self.assertEqual(fields[-1], "_ts:" + view)
+            self.assertEqual(_cached_view_projection.cache_info().currsize, before)
+        for index in range(140):
+            _view_projection("stats@" + str(index), ("f",))
+        self.assertEqual(_cached_view_projection.cache_info().currsize, 128)
+
+    def test_single_view_plans_own_projection_lists_and_refresh_entities(self):
+        requested = ["trips"]
+        with mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_unique_entities",
+            return_value=(["entities"], [[0]], 1),
+        ), mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
+            side_effect=[[self._entity_key(1)], [self._entity_key(2)], [self._entity_key(3)]],
+        ), mock.patch.object(self.store, "_view_name", return_value="stats@1") as view_name:
+            first = list(self.store._grouped_read_plans(self.config, [(self.view, requested)], {}, {}))[0]
+            first[1][0] = "changed"
+            first[3][0][1][0] = 99
+            second = list(self.store._grouped_read_plans(self.config, [(self.view, requested)], {}, {}))[0]
+            self.assertEqual(second[1], ["stats@1:trips", "_ts:stats@1"])
+            self.assertEqual(second[3][0][1], [0, 1])
+            self.assertNotEqual(first[0], second[0])
+            requested[:] = ["other"]
+            view_name.return_value = "stats@2"
+            third = list(self.store._grouped_read_plans(self.config, [(self.view, requested)], {}, {}))[0]
+            self.assertEqual(third[1], ["stats@2:other", "_ts:stats@2"])
+            self.assertEqual(second[2][0][1], ["trips"])
+
     def test_feature_views_with_the_same_entities_share_one_projection(self):
         from feast import FeatureView, Field
+        from feast.protos.feast.serving.ServingService_pb2 import FieldStatus, GetOnlineFeaturesResponse
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
         from feast.types import Int64
         from google.protobuf.timestamp_pb2 import Timestamp
@@ -2171,23 +2545,20 @@ class OnlineStoreTest(unittest.TestCase):
                 ]
 
         client = self._install(client=MultiViewClient())
-        populated = []
+        response = GetOnlineFeaturesResponse()
         with mock.patch(
             "feast_temporalstore_command.online_store.utils._get_unique_entities",
             return_value=(["entities"], [[0], [1]], 2),
         ) as unique_entities, mock.patch(
             "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
             return_value=entity_keys,
-        ), mock.patch(
-            "feast_temporalstore_command.online_store.utils._populate_response_from_feature_data",
-            side_effect=lambda features, rows, *_args: populated.append((features, rows)),
         ):
             self.store._read_features_per_fv(
                 self.config,
                 [(self.view, ["trips"]), (fares, ["amount"])],
                 {},
                 {},
-                object(),
+                response,
                 False,
                 False,
             )
@@ -2200,9 +2571,12 @@ class OnlineStoreTest(unittest.TestCase):
             fields,
             ["stats:trips", "_ts:stats", "fares:amount", "_ts:fares"],
         )
-        self.assertEqual([item[0] for item in populated], [["trips"], ["amount"]])
-        self.assertEqual(populated[0][1][1][1]["trips"].int64_val, 2)
-        self.assertEqual(populated[1][1][1][1]["amount"].int64_val, 20)
+        self.assertEqual(list(response.metadata.feature_names.val), ["trips", "amount"])
+        self.assertEqual([value.int64_val for value in response.results[0].values], [1, 2])
+        self.assertEqual([value.int64_val for value in response.results[1].values], [10, 20])
+        for vector in response.results:
+            self.assertEqual(list(vector.statuses), [FieldStatus.PRESENT] * 2)
+            self.assertEqual(list(vector.event_timestamps), [stamp, stamp])
 
         fares.projection.join_key_map["driver_id"] = "other_driver_id"
         with mock.patch(
@@ -2211,13 +2585,11 @@ class OnlineStoreTest(unittest.TestCase):
         ) as unique_entities, mock.patch(
             "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
             return_value=entity_keys,
-        ), mock.patch(
-            "feast_temporalstore_command.online_store.utils._populate_response_from_feature_data",
         ):
             self.store._read_features_per_fv(
                 self.config,
                 [(self.view, ["trips"]), (fares, ["amount"])],
-                {}, {}, object(), False, False,
+                {}, {}, GetOnlineFeaturesResponse(), False, False,
             )
         self.assertEqual(unique_entities.call_count, 2)
 
@@ -2718,6 +3090,148 @@ class OnlineStoreTest(unittest.TestCase):
             {"kind": "common_delete", "key": set_key}
         ])
 
+    def test_projected_response_matches_feast_columns_and_status_counts(self):
+        from types import SimpleNamespace
+        from google.protobuf.timestamp_pb2 import Timestamp
+        from feast import utils
+        from feast.protos.feast.serving.ServingService_pb2 import GetOnlineFeaturesResponse
+        from feast.protos.feast.types.Value_pb2 import Value
+        from feast_temporalstore_command.projected_response import populate_projected_response
+
+        table = SimpleNamespace(name="stats", current_version_number=7, projection=SimpleNamespace(
+            name="stats", name_alias="shown", name_to_use=lambda: "shown@7"))
+        stamp = Timestamp(seconds=1720000000, nanos=123456789).SerializeToString() + b"\xa0\x06\x01"
+        values = [Value(int64_val=-3), Value(bytes_val=b"\x00payload"), Value(string_val=""),
+                  Value(bool_val=False), Value(double_val=float("nan")), Value(int64_list_val={"val": [1, -2, 0]})]
+        encoded = [value.SerializeToString() + b"\xa0\x06\x01" for value in values]
+        for feature_names, positions in (([f"f{i}" for i in range(6)], [2, 0, 5, 1, 4, 3, 6]),
+                                         (["f", "other", "f"], [1, 0, 1, 6]),
+                                         (["f", "other", "f", "other", "f"], [1, 0, 1, 0, 1, 6]), ([], [6])):
+            fields = feature_names + ["timestamp"]
+            for legacy in (False, True):
+                rows = [encoded + [stamp], [None] * 7, [b""] * 7, encoded + [b""]]
+                if legacy:
+                    rows = [[encode_bytes(value) if value is not None else None for value in row] for row in rows]
+                for indexes in ([[2, 0], [1], [], [4]], [[0, 1], [1], [2], [2, 4]]):
+                    for full_names in (False, True):
+                        for version_metadata in (False, True):
+                            with self.subTest(features=feature_names, legacy=legacy, indexes=indexes,
+                                              full=full_names, version=version_metadata):
+                                expected = GetOnlineFeaturesResponse()
+                                expected.metadata.feature_names.val.append("existing")
+                                expected.results.add().values.add().int64_val = 99
+                                expected.metadata.feature_view_metadata.add(name="other" if full_names else "shown", version=5)
+                                actual = GetOnlineFeaturesResponse()
+                                actual.CopyFrom(expected)
+                                decoded = [self.store._decode_online_response(
+                                    [row[position] for position in positions], fields, feature_names) for row in rows]
+                                with mock.patch("feast.metrics.track_feature_statuses") as tracked:
+                                    utils._populate_response_from_feature_data(feature_names, decoded, indexes,
+                                        expected, full_names, table, 5, version_metadata)
+                                    expected_counts = tracked.call_args_list
+                                with mock.patch("feast.metrics.track_feature_statuses") as tracked:
+                                    populate_projected_response(rows, positions, feature_names, indexes, actual,
+                                        full_names, table, 5, version_metadata)
+                                    self.assertEqual(tracked.call_args_list, expected_counts)
+                                self.assertEqual(actual.SerializeToString(deterministic=True),
+                                                 expected.SerializeToString(deterministic=True))
+
+    def test_projected_response_rolls_back_malformed_values_and_timestamps(self):
+        from types import SimpleNamespace
+        from google.protobuf.message import DecodeError
+        from google.protobuf.timestamp_pb2 import Timestamp
+        from feast.protos.feast.serving.ServingService_pb2 import GetOnlineFeaturesResponse
+        from feast.protos.feast.types.Value_pb2 import Value
+        from feast_temporalstore_command.projected_response import populate_projected_response
+
+        table = SimpleNamespace(name="stats", current_version_number=1, projection=SimpleNamespace(
+            name="stats", name_alias=None, name_to_use=lambda: "stats"))
+        good = Value(int64_val=7).SerializeToString()
+        for existing in (False, True):
+            for rows, error in (([[good, b""], [b"\xff", b""]], DecodeError),
+                                ([[good, b"\xff"]], DecodeError),
+                                ([[good, Timestamp(nanos=1000000001).SerializeToString()]], ValueError)):
+                response = GetOnlineFeaturesResponse()
+                if existing:
+                    response.metadata.feature_names.val.append("existing")
+                    response.results.add().values.add().int64_val = 99
+                before = response.SerializeToString(deterministic=True)
+                with self.subTest(existing=existing, rows=rows):
+                    with mock.patch("feast.metrics.track_feature_statuses") as tracked:
+                        with self.assertRaises(error):
+                            populate_projected_response(rows, [0, 1], ["f"], [[i] for i in range(len(rows))],
+                                response, False, table, len(rows), True)
+                        tracked.assert_not_called()
+                    self.assertEqual(response.SerializeToString(deterministic=True), before)
+
+    def test_projected_response_duplicate_destinations_own_their_messages(self):
+        from types import SimpleNamespace
+        from google.protobuf.timestamp_pb2 import Timestamp
+        from feast.protos.feast.serving.ServingService_pb2 import GetOnlineFeaturesResponse
+        from feast.protos.feast.types.Value_pb2 import Value
+        from feast_temporalstore_command.projected_response import populate_projected_response
+
+        table = SimpleNamespace(name="stats", projection=SimpleNamespace(
+            name="stats", name_alias=None, name_to_use=lambda: "stats"))
+        payload = bytearray(Value(bytes_val=b"original").SerializeToString())
+        response = GetOnlineFeaturesResponse()
+        populate_projected_response([[payload, Timestamp(seconds=10).SerializeToString()]],
+            [0, 1], ["f"], [[0, 1]], response, False, table, 2)
+        response.results[0].values[0].bytes_val = b"changed"
+        response.results[0].event_timestamps[0].seconds = 20
+        payload[:] = b"\x00" * len(payload)
+        self.assertEqual(response.results[0].values[1].bytes_val, b"original")
+        self.assertEqual(response.results[0].event_timestamps[1].seconds, 10)
+
+    def test_projected_templates_do_not_share_mutable_column_messages(self):
+        from types import SimpleNamespace
+        from google.protobuf.timestamp_pb2 import Timestamp
+        from feast.protos.feast.serving.ServingService_pb2 import FieldStatus, GetOnlineFeaturesResponse
+        from feast.protos.feast.types.Value_pb2 import Value
+        from feast_temporalstore_command.projected_response import populate_projected_response
+
+        table = SimpleNamespace(name="stats", projection=SimpleNamespace(
+            name="stats", name_alias=None, name_to_use=lambda: "stats"))
+        payload = bytearray(Value(bytes_val=b"original").SerializeToString())
+        response = GetOnlineFeaturesResponse()
+        populate_projected_response([[payload] * 4 + [Timestamp(seconds=10).SerializeToString()]],
+            [0, 1, 2, 3, 4], ["a", "b", "c", "d"], [[0, 1]], response, False, table, 2)
+        response.results[0].values[0].bytes_val = b"changed"
+        response.results[0].event_timestamps[0].seconds = 20
+        response.results[0].statuses[0] = FieldStatus.NOT_FOUND
+        payload[:] = b"\x00" * len(payload)
+        for column in response.results[1:]:
+            self.assertEqual(column.values[0].bytes_val, b"original")
+            self.assertEqual(column.event_timestamps[0].seconds, 10)
+            self.assertEqual(column.statuses[0], FieldStatus.PRESENT)
+        self.assertEqual(response.results[0].values[1].bytes_val, b"original")
+        self.assertEqual(response.results[0].event_timestamps[1].seconds, 10)
+        self.assertEqual(response.results[0].statuses[1], FieldStatus.PRESENT)
+
+    def test_projected_templates_roll_back_late_column_failures(self):
+        from types import SimpleNamespace
+        from google.protobuf.message import DecodeError
+        from feast.protos.feast.serving.ServingService_pb2 import GetOnlineFeaturesResponse
+        from feast.protos.feast.types.Value_pb2 import Value
+        from feast_temporalstore_command.projected_response import populate_projected_response
+
+        table = SimpleNamespace(name="stats", current_version_number=2, projection=SimpleNamespace(
+            name="stats", name_alias=None, name_to_use=lambda: "stats"))
+        payload = Value(int64_val=7).SerializeToString()
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                response = GetOnlineFeaturesResponse()
+                if existing:
+                    response.metadata.feature_names.val.append("existing")
+                    response.results.add().values.add().int64_val = 99
+                before = response.SerializeToString(deterministic=True)
+                with mock.patch("feast.metrics.track_feature_statuses") as tracked:
+                    with self.assertRaises(DecodeError):
+                        populate_projected_response([[payload, payload, payload, b"\xff", b""]],
+                            [0, 1, 2, 3, 4], ["a", "b", "c", "d"], [[0]], response, False, table, 1, True)
+                    tracked.assert_not_called()
+                self.assertEqual(response.SerializeToString(deterministic=True), before)
+
     def test_the_async_read_answers_and_emits_the_same_one_round_trip(self):
         """Feast's async serving path calls this, and the base class raises.
 
@@ -2885,6 +3399,36 @@ class AdvertisedCapabilityTest(unittest.TestCase):
 # `skipUnless` either way, so a count of collected tests cannot tell a run with
 # Feast from a run without it, and cannot tell either from a run where the whole
 # Feast tier silently stopped executing.
+@unittest.skipUnless(FEAST_AVAILABLE, "Feast is required for response scheduling checks")
+class AsyncResponseWorkTests(unittest.IsolatedAsyncioTestCase):
+    def test_response_work_budget_accounts_for_output_cells_and_payload_size(self):
+        from feast_temporalstore_command import TemporalStoreCommandOnlineStore
+        needs_worker = TemporalStoreCommandOnlineStore._read_response_needs_worker
+        self.assertFalse(needs_worker([[None, b"value"]], 256))
+        self.assertTrue(needs_worker([[b"value"]], 257))
+        self.assertFalse(needs_worker([[b"x" * (256 * 1024)]], 1))
+        self.assertTrue(needs_worker([[b"x" * (256 * 1024 + 1)]], 1))
+
+    async def test_large_duplicate_expansion_uses_a_worker_but_point_rows_do_not(self):
+        import threading
+        from feast_temporalstore_command import TemporalStoreCommandOnlineStore
+        store = TemporalStoreCommandOnlineStore()
+        owner = threading.get_ident()
+        for output_len, value, offload in ((1, b"value", False), (1000, b"value", True),
+                                           (1, b"x" * (256 * 1024 + 1), True)):
+            seen, response = [], []
+            def populate(rows, specs, layouts, target, *args):
+                seen.append(threading.get_ident())
+                target.append(rows)
+            specs = [(None, ["f"], [[0]], output_len, [])]
+            with mock.patch.object(store, "_populate_grouped_response", side_effect=populate):
+                await store._populate_grouped_response_async([[value]], specs, [(["f"], [0])], response, False, False)
+            self.assertEqual(response, [[[value]]])
+            self.assertEqual(seen[0] != owner, offload)
+
+
+from feast_temporalstore_command.tests.test_async_transport import AsyncReadTransportTests
+
 MINIMUM_EXECUTED_WITHOUT_FEAST = 12
 MINIMUM_EXECUTED_WITH_FEAST = 29
 

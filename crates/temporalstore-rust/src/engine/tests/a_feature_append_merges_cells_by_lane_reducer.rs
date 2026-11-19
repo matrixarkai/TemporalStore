@@ -4,8 +4,8 @@
 //! THE MERGE-REDUCE WRITE POLICY OF THE FEATURE APPEND, DRIVEN THROUGH THE REAL `execute` PATH.
 //!
 //! A merge-reduce point carries its own request: the key spec, the label and lane names, the
-//! per-lane reducers and the cells. The engine reads the snapshot stored at that timestamp,
-//! merges the cells in lane by lane, and writes one merged snapshot per timestamp.
+//! per-lane reducers and the cells. The engine reads the sample stored at that timestamp,
+//! merges the cells in lane by lane, and writes one merged sample per timestamp.
 //!
 //! WHAT EACH GUARD CAN ONLY PASS ON THE NEW PATH.
 //!   * `every_reducer_on_every_lane_matches_an_independent_fold` runs 36 headers (each of the six
@@ -21,7 +21,7 @@ use super::*;
 
 use crate::engine::cell_set::{
     self, Cell, CellHeader, CellKey, DimSpec, DimType, DimValue, EntityType, EntityValue, KeySpec, LaneReducer,
-    LaneSpec, Member, HEADER_VERSION, MAX_CELLS_PER_REQUEST, MAX_CELLS_PER_SNAPSHOT,
+    LaneSpec, Member, HEADER_VERSION, MAX_CELLS_PER_REQUEST, MAX_CELLS_PER_SAMPLE,
 };
 
 const SIX: [LaneReducer; 6] = [
@@ -106,6 +106,7 @@ fn merge(engine: &TemporalEngine, key: &str, points: Vec<FeaturePoint>) -> Execu
             key: key.to_string(),
             points,
             policy: FeatureWritePolicy::MergeReduce,
+            retry_token: None,
         },
     })
 }
@@ -113,8 +114,8 @@ fn merge(engine: &TemporalEngine, key: &str, points: Vec<FeaturePoint>) -> Execu
 fn landed(response: &ExecuteResponse) -> (u64, u64, u64) {
     assert!(response.status.ok, "the request was refused: {:?}", response.status);
     match &response.response {
-        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged } => {
-            (*snapshots_written, *cells_created, *cells_merged)
+        CommandResponse::CellMergeReceipt { samples_written, cells_created, cells_merged, .. } => {
+            (*samples_written, *cells_created, *cells_merged)
         }
         other => panic!("a merge-reduce append answers a receipt, got {other:?}"),
     }
@@ -138,18 +139,18 @@ fn raw_series(engine: &TemporalEngine, key: &str) -> Vec<FeaturePoint> {
     }
 }
 
-fn snapshots(engine: &TemporalEngine, key: &str) -> Vec<(u64, CellHeader, Vec<Cell>)> {
+fn samples(engine: &TemporalEngine, key: &str) -> Vec<(u64, CellHeader, Vec<Cell>)> {
     raw_series(engine, key)
         .into_iter()
         .map(|p| {
-            let (h, cells) = cell_set::decode_value(&p.value).expect("a stored value is a cell snapshot");
+            let (h, cells) = cell_set::decode_value(&p.value).expect("a stored value is a cell sample");
             (p.timestamp_ms, h, cells)
         })
         .collect()
 }
 
 fn lanes_of(engine: &TemporalEngine, key: &str, timestamp_ms: u64, member: u64) -> Vec<i64> {
-    snapshots(engine, key)
+    samples(engine, key)
         .into_iter()
         .find(|(at, _, _)| *at == timestamp_ms)
         .and_then(|(_, _, cells)| cells.into_iter().find(|c| c.member == Member::U64(member)))
@@ -267,7 +268,7 @@ fn the_receipt_says_what_landed() {
         (1, 1, 2),
         landed(&merge(&engine, &key, vec![point(&h, 50, &[cell(3, &lanes), cell(4, &lanes), cell(4, &lanes)])]))
     );
-    // Two timestamps, one of them new: two snapshots written.
+    // Two timestamps, one of them new: two samples written.
     assert_eq!(
         (2, 1, 1),
         landed(&merge(
@@ -276,7 +277,7 @@ fn the_receipt_says_what_landed() {
             vec![point(&h, 50, &[cell(1, &lanes)]), point(&h, 60, &[cell(9, &lanes)])]
         ))
     );
-    // Two points at one timestamp are one snapshot.
+    // Two points at one timestamp are one sample.
     assert_eq!(
         (1, 0, 2),
         landed(&merge(
@@ -288,7 +289,7 @@ fn the_receipt_says_what_landed() {
 }
 
 #[test]
-fn a_merged_snapshot_survives_a_cold_reload_and_keeps_merging() {
+fn a_merged_sample_survives_a_cold_reload_and_keeps_merging() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path(), None);
     let h = header(&SIX);
@@ -296,13 +297,13 @@ fn a_merged_snapshot_survives_a_cold_reload_and_keeps_merging() {
     for v in [5i64, -3, 9] {
         landed(&merge(&engine, &key, vec![point(&h, 100, &[cell(10, &[v, v, v, v, v, 0])])]));
     }
-    let before = snapshots(&engine, &key);
+    let before = samples(&engine, &key);
     assert_eq!(vec![11, 9, -3, 5, 9, 3], before[0].2[0].lanes);
     engine.unload_shard(1);
     drop(engine);
 
     let reloaded = engine_on(dir.path(), None);
-    assert_eq!(before, snapshots(&reloaded, &key), "a cold reload served another snapshot");
+    assert_eq!(before, samples(&reloaded, &key), "a cold reload served another sample");
     landed(&merge(&reloaded, &key, vec![point(&h, 100, &[cell(10, &[1, 1, 1, 1, 1, 0])])]));
     // The merge continued from the reloaded value: sum 12, count 4, max still 9.
     assert_eq!(vec![12, 9, -3, 5, 1, 4], lanes_of(&reloaded, &key, 100, 10));
@@ -342,7 +343,7 @@ fn a_request_that_disagrees_with_the_stored_header_is_refused_naming_the_field_a
 
     assert_eq!(before, raw_series(&engine, &key), "a refused request wrote something");
 
-    // A request that only ADDS a trailing lane is accepted, and the stored snapshot reads it as 0
+    // A request that only ADDS a trailing lane is accepted, and the stored sample reads it as 0
     // until the merge sets it.
     let extended = header(&[LaneReducer::Sum, LaneReducer::Max, LaneReducer::Sum]);
     landed(&merge(&engine, &key, vec![point(&extended, 10, &[cell(1, &[1, 1, 5])])]));
@@ -381,7 +382,7 @@ fn a_key_that_does_not_fit_its_spec_a_junk_value_a_plain_value_and_an_empty_requ
         })
         .status
         .ok);
-    refused(&merge(&engine, &key, vec![point(&h, 5, &[cell(1, &[1])])]), "not a cell snapshot");
+    refused(&merge(&engine, &key, vec![point(&h, 5, &[cell(1, &[1])])]), "not a cell sample");
     assert_eq!(b"plain".to_vec(), raw_series(&engine, &key)[0].value);
 
     // `Block` is still refused where it always was.
@@ -391,6 +392,7 @@ fn a_key_that_does_not_fit_its_spec_a_junk_value_a_plain_value_and_an_empty_requ
             key: key.clone(),
             points: vec![],
             policy: FeatureWritePolicy::Block,
+            retry_token: None,
         },
     });
     assert!(!blocked.status.ok);
@@ -402,7 +404,7 @@ fn distinct(from: u64, count: usize) -> Vec<Cell> {
 }
 
 #[test]
-fn cells_per_request_and_per_snapshot_refuse_one_past_and_accept_the_limit() {
+fn cells_per_request_and_per_sample_refuse_one_past_and_accept_the_limit() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let h = header(&[LaneReducer::Sum]);
@@ -418,24 +420,54 @@ fn cells_per_request_and_per_snapshot_refuse_one_past_and_accept_the_limit() {
         landed(&merge(&engine, &key, vec![point(&h, 1, &distinct(0, MAX_CELLS_PER_REQUEST))]))
     );
 
-    // Fill the snapshot to exactly its limit, one request at a time.
+    // Fill the sample to exactly its limit, one request at a time.
     let mut next = MAX_CELLS_PER_REQUEST as u64;
-    while (next as usize) < MAX_CELLS_PER_SNAPSHOT {
+    while (next as usize) < MAX_CELLS_PER_SAMPLE {
         landed(&merge(&engine, &key, vec![point(&h, 1, &distinct(next, MAX_CELLS_PER_REQUEST))]));
         next += MAX_CELLS_PER_REQUEST as u64;
     }
-    assert_eq!(MAX_CELLS_PER_SNAPSHOT, snapshots(&engine, &key)[0].2.len(), "DENOMINATOR: at the limit");
+    assert_eq!(MAX_CELLS_PER_SAMPLE, samples(&engine, &key)[0].2.len(), "DENOMINATOR: at the limit");
     // At the limit a request that only merges is accepted ...
     assert_eq!((1, 0, 2), landed(&merge(&engine, &key, vec![point(&h, 1, &distinct(0, 2))])));
     // ... and one new member is one too many, with nothing changed.
     let before = raw_series(&engine, &key);
     refused(
         &merge(&engine, &key, vec![point(&h, 1, &distinct(next, 1))]),
-        &format!("cells per snapshot {} is over the limit of {}", MAX_CELLS_PER_SNAPSHOT + 1, MAX_CELLS_PER_SNAPSHOT),
+        &format!("cells per sample {} is over the limit of {}", MAX_CELLS_PER_SAMPLE + 1, MAX_CELLS_PER_SAMPLE),
     );
     assert_eq!(before, raw_series(&engine, &key));
-    // Another timestamp is another snapshot, so the same member is fine there.
+    // Another timestamp is another sample, so the same member is fine there.
     landed(&merge(&engine, &key, vec![point(&h, 2, &distinct(next, 1))]));
+}
+
+#[test]
+fn the_cells_of_all_points_of_one_command_are_bounded_together() {
+    // A point holds at most 1024 cells and a command at most 100,000 points; the command as a
+    // whole holds at most MAX_CELLS_PER_MERGE_COMMAND cells, however they are spread.
+    use crate::engine::cell_set::MAX_CELLS_PER_MERGE_COMMAND as LIMIT;
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let h = header(&[LaneReducer::Sum]);
+    let key = key_for(61);
+    assert_eq!(0, LIMIT % MAX_CELLS_PER_REQUEST, "the limit is a whole number of full points");
+    let full_points = LIMIT / MAX_CELLS_PER_REQUEST;
+    let full = || -> Vec<FeaturePoint> {
+        (0..full_points as u64).map(|at| point(&h, 10 + at, &distinct(0, MAX_CELLS_PER_REQUEST))).collect()
+    };
+
+    // One cell past the limit, in a last point of its own: refused, naming the limit, and nothing
+    // of the 256 full points before it is written.
+    let mut over = full();
+    over.push(point(&h, 10_000, &distinct(0, 1)));
+    refused(
+        &merge(&engine, &key, over),
+        &format!("cells per merge command {} is over the limit of {}", LIMIT + 1, LIMIT),
+    );
+    assert!(raw_series(&engine, &key).is_empty(), "a refused command wrote something");
+
+    // Exactly the limit is accepted, every cell of it created.
+    assert_eq!((full_points as u64, LIMIT as u64, 0), landed(&merge(&engine, &key, full())));
+    assert_eq!(full_points, raw_series(&engine, &key).len(), "DENOMINATOR: the accepted command wrote its samples");
 }
 
 #[test]
@@ -457,7 +489,7 @@ fn the_feature_ceiling_holds_for_a_merge_reduce_append() {
 }
 
 #[test]
-fn the_trim_keeps_the_newest_snapshots_and_each_still_carries_its_header() {
+fn the_trim_keeps_the_newest_samples_and_each_still_carries_its_header() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path(), Some(3));
     let h = header(&[LaneReducer::Sum]);
@@ -465,15 +497,15 @@ fn the_trim_keeps_the_newest_snapshots_and_each_still_carries_its_header() {
     for at in 1..=5u64 {
         landed(&merge(&engine, &key, vec![point(&h, at, &[cell(1, &[at as i64])])]));
     }
-    let live = |e: &TemporalEngine| snapshots(e, &key).into_iter().map(|(at, hd, c)| (at, hd == h, c[0].lanes[0])).collect::<Vec<_>>();
+    let live = |e: &TemporalEngine| samples(e, &key).into_iter().map(|(at, hd, c)| (at, hd == h, c[0].lanes[0])).collect::<Vec<_>>();
     assert_eq!(vec![(3, true, 3), (4, true, 4), (5, true, 5)], live(&engine));
-    // Merging into a snapshot already in the series adds nothing to trim.
+    // Merging into a sample already in the series adds nothing to trim.
     landed(&merge(&engine, &key, vec![point(&h, 4, &[cell(1, &[10])])]));
     assert_eq!(vec![(3, true, 3), (4, true, 14), (5, true, 5)], live(&engine));
     let before = live(&engine);
     engine.unload_shard(1);
     drop(engine);
-    assert_eq!(before, live(&engine_on(dir.path(), Some(3))), "a reload brought back an evicted snapshot");
+    assert_eq!(before, live(&engine_on(dir.path(), Some(3))), "a reload brought back an evicted sample");
 }
 
 #[test]
@@ -488,10 +520,10 @@ fn a_key_past_its_deadline_merges_as_a_new_key() {
         .status
         .ok);
     std::thread::sleep(std::time::Duration::from_millis(30));
-    // Member 1 is written again: if the expired snapshot were merged into, its sum would be 12.
+    // Member 1 is written again: if the expired sample were merged into, its sum would be 12.
     assert_eq!((1, 1, 0), landed(&merge(&engine, &key, vec![point(&h, 1, &[cell(1, &[7])])])));
-    let cells = &snapshots(&engine, &key)[0].2;
-    assert_eq!(1, cells.len(), "the expired snapshot's other member came back");
+    let cells = &samples(&engine, &key)[0].2;
+    assert_eq!(1, cells.len(), "the expired sample's other member came back");
     assert_eq!(vec![7], cells[0].lanes);
 }
 
@@ -557,7 +589,7 @@ mod probe {
         (spec, key)
     }
 
-    /// (allocations, bytes) of one merge of `cells` cells into a snapshot of the same members.
+    /// (allocations, bytes) of one merge of `cells` cells into a sample of the same members.
     fn per_write(entity_bytes: usize, cells: usize) -> (f64, f64) {
         const OPS: usize = 20;
         let (spec, key) = text_spec(entity_bytes);
@@ -610,7 +642,7 @@ mod probe {
     }
 
     /// A merge-reduce write spends a fixed number of allocations whatever the cell count: the
-    /// snapshot is decoded, merged and encoded in a few vectors for the whole snapshot, not a few
+    /// sample is decoded, merged and encoded in a few vectors for the whole sample, not a few
     /// allocations per cell. Measured: 130.9 per write at 50, 150 and 1,000 cells (it was 687.8,
     /// 1,699.7 and 10,211.8). The slope is asserted between 50 and 1,000 cells, where a per-cell
     /// allocation of even one would add 950; the absolute bound is the measured 131 plus margin.

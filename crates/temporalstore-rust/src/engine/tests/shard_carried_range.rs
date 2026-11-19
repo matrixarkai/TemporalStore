@@ -165,7 +165,7 @@ fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
 /// THE DOOR IS NOW A NO-OP, AND THAT IS THE POINT.
 ///
 /// A `BlockAddress` does not hold a routing bucket, so "put every block into the state an older index
-/// decodes into" and "leave every page alone" are the same operation. The helper is kept because the
+/// decodes into" and "leave every block alone" are the same operation. The helper is kept because the
 /// round trip it performs is the assertion that the `rs` key on the wire is inert: it must come back
 /// EQUAL, and a block that changed would mean an index written before the field left decodes to a
 /// DIFFERENT address -- which is what a migration would be for.
@@ -298,7 +298,7 @@ fn a_loaded_shard_carries_the_routing_range_it_was_loaded_on() {
 
 /// THE TWO SITES THAT FILE A BLOCK NOW FILE IT UNDER THE SHARD'S OWN RANGE.
 ///
-/// This is mx#1949's `the_two_sites_that_file_a_page_still_file_it_under_the_whole_range`, with
+/// This is mx#1949's `the_two_sites_that_file_a_block_still_file_it_under_the_whole_range`, with
 /// the same fixture and the same two buckets named, asserting the opposite. It covers BOTH sites
 /// -- mx#1949's measured only the upsert -- because a fix that reached one of them and not the
 /// other would pass a test written against either alone.

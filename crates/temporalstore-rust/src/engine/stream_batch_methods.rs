@@ -12,9 +12,8 @@ fn read_filled_hash_cache_enabled() -> bool {
         .map(|value| value != "0").unwrap_or(true))
 }
 
-#[path = "projected_batch_snapshot.rs"]
-mod projected_batch_snapshot;
-use projected_batch_snapshot::ProjectedBatchSnapshot;
+#[path = "interleaved_hash_rows.rs"]
+mod interleaved_hash_rows;
 
 #[cfg(test)]
 #[path = "tests/projected_read_snapshot.rs"]
@@ -49,6 +48,8 @@ mod packed_hash_cache_reclaim_tests;
 #[cfg(test)]
 thread_local! {
     static HASH_BATCH_EXPANSIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static AFTER_PROJECTED_READ_PLAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -159,6 +160,14 @@ struct BatchExecutionResult {
     applied: usize,
     skipped: usize,
     errors: Vec<BatchWriteError>,
+    pending_barrier_sequence: Option<u64>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct BatchExecutionOptions<'a> {
+    max_commands: Option<usize>,
+    defer_barrier: bool,
+    shared_hash_fields: Option<&'a container_blocks::SharedHashFields>,
 }
 
 struct BatchResultCollector {
@@ -233,6 +242,7 @@ impl BatchResultCollector {
             applied: self.applied,
             skipped: self.skipped,
             errors: self.errors,
+            pending_barrier_sequence: None,
         }
     }
 }
@@ -898,6 +908,7 @@ impl TemporalEngine {
             return Ok(());
         }
 
+        let admission = self.serving_admission.lock();
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
             return Err(Status::error(
@@ -941,6 +952,7 @@ impl TemporalEngine {
             #[cfg(test)]
             HASH_BATCH_EXPANSIONS.with(|count| count.set(count.get().saturating_add(1)));
             drop(shards);
+            drop(admission);
             let response = self.batch_execute(BatchExecuteRequest {
                 shard_id,
                 commands: keys
@@ -1000,7 +1012,9 @@ impl TemporalEngine {
         let enforce_foreground_limits = !raft_applying() && !replaying_wal();
         let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
         let mut projection_scratch = container_blocks::Utf8ProjectionScratch::new();
-        let mut snapshot = ProjectedBatchSnapshot::new(keys.len());
+        let mut snapshot = execute_on_shard::PreparedHashBatch::new(keys.len());
+        let mut wal_snapshot = None;
+        let mut slab_snapshot = None;
         let recency_now = now_ms();
         for (index, key) in keys.iter().enumerate() {
             let rejected = if enforce_foreground_limits
@@ -1026,30 +1040,41 @@ impl TemporalEngine {
                 None
             };
             if let Some(status) = rejected {
-                snapshot.push(index, Err(status), &mut visit);
+                snapshot.push(index, 0, Err(status));
                 continue;
             }
 
             let routing_bucket =
                 block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-            let values = execute_on_shard::execute_hash_multi_get_projected(
+            let plan = execute_on_shard::PreparedHashRead::prepare(
                 &self.cache,
-                &self.block_store,
                 shard_id,
-                routing_bucket,
                 shard,
                 key,
                 &fields,
                 &projection_plan,
                 &mut projection_scratch,
+                true,
+                snapshot.cache_budget(),
             );
+            plan.pin_records(&mut wal_snapshot, &mut slab_snapshot, &self.block_store, shard_id, key, &fields, keys.len());
             crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
                 shard.bucket_recency.insert(routing_bucket, recency_now);
             });
-            snapshot.push(index, Ok(values), &mut visit);
+            snapshot.push(index, routing_bucket, Ok(plan));
         }
         drop(shards);
-        snapshot.flush(&mut visit);
+        drop(admission);
+        #[cfg(test)]
+        if let Some(after) = AFTER_PROJECTED_READ_PLAN.with(|slot| slot.borrow_mut().take()) {
+            after();
+        }
+        for (index, bucket, result) in snapshot.into_rows() {
+            visit(index, result.map(|plan| plan.load(&self.cache, &self.block_store, shard_id,
+                bucket, &keys[index], &fields, &projection_plan, &mut projection_scratch)));
+        }
+        drop(wal_snapshot);
+        drop(slab_snapshot);
         Ok(())
     }
 
@@ -1154,10 +1179,11 @@ impl TemporalEngine {
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         self.batch_execute_inner(
             request.shard_id,
-            BatchCommandSource::Commands(request.commands.into_iter()),
+            &mut BatchCommandSource::Commands(request.commands.into_iter()),
             false,
             None,
             None,
+            BatchExecutionOptions::default(),
         )
         .into_full()
     }
@@ -1169,10 +1195,11 @@ impl TemporalEngine {
     pub fn batch_execute_durable(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         self.batch_execute_inner(
             request.shard_id,
-            BatchCommandSource::Commands(request.commands.into_iter()),
+            &mut BatchCommandSource::Commands(request.commands.into_iter()),
             false,
             Some(false),
             None,
+            BatchExecutionOptions::default(),
         )
         .into_full()
     }
@@ -1199,7 +1226,7 @@ impl TemporalEngine {
         let ttl_ms = request.ttl_ms;
         let response = self.batch_execute_inner(
             request.shard_id,
-            BatchCommandSource::SharedHashRows {
+            &mut BatchCommandSource::SharedHashRows {
                 entries: request
                     .fields
                     .into_iter()
@@ -1212,6 +1239,7 @@ impl TemporalEngine {
             true,
             None,
             Some(false),
+            BatchExecutionOptions::default(),
         )
         .into_compact();
         (response, completed_keys)
@@ -1242,7 +1270,7 @@ impl TemporalEngine {
         let mut completed_keys = Vec::with_capacity(request.rows.len());
         let response = self.batch_execute_inner(
             request.shard_id,
-            BatchCommandSource::SharedTimestampRows {
+            &mut BatchCommandSource::SharedTimestampRows {
                 entries: request
                     .fields
                     .into_iter()
@@ -1256,6 +1284,7 @@ impl TemporalEngine {
             true,
             None,
             Some(true),
+            BatchExecutionOptions::default(),
         )
         .into_compact();
         (response, completed_keys)
@@ -1270,22 +1299,23 @@ impl TemporalEngine {
         }
         let mut completed_keys = Vec::with_capacity(request.rows.len());
         let response = self.batch_execute_inner(request.shard_id,
-            BatchCommandSource::BorrowedTimestampRows {
+            &mut BatchCommandSource::BorrowedTimestampRows {
                 entries: request.fields.into_iter().map(|field| (field, Vec::new())).collect(),
                 timestamp_field: Some(request.timestamp_field), ttl_ms: request.ttl_ms,
                 rows: request.rows.into_iter(), current_values: Vec::new(),
                 completed_keys: &mut completed_keys,
-            }, true, None, Some(true)).into_compact();
+            }, true, None, Some(true), BatchExecutionOptions::default()).into_compact();
         (response, completed_keys)
     }
 
     fn batch_execute_inner(
         &self,
         shard_id: ShardId,
-        mut command_source: BatchCommandSource<'_>,
+        command_source: &mut BatchCommandSource<'_>,
         reuse_hash_command_metadata: bool,
         async_storage_override: Option<bool>,
         compact_conditional: Option<bool>,
+        options: BatchExecutionOptions<'_>,
     ) -> BatchExecutionResult {
         let reuse_hash_command_metadata =
             reuse_hash_command_metadata && crate::wal::wal_data_only_enabled();
@@ -1306,12 +1336,13 @@ impl TemporalEngine {
             }
         }
         let _drain_staged = DrainStagedOnExit;
-        let command_count = command_source.command_count();
+        let command_count = options.max_commands.unwrap_or(usize::MAX).min(command_source.command_count());
         let mut results = BatchResultCollector::new(command_count, compact_conditional);
         if command_count == 0 {
             return results.finish(Status::ok());
         }
         let _slab_target_scope = crate::storage_config::SlabTargetScope::new();
+        let admission = self.serving_admission.lock();
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
             // returns a BATCH-LEVEL topology error with ZERO CmdResponse entries when the
@@ -1410,6 +1441,10 @@ impl TemporalEngine {
             && !wal_legacy_recovery()
             && config.maxmemory_bytes.is_none();
         let hash_storage_async = config.async_storage || defer_shared_hash_materialization;
+        if options.defer_barrier && !defer_shared_hash_materialization {
+            return results.finish(Status::error("interleaved_write_unavailable",
+                "interleaved writes require retained data-only hash frames"));
+        }
         // WAL-resident and bulk writes defer served-index persistence, so they do not consume the
         // per-key delta metadata below. Building it anyway clones every touched hash key and
         // field, then drops the complete batch without writing it.
@@ -1431,10 +1466,11 @@ impl TemporalEngine {
         // does not make the others' identities uncarryable.
         let mut batch_touched_container_elements: Vec<TouchedContainerElement> = Vec::new();
         let mut dirty_propagation_keys = BTreeSet::new();
-        let shared_hash_fields = command_source.shared_hash_entries()
+        let owned_shared_hash_fields = options.shared_hash_fields.is_none().then(|| command_source.shared_hash_entries()
             .filter(|_| reuse_hash_command_metadata)
             .and_then(|entries| super::container_blocks::SharedHashFields::new(
-                entries.iter().map(|(field, _)| field.as_str())));
+                entries.iter().map(|(field, _)| field.as_str())))).flatten();
+        let shared_hash_fields = options.shared_hash_fields.or(owned_shared_hash_fields.as_ref());
         // Readers cannot observe these indexes until the synchronous WAL append has registered
         // every frame. Conditional rows also retain the actual timestamp in the resident hint,
         // so another row in this batch never needs an unregistered frame for its comparison.
@@ -1451,7 +1487,8 @@ impl TemporalEngine {
         } else {
             execute_on_shard::PackedFrameCache::Eager
         };
-        while let Some(mut command) = command_source.next_command() {
+        for _ in 0..command_count {
+            let Some(mut command) = command_source.next_command() else { break };
             if !reuse_hash_command_metadata {
                 if let (Command::HashMultiSetIfTimestampOlder { entries, .. }, Some(values)) =
                     (&mut command, command_source.borrowed_hash_values())
@@ -1618,7 +1655,7 @@ impl TemporalEngine {
                             key,
                             entries,
                             true,
-                            shared_hash_fields.as_ref(),
+                            shared_hash_fields,
                             frame_cache,
                         );
                     (outcome, Some(metadata), filed)
@@ -1648,7 +1685,7 @@ impl TemporalEngine {
                             ttl_ms,
                             entries,
                             true,
-                            shared_hash_fields.as_ref(),
+                            shared_hash_fields,
                             command_source.borrowed_hash_values(),
                             frame_cache,
                         );
@@ -1808,10 +1845,12 @@ impl TemporalEngine {
                         let routing_bucket = shared_row_routing_bucket.unwrap_or_else(|| {
                             block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
                         });
-                        crate::engine::storage_bucket_internals::mark_object_dirty_at_bucket_deferred(
+                        // An object that was already marked had its blocks pushed by that mark.
+                        if crate::engine::storage_bucket_internals::mark_object_dirty_at_bucket_deferred(
                             shard, object_key, routing_bucket,
-                        );
-                        dirty_propagation_keys.insert(object_key.to_string());
+                        ) {
+                            dirty_propagation_keys.insert(object_key.to_string());
+                        }
                     }
                 }
                 // The same maintenance the single-command path does. An ingest's writes are
@@ -1823,7 +1862,7 @@ impl TemporalEngine {
                 // still runs; and an empty bucket_map still rebuilds, because maintenance updates
                 // an index rather than constructing one.
                 let maintained_bucket_index = if hash_index_filed.is_some()
-                    || matches!(command_for_post_write_ref, Command::SetAdd { .. })
+                    || matches!(command_for_post_write_ref, Command::SetAdd { .. } | Command::SetAddMany { .. })
                 {
                     // These writers already filed the applied elements and swept tombstones.
                     true
@@ -2011,7 +2050,7 @@ impl TemporalEngine {
                 && !persist_index_delta
                 && !raft_applying()
                 && !replaying_wal()
-                && self.concurrent_commit.load(std::sync::atomic::Ordering::Relaxed);
+                && (options.defer_barrier || self.concurrent_commit.load(std::sync::atomic::Ordering::Relaxed));
             let batch_result = if use_data_only {
                 self.wal_store
                     .append_batch_as_one_record_at(
@@ -2035,11 +2074,12 @@ impl TemporalEngine {
                         if !sync || has_wal_resident_blocks
                             || (reuse_hash_command_metadata && !shard.wal_resident_blocks.is_empty())
                         {
-                            let locations = match shared_hash_fields.as_ref() {
+                            let locations = match shared_hash_fields {
                                 Some(fields) => super::block_in_wal::register_shared_hash_record(
                                     &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,
                                     log_id, record.sequence, &self.wal_store,
                                     fields.names(),
+                                    shard,
                                 ),
                                 None => super::block_in_wal::register_record_with_outcomes(
                                     &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,
@@ -2171,10 +2211,11 @@ impl TemporalEngine {
                 // single-command path states: the gate above asks about a shrink or a deadline,
                 // and a pure add -- the write whose element the fold could not restore -- is
                 // neither.
-                key_states.extend(capture_container_element_states(
-                    shard,
-                    &batch_touched_container_elements,
-                ));
+                key_states.extend(
+                    capture_container_element_states(shard, &batch_touched_container_elements)
+                        .into_iter()
+                        .map(crate::index_log::KeyState::from),
+                );
                 let appended_index_log_sequence = self
                     .index_log_store
                     .append_delta(
@@ -2212,25 +2253,28 @@ impl TemporalEngine {
             }
         }
         drop(shards);
-        if let Some(sequence) = pending_barrier_seq {
-            // Match single-command concurrent commit: reserve and register under the
-            // engine guard, then await the shared durable barrier before acknowledging.
-            #[cfg(test)]
-            BEFORE_SHARED_ROW_COMMIT.with(|slot| {
-                let observer = slot.borrow_mut().take();
-                if let Some(observer) = observer {
-                    observer(self, shard_id, sequence);
-                }
-            });
-            if let Err(err) = self.wal_store.commit_barrier(shard_id, sequence) {
-                return results.finish(Status::error(
-                    "wal_commit_failed",
-                    format!("durable WAL batch commit barrier failed: {err}"),
-                ));
+        drop(admission);
+        if let Some(sequence) = pending_barrier_seq.filter(|_| !options.defer_barrier) {
+            if let Err(status) = self.commit_shared_row_barrier(shard_id, sequence) {
+                return results.finish(status);
             }
         }
         self.publish_context_embedding_commands(&context_embedding_commands);
-        results.finish(Status::ok())
+        let mut result = results.finish(Status::ok());
+        result.pending_barrier_sequence = pending_barrier_seq;
+        result
+    }
+
+    fn commit_shared_row_barrier(&self, shard_id: ShardId, sequence: u64) -> Result<(), Status> {
+        #[cfg(test)]
+        BEFORE_SHARED_ROW_COMMIT.with(|slot| {
+            let observer = slot.borrow_mut().take();
+            if let Some(observer) = observer {
+                observer(self, shard_id, sequence);
+            }
+        });
+        self.wal_store.commit_barrier(shard_id, sequence).map_err(|err| Status::error(
+            "wal_commit_failed", format!("durable WAL batch commit barrier failed: {err}")))
     }
 
     pub fn batch_execute_replicated(

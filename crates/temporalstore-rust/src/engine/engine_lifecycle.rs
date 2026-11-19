@@ -32,7 +32,11 @@ fn remove_timestamped_series(
     object_key: &str,
 ) -> bool {
     match kind {
-        "feature" => shard.features_mut().remove(object_key).is_some(),
+        "feature" => {
+            // The ring of a key that is gone is gone with it (see `delete_record_exact`).
+            shard.forget_retry_ring(object_key);
+            shard.features_mut().remove(object_key).is_some()
+        }
         "context_index" => shard.context_indexes_mut().remove(object_key).is_some(),
         "context_audit" => shard.context_audits_mut().remove(object_key).is_some(),
         "context_child" => shard.context_children_mut().remove(object_key).is_some(),
@@ -538,7 +542,9 @@ impl TemporalEngine {
         let index_log_store = LocalIndexLogStore::new(index_dir.join("indexlogs"));
         Self {
             shards: Arc::default(),
+            serving_admission: Arc::default(),
             checkpoint_publications: Arc::default(),
+            retention_registry: Arc::default(),
             cache,
             block_store,
             wal_store,
@@ -547,14 +553,18 @@ impl TemporalEngine {
             index_scratch: None,
             configs: Arc::default(),
             infos: Arc::default(),
+            fast_read_recency: Arc::default(),
             admissions: Arc::default(),
             context_embedding_indexes: Arc::default(),
             promote_scans: Arc::default(),
             replay_installs: Arc::default(),
             dump_failures: Arc::default(),
+            expiry_sweep_failures: Arc::default(),
             maintenance_mirror: Arc::default(),
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
             compaction_rounds: Arc::default(),
+            compaction_passes: Arc::default(),
+            unpublished_compaction_slabs: Arc::default(),
             recovery_probe_cursors: Arc::default(),
             concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             expiry_index_flush_under_lock: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -585,7 +595,7 @@ impl TemporalEngine {
         }
     }
 
-    /// Warm this engine's page cache in the BACKGROUND rather than during `load_shard`, so a
+    /// Warm this engine's block cache in the BACKGROUND rather than during `load_shard`, so a
     /// restart publishes serving state before the promotion pass finishes.
     ///
     /// A caller that holds the engine says this to the engine. The proxy used to say it to the
@@ -843,6 +853,12 @@ impl TemporalEngine {
     /// How many recorded outcomes recovery has installed (see `replay_installs`).
     pub(crate) fn replay_installs_for_test(&self) -> u64 {
         self.replay_installs
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Expiry sweeps that returned an error (see `expiry_sweep_failures`).
+    pub fn expiry_sweep_failures(&self) -> u64 {
+        self.expiry_sweep_failures
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
@@ -1138,7 +1154,10 @@ impl TemporalEngine {
                     // This path is the reason the stamp needed covering at all: it is reached by
                     // an ORDINARY restart, not by anyone calling an install endpoint, so an old
                     // store with an old dump manifest on disk met no gate whatsoever.
-                    match crate::engine::decode_index_bytes(&manifest.index_bytes) {
+                    match installable_image(&manifest)
+                        .map_err(|err| err.to_string())
+                        .and_then(crate::engine::decode_index_bytes)
+                    {
                         Ok(mut restored) => {
                             // RE-DERIVE THE UNSERIALIZED MODEL MAPS BEFORE REBUILDING OWNERSHIP,
                             // for the reason `install_bucket_dump_manifest` states at its own call
@@ -1323,6 +1342,11 @@ impl TemporalEngine {
         restore_phase_probe::mark("publish_and_seed");
         let restore_result = rehydrated
             .and_then(|_| self.replay_wal_into_shard(request.shard_id, replay_watermark));
+        if restore_result.is_ok() {
+            // The log above the replay point is undumped, whatever process wrote it.
+            self.wal_store
+                .seed_undumped_from_sequence(request.shard_id, replay_watermark);
+        }
         if let Err(status) = restore_result {
             // ReplayWal returns DataLoss on a WAL hole and aborts Load. Unwind the
             // partially-loaded shard and refuse the load rather than serve truncated
@@ -2149,6 +2173,34 @@ impl TemporalEngine {
                     .insert(std::sync::Arc::from(&item.object_key[..]), (tokens, refilled_at));
                 true
             }
+            // A retry token a merge-reduce append filed in its key's ring, and the receipt it
+            // landed: state no block backs, which lives in the index image and so is older than
+            // the append when the append is only in the log. Installing it files the entry the
+            // write filed, so a retry of that request after a crash answers its first receipt.
+            //
+            // The series is installed by the items before this one in the record, so the same rule
+            // the write applies holds here: a key that holds no snapshot remembers nothing. A
+            // token the ring already holds (the image was flushed after this record) is left as
+            // it is, which is what makes the record replayable more than once. A value that is not
+            // one entry in its one spelling is refused, and a refused item fails the load.
+            // The item kind text is stored in the log, so it keeps its original spelling: it is a storage tag, not a name.
+            "cell_retry" => {
+                let Some(Ok((token, receipt))) =
+                    item.value.as_deref().map(super::cell_retry_ring::decode_logged_entry)
+                else {
+                    return false;
+                };
+                let live = shard.features().get(&item.object_key[..]).is_some_and(|series| series.len() > 0);
+                if !live {
+                    shard.forget_retry_ring(&item.object_key);
+                    return true;
+                }
+                let held = shard.retry_ring(&item.object_key).map(|ring| ring.admit(token));
+                if matches!(held, Some(super::cell_retry_ring::Admission::Replay(_))) {
+                    return true;
+                }
+                shard.record_retry_token(&item.object_key, token, receipt).is_ok()
+            }
             "string" => {
                 let Some(address) = item.resolved_address() else {
                     return false;
@@ -2204,7 +2256,7 @@ impl TemporalEngine {
                 );
                 true
             }
-            // set: the PAGE spells the member, and the page's key IS the member.
+            // set: the BLOCK spells the member, and the block's key IS the member.
             //
             // THE SAME MOVE AS THE HASH ARM AND ONE DEGREE MORE DIRECT. For
             // `ElementKeySpelling::Name`, and for `Hex` before it on blocks written earlier, the
@@ -2242,7 +2294,7 @@ impl TemporalEngine {
                 }
                 true
             }
-            // list: the PAGE spells the sequence, as sixteen hex digits of a biased word so the
+            // list: the BLOCK spells the sequence, as sixteen hex digits of a biased word so the
             // text sorts in list order.
             "list" => {
                 let (Some(address), Some(positions)) =
@@ -2280,10 +2332,10 @@ impl TemporalEngine {
             // old does not exist, because this replay arm and the writer that feeds it moved in
             // the same change, and a value-less zset insert outcome is therefore always a replay
             // this arm cannot recover -- refuse rather than install a wrong score.
-            // zset: the PAGE spells the member. THE SCORE STILL COMES FROM THE OUTCOME, and that
+            // zset: the BLOCK spells the member. THE SCORE STILL COMES FROM THE OUTCOME, and that
             // is deliberate rather than an oversight.
             //
-            // The page's key for this spelling is eight bytes of biased score followed by the
+            // The block's key for this spelling is eight bytes of biased score followed by the
             // member, so the score IS in the block -- but `element_name_from_element_key` drops those
             // eight bytes, because the element name stopped spelling a score when zset collapsed to
             // one entry a block. Reading the score back out of the key would mean this arm decoding
@@ -2908,24 +2960,40 @@ impl TemporalEngine {
                 .push((*folded, placement.sequence));
         }
         drop(shards);
-        for (log_id, placements) in unresolved {
-            if !super::block_in_wal::register_from_record(
-                &self.block_store,
-                shard_id,
-                log_id,
-                &placements,
-                &self.wal_store,
-            ) {
-                // Fully materialized imports can carry optional placements from
-                // another log domain. Local placements still restore fallbacks
-                // for unreadable real slabs after a partial compaction.
-                if !require_wal {
-                    return Ok(());
+        // The records are read in batches, in log-id order: a batch lists the log's segments once
+        // and reuses the open file, where a read per value listed them every time (about 100 s for
+        // 100,000 values over a 300 MB log). A batch that fails as a whole is read value by value,
+        // so an unreadable record is reported exactly as it always was.
+        let unresolved: Vec<(u64, Vec<(u64, u64)>)> = unresolved.into_iter().collect();
+        for batch in unresolved.chunks(4096) {
+            let ids: Vec<u64> = batch.iter().map(|(log_id, _)| *log_id).collect();
+            let frames = match self.wal_store.read_frames_at_log_ids(shard_id, &ids) {
+                Ok(frames) => frames,
+                Err(_) => ids
+                    .iter()
+                    .map(|log_id| self.wal_store.read_frame_at_log_id(shard_id, *log_id).ok().flatten())
+                    .collect(),
+            };
+            for ((log_id, placements), frame) in batch.iter().zip(frames) {
+                if !super::block_in_wal::register_from_record(
+                    &self.block_store,
+                    shard_id,
+                    *log_id,
+                    frame,
+                    placements,
+                    &self.wal_store,
+                ) {
+                    // Fully materialized imports can carry optional placements from
+                    // another log domain. Local placements still restore fallbacks
+                    // for unreadable real slabs after a partial compaction.
+                    if !require_wal {
+                        return Ok(());
+                    }
+                    return Err(Status::error(
+                        "wal_resident_block_missing",
+                        format!("shard {shard_id} cannot recover WAL-backed block at log id {log_id}"),
+                    ));
                 }
-                return Err(Status::error(
-                    "wal_resident_block_missing",
-                    format!("shard {shard_id} cannot recover WAL-backed block at log id {log_id}"),
-                ));
             }
         }
         Ok(())
@@ -3147,7 +3215,10 @@ impl TemporalEngine {
                 // an error, not an empty shard: a durably acknowledged write reported as absent,
                 // which is the quietest way a store can lose data. Registering here, where the log
                 // id is still in hand, makes a replayed record as addressable as a written one.
-                if !record.staged_blocks.is_empty() {
+                let deferred_hash_log = (!record.staged_blocks.is_empty() && !record.outcomes.is_empty()
+                    && record.outcomes.iter().all(|item| item.kind == "hash" || item.resolved_address().is_none()))
+                    .then(|| log_id_by_sequence.get(&record.sequence).copied()).flatten();
+                if !record.staged_blocks.is_empty() && deferred_hash_log.is_none() {
                     if let Some(&log_id) = log_id_by_sequence.get(&record.sequence) {
                         let locations = super::block_in_wal::register_record_with_outcomes(
                             &self.block_store,
@@ -3234,6 +3305,25 @@ impl TemporalEngine {
                                     element_name
                                 ),
                             ));
+                        }
+                    }
+                    if let Some(log_id) = deferred_hash_log {
+                        let mut shards = self.shards.write().expect("engine lock poisoned");
+                        let shard = shards.get_mut(&shard_id).ok_or_else(|| Status::error(
+                            "shard_not_loaded", "replaying shard disappeared before frame publication"))?;
+                        for (folded, placement) in wal_resident_updates.drain() {
+                            shard.wal_resident_blocks.insert(folded, placement);
+                        }
+                        let locations = super::block_in_wal::register_shared_hash_record(
+                            &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,
+                            log_id, record.sequence, &self.wal_store, &[], shard,
+                        );
+                        #[cfg(test)]
+                        super::replay_scratch::observe_placements(locations.len(), locations.capacity());
+                        for folded in locations {
+                            shard.wal_resident_blocks.insert(folded, crate::engine::state::WalResidentBlock {
+                                log_id, sequence: record.sequence,
+                            });
                         }
                     }
                     self.replay_installs.fetch_add(
@@ -3437,6 +3527,10 @@ impl TemporalEngine {
             let mut shards = self.shards.write().expect("engine lock poisoned");
             self.checkpoint_publications.forget(request.shard_id);
             shards.remove(&request.shard_id);
+            // The index was flushed above and a reload reads it, so nothing is left to hold.
+            self.unpublished_compaction_slabs
+                .write().expect("unpublished compaction lock poisoned")
+                .remove(&request.shard_id);
         }
         self.infos
             .write()

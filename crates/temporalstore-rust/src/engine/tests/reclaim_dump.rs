@@ -1123,7 +1123,7 @@ fn a_hash_dump_keeps_wal_blocks_needed_by_restore() {
 }
 
 #[test]
-fn a_live_only_string_dump_keeps_wal_pages_without_slab_rewrites() {
+fn a_live_only_string_dump_keeps_wal_blocks_without_slab_rewrites() {
     let dir = tempfile::tempdir().unwrap();
     let keys = reclaim_dump_keys(64);
     for batch in [1, 8] {
