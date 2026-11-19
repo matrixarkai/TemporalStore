@@ -361,6 +361,18 @@ fn write_context_node(
         // node in a store files its block under this one four-character name.
         let field_handle =
             super::state::intern_shared(&mut shard.bucket_index.kind_pool, CONTEXT_NODE_FIELD);
+        // THE BLOCK THIS REWRITE LEAVES, ASKED WHILE THE MAP STILL HOLDS THE OLD ANSWER. A node
+        // rewritten in place lands at a NEW address, and the append files that block without
+        // knowing it replaces one, so every earlier block of the node stayed a live entry in the
+        // bucket index and in the object's block refs: ten rewrites left ten entries, and every
+        // write emitted a row for each of them (a node rewritten 640 times allocated 1,043 blocks
+        // an upsert against 130 at 40). The hash write asks the same question of the same map
+        // (`block_an_element_vacates`) and hands the answer to its filer; this emitter files nothing
+        // itself, so the answer retires the old entry after the new one is in.
+        let vacated = shard
+            .bucket_index
+            .hashes
+            .block_an_element_vacates(object_key, &field_handle, &address);
         super::recorded_map::install_element_staged_only::<super::recorded_map::HashKind>(
             shard,
             shard_id,
@@ -372,6 +384,18 @@ fn write_context_node(
             address.clone(),
             address,
         );
+        if let Some(vacated) = vacated {
+            // A refusal (the block is not filed where its identity says) leaves the entry for the
+            // whole-object sync that follows every write to restate, exactly as before.
+            let _ = super::storage_bucket_internals::retire_object_blocks(
+                shard,
+                shard_id,
+                "hash",
+                object_key,
+                std::slice::from_ref(&vacated),
+                true,
+            );
+        }
         wrote = true;
     }
     invalidate_context_record(cache, shard_id, object_key);
