@@ -10121,7 +10121,7 @@ flag exists to say",
             .unwrap();
         drop(store);
 
-        let record = IndexDeltaRecord {
+        let record = IndexDeltaRecord::<serde_json::Value> {
             shard_id: 3,
             sequence: 2,
             items: vec![block_item(2, "second", false)],
