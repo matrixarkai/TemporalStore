@@ -2687,6 +2687,7 @@ pub(super) fn release_bucket_blocks(
     if candidates.is_empty() {
         return outcome;
     }
+    shard.bucket_index.ensure_bucket_owners();
     let wanted: BTreeSet<u32> = candidates.iter().copied().collect();
     // One model-map walk for the whole batch, not one per bucket. This is the set a reload would
     // rebuild from, so comparing the resident blocks against it is the proof the release is
@@ -2760,9 +2761,13 @@ pub(super) fn release_bucket_blocks(
         // Keep only owned candidate identities across mutations. A successful release removes
         // lookup rows local to that bucket, so it cannot change another candidate's identities.
         let names = names_by_bucket.get_or_insert_with(|| {
-            let keys = crate::engine::state::BlockKeysByPosition::from_parts(
+            // ONE INVERSION FOR THE BATCH, from the owners of every wanted bucket.
+            let wanted_buckets: Vec<u32> = wanted.iter().copied().collect();
+            let keys = crate::engine::state::BlockKeysByPosition::from_owned_buckets(
                 &shard.bucket_index.objects,
                 &shard.bucket_index.object_block_lookup,
+                shard.bucket_index.bucket_owners.get(),
+                &wanted_buckets,
             );
             wanted.iter().filter_map(|routing_bucket| {
                 shard.bucket_index.bucket_map.get(routing_bucket)

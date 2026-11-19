@@ -179,6 +179,8 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
         object_element_name_block_refs,
         // SKIPPED, `#[serde(skip)]`. Which buckets have had their resident blocks released.
         released_buckets,
+        // SKIPPED, not serialized. Derived from the objects' refs and rebuilt when a shard is installed.
+        bucket_owners: _,
     } = &index;
 
     // The populated-ness of all eleven is asserted, so a future edit that empties the fixture
