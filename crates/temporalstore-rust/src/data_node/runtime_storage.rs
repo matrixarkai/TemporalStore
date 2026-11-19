@@ -738,13 +738,9 @@ impl DataNodeRuntime {
             let mut moved_blocks = 0usize;
             let resident = self.inner.engine.wal_resident_block_count(shard_id);
             if resident > 0 {
-                let moved = self.inner.engine.materialize_oldest_resident_blocks(
+                let moved = self.inner.engine.materialize_resident_blocks_for_round(
                     shard_id,
-                    resident.saturating_sub(if options.max_dump_buckets_per_round == 0 {
-                        usize::MAX
-                    } else {
-                        options.max_dump_buckets_per_round
-                    }),
+                    options.max_dump_buckets_per_round,
                 );
                 moved_blocks = moved;
                 tracing::debug!(

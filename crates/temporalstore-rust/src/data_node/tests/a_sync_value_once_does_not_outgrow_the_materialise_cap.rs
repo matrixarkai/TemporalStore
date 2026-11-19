@@ -13,10 +13,9 @@ const ROUNDS: usize = 10;
 const PER_ROUND: usize = 400;
 const CAP: usize = 20;
 
-// Ignored until the loop drains log-resident values at the write rate (or the cap is lifted). It is
-// the condition for turning `TS_SYNC_VALUE_ONCE` on by default; run it with `-- --ignored`.
+// The condition for turning `TS_SYNC_VALUE_ONCE` on by default: the log-resident set must stay
+// bounded when writes outrun the per-round cap. A round keeps at most `CAP` resident, so this holds.
 #[test]
-#[ignore = "the condition for default-on: the log-resident set must stay bounded under sustained writes"]
 fn log_resident_values_stay_bounded_when_writes_outrun_the_per_round_cap() {
     let _on = crate::engine::value_once_in_test(true);
     let dir = tempfile::tempdir().unwrap();
@@ -71,6 +70,11 @@ fn log_resident_values_stay_bounded_when_writes_outrun_the_per_round_cap() {
             runtime.inner.engine.write_ahead_log_store().block_retention_floor(1),
         );
         resident_after.push(resident);
+        // The invariant holds at the end of EVERY round, not only the last.
+        assert!(
+            resident <= CAP,
+            "round {round}: {resident} log-resident values after the round, more than the cap {CAP};              history {resident_after:?}"
+        );
     }
     // One round's writes plus one round's cap is the most a bounded design may hold at a round's end.
     let bound = PER_ROUND + CAP;
