@@ -631,3 +631,5 @@ mod a_restating_write_names_one_bucket_not_the_shard;
 mod a_resident_map_read_takes_the_shared_lock;
 #[path = "tests/a_rewritten_context_node_replaces_its_block.rs"]
 mod a_rewritten_context_node_replaces_its_block;
+#[path = "tests/a_list_position_and_removal_answer_what_a_walk_answered.rs"]
+mod a_list_position_and_removal_answer_what_a_walk_answered;
