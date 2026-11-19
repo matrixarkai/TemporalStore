@@ -1229,6 +1229,107 @@ fn what_a_writer_waits_during_each_stage_of_a_dumping_round() {
     }
 }
 
+/// Measurement harness, not a gate: how many rounds a shard that has just been written to takes to
+/// go QUIET on the shipped options, at `LOOP_KEYS` keys. Quiet means the WAL reclaim stage did not
+/// walk the shard (it answered from the quiet-reclaim memo) and the compaction stage did not run.
+/// One line per round with the memo's key before and after (a key that moves every round is a memo
+/// that can never hit), the stage walks, and what the compaction plan says it could relocate. The
+/// last line is the number of rounds it took, or NEVER within `LOOP_QUIET_MAX` (default 20).
+///
+/// `moved_blocks`, `dumped` and the WAL records removed are locals of the loop, not report fields; a
+/// memo that ends a round as `reclaimable=true` is the loop's own statement that all three were zero.
+#[test]
+#[ignore]
+fn how_many_rounds_a_written_shard_takes_to_go_quiet() {
+    let keys = std::env::var("LOOP_KEYS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1500usize);
+    let max_rounds = std::env::var("LOOP_QUIET_MAX")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(20usize);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    let engine = runtime.engine();
+    for index in 0..keys.min(2000) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("loop-{index:06}"),
+                value: vec![b'w'; 96],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let options = StorageManagerOptions::default();
+    let mut quiet_after = None;
+    for round in 1..=max_rounds {
+        crate::engine::reset_live_block_scan_sites();
+        let memo_of = |runtime: &DataNodeRuntime| {
+            runtime
+                .inner
+                .quiet_wal_reclaim
+                .lock()
+                .unwrap()
+                .get(&1)
+                .map(|(key, reclaimable)| format!("{key:?} reclaimable={reclaimable}"))
+        };
+        let before = memo_of(&runtime);
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let after = memo_of(&runtime);
+        let span = |name: &str| {
+            report
+                .stage_spans
+                .iter()
+                .find(|span| span.stage == name)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let wal = span("reclaim_wal");
+        let compact = span("compact_pages");
+        let relocatable =
+            crate::engine::compaction_relocatable_block_refs(&report.lifecycle_plan.reclaim_candidates);
+        eprintln!(
+            "Q round {round}: whole {} us; reclaim_wal {} us walk={} ran={}; compact_pages {} us walk={} ran={}; \
+             compaction_relocatable_block_refs={relocatable} reclaim_candidates={} dump_manifest={}; \
+             dirty_buckets={} undumped_wal_records={}",
+            report.duration_us,
+            wal.duration_us,
+            wal.walk.live_block_entries,
+            wal.executed,
+            compact.duration_us,
+            compact.walk.live_block_entries,
+            compact.executed,
+            report.lifecycle_plan.reclaim_candidates.len(),
+            report
+                .lifecycle_report
+                .as_ref()
+                .map(|lifecycle| lifecycle.dump_manifest.is_some())
+                .unwrap_or(false),
+            report.pressure.dirty_bucket_count,
+            report.pressure.undumped_wal_records
+        );
+        eprintln!("      Q{round} memo before: {}", before.as_deref().unwrap_or("none"));
+        eprintln!("      Q{round} memo after : {}", after.as_deref().unwrap_or("none"));
+        let quiet = wal.walk.live_block_entries == 0 && !compact.executed;
+        if quiet && quiet_after.is_none() {
+            quiet_after = Some(round);
+            // One more round to show it stays quiet.
+            if round < max_rounds {
+                continue;
+            }
+        }
+        if quiet_after.is_some() && quiet {
+            break;
+        }
+    }
+    match quiet_after {
+        Some(rounds) => eprintln!("Q RESULT keys={keys}: quiet after {rounds} round(s)"),
+        None => eprintln!("Q RESULT keys={keys}: NEVER quiet within {max_rounds} rounds"),
+    }
+}
+
 /// A DIRTY ROUND READS THE LIVE BLOCKS OF THE SHARD NO MORE THAN `DIRTY_ROUND_WALK_BOUND` TIMES.
 ///
 /// A shard that takes writes between rounds is dirty at every round, and the round then builds its
