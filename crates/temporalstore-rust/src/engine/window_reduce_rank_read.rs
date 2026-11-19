@@ -346,6 +346,20 @@ fn settle_header(a: CellHeader, b: &CellHeader) -> Result<CellHeader, String> {
     }
 }
 
+/// What a ranked read over several keys takes from the shard: one snapshot per key, in order. A
+/// key the shard does not hold has an empty one.
+pub(super) fn snapshot_many(shard: &ShardState, keys: &[String], spec: &WindowReduceRankSpec, now_ms: u64) -> Vec<RankSnapshot> {
+    keys.iter()
+        .map(|key| {
+            shard
+                .features()
+                .get(key.as_str())
+                .map(|series| snapshot(series, spec, now_ms))
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 /// A ranked read over the samples of every key in `keys`, which the caller has already held to
 /// the key bound and refused duplicates in. Keys the shard does not hold (or whose window is
 /// empty) contribute nothing.
@@ -365,18 +379,49 @@ pub(super) fn serve_many(
     if let Err(why) = validate_keys(keys) {
         return refused(why);
     }
+    serve_many_snapshots(
+        cache,
+        block_store,
+        shard_id,
+        keys,
+        spec,
+        start_routing_bucket,
+        end_routing_bucket,
+        now_ms,
+        snapshot_many(shard, keys, spec, now_ms),
+    )
+}
+
+/// [`serve_many`] over entries already taken from the shard, one snapshot per key in order: every
+/// block read happens here, so a caller can run it with no lock on the shard.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn serve_many_snapshots(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    keys: &[String],
+    spec: &WindowReduceRankSpec,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    now_ms: u64,
+    snapshots: Vec<RankSnapshot>,
+) -> RankedCells {
+    if let Err(why) = validate_keys(keys) {
+        return refused(why);
+    }
     let mut block_keys = BlockKeys::new();
 
-    // Which keys the shard holds, each one's newest header, and the one header they settle on.
-    let mut held: Vec<Option<(&ObjectSlot, Option<u32>)>> = Vec::with_capacity(keys.len());
+    // Which keys hold a sample, each one's newest header, and the one header they settle on.
+    let mut held: Vec<Option<(&RankSnapshot, Option<u32>)>> = Vec::with_capacity(keys.len());
     let mut header: Option<CellHeader> = None;
-    for (position, key) in keys.iter().enumerate() {
-        let Some(series) = shard.features().get(key.as_str()) else {
+    for (position, (key, snapshot)) in keys.iter().zip(&snapshots).enumerate() {
+        let newest = snapshot.newest.as_ref().map(|(at, entry)| (*at, entry));
+        if newest.is_none() {
             held.push(None);
             continue;
-        };
+        }
         let routing_bucket = Some(block_routing_bucket(key, start_routing_bucket, end_routing_bucket));
-        match newest_header(cache, block_store, shard_id, series, key, routing_bucket, &mut block_keys) {
+        match newest_header_of(cache, block_store, shard_id, newest, key, routing_bucket, &mut block_keys) {
             Ok(Some(own)) => {
                 header = match header.take() {
                     None => Some(own),
@@ -385,7 +430,7 @@ pub(super) fn serve_many(
                         Err(why) => return refused(format!("key {position}: {why}")),
                     },
                 };
-                held.push(Some((series, routing_bucket)));
+                held.push(Some((snapshot, routing_bucket)));
             }
             Ok(None) => held.push(None),
             Err(why) => return refused(format!("key {position}: {why}")),
@@ -406,13 +451,13 @@ pub(super) fn serve_many(
     // A rows window names the samples it reaches only by reading them, so its samples are counted
     // after each key is read rather than from the list the walk hands back.
     let rows_window = matches!(spec.window, WindowReduceWindow::NewestRows { .. });
-    for (position, (key, series)) in keys.iter().zip(&held).enumerate() {
-        let Some((series, routing_bucket)) = series else {
+    for (position, (key, taken)) in keys.iter().zip(&held).enumerate() {
+        let Some((snapshot, routing_bucket)) = taken else {
             decoded.push(Vec::new());
             skipped.push(Vec::new());
             continue;
         };
-        let named = named_samples(series, spec, now_ms);
+        let named: Vec<(u64, &ElementEntry)> = snapshot.named.iter().map(|(at, entry)| (*at, entry)).collect();
         if !rows_window {
             sample_count += named.len();
             if let Err(why) = validate_chosen(sample_count, cell_count) {
