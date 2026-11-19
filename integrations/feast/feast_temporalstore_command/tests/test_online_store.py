@@ -1454,8 +1454,19 @@ class OnlineStoreTest(unittest.TestCase):
             self.config.online_store.max_batch_commands,
             self.config.online_store.max_batch_request_bytes,
             self.config.online_store.max_write_batch_commands,
+            self.config.online_store.max_async_read_batches,
         )
         return client
+
+    def test_async_batch_concurrency_rebuilds_the_cached_client(self):
+        original = self._install()
+        self.config.online_store.max_async_read_batches = 2
+        with mock.patch.object(original, "close") as closed:
+            client = self.store._get_client(self.config)
+        self.assertIsNot(client, original)
+        self.assertEqual(client.max_async_read_batches, 2)
+        closed.assert_called_once_with()
+        client.close()
 
     def _timestamp_client(self):
         from google.protobuf.timestamp_pb2 import Timestamp

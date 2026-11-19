@@ -51,6 +51,7 @@ online_store:
   port: 17102
   shard_id: 1
   max_batch_commands: 512
+  max_async_read_batches: 1
   max_write_batch_commands: 4096
   max_batch_request_bytes: 4194304
   skip_dedup: false          # see "Writes" below
@@ -170,6 +171,19 @@ and MessagePack decoding above 1 MiB, run in workers so large replies do not
 monopolize the event loop. Duplicate output positions count toward that budget.
 The configured socket timeout remains a connection/read-inactivity timeout,
 not a new total-duration limit on a progressing large response.
+
+Large async reads can overlap up to `max_async_read_batches` HTTP batches (range
+1 to 32). The default 1 preserves serial dispatch; increase it only when workload
+measurements show a benefit, since parallel requests can contend at a busy node.
+Single-batch reads use a direct path without child tasks or an extra result-list
+copy. Results retain input order, including repeated keys.
+An unknown route is probed with one batch before overlap;
+any successfully decoded batch prevents a later 404 from replaying the request
+through an older route. Pending tasks are cancelled and drained on failure or
+cancellation. In-flight encoded bodies per call stay within
+`max_batch_request_bytes`, with at most one additional encoded batch awaiting
+admission. Replies can still occupy memory for each pending batch; these limits
+are not a response-size or process-memory cap. Writes remain unchanged.
 
 Each event loop owns its connection pool, with at most 32 acquired connections.
 Admission across a client is bounded to 256 outstanding native async reads and
