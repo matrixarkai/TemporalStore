@@ -617,3 +617,5 @@ mod a_latency_and_throughput_harness;
 mod a_hash_and_string_point_read_takes_the_shared_lock;
 #[path = "tests/a_feature_range_read_takes_the_shared_lock.rs"]
 mod a_feature_range_read_takes_the_shared_lock;
+#[path = "tests/a_list_position_and_removal_answer_what_a_walk_answered.rs"]
+mod a_list_position_and_removal_answer_what_a_walk_answered;
