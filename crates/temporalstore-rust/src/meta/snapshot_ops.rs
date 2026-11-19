@@ -182,8 +182,7 @@ impl SingleNodeMeta {
                 .truncate(true)
                 .write(true)
                 .open(&tmp_path)?;
-            serde_json::to_writer_pretty(&mut file, &snapshot).map_err(io::Error::other)?;
-            file.write_all(b"\n")?;
+            file.write_all(&crate::metaserver_files::encode_meta_snapshot(&snapshot))?;
             file.sync_data()?;
         }
         fs::rename(&tmp_path, path)?;
@@ -191,8 +190,7 @@ impl SingleNodeMeta {
     }
 
     pub fn load_snapshot_from_file(path: impl AsRef<Path>) -> io::Result<MetaSnapshot> {
-        let file = OpenOptions::new().read(true).open(path)?;
-        serde_json::from_reader(file).map_err(io::Error::other)
+        crate::metaserver_files::decode_meta_snapshot(&fs::read(path)?)
     }
 
     pub fn install_snapshot_from_file(&self, path: impl AsRef<Path>) -> io::Result<AckResponse> {
