@@ -2159,13 +2159,8 @@ impl LocalWriteAheadLogStore {
             // address the sealed pieces already own. The single-record path has always done this;
             // the batch path did not, and nothing about a batch makes it safe to skip.
             ensure_active_wal_segment(&mut inner, shard_id)?;
-            let (disk_last_sequence, _) = last_wal_sequence_at(&inner.root, shard_id)?;
-            let cached_last_sequence = inner
-                .last_sequence_by_shard
-                .get(&shard_id)
-                .copied()
-                .unwrap_or_default();
-            let mut seq = cached_last_sequence.max(disk_last_sequence);
+            let (mut seq, _) =
+                resolve_last_sequence_for_append(&mut inner, shard_id, self.flat_append())?;
             // ONE open for the whole batch. Each record used to open, write, stat and close the
             // piece for itself -- 4N syscalls against the single barrier below, which is the one
             // thing a batch exists to amortise. Safe to hold across the loop because the append
@@ -2187,6 +2182,9 @@ impl LocalWriteAheadLogStore {
                     .append(true)
                     .open(batch_path.as_path())?
             };
+            // Record-end bookkeeping advances inside the loop. Do not pair a partial batch's
+            // new end with its old sequence if a write fails or unwinds before publication.
+            inner.last_sequence_by_shard.remove(&shard_id);
             for (index, command) in commands.into_iter().enumerate() {
                 seq = seq.saturating_add(1);
                 let mut metadata = WriteAheadLogRecordMetadata::single_command(&command);
@@ -2226,6 +2224,10 @@ impl LocalWriteAheadLogStore {
                 }
                 batch_end = Some(report.persistent_bytes);
                 records.push(rec);
+                #[cfg(test)]
+                if index == 0 {
+                    crate::fault::point("wal/atomic_batch/after_first_record");
+                }
             }
             // Closed before the roll below, which may seal and rename this very piece.
             drop(batch_file);
@@ -4787,6 +4789,10 @@ fn wal_bulk_relaxed_durability() -> bool {
     crate::engine::bulk_ingest_mode()
 }
 
+
+#[cfg(test)]
+#[path = "wal/atomic_batch_cache_tests.rs"]
+mod atomic_batch_cache_tests;
 
 /// Resolve the last WAL sequence for `shard_id` immediately before an append, under the `inner`
 /// lock. Fast path (gate on): if a cached sequence AND a verified file length are both present and
