@@ -1921,13 +1921,6 @@ impl TemporalEngine {
                 | Command::HashFieldExists { .. }
                 | Command::FeatureQuery { .. }
                 | Command::FeatureQueryFiltered { .. }
-                | Command::ZSetScore { .. }
-                | Command::ZSetCard { .. }
-                | Command::ZSetScan { .. }
-                | Command::ListLen { .. }
-                | Command::SetScan { .. }
-                | Command::SetCard { .. }
-                | Command::SetIsMember { .. }
         );
         if !read_command {
             return None;
