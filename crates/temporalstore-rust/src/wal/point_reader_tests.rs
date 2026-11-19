@@ -253,3 +253,106 @@ fn represented_file_lengths_limit_delayed_external_reclaim() {
         assert!(cache.open_file_bytes <= OPEN_FILE_BYTES);
     }
 }
+
+fn write_piece_header(path: &Path, base: u64) {
+    let mut bytes = crate::log_framing::encode_base_header(base);
+    bytes.extend_from_slice(&[crate::log_framing::FRAME_MAGIC_V3, 1, 2, 3]);
+    fs::write(path, bytes).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn compact_directory_reuses_large_listings_without_retaining_descriptors() {
+    const PIECES: usize = 20_000;
+    let dir = tempfile::tempdir().unwrap();
+    for index in (0..PIECES).rev() {
+        let base = index as u64 * 8;
+        write_piece_header(&sealed_wal_path(dir.path(), 7, base), base);
+    }
+    let previous = wal_segment_pieces(dir.path(), 7);
+    let old_minimum = previous.capacity() * std::mem::size_of::<WalPiece>()
+        + previous.iter().map(|piece| piece.path.capacity()).sum::<usize>();
+    assert!(old_minimum > DIRECTORY_BYTES, "the full-path control must exceed admission");
+    drop(previous);
+    let mut cache = Cache::default();
+    WAL_SEGMENT_LISTINGS.with(|count| count.set(0));
+    for index in [0, PIECES / 2, PIECES - 1] {
+        let base = index as u64 * 8;
+        let reader = cache.take(dir.path(), 7, base).unwrap().unwrap();
+        assert_eq!(reader.base, base);
+        assert_eq!(reader.path, sealed_wal_path(dir.path(), 7, base));
+        assert!(reader.sealed);
+        // Each lookup misses the descriptor cache, so only the directory can be reused.
+        drop(reader);
+    }
+    assert_eq!(WAL_SEGMENT_LISTINGS.with(|count| count.get()), 1);
+    assert_eq!(cache.directories.len(), 1);
+    assert!(cache.readers.is_empty());
+    assert!(cache.directories[0].aliases.is_empty());
+    assert_eq!(cache.directories[0].pieces.len(), PIECES);
+    assert!(cache.directory_bytes < DIRECTORY_BYTES);
+    println!("pieces={PIECES} full_path_minimum_bytes={old_minimum} compact_bytes={} listings=1", cache.directory_bytes);
+}
+
+#[test]
+fn compact_directory_preserves_current_legacy_and_noncanonical_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let names = [
+        (0, format!("shard-7.wal.{:020}.{WAL_PIECE_SUFFIX}", 0)),
+        (8, format!("shard-7.wal.{:020}.{LEGACY_WAL_PIECE_SUFFIX}", 8)),
+        (16, format!("shard-7.wal.16.{WAL_PIECE_SUFFIX}")),
+        (24, format!("shard-7.wal.+24.{LEGACY_WAL_PIECE_SUFFIX}")),
+        (32, format!("shard-7.wal.{:040}.{WAL_PIECE_SUFFIX}", 32)),
+        (u64::MAX, format!("shard-7.wal.{:020}.{WAL_PIECE_SUFFIX}", u64::MAX)),
+    ];
+    for (base, name) in &names {
+        write_piece_header(&dir.path().join(name), *base);
+    }
+    fs::write(dir.path().join("foreign"), b"ignore").unwrap();
+    write_piece_header(&sealed_wal_path(dir.path(), 8, 48), 48);
+    let mut cache = Cache::default();
+    for (base, name) in names {
+        let reader = cache.take(dir.path(), 7, base).unwrap().unwrap();
+        assert_eq!(reader.base, base);
+        assert_eq!(reader.path, dir.path().join(name));
+        assert!(reader.sealed);
+    }
+    let listed = cache.directory(dir.path(), 7, false).unwrap();
+    assert_eq!(listed.pieces.len(), 6);
+    assert_eq!(listed.aliases.len(), 3);
+}
+
+#[cfg(unix)]
+#[test]
+fn oversized_alias_metadata_stays_outside_the_directory_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    for base in (0..6_000).map(|index| index * 8) {
+        let name = format!("shard-7.wal.{base:0180}.{WAL_PIECE_SUFFIX}");
+        write_piece_header(&dir.path().join(name), base);
+    }
+    let mut cache = Cache::default();
+    let listed = cache.directory(dir.path(), 7, false).unwrap();
+    assert_eq!(listed.pieces.len(), 6_000);
+    assert_eq!(listed.aliases.len(), 6_000);
+    assert!(listed.weight > DIRECTORY_BYTES);
+    assert!(cache.directories.is_empty());
+    assert_eq!(cache.directory_bytes, 0);
+    let base = 5_999 * 8;
+    let reader = cache.take(dir.path(), 7, base).unwrap().unwrap();
+    assert_eq!(reader.path, dir.path().join(format!("shard-7.wal.{base:0180}.{WAL_PIECE_SUFFIX}")));
+}
+
+#[cfg(unix)]
+#[test]
+fn compact_directory_preserves_non_utf8_root_paths() {
+    use std::os::unix::ffi::OsStringExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join(OsString::from_vec(b"root-\xff".to_vec()));
+    fs::create_dir(&root).unwrap();
+    let path = sealed_wal_path(&root, 7, 42);
+    write_piece_header(&path, 42);
+    let mut cache = Cache::default();
+    let reader = cache.take(&root, 7, 42).unwrap().unwrap();
+    assert_eq!(reader.path, path);
+    assert_eq!(reader.base, 42);
+}

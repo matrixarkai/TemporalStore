@@ -5,6 +5,7 @@
 
 use super::*;
 use std::collections::VecDeque;
+use std::ffi::{OsStr, OsString};
 
 const MAX_READERS: usize = 128;
 const READER_BYTES: usize = 256 * 1024;
@@ -58,11 +59,129 @@ pub(super) struct Reader {
     pub(super) physical: u64,
 }
 
+const CURRENT_SPELLING: usize = 0;
+const LEGACY_SPELLING: usize = 1;
+const FIRST_ALIAS: usize = 2;
+
+struct Piece {
+    start: u64,
+    spelling: usize,
+}
+
+struct NameWriter<'a>(&'a mut OsString);
+
+impl std::fmt::Write for NameWriter<'_> {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        self.0.push(text);
+        Ok(())
+    }
+}
+
 struct Directory {
     shard: ShardId,
     stamp: Option<Stamp>,
-    pieces: Vec<WalPiece>,
+    pieces: Vec<Piece>,
+    aliases: Vec<OsString>,
+    names: SealedNameParts,
+    active: PathBuf,
     weight: usize,
+}
+
+fn canonical_spelling(name: &OsStr, parts: &SealedNameParts) -> Option<usize> {
+    let tail = name.to_str()?.strip_prefix(parts.prefix.as_str())?;
+    let (digits, spelling) = tail
+        .strip_suffix(parts.suffix.as_str())
+        .map(|digits| (digits, CURRENT_SPELLING))
+        .or_else(|| {
+            tail.strip_suffix(parts.legacy_suffix.as_str())
+                .map(|digits| (digits, LEGACY_SPELLING))
+        })?;
+    (digits.len() == 20 && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .then_some(spelling)
+}
+
+impl Directory {
+    fn from_entries(
+        root: &Path,
+        shard: ShardId,
+        stamp: Option<Stamp>,
+        entries: impl Iterator<Item = fs::DirEntry>,
+    ) -> Self {
+        #[cfg(test)]
+        WAL_SEGMENT_LISTINGS.with(|count| count.set(count.get() + 1));
+        let names = SealedNameParts::for_shard(shard);
+        let mut pieces = Vec::new();
+        let mut aliases = Vec::new();
+        for entry in entries {
+            #[cfg(test)]
+            WAL_SEGMENT_LISTING_ENTRIES.with(|count| count.set(count.get() + 1));
+            let name = entry.file_name();
+            let Some(start) = sealed_wal_start_log_id_with(Path::new(&name), &names) else {
+                continue;
+            };
+            let spelling = canonical_spelling(&name, &names).unwrap_or_else(|| {
+                let spelling = FIRST_ALIAS + aliases.len();
+                aliases.push(name);
+                spelling
+            });
+            pieces.push(Piece { start, spelling });
+        }
+        pieces.sort_by_key(|piece| piece.start);
+        // Retaining spare slots can make an otherwise bounded directory miss admission.
+        pieces.shrink_to_fit();
+        let active = write_ahead_log_path(root, shard);
+        let weight = std::mem::size_of::<Self>()
+            + 2 * std::mem::size_of::<usize>()
+            + pieces.capacity() * std::mem::size_of::<Piece>()
+            + aliases.capacity() * std::mem::size_of::<OsString>()
+            + aliases.iter().map(|name| name.capacity()).sum::<usize>()
+            + names.prefix.capacity()
+            + names.suffix.capacity()
+            + names.legacy_suffix.capacity()
+            + active.capacity();
+        Self {
+            shard,
+            stamp,
+            pieces,
+            aliases,
+            names,
+            active,
+            weight,
+        }
+    }
+
+    fn path(&self, root: &Path, index: usize) -> PathBuf {
+        let Some(piece) = self.pieces.get(index) else {
+            return self.active.clone();
+        };
+        match piece.spelling {
+            CURRENT_SPELLING | LEGACY_SPELLING => {
+                let suffix = if piece.spelling == CURRENT_SPELLING {
+                    &self.names.suffix
+                } else {
+                    &self.names.legacy_suffix
+                };
+                let mut path = PathBuf::with_capacity(
+                    root.as_os_str().len() + 1 + self.names.prefix.len() + 20 + suffix.len(),
+                );
+                path.push(root);
+                path.push(&self.names.prefix);
+                // Format into the path allocation without a separate filename buffer.
+                std::fmt::write(
+                    &mut NameWriter(path.as_mut_os_string()),
+                    format_args!("{:020}{}", piece.start, suffix),
+                ).expect("formatting a log file name");
+                path
+            }
+            alias => {
+                let name = &self.aliases[alias - FIRST_ALIAS];
+                let mut path = PathBuf::with_capacity(root.as_os_str().len() + 1 + name.len());
+                path.push(root);
+                path.push(name);
+                path
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for Directory {
@@ -113,15 +232,16 @@ impl Cache {
         // between listing and opening. A failed lookup refreshes once even when its stamp matches.
         for force in [false, true] {
             let directory = self.directory(root, shard, force)?;
-            let sealed = directory.pieces.len().saturating_sub(1);
-            let upper = directory.pieces[..sealed]
-                .partition_point(|piece| piece.starts_at.is_some_and(|base| base <= log_id));
+            let sealed = directory.pieces.len();
+            let upper = directory.pieces
+                .partition_point(|piece| piece.start <= log_id);
             let first = upper.saturating_sub(1);
-            for piece in &directory.pieces[first..] {
-                if piece.starts_at.is_some_and(|base| base > log_id) {
+            for index in first..=sealed {
+                if directory.pieces.get(index).is_some_and(|piece| piece.start > log_id) {
                     break;
                 }
-                let mut file = match self.open(&piece.path) {
+                let path = directory.path(root, index);
+                let mut file = match self.open(&path) {
                     Ok(file) => file,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                     Err(error) => return Err(error.into()),
@@ -139,8 +259,8 @@ impl Cache {
                         base,
                         header,
                         length: metadata.len(),
-                        sealed: piece.starts_at.is_some(),
-                        path: piece.path.clone(),
+                        sealed: index < sealed,
+                        path,
                         stamp: stamp(&metadata),
                         file,
                         physical: header + (log_id - base),
@@ -262,21 +382,10 @@ impl Cache {
             Err(_) if self.retire_oldest() => Some(fs::read_dir(root)?),
             Err(error) => return Err(error.into()),
         };
-        let pieces =
-            wal_segment_pieces_from_entries(root, shard, entries.into_iter().flatten().flatten());
-        let weight = std::mem::size_of::<Directory>()
-            + 2 * std::mem::size_of::<usize>()
-            + pieces.capacity() * std::mem::size_of::<WalPiece>()
-            + pieces
-                .iter()
-                .map(|piece| piece.path.capacity())
-                .sum::<usize>();
-        let directory = Arc::new(Directory {
-            shard,
-            stamp: current,
-            pieces,
-            weight,
-        });
+        let directory = Arc::new(Directory::from_entries(
+            root, shard, current, entries.into_iter().flatten().flatten(),
+        ));
+        let weight = directory.weight;
         if current.is_none() || weight > DIRECTORY_BYTES {
             return Ok(directory);
         }
