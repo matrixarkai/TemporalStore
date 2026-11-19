@@ -513,6 +513,10 @@ jobs:
             engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::no_reader_takes_a_manifests_image_around_the_resolver \
             engine::bucket_dump_chain::tests::a_missing_link_is_an_error_and_never_a_shorter_chain \
             raft::wal_proto::tests::every_command_the_raft_wal_carries_is_protobuf \
+            raft::wal_proto::tests::the_raft_wal_record_codec_has_no_json \
+            raft::wal_proto::tests::a_replicated_batch_carries_its_rpc_metadata \
+            raft::wal_proto::tests::an_installed_snapshot_keeps_every_field \
+            raft::wal_proto::tests::an_installed_snapshot_without_the_current_format_is_refused \
             shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \

@@ -596,11 +596,24 @@ message WalStateImage {
   optional uint32 end_routing_bucket = 5;
 }
 
-// An installed snapshot, split so the image's bytes stay bytes: everything else about the
-// snapshot travels in its existing encoding in `snapshot_sans_image`.
+// An installed snapshot. The image's bytes stay bytes, and every other field of the snapshot is a
+// field here. Tag 1 held the rest of the snapshot as an encoded text document; it is retired, not
+// reused.
+//
+// A reader skips a field it does not know, so a record written with tag 1 alone would decode as a
+// snapshot of shard 0 at index 0 -- a plausible empty one. `format_version` is what prevents it:
+// the writer sets 1, the reader refuses anything else by name, and an absent field reads as 0.
 message WalInstalledSnapshot {
-  bytes snapshot_sans_image = 1;
+  reserved 1;
   WalStateImage state_image = 2;
+  uint64 shard_id = 3;
+  uint64 last_included_term = 4;
+  uint64 last_included_index = 5;
+  optional WalExternalSnapshotRef external_snapshot_ref = 6;
+  repeated WalLogEntry entries = 7;
+  // True when the image lives in its own file beside the log rather than inside this record.
+  bool state_image_externalized = 8;
+  uint32 format_version = 9;
 }
 
 message WalPipelineState {
@@ -902,6 +915,9 @@ message EngineWalMetadata {
 // The entries carry the values, which is where the bytes are; the rest of the message is a
 // handful of integers.
 message RaftAppendEntriesRequest {
+  // Tag 9 held the tracing metadata as an encoded text document. It is retired, not reused. A
+  // reader skips it, which costs only the tracing metadata: nothing else here depends on it.
+  reserved 9;
   uint64 shard_id = 1;
   uint64 term = 2;
   uint64 leader_id = 3;
@@ -910,9 +926,14 @@ message RaftAppendEntriesRequest {
   uint64 prev_log_term = 6;
   repeated WalLogEntry entries = 7;
   uint64 leader_commit = 8;
-  // Set only when the caller attached tracing metadata, and carried in its existing encoding so
-  // none of its fields depend on this schema keeping up.
-  bytes rpc = 9;
+  // Set only when the caller attached tracing metadata.
+  optional RaftRpcMetadata rpc = 10;
+}
+
+message RaftRpcMetadata {
+  optional string auth_token = 1;
+  optional uint64 deadline_ms = 2;
+  string request_id = 3;
 }
 
 // Just enough of an engine log record to decide whether it is wanted.
