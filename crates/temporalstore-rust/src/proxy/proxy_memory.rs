@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::*;
-use crate::sdk::v1::{LlmMemoryHistoryRecord, LlmMemoryRecord};
+use crate::sdk::v1::{llm_metadata_value::Kind as MetadataKind, LlmMemoryHistoryRecord, LlmMemoryRecord,
+    LlmMetadataList, LlmMetadataMap, LlmMetadataValue};
 use crate::types::CommandResponse;
 
 #[path = "memory_node_lookup.rs"]
@@ -177,6 +178,64 @@ impl MemoryScope {
     }
 }
 
+/// The one shape of a memory or history record this build writes and reads. An absent field reads
+/// as 0, which is what a record written with the retired MessagePack bytes decodes to.
+const MEMORY_RECORD_FORMAT_VERSION: u32 = 1;
+
+/// A metadata document as a typed value tree. Integers keep their sign and width class and floats
+/// stay floats, so the document comes back as the one that was stored.
+fn metadata_to_proto(value: &Value) -> LlmMetadataValue {
+    let kind = match value {
+        Value::Null => MetadataKind::NullValue(true),
+        Value::Bool(flag) => MetadataKind::BoolValue(*flag),
+        Value::Number(number) => {
+            if let Some(int) = number.as_i64() {
+                MetadataKind::IntValue(int)
+            } else if let Some(uint) = number.as_u64() {
+                MetadataKind::UintValue(uint)
+            } else {
+                MetadataKind::DoubleValue(number.as_f64().unwrap_or_default())
+            }
+        }
+        Value::String(text) => MetadataKind::StringValue(text.clone()),
+        Value::Array(items) => MetadataKind::ListValue(LlmMetadataList {
+            items: items.iter().map(metadata_to_proto).collect(),
+        }),
+        Value::Object(entries) => MetadataKind::MapValue(LlmMetadataMap {
+            entries: entries
+                .iter()
+                .map(|(key, item)| (key.clone(), metadata_to_proto(item)))
+                .collect(),
+        }),
+    };
+    LlmMetadataValue { kind: Some(kind) }
+}
+
+/// A metadata document from its value tree; `None` when a node carries no kind or a float that is
+/// not a JSON number, which no writer produces.
+fn metadata_from_proto(message: LlmMetadataValue) -> Option<Value> {
+    Some(match message.kind? {
+        MetadataKind::NullValue(_) => Value::Null,
+        MetadataKind::BoolValue(flag) => Value::Bool(flag),
+        MetadataKind::IntValue(int) => Value::Number(int.into()),
+        MetadataKind::UintValue(uint) => Value::Number(uint.into()),
+        MetadataKind::DoubleValue(float) => Value::Number(serde_json::Number::from_f64(float)?),
+        MetadataKind::StringValue(text) => Value::String(text),
+        MetadataKind::ListValue(list) => Value::Array(
+            list.items
+                .into_iter()
+                .map(metadata_from_proto)
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        MetadataKind::MapValue(map) => Value::Object(
+            map.entries
+                .into_iter()
+                .map(|(key, item)| Some((key, metadata_from_proto(item)?)))
+                .collect::<Option<serde_json::Map<_, _>>>()?,
+        ),
+    })
+}
+
 impl MemoryRecord {
     fn matches(&self, identity: &MemoryIdentity) -> bool {
         matches_dimension(&identity.user_id, &self.user_id)
@@ -189,7 +248,8 @@ impl MemoryRecord {
             id: self.id.clone(),
             context_ref: self.context_ref.clone(),
             memory: self.memory.clone(),
-            metadata_msgpack: rmp_serde::to_vec_named(&self.metadata).unwrap_or_default(),
+            metadata: Some(metadata_to_proto(&self.metadata)),
+            format_version: MEMORY_RECORD_FORMAT_VERSION,
             tenant_id: self.tenant_id.clone(),
             account_id: self.account_id.clone(),
             user_id: self.user_id.clone(),
@@ -203,10 +263,12 @@ impl MemoryRecord {
 
     fn decode(bytes: &[u8]) -> Option<Self> {
         let record = LlmMemoryRecord::decode(bytes).ok()?;
-        let metadata = if record.metadata_msgpack.is_empty() {
-            Value::Null
-        } else {
-            rmp_serde::from_slice(&record.metadata_msgpack).ok()?
+        if record.format_version != MEMORY_RECORD_FORMAT_VERSION {
+            return None;
+        }
+        let metadata = match record.metadata {
+            Some(value) => metadata_from_proto(value)?,
+            None => Value::Null,
         };
         Some(Self {
             id: record.id,
@@ -231,11 +293,8 @@ impl MemoryHistoryEntry {
             event: self.event.clone(),
             at_ms: self.at_ms,
             memory: self.memory.clone(),
-            metadata_msgpack: self
-                .metadata
-                .as_ref()
-                .and_then(|value| rmp_serde::to_vec_named(value).ok())
-                .unwrap_or_default(),
+            metadata: self.metadata.as_ref().map(metadata_to_proto),
+            format_version: MEMORY_RECORD_FORMAT_VERSION,
             feedback: self.feedback.clone(),
             feedback_reason: self.feedback_reason.clone(),
         }
@@ -244,10 +303,12 @@ impl MemoryHistoryEntry {
 
     fn decode(bytes: &[u8]) -> Option<Self> {
         let record = LlmMemoryHistoryRecord::decode(bytes).ok()?;
-        let metadata = if record.metadata_msgpack.is_empty() {
-            None
-        } else {
-            Some(rmp_serde::from_slice(&record.metadata_msgpack).ok()?)
+        if record.format_version != MEMORY_RECORD_FORMAT_VERSION {
+            return None;
+        }
+        let metadata = match record.metadata {
+            Some(value) => Some(metadata_from_proto(value)?),
+            None => None,
         };
         Some(Self {
             id: record.id,
@@ -2773,5 +2834,136 @@ mod tests {
             memory_context_ref("0123456789abcdef-fedcba9876543210", 42),
             "0123456789abcdef-fedcba9876543210~000000000000002a"
         );
+    }
+}
+
+#[cfg(test)]
+mod memory_metadata_tests {
+    use super::*;
+
+    fn a_document() -> Value {
+        json!({
+            "null": null,
+            "flag": true,
+            "off": false,
+            "small": 7,
+            "negative": -9_000_000_000_i64,
+            "min": i64::MIN,
+            "past_i64": u64::MAX,
+            "ratio": 0.25,
+            "tiny": -1.5e-300,
+            "text": "caf\u{e9} \u{1f980}",
+            "empty_text": "",
+            "empty_list": [],
+            "empty_map": {},
+            "mixed": [1, "two", null, [3, 4], {"five": 5.5}],
+            "nested": {"a": {"b": {"c": [true, false]}}},
+        })
+    }
+
+    /// A document comes back as written: the integer classes stay integers, a float stays a float,
+    /// and an empty list, an empty map and a null stay three different things.
+    #[test]
+    fn a_metadata_document_round_trips_exactly() {
+        let document = a_document();
+        let back = metadata_from_proto(metadata_to_proto(&document)).expect("decodes");
+        assert_eq!(back, document);
+        // DENOMINATORS: the fixture really holds each class, so the equality covers what it says.
+        let object = document.as_object().unwrap();
+        assert!(object["past_i64"].as_u64().is_some() && object["past_i64"].as_i64().is_none());
+        assert!(object["min"].as_i64() == Some(i64::MIN));
+        assert!(object["ratio"].is_f64() && object["small"].is_i64());
+        assert_ne!(object["empty_list"], object["empty_map"]);
+        assert_ne!(object["empty_list"], Value::Null);
+        // an integer and a float that are numerically equal stay distinct
+        let int = metadata_from_proto(metadata_to_proto(&json!(1))).unwrap();
+        let float = metadata_from_proto(metadata_to_proto(&json!(1.0))).unwrap();
+        assert!(int.is_i64() && float.is_f64());
+    }
+
+    fn a_record(metadata: Value) -> MemoryRecord {
+        MemoryRecord {
+            id: "m1".into(),
+            context_ref: "c1".into(),
+            memory: "remembered".into(),
+            metadata,
+            tenant_id: "t".into(),
+            account_id: "a".into(),
+            user_id: "u".into(),
+            agent_id: "g".into(),
+            run_id: "r".into(),
+            created_at_ms: 11,
+            updated_at_ms: 12,
+        }
+    }
+
+    /// The record through its bytes, with the document intact.
+    #[test]
+    fn a_memory_record_round_trips_with_its_metadata() {
+        let record = a_record(a_document());
+        let decoded = MemoryRecord::decode(&record.encode()).expect("decodes");
+        assert_eq!(decoded.metadata, record.metadata);
+        assert_eq!(decoded.memory, record.memory);
+        assert_eq!((decoded.created_at_ms, decoded.updated_at_ms), (11, 12));
+        // null metadata and no metadata both read as null, as they always did
+        assert_eq!(MemoryRecord::decode(&a_record(Value::Null).encode()).unwrap().metadata, Value::Null);
+    }
+
+    /// A history entry keeps the difference between no metadata and a present null.
+    #[test]
+    fn a_history_entry_keeps_absent_metadata_apart_from_null() {
+        let entry = |metadata| MemoryHistoryEntry {
+            id: "h1".into(),
+            event: "ADD".into(),
+            at_ms: 5,
+            memory: Some("m".into()),
+            metadata,
+            feedback: None,
+            feedback_reason: None,
+        };
+        let absent = MemoryHistoryEntry::decode(&entry(None).encode()).expect("decodes");
+        let null = MemoryHistoryEntry::decode(&entry(Some(Value::Null)).encode()).expect("decodes");
+        let full = MemoryHistoryEntry::decode(&entry(Some(a_document())).encode()).expect("decodes");
+        assert_eq!(absent.metadata, None);
+        assert_eq!(null.metadata, Some(Value::Null));
+        assert_eq!(full.metadata, Some(a_document()));
+    }
+
+    /// A record in the retired shape -- the MessagePack bytes in tag 3, no format version -- is
+    /// refused, not read as a record with no metadata.
+    #[test]
+    fn a_record_without_the_current_format_is_refused() {
+        let current = a_record(a_document()).encode();
+        assert!(MemoryRecord::decode(&current).is_some(), "the untouched bytes are the control");
+        let mut message = LlmMemoryRecord::decode(current.as_slice()).unwrap();
+        for version in [0u32, 2] {
+            message.format_version = version;
+            assert!(MemoryRecord::decode(&message.encode_to_vec()).is_none(), "format {version} was read");
+        }
+        // what an old record looks like: its fields, tag 3 holding bytes, and no version at all
+        let mut old = Vec::new();
+        prost::encoding::string::encode(1, &"m1".to_string(), &mut old);
+        prost::encoding::bytes::encode(3, &vec![0x80u8], &mut old);
+        assert!(MemoryRecord::decode(&old).is_none());
+    }
+
+    /// The MessagePack the metadata used to be stored as is gone from this file.
+    #[test]
+    fn the_memory_records_hold_no_messagepack() {
+        let text = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/proxy/proxy_memory.rs"),
+        )
+        .expect("this guard reads proxy_memory.rs");
+        let production = text.split("\n#[cfg(test)]\nmod memory_metadata_tests").next().unwrap();
+        assert!(production.len() > 10_000, "the scan found almost nothing");
+        let code: String = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(code.contains("metadata_to_proto"), "the metadata codec is gone from the file");
+        assert!(!code.contains("rmp_serde"), "proxy_memory.rs reaches for MessagePack");
+        assert!(!code.contains("metadata_msgpack"), "the retired field is back");
+        assert!("rmp_serde::to_vec".contains("rmp_serde"), "the control must see what it looks for");
     }
 }

@@ -508,6 +508,11 @@ jobs:
             engine::tests::a_dump_manifest_lists_the_shard_once::a_manifest_lists_the_live_blocks_once \
             engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::a_whole_manifest_gives_its_image_and_a_delta_is_refused \
             engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::the_reader_doors_refuse_a_delta \
+            proxy::memory::memory_metadata_tests::a_metadata_document_round_trips_exactly \
+            proxy::memory::memory_metadata_tests::a_memory_record_round_trips_with_its_metadata \
+            proxy::memory::memory_metadata_tests::a_history_entry_keeps_absent_metadata_apart_from_null \
+            proxy::memory::memory_metadata_tests::a_record_without_the_current_format_is_refused \
+            proxy::memory::memory_metadata_tests::the_memory_records_hold_no_messagepack \
             engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::retention_keeps_the_base_of_the_delta_it_keeps \
             engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::a_delta_whose_base_is_gone_keeps_every_manifest \
             engine::tests::a_delta_manifest_is_never_read_as_a_whole_image::no_reader_takes_a_manifests_image_around_the_resolver \
