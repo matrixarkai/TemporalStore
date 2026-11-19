@@ -103,13 +103,9 @@ type Row = (&'static str, &'static str, usize, Class, &'static str);
 const ROSTER: &[Row] = &[
     ("crates/temporalstore-rust/src/engine/engine_regression_test_modules.rs", "<strings>", 1, Class::OtherSense, "the #[path] of this guard own file, which is named for the word it counts down"),
     ("crates/temporalstore-rust/src/engine/engine_regression_test_modules.rs", "component_is_retired", 1, Class::OtherSense, "this guard, registered under the name of the word it counts down"),
-    ("crates/temporalstore-rust/src/engine/tests/block_entry_element_naming.rs", "<strings>", 1, Class::LegacyAlias, "asserts that the stored text no longer carries the old key"),
-    ("crates/temporalstore-rust/src/engine/tests/block_entry_names.rs", "<strings>", 12, Class::LegacyAlias, "fixtures: the index text an earlier build stored, which spells the key as it was, and the assertions that it is still read"),
     ("crates/temporalstore-rust/src/engine/tests/index_write_amplification.rs", "components", 1, Class::OtherSense, "std::path::Path::components(), the standard library iterator over a path"),
     ("crates/temporalstore-rust/src/engine/tests/no_signature_names_the_series.rs", "components", 1, Class::OtherSense, "std::path::Path::components(), the standard library iterator over a path"),
-    ("crates/temporalstore-rust/src/engine/tests/stream_reads_and_shard_controls.rs", "<strings>", 1, Class::LegacyAlias, "asserts that a stored block carries neither the old key nor the short one"),
     ("crates/temporalstore-rust/src/engine/tests/what_an_element_name_writes_to_disk_and_the_wire.rs", "//", 1, Class::OtherSense, "names the guard this file is read beside"),
-    ("crates/temporalstore-rust/src/engine/tests/what_an_element_name_writes_to_disk_and_the_wire.rs", "<strings>", 1, Class::OtherSense, "the assertion that the long spelling is never written"),
     ("crates/temporalstore-rust/src/foreign_type_name_guard.rs", "<strings>", 1, Class::OtherSense, "the guard table of FOREIGN type names, which quotes foreign words on purpose"),
     ("crates/temporalstore-rust/src/foreign_type_name_guard.rs", "components", 2, Class::OtherSense, "std::path::Path::components(), the standard library iterator over a path"),
     ("crates/temporalstore-rust/src/matrixark_rust_proxy_impl.rs", "sanitize_path_component", 3, Class::OtherSense, "a filesystem path component: the directory name a namespace or table is stored under"),

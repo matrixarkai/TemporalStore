@@ -332,7 +332,7 @@ fn control_api_reads_and_scans_index_log_stream() {
     // `element_name` or `c` key on a block entry here would mean the element name has come back to the
     // STORED form, which is the thing the width step removed.
     assert!(
-        hash_block.get("component").is_none() && hash_block.get("c").is_none(),
+        hash_block.get("element_name").is_none() && hash_block.get("c").is_none(),
         "the served index still writes an element name on a block entry: {hash_block}"
     );
     let address = hash_block

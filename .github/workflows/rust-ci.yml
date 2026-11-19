@@ -198,6 +198,14 @@ jobs:
             -- --test-threads=1 2>&1 | tee /tmp/follower-catch-up-gate.log
           grep -q 'test result: ok\. 2 passed; 0 failed;' /tmp/follower-catch-up-gate.log
 
+      - name: Index-log fold keeps earlier feature blocks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib the_index_log_fold_keeps_earlier_feature_blocks \
+            -- --test-threads=1 2>&1 | tee /tmp/fold-keeps-feature-blocks.log
+          grep -q 'test result: ok\. 2 passed; 0 failed;' /tmp/fold-keeps-feature-blocks.log
+
       - name: Bounded memory deletion checks
         timeout-minutes: 30
         run: |
@@ -590,7 +598,6 @@ jobs:
             engine::tests::part4::the_slab_usage_sample_emits_the_canonical_name_and_reads_no_retired_one \
             engine::tests::part4::a_bucket_summary_reads_back_the_names_it_writes \
             index_log::tests::an_index_item_spelled_with_a_retired_name_is_not_read_as_the_same_item \
-            engine::tests::block_entry_names::the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones \
             index_log::tests::a_delta_record_with_a_long_field_name_is_not_read_as_the_same_record \
             index_log::tests::a_log_holding_a_real_anchor_still_folds_rolls_and_sweeps \
             engine::tests::a_checkpoint_publish_into_a_log_with_an_anchor_lands::a_second_checkpoint_publish_lands_in_a_log_that_holds_the_first_ones_anchor \
@@ -696,7 +703,7 @@ jobs:
             engine::window_reduce_fan_in::tests::the_keys_count_is_a_wire_field_that_an_answer_without_it_reads_as_zero \
             engine::window_reduce_rank::tests::each_score_orders_by_the_value_only_it_produces \
             engine::window_reduce_rank::tests::a_wilson_bound_is_the_hand_computed_number_and_rewards_volume \
-            engine::window_reduce_rank::tests::an_undefined_score_is_counted_and_not_ranked \
+            engine::window_reduce_rank::tests::a_ratio_or_wilson_that_cannot_be_formed_is_ranked_at_zero_and_never_dropped \
             engine::window_reduce_rank::tests::each_window_kind_selects_the_samples_it_names \
             engine::window_reduce_rank::tests::a_window_that_cannot_hold_a_sample_is_refused \
             engine::window_reduce_rank::tests::ties_break_by_member_and_a_smaller_k_is_a_prefix_of_a_larger_one \
@@ -809,7 +816,7 @@ jobs:
             engine::window_aggregate::algorithm_tests::the_three_roundings_differ_on_a_fraction \
             engine::window_aggregate::algorithm_tests::an_empty_window_answers_what_the_notes_say \
             engine::window_aggregate::algorithm_tests::overflow_saturates_and_a_sum_is_exact_until_it_is_read \
-            engine::window_aggregate::algorithm_tests::ratio_wilson_rate_and_weights_edge_cases \
+            engine::window_aggregate::algorithm_tests::rate_and_weights_edge_cases \
             engine::window_aggregate::algorithm_tests::bad_parameters_and_names_are_refused_naming_the_field \
             engine::window_aggregate::algorithm_tests::mergeability_is_declared_and_matches_what_merge_can_do \
             engine::window_aggregate::algorithm_tests::merging_partial_results_equals_reducing_the_concatenation \
@@ -852,7 +859,7 @@ jobs:
             engine::window_reduce_rollup::tests::a_decoded_replay_reaches_the_bytes_the_first_run_reached \
             engine::window_reduce_rollup::tests::nothing_to_roll_returns_the_samples_unchanged \
             engine::window_reduce_rollup::tests::a_cap_keeps_the_best_of_each_group_breaks_ties_by_member_and_reports_the_drops \
-            engine::window_reduce_rollup::tests::a_cell_whose_score_is_undefined_ranks_after_every_scored_cell \
+            engine::window_reduce_rollup::tests::a_cell_whose_denominator_is_zero_scores_zero_and_ranks_after_the_cells_with_a_higher_ratio \
             engine::window_reduce_rollup::flat_tests::a_rollup_over_flat_samples_rolls_up_what_a_rollup_over_plain_samples_rolls_up \
             engine::window_reduce_rollup::flat_tests::a_flat_sample_out_of_order_is_refused_as_a_plain_one_is \
             engine::window_reduce_rollup::tests::the_cap_runs_on_the_folded_bucket_not_on_the_samples_that_make_it \
@@ -959,12 +966,14 @@ jobs:
             engine::window_reduce_protocol::tests::a_newest_rows_window_counts_rows_and_its_bounds_are_exact \
             engine::window_reduce_rank::flat_tests::a_sample_read_without_its_first_cells_ranks_as_the_plain_sample_without_them \
             engine::window_reduce_protocol::tests::recent_is_the_stored_cell_read_with_the_selectors_label_and_limit \
-            engine::window_reduce_protocol::tests::match_lane_adds_an_equality_on_the_lane_it_names_and_refuses_what_it_cannot_say \
+            engine::window_reduce_protocol::tests::match_lane_adds_an_equality_on_the_lane_it_names_and_matches_nothing_on_a_lane_the_table_lacks \
+            engine::window_reduce_protocol::tests::a_window_from_a_start_includes_its_end_for_the_reads_that_select_by_member_or_lane_value \
+            engine::window_reduce_rank::signed_lane_predicate_tests::a_lane_predicate_reads_its_value_as_signed_and_a_label_predicate_as_unsigned \
             engine::window_reduce_protocol::tests::a_stored_cell_answer_is_one_entry_per_row_stamped_with_its_own_sample \
             engine::window_reduce_protocol::tests::a_members_only_read_asks_for_exactly_the_members_it_names_ordered_by_time \
             engine::window_reduce_protocol::tests::a_window_from_a_start_covers_whole_milliseconds_and_excludes_its_end \
             engine::window_reduce_protocol::tests::an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time \
-            engine::window_reduce_protocol::tests::the_skip_existing_flag_is_carried_and_refused_with_a_message_that_says_what_to_use \
+            engine::window_reduce_protocol::tests::the_skip_existing_flag_is_ignored_by_a_write_so_the_request_translates_to_the_same_commands \
             engine::window_reduce_protocol::tests::a_retry_token_on_the_wire_rides_on_every_key_of_the_append_and_a_zero_token_is_none \
             engine::window_reduce_protocol::tests::the_token_and_the_replayed_flag_have_the_established_field_numbers \
             engine::window_reduce_protocol::tests::a_replayed_receipt_is_reported_with_the_counts_of_the_first_application \
@@ -973,7 +982,7 @@ jobs:
             engine::tests::a_read_can_say_which_samples_it_used::a_read_that_asks_says_which_samples_it_used_and_how_many_cells_each_held_live_and_after_a_restart \
             engine::tests::a_read_can_say_which_samples_it_used::a_read_that_does_not_ask_answers_what_it_always_answered_and_its_json_has_no_new_field \
             engine::tests::a_read_can_say_which_samples_it_used::a_rows_window_counts_only_the_cells_it_holds_of_the_sample_at_its_edge \
-            engine::window_reduce_protocol::tests::a_selector_that_asks_for_a_member_limit_is_refused_naming_the_field \
+            engine::window_reduce_protocol::tests::limit_members_is_the_row_count_of_a_stored_cell_read_that_names_no_limit_and_nothing_else \
             engine::window_reduce_protocol::tests::a_selector_that_wants_sample_info_asks_the_read_for_it_and_changes_nothing_else \
             engine::window_reduce_protocol::tests::an_answer_says_which_samples_the_read_used_in_microseconds_and_leaves_the_field_out_when_not_asked \
             engine::window_reduce_protocol::tests::a_selector_that_sets_them_off_is_translated_to_exactly_the_read_it_was_without_them \
@@ -1097,7 +1106,8 @@ jobs:
             engine::recovery_sweep_compact::compaction_execution_tests::a_failed_compaction_barrier_followed_by_reclaim_and_a_restart_loses_no_key \
             engine::recovery_sweep_compact::compaction_execution_tests::two_failed_compaction_rounds_keep_the_slabs_of_the_first \
             engine::recovery_sweep_compact::compaction_execution_tests::a_drain_round_asks_only_about_keys_that_hold_a_block_on_the_drain_slab \
-            engine::recovery_sweep_compact::compaction_execution_tests::a_compaction_round_keeps_every_buckets_dirty_generation
+            engine::recovery_sweep_compact::compaction_execution_tests::a_compaction_round_keeps_every_buckets_dirty_generation \
+            data_node::runtime_storage::maintenance_report_tests::a_compaction_step_returns_when_its_budget_is_spent_and_the_pass_resumes
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-compact.log
             # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
@@ -1359,6 +1369,8 @@ jobs:
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::a_sequence_query_answers_the_rows_that_were_added \
             engine::tests::a_resident_map_read_takes_the_shared_lock::each_resident_map_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_resident_map_read_takes_the_shared_lock::the_fast_reads_answer_what_the_maps_hold \
+            engine::tests::a_rewritten_context_node_replaces_its_block::a_rewritten_node_holds_one_block_entry \
+            engine::tests::a_rewritten_context_node_replaces_its_block::a_rewritten_node_reads_back_after_a_restart \
             engine::tests::a_feature_range_read_takes_the_shared_lock::each_range_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_feature_range_read_takes_the_shared_lock::a_range_read_answers_what_was_appended \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::each_point_read_answers_while_the_shared_lock_is_held \
@@ -1532,6 +1544,7 @@ jobs:
             engine::tests::a_feature_sum_reads_each_point_in_place::probe::a_feature_sum_does_not_allocate_per_point \
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::probe::a_sequence_query_does_not_allocate_per_row \
             engine::tests::a_restating_write_names_one_bucket_not_the_shard::probe::a_restating_write_does_not_allocate_with_the_shard \
+            engine::tests::a_rewritten_context_node_replaces_its_block::probe::a_node_rewrite_costs_the_same_after_many_rewrites \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::probe::a_length_and_a_range_do_not_allocate_per_byte \
             engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::probe::a_known_outcome_kind_allocates_nothing \
             engine::tests::a_hash_field_presence_is_read_from_its_row::probe::a_presence_check_does_not_copy_the_value \

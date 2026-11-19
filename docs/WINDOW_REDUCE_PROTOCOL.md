@@ -65,8 +65,8 @@ one key; cells with the same member merge lane by lane under the profile's reduc
 request is validated before anything is written: a refusal writes nothing. A list shorter than the
 profile's lanes is padded with zeros; a longer one is refused. The shorthand fields 2 and 3 fill a
 pair when neither pair nor list is present. A cell with no `has_label` takes its label from the
-profile's rule. `skip_existing` is carried but refused for now, with a message pointing at the retry token that makes a
-retried add safe; no write mode implements it. `group_on_server` is accepted and always on.
+profile's rule. `skip_existing` is carried and ignored: an add always merges (a retried add is made safe by the
+retry token). `group_on_server` is accepted and always on.
 
 **Retry token.** A non-zero `retry_token` (add request, field 16) rides on the append of every key of the
 request; zero means none. A key remembers its last 16 tokens: the same token again answers the counts of
@@ -80,7 +80,9 @@ checked only.
 status. Bounded by the number of queries.
 
 **Windows.** `TRAILING_FROM_NOW` is `[now - span, now]`. `TRAILING_FROM_NEWEST` is the trailing span
-ending at the newest stored sample of the key. `FROM_START` is `[start, start + span)`.
+ending at the newest stored sample of the key. `FROM_START` is `[start, start + span)`; for the two
+reads that select cells by member or by lane value (`MEMBERS_ONLY`, `MATCH_LANE`) it is
+`[start, start + span]`, the stamp at the very end included (a span of 0 is the instant at the start).
 `NEWEST_ROWS` counts stored (timestamp, member) rows, not samples: `span` is the number of rows, the
 newest `span` cells the key holds, taken whole sample by whole sample from the newest back. The
 sample that crosses `span` keeps only the cells it needs, its largest members (the newest rows in
@@ -91,10 +93,14 @@ window applies to each key of a merged read. It takes the request clock for no p
 no anchor.
 
 **Rank modes.** FIRST_LANE and SECOND_LANE order members by their reduced lane 0 or 1; NAMED_LANE by
-the lane at `sort_lane` (zero when absent); RATIO by lane 0 over lane 1; MEMBER by member;
+the lane at `sort_lane` (zero when absent); RATIO by lane 0 over lane 1 as a whole number (the fraction is dropped, so every ratio below 1 scores 0 and
+those members tie), 0 when lane 1 is 0; MEMBER by member;
 WEIGHTED by the sum of the lanes at `weighted_lanes` times `weights` (indexes and weights not
-negative, same length, pair tables only index 0 and 1); WILSON by the lower bound for lane 0
-successes of lane 1 trials at `wilson_z` (1.96 when absent). Results are ordered best first; equal
+negative, same length, pair tables only index 0 and 1); WILSON by the lower bound of the Wilson
+interval of the smaller of lanes 0 and 1 out of the larger (so which of them holds the successes does
+not matter) at `wilson_z` (1.96 when absent or not above 0), times 10,000 and cut to a whole number,
+0 when the larger is 0. Every member is ranked: none is dropped for a score that cannot be formed.
+Results are ordered best first; equal
 scores order by member. MEMBERS_ONLY returns the listed members and ignores `limit`. RECENT and
 MATCH_LANE return stored cells newest first, not reduced per member (see **Stored cells** below).
 
@@ -142,8 +148,10 @@ none reduced, the newest sample first (cells of one sample by member, smaller fi
 written in three samples is three rows, each with that sample's labels, lane values and stamp
 (`timestamp_us`). `limit` bounds the rows (1 to 1000, as for every read); the window, the label
 predicate and the member set apply to each cell. `MATCH_LANE` keeps the cells whose lane at
-`match_lane` (the first when absent) holds `match_value` (0 when absent); a lane the table does not
-declare, or a negative value, is refused. A quota is refused on these modes: it chooses among reduced
+`match_lane` (the first when absent) holds `match_value` (0 when absent, any signed number). A lane the
+table does not declare holds nothing, so no cell matches and the answer is empty. `NAMED_LANE` on a
+list table with a `sort_lane` past the last lane scores every member 0 (members come back in member
+order); a negative `sort_lane` is refused. A quota is refused on these modes: it chooses among reduced
 members. Over `more_entities` the rows of all keys interleave by stamp, the later entity first when
 two samples share one. The command is the ranked read with the score `Recent`.
 
@@ -175,15 +183,14 @@ edge of a `NEWEST_ROWS` window counts only the cells the window holds. The list 
 `want_sample_info` of false means "not asked", with or without its presence flag, and the answer then
 carries no `sample_info` at all.
 
-**Options no read honours.** `limit_members` (field 12) is in the wire shape, and no read implements
-it: a read cannot cap the members it considers. A selector that sets `limit_members` to anything but
-0 is refused with INVALID_ARGUMENT and a message naming the field (`limit` caps the rows returned). A
-`limit_members` of 0 means "not asked", with or without its presence flag, and reads as if absent.
+**Member count (`limit_members`).** `limit_members` (field 12, with `has_limit_members`) is the row
+count of a stored-cell (`RECENT`) read that names no `limit` (`limit` of 0 or less): when it is flagged
+and positive it is the `limit`. A `limit` that is set wins, and every other read mode ignores the
+field. The bound on rows (1 to 1000) applies to the count.
 
 ## Where this deliberately differs from the narrower shape
 
 * Unknown table answers NO_SUCH_TABLE (the narrower shape declares the code and answers NO_DATA).
-* `skip_existing` is refused with a clear message; the narrower server never read it.
 * A custom weighted rank works; the narrower server dereferenced an unset pointer.
 * Rank results are ordered; the narrower server returned an unordered selection.
 * A batch reports a status per answer, not only the last.

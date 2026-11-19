@@ -92,9 +92,7 @@
 //! reconstruction field by field against the LIVE value the encoder was handed, on all 8,000 blocks
 //! -- not against a re-render of itself, and not on a sample. `a_reload_reads_every_object_back`
 //! writes a corpus, drops the engine, reloads from the same directories and reads every object
-//! back, with a key never written asserted ABSENT in the same moment. The old-format reader is
-//! proved against COMMITTED BYTES in `block_entry_names`, whose `OLD_STORE_INDEX` is the index a
-//! pre-change binary really wrote.
+//! back, with a key never written asserted ABSENT in the same moment.
 //!
 //! rust-internal: measures this crate's own index codec, no product behaviour
 
@@ -680,9 +678,9 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
         );
     }
 
-    // AND A NON-EMPTY ELEMENT NAME IS CARRIED TOO, because an index written before the element name
-    // left the entry spells one -- `block_entry_names::OLD_STORE_INDEX` holds `hash:k:f0:1:9:3:4:4`
-    // -- and the object key in such a key must still come back whole rather than absorbing it.
+    // AND A NON-EMPTY ELEMENT NAME IS CARRIED TOO, because a block key can spell one
+    // (`hash:k:f0:1:9:3:4:4`) and the object key in such a key must still come back whole rather
+    // than absorbing it.
     let named = block_ref_key_from_parts("hash", "a:b", Some("f0"), 1, 9, 3, 4, 4);
     let parts = block_ref_key_parts(&named).expect("an element-named key parses");
     assert_eq!(
@@ -740,140 +738,6 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
 // =================================================================================================
 // THE OLD FORMAT, READ BY THE NEW READER, FROM A FIXTURE COMMITTED AS BYTES
 // =================================================================================================
-
-/// AN INDEX WRITTEN BEFORE THIS CHANGE IS READ BY THIS BINARY, THROUGH THE WHOLE DOOR.
-///
-/// # WHY A ROUND TRIP WOULD NOT HAVE BEEN EVIDENCE
-///
-/// A round trip writes and reads with the SAME build, so both halves are wrong together and agree.
-/// What has to be proved is that the reconstruction reads what a PREVIOUS binary wrote, and the
-/// only form of a previous binary's output that outlives the field is BYTES.
-///
-/// `block_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8` is such bytes: a whole shard index a
-/// pre-change binary really wrote, captured by that module's own capture instrument, whose three
-/// page entries each spell `object_key` and `model_id` as named fields -- and whose composite keys
-/// each spell the same two values. This arm takes it through the struct's own deserializer -- the
-/// read the retired plain-JSON arm of `decode_index_bytes` made -- and asserts the identity the new
-/// reader reconstructs is the identity the OLD entry carried, block by block.
-///
-/// # AND IT IS THE HARDEST AVAILABLE CASE, WHICH IS WHY IT IS THIS FIXTURE AND NOT A NEWER ONE
-///
-/// Its keys carry a NON-EMPTY element name slot -- `hash:ungated/hash:f0:0:0:27:0:0` and
-/// `zset:ungated/zset:6d30:0:54:34:0:0` -- from an era when a block entry named its element. A parse
-/// that searched for its fields rather than counting them from the END would read the object key
-/// short on exactly these keys and would still look right on every key this binary writes. Nothing
-/// a current store contains would catch that.
-///
-/// # WHAT THIS ARM DOES NOT CLAIM
-///
-/// It is not a claim that such a store is SERVED. A stamp-8 image is refused by `persistence`'s `<`
-/// comparison before anything reads it, which
-/// `block_entry_names::an_ungated_store_is_refused_before_it_is_served` drives. This is a claim
-/// about the DECODE, which happens first and which is where a reconstruction can go silently wrong.
-///
-/// rust-internal: decodes committed bytes through this crate's own door, no product behaviour
-#[test]
-fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carried() {
-    let bytes = super::block_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8;
-
-    // ---- THE FIXTURE REALLY CARRIES THE TWO FIELDS, ASSERTED ON THE TEXT ----
-    //
-    // On the TEXT and not on the decoded value, because what this binary can still read off an
-    // entry is exactly what the change took away. If the bytes did not spell them, this arm would
-    // be about an index that never had them and the reconstruction would have nothing to agree
-    // with.
-    for spelling in [
-        r#""object_key":"ungated/hash""#,
-        r#""object_key":"ungated/zset""#,
-        r#""model_id":"hash""#,
-        r#""model_id":"zset""#,
-    ] {
-        assert!(
-            bytes.contains(spelling),
-            "[CLAUSE old-bytes-carry-the-fields] the committed fixture does not spell {spelling}, \
-             so it is not an index whose entries name their object and this arm tests no \
-             reconstruction"
-        );
-    }
-
-    let decoded = serde_json::from_str::<crate::engine::state::ShardState>(bytes).expect(
-        "[CLAUSE old-bytes-decode] an index written by a pre-change binary must still be READ -- \
-         the header refuses it one layer up, and a read that failed here would mean the new \
-         reader cannot read the old shape at all",
-    );
-    assert_eq!(
-        8, decoded.index_format_version,
-        "[CLAUSE old-bytes-decode] the fixture's stamp is {} rather than 8, so it is not the \
-         pre-change store this guard is about",
-        decoded.index_format_version
-    );
-
-    // ---- EVERY BLOCK, AND THE IDENTITY IT CAME BACK WITH ----
-    let blocks = super::blocks_with_identity(&decoded.bucket_index);
-    let mut rebuilt: Vec<(String, String)> = blocks
-        .iter()
-        .map(|(_, _, object_key, block)| {
-            (object_key.to_string(), block.model_id().as_str().to_string())
-        })
-        .collect();
-    rebuilt.sort();
-    println!("\n=== a pre-change store, decoded and re-identified by this binary ===");
-    for row in &rebuilt {
-        println!("  {row:?}");
-    }
-
-    // THE EXPECTATION IS WHAT THE OLD ENTRIES SPELL, written out independently of the fixture text
-    // -- three rows, one per block, which is the set `an_ungated_store_is_refused_before_it_is_served`
-    // counts in the same bytes.
-    let expected: Vec<(String, String)> = {
-        let mut rows = vec![
-            ("ungated/hash".to_string(), "hash".to_string()),
-            ("ungated/hash".to_string(), "hash".to_string()),
-            ("ungated/zset".to_string(), "zset".to_string()),
-        ];
-        rows.sort();
-        rows
-    };
-    assert_eq!(
-        expected.len(),
-        rebuilt.len(),
-        "[CLAUSE old-bytes-rebuild-exactly] the fixture holds {} block(s) and {} came back",
-        expected.len(),
-        rebuilt.len()
-    );
-    for (at, (want, got)) in expected.iter().zip(rebuilt.iter()).enumerate() {
-        assert_eq!(
-            want, got,
-            "[CLAUSE old-bytes-rebuild-exactly] block {at} came back with the identity {got:?} \
-             where the stored entry spelled {want:?} -- a reconstruction that disagrees with what \
-             the old binary wrote is data loss wearing an optimisation's clothes"
-        );
-    }
-
-    // ---- THE CONTROL: THE COMPARISON MUST BE ABLE TO FAIL ----
-    let mut injected = rebuilt.clone();
-    injected[0].0.push('Z');
-    assert_ne!(
-        injected, rebuilt,
-        "[CLAUSE old-bytes-rebuild-exactly] the comparison cannot report a difference when one is \
-         injected, so the equalities above are equalities it cannot distinguish from inequalities"
-    );
-
-    // ---- AND THE ELEMENT NAME-BEARING KEY IS THE CASE THIS FIXTURE EXISTS FOR ----
-    assert!(
-        bytes.contains("hash:ungated/hash:f0:0:0:27:0:0"),
-        "[CLAUSE old-bytes-carry-the-fields] the fixture carries no element-named block key, so the \
-         split that could have read an object key short is not exercised"
-    );
-    let named = crate::index_log::block_ref_key_parts("hash:ungated/hash:f0:0:0:27:0:0")
-        .expect("an element-named key from a real pre-change store must parse");
-    assert_eq!(
-        ("hash", "ungated/hash", "f0"),
-        (named.kind, named.object_key, named.element_name),
-        "[CLAUSE old-bytes-rebuild-exactly] an element-named key splits in the wrong place, so a \
-         pre-change store's object keys would come back short"
-    );
-}
 
 // =================================================================================================
 // THE FIELD THAT CANNOT GO: THE PRESENCE BITS

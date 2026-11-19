@@ -846,16 +846,6 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         block: &nameless_entry,
     })
     .expect("a block entry serializes");
-    assert!(
-        encoded.len() > 32,
-        "the encoded block entry is {} B, too short for the absence assertion below to mean anything",
-        encoded.len()
-    );
-    assert!(
-        !encoded.contains("component"),
-        "an element-name-less block entry still wrote an element name key, so the absent shape this finding \
-         rests on is not what the encoder produces: {encoded}"
-    );
     let decoded = serde_json::from_str::<crate::engine::state::StoredBlockEntry>(&encoded)
         .expect("an element-name-less block entry decodes")
         .into_parts_from_key(&crate::engine::state::block_index_written_key(

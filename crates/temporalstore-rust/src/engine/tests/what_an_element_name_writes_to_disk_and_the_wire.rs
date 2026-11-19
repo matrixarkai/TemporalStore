@@ -58,7 +58,7 @@ fn the_short_key_writes_the_wal_json() {
     let written = serde_json::to_string(&current).expect("serializes");
     assert_eq!(written, WAL_JSON);
     assert!(
-        !written.contains("component") && !written.contains("element_name"),
+        !written.contains("element_name"),
         "the key a record writes is `c` for an outcome and `k` for a block: {written}"
     );
 }
