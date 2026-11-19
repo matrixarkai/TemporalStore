@@ -35,7 +35,7 @@
 
 use super::window_reduce_rank::{compile_predicates, Predicate};
 use super::window_reduce_rank_options::CompiledMembers;
-use super::cell_set::{within, Cell, CellHeader, CellRef};
+use super::cell_set::{within, Cell, CellHeader, CellRef, FlatCells};
 use crate::types::WindowReduceRemoveSpec;
 
 /// Samples a removal may read: the ones stamped inside its window.
@@ -89,7 +89,25 @@ impl Selection {
         (self.from_ms, self.to_ms)
     }
 
+    /// Which cells of a flat sample stay, and how many go. The cells are read in place: a
+    /// removal over a sample of any size allocates one mask, not a value per cell.
+    pub(crate) fn keep_mask(&self, cells: &FlatCells) -> (Vec<bool>, usize) {
+        let mut removed = 0usize;
+        let keep = (0..cells.len())
+            .map(|at| {
+                let view = cells.cell(at);
+                let take = self.members.allows(view.member) && self.predicates.iter().all(|predicate| predicate.holds(&view));
+                if take {
+                    removed += 1;
+                }
+                !take
+            })
+            .collect();
+        (keep, removed)
+    }
+
     /// Whether the cell is removed, given that its sample is inside the window.
+    #[allow(dead_code)]
     fn takes(&self, cell: &Cell) -> bool {
         let view = CellRef { member: cell.member.view(), labels: &cell.labels, lanes: &cell.lanes };
         self.members.allows(view.member) && self.predicates.iter().all(|predicate| predicate.holds(&view))
@@ -97,6 +115,7 @@ impl Selection {
 }
 
 /// What a removal did to one sample of the window.
+#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub(crate) struct Outcome {
     pub(crate) timestamp_ms: u64,
@@ -109,6 +128,7 @@ pub(crate) struct Outcome {
 /// The removal of `selection` from `samples` (ascending by stamp, each cell list as stored). A
 /// sample outside the window passes through untouched and is not reported. Returns one outcome
 /// per sample INSIDE the window, in the order given.
+#[allow(dead_code)]
 pub(crate) fn remove_cells(selection: &Selection, samples: Vec<(u64, Vec<Cell>)>) -> Vec<Outcome> {
     let (from, to) = selection.window();
     samples

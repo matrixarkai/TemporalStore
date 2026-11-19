@@ -66,7 +66,7 @@ pub(super) fn stored_key(entity: u64) -> String {
     encode_key(&key_spec(), &CellKey { entity: EntityValue::U64(entity), dims: vec![Some(DimValue::U16(3))] }).unwrap()
 }
 
-fn header() -> CellHeader {
+pub(super) fn header() -> CellHeader {
     CellHeader {
         version: HEADER_VERSION,
         key: key_spec(),
@@ -88,7 +88,7 @@ fn cells(count: usize, salt: u64) -> Vec<Cell> {
         .collect()
 }
 
-fn value_of(count: usize, salt: u64) -> Vec<u8> {
+pub(super) fn value_of(count: usize, salt: u64) -> Vec<u8> {
     encode_value(&header(), &cells(count, salt)).unwrap()
 }
 
