@@ -8612,7 +8612,7 @@ fn invalidate_cache_key_inner(cache: &MultiLayerCache, key: CacheKey, memory_onl
         // every tier and the walk removes nothing. `peek` answers for all three tiers and reports
         // an expired entry as absent, which is the answer every read of it gives, so skipping on
         // `false` leaves exactly the entries a reader could have been served.
-        invalidate_if_cached(cache, key);
+        let _ = cache.invalidate(&key);
     }
 }
 
