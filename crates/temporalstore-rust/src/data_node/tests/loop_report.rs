@@ -1164,3 +1164,64 @@ fn a_dirty_round_under_the_byte_gate_lists_less_than_a_dumping_round_does() {
     }
     assert!(checked >= 1, "no round had an idle index stage under the gate, so nothing was checked");
 }
+
+/// The stage rows say where in the round each stage began, on the round's own clock: the first row
+/// begins at zero, each row begins where the one before it ended, and the last one ends inside the
+/// round. That is what lets a writer's acknowledgements, timestamped on any other clock, be placed
+/// inside the stage that was running, so a stage's effect on writers can be read from one run.
+/// With a writer attached, every write is charged to exactly one of the stage windows or to the
+/// idle baseline, so no write is dropped and none is counted twice.
+#[test]
+fn a_writers_waits_are_attributed_to_the_stage_window_it_began_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 300);
+    let engine = std::sync::Arc::new(runtime.engine());
+
+    let (stall, report) = crate::engine::writer_stall_probe::measure_writer_stall_with(
+        &engine,
+        1,
+        || runtime.run_storage_manager_once(1, StorageManagerOptions::default()),
+    );
+
+    let spans = &report.stage_spans;
+    assert!(!spans.is_empty(), "the round reported no stage rows");
+    assert_eq!(spans[0].start_offset_us, 0, "the first stage row does not begin at the round's start");
+    for pair in spans.windows(2) {
+        let end = pair[0].start_offset_us + pair[0].duration_us;
+        // The next row begins where this one ended, to within the microsecond truncation of two
+        // separate conversions.
+        assert!(
+            pair[1].start_offset_us.abs_diff(end) <= 2,
+            "row {} begins at {} but row {} ended at {end}",
+            pair[1].stage,
+            pair[1].start_offset_us,
+            pair[0].stage
+        );
+    }
+    let last = spans.last().unwrap();
+    assert!(
+        last.start_offset_us + last.duration_us <= report.duration_us + 2,
+        "the last stage row ends after the round did"
+    );
+
+    let windows: Vec<(String, u64, u64)> = spans
+        .iter()
+        .map(|span| (span.stage.clone(), span.start_offset_us, span.duration_us))
+        .collect();
+    let by_window = stall.window_stalls(&windows);
+    let idle = stall.idle_baseline();
+    let charged: usize = by_window.iter().map(|w| w.writes).sum::<usize>() + idle.writes;
+    // A write that began in the few microseconds between the probe calling the round and the round
+    // taking its first timestamp, or between the last row and the end of the call, belongs to no
+    // window and to no idle count; there can only be a handful of them.
+    assert!(
+        charged <= stall.samples.len() && stall.samples.len() - charged <= 4,
+        "{} writes were issued but {charged} were charged to a window or to the idle baseline",
+        stall.samples.len()
+    );
+    assert!(idle.writes > 0, "the writer issued nothing outside the round to read the windows against");
+    println!("PROBE round_us={} idle={idle:?}", stall.round_us);
+    for window in &by_window {
+        println!("PROBE {window:?}");
+    }
+}

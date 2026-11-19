@@ -307,10 +307,12 @@ impl LoopSpans {
     /// and in order, so no earlier entry can be mistaken for it.
     fn close(&mut self, stage: &str, executed: &[String]) {
         let elapsed = self.clock.elapsed();
+        let start_offset = self.clock.saturating_duration_since(self.started);
         self.clock = std::time::Instant::now();
         self.rows.push(StorageManagerLoopStageSpan {
             stage: stage.to_string(),
             executed: executed.last().map(String::as_str) == Some(stage),
+            start_offset_us: start_offset.as_micros() as u64,
             duration_us: elapsed.as_micros() as u64,
             walk: crate::engine::take_stage_walk_charges(),
         });

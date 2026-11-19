@@ -1046,6 +1046,28 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-compact.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
+      - name: cargo test (writer wait by stage window guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # A write is charged to the stage window it began in, the percentile is nearest-rank, and
+          # the loop report's stage rows tile the round with a start offset on the clock of their
+          # duration. Pinned by exact name: they would otherwise run only in the advisory suite.
+          for t in \
+            engine::writer_stall_probe::window_math_tests::a_write_is_charged_to_the_window_it_began_in \
+            engine::writer_stall_probe::window_math_tests::nearest_rank_percentiles_of_a_known_sample \
+            data_node::tests::loop_report::a_writers_waits_are_attributed_to_the_stage_window_it_began_in
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-stall-window.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-stall-window.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-stall-window.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
       - name: cargo test (async reopen finds every acknowledged key guards, hard gate)
         timeout-minutes: 20
         run: |

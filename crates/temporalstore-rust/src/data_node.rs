@@ -1875,6 +1875,13 @@ pub struct StorageManagerLoopReport {
 pub struct StorageManagerLoopStageSpan {
     pub stage: String,
     pub executed: bool,
+    /// Where this row's interval begins, in microseconds after the start of the round, on the same
+    /// clock as `duration_us`. The rows tile the round, so row `i` covers
+    /// `[start_offset_us, start_offset_us + duration_us)` and the next row starts where it ends. A
+    /// reader who knows when the round began can place any other timestamped event, such as a
+    /// writer's acknowledgement, inside the stage that was running.
+    #[serde(default)]
+    pub start_offset_us: u64,
     #[serde(default)]
     pub duration_us: u64,
     #[serde(default)]
