@@ -234,3 +234,58 @@ fn shared_hash_fields_equal_width_partial_updates_do_not_replace_untouched_field
         verify_rows(&recovered, &[("a", 2), ("b", 2), ("c", 2), ("d", 2)], 1);
     }
 }
+
+#[test]
+fn shared_hash_fields_new_rows_are_exact_sized_and_survive_reload() {
+    for async_storage in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let open = || {
+            let engine = TemporalEngine::with_local_dirs(16 * 1024 * 1024,
+                dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"));
+            engine.load_shard(1);
+            engine
+        };
+        let engine = open();
+        assert!(engine.set_config(SetConfigRequest { shard_id: 1,
+            config: Config { version: 2, async_storage, ..Config::default() } }).ok);
+        let fields: Vec<_> = (0..21).rev().map(|i| format!("field-{i:03}")).collect();
+        let (result, keys) = engine.batch_execute_shared_hash_rows(BatchHashMultiSetRequest {
+            shard_id: 1,
+            fields: fields.clone(),
+            rows: (0..32).map(|row| BatchHashMultiSetRow(format!("new-row-{row}"),
+                fields.iter().enumerate().map(|(column, _)| {
+                    BatchHashMultiSetValue(vec![(row + column) as u8; 48])
+                }).collect())).collect(),
+            ttl_ms: None,
+        });
+        assert!(result.status.ok, "{:?}", result.status);
+        assert_eq!(result.applied, 32);
+        assert_eq!(keys.len(), 32);
+        {
+            let shards = engine.shards.read().unwrap();
+            for row in 0..32 {
+                let held = shards[&1].bucket_index.hashes.get(&format!("new-row-{row}")).unwrap();
+                assert_eq!(held.len(), 21);
+                assert_eq!(held.capacity_for_test(), 21);
+            }
+        }
+        let verify = |source: &TemporalEngine| {
+            source.cache().invalidate_shard(1).unwrap();
+            for row in 0..32 {
+                let result = source.execute(ExecuteRequest { shard_id: 1,
+                    command: Command::HashGetAll { key: format!("new-row-{row}") } });
+                assert!(result.status.ok);
+                let CommandResponse::HashEntries { entries } = result.response else { panic!("hash entries") };
+                let actual: std::collections::BTreeMap<_, _> = entries.into_iter().collect();
+                let expected: std::collections::BTreeMap<_, _> = fields.iter().enumerate()
+                    .map(|(column, field)| (field.clone(), vec![(row + column) as u8; 48])).collect();
+                assert_eq!(actual, expected);
+            }
+        };
+        verify(&engine);
+        engine.write_ahead_log_store().flush(1).unwrap();
+        drop(engine);
+        let recovered = open();
+        verify(&recovered);
+    }
+}

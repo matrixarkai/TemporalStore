@@ -259,6 +259,8 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "fold_carried_elements",
         "replay_remove_element",
         "element_values_mut",
+        // Selected compaction has the same value-only lend and cannot change membership.
+        "try_visit_element_values_mut",
         // The two PER-KIND exceptions, each gated by its marker trait.
         "replay_install_element",
         "repack_decoded",
