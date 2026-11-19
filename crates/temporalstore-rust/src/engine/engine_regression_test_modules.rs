@@ -140,6 +140,8 @@ mod a_timestamped_point_names_itself_once;
 mod a_hash_write_files_only_what_it_wrote;
 #[path = "tests/a_write_names_only_the_blocks_of_the_objects_it_touched.rs"]
 mod a_write_names_only_the_blocks_of_the_objects_it_touched;
+#[path = "tests/a_delete_names_only_the_blocks_of_its_own_bucket.rs"]
+mod a_delete_names_only_the_blocks_of_its_own_bucket;
 #[path = "tests/a_plan_learns_a_log_tail_from_its_appenders.rs"]
 mod a_plan_learns_a_log_tail_from_its_appenders;
 #[path = "tests/a_removal_states_no_block_rows.rs"]
@@ -571,6 +573,8 @@ mod a_window_reduce_read_over_several_keys;
 mod the_window_reduce_allocations_are_counted_per_operation;
 #[path = "tests/the_window_reduce_bytes_are_counted_per_operation.rs"]
 mod the_window_reduce_bytes_are_counted_per_operation;
+#[path = "tests/a_ranked_cell_read_takes_the_shared_shard_lock.rs"]
+mod a_ranked_cell_read_takes_the_shared_shard_lock;
 #[path = "tests/a_string_increment_and_append_are_one_step.rs"]
 mod a_string_increment_and_append_are_one_step;
 #[path = "tests/a_set_length_and_membership_read_the_member_map.rs"]
@@ -617,3 +621,5 @@ mod a_latency_and_throughput_harness;
 mod a_hash_and_string_point_read_takes_the_shared_lock;
 #[path = "tests/a_feature_range_read_takes_the_shared_lock.rs"]
 mod a_feature_range_read_takes_the_shared_lock;
+#[path = "tests/a_restating_write_names_one_bucket_not_the_shard.rs"]
+mod a_restating_write_names_one_bucket_not_the_shard;

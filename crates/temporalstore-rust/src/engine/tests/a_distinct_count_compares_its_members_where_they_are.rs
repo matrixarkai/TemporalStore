@@ -228,9 +228,10 @@ mod probe {
             "a count over one bucket allocated {one_slope:.3} blocks per member: it is copying them"
         );
         assert!(
-            many_slope < 0.5,
+            many_slope < 0.02,
             "a count over {BUCKETS} buckets allocated {many_slope:.3} blocks per member; a union of \
-             borrows allocates about one block per ten members, a union of copies one or more per member"
+             borrows in a table sized once allocates the same at any member count, an ordered set \
+             of borrows about one block per ten members, a union of copies one or more per member"
         );
     }
 }

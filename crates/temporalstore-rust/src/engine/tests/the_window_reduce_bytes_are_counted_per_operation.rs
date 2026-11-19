@@ -28,7 +28,7 @@ use crate::types::{
     WindowReduceRollupSpec, WindowReduceScore, WindowReduceWindow,
 };
 
-fn open(dir: &std::path::Path, cap: Option<usize>) -> TemporalEngine {
+pub(super) fn open(dir: &std::path::Path, cap: Option<usize>) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
         256 * 1024 * 1024,
         dir.join("cache"),
@@ -62,7 +62,7 @@ fn key_spec() -> KeySpec {
     }
 }
 
-fn stored_key(entity: u64) -> String {
+pub(super) fn stored_key(entity: u64) -> String {
     encode_key(&key_spec(), &CellKey { entity: EntityValue::U64(entity), dims: vec![Some(DimValue::U16(3))] }).unwrap()
 }
 
@@ -197,7 +197,7 @@ fn merge(engine: &TemporalEngine, key: &str, timestamp_ms: u64, value: Vec<u8>, 
 }
 
 /// `samples` samples of `cells_per` cells at stamps 100, 200, ... in one append.
-fn seed_samples(engine: &TemporalEngine, key: &str, samples: usize, cells_per: usize) {
+pub(super) fn seed_samples(engine: &TemporalEngine, key: &str, samples: usize, cells_per: usize) {
     let points: Vec<FeaturePoint> = (0..samples as u64)
         .map(|i| FeaturePoint { timestamp_ms: 100 * (i + 1), value: value_of(cells_per, i + 1) })
         .collect();
@@ -205,7 +205,7 @@ fn seed_samples(engine: &TemporalEngine, key: &str, samples: usize, cells_per: u
     assert!(response.status.ok, "{:?}", response.status);
 }
 
-fn rank_spec() -> WindowReduceRankSpec {
+pub(super) fn rank_spec() -> WindowReduceRankSpec {
     WindowReduceRankSpec::new(
         WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX },
         WindowReduceScore::Lane { lane: "shown".to_string() },

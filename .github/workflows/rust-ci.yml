@@ -454,6 +454,7 @@ jobs:
             engine::tests::a_set_door_asks_one_member_not_the_set::the_door_never_lists_the_set \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_answers_what_the_sorted_listing_answered \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_reads_a_prefix_and_never_lists \
+            engine::storage_bucket_internals::set_batch_work_tests::a_repeat_write_to_a_marked_collection_visits_no_block_at_any_size \
             engine::tests::set_install_census::every_command_that_installs_a_set_member_reports_a_touched_element \
             shared_store::tests::a_string_increment_and_an_append_are_framed_as_protobuf_and_round_trip \
             engine::tests::part4::what_each_command_recorded_describes_everything_it_changed \
@@ -1052,6 +1053,28 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-compact.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
+      - name: cargo test (writer wait by stage window guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # A write is charged to the stage window it began in, the percentile is nearest-rank, and
+          # the loop report's stage rows tile the round with a start offset on the clock of their
+          # duration. Pinned by exact name: they would otherwise run only in the advisory suite.
+          for t in \
+            engine::writer_stall_probe::window_math_tests::a_write_is_charged_to_the_window_it_began_in \
+            engine::writer_stall_probe::window_math_tests::nearest_rank_percentiles_of_a_known_sample \
+            data_node::tests::loop_report::a_writers_waits_are_attributed_to_the_stage_window_it_began_in
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-stall-window.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-stall-window.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-stall-window.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
       - name: cargo test (async reopen finds every acknowledged key guards, hard gate)
         timeout-minutes: 20
         run: |
@@ -1282,6 +1305,7 @@ jobs:
             engine::tests::a_feature_range_read_takes_the_shared_lock::a_range_read_answers_what_was_appended \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::each_point_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::the_fast_reads_answer_what_the_ordinary_reads_answer \
+            engine::tests::a_restating_write_names_one_bucket_not_the_shard::a_bucket_projection_names_what_the_whole_shard_inversion_names \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::length_and_range_answer_what_the_whole_read_answers \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::a_lapsed_string_has_no_length_and_no_range \
             engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::an_outcome_kind_serializes_as_the_plain_string_for_every_kind_in_use \
@@ -1449,6 +1473,7 @@ jobs:
             engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::probe::a_write_does_not_pay_for_the_objects_it_did_not_touch \
             engine::tests::a_feature_sum_reads_each_point_in_place::probe::a_feature_sum_does_not_allocate_per_point \
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::probe::a_sequence_query_does_not_allocate_per_row \
+            engine::tests::a_restating_write_names_one_bucket_not_the_shard::probe::a_restating_write_does_not_allocate_with_the_shard \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::probe::a_length_and_a_range_do_not_allocate_per_byte \
             engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::probe::a_known_outcome_kind_allocates_nothing \
             engine::tests::a_hash_field_presence_is_read_from_its_row::probe::a_presence_check_does_not_copy_the_value \

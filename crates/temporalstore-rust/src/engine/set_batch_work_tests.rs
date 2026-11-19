@@ -82,9 +82,8 @@ fn fresh_set_batches_do_not_scan_preexisting_refs_per_member() {
             "the set writer already filed its blocks"
         );
         assert_eq!(
-            dirty,
-            (existing + 128) as u64,
-            "propagate once per touched object"
+            dirty, 0,
+            "the object was already marked by the earlier batch, so its blocks are not visited again"
         );
         assert_dirty(&engine, "order");
         println!("existing={existing} async={async_storage} supersede_visits={supersede} dirty_visits={dirty}");
@@ -103,7 +102,7 @@ fn single_set_append_does_not_refile_the_whole_object() {
         command: append(128, 1).pop().unwrap(),
     });
     assert!(response.status.ok);
-    assert_eq!(counts(), (0, 129));
+    assert_eq!(counts(), (0, 0), "a repeat mark of a marked object visits no block");
     assert_eq!(bucket_block_upserts() - before, 0);
     assert_dirty(&engine, "order");
 }
@@ -314,5 +313,35 @@ fn fresh_hash_batches_do_not_scan_preexisting_refs_per_field() {
             "a clean hash still needs its first walk"
         );
         assert!(block_marks().iter().all(|dirty| *dirty));
+    }
+}
+
+/// A write into a collection visits the collection's blocks once per dump cycle, not once per
+/// write: the first write after a load marks the object and pushes, every later write finds it
+/// marked. Held at two sizes so a cost that grew with the elements held could not pass.
+#[test]
+fn a_repeat_write_to_a_marked_collection_visits_no_block_at_any_size() {
+    for existing in [64usize, 4_096] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path());
+        write(&engine, append(0, existing));
+        engine.unload_shard(1);
+        engine.load_shard(1);
+        reset();
+        for (n, command) in append(existing, 50).into_iter().enumerate() {
+            let response = engine.execute(ExecuteRequest { shard_id: 1, command });
+            assert!(response.status.ok);
+            let visits = counts().1;
+            if n == 0 {
+                assert_eq!(
+                    visits as usize,
+                    existing + 1,
+                    "the first write after a load marks the object and visits its {existing} blocks and the one it filed"
+                );
+            } else {
+                assert_eq!(visits as usize, existing + 1, "write {n} visited more blocks");
+            }
+        }
+        assert_dirty(&engine, "order");
     }
 }

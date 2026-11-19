@@ -89,6 +89,7 @@ mod storage_reports;
 mod prometheus_metrics;
 mod stream_batch_methods;
 mod recovery_sweep_compact;
+mod bucket_owners;
 #[path = "engine/engine_persistence.rs"]
 mod persistence;
 pub(crate) mod bucket_dump_codec;
@@ -437,25 +438,36 @@ pub struct TemporalEngine {
 pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Optional foreground relocation threshold. Both spellings remain supported; zero or an
-/// unset setting leaves log-backed values in their existing durable records.
+/// Optional foreground relocation threshold. Zero or an unset setting leaves log-backed values
+/// in their existing durable records.
 ///
 /// Registrations contain locations, not retained payloads. Their count follows indexed live
 /// identities, while the payload cache enforces its byte capacity independently. Moving every
 /// old location to a slab just because the index grew duplicates needed log data without
 /// freeing a reclaimable record. Maintenance handles relocation pressure separately.
 fn wal_resident_block_limit() -> usize {
-    crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"], 0)
+    crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS"], 0)
 }
+
+/// Two tests set and clear `TS_WAL_RESIDENT_BLOCKS` for the whole process while the harness runs
+/// tests on parallel threads. Each holds this lock for its whole body, so neither reads the other's
+/// value or clears it from under it.
+#[cfg(test)]
+pub(crate) static WAL_RESIDENT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod wal_resident_env_name_tests {
-    /// The previous spelling of this bound must keep configuring it.
+    /// THE ONE SPELLING BOUNDS THE SET, AND A RETIRED ONE DOES NOT.
     ///
-    /// An operator's explicit relocation policy must keep working under either spelling.
-    /// Unset is different from an explicit limit, and the current spelling wins over the alias.
+    /// The bound used to be read under an older spelling as well. A lookup list that gains that
+    /// name back would make every deployment still exporting it run with a relocation policy it
+    /// was not given, silently. The value set under the retired name differs from the default,
+    /// so "ignored" cannot be confused with "read and equal".
     #[test]
-    fn the_previous_wal_resident_env_name_still_bounds_the_set() {
+    fn only_the_current_wal_resident_env_name_bounds_the_set() {
+        let _env = super::WAL_RESIDENT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let keys = ["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"];
         for key in keys {
             std::env::remove_var(key);
@@ -466,20 +478,12 @@ mod wal_resident_env_name_tests {
         std::env::set_var("TS_WAL_RESIDENT_PAGES", "64");
         assert_eq!(
             super::wal_resident_block_limit(),
-            64,
-            "the previous spelling must still bound the resident set, not fall back to the default"
-        );
-        assert_ne!(
-            super::wal_resident_block_limit(), default_limit,
-            "a value read from the previous name must differ from the default, or this proves              nothing"
+            default_limit,
+            "a retired spelling bounded the resident set"
         );
 
         std::env::set_var("TS_WAL_RESIDENT_BLOCKS", "128");
-        assert_eq!(
-            super::wal_resident_block_limit(),
-            128,
-            "the current spelling must win when both are set, or a deployment mid-migration gets              whichever the lookup tried first"
-        );
+        assert_eq!(super::wal_resident_block_limit(), 128);
 
         for key in keys {
             std::env::remove_var(key);
@@ -1918,6 +1922,7 @@ impl TemporalEngine {
                 | Command::HashFieldExists { .. }
                 | Command::FeatureQuery { .. }
                 | Command::FeatureQueryFiltered { .. }
+                | Command::WindowReduceRank { .. }
         );
         if !read_command {
             return None;
@@ -2117,6 +2122,38 @@ impl TemporalEngine {
                         filters: Some(filters.as_slice()),
                     }
                 }
+                Command::WindowReduceRank { key, spec } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    // A spec admission would refuse is answered by the ordinary path, with its
+                    // status; this one only serves what the ordinary path would have served.
+                    if crate::engine::window_reduce_rank::validate_spec(spec).is_err() {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    let now_ms = resolve_now_ms();
+                    // THE ENTRIES ARE COPIED OUT UNDER THE GUARD and every block is read after it
+                    // drops, as a feature range read does: a ranked read decodes up to a window
+                    // bound of samples, and holding the guard across that stopped every writer.
+                    FastPathRead::WindowReduceRank {
+                        key: key.as_str(),
+                        spec,
+                        held: shard
+                            .features()
+                            .get(key.as_str())
+                            .map(|series| window_reduce_rank_read::snapshot(series, spec, now_ms))
+                            .unwrap_or_default(),
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        now_ms,
+                    }
+                }
                 Command::HashLen { key } | Command::HashFieldExists { key, .. } => {
                     if shard
                         .expires_at_ms()
@@ -2293,6 +2330,34 @@ impl TemporalEngine {
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::FeaturePoints { points },
+                })
+            }
+            FastPathRead::WindowReduceRank {
+                key,
+                spec,
+                held,
+                start_routing_bucket,
+                end_routing_bucket,
+                now_ms,
+            } => {
+                self.note_fast_read_recency(
+                    request.shard_id,
+                    block_routing_bucket(key, start_routing_bucket, end_routing_bucket),
+                );
+                let ranked = window_reduce_rank_read::serve_snapshot(
+                    &self.cache,
+                    &self.block_store,
+                    request.shard_id,
+                    key,
+                    spec,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    now_ms,
+                    held,
+                );
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::WindowReduceRanking { ranked },
                 })
             }
             FastPathRead::Answer {
@@ -3065,6 +3130,9 @@ impl TemporalEngine {
         // The id it is being INSERTED UNDER, so the shard and the key the served map routes it by
         // can never be two different numbers.
         state.set_shard_id(shard_id);
+        // THE PER-BUCKET OWNERS, built while the state is still private to this thread, for the
+        // same reason as the deadline view below. Absent, every caller falls back to the walk.
+        state.bucket_index.ensure_bucket_owners();
         // BUILT HERE, BEFORE THE TABLE LOCK, so the first sweep after a load or a manifest
         // install does not pay for it. `expiry_by_deadline` is `serde(skip)`, so every state that
         // arrives from disk has it empty, and `ensure_expiry_order` rebuilt it on the first
@@ -3701,10 +3769,30 @@ enum FastPathRead<'a> {
         /// `Some` for the filtered read, which keeps the points whose row every filter holds for.
         filters: Option<&'a [crate::types::FeatureFilter]>,
     },
+    /// A ranked cell read: the entries it opens, taken under the guard; the samples are read after
+    /// it drops.
+    WindowReduceRank {
+        key: &'a str,
+        spec: &'a crate::types::WindowReduceRankSpec,
+        held: window_reduce_rank_read::RankSnapshot,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+        now_ms: u64,
+    },
 }
 
 impl FastPathRead<'_> {
     fn pin_feature_slabs(&self, blocks: &BlockStore) -> Option<crate::block_store::BlockStoreReadSnapshot> {
+        if let Self::WindowReduceRank { held, .. } = self {
+            let mut snapshot = None;
+            for address in held.entries() {
+                if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                    snapshot.get_or_insert_with(|| crate::block_store::BlockStoreReadSnapshot::new(blocks))
+                        .pin(address.block_slab_id());
+                }
+            }
+            return snapshot;
+        }
         let Self::FeatureRange { window, .. } = self else { return None; };
         let mut snapshot = None;
         for (_, address) in window {
@@ -3757,6 +3845,18 @@ impl FastPathRead<'_> {
                     if crate::wal_record::is_wal_resident(address.block_slab_id()) {
                         snapshot.get_or_insert_with(|| {
                             block_in_wal::ReadSnapshotGuard::retained_batch(blocks, shard, window.len())
+                        }).pin(blocks, object, None, address);
+                    }
+                }
+                snapshot
+            }
+            Self::WindowReduceRank { key, held, .. } => {
+                let mut snapshot = None;
+                let object = stable_block_object_id(shard, "feature", key);
+                for address in held.entries() {
+                    if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                        snapshot.get_or_insert_with(|| {
+                            block_in_wal::ReadSnapshotGuard::retained_batch(blocks, shard, held.entries().count())
                         }).pin(blocks, object, None, address);
                     }
                 }
@@ -7226,6 +7326,11 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     let Some(shard_id) = shard.shard_id() else {
         return false;
     };
+    // A state that was cloned or swapped in has no owners until something builds them; build them
+    // here, once, so the bucket below is named from its own objects and not from the shard.
+    shard.bucket_index.ensure_bucket_owners();
+    #[cfg(test)]
+    shard.bucket_index.assert_bucket_owners_cover_every_ref();
     // A RELEASED bucket holds no block entries, so the walk below finds nothing to remove and the
     // object id would stay claimed until some later reload re-derived the set. Settle it here,
     // while the model map this reads the address out of still holds the block.
@@ -7263,12 +7368,14 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             .map(|keys| crate::engine::state::block_identities_in(&bucket, keys))
             .filter(|names| names.len() == bucket.block_index.len())
             .unwrap_or_else(|| {
+                // THE BUCKET'S OWN OBJECTS, not every object of the shard.
                 crate::engine::state::block_identities_in(
                     &bucket,
-                    &crate::engine::state::BlockKeysByPosition::from_parts_for_bucket(
+                    &crate::engine::state::BlockKeysByPosition::from_owned_buckets(
                         &shard.bucket_index.objects,
                         &shard.bucket_index.object_block_lookup,
-                        routing_bucket,
+                        shard.bucket_index.bucket_owners.get(),
+                        &[routing_bucket],
                     ),
                 )
             });
@@ -7322,6 +7429,11 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             // Moved below the prune, which touches `object_index` and never this field. Nothing
             // between them reads it.
             bucket.deleted_object_index.extend(deleted_object_ids);
+            // THE OBJECT HAS LEFT THIS BUCKET. Forgetting is not needed for correctness (a stale
+            // owner names nothing) but keeps the lists to the objects that are there.
+            if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
+                owners.forget_key(routing_bucket, key);
+            }
         }
     }
     if removed {
