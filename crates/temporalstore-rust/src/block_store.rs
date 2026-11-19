@@ -1563,8 +1563,8 @@ pub struct BlockStorePurgeDelayedDestroyReport {
     /// listing ran out reports exactly what the listing held.
     #[serde(default)]
     pub examined_block_slabs: usize,
-    /// The round returned WITHOUT opening the trash directory, because no quarantined slab could
-    /// have matured yet.
+    /// The round returned WITHOUT opening the trash directory: no live slab needed restoring,
+    /// and deletion was either disabled for the round or impossible before the grace expired.
     ///
     /// This is what makes the four lists above readable when they are all empty. Without it an
     /// empty `retained_too_young_block_slab_ids` says "the round walked and held nothing back",
@@ -2714,6 +2714,23 @@ impl BlockStore {
         )
     }
 
+    /// Restore named live slabs without granting deletion authority, even if the grace expires
+    /// after the caller chose an approximate live set.
+    pub(crate) fn restore_delayed_destroy_slabs_selected(
+        &self,
+        min_age_ms: u64,
+        live_block_slab_ids: impl IntoIterator<Item = u64>,
+        selected_block_slab_ids: Option<BTreeSet<u64>>,
+    ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
+        self.run_delayed_destroy_round(
+            min_age_ms,
+            live_block_slab_ids,
+            selected_block_slab_ids,
+            DELAYED_DESTROY_MAX_SLABS_PER_ROUND,
+            false,
+        )
+    }
+
     /// The purge, bounded to `max_slabs_per_round` slabs of work. 0 means unbounded.
     ///
     /// THE BOUND IS ON THE LOCK HOLD. Everything above funnels into this function, and this
@@ -2778,6 +2795,23 @@ impl BlockStore {
         selected_block_slab_ids: Option<BTreeSet<u64>>,
         max_slabs_per_round: usize,
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
+        self.run_delayed_destroy_round(
+            min_age_ms,
+            live_block_slab_ids,
+            selected_block_slab_ids,
+            max_slabs_per_round,
+            true,
+        )
+    }
+
+    fn run_delayed_destroy_round(
+        &self,
+        min_age_ms: u64,
+        live_block_slab_ids: impl IntoIterator<Item = u64>,
+        selected_block_slab_ids: Option<BTreeSet<u64>>,
+        max_slabs_per_round: usize,
+        allow_destroy: bool,
+    ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
         let mut live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         live_block_slab_ids.extend(inner.read_pins.keys().copied());
@@ -2801,17 +2835,18 @@ impl BlockStore {
         // THE ROUND THAT DOES NOT HAPPEN. See the note above the signature for why this is an
         // equivalence rather than an approximation; both halves of the condition are required and
         // neither costs a system call.
-        if let Some(earliest) = inner.delayed_destroy_earliest_unix_ms {
-            if now_unix_ms().saturating_sub(earliest) < min_age_ms
-                && !live_set_names_a_quarantined_slab(&inner.slabs, &live_block_slab_ids)
-            {
-                return Ok(BlockStorePurgeDelayedDestroyReport {
-                    max_slabs_per_round,
-                    declined_without_examining: true,
-                    quarantine_arrivals_seen: inner.quarantine_arrivals,
-                    ..Default::default()
-                });
-            }
+        let no_deletion_work = !allow_destroy
+            || inner.delayed_destroy_earliest_unix_ms
+                .is_some_and(|earliest| now_unix_ms().saturating_sub(earliest) < min_age_ms);
+        if no_deletion_work
+            && !live_set_names_a_quarantined_slab(&inner.slabs, &live_block_slab_ids)
+        {
+            return Ok(BlockStorePurgeDelayedDestroyReport {
+                max_slabs_per_round,
+                declined_without_examining: true,
+                quarantine_arrivals_seen: inner.quarantine_arrivals,
+                ..Default::default()
+            });
         }
         // WHAT THIS ROUND LEARNS ABOUT THE EARLIEST ARRIVAL, which it may only publish if it ends
         // up having seen every entry that is still in the directory when it finishes. `None` here
@@ -2898,6 +2933,15 @@ impl BlockStore {
                     );
                     restore_blocked.push(id);
                 }
+                continue;
+            }
+            // Deletion authority cannot grow when the clock crosses the grace boundary.
+            if !allow_destroy {
+                observe_quarantined_arrival(
+                    stamped_at,
+                    &mut earliest_seen,
+                    &mut may_publish_earliest,
+                );
                 continue;
             }
             // Quarantining goes through `set_slab_state`, which stamps `updated_unix_ms`, so the
@@ -4106,6 +4150,10 @@ mod gc_scan_window;
 #[cfg(test)]
 #[path = "block_store/open_read_scale.rs"]
 mod open_read_scale;
+
+#[cfg(test)]
+#[path = "block_store/restore_only_tests.rs"]
+mod restore_only_tests;
 
 #[cfg(test)]
 mod tests {
