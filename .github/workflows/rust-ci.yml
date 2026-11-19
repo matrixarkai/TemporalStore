@@ -379,6 +379,7 @@ jobs:
               engine::storage_lifecycle_methods::planning_order_tests::claim_ranks_match_manifest_augmented_summaries \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::execution_plan_uses_dirty_metadata_without_block_summaries \
               data_node::runtime_storage::maintenance_report_tests::timer_pressure_plans_preserve_work_without_bucket_reports \
+              data_node::round_budget::tests::a_tick_runs_one_heavy_slot_and_each_slot_runs_only_its_own_stages \
               wal::read_retention_tests::acquiring_and_releasing_a_read_lease_does_not_wait_for_wal_io \
               block_store::read_retention::tests::nested_readers_protect_only_named_slabs_until_last_release \
               block_store::read_retention::tests::read_pins_survive_quarantine_plans_and_restore_before_purge \
