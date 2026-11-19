@@ -125,6 +125,16 @@ fn in_situ_charge_per_record(records: usize) -> (f64, f64) {
     // THE CORPUS IS BUILT BEFORE THE SPAN OPENS, for the reason `alloc_class_scale` gives: a probe
     // that assembles its commands inside the measured window charges the store for its own fixture.
     let keys = corpus(records);
+    // A WRITE INVALIDATES ONLY WHAT THE CACHE HOLDS (`invalidate_if_cached`), and a freshly
+    // ingested key is held by no tier, so without this every write would skip the invalidation and
+    // the class would read zero. Each key gets an entry before the span, which is the regime the
+    // ladder above prices: a key some reader has already asked for.
+    for key in &keys {
+        engine
+            .cache()
+            .put(CacheKey::string(1, key), vec![7u8; 8])
+            .expect("seed a cached entry");
+    }
     let mut batches: Vec<Vec<Command>> = Vec::new();
     for chunk in keys.chunks(BATCH) {
         batches.push(

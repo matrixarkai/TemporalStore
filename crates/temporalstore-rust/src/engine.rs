@@ -8893,7 +8893,14 @@ fn invalidate_cache_key_inner(cache: &MultiLayerCache, key: CacheKey, memory_onl
     if memory_only {
         cache.invalidate_memory_only(&key);
     } else {
-        let _ = cache.invalidate(&key);
+        // ASK BEFORE INVALIDATING. A full `invalidate` of a key no tier holds still walks every
+        // tier's bookkeeping (disk index, manifest delete line, pmem delete line, ssd block
+        // delete), and that walk is the largest allocation class of a value write. A string's
+        // logical key is not filled by `StringGet`, so on an ordinary write it is absent from
+        // every tier and the walk removes nothing. `peek` answers for all three tiers and reports
+        // an expired entry as absent, which is the answer every read of it gives, so skipping on
+        // `false` leaves exactly the entries a reader could have been served.
+        invalidate_if_cached(cache, key);
     }
 }
 
