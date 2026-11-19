@@ -6064,6 +6064,11 @@ impl DirtyObjectIndex {
         self.by_key.contains_key(object_key)
     }
 
+    /// Whether `object_key` is already marked dirty under exactly `routing_bucket`.
+    pub(super) fn is_marked_at(&self, object_key: &str, routing_bucket: u32) -> bool {
+        self.by_key.get(object_key) == Some(&routing_bucket)
+    }
+
     /// Every dirty object key, in key order -- what iterating the flat set gave.
     pub(super) fn iter(&self) -> impl Iterator<Item = &str> + '_ {
         self.by_key.keys().map(|key| &**key)
