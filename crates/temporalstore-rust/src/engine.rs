@@ -1946,6 +1946,9 @@ impl TemporalEngine {
                 | Command::SetIsMember { .. }
                 | Command::WindowReduceRankBatch { .. }
                 | Command::WindowReduceFanInRank { .. }
+                | Command::ZSetRange { .. }
+                | Command::SetMembers { .. }
+                | Command::ListRange { .. }
         );
         if !read_command {
             return None;
@@ -2307,7 +2310,9 @@ impl TemporalEngine {
                 | Command::ListLen { key }
                 | Command::SetScan { key, .. }
                 | Command::SetCard { key }
-                | Command::SetIsMember { key, .. } => {
+                | Command::SetIsMember { key, .. }
+                | Command::ZSetRange { key, .. }
+                | Command::SetMembers { key } => {
                     if shard
                         .expires_at_ms()
                         .get(key.as_str())
@@ -2324,6 +2329,29 @@ impl TemporalEngine {
                     let response = index_only_read(shard, &request.command)?;
                     FastPathRead::Response {
                         response,
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                Command::ListRange { key, start, stop } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    // THE ADDRESSES ARE TAKEN UNDER THE GUARD AND THE BLOCKS ARE READ AFTER IT DROPS,
+                    // as a hash read does: the window is copied, and pinned if any of it is still in
+                    // the log.
+                    FastPathRead::List {
+                        key: key.as_str(),
+                        window: execute_on_shard::list_range_window(shard, key, *start, *stop),
                         routing_bucket: block_routing_bucket(
                             key,
                             start_routing_bucket,
@@ -2539,6 +2567,29 @@ impl TemporalEngine {
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::WindowReduceRanking { ranked },
+                })
+            }
+            FastPathRead::List {
+                key,
+                window,
+                routing_bucket,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                // A block that cannot be read declines the fast path, so the ordinary path answers
+                // instead of this one answering short.
+                let members = execute_on_shard::read_list_window(
+                    &self.cache,
+                    &self.block_store,
+                    request.shard_id,
+                    key,
+                    &window,
+                    routing_bucket,
+                )
+                .into_iter()
+                .collect::<Option<Vec<_>>>()?;
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Members { members },
                 })
             }
             FastPathRead::Response {
@@ -4010,6 +4061,12 @@ enum FastPathRead<'a> {
     },
     /// An integer answered from the index alone, with nothing to read afterwards.
     Answer { value: i64, routing_bucket: u32 },
+    /// The addresses of a list window, taken under the guard; the elements are read after it drops.
+    List {
+        key: &'a str,
+        window: Vec<(i64, ElementEntry)>,
+        routing_bucket: u32,
+    },
     /// A whole response answered from a resident map under the guard, with nothing to read
     /// afterwards.
     Response {
@@ -4078,6 +4135,10 @@ fn index_only_read(shard: &ShardState, command: &Command) -> Option<CommandRespo
         Command::SetIsMember { key, member } => {
             execute_on_shard::set_is_member_answer(shard, key, member)
         }
+        Command::ZSetRange { key, start, stop, rev } => {
+            Some(execute_on_shard::zset_range_answer(shard, key, *start, *stop, *rev))
+        }
+        Command::SetMembers { key } => execute_on_shard::set_members_from_map(shard, key),
         _ => None,
     }
 }
@@ -4182,7 +4243,23 @@ impl FastPathRead<'_> {
                 }
                 snapshot
             }
-            Self::Hash { .. } | Self::Answer { .. } | Self::Response { .. } => None,
+            Self::List { key, window, .. }
+                if window.iter().any(|(_, address)| {
+                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                }) =>
+            {
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                let object = stable_block_object_id(shard, "list", key);
+                for (seq, address) in window {
+                    if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                        let mut name = [0_u8; 16];
+                        let element_name = execute_on_shard::list_element_name(*seq, &mut name);
+                        guard.pin(blocks, object, Some(element_name), address);
+                    }
+                }
+                Some(guard)
+            }
+            Self::Hash { .. } | Self::Answer { .. } | Self::Response { .. } | Self::List { .. } => None,
         }
     }
 }
