@@ -1173,7 +1173,12 @@ jobs:
             engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_key_written_through_the_single_command_async_path \
             engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_key_written_through_the_batch_path \
             engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_live_key_after_async_deadline_keys_expire_between_cycles \
-            engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_live_key_after_async_expire_commands_on_clean_keys
+            engine::tests::a_reopen_after_capped_dumps_and_wal_reclaim_finds_every_acknowledged_key::a_reopen_finds_every_live_key_after_async_expire_commands_on_clean_keys \
+            engine::checkpoint_release_tests::borrowed_checkpoint_keeps_released_records_without_repopulating_live_buckets \
+            engine::checkpoint_release_tests::stamped_checkpoint_keeps_released_records_without_repopulating_live_buckets \
+            engine::tests::part3::bucket_index_is_authoritative_when_secondary_views_are_missing \
+            engine::tests::part3::cold_read_uses_bucket_block_address_after_cache_and_model_maps_are_cleared \
+            engine::tests::part3::legacy_model_maps_are_promoted_to_bucket_index_authority
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-reopen.log
             # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.

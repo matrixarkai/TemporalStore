@@ -1106,7 +1106,7 @@ pub(super) fn durable_recovery_bucket_dump_manifest_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
 ) -> Option<BucketDumpManifest> {
-    list_bucket_dump_manifests_at(index_dir, shard_id)
+    list_bucket_dump_manifests_shared_at(index_dir, shard_id)
         .ok()?
         .into_iter()
         // Tie-broken by the index-log order this used to sort by, so a shard whose two orderings
@@ -1119,6 +1119,7 @@ pub(super) fn durable_recovery_bucket_dump_manifest_at(
                 manifest.created_unix_ms,
             )
         })
+        .map(own_memoised_manifest)
 }
 
 /// The manifest's checksum, over its own protobuf encoding with the checksum field emptied.
