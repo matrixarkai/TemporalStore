@@ -126,6 +126,24 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: Recovery dirty bucket selection checks
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          for test in \
+            missing_dirty_bucket_selection_does_not_list_live_blocks \
+            empty_dirty_nodes_remain_visible_without_blocks \
+            metadata_and_container_models_use_the_same_dirty_selection \
+            a_dumped_bucket_does_not_hide_dirty_neighbours \
+            node_flags_not_key_ledger_counts_decide_coverage \
+            unloaded_shard_has_no_missing_dirty_buckets; do
+            cargo test --locked -p temporalstore-rust --lib --release \
+              "engine::storage_reports::recovery_dirty_bucket_tests::$test" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/recovery-dirty-bucket.log
+            grep -q 'running 1 test' /tmp/recovery-dirty-bucket.log
+            grep -q 'test result: ok\. 1 passed; 0 failed; 0 ignored;' /tmp/recovery-dirty-bucket.log
+          done
+
       - name: Ollama extraction source isolation checks
         timeout-minutes: 30
         run: |
