@@ -2740,7 +2740,7 @@ impl DataNodeRuntime {
     }
 
     #[cfg(test)]
-    fn new_without_workers_with_options(
+    pub(crate) fn new_without_workers_with_options(
         engine: TemporalEngine,
         options: DataNodeRuntimeOptions,
     ) -> Self {

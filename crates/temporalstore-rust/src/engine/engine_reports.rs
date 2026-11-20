@@ -3109,9 +3109,16 @@ pub struct CatalogDumpReclaimReport {
     /// dropped with `.ok()` and each field then read through `unwrap_or_default()`.
     #[serde(default)]
     pub index_log_sweep_failed: bool,
+    /// Records removed from the active WAL file; sealed-segment retirement is counted below.
     pub wal_records_removed: usize,
+    /// Active WAL file sizes, excluding the sealed segments counted separately below.
     pub wal_bytes_before: u64,
     pub wal_bytes_after: u64,
+    /// Whole WAL segments retired without rewriting their records.
+    #[serde(default)]
+    pub wal_segments_dropped: usize,
+    #[serde(default)]
+    pub wal_segment_bytes_dropped: u64,
     /// The write-ahead-log sweep returned an error and the three fields above are defaults.
     ///
     /// This is the field that makes the difference sayable. An errored sweep and an empty one

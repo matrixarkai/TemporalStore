@@ -20,6 +20,79 @@ fn execute(engine: &TemporalEngine, command: Command) {
     assert!(response.status.ok, "{:?}", response.status);
 }
 
+fn seed_catalog_wal_models(engine: &TemporalEngine) -> Vec<(Command, CommandResponse)> {
+    execute(engine, Command::StringSet { key: "catalog-string".into(), value: b"scalar".to_vec() });
+    execute(engine, Command::HashSet {
+        key: "catalog-hash".into(), field: "field".into(), value: b"member".to_vec(),
+    });
+    let point = crate::types::FeaturePoint { timestamp_ms: 7, value: b"point".to_vec() };
+    execute(engine, Command::FeatureAppend { key: "catalog-feature".into(), points: vec![point.clone()] });
+    let queries = vec![
+        (Command::StringGet { key: "catalog-string".into() },
+         CommandResponse::Bytes { value: Some(b"scalar".to_vec()) }),
+        (Command::HashGet { key: "catalog-hash".into(), field: "field".into() },
+         CommandResponse::Bytes { value: Some(b"member".to_vec()) }),
+        (Command::FeatureQuery { key: "catalog-feature".into(), start_ms: 0, end_ms: 100, count: None },
+         CommandResponse::FeaturePoints { points: vec![point] }),
+    ];
+    check_catalog_wal_models(engine, &queries);
+    queries
+}
+
+fn check_catalog_wal_models(engine: &TemporalEngine, queries: &[(Command, CommandResponse)]) {
+    for (command, expected) in queries {
+        let response = engine.execute(ExecuteRequest { shard_id: 1, command: command.clone() });
+        assert!(response.status.ok, "{command:?}: {:?}", response.status);
+        assert_eq!(&response.response, expected, "{command:?}");
+    }
+}
+
+#[test]
+fn catalog_checkpoint_keeps_locators_for_live_wal_backed_models() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    let queries = seed_catalog_wal_models(&engine);
+    let expected = engine.capture_shard_checkpoint(1).unwrap().0.wal_resident_blocks;
+    assert!(expected.len() >= 3, "all three models must depend on WAL records");
+    for _ in 0..2 {
+        let report = engine.dump_and_reclaim_index_logs_with_min_reclaimable(1, 0).unwrap();
+        assert!(!report.wal_sweep_failed && !report.index_log_sweep_failed, "{report:?}");
+        let current = engine.capture_shard_checkpoint(1).unwrap().0;
+        assert_eq!(current.wal_resident_blocks, expected,
+            "an index checkpoint does not relocate the values it still names in WAL");
+        let persisted = engine.load_index_base_only(1, false).unwrap();
+        assert_eq!(persisted.wal_resident_blocks, expected);
+        check_catalog_wal_models(&engine, &queries);
+    }
+}
+
+#[test]
+fn catalog_checkpoint_repeated_dumps_restore_wal_backed_models() {
+    for materialize_string in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_at(dir.path());
+        let queries = seed_catalog_wal_models(&engine);
+        if materialize_string {
+            assert_eq!(engine.materialize_synthetic_blocks(1), 1);
+        }
+        assert!(engine.synthetic_address_count_for_test(1) > 0);
+        let anchor = engine.wal_store.stats_without_rescan(1).last_sequence;
+        for _ in 0..2 {
+            let report = engine.dump_and_reclaim_index_logs_with_min_reclaimable(1, 0).unwrap();
+            assert!(!report.wal_sweep_failed && !report.index_log_sweep_failed, "{report:?}");
+            assert_eq!(report.wal_anchor, anchor);
+        }
+        assert_eq!(engine.load_index_base_only(1, false).unwrap().applied_wal_sequence, Some(anchor),
+            "the checkpoint must cover every write, not recover missing locators by tail replay");
+        drop(engine);
+        let reopened = TemporalEngine::with_local_dirs(
+            16 << 20, dir.path().join("fresh-cache"), dir.path().join("blocks"), dir.path().join("indexes"),
+        );
+        reopened.load_shard(1);
+        check_catalog_wal_models(&reopened, &queries);
+    }
+}
+
 fn dump_without_round_trip(engine: &TemporalEngine, buckets: Vec<u32>) -> BucketDumpManifest {
     let control = CHECKPOINT_DECODES.with(|count| count.get());
     decode_index_bytes(&serialize_index(&ShardState::default())).unwrap();
