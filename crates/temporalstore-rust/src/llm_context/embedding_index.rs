@@ -6,6 +6,10 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 
 use thiserror::Error;
 
+#[path = "embedding_row_pages.rs"]
+mod row_pages;
+use row_pages::RowPages;
+
 const MAX_EMBEDDING_DIMENSIONS: usize = 4096;
 const SIGNATURE_ROUTING_MIN_DIMENSIONS: usize = 384;
 const SIGNATURE_ROUTING_MIN_ROWS: usize = 8192;
@@ -285,7 +289,7 @@ struct TenantRows {
     item_ids: Vec<u64>,
     positions: IdentityPositions,
     scales: Vec<f32>,
-    vectors: Vec<i8>,
+    vectors: RowPages,
     signature_routing: Option<Box<SignatureRouting>>,
 }
 
@@ -582,21 +586,34 @@ impl SignatureTable {
     }
 }
 
+fn trim_sparse_buffer<T>(buffer: &mut Vec<T>) {
+    if buffer.capacity() > buffer.len().saturating_mul(4) {
+        // Leave growth room; another shrink requires deleting most of the remaining rows.
+        buffer.shrink_to(buffer.len().saturating_mul(2));
+    }
+}
+
 impl TenantRows {
-    fn reserve_vector_rows(&mut self, additional_rows: usize, dimensions: usize) {
-        let required = self
-            .vectors
-            .len()
-            .saturating_add(additional_rows.saturating_mul(dimensions));
-        let capacity = self.vectors.capacity();
-        if required <= capacity {
-            return;
+    fn trim_sparse_capacity(&mut self) {
+        self.vectors.trim_sparse_capacity();
+        trim_sparse_buffer(&mut self.scales);
+        trim_sparse_buffer(&mut self.owner_ids);
+        trim_sparse_buffer(&mut self.item_ids);
+        if let IdentityPositions::Small(positions) = &mut self.positions {
+            if positions.capacity() > positions.len().saturating_mul(4) {
+                positions.shrink_to(positions.len().saturating_mul(2));
+            }
         }
-        // Small buffers grow geometrically; large tenants retain bounded growth headroom.
-        let growth = capacity.max(dimensions).min(MAX_VECTOR_GROWTH_BYTES);
-        let target = required.max(capacity.saturating_add(growth));
-        self.vectors
-            .reserve_exact(target.saturating_sub(self.vectors.len()));
+        if let Some(routing) = self.signature_routing.as_mut() {
+            for table in &mut routing.tables {
+                trim_sparse_buffer(&mut table.next);
+                trim_sparse_buffer(&mut table.previous);
+            }
+        }
+    }
+
+    fn reserve_vector_rows(&mut self, additional_rows: usize, dimensions: usize) {
+        self.vectors.reserve_rows(additional_rows, dimensions);
     }
 
     fn signature_at(&self, dimensions: usize, position: usize) -> Option<u64> {
@@ -711,11 +728,10 @@ impl EmbeddingIndex {
         let (inserted, updated) = if let Some(&position) = rows.positions.get(&identity) {
             let old_signature = rows.signature_at(self.config.dimensions, position);
             rows.scales[position] = scale;
-            let start = position * self.config.dimensions;
             quantize_into(
                 input.values,
                 quantization_multiplier,
-                &mut rows.vectors[start..start + self.config.dimensions],
+                rows.vectors.row_mut(position),
             );
             rows.refresh_signature_routing(self.config.dimensions, position, old_signature);
             (0, 1)
@@ -865,8 +881,7 @@ impl EmbeddingIndex {
                 if let Some(&position) = rows.positions.get(&identity) {
                     let old_signature = rows.signature_at(self.config.dimensions, position);
                     rows.scales[position] = scale;
-                    let start = position * self.config.dimensions;
-                    rows.vectors[start..start + self.config.dimensions].copy_from_slice(vector);
+                    rows.vectors.row_mut(position).copy_from_slice(vector);
                     rows.refresh_signature_routing(
                         self.config.dimensions,
                         position,
@@ -1014,6 +1029,8 @@ impl EmbeddingIndex {
         self.total_entries -= 1;
         if rows.item_ids.is_empty() {
             self.tenants.remove(&key.tenant_id);
+        } else {
+            rows.trim_sparse_capacity();
         }
         true
     }
@@ -1306,8 +1323,7 @@ impl EmbeddingIndex {
         position: usize,
         heap: &mut BinaryHeap<Reverse<HeapHit>>,
     ) {
-        let start = position * self.config.dimensions;
-        let row = &rows.vectors[start..start + self.config.dimensions];
+        let row = rows.vectors.row(position);
         let score =
             (dot.dot(row, query) * rows.scales[position] * query_inverse_norm).clamp(-1.0, 1.0);
         let candidate = HeapHit { score, position };
@@ -1464,8 +1480,7 @@ impl EmbeddingIndex {
             let Some(&position) = rows.positions.get(&(0, item_id)) else {
                 continue;
             };
-            let start = position * self.config.dimensions;
-            let row = &rows.vectors[start..start + self.config.dimensions];
+            let row = rows.vectors.row(position);
             visit(EmbeddingHit {
                 key: EmbeddingKey {
                     tenant_id,
@@ -1730,6 +1745,10 @@ unsafe fn dot_i8_f32_avx2(left: &[i8], right: &[f32]) -> f32 {
 #[cfg(test)]
 #[path = "signature_update_tests.rs"]
 mod signature_update_tests;
+
+#[cfg(test)]
+#[path = "retained_capacity_tests.rs"]
+mod retained_capacity_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2201,7 +2220,7 @@ mod tests {
             item_ids: (0..row_count as u64).collect(),
             positions: IdentityPositions::default(),
             scales: vec![1.0 / 127.0; row_count],
-            vectors: vec![1; row_count * dimensions],
+            vectors: RowPages::from_flat(dimensions, vec![1; row_count * dimensions]),
             signature_routing: None,
         };
         rows.signature_routing = Some(SignatureRouting::build(&rows, dimensions));

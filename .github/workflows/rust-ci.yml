@@ -134,6 +134,17 @@ jobs:
             -- --test-threads=1 2>&1 | tee /tmp/ollama-source-isolation.log
           grep -q 'test result: ok\. 10 passed; 0 failed;' /tmp/ollama-source-isolation.log
 
+      - name: Embedding retained-capacity checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe retained_capacity_tests \
+            -- --test-threads=1 2>&1 | tee /tmp/embedding-retention-gate.log
+          grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/embedding-retention-gate.log
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe row_pages::tests:: \
+            -- --test-threads=1 2>&1 | tee /tmp/embedding-row-pages-gate.log
+          grep -q 'test result: ok\. 3 passed; 0 failed;' /tmp/embedding-row-pages-gate.log
+
       - name: Resource chunk content checks
         timeout-minutes: 30
         run: |
