@@ -643,3 +643,5 @@ mod a_list_position_and_removal_answer_what_a_walk_answered;
 mod a_sequence_read_takes_the_shared_lock;
 #[path = "tests/a_sorted_set_range_and_pop_select_the_first_members.rs"]
 mod a_sorted_set_range_and_pop_select_the_first_members;
+#[path = "tests/a_write_asks_the_cache_before_it_invalidates.rs"]
+mod a_write_asks_the_cache_before_it_invalidates;

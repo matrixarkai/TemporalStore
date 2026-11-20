@@ -2610,7 +2610,7 @@ pub(crate) fn execute_on_shard(
                 );
                 mutated = true;
             }
-            let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+            invalidate_if_cached(cache, CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty
         }
         Command::SetAddMany { key, members } => {
@@ -3796,7 +3796,7 @@ pub(crate) fn execute_on_shard(
         Command::SetMembers { key } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+                invalidate_if_cached(cache, CacheKey::set_members(shard_id, &key));
                 return ExecuteOutcome {
                     response: CommandResponse::Members {
                         members: Vec::new(),
@@ -3906,7 +3906,7 @@ pub(crate) fn execute_on_shard(
         Command::SetCard { key } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+                invalidate_if_cached(cache, CacheKey::set_members(shard_id, &key));
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
                     mutated,
@@ -3946,7 +3946,7 @@ pub(crate) fn execute_on_shard(
         Command::SetIsMember { key, member } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+                invalidate_if_cached(cache, CacheKey::set_members(shard_id, &key));
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
                     mutated,
@@ -4021,7 +4021,7 @@ pub(crate) fn execute_on_shard(
                 end_routing_bucket,
                 async_storage,
             );
-            let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+            invalidate_if_cached(cache, CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty
         }
         Command::SetRemoveMany { key, members } => {
