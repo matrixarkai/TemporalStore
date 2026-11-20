@@ -241,6 +241,17 @@ fn roll_at(bytes: u64) -> RollingThreshold {
     RollingThreshold
 }
 
+fn wal_roll_at(bytes: u64) -> impl Drop {
+    struct ResetWalRoll;
+    impl Drop for ResetWalRoll {
+        fn drop(&mut self) {
+            crate::wal::set_wal_segment_bytes_for_test(None);
+        }
+    }
+    crate::wal::set_wal_segment_bytes_for_test(Some(bytes));
+    ResetWalRoll
+}
+
 /// The kernel's own count of bytes THIS THREAD has written, from outside every book the engine
 /// keeps. `None` is an apparatus failure at every call site rather than a zero.
 ///
@@ -457,6 +468,9 @@ struct DumpAtSize {
     pieces_after: usize,
     wal_released: u64,
     wal_records_removed: usize,
+    wal_segments_dropped: usize,
+    wal_segment_bytes_dropped: u64,
+    wal_bytes_copied: u64,
     /// Whether the sweep errored. Its `Result` is dropped with `.ok()`, so without this the
     /// three fields above are defaults that read exactly like a reading.
     wal_sweep_failed: bool,
@@ -558,8 +572,12 @@ fn measure_dump(dir: &Path, corpus: usize, suffix: usize) -> DumpAtSize {
             .saturating_sub(report.index_log_bytes_after),
         index_log_records_removed: report.index_log_records_removed,
         pieces_after: store.piece_count(SHARD),
-        wal_released: report.wal_bytes_before.saturating_sub(report.wal_bytes_after),
+        wal_released: report.wal_bytes_before.saturating_sub(report.wal_bytes_after)
+            .saturating_add(report.wal_segment_bytes_dropped),
         wal_records_removed: report.wal_records_removed,
+        wal_segments_dropped: report.wal_segments_dropped,
+        wal_segment_bytes_dropped: report.wal_segment_bytes_dropped,
+        wal_bytes_copied: report.wal_bytes_copied,
         wal_sweep_failed: report.wal_sweep_failed,
     }
 }
@@ -620,7 +638,7 @@ fn show(tag: &str, measured: &DumpAtSize) {
         measured.piece_paths,
     );
     eprintln!(
-        "DUMP {tag} corpus={} | RELEASE index_log={} B in {} records, pieces {}->{} | WAL {} B in {} records (log held {} records, {} B) | written per byte released {:.4}",
+        "DUMP {tag} corpus={} | RELEASE index_log={} B in {} records, pieces {}->{} | WAL {} B, active records removed {}, whole segments {} ({} B), copied {} B (log held {} records, {} B) | written per byte released {:.4}",
         measured.corpus,
         measured.index_log_released,
         measured.index_log_records_removed,
@@ -628,6 +646,9 @@ fn show(tag: &str, measured: &DumpAtSize) {
         measured.pieces_after,
         measured.wal_released,
         measured.wal_records_removed,
+        measured.wal_segments_dropped,
+        measured.wal_segment_bytes_dropped,
+        measured.wal_bytes_copied,
         measured.wal_records_before,
         measured.wal_bytes_on_disk_before,
         measured.written_per_byte_released(),
@@ -948,6 +969,81 @@ fn what_a_dump_costs_and_releases_at_two_corpus_sizes() {
 ///
 /// rust-internal: prices the engine's own reclaim reporting, no product behaviour
 #[test]
+fn catalog_segment_reclaim_matches_removed_files_and_restores_keys() {
+    const RECORDS: usize = 1_200;
+    let _rolling = roll_at(ROLL_BYTES);
+    let _slab_values = crate::engine::value_once_in_test(false);
+    let _wal_rolling = wal_roll_at(64 * 1024);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = release_engine(dir.path());
+    for index in 0..RECORDS {
+        assert!(engine.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringSet {
+                key: format!("segment-{index:08}"),
+                value: format!("payload-{index:08}-{}", "x".repeat(96)).into_bytes(),
+            },
+        }).status.ok);
+    }
+    let wal = engine.write_ahead_log_store();
+    let wal_root = wal.info(SHARD).unwrap().path.parent().unwrap().to_path_buf();
+    let before = crate::wal::wal_piece_extents_for_test(&wal_root, SHARD)
+        .into_iter().map(|(path, _, _, _)| {
+            let bytes = path.metadata().unwrap().len();
+            (path, bytes)
+        }).collect::<std::collections::BTreeMap<_, _>>();
+    assert!(before.len() > 1, "the fixture must contain rolled WAL segments");
+    let report = engine.dump_and_reclaim_index_logs_with_min_reclaimable(SHARD, 0).unwrap();
+    assert!(!report.wal_sweep_failed);
+    assert_eq!(report.wal_retention_floor, None, "all values were written to slabs");
+    let removed = before.iter().filter(|(path, _)| !path.exists()).collect::<Vec<_>>();
+    assert!(!removed.is_empty(), "the fixture must physically unlink a segment");
+    assert_eq!(report.wal_segments_dropped, removed.len());
+    let removed_bytes: u64 = removed.iter().map(|(_, bytes)| **bytes).sum();
+    assert_eq!(report.wal_segment_bytes_dropped, removed_bytes);
+    let before_bytes: u64 = before.values().sum();
+    let after_bytes: u64 = crate::wal::wal_piece_extents_for_test(&wal_root, SHARD)
+        .iter().map(|(path, _, _, _)| path.metadata().unwrap().len()).sum();
+    assert_eq!(before_bytes - after_bytes,
+        report.wal_bytes_before.saturating_sub(report.wal_bytes_after)
+            + report.wal_segment_bytes_dropped);
+    if report.wal_rewrite_skipped {
+        assert_eq!(report.wal_bytes_before, report.wal_bytes_after);
+        assert_eq!(report.wal_bytes_copied, 0);
+    } else {
+        assert!(report.wal_bytes_copied > 0, "the active file still retains the last record");
+    }
+    println!("CATALOG_RECLAIM records={RECORDS} active_records_removed={} segments={} segment_bytes={} copied_bytes={} rewrite_skipped={}",
+        report.wal_records_removed, report.wal_segments_dropped,
+        report.wal_segment_bytes_dropped, report.wal_bytes_copied, report.wal_rewrite_skipped);
+
+    let mut old_shape = serde_json::to_value(&report).unwrap();
+    for field in ["wal_segments_dropped", "wal_segment_bytes_dropped", "wal_bytes_copied", "wal_rewrite_skipped"] {
+        old_shape.as_object_mut().unwrap().remove(field);
+    }
+    let decoded: crate::engine::reports::CatalogDumpReclaimReport = serde_json::from_value(old_shape).unwrap();
+    assert_eq!((decoded.wal_segments_dropped, decoded.wal_segment_bytes_dropped, decoded.wal_bytes_copied), (0, 0, 0));
+    assert!(!decoded.wal_rewrite_skipped);
+    drop(wal);
+    drop(engine);
+    let restored = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024, dir.path().join("restart-cache"),
+        dir.path().join("blocks"), dir.path().join("indexes"),
+    );
+    restored.load_shard(SHARD);
+    for index in 0..RECORDS {
+        let got = restored.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringGet { key: format!("segment-{index:08}") },
+        });
+        assert!(got.status.ok, "{index}: {:?}", got.status);
+        assert_eq!(got.response, CommandResponse::Bytes {
+            value: Some(format!("payload-{index:08}-{}", "x".repeat(96)).into_bytes()),
+        });
+    }
+}
+
+#[test]
 fn a_dump_reports_the_same_write_ahead_log_release_whether_or_not_one_happened() {
     const CONTROL_RECORDS: usize = 1_200;
     let _rolling = roll_at(ROLL_BYTES);
@@ -971,8 +1067,12 @@ fn a_dump_reports_the_same_write_ahead_log_release_whether_or_not_one_happened()
         .expect("APPARATUS: the empty-shard dump did not complete");
 
     let control_dir = tempfile::tempdir().expect("tempdir");
+    let _control_wal_rolling = wal_roll_at(0);
     let control = release_engine(control_dir.path());
-    seed_one_at_a_time(&control, 0, CONTROL_RECORDS);
+    {
+        let _slab_values = crate::engine::value_once_in_test(false);
+        seed_one_at_a_time(&control, 0, CONTROL_RECORDS);
+    }
     let control_wal = control.write_ahead_log_store();
     let control_records_before = control_wal.info(SHARD).map(|info| info.records).unwrap_or(0);
     let control_report = control
@@ -980,19 +1080,24 @@ fn a_dump_reports_the_same_write_ahead_log_release_whether_or_not_one_happened()
         .expect("APPARATUS: the control dump did not complete");
     let control_released = control_report
         .wal_bytes_before
-        .saturating_sub(control_report.wal_bytes_after);
+        .saturating_sub(control_report.wal_bytes_after)
+        .saturating_add(control_report.wal_segment_bytes_dropped);
+    assert_eq!(control_report.wal_retention_floor, None,
+        "the release control must not depend on WAL-only values");
 
     eprintln!(
-        "\nDUMP WAL batched corpus={} log held {} records in {} B, dump released {} B in {} records",
+        "\nDUMP WAL batched corpus={} log held {} records in {} B, dump released {} B, active records removed {}, whole segments {}",
         batched.corpus,
         batched.wal_records_before,
         batched.wal_bytes_on_disk_before,
         batched.wal_released,
         batched.wal_records_removed,
+        batched.wal_segments_dropped,
     );
     eprintln!(
-        "DUMP WAL control one-command-at-a-time records={CONTROL_RECORDS} log held {control_records_before} records, dump released {control_released} B in {} records",
+        "DUMP WAL control one-command-at-a-time records={CONTROL_RECORDS} log held {control_records_before} records, dump released {control_released} B, active records removed {}, whole segments {}",
         control_report.wal_records_removed,
+        control_report.wal_segments_dropped,
     );
     eprintln!(
         "DUMP WAL empty shard: log held {empty_wal_records} records, dump released {} B in {} records (before={} after={})",
@@ -1012,9 +1117,10 @@ fn a_dump_reports_the_same_write_ahead_log_release_whether_or_not_one_happened()
     assert!(
         control_released > 0 && control_report.wal_records_removed > 0,
         "CONTROL: a dump against a log written one command at a time released {control_released} B \
-         in {} records -- this arm exists to prove a non-zero WAL release is expressible here, and \
+         in {} active records and {} whole segments -- this arm exists to prove a non-zero WAL release is expressible here, and \
          without it the subject arm's zero says nothing",
-        control_report.wal_records_removed
+        control_report.wal_records_removed,
+        control_report.wal_segments_dropped
     );
     // SUBJECT. This arm reported 0 B in 0 records when it was written, and the assertion here
     // said so. The cause was found -- the reclaim walk stripped a trailing delimiter off a
@@ -1023,12 +1129,13 @@ fn a_dump_reports_the_same_write_ahead_log_release_whether_or_not_one_happened()
     // Inverted rather than loosened, per the note this assertion used to carry: the arm still
     // has to say something, and what it says now is that the batch path releases.
     assert!(
-        batched.wal_released > 0 && batched.wal_records_removed > 0,
-        "SUBJECT: the dump released {} B in {} records from a log holding {} records in {} bytes. \
+        batched.wal_released > 0 && (batched.wal_records_removed > 0 || batched.wal_segments_dropped > 0),
+        "SUBJECT: the dump released {} B in {} active records and {} whole segments from a log holding {} records in {} bytes. \
          A batch-written log reclaims now; a zero here is that defect returning, not a log with \
          nothing to give -- the fixture assertions above have already shown it holds records",
         batched.wal_released,
         batched.wal_records_removed,
+        batched.wal_segments_dropped,
         batched.wal_records_before,
         batched.wal_bytes_on_disk_before
     );
@@ -1042,7 +1149,9 @@ fn a_dump_reports_the_same_write_ahead_log_release_whether_or_not_one_happened()
     );
     let empty_released = empty_report
         .wal_bytes_before
-        .saturating_sub(empty_report.wal_bytes_after);
+        .saturating_sub(empty_report.wal_bytes_after)
+        .saturating_add(empty_report.wal_segment_bytes_dropped);
+    assert_eq!((empty_report.wal_segments_dropped, empty_report.wal_segment_bytes_dropped, empty_report.wal_bytes_copied), (0, 0, 0));
     assert_ne!(
         (batched.wal_released, batched.wal_records_removed),
         (empty_released, empty_report.wal_records_removed),

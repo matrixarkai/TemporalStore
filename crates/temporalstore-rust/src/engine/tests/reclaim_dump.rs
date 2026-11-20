@@ -563,7 +563,13 @@ fn dump_registration_retirement_keeps_concurrent_writes_and_refused_publications
             }
         }, || engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []));
         assert_eq!(result.is_err(), mutation == "supersede");
-        let expected_before_retry = if mutation == "other-key" { 2 } else { 1 };
+        // A successful newer catalog has already retired the deleted value's fallback.
+        // Writes during the barrier still keep every registration until a quiet retry.
+        let expected_before_retry = match mutation {
+            "other-key" => 2,
+            "supersede" => 0,
+            _ => 1,
+        };
         assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), expected_before_retry);
         assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), expected_before_retry);
         engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();

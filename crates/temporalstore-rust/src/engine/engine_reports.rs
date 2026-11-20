@@ -3109,10 +3109,21 @@ pub struct CatalogDumpReclaimReport {
     /// dropped with `.ok()` and each field then read through `unwrap_or_default()`.
     #[serde(default)]
     pub index_log_sweep_failed: bool,
+    /// Records removed by rewriting the active file; excludes whole-segment deletion.
     pub wal_records_removed: usize,
+    /// Active-file bytes before and after the sweep; closed segments are counted separately.
     pub wal_bytes_before: u64,
     pub wal_bytes_after: u64,
-    /// The write-ahead-log sweep returned an error and the three fields above are defaults.
+    /// Whole segments are unlinked separately from rewriting the active file.
+    #[serde(default)]
+    pub wal_segments_dropped: usize,
+    #[serde(default)]
+    pub wal_segment_bytes_dropped: u64,
+    #[serde(default)]
+    pub wal_bytes_copied: u64,
+    #[serde(default)]
+    pub wal_rewrite_skipped: bool,
+    /// The write-ahead-log sweep returned an error and its fields are defaults.
     ///
     /// This is the field that makes the difference sayable. An errored sweep and an empty one
     /// both report `(0, 0, 0)`, so a zero release could mean the log had nothing to give, or
