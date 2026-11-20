@@ -2610,7 +2610,7 @@ pub(crate) fn execute_on_shard(
                 );
                 mutated = true;
             }
-            let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+            invalidate_if_cached(cache, CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty
         }
         Command::SetAddMany { key, members } => {
@@ -2872,18 +2872,14 @@ pub(crate) fn execute_on_shard(
             rev,
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let mut ordered = zset_ordered_refs(shard, &key);
-            if rev {
-                ordered.reverse();
-            }
-            let length = ordered.len() as i64;
+            let length = shard.bucket_index.zsets.get(&key).map_or(0, BTreeMap::len) as i64;
             let resolve = |index: i64| if index < 0 { length + index } else { index };
             let from = resolve(start).max(0);
             let to = resolve(stop).min(length - 1);
             let members = if from > to || length == 0 {
                 Vec::new()
             } else {
-                ordered[from as usize..=to as usize]
+                zset_first_refs(shard, &key, to as usize + 1, rev)[from as usize..=to as usize]
                     .iter()
                     .flat_map(|(member, biased)| {
                         [member.to_vec(), zset_score_string(*biased).into_bytes()]
@@ -3270,11 +3266,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let mut ordered = zset_ordered_refs(shard, &key);
-            if !min {
-                ordered.reverse();
-            }
-            ordered.truncate(count as usize);
+            let ordered = zset_first_refs(shard, &key, count as usize, !min);
             // The borrows end here: the removals below take `&mut shard`, so the few members the
             // pop returns are copied out first. The clone count is the answer size, not the set size.
             let doomed: Vec<(Vec<u8>, u64)> = ordered
@@ -3804,7 +3796,7 @@ pub(crate) fn execute_on_shard(
         Command::SetMembers { key } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+                invalidate_if_cached(cache, CacheKey::set_members(shard_id, &key));
                 return ExecuteOutcome {
                     response: CommandResponse::Members {
                         members: Vec::new(),
@@ -3914,7 +3906,7 @@ pub(crate) fn execute_on_shard(
         Command::SetCard { key } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+                invalidate_if_cached(cache, CacheKey::set_members(shard_id, &key));
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
                     mutated,
@@ -3954,7 +3946,7 @@ pub(crate) fn execute_on_shard(
         Command::SetIsMember { key, member } => {
             if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+                invalidate_if_cached(cache, CacheKey::set_members(shard_id, &key));
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
                     mutated,
@@ -4029,7 +4021,7 @@ pub(crate) fn execute_on_shard(
                 end_routing_bucket,
                 async_storage,
             );
-            let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
+            invalidate_if_cached(cache, CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty
         }
         Command::SetRemoveMany { key, members } => {
@@ -7668,7 +7660,7 @@ pub(super) fn zset_score_string(biased: u64) -> String {
 /// USED TO BE SCORE BITS THEN MEMBER -- the comment this replaces said so, and the lexical order
 /// it bought was never built on: every zset serving arm that returns members in score order
 /// reads the score out of `shard.bucket_index.zsets` and sorts explicitly (`zset_members_in_score_range`,
-/// `zset_ordered_refs`), so dropping the score from this string costs that ordering nothing.
+/// `zset_first_refs`), so dropping the score from this string costs that ordering nothing.
 /// What it buys is the thing this change is for: `BlockIndex.element_name` for a zset entry is now
 /// the same shape as a set's, so zset can collapse to one index entry a block the way set and list
 /// already have. The score still rides every write -- see `RecordedKind::outcome_value` and the
@@ -7696,7 +7688,7 @@ pub(super) fn set_element_name(member: &[u8]) -> String {
 
 /// The members whose score falls in `[min_bits, max_bits]`, in score order.
 ///
-/// Same scan as `zset_ordered_refs` -- the map is keyed by member, so every member has to be
+/// Same scan as `zset_first_refs` -- the map is keyed by member, so every member has to be
 /// looked at either way -- but the score test happens BEFORE the member bytes are copied, so a
 /// narrow window copies a narrow window. The full-order helper below clones all n up front, which
 /// cost 4,115 allocations and 324 KB to return eight members from a set of 4,096.
@@ -7736,32 +7728,67 @@ fn zset_members_in_score_range(
     ordered
 }
 
-/// Every member of a zset in score order, as BORROWS rather than copies.
+/// The first `k` members of a zset in score order, or the last `k` in descending order when `rev`,
+/// WITHOUT sorting the set.
 ///
-/// The helper that stood here cloned every member before it knew which ones the caller wanted, so
-/// a rank range of eight out of 4,096 paid one allocation per member. The ordering needs the bytes
-/// only to COMPARE them, and a comparison needs no allocation. One allocation for the buffer of
-/// borrows; the caller clones only the members it returns, so the clone count becomes the answer
-/// size and not the set size. The time is unchanged at O(n log n); the figure that moves is
-/// allocations.
+/// The set used to be collected into one buffer and sorted to take a handful of its members, so a
+/// range of ten out of a hundred thousand paid an O(n log n) sort and a buffer of the whole set. A
+/// first-N read needs neither: a heap of `k` entries walked over the members is O(n log k)
+/// comparisons and O(k) memory, and once it is full an entry that cannot displace the worst one kept
+/// is rejected by one comparison. A request for all of the set is the same heap with `k` equal to the
+/// length, which is the sort's cost.
 ///
-/// `sort_unstable_by`: the map is keyed by member, so `(score, member)` is a total order with no
-/// ties for a stable sort to break, and a stable sort allocates a scratch buffer. The order is
-/// score-then-member, as before.
-fn zset_ordered_refs<'a>(shard: &'a ShardState, key: &str) -> Vec<(&'a [u8], u64)> {
-    let mut ordered: Vec<(&'a [u8], u64)> = shard
-        .bucket_index
-        .zsets
-        .get(key)
-        .map(|members| {
-            members
-                .iter()
-                .map(|(member, (biased, _))| (member.as_slice(), *biased))
-                .collect()
-        })
-        .unwrap_or_default();
-    ordered.sort_unstable_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)));
-    ordered
+/// THE ORDER IS `(score, member)` ascending, a total order because the map is keyed by member, and
+/// descending for `rev`.
+fn zset_first_refs<'a>(
+    shard: &'a ShardState,
+    key: &str,
+    k: usize,
+    rev: bool,
+) -> Vec<(&'a [u8], u64)> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let Some(members) = shard.bucket_index.zsets.get(key) else {
+        return Vec::new();
+    };
+    // A request for more than the set holds is a request for all of it.
+    let k = k.min(members.len());
+    if k == 0 {
+        return Vec::new();
+    }
+    let entries = members
+        .iter()
+        .map(|(member, (biased, _))| (*biased, member.as_slice()));
+    if rev {
+        // The `k` largest: a min-heap, so the smallest kept is at the top and is the one displaced.
+        let mut heap: BinaryHeap<Reverse<(u64, &[u8])>> = BinaryHeap::with_capacity(k + 1);
+        for entry in entries {
+            if heap.len() < k {
+                heap.push(Reverse(entry));
+            } else if heap.peek().is_some_and(|worst| entry > worst.0) {
+                heap.pop();
+                heap.push(Reverse(entry));
+            }
+        }
+        let mut kept: Vec<(u64, &[u8])> = heap.into_iter().map(|Reverse(entry)| entry).collect();
+        kept.sort_unstable_by(|a, b| b.cmp(a));
+        kept.into_iter().map(|(biased, member)| (member, biased)).collect()
+    } else {
+        // The `k` smallest: a max-heap, so the largest kept is at the top and is the one displaced.
+        let mut heap: BinaryHeap<(u64, &[u8])> = BinaryHeap::with_capacity(k + 1);
+        for entry in entries {
+            if heap.len() < k {
+                heap.push(entry);
+            } else if heap.peek().is_some_and(|worst| entry < *worst) {
+                heap.pop();
+                heap.push(entry);
+            }
+        }
+        heap.into_sorted_vec()
+            .into_iter()
+            .map(|(biased, member)| (member, biased))
+            .collect()
+    }
 }
 
 /// The whole token-bucket model in one pure function, so its arithmetic is testable with

@@ -562,6 +562,12 @@ pub struct RankedCells {
     pub window_first_ms: u64,
     #[serde(default)]
     pub window_last_ms: u64,
+    /// The stamps of the oldest and the newest sample that held a cell the read selected (it passed
+    /// the member set and the predicates), before the top-k kept any of it. 0 and 0 when none did.
+    #[serde(default)]
+    pub matched_first_ms: u64,
+    #[serde(default)]
+    pub matched_last_ms: u64,
     /// Keys that held at least one sample in the window: 1 for a read of one key that had
     /// some, and for a read over several keys how many of them did. A read that names keys the
     /// serving shard does not hold counts them here as absent, so a caller who named N keys and

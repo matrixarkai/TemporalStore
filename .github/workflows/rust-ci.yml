@@ -548,6 +548,8 @@ jobs:
             engine::tests::a_set_door_asks_one_member_not_the_set::the_door_never_lists_the_set \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_answers_what_the_sorted_listing_answered \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_reads_a_prefix_and_never_lists \
+            engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_pop_takes_the_first_or_last_members_in_order_and_leaves_the_rest \
+            engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_range_of_the_first_members_answers_what_the_full_sort_answered \
             engine::tests::a_list_position_and_removal_answer_what_a_walk_answered::positions_and_removals_answer_what_a_walk_answered_with_and_without_a_hole \
             engine::storage_bucket_internals::set_batch_work_tests::a_new_sorted_set_member_is_filed_without_scanning_the_objects_refs_at_any_size \
             engine::storage_bucket_internals::set_batch_work_tests::a_repeat_write_to_a_marked_collection_visits_no_block_at_any_size \
@@ -757,6 +759,7 @@ jobs:
             engine::window_reduce_fan_in::tests::the_size_checks_accept_the_limit_and_refuse_one_past_it_by_themselves \
             engine::window_reduce_fan_in::tests::the_keys_count_is_a_wire_field_that_an_answer_without_it_reads_as_zero \
             engine::window_reduce_rank::tests::each_score_orders_by_the_value_only_it_produces \
+            engine::window_reduce_rank::tests::the_matched_span_is_the_samples_that_held_a_selected_cell_and_the_window_span_is_every_sample \
             engine::window_reduce_rank::tests::a_wilson_bound_is_the_hand_computed_number_and_rewards_volume \
             engine::window_reduce_rank::tests::a_ratio_or_wilson_that_cannot_be_formed_is_ranked_at_zero_and_never_dropped \
             engine::window_reduce_rank::tests::each_window_kind_selects_the_samples_it_names \
@@ -1483,6 +1486,9 @@ jobs:
             engine::tests::a_rewritten_context_node_replaces_its_block::a_rewritten_node_reads_back_after_a_restart \
             engine::tests::a_sequence_read_takes_the_shared_lock::a_sequence_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_sequence_read_takes_the_shared_lock::a_sequence_read_answers_what_was_added \
+            engine::tests::a_write_asks_the_cache_before_it_invalidates::a_cached_string_is_still_invalidated_by_a_write \
+            engine::tests::a_write_asks_the_cache_before_it_invalidates::a_cached_set_is_still_invalidated_by_an_add_and_a_remove \
+            engine::tests::a_write_asks_the_cache_before_it_invalidates::a_write_to_a_key_nothing_caches_invalidates_nothing \
             engine::tests::a_feature_range_read_takes_the_shared_lock::each_range_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_feature_range_read_takes_the_shared_lock::a_range_read_answers_what_was_appended \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::each_point_read_answers_while_the_shared_lock_is_held \
@@ -1657,6 +1663,7 @@ jobs:
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::probe::a_sequence_query_does_not_allocate_per_row \
             engine::tests::a_restating_write_names_one_bucket_not_the_shard::probe::a_restating_write_does_not_allocate_with_the_shard \
             engine::tests::a_rewritten_context_node_replaces_its_block::probe::a_node_rewrite_costs_the_same_after_many_rewrites \
+            engine::tests::a_write_asks_the_cache_before_it_invalidates::probe::an_uncached_write_does_not_enter_the_invalidation_class \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::probe::a_length_and_a_range_do_not_allocate_per_byte \
             engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::probe::a_known_outcome_kind_allocates_nothing \
             engine::tests::a_hash_field_presence_is_read_from_its_row::probe::a_presence_check_does_not_copy_the_value \

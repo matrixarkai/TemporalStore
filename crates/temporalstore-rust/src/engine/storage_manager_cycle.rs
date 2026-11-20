@@ -480,9 +480,14 @@ impl TemporalEngine {
                 &self.block_store, request.shard_id, &self.wal_store,
             )
         {
-            self.materialize_resident_blocks_for_round(
+            let per_round = if request.max_dump_buckets_per_round == 0 {
+                usize::MAX
+            } else {
+                request.max_dump_buckets_per_round
+            };
+            self.materialize_oldest_resident_blocks(
                 request.shard_id,
-                request.max_dump_buckets_per_round,
+                wal_resident_blocks_before.saturating_sub(per_round),
             )
         } else {
             0

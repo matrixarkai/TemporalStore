@@ -764,6 +764,8 @@ impl Plan {
             samples: chosen.len(),
             window_first_ms: chosen.first().map_or(0, |s| s.stamp()),
             window_last_ms: chosen.last().map_or(0, |s| s.stamp()),
+            matched_first_ms: rows.iter().map(|r| r.last_ms).min().unwrap_or(0),
+            matched_last_ms: rows.iter().map(|r| r.last_ms).max().unwrap_or(0),
             keys: 0,
             unscored: 0,
             rows,
@@ -869,6 +871,7 @@ impl Plan {
         let mut reduced = vec![0i64; self.lane_count];
         let mut top = TopK::new(self.top_k, self.lane_count, self.label_count);
         let mut unscored = 0u64;
+        let (mut matched_first, mut matched_last) = (u64::MAX, 0u64);
         let as_of_ms = chosen.last().map_or(0, |sample| sample.stamp());
 
         for (i, sample) in chosen.iter().enumerate() {
@@ -894,6 +897,8 @@ impl Plan {
                 }
             }
             let &(last_ms, newest) = occurrences.last().ok_or("a member has no occurrence")?;
+            matched_first = matched_first.min(occurrences[0].0);
+            matched_last = matched_last.max(last_ms);
             match self.score(member, last_ms, &reduced, &occurrences, as_of_ms)? {
                 Some(key) => top.offer(key, member, last_ms, &newest.labels, &reduced),
                 None => unscored += 1,
@@ -924,6 +929,8 @@ impl Plan {
             samples: chosen.len(),
             window_first_ms: chosen.first().map_or(0, |s| s.stamp()),
             window_last_ms: chosen.last().map_or(0, |s| s.stamp()),
+            matched_first_ms: if matched_first == u64::MAX { 0 } else { matched_first },
+            matched_last_ms: matched_last,
             // The caller knows how many series `chosen` came from.
             keys: 0,
             unscored,

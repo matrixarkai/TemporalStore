@@ -139,7 +139,9 @@ use crate::engine::reports::StorageManagerCycleRequest;
 /// now come off one listing (`a_plan_lists_the_shards_blocks_once`). The round's census loses
 /// exactly one pass: measured 22,000 entries over 2,000
 /// records = 11x. The two older tables above state 12 for the tree before that change.
-const WALKS_PER_ROUND: u64 = 11;
+// Recovery coverage now reads maintained dirty nodes rather than block summaries.
+// Measured at 2,000 and 20,000 records: one fewer whole-store pass at both sizes.
+const WALKS_PER_ROUND: u64 = 10;
 
 /// The same, once the dirty set has drained.
 ///
@@ -156,7 +158,8 @@ const WALKS_PER_ROUND: u64 = 11;
 /// tree, the idle round materialises 24,000 live-block entries over 2,000 records, which is 12x --
 /// the same as the steady round, so the manifest no longer makes an idle shard dearer.
 /// 12 -> 11 FOR THE SAME REASON AS `WALKS_PER_ROUND`, and it was measured: the idle round also loses one pass.
-const WALKS_PER_IDLE_ROUND: u64 = 11;
+// The same removed coverage pass was also present on the idle path (2,000 records).
+const WALKS_PER_IDLE_ROUND: u64 = 10;
 
 fn round_engine(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(

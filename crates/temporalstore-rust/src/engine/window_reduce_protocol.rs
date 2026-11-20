@@ -920,13 +920,21 @@ pub(crate) fn answer_of(profile: &TableProfile, query: &wire::WindowReduceQuery,
         .collect::<Vec<_>>();
     let echoed = query.echo && query.has_echo;
     // The span the read scanned: the oldest and the newest sample of the window, before the top-k
-    // kept any of it. A read that selects cells by member or by lane value reports the span of the
-    // rows it returned instead, as only those cells were looked for.
-    let by_rows = matches!(
-        query.selector.as_ref().map(|s| s.mode()),
-        Some(wire::RankMode::MembersOnly | wire::RankMode::MatchLane)
-    );
-    let (first_us, last_us) = if by_rows {
+    // kept any of it. A `MEMBERS_ONLY` read reports the oldest and the newest sample that held one of
+    // its members, and a `MATCH_LANE` read the span of the rows it returned: only those cells were
+    // looked for.
+    let by_rows = matches!(query.selector.as_ref().map(|s| s.mode()), Some(wire::RankMode::MatchLane));
+    let matched = matches!(query.selector.as_ref().map(|s| s.mode()), Some(wire::RankMode::MembersOnly));
+    let (first_us, last_us) = if matched {
+        if ranked.rows.is_empty() {
+            (0, 0)
+        } else {
+            (
+                (ranked.matched_first_ms as i64).saturating_mul(1000),
+                (ranked.matched_last_ms as i64).saturating_mul(1000),
+            )
+        }
+    } else if by_rows {
         (
             if entries.is_empty() { 0 } else { (first as i64).saturating_mul(1000) },
             (last as i64).saturating_mul(1000),

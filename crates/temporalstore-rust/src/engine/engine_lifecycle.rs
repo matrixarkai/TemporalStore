@@ -2738,24 +2738,7 @@ impl TemporalEngine {
     /// So the recent stay resident -- they are the ones a read is most likely to want, and their
     /// bytes are in the record just written -- and everything older is written where anyone can
     /// find it. Oldest first, because the oldest is the one holding the floor down.
-    ///
-    /// How many to keep after a round is [`resident_keep_after_round`]'s answer, not
-    /// `resident - cap`: that moved at most `cap` per round, so a write rate above it grew the
-    /// registry and pinned the log for ever.
     pub fn materialize_oldest_resident_blocks(&self, shard_id: ShardId, keep: usize) -> usize {
-        self.materialize_oldest_resident_blocks_until(shard_id, keep, None, 0)
-    }
-
-    /// As [`Self::materialize_oldest_resident_blocks`], but stops once `deadline` has passed AND at
-    /// least `min_moves` have moved, leaving the rest for the next round. The deadline is checked
-    /// between blocks; the shard write lock is held only to publish one block, never across them.
-    pub(crate) fn materialize_oldest_resident_blocks_until(
-        &self,
-        shard_id: ShardId,
-        keep: usize,
-        deadline: Option<std::time::Instant>,
-        min_moves: usize,
-    ) -> usize {
         let ordered = super::block_in_wal::oldest_registered_objects(&self.block_store, shard_id);
         if ordered.len() <= keep {
             return 0;
@@ -2769,44 +2752,7 @@ impl TemporalEngine {
             .iter()
             .map(|(_, (object_id, _))| *object_id)
             .collect();
-        self.materialize_resident_blocks_budgeted(
-            shard_id,
-            |object_id| retiring.contains(&object_id),
-            |_| {},
-            deadline,
-            min_moves,
-        )
-    }
-
-    /// One storage-manager round's share of the log-resident blocks. Both the one-shot cycle and the
-    /// timer loop call this, so they cannot disagree about the budget.
-    ///
-    /// The invariant is on what is LEFT: at most `cap` (`max_dump_buckets_per_round`, 0 = no cap)
-    /// stay resident after the round, whatever the write rate. The old rule kept `resident - cap`,
-    /// which moved only `cap` per round, so a write rate above the cap grew the registry (memory)
-    /// and held the log's retention floor down for ever. A round now moves at least `cap` and as
-    /// many as arrived since the last one: the second write the two-copy placement paid on every
-    /// set, deferred to the round and paid once per value, so the work tracks the inflow.
-    pub fn materialize_resident_blocks_for_round(&self, shard_id: ShardId, cap: usize) -> usize {
-        self.materialize_resident_blocks_for_round_within(shard_id, cap, ROUND_MATERIALISE_BUDGET)
-    }
-
-    /// The round with an explicit time budget. When the budget runs out the rest is carried to the
-    /// next round; at least `cap` (or one block when there is no cap) moves first so a round always
-    /// makes progress and the resident count returns to the bound in a bounded number of rounds.
-    pub(crate) fn materialize_resident_blocks_for_round_within(
-        &self,
-        shard_id: ShardId,
-        cap: usize,
-        budget: std::time::Duration,
-    ) -> usize {
-        let resident = self.wal_resident_block_count(shard_id);
-        self.materialize_oldest_resident_blocks_until(
-            shard_id,
-            resident_keep_after_round(resident, cap),
-            Some(std::time::Instant::now() + budget),
-            cap.max(1),
-        )
+        self.materialize_resident_blocks_where(shard_id, |object_id| retiring.contains(&object_id))
     }
 
     pub fn materialize_synthetic_blocks(&self, shard_id: ShardId) -> usize {
@@ -2826,22 +2772,10 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
         wanted: impl Fn(u64) -> bool,
-        before_publish: impl FnMut(&str),
-    ) -> usize {
-        self.materialize_resident_blocks_budgeted(shard_id, wanted, before_publish, None, 0)
-    }
-
-    fn materialize_resident_blocks_budgeted(
-        &self,
-        shard_id: ShardId,
-        wanted: impl Fn(u64) -> bool,
         mut before_publish: impl FnMut(&str),
-        deadline: Option<std::time::Instant>,
-        min_moves: usize,
     ) -> usize {
         // The range is read under the same guard as the addresses, so a block is read and
         // rewritten under the bucket the shard is actually loaded on.
-        let collect_started = std::time::Instant::now();
         let (addresses, start_routing_bucket, end_routing_bucket): (
             Vec<(String, crate::block_store::ElementEntry)>,
             u32,
@@ -2865,15 +2799,6 @@ impl TemporalEngine {
                 end_routing_bucket,
             )
         };
-        // The collect above scans every string under the shards READ lock, which a writer's write
-        // lock waits behind. Its duration is logged per round so the cost at scale is a number, not a
-        // guess; a registry-maintained key set would remove the scan if it grows past a few ms.
-        tracing::debug!(
-            shard_id,
-            candidates = addresses.len(),
-            collect_us = collect_started.elapsed().as_micros() as u64,
-            "log-resident block collect (shards read lock held for the scan)"
-        );
         let mut moved = 0usize;
         for (key, address) in addresses {
             let object_id = super::stable_block_object_id(shard_id, "string", &key);
@@ -2948,11 +2873,6 @@ impl TemporalEngine {
                     // remove a registration installed by a subsequent writer.
                     super::block_in_wal::deregister(&self.block_store, shard_id, object_id, None);
                     moved += 1;
-                }
-            }
-            if let Some(deadline) = deadline {
-                if moved >= min_moves && std::time::Instant::now() >= deadline {
-                    break;
                 }
             }
         }
@@ -4041,24 +3961,3 @@ where
         }
     }
 }
-
-/// How many log-resident blocks a storage-manager round leaves resident, given how many there are
-/// and the per-round budget `cap` (`max_dump_buckets_per_round`, 0 = no cap).
-///
-/// The invariant is on what is LEFT: at most `cap` stay resident after any round, whatever the
-/// write rate. The old rule left `resident - cap`, which moved only `cap` per round, so a write rate
-/// above the cap grew the registry (memory) and held the log's retention floor down for ever. A
-/// round now moves `resident - min(resident - cap, cap)`: at least `cap`, and as many as arrived
-/// since the last one. That is the cost the two-copy placement paid on every write, deferred to
-/// the round and paid once per value, so the work is proportional to the inflow and no more.
-pub(crate) fn resident_keep_after_round(resident: usize, cap: usize) -> usize {
-    if cap == 0 {
-        return 0;
-    }
-    resident.saturating_sub(cap).min(cap)
-}
-
-/// The longest a storage-manager round spends materialising log-resident blocks before it carries
-/// the rest to the next round. The guard is released between blocks regardless; this bounds the
-/// round's wall time for a backlog far above the cap.
-pub(crate) const ROUND_MATERIALISE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
