@@ -1438,18 +1438,40 @@ pub fn live_block_walk_times_snapshot() -> std::collections::BTreeMap<String, (u
         .unwrap_or_default()
 }
 
-/// Times one whole-shard walk for the writer-stall probe. Test builds only.
+/// Whether walks are timed. OFF unless a harness switches it on: a timer allocates (a site label,
+/// a map entry), and the allocation guards that count a walk's bytes to the byte must not see it.
+#[cfg(test)]
+static WALK_TIMING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switch the per-site walk timing on or off. Test builds only; the writer-wait harness turns it on
+/// for its own rounds and off again.
+#[cfg(test)]
+pub fn set_walk_timing(on: bool) {
+    WALK_TIMING.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Times one whole-shard walk for the writer-stall probe. Test builds only, and a no-op that
+/// allocates nothing unless [`set_walk_timing`] switched it on.
 #[cfg(test)]
 pub(super) struct WalkTimer {
     previous: &'static str,
     site: String,
     started: std::time::Instant,
+    armed: bool,
 }
 
 #[cfg(test)]
 impl WalkTimer {
     #[track_caller]
     pub(super) fn start() -> Self {
+        if !WALK_TIMING.load(std::sync::atomic::Ordering::Relaxed) {
+            return Self {
+                previous: "",
+                site: String::new(),
+                started: std::time::Instant::now(),
+                armed: false,
+            };
+        }
         let caller = std::panic::Location::caller();
         let site = format!("{}:{}", caller.file(), caller.line());
         // The probe's phase is a `&'static str`; one leaked label per distinct site, in tests only.
@@ -1468,6 +1490,7 @@ impl WalkTimer {
             previous,
             site,
             started: std::time::Instant::now(),
+            armed: true,
         }
     }
 }
@@ -1475,6 +1498,9 @@ impl WalkTimer {
 #[cfg(test)]
 impl Drop for WalkTimer {
     fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
         let elapsed = self.started.elapsed().as_micros();
         if let Ok(mut times) = live_block_walk_times().lock() {
             let entry = times.entry(self.site.clone()).or_insert((0, 0, 0));
