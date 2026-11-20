@@ -62,6 +62,19 @@ fn seeded_runtime(dir: &std::path::Path, keys: usize) -> DataNodeRuntime {
 /// Every stage the loop reaches has a row, in order; a row says whether its stage ran; the rows
 /// are intervals of the round's own clock so they cannot add up to more than the round; and the
 /// walk charge reaches the row of the stage that did the walking.
+/// Whether the measurement harnesses run their rounds with the detailed report the way `run_storage_manager_once`
+/// does (`LOOP_DETAILED=1`), or the way the server's loop and tick do (the default). The detailed report builds
+/// the post-stage snapshots, which walk the shard after the stages have run; the production loop never does, so
+/// numbers taken with it include walks no served round takes.
+fn harness_detailed() -> bool {
+    std::env::var("LOOP_DETAILED").is_ok_and(|value| value == "1")
+}
+
+/// One round as the harnesses take it: production-faithful (`detailed_report` false) unless `LOOP_DETAILED=1`.
+fn harness_round(runtime: &DataNodeRuntime, options: StorageManagerOptions) -> StorageManagerLoopReport {
+    runtime.run_storage_manager_once_with_report_details(1, options, harness_detailed())
+}
+
 #[test]
 fn the_loop_report_prices_every_stage_it_reaches() {
     let dir = tempfile::tempdir().unwrap();
@@ -960,6 +973,7 @@ fn the_expire_and_evict_counts_are_each_stages_own_runs() {
 #[test]
 #[ignore]
 fn what_a_dirty_loop_round_walks_by_call_site() {
+    eprintln!("H detailed_report={} (production loop and tick use false; LOOP_DETAILED=1 selects true)", harness_detailed());
     let keys = std::env::var("LOOP_KEYS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -1004,7 +1018,7 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
         }
     }
     for _ in 0..6 {
-        runtime.run_storage_manager_once(1, shipped.clone());
+        harness_round(&runtime, shipped.clone());
     }
     let engine = runtime.engine();
     for round in 0..rounds {
@@ -1020,7 +1034,7 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
             assert!(response.status.ok, "write {index}: {:?}", response.status);
         }
         crate::engine::reset_live_block_scan_sites();
-        let report = runtime.run_storage_manager_once(1, shipped.clone());
+        let report = harness_round(&runtime, shipped.clone());
         let walked: u64 = report.stage_spans.iter().map(|s| s.walk.live_block_entries).sum();
         eprintln!(
             "D round {round}: {} us, walk_entries={walked} (= {:.1} whole-shard walks of {keys})",
@@ -1074,7 +1088,7 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
             .unwrap()
             .get(&1)
             .map(|(key, reclaimable)| format!("{key:?} reclaimable={reclaimable}"));
-        let report = runtime.run_storage_manager_once(1, idle_options.clone());
+        let report = harness_round(&runtime, idle_options.clone());
         let memo_after = runtime
             .inner
             .quiet_wal_reclaim
@@ -1174,6 +1188,7 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
 #[test]
 #[ignore]
 fn what_a_writer_waits_during_each_stage_of_a_dumping_round() {
+    eprintln!("H detailed_report={} (production loop and tick use false; LOOP_DETAILED=1 selects true)", harness_detailed());
     let keys = std::env::var("LOOP_KEYS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -1207,7 +1222,7 @@ fn what_a_writer_waits_during_each_stage_of_a_dumping_round() {
         let (stall, report) = crate::engine::writer_stall_probe::measure_writer_stall_with(
             &engine,
             1,
-            || runtime.run_storage_manager_once(1, options.clone()),
+            || harness_round(&runtime, options.clone()),
         );
         eprintln!(
             "W {label} keys={keys}: round {} us, writer saw {} writes, longest wait {} us",
@@ -1264,6 +1279,7 @@ fn what_a_writer_waits_during_each_stage_of_a_dumping_round() {
 #[test]
 #[ignore]
 fn how_many_rounds_a_written_shard_takes_to_go_quiet() {
+    eprintln!("H detailed_report={} (production loop and tick use false; LOOP_DETAILED=1 selects true)", harness_detailed());
     let keys = std::env::var("LOOP_KEYS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -1299,7 +1315,7 @@ fn how_many_rounds_a_written_shard_takes_to_go_quiet() {
                 .map(|(key, reclaimable)| format!("{key:?} reclaimable={reclaimable}"))
         };
         let before = memo_of(&runtime);
-        let report = runtime.run_storage_manager_once(1, options.clone());
+        let report = harness_round(&runtime, options.clone());
         let after = memo_of(&runtime);
         let span = |name: &str| {
             report
