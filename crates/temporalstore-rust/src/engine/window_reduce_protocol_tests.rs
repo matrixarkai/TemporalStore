@@ -509,6 +509,8 @@ fn an_answer_carries_wide_lanes_the_member_the_label_and_the_newest_time() {
         }],
         refused: String::new(),
         sample_info: Vec::new(),
+        matched_first_ms: 0,
+        matched_last_ms: 0,
     };
     let q = WindowReduceQuery { echo: true, has_echo: true, ..query(trailing(), selector(RankMode::Ratio)) };
     let a = answer_of(&profile, &q, &ranked);
@@ -1074,6 +1076,8 @@ fn first_and_last_say_what_the_window_scanned_except_for_the_reads_that_select_b
         samples: 4,
         window_first_ms: 10,
         window_last_ms: 90,
+        matched_first_ms: 20,
+        matched_last_ms: 80,
         keys: 1,
         rows: vec![crate::types::RankedCellRow { member: CellMemberId::U64(7), score: 1.0, last_ms: 60, labels: vec![5], lanes: vec![1, 2] }],
         ..Default::default()
@@ -1085,9 +1089,10 @@ fn first_and_last_say_what_the_window_scanned_except_for_the_reads_that_select_b
     for mode in [RankMode::FirstLane, RankMode::Ratio, RankMode::Wilson, RankMode::Member, RankMode::Recent, RankMode::DecayedLane] {
         assert_eq!(span(mode, &ranked), (10_000, 90_000), "{mode:?}");
     }
-    for mode in [RankMode::MembersOnly, RankMode::MatchLane] {
-        assert_eq!(span(mode, &ranked), (60_000, 60_000), "{mode:?}");
-    }
+    // MEMBERS_ONLY: the oldest and newest sample that held a selected member (20 and 80), not the
+    // newest sample of each returned member; MATCH_LANE: the rows it returned.
+    assert_eq!(span(RankMode::MembersOnly, &ranked), (20_000, 80_000));
+    assert_eq!(span(RankMode::MatchLane, &ranked), (60_000, 60_000));
     // A window that selected no sample is 0 and 0.
     assert_eq!(span(RankMode::FirstLane, &RankedCells::default()), (0, 0));
 }

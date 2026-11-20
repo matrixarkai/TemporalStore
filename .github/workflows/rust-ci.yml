@@ -741,6 +741,7 @@ jobs:
             engine::window_reduce_fan_in::tests::the_size_checks_accept_the_limit_and_refuse_one_past_it_by_themselves \
             engine::window_reduce_fan_in::tests::the_keys_count_is_a_wire_field_that_an_answer_without_it_reads_as_zero \
             engine::window_reduce_rank::tests::each_score_orders_by_the_value_only_it_produces \
+            engine::window_reduce_rank::tests::the_matched_span_is_the_samples_that_held_a_selected_cell_and_the_window_span_is_every_sample \
             engine::window_reduce_rank::tests::a_wilson_bound_is_the_hand_computed_number_and_rewards_volume \
             engine::window_reduce_rank::tests::a_ratio_or_wilson_that_cannot_be_formed_is_ranked_at_zero_and_never_dropped \
             engine::window_reduce_rank::tests::each_window_kind_selects_the_samples_it_names \
