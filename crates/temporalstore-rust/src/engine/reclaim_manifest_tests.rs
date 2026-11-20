@@ -127,12 +127,10 @@ fn direct_reclaim_honors_retention_owners_and_extended_grace() {
     let held = engine.purge_storage_delayed_destroy(&request);
     assert!(held.purged_block_slab_ids.is_empty());
     assert_eq!(held.restored_block_slab_ids, vec![0]);
-    assert!(engine.block_store.slab_ids().unwrap().contains(&0));
+    assert_eq!(engine.block_store.read_slab(0).unwrap(), b"retained");
     assert!(engine.block_store.delayed_destroy_slab_ids().unwrap().is_empty());
-    // Release the owner, then quarantine the slab again to exercise the age gate.
-    engine.block_store
-        .gc_slabs_before_with_live_refs_delayed_destroy(1, [1])
-        .unwrap();
+    // Release the owner and quarantine again before testing the independent grace gate.
+    engine.block_store.gc_slabs_before_with_live_refs_delayed_destroy(1, [1]).unwrap();
     engine.block_store.age_quarantine_for_reclaim_test(0);
     assert_eq!(
         engine.block_store.delayed_destroy_slab_ids().unwrap(),
@@ -144,10 +142,13 @@ fn direct_reclaim_honors_retention_owners_and_extended_grace() {
         ..request.clone()
     });
     assert!(held.purged_block_slab_ids.is_empty());
+    assert!(held.restored_block_slab_ids.is_empty());
+    assert_eq!(engine.block_store.delayed_destroy_slab_ids().unwrap(), vec![0]);
     let released = engine.purge_storage_delayed_destroy(&StorageLifecycleRequest {
         block_gc_checkpoint_floor_slab_id: None,
         ..request
     });
     assert_eq!(released.purged_block_slab_ids, vec![0]);
     assert!(released.purged_physical_bytes > 0);
+    assert!(engine.block_store.read_slab(0).is_err());
 }

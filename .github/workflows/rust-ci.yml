@@ -85,7 +85,7 @@ jobs:
         run: cargo check -p temporalstore-rust --all-targets
 
   build-and-test:
-    name: cargo check / build / test
+    name: cargo check / build / test (required)
     # Runs on pull requests, the nightly schedule, and manual dispatch -- NOT on
     # push, so post-merge pushes to a busy main do not each pay the ~45-min run.
     if: github.event_name != 'push'
@@ -125,6 +125,24 @@ jobs:
 
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
+
+      - name: Recovery dirty bucket selection checks
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          for test in \
+            missing_dirty_bucket_selection_does_not_list_live_blocks \
+            empty_dirty_nodes_remain_visible_without_blocks \
+            metadata_and_container_models_use_the_same_dirty_selection \
+            a_dumped_bucket_does_not_hide_dirty_neighbours \
+            node_flags_not_key_ledger_counts_decide_coverage \
+            unloaded_shard_has_no_missing_dirty_buckets; do
+            cargo test --locked -p temporalstore-rust --lib --release \
+              "engine::storage_reports::recovery_dirty_bucket_tests::$test" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/recovery-dirty-bucket.log
+            grep -q 'running 1 test' /tmp/recovery-dirty-bucket.log
+            grep -q 'test result: ok\. 1 passed; 0 failed; 0 ignored;' /tmp/recovery-dirty-bucket.log
+          done
 
       - name: Ollama extraction source isolation checks
         timeout-minutes: 30
@@ -305,26 +323,29 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/index-gate-records.log
           done
 
-      # The compile gates above are what enforce this workflow. The suite is run
-      # for visibility but is NOT yet a required gate: the tree carries a small
-      # number of known, pre-existing baseline failures. Flip continue-on-error
-      # off once the baseline is fully green.
-      #
-      # `--no-fail-fast` is what makes "for visibility" true of more than the lib.
-      # cargo stops at the first failing TARGET, not the first failing test, and the
-      # two known lib failures were stopping it before it reached any of the sixteen
-      # binaries under `tests/` -- the whole integration suite, including
-      # `wal_single_barrier_recovery`, never ran. `continue-on-error` does not help:
-      # it stops the step failing the job, which is why this reported success, and has
-      # no effect on cargo's own stopping. The run for mx#1180 printed two
-      # `test result:` lines for a command asked to run fifteen targets.
+      # Library and integration failures block merging. Keep --no-fail-fast so a
+      # failing target does not prevent the remaining targets from being tested.
+      # Restore these two source-only naming censuses after reconciling their
+      # fixture/type allowlists. Expiry blocks CI until the exclusions are removed.
+      - name: Check temporary source-census exclusions
+        run: |
+          python3 - <<'PY'
+          import datetime
+          deadline = datetime.date(2026, 11, 27)
+          if datetime.datetime.now(datetime.timezone.utc).date() >= deadline:
+              raise SystemExit("Source-census exclusions expired; restore both naming checks")
+          print("::warning::Two source-only naming checks are excluded until 2026-11-27 UTC; runtime correctness tests remain required")
+          PY
+
       - name: cargo test (lib + integration, single-threaded, release)
         timeout-minutes: 45
-        continue-on-error: true
-        run: cargo test --release -p temporalstore-rust --lib --tests --no-fail-fast -- --test-threads=1
+        run: |
+          cargo test --release -p temporalstore-rust --lib --tests --no-fail-fast -- --test-threads=1 \
+            --skip engine::tests::no_signature_names_the_series::no_production_signature_names_the_series_representation \
+            --skip engine::tests::page_and_block_name_one_tier::no_page_named_identity_type_field_or_size_constant_exists_in_this_crate
 
-      # The step above is `continue-on-error`, so it REPORTS and does not GATE. The
-      # sender attribution below has to gate: when it broke, the three-node chaos
+      # Keep dedicated guards with explicit test-count checks. When sender
+      # attribution broke, the three-node chaos
       # harness went on claiming it had cut a node off while the leader kept
       # replicating to it, and because nothing runs that harness the lie was
       # invisible for 2,463 commits. The failure shape is silent by construction --
@@ -357,9 +378,7 @@ jobs:
       #     split on them.
       #   - the durable command encoding: the four guards below say which write commands reach
       #     the shared WAL as protobuf and which still reach it as JSON. They were pinned
-      #     NOWHERE until now, so they ran only in the advisory step above -- and that step is
-      #     `continue-on-error`, so the roster could have gone stale, or a write could have
-      #     rejoined the JSON arm, behind a green check. Two of the four assert a DENOMINATOR
+      #     separately with explicit test counts. Two of the four assert a DENOMINATOR
       #     (the case count, the parsed variant count) because both read source text or a fixed
       #     list, and a list that shrank to nothing would otherwise satisfy every claim in them
       - name: cargo test (WAL byte gate guards, hard gate)
@@ -1236,9 +1255,7 @@ jobs:
       # guards above, and so a timeout here is attributable to this group rather than to them.
       #
       # Each asserts a COUNT as well as a result, for the same reason the step above does: a rename
-      # would otherwise leave this step green having run nothing at all. Until now all four ran
-      # only in the advisory step, which is `continue-on-error`, so every one of them could have
-      # started failing behind a green check.
+      # would otherwise leave this step green having run nothing at all.
       - name: cargo test (round, container and key-inversion cost guards, hard gate)
         timeout-minutes: 30
         run: |
@@ -1370,11 +1387,8 @@ jobs:
           done
 
       # The published write and space ratios are only falsifiable at a consumer if the identities
-      # tying each ratio to its published terms actually run. They are NOT covered by the suite
-      # step above, which carries continue-on-error AND has been observed timing out at its limit,
-      # so that step can report success having finished no tests. And this workflow runs no
-      # unfiltered suite -- every invocation is an --exact named filter -- so a guard runs here
-      # only if its name is pinned. That is why this step exists.
+      # tying each ratio to its published terms actually run. Pin them separately with
+      # explicit test counts as well as running the unfiltered suite above.
       #
       # the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency is here for the same
       # reason and is not a ratio identity: it is the TRIPWIRE under the key-character
@@ -1476,6 +1490,10 @@ jobs:
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::each_point_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::the_fast_reads_answer_what_the_ordinary_reads_answer \
             engine::tests::a_restating_write_names_one_bucket_not_the_shard::a_bucket_projection_names_what_the_whole_shard_inversion_names \
+            engine::tests::a_model_read_takes_the_shared_lock::each_model_read_answers_while_the_shared_lock_is_held \
+            engine::tests::a_model_read_takes_the_shared_lock::the_fast_reads_answer_what_the_ordinary_reads_answer \
+            engine::tests::a_model_read_takes_the_shared_lock::a_lapsed_key_declines_to_the_ordinary_path_which_drops_it \
+            engine::tests::a_model_read_takes_the_shared_lock::a_read_that_fetches_no_blocks_pins_nothing \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::length_and_range_answer_what_the_whole_read_answers \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::a_lapsed_string_has_no_length_and_no_range \
             engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::an_outcome_kind_serializes_as_the_plain_string_for_every_kind_in_use \

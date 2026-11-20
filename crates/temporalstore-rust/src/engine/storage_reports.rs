@@ -48,7 +48,6 @@ impl TemporalEngine {
         sweep
     }
 
-
     /// WHAT THE SERVED HASH READ HAS SEEN OF ITS TWO SOURCES, read off the counters the read
     /// path keeps.
     ///
@@ -66,10 +65,8 @@ impl TemporalEngine {
             reads_served,
             index_named_fields_the_container_lacked,
             divergences_logged,
-            last_divergence: last.map(|(object_key, field)| HashReadDivergenceSample {
-                object_key,
-                field,
-            }),
+            last_divergence: last
+                .map(|(object_key, field)| HashReadDivergenceSample { object_key, field }),
         }
     }
     /// WHAT THE BUCKET MAINTENANCE SCAN HAS SEEN of the blocks and the object list.
@@ -90,10 +87,12 @@ impl TemporalEngine {
             list_held_an_object_no_block_names: counts.list_held_an_object_no_block_names,
             divergences_logged: counts.divergences_logged,
             stored_slots_repeated_an_id: super::state::stored_slots_repeated_an_id(),
-            last_divergence: counts.last.map(|(what, object_id)| ObjectIndexDivergenceSample {
-                what: what.to_string(),
-                object_id,
-            }),
+            last_divergence: counts
+                .last
+                .map(|(what, object_id)| ObjectIndexDivergenceSample {
+                    what: what.to_string(),
+                    object_id,
+                }),
         }
     }
 
@@ -479,7 +478,10 @@ impl TemporalEngine {
         // round as that pair: fixing only the other would have left every round still reading
         // both logs in full, from a second site.
         let wal_records = self.wal_store.record_count(shard_id).unwrap_or_default();
-        let index_log_records = self.index_log_store.record_count(shard_id).unwrap_or_default();
+        let index_log_records = self
+            .index_log_store
+            .record_count(shard_id)
+            .unwrap_or_default();
         StorageLogCompatibilityReport {
             shard_id,
             wal_format: "rust-protobuf-wal-v1".to_string(),
@@ -621,7 +623,8 @@ impl TemporalEngine {
         };
         for (key, address) in plan {
             if self.cache.peek_tier(&key).is_some() {
-                report.already_cached_block_refs = report.already_cached_block_refs.saturating_add(1);
+                report.already_cached_block_refs =
+                    report.already_cached_block_refs.saturating_add(1);
                 report.warmed_block_refs = report.warmed_block_refs.saturating_add(1);
             } else if let Ok(bytes) = self.read_block_counted(&address) {
                 report.page_store_reads = report.page_store_reads.saturating_add(1);
@@ -657,12 +660,13 @@ impl TemporalEngine {
             let Some(routing_bucket) = cache_entry_routing_bucket(entry) else {
                 continue;
             };
-            let summary = bucket_summaries
-                .entry(routing_bucket)
-                .or_insert(StorageCacheBucketSummary {
-                    routing_bucket,
-                    ..StorageCacheBucketSummary::default()
-                });
+            let summary =
+                bucket_summaries
+                    .entry(routing_bucket)
+                    .or_insert(StorageCacheBucketSummary {
+                        routing_bucket,
+                        ..StorageCacheBucketSummary::default()
+                    });
             summary.entry_count = summary.entry_count.saturating_add(1);
             summary.memory_bytes = summary.memory_bytes.saturating_add(entry.memory_bytes);
             summary.disk_bytes = summary.disk_bytes.saturating_add(entry.disk_bytes);
@@ -742,20 +746,8 @@ impl TemporalEngine {
         // the bucket's own flag rather than derived from a count of dirty OBJECTS. See
         // `dirty_bucket_nodes`. A bucket with no node reads the same either way, because the set
         // loop contributes no count to one.
-        let dirty_nodes = self
-            .shards
-            .read()
-            .expect("shards lock poisoned")
-            .get(&shard_id)
-            .map(super::storage_reporting::dirty_bucket_nodes)
-            .unwrap_or_default();
-        let missing_dump_bucket_ids = self
-            .bucket_storage_summaries(shard_id)
-            .into_iter()
-            .filter(|summary| dirty_nodes.contains(&summary.routing_bucket))
-            .map(|summary| summary.routing_bucket)
-            .filter(|bucket| !latest_dump_buckets.contains(bucket))
-            .collect::<Vec<_>>();
+        let missing_dump_bucket_ids =
+            self.recovery_missing_dump_bucket_ids(shard_id, &latest_dump_buckets);
         let interrupted_bucket_dump_installs = self.interrupted_bucket_dump_installs(shard_id);
         let (
             prepared_bucket_dump_install_count,
@@ -783,8 +775,7 @@ impl TemporalEngine {
             latest_safe_index_log_sequence,
             latest_dump_wal_sequence,
             latest_dump_index_log_sequence,
-            selected_replay_wal_sequence: latest_dump_wal_sequence
-                .min(latest_safe_wal_sequence),
+            selected_replay_wal_sequence: latest_dump_wal_sequence.min(latest_safe_wal_sequence),
             selected_replay_index_log_sequence: latest_dump_index_log_sequence
                 .min(latest_safe_index_log_sequence),
             orphan_block_slab_ids,
@@ -801,6 +792,25 @@ impl TemporalEngine {
             corrupt_block_slab_ids,
             unreadable_block_bytes,
         }
+    }
+
+    fn recovery_missing_dump_bucket_ids(
+        &self,
+        shard_id: ShardId,
+        latest_dump_buckets: &BTreeSet<u32>,
+    ) -> Vec<u32> {
+        let shards = self.shards.read().expect("shards lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return Vec::new();
+        };
+        // Dirty nodes always receive summaries, including nodes without live blocks.
+        shard
+            .bucket_index
+            .bucket_map
+            .dirty_buckets()
+            .difference(latest_dump_buckets)
+            .copied()
+            .collect()
     }
 }
 
@@ -843,3 +853,7 @@ pub fn reset_storage_cache_inspection_listings() {
     STORAGE_CACHE_INSPECTION_LISTINGS.with(|cell| cell.set(0));
     STORAGE_CACHE_INSPECTION_LISTING_ENTRIES.with(|cell| cell.set(0));
 }
+
+#[cfg(test)]
+#[path = "recovery_dirty_bucket_tests.rs"]
+mod recovery_dirty_bucket_tests;

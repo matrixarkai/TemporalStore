@@ -3109,12 +3109,12 @@ pub struct CatalogDumpReclaimReport {
     /// dropped with `.ok()` and each field then read through `unwrap_or_default()`.
     #[serde(default)]
     pub index_log_sweep_failed: bool,
-    /// Records removed by rewriting the active file; excludes whole-segment deletion.
+    /// Records removed from the active WAL file; sealed-segment retirement is counted below.
     pub wal_records_removed: usize,
-    /// Active-file bytes before and after the sweep; closed segments are counted separately.
+    /// Active WAL file sizes, excluding the sealed segments counted separately below.
     pub wal_bytes_before: u64,
     pub wal_bytes_after: u64,
-    /// Whole segments are unlinked separately from rewriting the active file.
+    /// Whole WAL segments retired without rewriting their records.
     #[serde(default)]
     pub wal_segments_dropped: usize,
     #[serde(default)]

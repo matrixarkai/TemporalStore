@@ -4289,8 +4289,26 @@ fn expiry_cache_pass_arms(objects: usize) -> (ExpiryCachePassArm, ExpiryCachePas
     let sweep = &crate::engine::CACHE_SWEEP_COUNTS;
     let expired_keys = cache_pass_due(objects);
 
+    // Hash point reads use physical blocks, not logical response copies. Seed the supported
+    // logical selectors explicitly so both invalidators still exercise every swept namespace.
+    let seed_selectors = |engine: &TemporalEngine| {
+        for key in cache_pass_marked(objects) {
+            for namespace in crate::engine::SWEPT_RECORD_NAMESPACES {
+                for selector in ["first", "second", "third"] {
+                    engine.cache.put(CacheKey {
+                        shard_id: 1,
+                        namespace: (*namespace).into(),
+                        record_key: key.as_str().into(),
+                        selector: selector.into(),
+                    }, vec![1; 16]).unwrap();
+                }
+            }
+        }
+    };
+
     let per_key = {
         let (_dir, engine) = cache_pass_fixture(objects, true, &expired_keys);
+        seed_selectors(&engine);
         let before = cache_pass_listing(&engine);
         sweep.reset();
         sweep.set_armed(true);
@@ -4313,6 +4331,7 @@ fn expiry_cache_pass_arms(objects: usize) -> (ExpiryCachePassArm, ExpiryCachePas
 
     let batched = {
         let (_dir, engine) = cache_pass_fixture(objects, true, &expired_keys);
+        seed_selectors(&engine);
         let before = cache_pass_listing(&engine);
         sweep.reset();
         sweep.set_armed(true);
