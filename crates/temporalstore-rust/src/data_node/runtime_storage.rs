@@ -1384,6 +1384,7 @@ impl DataNodeRuntime {
                     crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
                 );
             if !quarantine_waits {
+                let purge_started = std::time::Instant::now();
                 let purge = self
                     .inner
                     .engine
@@ -1400,6 +1401,7 @@ impl DataNodeRuntime {
                             crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
                         ..StorageLifecycleRequest::default()
                     });
+                super::task_execution::record_gc_phase(&self.inner, "purge", purge_started);
                 block_purge_report = Some(purge);
                 if !executed_stages.iter().any(|stage| stage == "reclaim_page") {
                     executed_stages.push("reclaim_page".to_string());

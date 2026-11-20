@@ -183,6 +183,22 @@ fn live_block_slab_ids_for_collection(
     inner.engine.live_block_slab_ids_all_shards()
 }
 
+/// Charge `started.elapsed()` to a named sub-phase of block collection. The rows land in the same
+/// per-stage timing table the loop's own stages use, as `reclaim_page.<phase>`, so the stage report
+/// and the metrics endpoint show where a collection round spends its time. Rounds executed counts
+/// the rounds the phase ran in; max is the longest single run.
+pub(super) fn record_gc_phase(inner: &DataNodeRuntimeInner, phase: &str, started: std::time::Instant) {
+    let us = started.elapsed().as_micros() as u64;
+    let mut stats = inner.stats.lock().expect("runtime stats lock poisoned");
+    let timing = stats
+        .storage_manager_stage_timing
+        .entry(format!("reclaim_page.{phase}"))
+        .or_default();
+    timing.rounds_executed += 1;
+    timing.total_us = timing.total_us.saturating_add(us);
+    timing.max_us = timing.max_us.max(us);
+}
+
 pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> GcResponse {
     // REFUSE WHILE THE SHARD IS RECOVERING (WAL replay still to run, or running).
     //
@@ -272,7 +288,10 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     // actually reclaimed means doing it after, which is why this is a branch here and a second
     // block below rather than a narrower call in the same place.
     if !request.block_gc_invalidate_removed_slabs_only {
-        match inner.engine.cache().invalidate_shard(request.shard_id) {
+        let phase_started = std::time::Instant::now();
+        let invalidated = inner.engine.cache().invalidate_shard(request.shard_id);
+        record_gc_phase(inner, "cache_invalidate", phase_started);
+        match invalidated {
             Ok(report) => {
                 cache_entries_removed = report.memory_entries_removed;
                 cache_disk_bytes_removed = report.disk_bytes_removed;
@@ -373,17 +392,21 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             // hold blocks from multiple shards. Retain slabs live in ANY loaded shard, not just
             // this request's shard; a per-shard live set would delete another shard's live blocks.
             // The retained manifests first, because both ways of building the live set need them.
+            let phase_started = std::time::Instant::now();
             let manifest_block_slab_ids: std::collections::BTreeSet<u64> = inner
                 .engine
                 .list_bucket_dump_manifests(request.shard_id)
                 .iter()
                 .flat_map(|manifest| manifest.block_slab_ids.iter().copied())
                 .collect();
+            record_gc_phase(inner, "manifests", phase_started);
+            let phase_started = std::time::Instant::now();
             let mut live_block_slab_ids = live_block_slab_ids_for_collection(
                 inner,
                 retain_from_block_slab_id,
                 &manifest_block_slab_ids,
             );
+            record_gc_phase(inner, "live_set", phase_started);
             // Retain any block slab still referenced by a durable bucket-dump manifest. The
             // operator /gc RPC must not delete a slab a retained manifest needs: a lagging
             // follower's replay or a snapshot-install reads it, and deleting it makes the
@@ -427,6 +450,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
                 || !request.block_gc_raft_snapshot_refs.is_empty()
                 || request.block_gc_checkpoint_floor_slab_id.is_some()
                 || request.block_gc_raft_install_floor_slab_id.is_some();
+            let phase_started = std::time::Instant::now();
             let reclaimable_block_slab_ids = if names_retention_owner {
                 inner
                     .engine
@@ -458,6 +482,8 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             } else {
                 Ok(None)
             };
+            record_gc_phase(inner, "dependency_plan", phase_started);
+            let phase_started = std::time::Instant::now();
             let gc_result = reclaimable_block_slab_ids.and_then(|allowed| {
                 inner
                     .engine
@@ -470,6 +496,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
                         allowed,
                     )
             });
+            record_gc_phase(inner, "store_gc", phase_started);
             match gc_result {
                 Ok(report) => {
                     if request.block_gc_invalidate_removed_slabs_only {
