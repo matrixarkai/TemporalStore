@@ -35,6 +35,52 @@ pub(super) struct QuietWalReclaimKey {
     retention_inputs: u64,
 }
 
+fn record_purge_work(
+    report: &mut Option<StorageLifecycleReport>,
+    plan: &StorageLifecyclePlan,
+    purge: crate::block_store::BlockStorePurgeDelayedDestroyReport,
+    detailed_report: bool,
+) {
+    if !detailed_report
+        || (purge.purged_block_slab_ids.is_empty() && purge.restored_block_slab_ids.is_empty())
+    {
+        return;
+    }
+    // Use the plan already computed for this round; reporting must not run maintenance again.
+    let report = report.get_or_insert_with(|| StorageLifecycleReport {
+        shard_id: plan.shard_id,
+        plan: plan.clone(),
+        ..StorageLifecycleReport::default()
+    });
+    report.delayed_destroy_purged_slabs.extend(purge.purged_block_slab_ids);
+    report.delayed_destroy_purged_bytes = report.delayed_destroy_purged_bytes
+        .saturating_add(purge.purged_physical_bytes);
+    report.delayed_destroy_restored_slabs.extend(purge.restored_block_slab_ids);
+    report.delayed_destroy_restored_bytes = report.delayed_destroy_restored_bytes
+        .saturating_add(purge.restored_physical_bytes);
+    report.refresh_public_lifecycle_metrics();
+}
+
+#[cfg(test)]
+mod purge_report_tests {
+    use super::*;
+
+    #[test]
+    fn compact_scheduler_reporting_does_not_build_a_lifecycle_report() {
+        let mut report = None;
+        record_purge_work(
+            &mut report,
+            &StorageLifecyclePlan::default(),
+            crate::block_store::BlockStorePurgeDelayedDestroyReport {
+                purged_block_slab_ids: vec![1], purged_physical_bytes: 128,
+                ..Default::default()
+            },
+            false,
+        );
+        assert!(report.is_none());
+    }
+}
+
 impl DataNodeRuntime {
     fn quiet_wal_reclaim_key(
         &self,
@@ -1304,7 +1350,7 @@ impl DataNodeRuntime {
         // stage off, nothing else would, and every slab this stage sets aside would stay in
         // quarantine for ever. Owners and grace are the ones the index stage passes.
         if options.enable_block_gc && !options.enable_index_gc {
-            let _ = self
+            let purge = self
                 .inner
                 .engine
                 .purge_storage_delayed_destroy(&StorageLifecycleRequest {
@@ -1320,6 +1366,7 @@ impl DataNodeRuntime {
                         crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
                     ..StorageLifecycleRequest::default()
                 });
+            record_purge_work(&mut lifecycle_report, &lifecycle_plan, purge, detailed_report);
         }
         spans.close("reclaim_page", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
@@ -1443,7 +1490,7 @@ impl DataNodeRuntime {
                 .storage_manager_index_gc_runs += 1;
             executed_stages.push("reclaim_index".to_string());
         } else if index_gc_purge_only {
-            let _ = self
+            let purge = self
                 .inner
                 .engine
                 .purge_storage_delayed_destroy(&StorageLifecycleRequest {
@@ -1459,6 +1506,7 @@ impl DataNodeRuntime {
                         crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
                     ..StorageLifecycleRequest::default()
                 });
+            record_purge_work(&mut lifecycle_report, &lifecycle_plan, purge, detailed_report);
             self.inner
                 .stats
                 .lock()
