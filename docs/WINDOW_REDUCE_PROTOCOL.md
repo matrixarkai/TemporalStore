@@ -20,7 +20,7 @@ kind `cell_retry` keep their original spelling because they are written to disk.
   to a millisecond (accepted and documented). Two observations in one millisecond share a sample and merge.
 * An entity is a 64 bit id (field 1), or text or bytes through the additive fields.
 * Lane values are 64 bit. Readers that declare them 32 bit see the low 32 bits.
-* A table name selects a declared **profile** (below). An unknown table answers `NO_SUCH_TABLE`.
+* A table name selects a declared **profile** (below). An unknown table answers `NO_DATA`.
 
 ## Profile
 
@@ -52,7 +52,7 @@ header written with the first write of a key family still guards every later wri
 
 Enum values: operations ADD 0, BATCH_QUERY 1, REMOVE 2, RESTORE 3, DELETE 4. Status codes OK 0,
 ERROR 1, STORAGE_ERROR 2, OUT_OF_MEMORY 3, NO_DATA 4, QUOTA_EXHAUSTED 5, REQUEST_ILLEGAL 6,
-NO_SUCH_TABLE 7, INVALID_ARGUMENT 8, DUPLICATE_REFUSED 9. Rank modes FIRST_LANE 0, SECOND_LANE 1,
+NO_SUCH_TABLE 7 (declared, never answered), INVALID_ARGUMENT 8, DUPLICATE_REFUSED 9. Rank modes FIRST_LANE 0, SECOND_LANE 1,
 RATIO 2, MEMBER 3, RECENT 4, NAMED_LANE 5, MATCH_LANE 6, WEIGHTED 7, MEMBERS_ONLY 8, WILSON 9,
 DECAYED_LANE 10 (new).
 Window kinds TRAILING_FROM_NOW 0, TRAILING_FROM_NEWEST 1, NEWEST_ROWS 2, FROM_START 3,
@@ -171,7 +171,7 @@ only for particular cells, report the span of the rows they return. A read of an
 answer with status OK. A pair table answers `pair`,
 a list table `list`; `timestamp_us` is the newest sample holding the member.
 
-**Errors.** Refusals answer INVALID_ARGUMENT, an unknown table NO_SUCH_TABLE, a duplicate refused
+**Errors.** Refusals answer INVALID_ARGUMENT, an unknown table NO_DATA, a duplicate refused
 under a no-merge profile DUPLICATE_REFUSED, an exhausted quota QUOTA_EXHAUSTED, anything else ERROR.
 
 **Sample info.** `want_sample_info` (selector field 19) true asks the answer to say which samples the
@@ -190,7 +190,6 @@ field. The bound on rows (1 to 1000) applies to the count.
 
 ## Where this deliberately differs from the narrower shape
 
-* Unknown table answers NO_SUCH_TABLE (the narrower shape declares the code and answers NO_DATA).
 * A custom weighted rank works; the narrower server dereferenced an unset pointer.
 * Rank results are ordered; the narrower server returned an unordered selection.
 * A batch reports a status per answer, not only the last.

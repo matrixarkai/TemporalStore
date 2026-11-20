@@ -215,7 +215,7 @@ fn a_request_with_a_wrong_shape_an_unknown_table_or_a_duplicate_is_refused_with_
     assert_eq!(err.code, WindowReduceStatusCode::InvalidArgument);
 
     let profiles = Profiles::new(vec![profile]).unwrap();
-    assert_eq!(profiles.lookup(b"absent").unwrap_err().code, WindowReduceStatusCode::NoSuchTable);
+    assert_eq!(profiles.lookup(b"absent").unwrap_err().code, WindowReduceStatusCode::NoData);
     assert!(profiles.lookup(b"stats").is_ok());
 }
 
@@ -266,7 +266,7 @@ fn a_batch_names_the_position_of_the_query_that_refused_it() {
     let mut bad = good.clone();
     bad.table = b"absent".to_vec();
     let err = translate_batch(&profiles, &WindowReduceBatchQuery { queries: vec![good.clone(), bad] }).unwrap_err();
-    assert_eq!(err.code, WindowReduceStatusCode::NoSuchTable);
+    assert_eq!(err.code, WindowReduceStatusCode::NoData);
     let mut worse = good.clone();
     worse.selector.as_mut().unwrap().limit = 0;
     let err = translate_batch(&profiles, &WindowReduceBatchQuery { queries: vec![good.clone(), good, worse] }).unwrap_err();

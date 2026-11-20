@@ -190,7 +190,7 @@ impl Profiles {
             .iter()
             .find(|profile| profile.name.as_bytes() == table)
             .ok_or_else(|| Refusal {
-                code: WindowReduceStatusCode::NoSuchTable,
+                code: WindowReduceStatusCode::NoData,
                 message: format!("no table named `{}`", String::from_utf8_lossy(table)),
             })
     }
