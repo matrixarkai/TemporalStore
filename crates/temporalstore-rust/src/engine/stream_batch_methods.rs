@@ -1639,6 +1639,7 @@ impl TemporalEngine {
                     config.feature_max_size,
                 );
             let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
+            shard.feature_max_age_ms = config.feature_max_age_ms();
             let (outcome, returned_post_write, hash_index_filed) = match command {
                 Command::HashMultiSet { key, entries } if reuse_consumed_metadata => {
                     let (outcome, metadata, filed) =
