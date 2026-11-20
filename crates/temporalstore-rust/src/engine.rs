@@ -1957,10 +1957,6 @@ impl TemporalEngine {
                 | Command::SetIsMember { .. }
                 | Command::WindowReduceRankBatch { .. }
                 | Command::WindowReduceFanInRank { .. }
-                | Command::ControlStateCount { .. }
-                | Command::ControlStateQuery { .. }
-                | Command::ControlStateSelectionQuery { .. }
-                | Command::SeenCard { .. }
         );
         if !read_command {
             return None;
