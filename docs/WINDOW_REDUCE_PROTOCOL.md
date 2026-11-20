@@ -176,7 +176,8 @@ position; so is any query that would be refused alone.
 
 **Answers.** `first_us` and `last_us` are the oldest and the newest sample the window selected, before
 the top-k kept any of it (0 and 0 when it selected none); `MEMBERS_ONLY` and `MATCH_LANE` reads, which look
-only for particular cells, report the span of the rows they return. A read of an absent key is an empty
+only for particular cells, report a narrower span: `MEMBERS_ONLY` the oldest and the newest sample that
+held one of its members, `MATCH_LANE` the span of the rows it returns. A read of an absent key is an empty
 answer with status OK. A pair table answers `pair`,
 a list table `list`; `timestamp_us` is the newest sample holding the member.
 

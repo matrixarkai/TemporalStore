@@ -191,6 +191,27 @@ fn a_ratio_or_wilson_that_cannot_be_formed_is_ranked_at_zero_and_never_dropped()
 }
 
 #[test]
+fn the_matched_span_is_the_samples_that_held_a_selected_cell_and_the_window_span_is_every_sample() {
+    // Member 4 is in the samples at 200 and 400 only; the window holds 100, 200, 300 and 400.
+    let mut query = spec(ALL, WindowReduceScore::Time, 5);
+    query.members = crate::types::CellMemberFilter { include: Some(vec![CellMemberId::U64(4)]), exclude: vec![] };
+    let ranked = run(&query);
+    assert_eq!((ranked.window_first_ms, ranked.window_last_ms), (100, 400));
+    assert_eq!((ranked.matched_first_ms, ranked.matched_last_ms), (200, 400));
+    // A predicate narrows it the same way: slot 1 cells exist at 100, 200 and 300 only.
+    let mut slot = spec(ALL, WindowReduceScore::Time, 5);
+    slot.filters = vec![filter("slot", FeatureFilterOp::Equal, 1)];
+    let ranked = run(&slot);
+    assert_eq!((ranked.matched_first_ms, ranked.matched_last_ms), (100, 300));
+    // Nothing selected: 0 and 0, with the window span still reported.
+    let mut none = spec(ALL, WindowReduceScore::Time, 5);
+    none.filters = vec![filter("slot", FeatureFilterOp::Equal, 9)];
+    let ranked = run(&none);
+    assert_eq!((ranked.matched_first_ms, ranked.matched_last_ms), (0, 0));
+    assert_eq!((ranked.window_first_ms, ranked.window_last_ms), (100, 400));
+}
+
+#[test]
 fn each_window_kind_selects_the_samples_it_names() {
     let shown = |window| {
         let ranked = run(&spec(window, lane("shown"), 5));
