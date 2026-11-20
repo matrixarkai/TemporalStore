@@ -506,7 +506,7 @@ impl DataNodeRuntime {
         self.run_storage_manager_once_with_report_details(shard_id, options, true)
     }
 
-    fn run_storage_manager_once_with_report_details(
+    pub(crate) fn run_storage_manager_once_with_report_details(
         &self,
         shard_id: ShardId,
         options: StorageManagerOptions,
