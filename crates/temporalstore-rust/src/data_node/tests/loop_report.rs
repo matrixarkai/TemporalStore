@@ -70,6 +70,11 @@ fn the_loop_report_prices_every_stage_it_reaches() {
     let options = StorageManagerOptions {
         // One stage off, so the skip path has to produce a row too.
         enable_block_compaction: false,
+        // The gate is crossed so the plans walk the dirty fixture: under the shipped byte gate a
+        // shard this small is left undumped and the only walker was the index stage's purge, which
+        // the block stage now skips while no quarantined slab can mature.
+        dirty_bucket_pressure: 1,
+        min_undumped_wal_bytes: 1,
         ..StorageManagerOptions::default()
     };
     let report = runtime.run_storage_manager_once(1, options);
@@ -1112,7 +1117,9 @@ fn a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound() {
         if round == 0 {
             continue;
         }
-        assert!(walked >= keys as u64 * 10, "the round listed only {walked} entries");
+        // A floor of 8 listings, not 10: the index stage no longer lists the shard to purge a quarantine
+        // that cannot mature, so a dirty round is 9 listings and not 10.
+        assert!(walked >= keys as u64 * 8, "the round listed only {walked} entries");
         assert!(
             walked <= DIRTY_ROUND_WALK_BOUND * keys as u64,
             "a dirty round listed {walked} entries = {:.1} listings of {keys} keys, bound {DIRTY_ROUND_WALK_BOUND}",
