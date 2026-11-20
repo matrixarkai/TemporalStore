@@ -1232,6 +1232,11 @@ fn what_a_writer_waits_during_each_stage_of_a_dumping_round() {
             "      W {label} outside the round: writes={} p50={} us p99={} us max={} us",
             idle.writes, idle.p50_us, idle.p99_us, idle.max_wait_us
         );
+        // The longest wait of a write that began in each PHASE the engine named while the round ran
+        // (`writer_stall_probe::set_phase`, test builds): which step of the dump holds the writer.
+        for (phase, max_wait_us) in &stall.max_wait_us_by_phase {
+            eprintln!("      W {label} phase {phase:<48} max wait {max_wait_us:>10} us");
+        }
     }
 }
 
