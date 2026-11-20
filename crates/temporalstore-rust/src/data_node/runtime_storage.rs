@@ -3015,8 +3015,8 @@ impl PageGcStage<'_> {
             max_slabs: window,
         });
         // A round that starts a fresh pass asks the gate first: refresh the per-slab tally, then ask
-        // whether the live fraction over every slab is under the threshold. Both are O(slabs) with
-        // no file opened. A pass already underway finishes; an unpublished tally reads as due.
+        // whether the live fraction over noncurrent slabs is under the threshold. Both are O(slabs)
+        // with no file opened. A pass already underway finishes; an unpublished tally reads as due.
         if cursor.after_slab_id.is_none() {
             let engine = &self.runtime.inner.engine;
             engine.publish_block_slab_live_bytes();
