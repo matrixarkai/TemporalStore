@@ -2416,10 +2416,10 @@ fn wire_matrixobject_durability(
 /// cross-node lazy data-follow. Absent (or a non-matrixobject scheme) leaves the
 /// datanode on its existing behavior, byte-identical.
 ///
-/// `TS_MATRIXOBJECT_MODE=gateway|direct` chooses how the node reaches the cluster; with no
-/// mode, whichever of `TS_SHARED_STORE_URI` (gateway) and `TS_MATRIXOBJECT_META` (direct) is
-/// set decides. A configuration that names both, or that contradicts its mode, is a startup
-/// error: the node refuses to run rather than choose where its writes go.
+/// `TS_MATRIXOBJECT_MODE=gateway|direct` chooses how the node reaches the cluster. Direct is
+/// the default: with no mode, `TS_MATRIXOBJECT_META` (direct) decides even when
+/// `TS_SHARED_STORE_URI` (gateway) is also set, and the gateway is used only when it is the only
+/// one configured. A mode whose own setting is missing is a startup error.
 fn matrixobject_networked_target() -> Option<(MatrixObjectMode, String)> {
     let env = |name: &str| std::env::var(name).ok();
     let uri = env("TS_SHARED_STORE_URI");

@@ -1436,6 +1436,11 @@ impl TemporalEngine {
         }
     }
 
+    pub(crate) fn storage_dump_wal_sequence(&self, shard_id: ShardId) -> Option<u64> {
+        latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id)
+            .map(|manifest| manifest.wal_sequence)
+    }
+
     pub fn storage_wal_reclaim_plan(
         &self,
         shard_id: ShardId,

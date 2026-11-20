@@ -3384,3 +3384,145 @@ fn clear_string_rows_keeping_their_blocks_named(
     shard.strings_mut().clear();
     moved
 }
+
+/// A listing must release its read guard on the shard before it builds the summaries.
+///
+/// Every writer takes the write guard for its whole command, so for as long as a listing holds the
+/// read guard no write is acknowledged. The listing used to hold it across the copy out of the
+/// shard AND the summaries and digests built from the copy, and across reading the latest manifest
+/// off disk. On a 1M-key fill, whole-shard listings took 14% of the run with the longest at 4.5 s,
+/// and 27 of 29 seconds in which no write was acknowledged overlapped one.
+///
+/// The hook runs on the listing's thread at the point it has let the shard go. A write started
+/// there from another thread must finish while the listing is parked; if the listing still held
+/// its guard the write could not finish until the hook returned.
+#[test]
+fn a_writer_is_not_blocked_while_a_listing_builds_its_summaries() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "first".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+
+    let finished_while_parked = Arc::new(AtomicBool::new(false));
+    let writer_engine = engine.clone();
+    let flag = Arc::clone(&finished_while_parked);
+    // The writer is joined AFTER the listing returns. Joining it inside the hook would wait on a
+    // write that cannot finish while the listing still holds the guard, so a listing that held it
+    // would hang the test instead of failing it.
+    let parked_writer = Arc::new(std::sync::Mutex::new(None));
+    let parked = Arc::clone(&parked_writer);
+    crate::engine::storage_reporting::on_next_listing_released(move || {
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            writer_engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "during".to_string(),
+                    value: b"v".to_vec(),
+                },
+            });
+            let _ = done_tx.send(());
+        });
+        flag.store(
+            done_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            Ordering::SeqCst,
+        );
+        *parked.lock().expect("parked writer slot") = Some(writer);
+    });
+
+    let _ = engine.bucket_storage_summaries(1);
+    if let Some(writer) = parked_writer.lock().expect("parked writer slot").take() {
+        writer.join().expect("writer thread");
+    }
+    assert!(
+        finished_while_parked.load(Ordering::SeqCst),
+        "a write could not finish while the listing was building its summaries: the listing \
+         still holds its read guard on the shard"
+    );
+}
+
+/// A listing reports the shard as it stood when the listing took its copy, not as it stands when the
+/// summaries are finished building.
+///
+/// Building the summaries after the guard is released is only sound if they are built from what the
+/// guard covered. A write that lands in between must not appear in this listing and must appear in
+/// the next one; a build that went back to the live shard once the guard was released would show it
+/// in this one, and would be reading the shard without holding it.
+#[test]
+fn a_listing_built_after_the_guard_is_released_reports_the_shard_as_it_was_copied() {
+    use std::sync::{mpsc, Arc};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn dirty_objects(engine: &TemporalEngine) -> u64 {
+        engine
+            .bucket_storage_summaries(1)
+            .iter()
+            .map(|summary| summary.dirty_object_count)
+            .sum()
+    }
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "first".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    let before = dirty_objects(&engine);
+    assert!(before > 0, "the seed write left no dirty object to count");
+
+    let wrote_while_parked = Arc::new(AtomicBool::new(false));
+    let writer_engine = engine.clone();
+    let flag = Arc::clone(&wrote_while_parked);
+    // Joined after the listing returns, so a listing that held its guard fails the assertions
+    // below instead of hanging the test (see the other test).
+    let parked_writer = Arc::new(std::sync::Mutex::new(None));
+    let parked = Arc::clone(&parked_writer);
+    crate::engine::storage_reporting::on_next_listing_released(move || {
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            writer_engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "during".to_string(),
+                    value: b"v".to_vec(),
+                },
+            });
+            let _ = done_tx.send(());
+        });
+        flag.store(
+            done_rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok(),
+            Ordering::SeqCst,
+        );
+        *parked.lock().expect("parked writer slot") = Some(writer);
+    });
+
+    let during_listing = dirty_objects(&engine);
+    if let Some(writer) = parked_writer.lock().expect("parked writer slot").take() {
+        writer.join().expect("writer thread");
+    }
+    assert!(
+        wrote_while_parked.load(Ordering::SeqCst),
+        "the write could not finish while the listing was parked"
+    );
+    assert_eq!(
+        during_listing, before,
+        "a write that landed after the listing took its copy showed up in that listing"
+    );
+    assert_eq!(
+        dirty_objects(&engine),
+        before + 1,
+        "the next listing does not show the write that landed during the last one"
+    );
+}

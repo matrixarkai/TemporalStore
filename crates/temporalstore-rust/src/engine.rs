@@ -3157,8 +3157,16 @@ impl TemporalEngine {
             .as_ref()
             .map(|info| info.end_routing_bucket)
             .unwrap_or(u32::MAX);
+        // ONLY THE COPY OUT OF THE SHARD RUNS UNDER ITS READ GUARD. Every writer takes the write
+        // guard for its whole command, so for as long as this guard is held no write is
+        // acknowledged. Building the summaries and the digests reads nothing of the shard, so it
+        // runs after the guard is released, and so does reading the latest manifest off disk.
+        let listing = capture_live_listing(shard);
+        drop(shards);
+        #[cfg(test)]
+        storage_reporting::run_listing_released_hook();
         let (summaries, digests) =
-            bucket_summaries_and_digests(shard_id, shard, start, end, with_digests);
+            build_summaries_and_digests(shard_id, listing, start, end, with_digests);
         let summaries =
             if let Some(manifest) = latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id) {
                 merge_last_dump_sequence(summaries, &manifest)

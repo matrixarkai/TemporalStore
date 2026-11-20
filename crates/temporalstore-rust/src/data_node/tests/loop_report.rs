@@ -278,13 +278,13 @@ fn what_a_quiet_loop_round_pays_stage_by_stage() {
     eprintln!("B after measuring: {}", state(&b, &shipped));
 }
 
-/// What the WAL-reclaim stage's walk charge was in one round: nonzero means it asked the question.
-fn wal_stage_walk(report: &StorageManagerLoopReport) -> u64 {
+/// The physical log collector's walk charge; dumping has its own independent byte gate.
+fn collection_stage_walk(report: &StorageManagerLoopReport) -> u64 {
     report
         .stage_spans
         .iter()
-        .find(|span| span.stage == "reclaim_wal")
-        .expect("every round reports the reclaim_wal stage")
+        .find(|span| span.stage == "reclaim_page")
+        .expect("every round reports the reclaim_page stage")
         .walk
         .live_block_entries
 }
@@ -333,28 +333,27 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
         let report = runtime.run_storage_manager_once(1, settling.clone());
         // Settled means IDLE and not asking: a round that skips the stage because the shard is
         // still dirty below the byte gate walks nothing either, and is not the memory at work.
-        if wal_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
+        if collection_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
             settled_after = Some(round);
             break;
         }
     }
     let settled_after =
-        settled_after.expect("the WAL-reclaim stage never stopped walking on an idle shard");
+        settled_after.expect("page collection never stopped walking on an idle shard");
 
     // QUIET: several further rounds, every one of them skipping the question. A stage that asked
     // once more per round would be caught here, and one that had never asked would be caught below.
     for round in 0..5 {
         let report = runtime.run_storage_manager_once(1, options.clone());
         assert_eq!(
-            wal_stage_walk(&report),
+            collection_stage_walk(&report),
             0,
             "quiet round {round} (settled after {settled_after}) walked the shard again although \
              nothing had changed"
         );
     }
 
-    // A WRITE makes the shard dirty, and a dirty shard below the byte gate is not idle: the stage
-    // does not ask the question at all (no walk), because the log bytes decide, not the memory.
+    // A write changes collection inputs even below the independent dump byte gate.
     let response = runtime.inner.engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
@@ -364,11 +363,10 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
     });
     assert!(response.status.ok, "write after the quiet rounds: {:?}", response.status);
     let report = runtime.run_storage_manager_once(1, options.clone());
-    assert_eq!(
-        wal_stage_walk(&report),
-        0,
-        "a dirty shard below the byte gate asked the WAL-reclaim question"
-    );
+    assert!(collection_stage_walk(&report) > 0,
+        "a write did not invalidate the physical log collection memo");
+    assert_eq!(report.stage_spans.iter().find(|span| span.stage == "reclaim_wal")
+        .unwrap().walk.live_block_entries, 0, "a below-threshold write caused a dump");
 
     // Release the write with a one-byte gate until the shard is clean again, then QUIET AGAIN.
     let releasing = StorageManagerOptions {
@@ -382,7 +380,7 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
     let mut quiet_again = false;
     for _ in 0..12 {
         let report = runtime.run_storage_manager_once(1, options.clone());
-        if wal_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
+        if collection_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
             quiet_again = true;
             break;
         }
@@ -402,8 +400,8 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
     };
     let report = runtime.run_storage_manager_once(1, with_a_reader);
     assert!(
-        wal_stage_walk(&report) > 0,
-        "a new retention input did not make the WAL-reclaim stage ask again, so the memory's key \
+        collection_stage_walk(&report) > 0,
+        "a new retention input did not make page collection ask again, so the memory's key \
          does not include what the caller passes"
     );
 }

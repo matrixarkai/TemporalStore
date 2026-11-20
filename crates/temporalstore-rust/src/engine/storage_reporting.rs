@@ -384,15 +384,99 @@ pub(super) fn bucket_summaries_and_digests(
     Vec<BucketStorageSummary>,
     BTreeMap<u32, BucketFingerprintDigest>,
 ) {
-    let entries = collect_live_block_entries(shard);
-    let summaries = bucket_storage_summaries_from_entries(
-        shard,
+    build_summaries_and_digests(
+        shard_id,
+        capture_live_listing(shard),
         start_routing_bucket,
         end_routing_bucket,
-        &entries,
+        with_digests,
+    )
+}
+
+/// What the summaries read of the shard besides its live blocks: each bucket node's own record
+/// and the dirty-object tallies. One row per bucket, so it is copied out while the caller holds
+/// the shard and the summaries are built from the copy once the shard is released.
+pub(super) struct BucketNodeFacts {
+    /// `(routing_bucket, dirty, object_count, dirty_generation)` for every bucket node.
+    nodes: Vec<(u32, bool, u64, u64)>,
+    /// `(routing_bucket, dirty_object_count)` for every bucket holding a dirty object.
+    dirty_object_counts: Vec<(u32, u64)>,
+}
+
+/// Everything a listing takes from the shard. Owned, so the caller can drop the guard on the
+/// shard before the summaries and digests are built from it.
+pub(super) struct LiveListing {
+    entries: Vec<LiveBlockEntry>,
+    facts: BucketNodeFacts,
+}
+
+/// Copy out of `shard` everything the summaries and digests need. This is the only part of a
+/// listing that has to run under the caller's read of the shard.
+pub(super) fn capture_live_listing(shard: &ShardState) -> LiveListing {
+    LiveListing {
+        entries: collect_live_block_entries(shard),
+        facts: bucket_node_facts(shard),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static LISTING_RELEASED_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+/// Run `hook` once, on this thread, at the point a listing has released its guard on the shard.
+#[cfg(test)]
+pub(super) fn on_next_listing_released(hook: impl FnOnce() + 'static) {
+    LISTING_RELEASED_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+pub(super) fn run_listing_released_hook() {
+    if let Some(hook) = LISTING_RELEASED_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
+
+fn bucket_node_facts(shard: &ShardState) -> BucketNodeFacts {
+    BucketNodeFacts {
+        nodes: shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, bucket)| {
+                (
+                    *routing_bucket,
+                    bucket.dirty(),
+                    bucket.object_index.object_count() as u64,
+                    bucket.dirty_generation,
+                )
+            })
+            .collect(),
+        dirty_object_counts: shard.dirty_objects.bucket_counts().collect(),
+    }
+}
+
+/// The summaries and, when asked, the digests of a listing already taken. Reads no shard state,
+/// so it runs after the caller has released its guard on the shard.
+pub(super) fn build_summaries_and_digests(
+    shard_id: ShardId,
+    listing: LiveListing,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    with_digests: bool,
+) -> (
+    Vec<BucketStorageSummary>,
+    BTreeMap<u32, BucketFingerprintDigest>,
+) {
+    let summaries = summaries_from_listing(
+        start_routing_bucket,
+        end_routing_bucket,
+        &listing.entries,
+        &listing.facts,
     );
     let digests = if with_digests {
-        bucket_generation_digests_from_entries(shard_id, &entries)
+        bucket_generation_digests_from_entries(shard_id, &listing.entries)
     } else {
         BTreeMap::new()
     };
@@ -418,6 +502,36 @@ pub(super) fn bucket_storage_summaries_from_visit(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
     visit: impl FnOnce(&mut dyn FnMut(&LiveBlockEntry)),
+) -> Vec<BucketStorageSummary> {
+    summaries_from_visit_and_facts(
+        start_routing_bucket,
+        end_routing_bucket,
+        visit,
+        &bucket_node_facts(shard),
+    )
+}
+
+/// The summaries of a listing already taken: the live blocks as `entries` and the bucket nodes'
+/// own records as `facts`. Reads no shard state.
+fn summaries_from_listing(
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    entries: &[LiveBlockEntry],
+    facts: &BucketNodeFacts,
+) -> Vec<BucketStorageSummary> {
+    summaries_from_visit_and_facts(
+        start_routing_bucket,
+        end_routing_bucket,
+        |consume| entries.iter().for_each(consume),
+        facts,
+    )
+}
+
+fn summaries_from_visit_and_facts(
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    visit: impl FnOnce(&mut dyn FnMut(&LiveBlockEntry)),
+    facts: &BucketNodeFacts,
 ) -> Vec<BucketStorageSummary> {
     let mut buckets = BTreeMap::<u32, BucketStorageSummary>::new();
     let mut block_slabs_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
@@ -475,7 +589,7 @@ pub(super) fn bucket_storage_summaries_from_visit(
             );
         }
     });
-    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+    for &(routing_bucket, dirty, object_count, dirty_generation) in &facts.nodes {
         // object_count and the base dirty_generation are durable-generation IDENTITY
         // fields (compared by bucket_dump_summary_matches_current_generation to anchor
         // WAL/index reclaim). They must reflect durable bucket content, not the
@@ -484,19 +598,19 @@ pub(super) fn bucket_storage_summaries_from_visit(
         // reclaim fingerprint. Populate whenever the bucket is dirty OR already has a
         // live-block summary; behaviour is unchanged for every pre-clear state (a bucket
         // with content is dirty today, so the branch was always taken).
-        let has_live_summary = buckets.contains_key(routing_bucket);
-        if !bucket.dirty() && !has_live_summary {
+        let has_live_summary = buckets.contains_key(&routing_bucket);
+        if !dirty && !has_live_summary {
             continue;
         }
-        let summary = buckets.entry(*routing_bucket).or_insert(BucketStorageSummary {
-            routing_bucket: *routing_bucket,
+        let summary = buckets.entry(routing_bucket).or_insert(BucketStorageSummary {
+            routing_bucket,
             ..BucketStorageSummary::default()
         });
         // object_index.len() is the bucket's total object count, not its dirty count;
         // assigning it to dirty_object_count double-counted (the dirty_objects loop
         // below is the authoritative per-key dirty tally).
-        summary.object_count = bucket.object_index.object_count() as u64;
-        summary.dirty_generation = bucket.dirty_generation;
+        summary.object_count = object_count;
+        summary.dirty_generation = dirty_generation;
     }
     // ONE ITERATION PER DIRTY BUCKET, where this was one per dirty OBJECT.
     //
@@ -508,7 +622,7 @@ pub(super) fn bucket_storage_summaries_from_visit(
     //
     // This function runs three times in one `apply_storage_lifecycle` and again on each metrics
     // scrape, so the per-key hash was paid four times a round over a set that grows with ingest.
-    for (routing_bucket, dirty_object_count) in shard.dirty_objects.bucket_counts() {
+    for &(routing_bucket, dirty_object_count) in &facts.dirty_object_counts {
         DIRTY_SUMMARY_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let summary = buckets.entry(routing_bucket).or_insert(BucketStorageSummary {
             routing_bucket,

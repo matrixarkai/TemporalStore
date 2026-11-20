@@ -3376,12 +3376,14 @@ pub struct StorageManagerCycleRequest {
     pub dry_run: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_prepare: bool,
+    /// Publish dirty-slot dumps. Physical log retirement is controlled by `enable_block_reclaim`.
     #[serde(rename = "enable_wal_reclaim", default = "default_storage_manager_stage_enabled")]
     pub enable_wal_reclaim: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_evict: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_expire: bool,
+    /// Collect page-store garbage and published log prefixes, subject to retention fences.
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_block_reclaim: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
