@@ -3415,6 +3415,11 @@ fn a_writer_is_not_blocked_while_a_listing_builds_its_summaries() {
     let finished_while_parked = Arc::new(AtomicBool::new(false));
     let writer_engine = engine.clone();
     let flag = Arc::clone(&finished_while_parked);
+    // The writer is joined AFTER the listing returns. Joining it inside the hook would wait on a
+    // write that cannot finish while the listing still holds the guard, so a listing that held it
+    // would hang the test instead of failing it.
+    let parked_writer = Arc::new(std::sync::Mutex::new(None));
+    let parked = Arc::clone(&parked_writer);
     crate::engine::storage_reporting::on_next_listing_released(move || {
         let (done_tx, done_rx) = mpsc::channel();
         let writer = std::thread::spawn(move || {
@@ -3431,10 +3436,13 @@ fn a_writer_is_not_blocked_while_a_listing_builds_its_summaries() {
             done_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
             Ordering::SeqCst,
         );
-        writer.join().expect("writer thread");
+        *parked.lock().expect("parked writer slot") = Some(writer);
     });
 
     let _ = engine.bucket_storage_summaries(1);
+    if let Some(writer) = parked_writer.lock().expect("parked writer slot").take() {
+        writer.join().expect("writer thread");
+    }
     assert!(
         finished_while_parked.load(Ordering::SeqCst),
         "a write could not finish while the listing was building its summaries: the listing \
@@ -3477,6 +3485,10 @@ fn a_listing_built_after_the_guard_is_released_reports_the_shard_as_it_was_copie
     let wrote_while_parked = Arc::new(AtomicBool::new(false));
     let writer_engine = engine.clone();
     let flag = Arc::clone(&wrote_while_parked);
+    // Joined after the listing returns, so a listing that held its guard fails the assertions
+    // below instead of hanging the test (see the other test).
+    let parked_writer = Arc::new(std::sync::Mutex::new(None));
+    let parked = Arc::clone(&parked_writer);
     crate::engine::storage_reporting::on_next_listing_released(move || {
         let (done_tx, done_rx) = mpsc::channel();
         let writer = std::thread::spawn(move || {
@@ -3493,10 +3505,13 @@ fn a_listing_built_after_the_guard_is_released_reports_the_shard_as_it_was_copie
             done_rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok(),
             Ordering::SeqCst,
         );
-        writer.join().expect("writer thread");
+        *parked.lock().expect("parked writer slot") = Some(writer);
     });
 
     let during_listing = dirty_objects(&engine);
+    if let Some(writer) = parked_writer.lock().expect("parked writer slot").take() {
+        writer.join().expect("writer thread");
+    }
     assert!(
         wrote_while_parked.load(Ordering::SeqCst),
         "the write could not finish while the listing was parked"
