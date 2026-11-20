@@ -680,6 +680,20 @@ impl DataNodeRuntime {
         let wal_reclaim_reported = wal_reclaim_pressure || memo_hit == Some(true);
         if options.enable_wal_reclaim && wal_reclaim_pressure {
             let dump_started = std::time::Instant::now();
+            // Publish relocated addresses before the dump captures their generations.
+            let resident = self.inner.engine.wal_resident_block_count(shard_id);
+            let moved_blocks = if resident > 0 {
+                self.inner.engine.materialize_oldest_resident_blocks(
+                    shard_id,
+                    resident.saturating_sub(if options.max_dump_buckets_per_round == 0 {
+                        usize::MAX
+                    } else {
+                        options.max_dump_buckets_per_round
+                    }),
+                )
+            } else {
+                0
+            };
             let response = self.apply_storage_lifecycle_with_report_details(StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
@@ -727,36 +741,6 @@ impl DataNodeRuntime {
             }
             let dumped = response.report.dump_manifest.is_some();
             lifecycle_report = Some(response.report);
-            // Move the oldest blocks that live only inside a WAL record into the block store,
-            // before anything tries to reclaim the log. `min_registered_sequence` pins retention
-            // to the LOWEST registration, so one resident block holds the floor down whatever the
-            // retention policy says. The dump this stage just took does NOT do it: measured on 48
-            // async writes, a flush left all 48 registered and so did a full eight-stage cycle,
-            // with the log floor still at sequence 1.
-            //
-            // Same bound and same order as the one-shot cycle in `engine::storage_manager_cycle`,
-            // which is the other implementation of these stages -- at most
-            // `max_dump_buckets_per_round` per pass, oldest first. This is the copy that runs on a
-            // timer, so it is the one that decides whether an IDLE shard ever becomes reclaimable.
-            let mut moved_blocks = 0usize;
-            let resident = self.inner.engine.wal_resident_block_count(shard_id);
-            if resident > 0 {
-                let moved = self.inner.engine.materialize_oldest_resident_blocks(
-                    shard_id,
-                    resident.saturating_sub(if options.max_dump_buckets_per_round == 0 {
-                        usize::MAX
-                    } else {
-                        options.max_dump_buckets_per_round
-                    }),
-                );
-                moved_blocks = moved;
-                tracing::debug!(
-                    shard_id,
-                    moved,
-                    resident,
-                    "storage manager moved log-resident blocks into the block store"
-                );
-            }
             // Dumping and spilling make the log RECLAIMABLE. Neither frees a byte of it.
             //
             // This stage was named for a reclaim it never performed: `gc_before_sequence` is the
