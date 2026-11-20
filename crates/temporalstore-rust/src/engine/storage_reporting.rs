@@ -176,12 +176,30 @@ pub(super) fn object_lifecycle_report_from_entries(
     selected_buckets: &BTreeSet<u32>,
     routing_bucket_for_key: impl Fn(&str) -> u32,
 ) -> StorageObjectLifecycleReport {
+    object_lifecycle_report_from_entry_slice(
+        shard_id,
+        shard,
+        &entries,
+        selected_buckets,
+        routing_bucket_for_key,
+    )
+}
+
+/// The same report over a listing the caller keeps, so one listing can feed this and the samples
+/// taken beside it.
+pub(super) fn object_lifecycle_report_from_entry_slice(
+    shard_id: ShardId,
+    shard: &ShardState,
+    entries: &[LiveBlockEntry],
+    selected_buckets: &BTreeSet<u32>,
+    routing_bucket_for_key: impl Fn(&str) -> u32,
+) -> StorageObjectLifecycleReport {
     let mut report = ObjectLifecycleAccumulator::default();
     for entry in entries {
         // Use the container's filing, not the reading process's routing range.
         let bucket = entry.filed_bucket().unwrap_or_else(|| routing_bucket_for_key(&entry.object_key));
         if selected_buckets.is_empty() || selected_buckets.contains(&bucket) {
-            report.observe(shard_id, &entry);
+            report.observe(shard_id, entry);
         }
     }
     report.finish(shard, selected_buckets, routing_bucket_for_key)
