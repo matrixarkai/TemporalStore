@@ -1300,26 +1300,43 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("reclaim_page_no_pressure".to_string());
         }
-        // THE PURGE HAS ONE OWNER PER ROUND. The index stage runs it when it is enabled; with that
-        // stage off, nothing else would, and every slab this stage sets aside would stay in
-        // quarantine for ever. Owners and grace are the ones the index stage passes.
-        if options.enable_block_gc && !options.enable_index_gc {
-            let _ = self
-                .inner
-                .engine
-                .purge_storage_delayed_destroy(&StorageLifecycleRequest {
-                    shard_id,
-                    purge_delayed_destroy: true,
-                    follower_replay_cursors: options.follower_replay_cursors.clone(),
-                    block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
-                    block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                    block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
-                    block_gc_raft_install_floor_slab_id: options
-                        .block_gc_raft_install_floor_slab_id,
-                    block_gc_delayed_destroy_grace_ms:
-                        crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
-                    ..StorageLifecycleRequest::default()
-                });
+        // THE PURGE BELONGS TO THIS STAGE, and to no other: it destroys slabs this stage set aside.
+        //
+        // A QUARANTINED SLAB IS WORK ONLY WHEN IT CAN BE ACTED ON. The plan lists every slab in
+        // quarantine, but the purge destroys none before the grace has passed and restores one only
+        // when the live set names it; a store that has already checked the quarantine against the
+        // live set, with nothing old enough, is asked nothing the purge would answer differently, so
+        // the call (and the walk behind it) is skipped. Under steady overwrite load a quarantine is
+        // never empty, so reading "any slab" as work would walk the shard every round. A retention
+        // owner can name a quarantined slab with no new arrival, so with one configured the purge
+        // always runs, and when a slab CAN mature the restore check still reads the walked live set.
+        if options.enable_block_gc {
+            let quarantine_waits = options.block_gc_shared_store_cursors.is_empty()
+                && !self.inner.engine.has_registered_replay_readers(shard_id)
+                && options.raft_snapshot_refs.is_empty()
+                && options.block_gc_checkpoint_floor_slab_id.is_none()
+                && options.block_gc_raft_install_floor_slab_id.is_none()
+                && self.inner.engine.quarantine_waits_for_age(
+                    crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
+                );
+            if !quarantine_waits {
+                let _ = self
+                    .inner
+                    .engine
+                    .purge_storage_delayed_destroy(&StorageLifecycleRequest {
+                        shard_id,
+                        purge_delayed_destroy: true,
+                        follower_replay_cursors: options.follower_replay_cursors.clone(),
+                        block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
+                        block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
+                        block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
+                        block_gc_raft_install_floor_slab_id: options
+                            .block_gc_raft_install_floor_slab_id,
+                        block_gc_delayed_destroy_grace_ms:
+                            crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
+                        ..StorageLifecycleRequest::default()
+                    });
+            }
         }
         spans.close("reclaim_page", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
@@ -1401,22 +1418,6 @@ impl DataNodeRuntime {
             pressure.undumped_wal_records,
             pressure.wal_bytes,
         );
-        // A QUARANTINED SLAB IS WORK ONLY WHEN IT CAN BE ACTED ON. The plan lists every slab in
-        // quarantine, but the purge destroys none before the grace has passed and restores one only
-        // when the live set names it; a store that has already checked the quarantine against the
-        // live set, with nothing old enough, is asked nothing the purge would answer differently.
-        // Under steady overwrite load a quarantine is never empty, so reading "any slab" as work kept
-        // this stage on its full path every round. A retention owner can name a quarantined slab with
-        // no new arrival, so with one configured the plan's list stands.
-        let index_quarantine_waits = options.block_gc_shared_store_cursors.is_empty()
-            && !self.inner.engine.has_registered_replay_readers(shard_id)
-            && options.raft_snapshot_refs.is_empty()
-            && options.block_gc_checkpoint_floor_slab_id.is_none()
-            && options.block_gc_raft_install_floor_slab_id.is_none()
-            && self
-                .inner
-                .engine
-                .quarantine_waits_for_age(crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS);
         let index_gc_idle_apart_from_quarantine = options.enable_index_gc
             && index_log_floor != 0
             && ((pressure.dirty_bucket_count == 0 && pressure.undumped_wal_records == 0)
@@ -1428,37 +1429,9 @@ impl DataNodeRuntime {
                 .index_log_store()
                 .log_len_bytes(shard_id)
                 < index_log_floor;
-        let index_gc_has_no_work = index_gc_idle_apart_from_quarantine
-            && (lifecycle_plan.delayed_destroy_block_slab_ids.is_empty() || index_quarantine_waits);
-        // A SHARD IDLE EXCEPT FOR ITS QUARANTINE NEEDS THE PURGE AND NOTHING AROUND IT. The dump, the
-        // manifest prune, the roll-forward and the log collector are all idle by the clauses above, so
-        // what the full path would add to the purge is two plan builds that find that out again.
-        // The purge takes the retention owners itself, so this holds with one configured.
-        let index_gc_purge_only = index_gc_idle_apart_from_quarantine && !index_gc_has_no_work;
+        // The quarantine is the block stage's: this stage no longer purges, so a waiting slab is not its work.
+        let index_gc_has_no_work = index_gc_idle_apart_from_quarantine;
         if index_gc_has_no_work {
-            self.inner
-                .stats
-                .lock()
-                .expect("runtime stats lock poisoned")
-                .storage_manager_index_gc_runs += 1;
-            executed_stages.push("reclaim_index".to_string());
-        } else if index_gc_purge_only {
-            let _ = self
-                .inner
-                .engine
-                .purge_storage_delayed_destroy(&StorageLifecycleRequest {
-                    shard_id,
-                    purge_delayed_destroy: true,
-                    follower_replay_cursors: options.follower_replay_cursors.clone(),
-                    block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
-                    block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
-                    block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
-                    block_gc_raft_install_floor_slab_id: options
-                        .block_gc_raft_install_floor_slab_id,
-                    block_gc_delayed_destroy_grace_ms:
-                        crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
-                    ..StorageLifecycleRequest::default()
-                });
             self.inner
                 .stats
                 .lock()
@@ -1518,7 +1491,7 @@ impl DataNodeRuntime {
                 max_dump_buckets_per_round: options.index_gc_max_dump_buckets_per_round,
                 min_undumped_wal_records: dump_min_records,
                 min_undumped_wal_bytes: dump_min_bytes,
-                purge_delayed_destroy: true,
+                purge_delayed_destroy: false,
                 purge_delayed_destroy_slab_ids: None,
                 prune_bucket_dump_manifests: true,
                 roll_forward_bucket_dump_installs: true,
