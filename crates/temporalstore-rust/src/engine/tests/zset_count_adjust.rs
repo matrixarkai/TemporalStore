@@ -160,12 +160,12 @@ fn zset_count_adjust_mixed_batch_logs_only_changed_blocks() {
             .expect("mixed write must emit a durable delta");
         let bytes = engine.index_log_store.stats_without_rescan(1).bytes_written - before;
         println!(
-            "existing={existing} delta_items={} delta_bytes={bytes} upsert={}",
+            "existing={existing} delta_items={} delta_bytes={bytes} upsert={:?}",
             last.items.len(),
             last.upsert
         );
         assert!(
-            last.upsert,
+            last.upsert.legacy_upsert() == Some(true),
             "count adjustment downgraded the entire mixed batch"
         );
         assert_eq!(
@@ -237,10 +237,11 @@ fn zset_count_adjust_recovers_mixed_updates_and_zero_removals_without_unload() {
             adjust_member(b"user-b", -4);
             let records = engine.index_log_store.read_delta_records(1, 0).unwrap();
             let removal = records.last().expect("zero removal must emit a delta");
-            assert!(
-                !removal.upsert,
-                "zero removal must retain snapshot semantics"
-            );
+            if batch {
+                assert_eq!(removal.upsert.replacement_keys().unwrap(), &["identities".to_string()]);
+            } else {
+                assert_eq!(removal.upsert.legacy_upsert(), Some(false));
+            }
             assert!(
                 removal
                     .items

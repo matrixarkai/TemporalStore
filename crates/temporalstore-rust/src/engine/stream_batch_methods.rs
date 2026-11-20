@@ -1456,10 +1456,7 @@ impl TemporalEngine {
         // capture below have anything to preserve -- see the single-command execute path, whose
         // guard this mirrors.
         let mut batch_membership_shrank = false;
-        // Some(element names) while every mutating command in the batch is a pure block-upsert;
-        // one non-upsert write downgrades the whole record to snapshot semantics.
-        let mut batch_upsert_element_names: Option<Vec<(&'static str, String, Option<String>)>> =
-            Some(Vec::new());
+        let mut batch_index_delta_plan = BatchIndexDeltaPlan::default();
         // Every container element any command in this batch added or replaced. Unlike the
         // element names above this is never downgraded to `None`: it is a list of elements, not a
         // claim that the whole record is a pure upsert, so one non-upsert command in the batch
@@ -1801,8 +1798,8 @@ impl TemporalEngine {
                 // Same question as the single-command path, through the SAME function: a
                 // membership shrink OR a deadline change. Two spellings of this test is how
                 // one of them keeps a bug the other fixed, so there is only one.
-                if persist_index_delta && !batch_membership_shrank {
-                    batch_membership_shrank = feature_trimmed_membership
+                let command_state_changed = persist_index_delta
+                    && (feature_trimmed_membership
                         || delta_key_state_change(
                             shard,
                             object_keys,
@@ -1810,8 +1807,8 @@ impl TemporalEngine {
                                 .as_ref()
                                 .expect("persisted index delta captured pre-write state")
                                 .as_slice(),
-                        );
-                }
+                        ));
+                batch_membership_shrank |= command_state_changed;
                 let hash_command = matches!(
                     command_for_post_write_ref,
                     Command::HashSet { .. }
@@ -1941,10 +1938,9 @@ impl TemporalEngine {
                             }))
                 };
                 if persist_index_delta {
-                    match (&mut batch_upsert_element_names, written_element_names) {
-                        (Some(collected), Some(element_names)) => collected.extend(element_names),
-                        (state, _) => *state = None,
-                    }
+                    batch_index_delta_plan.record_command(
+                        object_keys, written_element_names, command_state_changed,
+                    );
                 }
                 // Every per-command consumer above borrows these keys. The batch delta keeps
                 // them beyond this iteration, so transfer ownership only after maintenance.
@@ -2176,27 +2172,9 @@ impl TemporalEngine {
                 // Append the blocks this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
-                let (items, upsert_record) = match batch_upsert_element_names.as_ref() {
-                    Some(element_names) => (
-                        collect_upsert_index_items(
-                            shard,
-                            shard_id,
-                            element_names,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        ),
-                        true,
-                    ),
-                    None => (
-                        collect_command_index_items(
-                            shard,
-                            &delta_command_keys,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        ),
-                        false,
-                    ),
-                };
+                let (items, upsert_record) = batch_index_delta_plan.collect(
+                    shard, &delta_command_keys, start_routing_bucket, end_routing_bucket,
+                );
                 // Capturing serializes every entry the per-key maps hold for each key, so
                 // appending to a posting of length N serialized all N -- 99.5% of the index log
                 // on a real corpus (3.53 GB against 16 MB for the same 20,001 messages). A write
