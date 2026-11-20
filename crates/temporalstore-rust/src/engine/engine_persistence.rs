@@ -806,16 +806,8 @@ impl TemporalEngine {
         // would read `current - pre_reclaim_length`, saturating to zero until the file regrew
         // past its old size -- silently suspending the cadence right after its first success.
         self.index_log_store.mark_catalog_dumped(shard_id);
-        // Blocks at or below the anchor are in the durable base now, so a log id is no longer
-        // the only way to find their bytes. Dropping those entries is what keeps this from
-        // growing with the log -- they cost index bytes, and a dumped block will never need one.
-        if let Ok(mut shards) = self.shards.write() {
-            if let Some(shard) = shards.get_mut(&shard_id) {
-                shard
-                    .wal_resident_blocks
-                    .retain(|_, placement| placement.sequence > wal_anchor);
-            }
-        }
+        // Publishing an index does not relocate WAL-backed values. Keep their locators
+        // until materialization or registration retirement makes the records unnecessary.
         // Pin the WAL floor to the lowest sequence a live block-in-WAL registration still
         // depends on: such a record holds the ONLY copy of a block the served index points at
         // (the write was acked off a synthetic address), so truncating it turns an acked write
