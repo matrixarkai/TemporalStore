@@ -45,7 +45,7 @@
 //! The module is pure: it reads decoded [`Cell`]s and a clock value and touches no engine state.
 
 use std::cmp::{Ordering, Reverse};
-use std::collections::BinaryHeap;
+use std::collections::{BTreeSet, BinaryHeap};
 
 use super::window_reduce_rank_options::{
     last_bounds, validate_options, Anchor, CompiledMembers, CompiledQuota, RankOptions,
@@ -296,11 +296,12 @@ pub(crate) fn validate_spec(spec: &WindowReduceRankSpec) -> Result<(), String> {
     validate_score(&spec.score)
 }
 
-/// A `Recent` read answers stored cells, and a quota chooses among reduced members: the two
-/// cannot be asked together.
+/// A `Recent` read answers stored cells, and a quota on it walks those cells (see
+/// [`Plan::run_recent_quota`]): it needs a lane to count, because a quota of `others` alone would
+/// end the walk at the first cell.
 fn check_recent(score: &WindowReduceScore, quota: &crate::types::WindowReduceQuota) -> Result<(), String> {
-    if matches!(score, WindowReduceScore::Recent) && !quota.is_none() {
-        return Err("a recent read returns stored cells and takes no quota".to_string());
+    if matches!(score, WindowReduceScore::Recent) && !quota.is_none() && quota.lanes.is_empty() {
+        return Err("a quota on a stored-cell read needs at least one lane to count".to_string());
     }
     Ok(())
 }
@@ -736,6 +737,9 @@ impl Plan {
     /// first (it is the one a reduction would combine last). The walk stops at `top_k`, so the work
     /// is bounded by the window and by the rows asked for.
     fn run_recent<'a, V: SampleRead<'a>>(&self, chosen: &[V]) -> Result<RankedCells, String> {
+        if let Some(quota) = &self.quota {
+            return self.run_recent_quota(chosen, quota);
+        }
         let mut rows = Vec::with_capacity(self.top_k.min(chosen.iter().map(|s| s.cell_count()).sum::<usize>()));
         'newest: for sample in chosen.iter().rev() {
             let mut at = 0usize;
@@ -765,6 +769,78 @@ impl Plan {
             rows,
             refused: String::new(),
             sample_info: self.sample_summary(chosen),
+        })
+    }
+
+    /// The stored-cell read with a quota: the cells of `chosen` that pass the member set and every
+    /// predicate, newest sample first, none reduced, walked until every lane of the quota is full or
+    /// `top_k` cells have been walked.
+    ///
+    /// A lane is SHORT until it holds its count of distinct members. A walked cell that has a
+    /// non-zero value in a short lane is returned when its member is new to that lane (it then counts
+    /// toward every short lane it fits), and a cell that fits no short lane is returned while fewer
+    /// than `others` of them have been. The walk ends when no lane is short, even when `others` is not
+    /// met, and a cell that is walked and not returned still counts toward `top_k`. So `top_k` bounds
+    /// the cells looked at, not the rows returned, and the same member can come back in several rows
+    /// when it fits no lane.
+    fn run_recent_quota<'a, V: SampleRead<'a>>(&self, chosen: &[V], quota: &CompiledQuota) -> Result<RankedCells, String> {
+        struct Short<'m> {
+            lane: usize,
+            count: usize,
+            seen: BTreeSet<MemberRef<'m>>,
+        }
+        let mut short: Vec<Short<'a>> =
+            quota.lanes().iter().map(|&(lane, count)| Short { lane, count, seen: BTreeSet::new() }).collect();
+        let mut others_left = quota.others();
+        let (mut walked, mut rows) = (0usize, Vec::new());
+        'newest: for sample in chosen.iter().rev() {
+            let mut at = 0usize;
+            while self.settle(sample, &mut at)?.is_some() {
+                let cell = sample.cell(at);
+                walked += 1;
+                let (mut fits, mut new_member) = (false, false);
+                let mut i = 0;
+                while i < short.len() {
+                    if cell.lanes[short[i].lane] != 0 {
+                        fits = true;
+                        if short[i].seen.insert(cell.member) {
+                            new_member = true;
+                            if short[i].seen.len() >= short[i].count {
+                                short.swap_remove(i);
+                                continue;
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+                let others = !new_member && !fits && others_left > 0;
+                if others {
+                    others_left -= 1;
+                }
+                if new_member || others {
+                    rows.push(RankedCellRow {
+                        member: member_id(cell.member),
+                        score: sample.stamp() as f64,
+                        last_ms: sample.stamp(),
+                        labels: self.labels_out.iter().map(|&i| cell.labels[i]).collect(),
+                        lanes: self.lanes_out.iter().map(|&i| cell.lanes[i]).collect(),
+                    });
+                }
+                if short.is_empty() || walked >= self.top_k {
+                    break 'newest;
+                }
+                at += 1;
+            }
+        }
+        Ok(RankedCells {
+            label_columns: self.label_names.clone(),
+            lane_columns: self.lane_names.clone(),
+            samples: chosen.len(),
+            window_first_ms: chosen.first().map_or(0, |s| s.stamp()),
+            window_last_ms: chosen.last().map_or(0, |s| s.stamp()),
+            sample_info: self.sample_summary(chosen),
+            rows,
+            ..RankedCells::default()
         })
     }
 

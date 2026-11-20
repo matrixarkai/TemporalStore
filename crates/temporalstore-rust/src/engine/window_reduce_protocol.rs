@@ -739,7 +739,9 @@ pub(crate) fn translate_query(profile: &TableProfile, query: &wire::WindowReduce
         window_reduce_fan_in::validate_keys(&named).map_err(invalid)?;
     }
     let anchor = anchor_of(window);
-    let closed_end = matches!(selector.mode(), wire::RankMode::MembersOnly | wire::RankMode::MatchLane);
+    // A quota on stored cells is the walk of newest rows with a closed end, as the other cell selections.
+    let closed_end = matches!(selector.mode(), wire::RankMode::MembersOnly | wire::RankMode::MatchLane)
+        || (selector.mode() == wire::RankMode::Recent && !selector.quota_lanes.is_empty());
     let window = window_of(window, closed_end)?;
     let score = score_of(profile, selector)?;
     let quota = quota_of(profile, selector)?;

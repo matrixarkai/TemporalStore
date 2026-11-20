@@ -996,9 +996,13 @@ fn recent_is_the_stored_cell_read_with_the_selectors_label_and_limit() {
     assert_eq!(limited(1000).unwrap().spec.top_k, 1000);
     assert!(limited(1001).unwrap_err().message.contains("over the limit"));
     assert!(limited(0).is_err());
-    // A quota chooses among reduced members, so it is refused here with the engine's own words.
+    // A quota with a lane is the walk of stored cells, and its window ends at its end stamp too.
     let quota = WindowReduceSelector { quota_lanes: vec![0], quota_counts: vec![1], ..selector(RankMode::Recent) };
-    assert!(refusal(quota).message.contains("takes no quota"));
+    let planned = plan(quota);
+    assert_eq!((planned.spec.quota.lanes.len(), planned.spec.quota.others), (1, 1));
+    // A quota of `others` alone has no lane to fill, so it is refused with the engine's own words.
+    let others_only = WindowReduceSelector { quota_lanes: vec![], quota_counts: vec![1], ..selector(RankMode::Recent) };
+    assert!(refusal(others_only).message.contains("needs at least one lane"));
 }
 
 #[test]

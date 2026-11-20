@@ -124,6 +124,15 @@ also the count of members that fit no still-unmet lane (`others`). One count and
 `others` alone. Counts are not negative, a lane is named once, there are at most 16 lanes, and the
 reserved total (every lane count plus `others`) is within the top-k cap of 1000.
 
+On a stored-cell read (`RECENT`, `MATCH_LANE`) the quota is the walk of stored cells, newest sample first,
+cells of a sample by member, none reduced. A lane is short until it holds its count of distinct members; a
+walked cell with a non-zero value in a short lane is returned when its member is new to that lane, and a
+cell that fits no short lane is returned while fewer than `others` of them have been. The walk ends when no
+lane is short, even when `others` is not met, and `limit` bounds the cells walked (a cell walked and not
+returned counts), not the rows returned; the same member can come back in several rows when it fits no
+lane. A quota of `others` alone is refused there (it would end the walk at the first cell), and the end of
+a `FROM_START` window is included.
+
 > **Known double count.** Because the first count is read both as `others` and as the first lane's
 > count, a valid request whose counts add up to 500 reserves 1000 members, and one that adds up to 501
 > is refused for reserving 1002. The first lane's count must also be at least 1. The mapping is kept
@@ -151,8 +160,8 @@ predicate and the member set apply to each cell. `MATCH_LANE` keeps the cells wh
 `match_lane` (the first when absent) holds `match_value` (0 when absent, any signed number). A lane the
 table does not declare holds nothing, so no cell matches and the answer is empty. `NAMED_LANE` on a
 list table with a `sort_lane` past the last lane scores every member 0 (members come back in member
-order); a negative `sort_lane` is refused. A quota is refused on these modes: it chooses among reduced
-members. Over `more_entities` the rows of all keys interleave by stamp, the later entity first when
+order); a negative `sort_lane` is refused. A quota on these modes walks the stored cells (see **Quota**).
+Over `more_entities` the rows of all keys interleave by stamp, the later entity first when
 two samples share one. The command is the ranked read with the score `Recent`.
 
 **Several entities.** `more_entities` (at most 63, 64 bit ids, none repeated, none equal to `entity`)
