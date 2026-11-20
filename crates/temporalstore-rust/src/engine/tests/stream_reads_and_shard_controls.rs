@@ -2462,6 +2462,7 @@ fn legacy_model_maps_are_promoted_to_bucket_index_authority() {
         let shard = shards.get_mut(&1).expect("shard loaded");
         assert!(!shard.strings().is_empty());
         shard.bucket_index.bucket_map.clear();
+        shard.promote_scan_done = true;
     }
 
     let get = engine.execute(ExecuteRequest {
@@ -2538,6 +2539,18 @@ fn cold_read_uses_bucket_block_address_after_cache_and_model_maps_are_cleared() 
         }
     );
     assert!(engine.block_store().stats().reads > block_reads_before);
+    let length = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringLen { key: "cold-slot-read".to_string() },
+    });
+    assert!(length.status.ok);
+    assert_eq!(length.response, CommandResponse::Integer { value: 9 });
+    let range = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGetRange { key: "cold-slot-read".to_string(), start: 5, end: 8 },
+    });
+    assert!(range.status.ok);
+    assert_eq!(range.response, CommandResponse::Bytes { value: Some(b"disk".to_vec()) });
 }
 
 // shared-corpus: storage_recovery_reconciles_bucket_index_to_model_views

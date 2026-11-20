@@ -1163,7 +1163,8 @@ impl TemporalEngine {
         // flag is `#[serde(skip)]` (false on any fresh load), so the first live command after a
         // reload still pays one full reconcile. Gate OFF -> the scan runs every command as before.
         if !defer_bucket_index_reconstruct()
-            && !(self.wal_store.flat_append() && shard.promote_scan_done)
+            && !(self.wal_store.flat_append() && shard.promote_scan_done
+                && !shard.bucket_index.bucket_map.is_empty())
         {
             self.promote_scans
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1913,6 +1914,14 @@ impl TemporalEngine {
             .unwrap_or_else(|| Config::default().feature_max_size)
     }
 
+    fn fast_string_address(shard: &ShardState, key: &str) -> Option<ElementEntry> {
+        shard.string_address(key).or_else(|| {
+            // A secondary row may be absent while the primary locator still names it.
+            shard.bucket_index.object_block_lookup.get("string", key)?;
+            bucket_store::bucket_index_block_address(shard, "string", key, None)
+        })
+    }
+
     fn execute_read_only_fast_path(&self, request: &ExecuteRequest) -> Option<ExecuteResponse> {
         let read_command = matches!(
             request.command,
@@ -1971,6 +1980,9 @@ impl TemporalEngine {
                     response: CommandResponse::Empty,
                 });
             };
+            if shard.bucket_index.bucket_map.is_empty() && shard_has_model_entries(shard) {
+                return None;
+            }
             let plan = match &request.command {
                 Command::StringGet { key } => {
                     if shard
@@ -1984,7 +1996,7 @@ impl TemporalEngine {
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::String {
                         key: key.as_str(),
-                        address: shard.string_address(key.as_str()),
+                        address: Self::fast_string_address(shard, key.as_str()),
                         routing_bucket: block_routing_bucket(
                             key,
                             start_routing_bucket,
@@ -2033,7 +2045,7 @@ impl TemporalEngine {
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::StringShared {
                         key: key.as_str(),
-                        address: shard.string_address(key.as_str()),
+                        address: Self::fast_string_address(shard, key.as_str()),
                         routing_bucket: block_routing_bucket(
                             key,
                             start_routing_bucket,
@@ -2350,9 +2362,8 @@ impl TemporalEngine {
                 self.note_fast_read_recency(request.shard_id, routing_bucket);
                 // THE SHARD HAS ALREADY SAID NO, SO NOTHING BELOW IT IS ASKED.
                 //
-                // `address` is `shard.string_address(key)` -- one map get against `shard.strings`,
-                // taken under the shard lock in the block above -- and it is the ONLY thing the
-                // source closure below consults. `None` from it is the answer this arm returns
+                // `address` comes from the string row or its named primary bucket locator,
+                // resolved under the shard lock above. `None` from both is the answer this arm returns
                 // whatever any cache tier holds. Letting the cache be asked first therefore paid
                 // for a question the authority that owns it had already answered.
                 //
@@ -4455,9 +4466,7 @@ impl Drop for MarkedShardReadGuard<'_> {
 /// is set first, for the snapshot callers that keep the shard and want it to read as current.
 pub(super) fn serialize_index_stamped(shard: &mut ShardState) -> Vec<u8> {
     shard.index_format_version = SHARD_INDEX_FORMAT_VERSION;
-    let bytes = encode_index_bytes(shard);
-    shard_write_guard::note_index_encode(bytes.len());
-    bytes
+    serialize_index(shard)
 }
 
 /// The served index of a shard, as bytes. Always the msgpack container, whatever the shard's own
@@ -4472,6 +4481,14 @@ pub(super) fn serialize_index_stamped(shard: &mut ShardState) -> Vec<u8> {
 /// field from it, so a reader gets the current stamp from either shard and the writer has nothing
 /// left to choose.
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
+    // Release markers are memory-only. Complete the owned image without making
+    // evicted buckets resident again in the served shard.
+    let mut complete = (!shard.bucket_index.released_buckets.is_empty()).then(|| shard.clone());
+    if let Some(snapshot) = complete.as_mut() {
+        let shard_id = shard.shard_id().expect("released checkpoint must identify its shard");
+        storage_bucket_internals::restore_released_buckets_in_checkpoint(snapshot, shard_id);
+    }
+    let shard = complete.as_ref().unwrap_or(shard);
     let bytes = encode_index_bytes(shard);
     // Counted at the two production entry points rather than inside `encode_index_bytes`, so the
     // tally is one per served-index encode whichever branch produced it -- and so the handful of
@@ -4521,6 +4538,10 @@ const INDEX_ZSTD_LEVEL: i32 = 1;
 #[cfg(test)]
 #[path = "engine/index_encode_work_tests.rs"]
 mod index_encode_work_tests;
+
+#[cfg(test)]
+#[path = "engine/checkpoint_release_tests.rs"]
+mod checkpoint_release_tests;
 
 /// Does this look like a served index?
 ///
