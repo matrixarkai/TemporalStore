@@ -20,6 +20,66 @@ pub(super) struct MaintenanceDeletion {
     records: Vec<String>,
 }
 
+/// Owned names for one exclusive deletion-only run. Existing handles cannot be renamed or added
+/// during the run, so each bucket's names remain valid across its separately logged frames.
+#[derive(Default)]
+pub(super) struct DeletionIdentityBatch {
+    names: BTreeMap<u32, HashMap<u64, Arc<str>>>,
+    reused_buckets: BTreeSet<u32>,
+}
+
+impl DeletionIdentityBatch {
+    fn for_deletions(shard: &ShardState, deletions: &[MaintenanceDeletion]) -> Self {
+        // Without a retained lookup, target selection falls back to all buckets. Do not repeat
+        // that fallback during planning, and do not cache names with no proven reuse.
+        if shard.bucket_index.names_no_object_blocks() {
+            return Self::default();
+        }
+        let mut counts = BTreeMap::<u32, usize>::new();
+        let mut seen = std::collections::HashSet::new();
+        for key in deletions.iter().flat_map(|deletion| &deletion.records) {
+            if !seen.insert(key.as_str()) {
+                continue;
+            }
+            for bucket in bucket_index_target_buckets_for_object_key(shard, key) {
+                *counts.entry(bucket).or_default() += 1;
+            }
+        }
+        Self {
+            names: BTreeMap::new(),
+            reused_buckets: counts
+                .into_iter()
+                .filter_map(|(bucket, count)| (count > 1).then_some(bucket))
+                .collect(),
+        }
+    }
+
+    pub(super) fn reuses_bucket(&self, routing_bucket: u32) -> bool {
+        self.reused_buckets.contains(&routing_bucket)
+    }
+
+    pub(super) fn capture_bucket(&mut self, shard: &ShardState, routing_bucket: u32) {
+        if !self.reuses_bucket(routing_bucket) || self.names.contains_key(&routing_bucket) {
+            return;
+        }
+        let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
+            return;
+        };
+        let keys = state::BlockKeysByPosition::from_owned_buckets(
+            &shard.bucket_index.objects,
+            &shard.bucket_index.object_block_lookup,
+            shard.bucket_index.bucket_owners.get(),
+            &[routing_bucket],
+        );
+        self.names
+            .insert(routing_bucket, state::block_identities_in(bucket, &keys));
+    }
+
+    pub(super) fn bucket(&self, routing_bucket: u32) -> Option<&HashMap<u64, Arc<str>>> {
+        self.names.get(&routing_bucket)
+    }
+}
+
 pub(super) struct MaintenanceLogResult {
     pub(super) removed_keys: usize,
     pub(super) apply_ns: u64,
@@ -62,6 +122,7 @@ impl TemporalEngine {
         let mut removed_keys = 0usize;
         let mut apply_ns = 0u64;
         let mut pending = BTreeSet::new();
+        let mut identities = DeletionIdentityBatch::for_deletions(shard, &deletions);
         let mut flush = |shard: &mut ShardState,
                          outcomes: &mut Vec<crate::wal::WalOutcomeItem>,
                          keys: &mut Vec<String>| {
@@ -104,7 +165,9 @@ impl TemporalEngine {
             };
             let apply_started = std::time::Instant::now();
             for item in &record.outcomes {
-                delete_record_exact(shard, &item.object_key);
+                delete_record_exact_with_identity_batch(
+                    shard, &item.object_key, Some(&mut identities),
+                );
             }
             shard.note_wal_application(record.sequence, record.sequence);
             let applied_ns = apply_started.elapsed().as_nanos() as u64;
