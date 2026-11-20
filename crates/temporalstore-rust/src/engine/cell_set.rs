@@ -50,7 +50,7 @@ pub(crate) const MAX_KEY_DIMENSIONS: usize = 8;
 /// Labels a cell may carry.
 pub(crate) const MAX_LABELS_PER_CELL: usize = 4;
 /// Lanes a cell may carry.
-pub(crate) const MAX_LANES_PER_CELL: usize = 16;
+pub(crate) const MAX_LANES_PER_CELL: usize = 32;
 /// Bytes in a bytes member or a bytes entity.
 pub(crate) const MAX_MEMBER_BYTES: usize = 256;
 /// Bytes in a text dimension, a text entity, or the namespace.
@@ -2068,7 +2068,7 @@ mod tests {
         }
         assert_eq!(rows.len(), 11);
         // The limits are the ones the design states.
-        assert_eq!((MAX_KEY_DIMENSIONS, MAX_LABELS_PER_CELL, MAX_LANES_PER_CELL), (8, 4, 16));
+        assert_eq!((MAX_KEY_DIMENSIONS, MAX_LABELS_PER_CELL, MAX_LANES_PER_CELL), (8, 4, 32));
         assert_eq!((MAX_MEMBER_BYTES, MAX_TEXT_DIMENSION_BYTES, MAX_NAME_BYTES), (256, 256, 64));
         assert_eq!((MAX_CELLS_PER_REQUEST, MAX_CELLS_PER_SAMPLE, MAX_TOP_K), (1024, 4096, 1000));
         // Zero is refused where at least one is required.
@@ -2718,6 +2718,10 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "cell_set_lane_cap_tests.rs"]
+mod lane_cap_tests;
 
 #[cfg(test)]
 #[path = "cell_set_decode_fast_tests.rs"]

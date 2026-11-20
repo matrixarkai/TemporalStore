@@ -836,6 +836,9 @@ jobs:
             engine::window_aggregate::algorithm_tests::first_and_last_merge_only_in_stream_order \
             engine::window_aggregate::algorithm_tests::parsed_reducer_names_map_to_the_declared_reducers \
             engine::cell_set::tests::a_bytes_entity_round_trips_and_is_bounded \
+            engine::cell_set::lane_cap_tests::thirty_two_lanes_are_accepted_and_thirty_three_are_refused_by_the_header_and_by_a_cell \
+            engine::cell_set::lane_cap_tests::a_merge_at_sixteen_and_at_thirty_two_lanes_is_the_plain_merge_byte_for_byte \
+            engine::cell_set::lane_cap_tests::every_lane_costs_the_same_bytes_in_the_header_and_in_a_cell_at_any_count \
             engine::cell_set::tests::a_decoded_sample_is_held_to_the_same_bounds \
             engine::cell_set::tests::a_distance_that_overflows_or_a_misplaced_flag_is_refused \
             engine::cell_set::tests::a_header_check_accepts_the_same_header_and_additions_and_refuses_the_rest_naming_the_field \
