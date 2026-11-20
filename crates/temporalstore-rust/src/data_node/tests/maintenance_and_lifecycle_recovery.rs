@@ -6198,6 +6198,80 @@ fn the_loop_destroys_a_quarantined_slab_with_the_index_stage_off() {
     );
 }
 
+/// The block stage owns the quarantine purge; the index stage does not purge.
+///
+/// Slabs are quarantined by block collection and destroyed by the purge, so the purge is block
+/// reclaim. The two arms differ only in which stage runs the round that follows the grace: the
+/// block stage alone destroys the aged quarantine, the index stage alone leaves it untouched. The
+/// first arm (block stage alone) is the control that something was destroyable at all.
+#[test]
+fn only_the_block_stage_destroys_an_aged_quarantine() {
+    let run_arm = |block_gc: bool| {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let seed_options = StorageManagerOptions::default();
+        let mut written = 0usize;
+        for _ in 0..6 {
+            let engine = runtime.engine();
+            for index in 0..400usize {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("purge-owner-{:06}", (written + index) % 100),
+                        value: vec![b'v'; 96],
+                    },
+                });
+            }
+            written += 400;
+            runtime.run_storage_manager_once(1, seed_options.clone());
+        }
+        let quarantined = |runtime: &DataNodeRuntime| {
+            runtime
+                .engine()
+                .block_store()
+                .delayed_destroy_slab_ids()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<u64>>()
+        };
+        let before = quarantined(&runtime);
+        assert!(!before.is_empty(), "block_gc {block_gc}: nothing was quarantined");
+        runtime
+            .engine()
+            .block_store()
+            .backdate_delayed_destroy_stamps_for_test(26 * 60 * 60 * 1_000)
+            .expect("backdating the quarantine stamps");
+        // Only one of the two stages runs the round after the grace.
+        runtime.run_storage_manager_once(
+            1,
+            StorageManagerOptions {
+                enable_block_gc: block_gc,
+                enable_index_gc: !block_gc,
+                ..StorageManagerOptions::default()
+            },
+        );
+        let mut kept = quarantined(&runtime);
+        kept.extend(runtime.engine().block_store().slab_ids().unwrap_or_default());
+        before.iter().any(|id| !kept.contains(id))
+    };
+    assert!(
+        run_arm(true),
+        "control: with the block stage running nothing aged was destroyed, so the arm below proves nothing"
+    );
+    assert!(
+        !run_arm(false),
+        "the index stage destroyed a quarantined slab: the purge is the block stage's"
+    );
+}
+
 /// A reader registered with the engine holds its slabs against the periodic loop, with no option
 /// set, and releasing the lease lets the next round collect them.
 ///
