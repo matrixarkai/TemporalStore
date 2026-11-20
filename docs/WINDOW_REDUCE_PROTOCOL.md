@@ -28,7 +28,7 @@ A deployment declares, once, per table name: the key spec (namespace, entity typ
 dimension carries `channel` and which carries `kind` (an unbound one must be zero on the wire), the
 label name that carries `label`, how a label is derived when a request leaves it out (`FromRequest`,
 or `FromMember { shift, bits }`), the lanes with their reducers, the table shape (pair: two
-lanes; list: up to 16), whether a duplicate member at one timestamp merges or is refused, and the
+lanes; list: up to 32), whether a duplicate member at one timestamp merges or is refused, and the
 oldest and newest accepted timestamps. The profile is immutable for the life of the process; the
 header written with the first write of a key family still guards every later write.
 
@@ -213,7 +213,7 @@ field. The bound on rows (1 to 1000) applies to the count.
 
 Observations per request, entries per request (existing 1024 cells), queries per batch (64),
 members in a member list (1024 each side), quota lanes (16) and quota total (within the top-k cap of
-1000), weighted lanes (8), lanes (16), table name bytes (64), top-k (1000), more entities (63, so 64
+1000), weighted lanes (8), lanes (32), table name bytes (64), top-k (1000), more entities (63, so 64
 keys in a merged read), half-life (1 ms to ten years), rows of a `NEWEST_ROWS` window (262,144, and
 within 512 samples). Each is refused one past the limit and accepted at it.
 

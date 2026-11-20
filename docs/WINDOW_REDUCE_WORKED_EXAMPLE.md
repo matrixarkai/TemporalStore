@@ -40,7 +40,7 @@ kind `cell_retry` keep their original spelling because they are written to disk.
   `keep` reserved for the members seen most recently) and `trigger_over` (a group is cut only when
   it holds more than `keep + trigger_over`).
 
-Bounds: 8 dimensions, 4 labels, 16 lanes, 1 000 top-k, 512 samples per window, 8 predicates and
+Bounds: 8 dimensions, 4 labels, 32 lanes, 1 000 top-k, 512 samples per window, 8 predicates and
 8 lanes in a weighted score.
 A rollup touches at most 1 024 samples below its first cutoff (a longer history is rolled in
 steps, by moving the cutoff forward), keeps between 1 and 4 096 cells per group, adds at most 8
