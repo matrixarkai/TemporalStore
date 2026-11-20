@@ -336,6 +336,19 @@ fn retained_frame_folds(
     retained
 }
 
+/// Whether this shard has any physical registration. The same test `retirements` opens with: when
+/// this is false it returns nothing, so a caller may skip the walk it would otherwise run first.
+/// A poisoned lock reads as "yes", which keeps the walk.
+pub(super) fn has_entries(blocks: &crate::block_store::BlockStore, shard: ShardId) -> bool {
+    let Ok(table) = table().lock() else {
+        return true;
+    };
+    table
+        .get(&blocks.store_id())
+        .and_then(|shards| shards.get(&shard))
+        .is_some_and(|state| state.len != 0)
+}
+
 pub(super) fn retirements(
     blocks: &crate::block_store::BlockStore,
     shard: ShardId,

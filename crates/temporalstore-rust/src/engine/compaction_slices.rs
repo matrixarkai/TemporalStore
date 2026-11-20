@@ -55,6 +55,34 @@ pub(crate) fn sliced_compaction_enabled() -> bool {
     )
 }
 
+/// One line per phase of a pass, to stderr, when `TS_COMPACTION_PHASE_TIMING=1`: the duration of the
+/// setup, of each slice and of the finish, each of which holds the shard write guard once. Off by
+/// default; the read is one cached env lookup.
+fn phase_timing(phase: &str, shard_id: ShardId, started: std::time::Instant) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *ON.get_or_init(|| {
+        matches!(std::env::var("TS_COMPACTION_PHASE_TIMING").as_deref(), Ok("1") | Ok("true"))
+    });
+    if on {
+        eprintln!(
+            "COMPACTION_PHASE shard={shard_id} phase={phase} us={}",
+            started.elapsed().as_micros()
+        );
+    }
+}
+
+/// The kinds a slice moves by key; the other kinds go through the unkeyed relocation.
+fn keyed_kind(kind: StoredModelKind) -> bool {
+    matches!(
+        kind,
+        StoredModelKind::String
+            | StoredModelKind::Hash
+            | StoredModelKind::Set
+            | StoredModelKind::Zset
+            | StoredModelKind::List
+    )
+}
+
 /// Keys a slice moves when the caller does not say.
 pub(crate) const COMPACTION_SLICE_KEYS: usize = 128;
 
@@ -66,8 +94,16 @@ pub(crate) struct SlicedPass {
     drain_block_slab_ids: BTreeSet<u64>,
     /// Every slab the durable index may name when the pass began.
     pre_round_slabs: BTreeSet<u64>,
-    /// Keys still to move, the next ones at the end.
+    /// Keys still to move, the next ones at the end. Used only by a pass that could not take the
+    /// bucket cursor (see `by_bucket`).
     remaining_keys: Vec<crate::engine::state::ModelKey>,
+    /// THE CURSOR PASS. When the per-slab tally is ready and no bucket is released, the pass names no
+    /// key up front: each slice walks the next buckets after `bucket_cursor`, picks the keys that own
+    /// a block on a drain slab, validates those buckets' ownership and moves the keys. Setup is then
+    /// O(slabs), not O(shard), and a restart of the pass resumes from a bucket id, not a key list.
+    by_bucket: bool,
+    bucket_cursor: Option<u32>,
+    buckets_exhausted: bool,
     unkeyed_done: bool,
     /// Container blocks that were in the log before a slice moved them, and the placement each had
     /// then. The finish retires a registration only if it is still that placement.
@@ -166,17 +202,21 @@ impl TemporalEngine {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
         if slot.is_none() {
-            match self.begin_pass(
+            let started = std::time::Instant::now();
+            let begun = self.begin_pass(
                 shard_id,
                 shard,
                 start_routing_bucket,
                 end_routing_bucket,
                 drain_block_slab_ids,
-            )? {
+            )?;
+            phase_timing("setup", shard_id, started);
+            match begun {
                 Some(pass) => *slot = Some(pass),
                 None => return Ok(SliceProgress::Done),
             }
         }
+        let slice_started = std::time::Instant::now();
         let pass = slot.as_mut().expect("a pass was just begun");
         let mut stats = CompactionRewriteStats::for_drain_round(
             pass.target_block_slab_id,
@@ -200,16 +240,27 @@ impl TemporalEngine {
             CompactionIndexRefresh::ChangedBuckets,
         );
         pass.note_slice(shard, stats);
-        let pass_ended = moved.is_err() || pass.remaining_keys.is_empty();
+        phase_timing("slice", shard_id, slice_started);
+        let pass_ended = moved.is_err()
+            || if pass.by_bucket {
+                pass.unkeyed_done && pass.buckets_exhausted
+            } else {
+                pass.remaining_keys.is_empty()
+            };
         if !pass_ended {
             return Ok(SliceProgress::More);
         }
         let pass = slot.take().expect("the pass is in flight");
         match moved {
             Err(err) => Err(self.fail_pass(shard_id, shard, pass, err)),
-            Ok(()) => self
-                .finish_pass(shard_id, shard, pass, start_routing_bucket, end_routing_bucket)
-                .map(|()| SliceProgress::Done),
+            Ok(()) => {
+                let started = std::time::Instant::now();
+                let finished = self
+                    .finish_pass(shard_id, shard, pass, start_routing_bucket, end_routing_bucket)
+                    .map(|()| SliceProgress::Done);
+                phase_timing("finish", shard_id, started);
+                finished
+            }
         }
     }
 
@@ -224,50 +275,61 @@ impl TemporalEngine {
         drain_block_slab_ids: &BTreeSet<u64>,
     ) -> Result<Option<SlicedPass>, Status> {
         let bytes_written_before_relocation = self.block_store.stats().bytes_written;
-        let entries = collect_live_block_entries(shard);
-        let ownership = validate_bucket_ownership_index_from_entries(
-            shard_id,
-            shard,
-            &entries,
-            start_routing_bucket,
-            end_routing_bucket,
-        );
-        if !ownership.mismatches.is_empty() {
-            return Err(Status::error(
-                "block_compaction_owner_mismatch",
-                format!(
-                    "refusing compaction because {} live block refs disagree with object/block/slot ownership",
-                    ownership.mismatches.len()
-                ),
-            ));
-        }
-        if !entries
-            .iter()
-            .any(|entry| drain_block_slab_ids.contains(&entry.address.block_slab_id()))
-        {
-            return Ok(None);
-        }
-        let pre_round_slabs = entries
-            .iter()
-            .map(|entry| entry.address.block_slab_id())
-            .collect::<BTreeSet<u64>>();
-        let skippable = |kind: StoredModelKind| matches!(
-            kind,
-            StoredModelKind::String | StoredModelKind::Hash | StoredModelKind::Set
-                | StoredModelKind::Zset | StoredModelKind::List
-        );
-        let mut remaining_keys = entries
-            .iter()
-            .filter(|entry| {
-                skippable(entry.kind) && drain_block_slab_ids.contains(&entry.address.block_slab_id())
-            })
-            .map(|entry| entry.object_key.clone())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        remaining_keys.sort();
-        remaining_keys.reverse();
-        drop(entries);
+        let by_bucket = shard.bucket_index.block_slab_live.is_ready()
+            && shard.bucket_index.released_buckets.is_empty()
+            && !shard.bucket_index.bucket_map.is_empty();
+        let (pre_round_slabs, remaining_keys) = if by_bucket {
+            // THE GATE AND THE PIN COME FROM THE MAINTAINED TALLY: O(slabs). No block is walked
+            // here; the slices walk the buckets they reach.
+            let tally = &shard.bucket_index.block_slab_live;
+            if !drain_block_slab_ids
+                .iter()
+                .any(|slab| tally.tally(*slab).block_refs > 0)
+            {
+                return Ok(None);
+            }
+            // THE TALLY ONLY SKIPS WORK, IT NEVER AUTHORISES ONE. An under-counted tally would leave
+            // a slab the durable index names out of the pin, and reclaim could then purge it. So the
+            // pin is the tally's slabs UNION every slab the block store holds: a superset, O(slabs).
+            let mut pinned = tally.live_slab_ids().collect::<BTreeSet<u64>>();
+            pinned.extend(self.block_store.slab_ids().unwrap_or_default());
+            (pinned, Vec::new())
+        } else {
+            let entries = collect_live_block_entries(shard);
+            let ownership = validate_bucket_ownership_index_from_entries(
+                shard_id,
+                shard,
+                &entries,
+                start_routing_bucket,
+                end_routing_bucket,
+            );
+            if !ownership.mismatches.is_empty() {
+                return Err(Self::owner_mismatch_failure(ownership.mismatches.len()));
+            }
+            if !entries
+                .iter()
+                .any(|entry| drain_block_slab_ids.contains(&entry.address.block_slab_id()))
+            {
+                return Ok(None);
+            }
+            let pre_round_slabs = entries
+                .iter()
+                .map(|entry| entry.address.block_slab_id())
+                .collect::<BTreeSet<u64>>();
+            let mut remaining_keys = entries
+                .iter()
+                .filter(|entry| {
+                    keyed_kind(entry.kind)
+                        && drain_block_slab_ids.contains(&entry.address.block_slab_id())
+                })
+                .map(|entry| entry.object_key.clone())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            remaining_keys.sort();
+            remaining_keys.reverse();
+            (pre_round_slabs, remaining_keys)
+        };
         let resumed = self
             .compaction_rounds
             .read()
@@ -298,6 +360,9 @@ impl TemporalEngine {
             drain_block_slab_ids: drain_block_slab_ids.clone(),
             pre_round_slabs,
             remaining_keys,
+            by_bucket,
+            bucket_cursor: None,
+            buckets_exhausted: false,
             unkeyed_done: false,
             retired_container_wal_blocks: Vec::new(),
             wal_placements_seen: HashMap::new(),
@@ -325,12 +390,20 @@ impl TemporalEngine {
             )?;
             return Self::unreadable_blocks_failure(stats);
         }
-        let take = pass.remaining_keys.len().min(keys_per_slice.max(1));
-        let keys: HashSet<crate::engine::state::ModelKey> = pass
-            .remaining_keys
-            .split_off(pass.remaining_keys.len() - take)
-            .into_iter()
-            .collect();
+        let keys: HashSet<crate::engine::state::ModelKey> = if pass.by_bucket {
+            Self::next_bucket_keys(
+                shard_id, shard, start_routing_bucket, end_routing_bucket, pass, keys_per_slice,
+            )?
+        } else {
+            let take = pass.remaining_keys.len().min(keys_per_slice.max(1));
+            pass.remaining_keys
+                .split_off(pass.remaining_keys.len() - take)
+                .into_iter()
+                .collect()
+        };
+        if keys.is_empty() {
+            return Ok(());
+        }
         self.relocate_keyed_blocks(
             shard_id,
             shard,
@@ -340,6 +413,67 @@ impl TemporalEngine {
             stats,
         )?;
         Self::unreadable_blocks_failure(stats)
+    }
+
+    fn owner_mismatch_failure(mismatches: usize) -> Status {
+        Status::error(
+            "block_compaction_owner_mismatch",
+            format!(
+                "refusing compaction because {mismatches} live block refs disagree with object/block/slot ownership"
+            ),
+        )
+    }
+
+    /// The keys of the next buckets after the cursor that own a block on a drain slab, reading
+    /// buckets until `keys_per_slice` blocks have been examined or the buckets are exhausted. Each
+    /// bucket's ownership is validated before any of its keys is named, so a damaged bucket is
+    /// refused before a block of it moves. The work is the buckets reached, not the shard.
+    fn next_bucket_keys(
+        shard_id: ShardId,
+        shard: &ShardState,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+        pass: &mut SlicedPass,
+        keys_per_slice: usize,
+    ) -> Result<HashSet<crate::engine::state::ModelKey>, Status> {
+        let budget = keys_per_slice.max(1);
+        let mut examined = 0usize;
+        let mut keys = HashSet::new();
+        while examined < budget {
+            let Some((routing_bucket, bucket)) = shard
+                .bucket_index
+                .bucket_map
+                .range_after(pass.bucket_cursor)
+                .next()
+            else {
+                pass.buckets_exhausted = true;
+                break;
+            };
+            pass.bucket_cursor = Some(*routing_bucket);
+            let mut entries = Vec::new();
+            visit_bucket_nodes_live_block_entries(
+                shard,
+                std::iter::once((routing_bucket, bucket)),
+                |entry| entries.push(entry),
+            );
+            examined += entries.len().max(1);
+            let ownership = validate_bucket_ownership_index_from_entries(
+                shard_id, shard, &entries, start_routing_bucket, end_routing_bucket,
+            );
+            if !ownership.mismatches.is_empty() {
+                return Err(Self::owner_mismatch_failure(ownership.mismatches.len()));
+            }
+            keys.extend(
+                entries
+                    .iter()
+                    .filter(|entry| {
+                        keyed_kind(entry.kind)
+                            && pass.drain_block_slab_ids.contains(&entry.address.block_slab_id())
+                    })
+                    .map(|entry| entry.object_key.clone()),
+            );
+        }
+        Ok(keys)
     }
 
     /// A slice failed part way. Commit the consistent partial state the way a whole round does, keep

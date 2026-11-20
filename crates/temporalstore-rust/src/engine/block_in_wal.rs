@@ -951,6 +951,20 @@ enum RetirementKey {
     Physical(physical::PhysicalKey),
 }
 
+/// Whether this shard holds any block-in-WAL registration, logical or physical. Deciding which
+/// registrations to retire starts with a walk of every live block; with none registered there is
+/// nothing to retire and the walk can be skipped. An unreadable registry reads as "yes".
+pub(super) fn has_registrations(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+) -> bool {
+    let logical = registry()
+        .lock()
+        .map(|map| map.entries(block_store.store_id(), shard_id).next().is_some())
+        .unwrap_or(true);
+    logical || physical::has_entries(block_store, shard_id)
+}
+
 pub(super) fn unreferenced_physical_registrations(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,

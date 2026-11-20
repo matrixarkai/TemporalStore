@@ -1706,13 +1706,19 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         // Only the new slab passed this round's durability barrier. Unmoved
         // objects may still need their WAL fallback, including after a failed read.
-        let retained_objects = retained_objects_outside_slab(shard, shard_id, target_block_slab_id);
-        let mut retirements = super::block_in_wal::unreferenced_registrations(
-            &self.block_store, shard_id, &self.wal_store, &retained_objects,
-        );
-        retirements.extend(super::block_in_wal::unreferenced_physical_registrations(
-            &self.block_store, shard_id, &self.wal_store, shard, true,
-        ));
+        // WITH NO REGISTRATION THERE IS NOTHING TO RETIRE, and the walk of every live block that
+        // decides which are unreferenced is skipped: both functions below return nothing then.
+        let mut retirements = Vec::new();
+        if super::block_in_wal::has_registrations(&self.block_store, shard_id) {
+            let retained_objects =
+                retained_objects_outside_slab(shard, shard_id, target_block_slab_id);
+            retirements = super::block_in_wal::unreferenced_registrations(
+                &self.block_store, shard_id, &self.wal_store, &retained_objects,
+            );
+            retirements.extend(super::block_in_wal::unreferenced_physical_registrations(
+                &self.block_store, shard_id, &self.wal_store, shard, true,
+            ));
+        }
         retirements.retain(|retirement| shard.wal_resident_blocks.get(&retirement.folded_key)
             .is_some_and(|placement| placement.log_id == retirement.log_id
                 && placement.sequence == retirement.sequence));

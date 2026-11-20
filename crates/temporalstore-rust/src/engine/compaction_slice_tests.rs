@@ -249,8 +249,62 @@ fn a_pass_with_nothing_on_the_drain_slabs_does_nothing() {
     let (_, drain) = seed(&engine, 60);
     engine.compact_shard_blocks_draining_sliced(1, drain.clone(), 32).unwrap();
     let slabs = engine.block_store.slab_ids().unwrap();
+    let log_sequence = engine.index_log_store.stats(1).last_sequence;
+    reset_live_block_scan_entries();
     engine.compact_shard_blocks_draining_sliced(1, drain, 32).unwrap();
     assert_eq!(engine.block_store.slab_ids().unwrap(), slabs, "a pass with nothing to move rolled a slab");
+    // AN IDLE PASS WALKS NOTHING AND WRITES NOTHING: the per-slab tally says no block is left on the
+    // drained slabs, so the gate answers without a walk, and no step ran, so no record was appended.
+    assert_eq!(
+        live_block_scan_entries(),
+        0,
+        "a pass with nothing on the drain slabs walked the shard to find that out"
+    );
+    assert_eq!(
+        engine.index_log_store.stats(1).last_sequence,
+        log_sequence,
+        "a pass with nothing to move appended an index-log record"
+    );
+}
+
+/// THE TALLY ONLY SKIPS WORK; IT NEVER DECIDES WHAT IS SAFE. The pin that keeps reclaim away from the
+/// slabs the durable index names is the tally's slabs UNION every slab the block store holds, so a
+/// tally that forgot a slab (a counting bug, a door that did not charge) cannot leave a slab out of the
+/// pin. Taking the pin from the tally alone turns this red.
+#[test]
+fn the_pin_covers_a_slab_the_tally_forgot() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let (_expected, drain) = seed(&engine, 300);
+    let forgotten = *drain.iter().next().unwrap();
+    {
+        let mut shards = engine.shards_write_marked();
+        shards
+            .get_mut(&1)
+            .unwrap()
+            .bucket_index
+            .block_slab_live
+            .drop_slab_for_test(forgotten);
+    }
+    // The slabs that exist BEFORE the pass: the slab the pass rolls for itself is new, and no durable
+    // index names it, so it is not part of the pin.
+    let before = engine.block_store.slab_ids().unwrap();
+    // A drain slab other than the forgotten one still reads live, so the pass starts.
+    assert_eq!(engine.compact_shard_blocks_slice(1, &drain, 16).unwrap(), super::SliceProgress::More);
+    let pinned = engine
+        .unpublished_compaction_slabs
+        .read()
+        .unwrap()
+        .get(&1)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        pinned.contains(&forgotten),
+        "slab {forgotten} holds blocks the tally forgot and was left out of the pin {pinned:?}"
+    );
+    for slab in before {
+        assert!(pinned.contains(&slab), "slab {slab} the store held before the pass is not pinned: {pinned:?}");
+    }
 }
 
 #[test]
@@ -291,6 +345,92 @@ fn a_keyed_slice_does_not_rebuild_every_buckets_object_index() {
     let reopened = open(dir.path());
     assert_every_key_reads(&reopened, &expected, "after restart");
     assert_index_agrees(&reopened, "after restart");
+}
+
+/// SETUP AND EACH SLICE READ THE BUCKETS THEY REACH, NOT THE SHARD. The gate and the pin come from
+/// the per-slab tally and the slices walk the buckets after a cursor, so the number of live-block
+/// entries the first two steps materialize is a small part of the shard, and the whole pass reads
+/// each bucket about once. A setup that walks every block again makes the first step cost the
+/// shard and turns this red.
+#[test]
+fn a_pass_reads_the_buckets_it_reaches_and_not_the_shard() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let (expected, drain) = seed(&engine, 900);
+    // THE REGISTRATIONS ARE CLEARED FIRST, AND THAT IS A STATED LIMIT. Every block a write made is
+    // registered against the log it was written through, and the finish of a pass retires those
+    // registrations by walking every registered object once (`retained_objects_outside_slab`). That
+    // walk is the one item this guard does not claim to bound; the pass over a shard whose
+    // registrations are already retired is what it measures.
+    super::super::block_in_wal::clear_shard(&engine.block_store, 1);
+    let total = {
+        let shards = engine.shards_write_marked();
+        collect_live_block_entries(shards.get(&1).unwrap()).len() as u64
+    };
+    assert!(total >= 900, "the fixture holds {total} live blocks");
+
+    // Step one is the setup plus the unkeyed slice; step two is the first keyed slice.
+    reset_live_block_scan_entries();
+    assert_eq!(engine.compact_shard_blocks_slice(1, &drain, 16).unwrap(), super::SliceProgress::More);
+    let setup = live_block_scan_entries();
+    assert_eq!(engine.compact_shard_blocks_slice(1, &drain, 16).unwrap(), super::SliceProgress::More);
+    let two_steps = live_block_scan_entries();
+    eprintln!("COMPACTION_PASS_SCAN total_blocks={total} setup={setup} two_steps={two_steps}");
+    assert!(
+        setup * 4 < total,
+        "setup materialized {setup} live-block entries of {total}: it walked the shard"
+    );
+    assert!(
+        two_steps * 4 < total,
+        "two steps materialized {two_steps} live-block entries of {total}: a slice walked the shard"
+    );
+
+    // The rest of the pass reads each bucket about once, not the shard once per slice.
+    let mut steps = 2u64;
+    while engine.compact_shard_blocks_slice(1, &drain, 16).unwrap() == super::SliceProgress::More {
+        steps += 1;
+    }
+    let whole_pass = live_block_scan_entries();
+    eprintln!(
+        "COMPACTION_PASS_SCAN_SITES whole_pass={whole_pass} steps={steps} sites={:?}",
+        super::super::storage_bucket_internals::live_block_scan_sites_snapshot()
+    );
+    assert!(steps >= 10, "the pass took {steps} steps, too few to prove a per-step bound");
+    assert!(
+        whole_pass <= total + total / 2,
+        "the pass materialized {whole_pass} live-block entries over {steps} steps for a shard of {total}"
+    );
+    assert_every_key_reads(&engine, &expected, "after a cursor pass");
+    assert_index_agrees(&engine, "after a cursor pass");
+    let still_on_drain = {
+        let shards = engine.shards_write_marked();
+        collect_live_block_entries(shards.get(&1).unwrap())
+            .into_iter()
+            .filter(|entry| drain.contains(&entry.address.block_slab_id()))
+            .count()
+    };
+    assert_eq!(still_on_drain, 0, "blocks were left on the drained slabs");
+}
+
+/// Run by hand at scale: `SCALE_KEYS=300000 TS_COMPACTION_PHASE_TIMING=1 cargo test --release --lib
+/// repro_cursor_pass_at_scale -- --ignored --nocapture`. Prints the pass time, the longest write wait
+/// and, with the timing switch, the duration of the setup, every slice and the finish.
+#[test]
+#[ignore]
+fn repro_cursor_pass_at_scale() {
+    let keys: usize = std::env::var("SCALE_KEYS").ok().and_then(|v| v.parse().ok()).unwrap_or(100_000);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Arc::new(open(dir.path()));
+    let (_, drain) = seed(&engine, keys);
+    let stall = super::super::writer_stall_probe::measure_writer_stall(&engine, 1, || {
+        engine.compact_shard_blocks_draining_sliced(1, drain.clone(), 200).unwrap();
+    });
+    eprintln!(
+        "SCALE keys={keys} pass {} ms, longest write wait {} ms, writes {}",
+        stall.round_us / 1000,
+        stall.max_wait_us / 1000,
+        stall.writes
+    );
 }
 
 /// The point of slicing: a writer waits for a slice, not for the pass.
