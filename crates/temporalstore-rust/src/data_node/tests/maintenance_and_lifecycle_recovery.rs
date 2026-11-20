@@ -6198,6 +6198,80 @@ fn the_loop_destroys_a_quarantined_slab_with_the_index_stage_off() {
     );
 }
 
+/// The block stage owns the quarantine purge; the index stage does not purge.
+///
+/// Slabs are quarantined by block collection and destroyed by the purge, so the purge is block
+/// reclaim. The two arms differ only in which stage runs the round that follows the grace: the
+/// block stage alone destroys the aged quarantine, the index stage alone leaves it untouched. The
+/// first arm (block stage alone) is the control that something was destroyable at all.
+#[test]
+fn only_the_block_stage_destroys_an_aged_quarantine() {
+    let run_arm = |block_gc: bool| {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let seed_options = StorageManagerOptions::default();
+        let mut written = 0usize;
+        for _ in 0..6 {
+            let engine = runtime.engine();
+            for index in 0..400usize {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("purge-owner-{:06}", (written + index) % 100),
+                        value: vec![b'v'; 96],
+                    },
+                });
+            }
+            written += 400;
+            runtime.run_storage_manager_once(1, seed_options.clone());
+        }
+        let quarantined = |runtime: &DataNodeRuntime| {
+            runtime
+                .engine()
+                .block_store()
+                .delayed_destroy_slab_ids()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<std::collections::BTreeSet<u64>>()
+        };
+        let before = quarantined(&runtime);
+        assert!(!before.is_empty(), "block_gc {block_gc}: nothing was quarantined");
+        runtime
+            .engine()
+            .block_store()
+            .backdate_delayed_destroy_stamps_for_test(26 * 60 * 60 * 1_000)
+            .expect("backdating the quarantine stamps");
+        // Only one of the two stages runs the round after the grace.
+        runtime.run_storage_manager_once(
+            1,
+            StorageManagerOptions {
+                enable_block_gc: block_gc,
+                enable_index_gc: !block_gc,
+                ..StorageManagerOptions::default()
+            },
+        );
+        let mut kept = quarantined(&runtime);
+        kept.extend(runtime.engine().block_store().slab_ids().unwrap_or_default());
+        before.iter().any(|id| !kept.contains(id))
+    };
+    assert!(
+        run_arm(true),
+        "control: with the block stage running nothing aged was destroyed, so the arm below proves nothing"
+    );
+    assert!(
+        !run_arm(false),
+        "the index stage destroyed a quarantined slab: the purge is the block stage's"
+    );
+}
+
 /// A reader registered with the engine holds its slabs against the periodic loop, with no option
 /// set, and releasing the lease lets the next round collect them.
 ///
@@ -10944,11 +11018,22 @@ purged {:?}",
 }
 
 #[test]
-fn purge_only_rounds_report_physical_work_in_both_stage_routes() {
-    for index_stage in [false, true] {
+fn purge_only_rounds_report_physical_work_with_both_index_modes() {
+    for (index_stage, dirty_index) in [(false, false), (false, true), (true, false), (true, true)] {
         for retained in [false, true] {
             let engine = TemporalEngine::default();
             engine.load_shard(1);
+            if dirty_index {
+                assert!(engine.set_config(crate::SetConfigRequest {
+                    shard_id: 1,
+                    config: crate::Config { version: 2, async_storage: true, ..Default::default() },
+                }).ok);
+                assert!(engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet { key: "purge-report-live".into(), value: b"live".to_vec() },
+                }).status.ok);
+                assert!(engine.synthetic_address_count_for_test(1) > 0);
+            }
             engine.block_store().install_slab(0, b"retained payload").unwrap();
             engine.block_store().install_slab(1, b"active").unwrap();
             engine.block_store().gc_slabs_before_with_live_refs_delayed_destroy(1, [1]).unwrap();
@@ -10959,7 +11044,9 @@ fn purge_only_rounds_report_physical_work_in_both_stage_routes() {
             let options = StorageManagerOptions {
                 enable_prepare: false, enable_wal_reclaim: false, enable_memory_reclaim: false,
                 enable_expire: false, enable_evict: false, enable_block_compaction: false,
-                enable_block_gc: !index_stage, enable_index_gc: index_stage, enable_metrics_reap: false,
+                enable_block_gc: true, enable_index_gc: index_stage, enable_metrics_reap: false,
+                stale_block_slab_pressure: usize::MAX,
+                reclaimable_physical_bytes_pressure: u64::MAX,
                 block_gc_checkpoint_floor_slab_id: retained.then_some(0),
                 ..StorageManagerOptions::default()
             };
@@ -10973,8 +11060,7 @@ fn purge_only_rounds_report_physical_work_in_both_stage_routes() {
             runtime.engine().block_store().backdate_delayed_destroy_stamps_for_test(25 * 60 * 60 * 1_000).unwrap();
             let round = runtime.run_storage_manager_once(1, options);
             assert!(round.status.ok, "{:?}", round.status);
-            assert!(round.executed_stages.iter().any(|stage|
-                stage == if index_stage { "reclaim_index" } else { "reclaim_page" }));
+            assert!(round.executed_stages.iter().any(|stage| stage == "reclaim_page"));
             let report = round.lifecycle_report.expect("physical work must survive the purge-only route");
             assert_eq!(report.shard_id, 1);
             assert!(runtime.engine().block_store().delayed_destroy_slab_ids().unwrap().is_empty());

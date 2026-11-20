@@ -438,6 +438,11 @@ pub(super) struct ShardState {
     // execute.
     #[serde(skip)]
     pub(super) set_listing_from_map: bool,
+    // Transient per-execute hint: the age cut for feature series, from
+    // Config::feature_max_age_ms(). Serde-skipped and set on EVERY execute, which is what makes it
+    // replay-correct, as for the retained-points cap above. 0 means no age cut.
+    #[serde(skip)]
+    pub(super) feature_max_age_ms: u64,
     // THE LEGACY COMPATIBILITY FIELD IS GONE, and the condition its own doc set is what
     // retired it: no door can deliver a top-level `context_events` key any more. Pre-stamp
     // images are refused on every one of `decode_index_bytes`'s callers, and images at stamp
@@ -10430,6 +10435,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         control_state_max_size: _,
         control_distinct_sketch: _,
         set_listing_from_map: _,
+        feature_max_age_ms: _,
         dirty_objects: _,
         // A plain `u64` the decode leaves at 0 because it is `#[serde(skip)]`, and 0 is the value
         // this pass would want anyway: it means the first logged-deletion round after a load is

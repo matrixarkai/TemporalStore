@@ -1472,6 +1472,10 @@ jobs:
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::each_point_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::the_fast_reads_answer_what_the_ordinary_reads_answer \
             engine::tests::a_restating_write_names_one_bucket_not_the_shard::a_bucket_projection_names_what_the_whole_shard_inversion_names \
+            engine::tests::a_model_read_takes_the_shared_lock::each_model_read_answers_while_the_shared_lock_is_held \
+            engine::tests::a_model_read_takes_the_shared_lock::the_fast_reads_answer_what_the_ordinary_reads_answer \
+            engine::tests::a_model_read_takes_the_shared_lock::a_lapsed_key_declines_to_the_ordinary_path_which_drops_it \
+            engine::tests::a_model_read_takes_the_shared_lock::a_read_that_fetches_no_blocks_pins_nothing \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::length_and_range_answer_what_the_whole_read_answers \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::a_lapsed_string_has_no_length_and_no_range \
             engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::an_outcome_kind_serializes_as_the_plain_string_for_every_kind_in_use \
