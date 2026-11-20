@@ -1188,6 +1188,27 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-listing.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
+      - name: cargo test (quiet WAL-reclaim memo key guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # The memo that lets an idle shard skip the reclaim plan is keyed on the write-ahead log,
+          # resident-block, dirty and retention inputs and a one-minute backstop, and NOT on the index
+          # log's length. Pinned by exact name: they ran only in the advisory suite.
+          for t in \
+            data_node::runtime_storage::quiet_wal_reclaim_key_tests::each_input_the_key_keeps_moves_it_and_nothing_else_does \
+            data_node::runtime_storage::quiet_wal_reclaim_key_tests::a_remembered_answer_is_good_for_a_minute_and_no_longer
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-memo.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-memo.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok. 1 passed' /tmp/pin-memo.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
       - name: cargo test (compaction hold and drain guards, hard gate)
         timeout-minutes: 20
         run: |
