@@ -1168,6 +1168,26 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-index.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
+      - name: cargo test (listing builds outside the shard guard, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # A bucket listing copies out of the shard under its read guard and builds the summaries
+          # after releasing it, from the copy. Pinned by exact name: they ran only in the advisory suite.
+          for t in \
+            engine::tests::part3::a_writer_is_not_blocked_while_a_listing_builds_its_summaries \
+            engine::tests::part3::a_listing_built_after_the_guard_is_released_reports_the_shard_as_it_was_copied
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-listing.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-listing.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-listing.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
       - name: cargo test (compaction hold and drain guards, hard gate)
         timeout-minutes: 20
         run: |
