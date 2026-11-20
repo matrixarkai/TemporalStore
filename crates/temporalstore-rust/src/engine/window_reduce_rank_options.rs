@@ -171,6 +171,16 @@ impl CompiledQuota {
         CompiledQuota { lanes, others }
     }
 
+    /// `(lane position, count)` of each lane of the quota.
+    pub(crate) fn lanes(&self) -> &[(usize, usize)] {
+        &self.lanes
+    }
+
+    /// How many members that fit no short lane are kept.
+    pub(crate) fn others(&self) -> usize {
+        self.others
+    }
+
     /// Keeps the members of `ranked` the quota selects, in place and in order. `lanes_of` gives a
     /// member's reduced lanes. Allocates once, for the lanes still short.
     pub(crate) fn retain<T>(&self, ranked: &mut Vec<T>, lanes_of: impl Fn(&T) -> &[i64]) {

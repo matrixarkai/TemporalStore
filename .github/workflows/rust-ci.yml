@@ -765,7 +765,9 @@ jobs:
             engine::window_reduce_rank::tests::recent::rows_are_bounded_by_the_limit_and_the_walk_stops_in_the_middle_of_a_sample \
             engine::window_reduce_rank::tests::recent::the_window_the_predicates_the_member_set_and_the_projection_apply_to_each_cell \
             engine::window_reduce_rank::tests::recent::samples_sharing_a_stamp_come_back_with_the_later_one_in_the_slice_first \
-            engine::window_reduce_rank::tests::recent::a_recent_read_refuses_a_quota_and_is_no_score_for_a_cap \
+            engine::window_reduce_rank::tests::recent::a_recent_read_refuses_a_quota_with_no_lane_and_is_no_score_for_a_cap \
+            engine::window_reduce_rank::tests::recent::a_quota_on_stored_cells_walks_newest_first_and_stops_when_every_lane_is_full_or_the_limit_is_reached \
+            engine::window_reduce_rank::tests::recent::a_quota_on_stored_cells_is_the_plain_read_when_the_walk_ends_with_it_and_it_names_a_lane \
             engine::window_reduce_rank::tests::recent::a_cell_that_breaks_the_header_shape_or_the_member_order_is_refused_not_returned \
             engine::tests::a_window_reduce_ranked_read_is_a_command::a_ranked_read_answers_from_what_was_stored_live_and_after_a_restart \
             engine::tests::a_window_reduce_ranked_read_is_a_command::an_absent_key_and_an_expired_key_rank_nothing \
