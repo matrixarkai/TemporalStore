@@ -1094,6 +1094,26 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-memory-stages.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
+      - name: cargo test (scrape listing cache guard, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # A /metrics scrape reuses a fresh per-bucket listing and rebuilds a stale one, so a scrape
+          # does not walk the shard under the engine read guard. Pinned by exact name: it ran only in
+          # the advisory suite above.
+          for t in \
+            engine::tests::part3::a_scrape_reuses_a_fresh_bucket_listing_and_rebuilds_a_stale_one
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-scrape.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-scrape.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-scrape.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
       - name: cargo test (index stage and dump floor guards, hard gate)
         timeout-minutes: 20
         run: |

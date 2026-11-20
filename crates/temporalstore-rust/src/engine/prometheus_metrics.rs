@@ -17,7 +17,35 @@ fn max_bucket_series_per_shard() -> usize {
     )
 }
 
+/// How long a scrape may reuse the per-bucket summaries an earlier scrape listed. Per-bucket
+/// gauges move on the timescale of a dump, not of a scrape, and every scrape that lists them
+/// holds the engine read guard for a walk of the whole shard.
+const SCRAPE_BUCKET_SUMMARY_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl TemporalEngine {
+    /// The shard's per-bucket summaries for a scrape: the previous scrape's listing when it is
+    /// younger than `max_age`, a fresh listing otherwise.
+    ///
+    /// The listing runs with the cache mutex held, so scrapes that arrive together share it.
+    pub(super) fn scrape_bucket_storage_summaries(
+        &self,
+        shard_id: ShardId,
+        max_age: std::time::Duration,
+    ) -> Arc<Vec<BucketStorageSummary>> {
+        let mut cache = self
+            .scrape_bucket_summaries
+            .lock()
+            .expect("scrape summary cache poisoned");
+        if let Some((taken, summaries)) = cache.get(&shard_id) {
+            if taken.elapsed() < max_age {
+                return Arc::clone(summaries);
+            }
+        }
+        let summaries = Arc::new(self.bucket_storage_summaries(shard_id));
+        cache.insert(shard_id, (std::time::Instant::now(), Arc::clone(&summaries)));
+        summaries
+    }
+
     pub fn prometheus_metrics(&self) -> String {
         let mut out = String::new();
         out.push_str("# HELP temporalstore_shard_records Number of records by shard and kind.\n");
@@ -440,7 +468,8 @@ impl TemporalEngine {
             // instead; the shard totals emitted above already carry the aggregate. Note
             // object_manager.routing_bucket_count is the shard's routing RANGE (u32::MAX), not the
             // number of occupied slots, so the occupied count has to come from the summaries.
-            let bucket_summaries = self.bucket_storage_summaries(stats.shard_id);
+            let bucket_summaries =
+                self.scrape_bucket_storage_summaries(stats.shard_id, SCRAPE_BUCKET_SUMMARY_MAX_AGE);
             let max_bucket_series = max_bucket_series_per_shard();
             if bucket_summaries.len() > max_bucket_series {
                 push_metric(
