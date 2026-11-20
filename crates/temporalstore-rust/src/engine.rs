@@ -1923,6 +1923,17 @@ impl TemporalEngine {
         })
     }
 
+    /// Whether the shard has the counter rollup on: its windowed sum is the ordinary arm's, so the
+    /// fast path leaves those reads to it.
+    fn control_rollup_on(&self, shard_id: ShardId) -> bool {
+        self.configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .map(|config| config.control_rollup_enabled())
+            .unwrap_or(false)
+    }
+
     fn execute_read_only_fast_path(&self, request: &ExecuteRequest) -> Option<ExecuteResponse> {
         let read_command = matches!(
             request.command,
@@ -2331,6 +2342,81 @@ impl TemporalEngine {
                         ),
                     }
                 }
+                // THE COUNTER, DISTINCT, SELECTION AND SEEN READS: pure reads of resident maps, answered
+                // under the guard with the reductions the ordinary arms use. Declined wherever the
+                // ordinary arm mutates or consults something a reader may not -- a key (or a family
+                // key of it) whose deadline lapsed, which the ordinary path drops, and a shard with
+                // the counter rollup on, whose windowed sum is the ordinary arm's own.
+                Command::ControlStateCount { key, start_ms, end_ms }
+                | Command::ControlStateQuery { key, start_ms, end_ms, .. } => {
+                    if control_key_lapsed(shard, key) || self.control_rollup_on(request.shard_id) {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    let value = match &request.command {
+                        Command::ControlStateQuery { aggregator, .. }
+                            if is_control_state_change_aggregator(aggregator) =>
+                        {
+                            count_control_state_changes(shard, key, *start_ms, *end_ms)
+                        }
+                        Command::ControlStateQuery { aggregator, .. } => {
+                            control_state_window_value(shard, key, *start_ms, *end_ms, aggregator)
+                        }
+                        _ => shard
+                            .control_state()
+                            .get(key.as_str())
+                            .map(|series| {
+                                window_aggregate::sum_legacy(
+                                    series
+                                        .range(timestamp_range_bounds(*start_ms, *end_ms))
+                                        .map(|(_, value)| *value),
+                                )
+                            })
+                            .unwrap_or_default(),
+                    };
+                    FastPathRead::Answer {
+                        value,
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                Command::SeenCard { key } => {
+                    if control_key_lapsed(shard, key) {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::Answer {
+                        value: shard
+                            .seen
+                            .get(key.as_str())
+                            .map_or(0, |seen| seen.by_member.len()) as i64,
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                Command::ControlStateSelectionQuery { key } => {
+                    if control_key_lapsed(shard, key) {
+                        return None;
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::Value {
+                        value: shard
+                            .control_state_selection
+                            .get(key.as_str())
+                            .map(|stored| stored.value.clone()),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
                 _ => return None,
             };
             let wal_snapshot = plan.pin_log_locations(&self.block_store, request.shard_id);
@@ -2619,6 +2705,16 @@ impl TemporalEngine {
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::Integer { value },
+                })
+            }
+            FastPathRead::Value {
+                value,
+                routing_bucket,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Bytes { value },
                 })
             }
             FastPathRead::StringShared {
@@ -3950,6 +4046,31 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
 pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 32;
 
+/// Whether `key`, or one of the control-state family keys the ordinary read would also drop with
+/// it, has a deadline that lapsed. The same three families `remove_if_expired_with` examines, asked
+/// without mutating anything: a shard with no deadline at all answers without building a name.
+fn control_key_lapsed(shard: &ShardState, key: &str) -> bool {
+    let deadlines = shard.expires_at_ms();
+    if deadlines.is_empty() {
+        return false;
+    }
+    let now = resolve_now_ms();
+    let lapsed = |candidate: &str| deadlines.get(candidate).is_some_and(|at| *at <= now);
+    if lapsed(key) {
+        return true;
+    }
+    if key.starts_with("control_state:") {
+        return false;
+    }
+    [
+        ControlStateFamily::Counter,
+        ControlStateFamily::Distinct,
+        ControlStateFamily::Selection,
+    ]
+    .into_iter()
+    .any(|family| lapsed(&control_state_family_key(family, key)))
+}
+
 /// What the serving read fast path decided to serve: chosen under the shard-table read guard,
 /// read off the block store after it drops.
 ///
@@ -4016,6 +4137,9 @@ enum FastPathRead<'a> {
         response: CommandResponse,
         routing_bucket: u32,
     },
+    /// A byte string answered from a resident map alone (the selection's winner), copied out under
+    /// the guard, with nothing to read afterwards.
+    Value { value: Option<Vec<u8>>, routing_bucket: u32 },
     /// The addresses of a feature window, taken under the guard; the points are read after it drops.
     FeatureRange {
         key: &'a str,
@@ -4182,7 +4306,15 @@ impl FastPathRead<'_> {
                 }
                 snapshot
             }
-            Self::Hash { .. } | Self::Answer { .. } | Self::Response { .. } => None,
+            // A READ THAT FETCHES NO BLOCKS HAS NO LOCATION TO PIN. `Answer` is an integer taken
+            // from the index and `Value` is a byte string copied out of a resident map, both under
+            // the guard; nothing is read after it drops, so there is no WAL-resident address a
+            // reclaim could retire out from under the read. See
+            // `a_read_that_fetches_no_blocks_pins_nothing`.
+            Self::Hash { .. }
+            | Self::Answer { .. }
+            | Self::Response { .. }
+            | Self::Value { .. } => None,
         }
     }
 }
