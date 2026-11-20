@@ -17,15 +17,16 @@
 //! rebalance and survives datanode loss — but to degrade gracefully rather than
 //! wedge a node when it is not:
 //!
-//! 1. **matrixobject (shared/networked)** — when the `matrixobject` feature is
+//! 1. **matrixobject (cluster)** — when the `matrixobject` feature is
 //!    compiled AND a MatrixObject endpoint is configured (`TS_MATRIXOBJECT_ENDPOINT`)
-//!    AND a cheap startup **reachability probe** to that endpoint succeeds.
-//! 2. **matrixobject (node-local)** — when the feature is compiled but no
-//!    endpoint is configured (the historical node-local behavior, unchanged).
-//! 3. **shared path** — otherwise, any configured shared filesystem/object-store
+//!    AND a cheap startup **reachability probe** to that endpoint succeeds. There is
+//!    no node-local MatrixObject store: the cluster is the only MatrixObject path, and
+//!    the node reaches it through a gateway (`TS_SHARED_STORE_URI`) or directly
+//!    (`TS_MATRIXOBJECT_META`).
+//! 2. **shared path** — otherwise, any configured shared filesystem/object-store
 //!    root (`TS_SHARED_STORE_DIR`). This is the graceful downgrade target when a
 //!    configured MatrixObject endpoint is *unreachable*.
-//! 4. **raft replication** — otherwise. With no raft peers this is effectively a
+//! 3. **raft replication** — otherwise. With no raft peers this is effectively a
 //!    single local node, matching the historical default
 //!    ([`ReplicationMode::default`] is `Raft`).
 //!
@@ -64,22 +65,15 @@ pub const TS_SHARED_STORE_DIR: &str = "TS_SHARED_STORE_DIR";
 /// Env var: cluster id namespacing shared-store keys (all nodes must agree).
 pub const TS_SHARED_STORE_CLUSTER_ID: &str = "TS_SHARED_STORE_CLUSTER_ID";
 
-/// Env var: directory holding this node's durable MatrixObject snapshot.
-///
-/// NAMED HERE BECAUSE IT WAS NOT NAMED ANYWHERE. The durability wiring in `src/bin/temporalstore_data_server.rs`
-/// read this key as a bare string literal, which is the one shape of config that cannot be
-/// checked: a typo in it does not fail, it silently selects the default. Every other key this
-/// module resolves is a `const` for that reason.
+/// RETIRED env var: a directory for a node-local MatrixObject snapshot. The node-local store no
+/// longer exists, so a node that still sets this refuses to start
+/// ([`StorageBackendConfig::retired_settings`]) instead of ignoring it and writing somewhere the
+/// operator did not intend.
 pub const TS_MATRIXOBJECT_STORE_DIR: &str = "TS_MATRIXOBJECT_STORE_DIR";
 
 /// Default bucket used for the matrixobject backend when unset.
 pub const DEFAULT_MATRIXOBJECT_BUCKET: &str = "temporalstore";
 
-/// Default directory for the durable MatrixObject snapshot when unset.
-///
-/// Unchanged from the literal the durability wiring used, so a node relying on the default keeps
-/// the same directory.
-pub const DEFAULT_MATRIXOBJECT_STORE_DIR: &str = "target/temporalstore-matrixobject";
 /// Default shared-store cluster id when unset.
 pub const DEFAULT_SHARED_STORE_CLUSTER_ID: &str = "temporalstore";
 /// Default port assumed for a MatrixObject endpoint given without one (matches
@@ -98,21 +92,14 @@ pub const fn matrixobject_feature_compiled() -> bool {
 /// The storage/replication strategy a distributed node should use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageBackend {
-    /// Shared object storage via matrixobject (the preferred shared backend).
+    /// Shared object storage on a MatrixObject cluster (the preferred shared backend). The node
+    /// reaches the cluster through the networked store, a gateway or direct: there is no
+    /// node-local MatrixObject store.
     MatrixObject {
         /// Bucket that holds this cluster's shard objects.
         bucket: String,
         /// Cluster id namespacing shared-store keys.
         cluster_id: String,
-        /// Directory holding this node's durable MatrixObject snapshot.
-        ///
-        /// CARRIED ON THE BACKEND SO THERE IS ONE ANSWER. The store that serves this backend
-        /// and the store the durability wiring builds were resolved independently -- and only
-        /// one of them resolved anything: the durability path read
-        /// `TS_MATRIXOBJECT_STORE_DIR`, and `build_shared_object_store` took
-        /// `StoreOptions::default()`, which keeps the whole object store in memory. Two
-        /// stores, one bucket name, different contents, and nothing to make them agree.
-        store_dir: PathBuf,
     },
     /// Shared object storage rooted at a configured filesystem/mounted path
     /// (a `FileObjectStore`-compatible root shared by every node).
@@ -167,15 +154,8 @@ impl StorageBackend {
     /// Short, log-friendly description of the resolved backend.
     pub fn describe(&self) -> String {
         match self {
-            StorageBackend::MatrixObject {
-                bucket,
-                cluster_id,
-                store_dir,
-            } => {
-                format!(
-                    "shared-storage:matrixobject(bucket={bucket}, cluster={cluster_id}, dir={})",
-                    store_dir.display()
-                )
+            StorageBackend::MatrixObject { bucket, cluster_id } => {
+                format!("shared-storage:matrixobject(bucket={bucket}, cluster={cluster_id})")
             }
             StorageBackend::SharedPath { root, cluster_id } => {
                 format!(
@@ -190,9 +170,10 @@ impl StorageBackend {
     /// Construct the shared object store this backend refers to.
     ///
     /// Returns `Ok(None)` for [`StorageBackend::RaftReplication`] — there is no
-    /// shared store; the node replicates via raft. The matrixobject arm is only
-    /// reachable when the `matrixobject` feature is compiled (resolution keys on
-    /// [`matrixobject_feature_compiled`]); the uncompiled arm is a defensive error.
+    /// shared store; the node replicates via raft — and for
+    /// [`StorageBackend::MatrixObject`]: the cluster store is the networked one the data server
+    /// builds from `TS_SHARED_STORE_URI` / `TS_MATRIXOBJECT_META`, so this resolver has no store
+    /// of its own to hand out for it.
     pub fn build_shared_object_store(
         &self,
     ) -> Result<Option<Arc<dyn ObjectStore>>, ObjectStoreError> {
@@ -200,45 +181,7 @@ impl StorageBackend {
             StorageBackend::SharedPath { root, .. } => {
                 Ok(Some(Arc::new(FileObjectStore::new(root.clone()))))
             }
-            #[cfg(feature = "matrixobject")]
-            StorageBackend::MatrixObject {
-                bucket, store_dir, ..
-            } => {
-                // DURABLE, NOT IN MEMORY. This called `with_default_options`, and the doc on
-                // `with_persistent_dir` beside it says what that means: "`StoreOptions::default()`
-                // keeps the entire object store in memory, so the bytes vanish when the process
-                // exits." So the store handed out as the shared-storage backend lost everything on
-                // restart, while the durability wiring built a SECOND, durable store under the same
-                // bucket name from a directory this resolver did not know about.
-                //
-                // IT WAS ALSO THE ONLY THING THE STARTUP CHECK CHECKED. The one production caller
-                // builds this "early so a broken shared-storage config fails fast at startup rather
-                // than on the first write", and then drops the store. Built in memory, that check
-                // could not fail: an unwritable or corrupt snapshot directory passed it and the
-                // process died later in `wire_matrixobject_durability`, which exits 1 on the same
-                // condition. Pointed at the real directory, the check is about the store the node
-                // will actually use.
-                //
-                // `MatrixObjectStore::new` reads the snapshot back on construction and
-                // `flush_persistent_snapshot` rewrites it, so this survives a restart.
-                //
-                // IT IS STILL NODE-LOCAL, and that is worth stating where the type is built rather
-                // than leaving it to be inferred from the word "shared": the object-store crate has
-                // no network surface, so data follows a shard to another node only if `store_dir`
-                // is itself a shared mount. `is_shared_storage` and the disk-cache-tier default
-                // both assume a durable copy that is not this node's own disk, and that assumption
-                // holds only under such a mount.
-                let store = crate::matrixobject_store::MatrixObjectObjectStore::with_persistent_dir(
-                    bucket.clone(),
-                    store_dir,
-                )?;
-                Ok(Some(Arc::new(store)))
-            }
-            #[cfg(not(feature = "matrixobject"))]
-            StorageBackend::MatrixObject { .. } => Err(ObjectStoreError::InvalidKey(
-                "matrixobject backend selected but the `matrixobject` feature is not compiled"
-                    .to_string(),
-            )),
+            StorageBackend::MatrixObject { .. } => Ok(None),
             StorageBackend::RaftReplication => Ok(None),
         }
     }
@@ -377,8 +320,8 @@ pub struct StorageBackendConfig {
     /// Configured endpoint of the *networked* MatrixObject store, if any. When
     /// present the `auto` resolver probes it before selecting matrixobject.
     matrixobject_endpoint: Option<String>,
-    /// Directory for this node's durable MatrixObject snapshot.
-    matrixobject_store_dir: PathBuf,
+    /// A retired `TS_MATRIXOBJECT_STORE_DIR` value, kept only so the node can refuse it by name.
+    retired_store_dir: Option<String>,
     shared_store_dir: Option<PathBuf>,
     cluster_id: String,
 }
@@ -405,18 +348,31 @@ impl StorageBackendConfig {
             .unwrap_or_else(|| DEFAULT_SHARED_STORE_CLUSTER_ID.to_string());
         let shared_store_dir = non_empty(get(TS_SHARED_STORE_DIR)).map(PathBuf::from);
         let matrixobject_endpoint = non_empty(get(TS_MATRIXOBJECT_ENDPOINT));
-        let matrixobject_store_dir = non_empty(get(TS_MATRIXOBJECT_STORE_DIR))
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_MATRIXOBJECT_STORE_DIR));
+        let retired_store_dir = non_empty(get(TS_MATRIXOBJECT_STORE_DIR));
         Self {
             override_mode: BackendOverride::parse(get(TS_STORAGE_BACKEND).as_deref()),
             matrixobject_available,
             matrixobject_bucket: bucket,
             matrixobject_endpoint,
-            matrixobject_store_dir,
+            retired_store_dir,
             shared_store_dir,
             cluster_id,
         }
+    }
+
+    /// Settings that named the retired node-local MatrixObject store, one message each. A node
+    /// must refuse to start while this is non-empty: ignoring the setting would run the node
+    /// somewhere other than where the operator pointed it.
+    pub fn retired_settings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(dir) = &self.retired_store_dir {
+            out.push(format!(
+                "{TS_MATRIXOBJECT_STORE_DIR}={dir} configures a node-local MatrixObject store, \
+                 which has been retired: MatrixObject is reached only through the cluster. \
+                 Unset it and set TS_SHARED_STORE_URI (gateway) or TS_MATRIXOBJECT_META (direct)."
+            ));
+        }
+        out
     }
 
     /// Resolve the concrete backend a node should use, applying the precedence
@@ -471,7 +427,6 @@ impl StorageBackendConfig {
         StorageBackend::MatrixObject {
             bucket: self.matrixobject_bucket.clone(),
             cluster_id: self.cluster_id.clone(),
-            store_dir: self.matrixobject_store_dir.clone(),
         }
     }
 
@@ -487,12 +442,12 @@ impl StorageBackendConfig {
             Some(endpoint) => format!(
                 "TS_STORAGE_BACKEND=matrixobject: forced (endpoint {endpoint}, probe skipped)"
             ),
-            None => "TS_STORAGE_BACKEND=matrixobject: forced (node-local, no endpoint)".to_string(),
+            None => "TS_STORAGE_BACKEND=matrixobject: forced (cluster target from TS_SHARED_STORE_URI or TS_MATRIXOBJECT_META)".to_string(),
         }
     }
 
-    /// The `auto` decision: prefer a reachable networked matrixobject store,
-    /// then node-local matrixobject, then a configured shared path, then raft.
+    /// The `auto` decision: prefer a reachable matrixobject cluster, then a
+    /// configured shared path, then raft.
     fn resolve_auto_decision(&self, probe: &ReachabilityProbe<'_>) -> BackendDecision {
         if self.matrixobject_available {
             match &self.matrixobject_endpoint {
@@ -515,18 +470,14 @@ impl StorageBackendConfig {
                     );
                     return fallback;
                 }
-                None => {
-                    return BackendDecision::new(
-                        self.matrixobject(),
-                        "auto: matrixobject feature available, node-local \
-                         (no TS_MATRIXOBJECT_ENDPOINT configured)",
-                    );
-                }
+                // No endpoint: there is no node-local MatrixObject store to fall back on, so
+                // this is the same as the feature being absent.
+                None => {}
             }
         }
         let mut fallback = self.fallback_below_matrixobject();
         fallback.reason = format!(
-            "auto: matrixobject unavailable — selected {}",
+            "auto: no reachable matrixobject cluster configured — selected {}",
             fallback.backend.describe()
         );
         fallback
@@ -593,10 +544,11 @@ mod tests {
     }
 
     #[test]
-    fn matrixobject_wins_when_available_even_with_shared_dir() {
+    fn forced_matrixobject_is_the_cluster_backend_even_with_a_shared_dir() {
         let backend = resolve(
             true,
             &[
+                (TS_STORAGE_BACKEND, "matrixobject"),
                 (TS_SHARED_STORE_DIR, "/mnt/shared"),
                 (TS_MATRIXOBJECT_BUCKET, "prod-bucket"),
                 (TS_SHARED_STORE_CLUSTER_ID, "cluster-7"),
@@ -607,11 +559,48 @@ mod tests {
             StorageBackend::MatrixObject {
                 bucket: "prod-bucket".to_string(),
                 cluster_id: "cluster-7".to_string(),
-                store_dir: PathBuf::from(DEFAULT_MATRIXOBJECT_STORE_DIR),
             }
         );
         assert_eq!(backend.replication_mode(), ReplicationMode::SharedStore);
         assert!(backend.is_shared_storage());
+    }
+
+    #[test]
+    fn a_shared_dir_wins_when_no_cluster_endpoint_is_configured() {
+        // There is no node-local MatrixObject store, so with the feature compiled and no
+        // endpoint the node uses the shared path.
+        assert_eq!(
+            resolve(true, &[(TS_SHARED_STORE_DIR, "/mnt/shared")]),
+            StorageBackend::SharedPath {
+                root: PathBuf::from("/mnt/shared"),
+                cluster_id: DEFAULT_SHARED_STORE_CLUSTER_ID.to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_retired_node_local_store_dir_is_refused_by_name() {
+        let refused = StorageBackendConfig::from_parts(
+            true,
+            &getter(&[(TS_MATRIXOBJECT_STORE_DIR, "/var/lib/ts/mo")]),
+        )
+        .retired_settings();
+        assert_eq!(refused.len(), 1);
+        assert!(refused[0].contains("TS_MATRIXOBJECT_STORE_DIR"), "{}", refused[0]);
+        assert!(refused[0].contains("/var/lib/ts/mo"), "{}", refused[0]);
+        assert!(refused[0].contains("TS_SHARED_STORE_URI"), "{}", refused[0]);
+        assert!(refused[0].contains("TS_MATRIXOBJECT_META"), "{}", refused[0]);
+        // Unset and blank are not a configuration.
+        assert!(StorageBackendConfig::from_parts(true, &getter(&[])).retired_settings().is_empty());
+        assert!(StorageBackendConfig::from_parts(true, &getter(&[(TS_MATRIXOBJECT_STORE_DIR, "  ")]))
+            .retired_settings()
+            .is_empty());
+    }
+
+    #[test]
+    fn the_cluster_backend_has_no_resolver_owned_store() {
+        let backend = resolve(true, &[(TS_STORAGE_BACKEND, "matrixobject")]);
+        assert!(backend.build_shared_object_store().unwrap().is_none());
     }
 
     #[test]
@@ -629,13 +618,12 @@ mod tests {
 
     #[test]
     fn default_matrixobject_bucket_when_unset() {
-        let backend = resolve(true, &[]);
+        let backend = resolve(true, &[(TS_STORAGE_BACKEND, "matrixobject")]);
         assert_eq!(
             backend,
             StorageBackend::MatrixObject {
                 bucket: DEFAULT_MATRIXOBJECT_BUCKET.to_string(),
                 cluster_id: DEFAULT_SHARED_STORE_CLUSTER_ID.to_string(),
-                store_dir: PathBuf::from(DEFAULT_MATRIXOBJECT_STORE_DIR),
             }
         );
     }
@@ -672,15 +660,11 @@ mod tests {
 
     #[test]
     fn explicit_shared_override_without_dir_falls_back_to_auto() {
-        // Asked for shared but nothing configured: still pick best available
-        // (matrixobject here) rather than a broken shared-path.
+        // Asked for shared but nothing configured: still pick the best available, which with no
+        // cluster endpoint and no shared dir is raft rather than a broken shared-path.
         assert_eq!(
             resolve(true, &[(TS_STORAGE_BACKEND, "shared")]),
-            StorageBackend::MatrixObject {
-                bucket: DEFAULT_MATRIXOBJECT_BUCKET.to_string(),
-                cluster_id: DEFAULT_SHARED_STORE_CLUSTER_ID.to_string(),
-                store_dir: PathBuf::from(DEFAULT_MATRIXOBJECT_STORE_DIR),
-            }
+            StorageBackend::RaftReplication
         );
         // ...and raft when nothing at all is available.
         assert_eq!(
@@ -723,12 +707,16 @@ mod tests {
                 (TS_SHARED_STORE_DIR, ""),
             ],
         );
+        assert_eq!(backend, StorageBackend::RaftReplication);
+        // A blank bucket is the default bucket.
         assert_eq!(
-            backend,
+            resolve(
+                true,
+                &[(TS_STORAGE_BACKEND, "matrixobject"), (TS_MATRIXOBJECT_BUCKET, "  ")]
+            ),
             StorageBackend::MatrixObject {
                 bucket: DEFAULT_MATRIXOBJECT_BUCKET.to_string(),
                 cluster_id: DEFAULT_SHARED_STORE_CLUSTER_ID.to_string(),
-                store_dir: PathBuf::from(DEFAULT_MATRIXOBJECT_STORE_DIR),
             }
         );
     }
@@ -762,7 +750,7 @@ mod tests {
             StorageBackend::RaftReplication.describe(),
             "raft-replication"
         );
-        assert!(resolve(true, &[])
+        assert!(resolve(true, &[(TS_STORAGE_BACKEND, "matrixobject")])
             .describe()
             .starts_with("shared-storage:matrixobject"));
     }
@@ -791,7 +779,6 @@ mod tests {
             StorageBackend::MatrixObject {
                 bucket: DEFAULT_MATRIXOBJECT_BUCKET.to_string(),
                 cluster_id: DEFAULT_SHARED_STORE_CLUSTER_ID.to_string(),
-                store_dir: PathBuf::from(DEFAULT_MATRIXOBJECT_STORE_DIR),
             }
         );
         assert!(d.reason.contains("reachable"), "reason: {}", d.reason);
@@ -831,12 +818,12 @@ mod tests {
     }
 
     #[test]
-    fn auto_no_endpoint_selects_node_local_matrixobject() {
-        // Feature available but no endpoint configured: historical node-local
-        // behavior, and the probe must never be consulted.
+    fn auto_no_endpoint_does_not_select_matrixobject() {
+        // Feature available but no cluster endpoint configured: there is no node-local store to
+        // select, so the node falls through, and the probe must never be consulted.
         let d = decide(true, &[], &|_: &str| panic!("probe must not run without an endpoint"));
-        assert!(matches!(d.backend, StorageBackend::MatrixObject { .. }));
-        assert!(d.reason.contains("node-local"), "reason: {}", d.reason);
+        assert_eq!(d.backend, StorageBackend::RaftReplication);
+        assert!(!d.reason.contains("node-local"), "reason: {}", d.reason);
     }
 
     #[test]
@@ -950,7 +937,6 @@ mod disk_cache_tier_tests {
         StorageBackend::MatrixObject {
             bucket: "b".to_string(),
             cluster_id: "c".to_string(),
-            store_dir: PathBuf::from(DEFAULT_MATRIXOBJECT_STORE_DIR),
         }
     }
 

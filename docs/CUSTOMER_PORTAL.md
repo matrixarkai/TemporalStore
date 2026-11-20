@@ -803,7 +803,7 @@ are different things, and only the first was ever true. Choosing happens when a 
 | --- | --- | --- |
 | One box | Everything in a single process, no metaserver, no peers. The default, and it needs no configuration to work. | Local disk: EBS, instance SSD, or whatever the machine has |
 | Replicated (Raft) | An odd number of nodes replicating through Raft, each with its own disk. | Local disk, plus a separate Raft write-ahead log directory |
-| Shared storage | Nodes are stateless in front of one shared store. | MatrixObject by default, or a shared filesystem path |
+| Shared storage | Nodes are stateless in front of one shared store. | A MatrixObject cluster (reached through a gateway or directly), or a shared filesystem path |
 
 `GET /v1/admin/deployment` lists the shapes and reports the backend this deployment is **actually
 running**, read from the datanode's own `temporalstore_storage_backend` metric rather than derived
@@ -824,6 +824,10 @@ no error raised anywhere:
   address arriving from a config file or a systemd drop-in is enough on its own to turn a one-box
   deployment into a distributed one. A one-box plan therefore pins `TS_STANDALONE=1` rather than
   leaving it to the default, so that cannot happen quietly.
+
+MatrixObject is the cluster and nothing else: there is no node-local MatrixObject store. A
+node with `TS_STORAGE_BACKEND=matrixobject` and neither `TS_SHARED_STORE_URI` nor
+`TS_MATRIXOBJECT_META` set refuses to start, and `TS_MATRIXOBJECT_STORE_DIR` is refused by name.
 
 The engine records **why** it chose a backend in a startup log line and nowhere else, so the portal
 reports the outcome and says plainly that the reason is not readable over HTTP.

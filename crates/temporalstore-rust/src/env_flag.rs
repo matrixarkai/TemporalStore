@@ -20,8 +20,8 @@
 //!
 //! Every default-on flag in the tree reached one of those readers:
 //! `TS_META_AUTO_REBALANCE_BALANCE`, `TS_META_REBALANCE_LOCATION_SCOPED`,
-//! `TS_META_REBALANCE_PER_TABLE`, `TS_MATRIXOBJECT_CHECKPOINT_ON_START`,
-//! `TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START` and `TS_RAFT_ALLOW_PLAINTEXT`.
+//! `TS_META_REBALANCE_PER_TABLE`, `TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START` and
+//! `TS_RAFT_ALLOW_PLAINTEXT`.
 //!
 //! The python side of this repository already settled the same argument and wrote it down in
 //! `tools/test_env_flag_vocabulary.py`: "Boolean flags were parsed in six different
