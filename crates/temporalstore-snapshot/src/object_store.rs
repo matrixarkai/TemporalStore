@@ -2333,6 +2333,22 @@ mod tests {
         assert_eq!(count(&door, "GET"), 1, "the read-back is the fallback");
     }
 
+    #[tokio::test]
+    async fn a_door_that_cannot_answer_is_a_transport_failure_with_its_own_words_and_not_a_503() {
+        // On the append path a door failure and a 503 reply are settled the same way, so only a
+        // plain read tells them apart: the first carries the door's own words, the second is an
+        // answered status.
+        let (store, door) = canned_store(Box::new(|method, target, _before| match method {
+            "GET" => Err("the door fell over".to_string()),
+            other => panic!("unexpected {other} {target}"),
+        }));
+        let error = store.get("wal").await.expect_err("the door did not answer");
+        let text = error.to_string();
+        assert!(text.contains("the door fell over"), "the door's own failure is reported: {text}");
+        assert!(!text.contains("503"), "a door that fails to answer is not an answered 503: {text}");
+        assert_eq!(count(&door, "GET"), 1);
+    }
+
     // ---- The networked store and its mode ----
 
     #[test]
