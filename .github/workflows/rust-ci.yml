@@ -1251,6 +1251,25 @@ jobs:
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
+      - name: Active index gate record accounting checks
+        run: |
+          set -o pipefail
+          for t in \
+            index_log::gate_records_tests::append_maintained_gate_matches_cold_reads_at_every_floor \
+            index_log::gate_records_tests::a_cold_gate_reads_once_and_later_appends_extend_it \
+            index_log::gate_records_tests::collection_rewrites_and_sequence_holes_invalidate_the_gate \
+            index_log::gate_records_tests::rolling_replaces_only_the_active_gate_records \
+            index_log::gate_records_tests::active_gate_memory_is_capped_and_a_roll_starts_a_new_cache \
+            index_log::gate_records_tests::anchor_and_delta_appends_share_the_same_gate_boundaries \
+            index_log::gate_records_tests::undecodable_and_nonmonotonic_records_never_create_a_gate_cache \
+            index_log::gate_records_tests::a_torn_active_tail_is_never_cached_as_a_complete_piece \
+            index_log::tests::the_gate_reads_piece_names_not_every_record; do
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/index-gate-records.log
+            grep -q '^running 1 test$' /tmp/index-gate-records.log
+            grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/index-gate-records.log
+          done
+
       - name: Unsupported append never replaces WAL bytes
         run: |
           set -o pipefail
