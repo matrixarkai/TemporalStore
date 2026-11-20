@@ -2255,6 +2255,27 @@ fn visit_bucket_index_live_block_entries(shard: &ShardState, mut visit: impl FnM
 pub(super) fn visit_bucket_nodes_live_block_entries<'a>(
     shard: &ShardState,
     buckets: impl Iterator<Item = (&'a u32, &'a BucketNode)>,
+    visit: impl FnMut(LiveBlockEntry),
+) {
+    visit_bucket_nodes_live_block_entries_inner(shard, buckets, None, visit);
+}
+
+pub(super) fn visit_owned_bucket_live_block_entries(
+    shard: &ShardState,
+    routing_bucket: &u32,
+    bucket: &BucketNode,
+    visit: impl FnMut(LiveBlockEntry),
+) {
+    visit_bucket_nodes_live_block_entries_inner(
+        shard, std::iter::once((routing_bucket, bucket)), Some(*routing_bucket), visit,
+    );
+}
+
+#[track_caller]
+fn visit_bucket_nodes_live_block_entries_inner<'a>(
+    shard: &ShardState,
+    buckets: impl Iterator<Item = (&'a u32, &'a BucketNode)>,
+    scoped_bucket: Option<u32>,
     mut visit: impl FnMut(LiveBlockEntry),
 ) {
     // Charged here rather than by whoever called: three production callers reach this walk
@@ -2263,7 +2284,16 @@ pub(super) fn visit_bucket_nodes_live_block_entries<'a>(
     // materializes the indexed blocks and then, whenever anything is released, the whole shard.
     let mut from_index = 0usize;
     // THE IDENTITY COMES FROM BESIDE THE BLOCK, once for the walk. `shard` is immutable here.
-    let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    let identities = match scoped_bucket {
+        Some(bucket) => crate::engine::state::BlockKeysByPosition::from_owned_buckets(
+            &shard.bucket_index.objects, &shard.bucket_index.object_block_lookup,
+            shard.bucket_index.bucket_owners.get(), &[bucket],
+        ),
+        None => shard.bucket_index.block_identities(),
+    };
+    // A misfiled block may be absent from the scoped owners. Name it through the complete
+    // index so ownership validation still reports it, rather than dropping the damaged row.
+    let fallback = std::cell::OnceCell::new();
     for (routing_bucket, bucket) in buckets {
         // Preserve the scalar lookup's first match without rescanning all tombstones per block.
         // This borrowed map lives for one bucket only, not for the shard's lifetime.
@@ -2291,10 +2321,15 @@ pub(super) fn visit_bucket_nodes_live_block_entries<'a>(
                     .identity_of(bucket, *handle, block)
                     .map(|named| named.object_key)
             }
-                .or_else(|| identities.identity_anywhere(*handle).map(|(_, key)| key));
+                .or_else(|| {
+                    let complete = if scoped_bucket.is_some() {
+                        fallback.get_or_init(|| shard.bucket_index.block_identities())
+                    } else { &identities };
+                    complete.identity_anywhere(*handle).map(|(_, key)| key)
+                });
             let Some(beside) = beside else {
                 debug_assert!(
-                    identities.names_no_position(),
+                    fallback.get().unwrap_or(&identities).names_no_position(),
                     "bucket {} holds a block the index cannot name at any position while the \
                      lookup DOES name positions, so this walk is dropping a row outside the one \
                      window that explains it",

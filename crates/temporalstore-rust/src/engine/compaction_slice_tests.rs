@@ -8,13 +8,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 fn open(dir: &std::path::Path) -> TemporalEngine {
+    open_over(dir, u32::MAX)
+}
+
+fn open_over(dir: &std::path::Path, end_routing_bucket: u32) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.join("cache"),
         dir.join("blocks"),
         dir.join("indexes"),
     );
-    engine.load_shard(1);
+    assert!(engine.load_shard_with(crate::control::LoadShardRequest {
+        shard_id: 1, load_version: 0, local_node_id: None, shard_uri: String::new(),
+        start_routing_bucket: 0, end_routing_bucket, readonly: false, table_name: String::new(),
+    }).status.ok);
     assert!(
         engine
             .set_config(crate::control::SetConfigRequest {
@@ -142,6 +149,189 @@ fn assert_index_agrees(engine: &TemporalEngine, when: &str) {
     );
     let drift = reconcile_block_slab_live(shard);
     assert_eq!(drift.drifted_slabs, 0, "{when}: the live tally disagrees with the index: {drift:?}");
+}
+
+#[test]
+fn selected_compaction_visits_one_owner_across_every_live_model() {
+    use crate::engine::storage_bucket_internals::model_kind_registry_guards;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let fixture = model_kind_registry_guards::shard_holding_one_block_of_every_kind();
+    let entries = collect_model_live_block_entries(&fixture);
+    assert_eq!(entries.len(), 15);
+    for entry in entries {
+        let mut shard = fixture.clone();
+        let keys = std::collections::HashSet::from([entry.object_key.clone()]);
+        let mut stats = CompactionRewriteStats::for_round(99, 0, 0);
+        engine.relocate_keyed_blocks(1, &mut shard, 0, u32::MAX, Some(&keys), &mut stats).unwrap();
+        engine.relocate_unkeyed_blocks(1, &mut shard, 0, u32::MAX, Some(&keys), &mut stats).unwrap();
+        assert_eq!(stats.decisions, 1, "selected {}:{}", entry.kind, entry.object_key);
+        assert!(stats.moved.is_empty(), "zero budget must not move a block");
+    }
+}
+
+#[test]
+fn selected_series_compaction_does_not_visit_unrelated_owners() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let mut shard = ShardState::default();
+    let at = ElementEntry::from_parts(3, 128, 64, Some(0), None);
+    for index in 0..100_000 {
+        shard.features_mut().insert(format!("feature-{index}").into(),
+            BTreeMap::from([(1, at.clone())]).into());
+        shard.context_nodes_mut().insert(format!("node-{index}").into(), at.clone());
+    }
+    let keys = std::collections::HashSet::from([Arc::from("feature-7")]);
+    let mut stats = CompactionRewriteStats::for_round(99, 0, 0);
+    engine.relocate_unkeyed_blocks(1, &mut shard, 0, u32::MAX, Some(&keys), &mut stats).unwrap();
+    assert_eq!(stats.decisions, 1);
+}
+
+#[test]
+fn scoped_compaction_identity_still_names_a_misfiled_bucket() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let commands = (0..16).map(|index| Command::StringSet {
+        key: format!("key-{index}"), value: value_of(index, 0),
+    }).collect();
+    assert!(engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands }).status.ok);
+    let mut shards = engine.shards_write_marked();
+    let shard = shards.get_mut(&1).unwrap();
+    let original = *shard.bucket_index.bucket_map.keys().next().unwrap();
+    let mut wrong = original.wrapping_add(1);
+    while shard.bucket_index.bucket_map.contains_key(&wrong) { wrong = wrong.wrapping_add(1); }
+    let node = shard.bucket_index.bucket_map.remove(&original).unwrap();
+    let blocks = node.block_index.len();
+    shard.bucket_index.bucket_map.insert(wrong, node);
+    shard.bucket_index.ensure_bucket_owners();
+    let mut entries = Vec::new();
+    storage_bucket_internals::visit_owned_bucket_live_block_entries(
+        shard, &wrong, shard.bucket_index.bucket_map.get(&wrong).unwrap(),
+        |entry| entries.push(entry),
+    );
+    assert!(blocks > 0);
+    assert_eq!(entries.len(), blocks, "a scoped inversion must not hide damaged blocks");
+    let report = validate_bucket_ownership_index_from_entries(1, shard, &entries, 0, u32::MAX);
+    assert!(!report.mismatches.is_empty());
+}
+
+#[test]
+fn a_selected_entity_key_must_keep_its_canonical_numeric_suffix() {
+    use crate::engine::storage_bucket_internals::model_kind_registry_guards;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let mut shard = model_kind_registry_guards::shard_holding_one_block_of_every_kind();
+    for key in ["ctx:entity:t:n:01", "ctx:entity:t:n:+1", "ctx:entity:t:n:other"] {
+        let keys = std::collections::HashSet::from([Arc::from(key)]);
+        let mut stats = CompactionRewriteStats::for_round(99, 0, 0);
+        engine.relocate_unkeyed_blocks(1, &mut shard, 0, u32::MAX, Some(&keys), &mut stats).unwrap();
+        assert_eq!(stats.decisions, 0, "{key} is not the owner key of entity 1");
+    }
+}
+
+#[test]
+fn selected_entity_compaction_moves_only_the_named_point_and_keeps_its_bytes() {
+    use crate::engine::timestamped_series::TimestampedSeries;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let mut shard = ShardState::default();
+    let mut points = BTreeMap::new();
+    for entity in 1..=3 {
+        let key = format!("collection:with:colons:{entity}");
+        let bucket = block_routing_bucket(&key, 0, u32::MAX);
+        let address = append_value(&engine.cache, &engine.block_store, 1, &value_of(entity, 0),
+            Some(stable_block_object_id(1, "context_entity", &key)), None, Some(bucket), false).unwrap();
+        points.insert(entity as u64, address);
+    }
+    let before = points.clone();
+    shard.context_entities_mut().insert(Arc::from("collection:with:colons"), points.into());
+    let target = engine.block_store.roll_slab().unwrap().new_block_slab_id;
+    let mut stats = CompactionRewriteStats::for_round(target, u64::MAX, usize::MAX);
+    let keys = std::collections::HashSet::from([Arc::from("collection:with:colons:2")]);
+    engine.relocate_unkeyed_blocks(1, &mut shard, 0, u32::MAX, Some(&keys), &mut stats).unwrap();
+    assert_eq!(stats.decisions, 1);
+    assert_eq!(stats.moved.len(), 1);
+    assert_eq!(stats.moved[0].object_key, "collection:with:colons:2");
+    let series = shard.context_entities().get("collection:with:colons").unwrap();
+    for entity in [1, 3] {
+        assert_eq!(TimestampedSeries::get(series, entity), before.get(&entity));
+    }
+    let address = TimestampedSeries::get(series, 2).unwrap();
+    assert_eq!(address.block_slab_id(), target);
+    let key = "collection:with:colons:2";
+    engine.cache.invalidate_shard(1).unwrap();
+    assert_eq!(read_block_bytes(&engine.cache, &engine.block_store, 1, address,
+        BlockIdentity::of(1, "context_entity", key, None),
+        Some(block_routing_bucket(key, 0, u32::MAX))).unwrap(), value_of(2, 0));
+}
+
+fn feature_slice_case(count: usize, cursor: bool, routing_end: u32) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open_over(dir.path(), routing_end);
+    let commands = (0..count).map(|index| Command::FeatureAppend {
+        key: format!("feature-{index}"),
+        points: vec![FeaturePoint { timestamp_ms: 1, value: value_of(index, 0) }],
+    }).collect();
+    assert!(engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands }).status.ok);
+    let drain = engine.block_store.slab_ids().unwrap().into_iter().collect::<BTreeSet<_>>();
+    engine.block_store.roll_slab().unwrap();
+    if !cursor {
+        let mut shards = engine.shards_write_marked();
+        shards.get_mut(&1).unwrap().bucket_index.block_slab_live.forget_for_test();
+    }
+    let started = std::time::Instant::now();
+    let (progress, identity_visits) = crate::engine::state::measure_block_identity_visits_for_test(|| {
+        engine.compact_shard_blocks_slice(1, &drain, 16).unwrap()
+    });
+    assert_eq!(progress, super::SliceProgress::More);
+    let first_slice_us = started.elapsed().as_micros();
+    let remaining = {
+        let shards = engine.shards.read().unwrap();
+        collect_model_live_block_entries(shards.get(&1).unwrap()).iter()
+            .filter(|entry| drain.contains(&entry.address.block_slab_id())).count()
+    };
+    assert!(remaining < count && remaining >= count - 16,
+        "first slice moved {} of {count} owners, cursor={cursor}", count - remaining);
+    if cursor && routing_end >= 1023 {
+        assert!(identity_visits < count / 2,
+            "first slice visited {identity_visits} identity owners out of {count}");
+    }
+    assert_index_agrees(&engine, "after the first feature slice");
+    let tail_started = std::time::Instant::now();
+    engine.compact_shard_blocks_draining_sliced(1, drain.clone(), 16).unwrap();
+    eprintln!("FEATURE_COMPACTION keys={count} cursor={cursor} routing_end={routing_end} first_slice_us={first_slice_us} first_slice_owners={} tail_and_publication_us={}",
+        count - remaining, tail_started.elapsed().as_micros());
+    assert_index_agrees(&engine, "after all feature slices");
+    engine.flush_shard_index(1);
+    drop(engine);
+    let reopened = open_over(dir.path(), routing_end);
+    reopened.cache.invalidate_shard(1).unwrap();
+    let shards = reopened.shards.read().unwrap();
+    let shard = shards.get(&1).unwrap();
+    let entries = collect_model_live_block_entries(shard);
+    assert_eq!(entries.len(), count);
+    assert!(entries.iter().all(|entry| !drain.contains(&entry.address.block_slab_id())));
+    for entry in entries {
+        let index = entry.object_key.strip_prefix("feature-").unwrap().parse::<usize>().unwrap();
+        let bytes = read_block_bytes(&reopened.cache, &reopened.block_store, 1, &entry.address,
+            BlockIdentity::of(1, "feature", &entry.object_key, None),
+            Some(entry.filed_routing_bucket)).unwrap();
+        let points = super::super::packed_blocks::decode_feature_block(&bytes).unwrap();
+        assert_eq!(points, vec![FeaturePoint { timestamp_ms: 1, value: value_of(index, 0) }]);
+    }
+}
+
+#[test]
+fn feature_only_compaction_moves_a_slice_instead_of_the_whole_shard() {
+    for (cursor, end) in [(false, u32::MAX), (true, u32::MAX), (true, 1023), (true, 0)] {
+        feature_slice_case(256, cursor, end);
+    }
+}
+
+#[test]
+#[ignore = "large feature compaction and reload measurement"]
+fn feature_compaction_slices_at_scale() {
+    feature_slice_case(100_000, true, 1023);
 }
 
 /// A pass in slices holds the invariant at EVERY boundary, with writes, a delete and a whole-round
@@ -369,7 +559,7 @@ fn a_pass_reads_the_buckets_it_reaches_and_not_the_shard() {
     };
     assert!(total >= 900, "the fixture holds {total} live blocks");
 
-    // Step one is the setup plus the unkeyed slice; step two is the first keyed slice.
+    // Both steps move only the owners selected by their bucket cursors.
     reset_live_block_scan_entries();
     assert_eq!(engine.compact_shard_blocks_slice(1, &drain, 16).unwrap(), super::SliceProgress::More);
     let setup = live_block_scan_entries();

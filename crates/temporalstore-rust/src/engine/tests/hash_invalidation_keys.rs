@@ -10,6 +10,13 @@ mod lazy_expiry_cache;
 #[path = "record_delete_cache.rs"]
 mod record_delete_cache;
 
+fn seed_query_response(engine: &TemporalEngine, key: CacheKey, response: &CommandResponse) {
+    let bytes = crate::engine::command_validation::encode_cached_response(response)
+        .expect("the legacy query response must be cacheable");
+    engine.cache.put_memory_only(key.clone(), bytes);
+    assert!(engine.cache.peek(&key));
+}
+
 #[test]
 fn indexed_feature_invalidation_refreshes_warm_queries_for_single_and_batch_writes() {
     for batched in [false, true] {
@@ -41,13 +48,14 @@ fn indexed_feature_invalidation_refreshes_warm_queries_for_single_and_batch_writ
         };
         for (shard, key) in [(1, "history"), (1, "neighbor"), (2, "history")] {
             run(shard, append(key, 10, b"1"));
-            run(shard, query(key, 0));
+            let response = run(shard, query(key, 0));
+            seed_query_response(&engine, CacheKey::feature_query(shard, key, 0, 100, None), &response);
         }
-        run(1, query("history", 20));
-        run(1, query("new", 0));
         let full = CacheKey::feature_query(1, "history", 0, 100, None);
         let tail = CacheKey::feature_query(1, "history", 20, 100, None);
         let empty = CacheKey::feature_query(1, "new", 0, 100, None);
+        seed_query_response(&engine, tail.clone(), &run(1, query("history", 20)));
+        seed_query_response(&engine, empty.clone(), &run(1, query("new", 0)));
         assert!(engine.cache.peek(&full) && engine.cache.peek(&tail) && engine.cache.peek(&empty));
         assert!(engine.cache.keys_for_records(1, "feature", &["history"]).indexed);
         write(append("history", 20, b"2"));

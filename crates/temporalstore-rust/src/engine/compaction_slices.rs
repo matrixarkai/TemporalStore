@@ -9,7 +9,7 @@
 //!
 //!   * SETUP (one guard hold): validate ownership, name the keys that own a block on a drain slab,
 //!     roll the slab the pass fills, pin the slabs the durable index still names, make the bucket
-//!     index complete, and move the blocks of the models that are not walked by key.
+//!     index complete.
 //!   * EACH SLICE (one guard hold): move the blocks of the next `keys_per_slice` keys and update the
 //!     bucket index for the blocks moved.
 //!   * FINISH (one guard hold): make the bucket index complete again, fsync the moved bytes, publish
@@ -46,8 +46,8 @@ pub(crate) enum SliceProgress {
 }
 
 /// Whether the data node's draining stage runs a sliced pass. OFF unless `TS_SLICED_COMPACTION` is
-/// `1` or `true`. Keyed slices use direct lookups and refresh changed buckets, but setup, unkeyed
-/// relocation and final publication still perform whole-shard work.
+/// `1` or `true`. Slices use selected-owner lookups across all models; setup and final publication
+/// still perform whole-shard work.
 pub(crate) fn sliced_compaction_enabled() -> bool {
     matches!(
         std::env::var("TS_SLICED_COMPACTION").as_deref(),
@@ -71,18 +71,6 @@ fn phase_timing(phase: &str, shard_id: ShardId, started: std::time::Instant) {
     }
 }
 
-/// The kinds a slice moves by key; the other kinds go through the unkeyed relocation.
-fn keyed_kind(kind: StoredModelKind) -> bool {
-    matches!(
-        kind,
-        StoredModelKind::String
-            | StoredModelKind::Hash
-            | StoredModelKind::Set
-            | StoredModelKind::Zset
-            | StoredModelKind::List
-    )
-}
-
 /// Keys a slice moves when the caller does not say.
 pub(crate) const COMPACTION_SLICE_KEYS: usize = 128;
 
@@ -103,8 +91,8 @@ pub(crate) struct SlicedPass {
     /// O(slabs), not O(shard), and a restart of the pass resumes from a bucket id, not a key list.
     by_bucket: bool,
     bucket_cursor: Option<u32>,
+    pending_bucket_owners: Vec<(crate::engine::state::ModelKey, bool)>,
     buckets_exhausted: bool,
-    unkeyed_done: bool,
     /// Container blocks that were in the log before a slice moved them, and the placement each had
     /// then. The finish retires a registration only if it is still that placement.
     retired_container_wal_blocks: Vec<(u64, String)>,
@@ -172,8 +160,9 @@ impl TemporalEngine {
                             SLICE_BOUNDARY.with(|cell| *cell.borrow_mut() = Some(hook));
                         }
                     }
-                    // Let a writer that queued behind the slice take the guard before the next one.
-                    std::thread::yield_now();
+                    // A yield alone can reacquire the lock before a woken writer runs. Give
+                    // queued foreground work a scheduling window between blocking-pass slices.
+                    std::thread::sleep(std::time::Duration::from_micros(50));
                 }
             }
         }
@@ -243,7 +232,7 @@ impl TemporalEngine {
         phase_timing("slice", shard_id, slice_started);
         let pass_ended = moved.is_err()
             || if pass.by_bucket {
-                pass.unkeyed_done && pass.buckets_exhausted
+                pass.buckets_exhausted
             } else {
                 pass.remaining_keys.is_empty()
             };
@@ -278,6 +267,7 @@ impl TemporalEngine {
         let by_bucket = shard.bucket_index.block_slab_live.is_ready()
             && shard.bucket_index.released_buckets.is_empty()
             && !shard.bucket_index.bucket_map.is_empty();
+        if by_bucket { shard.bucket_index.ensure_bucket_owners(); }
         let (pre_round_slabs, remaining_keys) = if by_bucket {
             // THE GATE AND THE PIN COME FROM THE MAINTAINED TALLY: O(slabs). No block is walked
             // here; the slices walk the buckets they reach.
@@ -319,8 +309,7 @@ impl TemporalEngine {
             let mut remaining_keys = entries
                 .iter()
                 .filter(|entry| {
-                    keyed_kind(entry.kind)
-                        && drain_block_slab_ids.contains(&entry.address.block_slab_id())
+                    drain_block_slab_ids.contains(&entry.address.block_slab_id())
                 })
                 .map(|entry| entry.object_key.clone())
                 .collect::<HashSet<_>>()
@@ -362,8 +351,8 @@ impl TemporalEngine {
             remaining_keys,
             by_bucket,
             bucket_cursor: None,
+            pending_bucket_owners: Vec::new(),
             buckets_exhausted: false,
-            unkeyed_done: false,
             retired_container_wal_blocks: Vec::new(),
             wal_placements_seen: HashMap::new(),
             rewritten_block_refs: 0,
@@ -371,7 +360,7 @@ impl TemporalEngine {
         }))
     }
 
-    /// Move one slice's blocks: the unkeyed models on the first slice, then the next keys.
+    /// Move the selected owners across every model, without a whole-shard first slice.
     #[allow(clippy::too_many_arguments)]
     fn run_slice(
         &self,
@@ -383,13 +372,6 @@ impl TemporalEngine {
         keys_per_slice: usize,
         stats: &mut CompactionRewriteStats,
     ) -> Result<(), Status> {
-        if !pass.unkeyed_done {
-            pass.unkeyed_done = true;
-            self.relocate_unkeyed_blocks(
-                shard_id, shard, start_routing_bucket, end_routing_bucket, stats,
-            )?;
-            return Self::unreadable_blocks_failure(stats);
-        }
         let keys: HashSet<crate::engine::state::ModelKey> = if pass.by_bucket {
             Self::next_bucket_keys(
                 shard_id, shard, start_routing_bucket, end_routing_bucket, pass, keys_per_slice,
@@ -412,6 +394,9 @@ impl TemporalEngine {
             Some(&keys),
             stats,
         )?;
+        self.relocate_unkeyed_blocks(
+            shard_id, shard, start_routing_bucket, end_routing_bucket, Some(&keys), stats,
+        )?;
         Self::unreadable_blocks_failure(stats)
     }
 
@@ -424,10 +409,8 @@ impl TemporalEngine {
         )
     }
 
-    /// The keys of the next buckets after the cursor that own a block on a drain slab, reading
-    /// buckets until `keys_per_slice` blocks have been examined or the buckets are exhausted. Each
-    /// bucket's ownership is validated before any of its keys is named, so a damaged bucket is
-    /// refused before a block of it moves. The work is the buckets reached, not the shard.
+    /// Examine at most the requested number of owners, retaining a bucket's unvisited owners
+    /// for later slices. Validate each bucket before moving any of its blocks.
     fn next_bucket_keys(
         shard_id: ShardId,
         shard: &ShardState,
@@ -440,6 +423,11 @@ impl TemporalEngine {
         let mut examined = 0usize;
         let mut keys = HashSet::new();
         while examined < budget {
+            if let Some((key, on_drain)) = pass.pending_bucket_owners.pop() {
+                examined += 1;
+                if on_drain { keys.insert(key); }
+                continue;
+            }
             let Some((routing_bucket, bucket)) = shard
                 .bucket_index
                 .bucket_map
@@ -451,27 +439,24 @@ impl TemporalEngine {
             };
             pass.bucket_cursor = Some(*routing_bucket);
             let mut entries = Vec::new();
-            visit_bucket_nodes_live_block_entries(
-                shard,
-                std::iter::once((routing_bucket, bucket)),
+            storage_bucket_internals::visit_owned_bucket_live_block_entries(
+                shard, routing_bucket, bucket,
                 |entry| entries.push(entry),
             );
-            examined += entries.len().max(1);
             let ownership = validate_bucket_ownership_index_from_entries(
                 shard_id, shard, &entries, start_routing_bucket, end_routing_bucket,
             );
             if !ownership.mismatches.is_empty() {
                 return Err(Self::owner_mismatch_failure(ownership.mismatches.len()));
             }
-            keys.extend(
-                entries
-                    .iter()
-                    .filter(|entry| {
-                        keyed_kind(entry.kind)
-                            && pass.drain_block_slab_ids.contains(&entry.address.block_slab_id())
-                    })
-                    .map(|entry| entry.object_key.clone()),
-            );
+            let mut owners = std::collections::BTreeMap::new();
+            for entry in entries {
+                let on_drain = pass.drain_block_slab_ids.contains(&entry.address.block_slab_id());
+                owners.entry(entry.object_key)
+                    .and_modify(|held| *held |= on_drain).or_insert(on_drain);
+            }
+            if owners.is_empty() { examined += 1; }
+            pass.pending_bucket_owners = owners.into_iter().rev().collect();
         }
         Ok(keys)
     }
