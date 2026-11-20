@@ -139,3 +139,53 @@ fn the_store_gate_reads_published_live_bytes_against_slab_logical_bytes() {
     assert!(mostly_live.ready && !mostly_live.due, "{mostly_live:?}");
     assert_eq!(mostly_live.logical_bytes, unknown.logical_bytes);
 }
+
+#[test]
+fn reclaim_gate_excludes_the_current_slab_from_both_totals() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlockStore::new(dir.path());
+    store.install_slab(0, &[b'f'; 128]).unwrap();
+    store.install_slab(1, &[b'a'; 4096]).unwrap();
+    let fractions = store.slab_live_fractions().unwrap();
+    let frozen = fractions.iter().find(|row| row.block_slab_id == 0).unwrap().logical_bytes;
+    let active = fractions.iter().find(|row| row.block_slab_id == 1).unwrap().logical_bytes;
+    assert!(active > frozen, "the active slab must dominate the control");
+    assert!(!evaluate_reclaim_gate(active, active + frozen, true, 5000).due);
+    store.publish_live_block_bytes(BTreeMap::from([
+        (0, BlockStoreSlabLive { live_block_refs: 0, live_bytes: 0 }),
+        (1, BlockStoreSlabLive { live_block_refs: 1, live_bytes: active }),
+    ]));
+    let gate = store.reclaim_gate(DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
+    assert!(gate.due, "live active bytes must not hide dead frozen space: {gate:?}");
+    assert_eq!((gate.live_bytes, gate.logical_bytes, gate.ready), (0, frozen, true));
+}
+
+#[test]
+fn reclaim_gate_with_only_a_current_slab_has_no_collection_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlockStore::new(dir.path());
+    store.install_slab(0, &[b'a'; 1024]).unwrap();
+    store.publish_live_block_bytes(BTreeMap::new());
+    let gate = store.reclaim_gate(DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
+    assert!(!gate.due, "an active slab cannot be collected even when its live bytes are zero: {gate:?}");
+    assert_eq!((gate.live_bytes, gate.logical_bytes, gate.ready), (0, 0, true));
+}
+
+#[test]
+fn reclaim_gate_is_not_opened_by_dead_bytes_in_the_current_slab() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlockStore::new(dir.path());
+    store.install_slab(0, &[b'f'; 128]).unwrap();
+    store.install_slab(1, &[b'a'; 4096]).unwrap();
+    let fractions = store.slab_live_fractions().unwrap();
+    let frozen = fractions.iter().find(|row| row.block_slab_id == 0).unwrap().logical_bytes;
+    let active = fractions.iter().find(|row| row.block_slab_id == 1).unwrap().logical_bytes;
+    assert!(evaluate_reclaim_gate(frozen, active + frozen, true, 5000).due);
+    store.publish_live_block_bytes(BTreeMap::from([
+        (0, BlockStoreSlabLive { live_block_refs: 1, live_bytes: frozen }),
+        (1, BlockStoreSlabLive { live_block_refs: 0, live_bytes: 0 }),
+    ]));
+    let gate = store.reclaim_gate(DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
+    assert!(!gate.due, "fully live frozen space must keep the gate closed: {gate:?}");
+    assert_eq!((gate.live_bytes, gate.logical_bytes), (frozen, frozen));
+}

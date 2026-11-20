@@ -161,12 +161,15 @@ fn a_bounded_collection_resumes_and_removes_what_one_unbounded_pass_removes() {
 #[test]
 fn a_mostly_live_store_with_a_stale_slab_closes_the_gate_and_the_stage_skips_collection() {
     let runtime = seeded_over(2000);
+    // The gate measures collectable space, not the writable slab holding the newest live blocks.
+    runtime.engine().block_store().roll_slab().unwrap();
     runtime.engine().publish_block_slab_live_bytes();
     let gate = runtime
         .engine()
         .block_store()
         .reclaim_gate(crate::block_store::DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
-    assert!(gate.ready && gate.logical_bytes > 0, "CONTROL: the store must hold slabs: {gate:?}");
+    assert!(gate.ready && gate.logical_bytes > 0 && gate.live_bytes > 0,
+        "CONTROL: sealed slabs must hold live data: {gate:?}");
     assert!(!gate.due, "CONTROL: a mostly-live store must close the gate: {gate:?}");
 
     let period = Duration::from_secs(1);

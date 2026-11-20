@@ -30,7 +30,7 @@ impl BlockStore {
             .clone()
     }
 
-    /// Whether the collector is worth running now: the live fraction over every slab the store holds
+    /// Whether the collector is worth running now: the live fraction over noncurrent slabs
     /// against `threshold_basis_points`. O(slabs), one lock, no file is opened and no block read.
     ///
     /// The denominator is each slab descriptor's `logical_bytes` and the numerator the published
@@ -40,13 +40,15 @@ impl BlockStore {
         let inner = self.inner.lock().expect("block store lock poisoned");
         let logical: u64 = inner
             .slabs
-            .values()
-            .fold(0_u64, |sum, slab| sum.saturating_add(slab.logical_bytes));
+            .iter()
+            .filter(|(id, _)| **id != inner.block_slab_id)
+            .fold(0_u64, |sum, (_, slab)| sum.saturating_add(slab.logical_bytes));
         match inner.live_block_bytes.as_ref() {
             Some(published) => {
                 let live: u64 = published
-                    .values()
-                    .fold(0_u64, |sum, slab| sum.saturating_add(slab.live_bytes));
+                    .iter()
+                    .filter(|(id, _)| **id != inner.block_slab_id)
+                    .fold(0_u64, |sum, (_, slab)| sum.saturating_add(slab.live_bytes));
                 evaluate_reclaim_gate(live, logical, true, threshold_basis_points)
             }
             None => evaluate_reclaim_gate(0, logical, false, threshold_basis_points),
