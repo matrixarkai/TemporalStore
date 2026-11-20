@@ -323,6 +323,15 @@ impl TemporalEngine {
         request: StorageLifecycleRequest,
         detailed_report: bool,
     ) -> StorageLifecyclePlan {
+        self.storage_lifecycle_plan_with_inventory(request, detailed_report, detailed_report)
+    }
+
+    fn storage_lifecycle_plan_with_inventory(
+        &self,
+        request: StorageLifecycleRequest,
+        detailed_report: bool,
+        authoritative_inventory: bool,
+    ) -> StorageLifecyclePlan {
         LIFECYCLE_PLAN_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // DO NOT WALK THE SHARD TO FIND OUT THERE IS NOTHING TO DO.
         //
@@ -521,7 +530,7 @@ impl TemporalEngine {
         }
         let physical_slab_ids = self.block_store.slab_ids();
         let live_block_slab_ids = self.planning_live_block_slab_ids(
-            request.shard_id, physical_slab_ids.as_deref().ok(), detailed_report,
+            request.shard_id, physical_slab_ids.as_deref().ok(), authoritative_inventory,
         );
         let live_block_slab_set = live_block_slab_ids
             .iter()
@@ -2048,7 +2057,11 @@ impl TemporalEngine {
         // (`storage_manager_cycle.rs`), so it is the same list under the name this struct uses.
         let follower_replay_cursors = request.follower_replay_cursors.clone();
         let raft_snapshot_refs = request.block_gc_raft_snapshot_refs.clone();
-        let plan = self.storage_lifecycle_plan(request);
+        // Collection reads dump selection, not the plan's block-summary report. Keep the
+        // post-dump decision fresh without reconstructing report-only block identities.
+        // Retain authoritative slab selection: a positive tally may defer a refresh dump,
+        // but this guard must still see any dump the detailed planner would require.
+        let plan = self.storage_lifecycle_plan_with_inventory(request, false, true);
         let wal_plan =
             self.storage_wal_reclaim_plan(shard_id, follower_replay_cursors, raft_snapshot_refs);
         self.storage_index_gc_report(

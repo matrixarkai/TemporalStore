@@ -305,3 +305,93 @@ fn operational_dump_keeps_follower_and_snapshot_index_gc_fences() {
         );
     }
 }
+
+#[test]
+fn periodic_index_collection_does_not_build_unused_block_summaries() {
+    for (count, dumped) in [(32, false), (512, false), (32, true), (512, true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path());
+        seed(&engine, count);
+        if dumped {
+            engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+        }
+        let request = StorageLifecycleRequest {
+            shard_id: 1,
+            min_undumped_wal_records: 1,
+            max_dump_buckets_per_round: 4,
+            follower_replay_cursors: vec![BucketDumpFollowerReplayCursor {
+                follower_id: "reader".into(),
+                shard_id: 1,
+                wal_sequence: 1,
+                index_log_sequence: 1,
+            }],
+            ..Default::default()
+        };
+        crate::snapshot_probe::reset();
+        let plan = engine.storage_lifecycle_plan(request.clone());
+        let control_slab_scans = crate::snapshot_probe::counts().live_slab_scans;
+        assert!(control_slab_scans > 0,
+            "the detailed control must scan slab addresses");
+        assert_eq!(!plan.selected_dump_buckets.is_empty(), !dumped);
+        // Populate immutable manifest digests before comparing the two live-state walks.
+        let _ = engine.storage_wal_reclaim_plan(
+            1, request.follower_replay_cursors.clone(), Vec::new(),
+        );
+        crate::engine::reset_live_block_scan_entries();
+        let wal = engine.storage_wal_reclaim_plan(
+            1, request.follower_replay_cursors.clone(), Vec::new(),
+        );
+        let required_visits = crate::engine::live_block_scan_entries();
+        assert!(required_visits >= count as u64, "the frontier control must visit live blocks");
+        let expected = engine.storage_index_gc_report(
+            &plan, &wal, None,
+            &StorageManagerCycleRequest { shard_id: 1, index_gc_max_entries_per_round: 4, ..Default::default() },
+        );
+        assert!(!expected.applied);
+        if dumped {
+            assert_eq!(expected.retain_from_index_log_sequence, 2,
+                "a dumped store must still honor the reader's retention fence");
+        }
+        crate::engine::reset_live_block_scan_entries();
+        crate::snapshot_probe::reset();
+        let actual = engine.apply_periodic_index_gc(request, None, 4);
+        let visits = crate::engine::live_block_scan_entries();
+        assert_eq!(serde_json::to_value(&actual).unwrap(), serde_json::to_value(&expected).unwrap());
+        assert_eq!(visits, required_visits,
+            "collection may visit the frontier's blocks, not materialize unused plan reports");
+        assert_eq!(crate::snapshot_probe::counts().live_slab_scans, control_slab_scans,
+            "the collection guard must retain authoritative slab selection");
+        eprintln!("INDEX_COLLECTION_PLAN count={count} dumped={dumped} visits={visits} frontier_visits={required_visits}");
+    }
+}
+
+#[test]
+fn index_collection_keeps_refresh_selection_when_live_tallies_overreport() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    seed(&engine, 32);
+    let old_address = engine.shards.read().unwrap().get(&1).unwrap()
+        .string_address("key-0").unwrap();
+    let manifest = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+    assert!(manifest.block_slab_ids.contains(&old_address.block_slab_id()));
+    engine.compact_shard_blocks(1).unwrap();
+    assert!(!engine.live_block_slab_ids(1).contains(&old_address.block_slab_id()));
+    engine.shards.write().unwrap().get_mut(&1).unwrap()
+        .bucket_index.block_slab_live.add_address(&old_address);
+    let request = StorageLifecycleRequest {
+        shard_id: 1,
+        min_undumped_wal_records: u64::MAX,
+        min_undumped_wal_bytes: u64::MAX,
+        item_amplification_full_dump_ppm: 0,
+        ..Default::default()
+    };
+    let detailed = engine.storage_lifecycle_plan(request.clone());
+    assert!(!detailed.selected_dump_buckets.is_empty(),
+        "the retained manifest must require a refresh after relocation");
+    let tally_only = engine.storage_lifecycle_plan_with_report_details(request.clone(), false);
+    assert!(tally_only.selected_dump_buckets.is_empty(),
+        "the positive overcount must hide the refresh from the tally-only control");
+    let collection = engine.storage_lifecycle_plan_with_inventory(request, false, true);
+    assert_eq!(collection.selected_dump_buckets, detailed.selected_dump_buckets);
+    assert_eq!(collection.live_block_slab_ids, detailed.live_block_slab_ids);
+}
