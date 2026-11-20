@@ -39,6 +39,91 @@ fn value(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
     value
 }
 
+#[test]
+fn single_object_bucket_deletions_keep_the_key_projection_fast_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path(), "indexes");
+    engine.load_shard(1);
+    let keys: Vec<_> = (0..32).map(|n| format!("sparse-delete-{n:04}")).collect();
+    for key in &keys {
+        write(&engine, key, b"remove");
+    }
+    let mut shards = engine.shards.write().unwrap();
+    let shard = shards.get_mut(&1).unwrap();
+    assert_eq!(shard.bucket_index.bucket_map.len(), keys.len());
+    let deletions = keys.iter().map(|key| MaintenanceDeletion::capture(shard, key).unwrap()).collect();
+    let (result, builds) = state::measure_block_identity_builds_for_test(|| {
+        engine.append_maintenance_deletions(1, shard, deletions, || {})
+    });
+    assert!(result.error.is_none());
+    assert_eq!(result.removed_keys, keys.len());
+    assert_eq!(builds, 0, "unique buckets must keep the key-local projection");
+    drop(shards);
+    for key in &keys {
+        assert_eq!(value(&engine, key), None);
+    }
+}
+
+#[test]
+fn dense_bucket_deletions_reuse_owner_names_across_logged_frames() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path(), "indexes");
+    let load = LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: 7,
+        readonly: false,
+        table_name: String::new(),
+    };
+    assert!(engine.load_shard_with(load.clone()).status.ok);
+    let keys: Vec<_> = (0..513).map(|n| format!("dense-delete-{n:04}")).collect();
+    for key in &keys {
+        write(&engine, key, b"remove");
+    }
+    let survivors: Vec<_> = (0..32).map(|n| format!("dense-keep-{n:04}")).collect();
+    for key in &survivors {
+        write(&engine, key, b"keep");
+    }
+    engine.flush_shard_index(1);
+    let mut shards = engine.shards.write().unwrap();
+    let shard = shards.get_mut(&1).unwrap();
+    shard.bucket_index.ensure_bucket_owners();
+    assert_eq!(shard.bucket_index.bucket_map.len(), 8);
+    let deletions = keys.iter().map(|key| MaintenanceDeletion::capture(shard, key).unwrap()).collect();
+    let mut appends = 0;
+    let ((result, visits), builds) = state::measure_block_identity_builds_for_test(|| {
+        state::measure_block_identity_visits_for_test(|| {
+            engine.append_maintenance_deletions(1, shard, deletions, || appends += 1)
+        })
+    });
+    assert!(result.error.is_none());
+    assert_eq!(result.removed_keys, keys.len());
+    assert_eq!(appends, 3);
+    assert_eq!(builds, 8, "each touched bucket is named once, not once per deletion");
+    assert!(visits <= keys.len() + survivors.len(), "owner visits={visits}");
+    drop(shards);
+    for key in &keys {
+        assert_eq!(value(&engine, key), None);
+    }
+    for key in &survivors {
+        assert_eq!(value(&engine, key), Some(b"keep".to_vec()));
+    }
+    engine.wal_store.flush(1).unwrap();
+    drop(engine);
+    let restored = engine_at(dir.path(), "indexes");
+    assert!(restored.load_shard_with(load).status.ok);
+    for key in &keys {
+        assert_eq!(value(&restored, key), None);
+    }
+    for key in &survivors {
+        assert_eq!(value(&restored, key), Some(b"keep".to_vec()));
+    }
+    println!("dense deletion capture: buckets=8 builds={builds} visits={visits} frames={appends}");
+}
+
 fn deletion_round_replays(expire: bool) {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_at(dir.path(), "indexes");

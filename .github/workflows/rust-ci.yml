@@ -1078,6 +1078,10 @@ jobs:
             data_node::tests::loop_report::the_overdue_count_is_what_a_bounded_round_leaves_due \
             data_node::tests::loop_report::the_cache_bound_stage_drops_the_cache_and_dumps_nothing \
             engine::tests::expiry_scale::a_long_run_of_due_cold_keys_does_not_starve_a_due_hot_key \
+            engine::maintenance_log::tests::dense_bucket_deletions_reuse_owner_names_across_logged_frames \
+            engine::maintenance_log::tests::single_object_bucket_deletions_keep_the_key_projection_fast_path \
+            engine::maintenance_log::tests::maintenance_log_failure_leaves_unlogged_records_live \
+            engine::maintenance_log::tests::maintenance_log_partial_failure_applies_and_mirrors_only_complete_frames \
             data_node::tests::part3::a_shard_that_finishes_recovery_has_its_due_keys_removed_by_its_own_next_round
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-memory-stages.log

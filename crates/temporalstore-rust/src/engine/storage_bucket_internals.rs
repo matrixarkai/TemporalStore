@@ -4737,8 +4737,14 @@ pub(super) fn upsert_bucket_index_block_filed_at_bucket(
 pub(super) fn mark_bucket_index_object_deleted_filed(
     shard: &mut ShardState,
     object_key: &str,
+    identities: Option<&mut super::maintenance_log::DeletionIdentityBatch>,
 ) -> (bool, ObjectDeletionFiled) {
-    let marked = super::mark_bucket_index_object_deleted(shard, object_key);
+    let marked = match identities {
+        Some(batch) => super::mark_bucket_index_object_deleted_with_identity_batch(
+            shard, object_key, Some(batch),
+        ),
+        None => super::mark_bucket_index_object_deleted(shard, object_key),
+    };
     (marked, ObjectDeletionFiled(()))
 }
 
