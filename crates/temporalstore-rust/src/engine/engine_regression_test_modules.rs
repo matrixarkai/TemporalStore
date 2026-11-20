@@ -649,3 +649,5 @@ mod a_write_asks_the_cache_before_it_invalidates;
 mod an_apply_lists_the_shard_once_for_its_report;
 #[path = "tests/a_feature_series_drops_points_past_its_age_cut.rs"]
 mod a_feature_series_drops_points_past_its_age_cut;
+#[path = "tests/a_removal_retires_its_vacated_block_by_naming_it.rs"]
+mod a_removal_retires_its_vacated_block_by_naming_it;
