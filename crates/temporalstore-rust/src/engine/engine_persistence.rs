@@ -875,6 +875,14 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|report| report.bytes_after)
                 .unwrap_or_default(),
+            wal_segments_dropped: wal_gc
+                .as_ref()
+                .map(|report| report.dropped_segments)
+                .unwrap_or_default(),
+            wal_segment_bytes_dropped: wal_gc
+                .as_ref()
+                .map(|report| report.dropped_segment_bytes)
+                .unwrap_or_default(),
             // The `.ok()` above is kept -- a failed sweep must not fail the dump, which has
             // already completed and is what bounds the index log. What changes is that the
             // failure is now SAID rather than rendered as three zeros indistinguishable from an

@@ -53,7 +53,9 @@ fn assert_lazy_expiry_with_residents(trigger: Command, writes_new_field: bool, p
                     value: Some(vec![7])
                 }
             );
-            assert!(engine.cache.peek(&CacheKey::hash(1, key, field)));
+            let cached_key = CacheKey::hash(1, key, field);
+            assert!(!engine.cache.peek(&cached_key), "point reads must not duplicate physical payloads");
+            seed_query_response(&engine, cached_key, &CommandResponse::Bytes { value: Some(vec![7]) });
         }
     }
     for index in 0..pages {
@@ -90,7 +92,7 @@ fn assert_lazy_expiry_with_residents(trigger: Command, writes_new_field: bool, p
             .get("due")
             .expect("deadline was recorded")
     };
-    // EXPIRE invalidates query entries; warm them again while the deadline is live.
+    // Keep valid legacy query entries alongside physical blocks to exercise invalidation itself.
     for field in ["a", "b"] {
         assert_eq!(
             run(
@@ -104,7 +106,9 @@ fn assert_lazy_expiry_with_residents(trigger: Command, writes_new_field: bool, p
                 value: Some(vec![7])
             }
         );
-        assert!(engine.cache.peek(&CacheKey::hash(1, "due", field)));
+        let cached_key = CacheKey::hash(1, "due", field);
+        assert!(!engine.cache.peek(&cached_key), "EXPIRE must clear the prior logical entry");
+        seed_query_response(&engine, cached_key, &CommandResponse::Bytes { value: Some(vec![7]) });
     }
     assert!(now_ms() < deadline, "the cache was not warm before expiry");
     let limit = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -124,6 +128,12 @@ fn assert_lazy_expiry_with_residents(trigger: Command, writes_new_field: bool, p
         CACHE_SWEEP_COUNTS.set_armed(true);
     }
     run(&engine, trigger);
+    for field in ["a", "b"] {
+        assert!(!engine.cache.peek(&CacheKey::hash(1, "due", field)),
+                "lazy expiry left a logical sibling cached: {field}");
+        assert!(engine.cache.peek(&CacheKey::hash(1, "live", field)),
+                "lazy expiry removed an independently live logical entry: {field}");
+    }
     if pages > 0 {
         let counts = CACHE_SWEEP_COUNTS.read_batched();
         CACHE_SWEEP_COUNTS.set_armed(false);
