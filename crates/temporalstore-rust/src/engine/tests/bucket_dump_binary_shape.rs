@@ -185,6 +185,138 @@ fn listed_ids(engine: &TemporalEngine) -> Vec<String> {
     ids
 }
 
+fn recovery_selection_fixture() -> Real {
+    let real = a_real_manifest();
+    let mut snapshot = decode_index_bytes(&real.manifest.index_bytes).unwrap();
+    for n in 0..2048 {
+        snapshot
+            .buckets
+            .insert(format!("checkpoint-quota-{n:05}").into(), (10.0, 1234));
+    }
+    for (n, (wal, index, created)) in [
+        (1000, 2, 3),
+        (1000, 3, 1),
+        (1000, 3, 4),
+        (900, 10, 5),
+        (800, 11, 6),
+        (700, 12, 7),
+        (600, 13, 8),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut manifest = real.manifest.clone();
+        manifest.manifest_id = format!("{SHARD}-selection-{n}");
+        manifest.wal_sequence = wal;
+        manifest.index_log_sequence = index;
+        manifest.created_unix_ms = created;
+        snapshot.applied_wal_sequence = Some(wal);
+        manifest.index_bytes = serialize_index(&snapshot);
+        manifest.index_sha256 = sha256_hex_bytes(&manifest.index_bytes);
+        resign(&mut manifest);
+        plant(&real.engine, &manifest);
+    }
+    real
+}
+
+#[test]
+fn recovery_checkpoint_selection_copies_only_the_winning_image() {
+    let real = recovery_selection_fixture();
+    let shared = list_bucket_dump_manifests_shared_at(&real.engine.index_dir, SHARD).unwrap();
+    assert_eq!(shared.len(), 8, "the selector must discard several real candidates");
+    let all_image_bytes: u64 = shared.iter().map(|m| m.index_bytes.len() as u64).sum();
+    drop(shared);
+
+    // Positive control: the previous selection shape copies every cached candidate.
+    reset_bucket_dump_manifest_io_counts();
+    let control = list_bucket_dump_manifests_at(&real.engine.index_dir, SHARD)
+        .unwrap()
+        .into_iter()
+        .max_by_key(|m| (m.wal_sequence, m.index_log_sequence, m.created_unix_ms))
+        .unwrap();
+    let control_counts = bucket_dump_manifest_io_counts();
+    assert_eq!(control_counts.owned_copies, 8);
+    assert_eq!(control_counts.owned_copy_bytes, all_image_bytes);
+    assert_eq!(control.manifest_id, format!("{SHARD}-selection-2"));
+
+    reset_bucket_dump_manifest_io_counts();
+    let picked = durable_recovery_bucket_dump_manifest_at(&real.engine.index_dir, SHARD).unwrap();
+    let counts = bucket_dump_manifest_io_counts();
+    assert_eq!(picked, control, "selection must keep WAL, index, and timestamp ordering");
+    assert_eq!(counts.owned_copies, 1, "only the winner needs an owned image");
+    assert_eq!(counts.parse_hits, 0);
+    assert_eq!(counts.file_reads, 8);
+    assert_eq!(counts.owned_copy_bytes, picked.index_bytes.len() as u64);
+    assert!(counts.owned_copy_bytes * 6 < all_image_bytes);
+
+    let warm = durable_recovery_bucket_dump_manifest_at(&real.engine.index_dir, SHARD).unwrap();
+    let warm_counts = bucket_dump_manifest_io_counts();
+    assert_eq!(warm, picked);
+    assert_eq!(warm_counts.parse_hits - counts.parse_hits, 8);
+    assert_eq!(warm_counts.file_reads - counts.file_reads, 0);
+    assert_eq!(warm_counts.owned_copies - counts.owned_copies, 1);
+    assert_eq!(
+        warm_counts.owned_copy_bytes - counts.owned_copy_bytes,
+        picked.index_bytes.len() as u64
+    );
+
+    // The uncached path still reads and verifies every candidate before choosing.
+    {
+        let _off = crate::engine::bucket_dump_io::ManifestParseMemoOff::new();
+        reset_bucket_dump_manifest_io_counts();
+        let cold = durable_recovery_bucket_dump_manifest_at(&real.engine.index_dir, SHARD).unwrap();
+        let cold_counts = bucket_dump_manifest_io_counts();
+        assert_eq!(cold, picked);
+        assert_eq!(cold_counts.file_reads, 8);
+        assert_eq!(cold_counts.checksum_serializes, 8);
+        assert_eq!(cold_counts.owned_copies, 0);
+    }
+    println!(
+        "checkpoint selection copies: control={} optimized={} image_bytes: control={} optimized={}",
+        control_counts.owned_copies,
+        counts.owned_copies,
+        control_counts.owned_copy_bytes,
+        counts.owned_copy_bytes
+    );
+}
+
+#[test]
+#[ignore = "selection-only diagnostic timing; not end-to-end restore latency"]
+fn recovery_checkpoint_selection_timing_profile() {
+    let real = recovery_selection_fixture();
+    let expected = durable_recovery_bucket_dump_manifest_at(&real.engine.index_dir, SHARD).unwrap();
+    let mut control = Vec::with_capacity(64);
+    let mut optimized = Vec::with_capacity(64);
+    for _ in 0..32 {
+        // ABBA keeps each arm in both positions without assuming a steady host clock rate.
+        for use_optimized in [false, true, true, false] {
+            let start = std::time::Instant::now();
+            let picked = if use_optimized {
+                durable_recovery_bucket_dump_manifest_at(&real.engine.index_dir, SHARD).unwrap()
+            } else {
+                list_bucket_dump_manifests_at(&real.engine.index_dir, SHARD)
+                    .unwrap()
+                    .into_iter()
+                    .max_by_key(|m| (m.wal_sequence, m.index_log_sequence, m.created_unix_ms))
+                    .unwrap()
+            };
+            let elapsed_ns = start.elapsed().as_nanos();
+            assert_eq!(picked, expected);
+            if use_optimized {
+                optimized.push(elapsed_ns);
+            } else {
+                control.push(elapsed_ns);
+            }
+        }
+    }
+    control.sort_unstable();
+    optimized.sort_unstable();
+    println!(
+        "selection_only_diagnostic samples=64 control_p50_ns={} control_p95_ns={} optimized_p50_ns={} optimized_p95_ns={}",
+        control[31], control[60], optimized[31], optimized[60]
+    );
+}
+
 /// THE CODEC CARRIES EVERY FIELD, REFUSES EVERYTHING ELSE, AND THE STREAMED DIGEST PAYLOAD IS
 /// PROST'S OWN ENCODING.
 ///

@@ -299,12 +299,8 @@ fn control_api_reads_and_scans_index_log_stream() {
     // full names on others, so accept either: what is being asserted is that the hash write is
     // recorded with the right page address, not how the fields are spelled.
     //
-    // AND THE SELECTOR CANNOT NAME THE FIELD ANY MORE. It matched
-    // `object_key == "h" && element_name == "f"`, and a block entry has no element name slot in the
-    // served index, so it matched nothing and read "the hash h/f write is recorded in the bucket
-    // index" for a write that was recorded. The object holds exactly ONE field, so its block is
-    // selected by object key alone -- and the count below is what keeps that selection exact
-    // rather than letting it widen to any block of any object.
+    // Identity is encoded in the map key, not repeated in the block value. Use the reader's
+    // parser so the selection checks both model and owner without depending on removed fields.
     let hash_blocks: Vec<&serde_json::Value> = served["slot_index"]["bucket_map"]
         .as_object()
         .expect("served index carries the bucket map")
@@ -315,10 +311,11 @@ fn control_api_reads_and_scans_index_log_stream() {
                 .or_else(|| bucket.get("p"))
                 .and_then(|blocks| blocks.as_object())
         })
-        .flat_map(|blocks| blocks.values())
-        .filter(|block| {
-            let key = block.get("object_key").or_else(|| block.get("k"));
-            key == Some(&serde_json::json!("h"))
+        .flat_map(|blocks| blocks.iter())
+        .filter_map(|(key, block)| {
+            let identity = crate::index_log::block_ref_key_parts(key)
+                .expect("the served block key carries its identity");
+            (identity.kind == "hash" && identity.object_key == "h").then_some(block)
         })
         .collect();
     assert_eq!(
@@ -369,10 +366,10 @@ fn control_api_reads_and_scans_index_log_stream() {
     // so taking it from there cannot go stale the way a literal just did.
     let string_kind = crate::engine::storage_bucket_internals::StoredModelKind::String.as_str();
     assert!(
-        served["objects"][string_kind].get("k1").is_some(),
-        "the served index carries no string row for `k1` under `objects.{string_kind}`; the \
+        served["slot_index"]["objects"][string_kind].get("k1").is_some(),
+        "the served index carries no string row for `k1` under `slot_index.objects.{string_kind}`; the \
          consolidated map holds {}",
-        served["objects"],
+        served["slot_index"]["objects"],
     );
 }
 
