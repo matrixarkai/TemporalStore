@@ -1259,6 +1259,20 @@ jobs:
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
+      - name: Periodic index collection planning checks
+        run: |
+          set -o pipefail
+          for t in \
+            engine::storage_lifecycle_methods::lifecycle_report_work_tests::periodic_index_collection_does_not_build_unused_block_summaries \
+            engine::storage_lifecycle_methods::lifecycle_report_work_tests::index_collection_keeps_refresh_selection_when_live_tallies_overreport \
+            engine::storage_lifecycle_methods::lifecycle_report_work_tests::execution_plan_uses_dirty_metadata_without_block_summaries \
+            engine::storage_lifecycle_methods::lifecycle_report_work_tests::operational_dump_keeps_follower_and_snapshot_index_gc_fences; do
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/index-collection-plan.log
+            grep -q '^running 1 test$' /tmp/index-collection-plan.log
+            grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/index-collection-plan.log
+          done
+
       - name: Collection gate excludes the current slab
         run: |
           set -o pipefail
