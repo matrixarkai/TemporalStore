@@ -37,7 +37,9 @@ fn a_collection_round_reports_each_of_its_phases() {
     );
     runtime.run_storage_manager_once(1, StorageManagerOptions::default());
     let timing = runtime.stats().storage_manager_stage_timing;
-    for phase in ["cache_invalidate", "manifests", "live_set", "dependency_plan", "store_gc"] {
+    // The page stage invalidates only the removed slabs (after the collection), so the whole-shard
+    // `cache_invalidate` row belongs to callers that ask for it and is not read here.
+    for phase in ["manifests", "live_set", "dependency_plan", "store_gc"] {
         let row = timing
             .get(&format!("reclaim_page.{phase}"))
             .unwrap_or_else(|| panic!("no row for phase {phase}: {:?}", timing.keys().collect::<Vec<_>>()));
