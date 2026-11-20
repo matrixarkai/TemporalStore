@@ -649,3 +649,5 @@ mod a_write_asks_the_cache_before_it_invalidates;
 mod an_apply_lists_the_shard_once_for_its_report;
 #[path = "tests/a_feature_series_drops_points_past_its_age_cut.rs"]
 mod a_feature_series_drops_points_past_its_age_cut;
+#[path = "tests/a_rewrite_asks_once_whether_two_elements_share_a_block.rs"]
+mod a_rewrite_asks_once_whether_two_elements_share_a_block;
