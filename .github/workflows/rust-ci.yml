@@ -1251,6 +1251,21 @@ jobs:
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
+      - name: Collection gate excludes the current slab
+        run: |
+          set -o pipefail
+          for t in \
+            block_store::gc_scan_window::reclaim_gate_excludes_the_current_slab_from_both_totals \
+            block_store::gc_scan_window::reclaim_gate_with_only_a_current_slab_has_no_collection_work \
+            block_store::gc_scan_window::reclaim_gate_is_not_opened_by_dead_bytes_in_the_current_slab \
+            data_node::tests::page_gc_resumes_behind_its_window::a_bounded_collection_resumes_and_removes_what_one_unbounded_pass_removes \
+            data_node::tests::page_gc_resumes_behind_its_window::a_mostly_live_store_with_a_stale_slab_closes_the_gate_and_the_stage_skips_collection; do
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/collection-gate.log
+            grep -q '^running 1 test$' /tmp/collection-gate.log
+            grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/collection-gate.log
+          done
+
       - name: Unsupported append never replaces WAL bytes
         run: |
           set -o pipefail
