@@ -17,7 +17,6 @@ hex = "0.4"
 prometheus-client = "=0.22.3"
 prost = "0.13"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 sha2 = "0.10"
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "time"] }
@@ -29,4 +28,6 @@ prost-build = "0.13"
 protoc-bin-vendored = "3"
 
 [dev-dependencies]
+# The AWS smoke test parses the AWS CLI's own JSON output.
+serde_json = "1"
 tempfile = "=3.10.1"
