@@ -2630,6 +2630,8 @@ struct IndexLogInner {
     last_sequence_by_shard: HashMap<ShardId, u64>,
     // Valid only while the active file still has the path and length recorded below.
     active_span_by_shard: HashMap<ShardId, ActiveIndexSegment>,
+    // Append-maintained sequence/frame ends, never record payloads.
+    active_gate_records_by_shard: HashMap<ShardId, ActiveIndexGateRecords>,
     /// MANIFEST-CONFORMANCE FOLD: the index-log byte length recorded at the last catalog dump, per
     /// shard. `undumped_len_since_dump` subtracts this from the current on-disk length to get the
     /// undumped gap that drives the threshold-dump cadence. Reset to 0
@@ -2958,6 +2960,7 @@ impl LocalIndexLogStore {
                 stats: IndexLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
                 active_span_by_shard: HashMap::new(),
+                active_gate_records_by_shard: HashMap::new(),
                 last_dumped_len_by_shard: HashMap::new(),
                 last_dumped_at_by_shard: HashMap::new(),
                 scratch: None,
@@ -3808,16 +3811,43 @@ impl LocalIndexLogStore {
                 }
                 continue;
             }
+            if let Some(cached) = inner.active_gate_records_by_shard.get(&shard_id)
+                .filter(|cached| cached.path == path && cached.len == metadata.len())
+            {
+                let removable = cached.records.partition_point(|(sequence, _)| {
+                    *sequence < retain_from_sequence
+                });
+                summary.records = summary.records.saturating_add(cached.records.len());
+                summary.removable_records = summary.removable_records.saturating_add(removable);
+                if removable > 0 {
+                    summary.removable_bytes = summary.removable_bytes
+                        .saturating_add(cached.records[removable - 1].1);
+                }
+                continue;
+            }
+            inner.active_gate_records_by_shard.remove(&shard_id);
             let Ok(file) = open_index_log_read(&path, &mut tally) else {
                 continue;
             };
             let mut reader = BufReader::new(file);
+            let mut gate_records = Vec::new();
+            let mut cacheable = true;
+            let mut consumed = 0_u64;
             // By FRAME, not by newline, for the reason every other walk of this log gives: a
             // binary payload may contain the delimiter a newline scan would stop at.
-            while let Ok(Some((frame_bytes, payload))) = crate::log_framing::read_frame(&mut reader)
-            {
+            loop {
+                let (frame_bytes, payload) = match crate::log_framing::read_frame(&mut reader) {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) => break,
+                    Err(_) => {
+                        cacheable = false;
+                        break;
+                    }
+                };
+                consumed = consumed.saturating_add(frame_bytes as u64);
                 summary.bytes_decoded = summary.bytes_decoded.saturating_add(frame_bytes as u64);
                 if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
+                    cacheable = false;
                     continue;
                 }
                 summary.records_decoded += 1;
@@ -3832,7 +3862,27 @@ impl LocalIndexLogStore {
                         summary.removable_bytes =
                             summary.removable_bytes.saturating_add(frame_bytes as u64);
                     }
+                    if cacheable {
+                        if gate_records.len() < MAX_ACTIVE_GATE_RECORDS
+                            && gate_records.last().is_none_or(|(sequence, _)| *sequence < head.sequence)
+                        {
+                            gate_records.push((head.sequence, consumed));
+                        } else {
+                            cacheable = false;
+                            gate_records.clear();
+                        }
+                    }
+                } else {
+                    cacheable = false;
+                    gate_records.clear();
                 }
+            }
+            if cacheable && consumed == metadata.len() {
+                inner.active_gate_records_by_shard.insert(shard_id, ActiveIndexGateRecords {
+                    path,
+                    len: consumed,
+                    records: gate_records,
+                });
             }
         }
         inner.stats.scans += 1;
@@ -3907,7 +3957,7 @@ impl LocalIndexLogStore {
         let (dropped_segments, dropped_segment_bytes, dropped_records) =
             drop_covered_index_segments(&root, shard_id, retain_from_sequence)?;
 
-        let _ = last_sequence_at(&root, shard_id)?;
+        repair_index_gc_active_tail(&inner, shard_id, &path)?;
         let mut records_before = 0usize;
         let mut removed_this_round = 0usize;
         let mut removable_records_before_budget = 0usize;
@@ -3970,6 +4020,7 @@ impl LocalIndexLogStore {
             }
             fs::rename(&temp_path, &path)?;
             inner.active_span_by_shard.remove(&shard_id);
+            inner.active_gate_records_by_shard.remove(&shard_id);
             sync_parent_dir(&path)?;
         }
         let bytes_after = index_log_total_bytes(&root, shard_id);
@@ -4064,7 +4115,7 @@ impl LocalIndexLogStore {
         let (dropped_segments, dropped_segment_bytes, dropped_records) =
             drop_reflected_index_segments(&root, shard_id, wal_anchor, meta_sequence)?;
 
-        let _ = last_sequence_at(&root, shard_id)?;
+        repair_index_gc_active_tail(&inner, shard_id, &path)?;
         let mut records_before = 0usize;
         let mut retained = Vec::new();
         // `read_frame` hands back how many bytes the record OCCUPIED, which this loop used to
@@ -4157,6 +4208,7 @@ impl LocalIndexLogStore {
         }
         fs::rename(&temp_path, &path)?;
         inner.active_span_by_shard.remove(&shard_id);
+        inner.active_gate_records_by_shard.remove(&shard_id);
         sync_parent_dir(&path)?;
         let bytes_after = index_log_total_bytes(&root, shard_id);
         Ok(IndexLogGcReport {
@@ -4508,6 +4560,45 @@ struct ActiveIndexSegment {
     span: IndexSegmentSpan,
 }
 
+// At most 64 KiB of sequence/frame-end metadata per active shard log. Larger or
+// irregular pieces keep the scanning path rather than growing an unbounded side index.
+const MAX_ACTIVE_GATE_RECORDS: usize = 4096;
+
+#[derive(Debug)]
+struct ActiveIndexGateRecords {
+    path: PathBuf,
+    len: u64,
+    records: Vec<(u64, u64)>,
+}
+
+fn note_active_gate_append(
+    inner: &mut IndexLogInner,
+    shard_id: ShardId,
+    path: &Path,
+    previous_len: u64,
+    written_len: u64,
+    sequence: u64,
+) {
+    let len = previous_len.saturating_add(written_len);
+    if previous_len == 0 {
+        inner.active_gate_records_by_shard.insert(shard_id, ActiveIndexGateRecords {
+            path: path.to_path_buf(),
+            len,
+            records: vec![(sequence, len)],
+        });
+    } else if let Some(cached) = inner.active_gate_records_by_shard.get_mut(&shard_id) {
+        if cached.path == path && cached.len == previous_len
+            && cached.records.len() < MAX_ACTIVE_GATE_RECORDS
+            && cached.records.last().is_some_and(|(last, _)| *last < sequence)
+        {
+            cached.records.push((sequence, len));
+            cached.len = len;
+        } else {
+            inner.active_gate_records_by_shard.remove(&shard_id);
+        }
+    }
+}
+
 fn active_span_at(
     inner: &IndexLogInner,
     shard_id: ShardId,
@@ -4521,6 +4612,26 @@ fn active_span_at(
         .map(|cached| cached.span)
 }
 
+fn repair_index_gc_active_tail(
+    inner: &IndexLogInner,
+    shard_id: ShardId,
+    path: &Path,
+) -> Result<(), IndexLogError> {
+    // Completed appends and fully decoded gate scans already establish the tail.
+    // Unknown or changed pieces still need repair; collection always validates payloads.
+    let complete_tail = path.metadata().ok().is_some_and(|metadata| {
+        active_span_at(inner, shard_id, path, metadata.len()).is_some()
+            || inner
+                .active_gate_records_by_shard
+                .get(&shard_id)
+                .is_some_and(|cached| cached.path == path && cached.len == metadata.len())
+    });
+    if !complete_tail {
+        let _ = last_sequence_at(&inner.root, shard_id)?;
+    }
+    Ok(())
+}
+
 fn note_active_append(
     inner: &mut IndexLogInner,
     shard_id: ShardId,
@@ -4531,6 +4642,7 @@ fn note_active_append(
     applied_wal_sequence: Option<u64>,
     carries_content: bool,
 ) {
+    note_active_gate_append(inner, shard_id, path, previous_len, written_len, sequence);
     let anchor = if applied_wal_sequence.is_none() && carries_content {
         INDEX_SEGMENT_UNREFLECTED
     } else {
@@ -4955,6 +5067,10 @@ mod index_log_sweep_bound;
 #[cfg(test)]
 #[path = "index_log_read_bytes.rs"]
 mod index_log_read_bytes;
+
+#[cfg(test)]
+#[path = "index_log_gate_records_tests.rs"]
+mod gate_records_tests;
 
 #[cfg(test)]
 mod tests {

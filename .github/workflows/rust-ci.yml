@@ -281,6 +281,30 @@ jobs:
       - name: cargo build (release service binaries)
         run: cargo build --release -p temporalstore-rust --bin matrixark_rust_metaserver --bin matrixark_rust_datanode
 
+      - name: Active index gate record accounting checks
+        run: |
+          set -o pipefail
+          for t in \
+            index_log::gate_records_tests::append_maintained_gate_matches_cold_reads_at_every_floor \
+            index_log::gate_records_tests::a_cold_gate_reads_once_and_later_appends_extend_it \
+            index_log::gate_records_tests::collection_rewrites_and_sequence_holes_invalidate_the_gate \
+            index_log::gate_records_tests::rolling_replaces_only_the_active_gate_records \
+            index_log::gate_records_tests::active_gate_memory_is_capped_and_a_roll_starts_a_new_cache \
+            index_log::gate_records_tests::anchor_and_delta_appends_share_the_same_gate_boundaries \
+            index_log::gate_records_tests::undecodable_and_nonmonotonic_records_never_create_a_gate_cache \
+            index_log::gate_records_tests::a_torn_active_tail_is_never_cached_as_a_complete_piece \
+            index_log::gate_records_tests::warm_collection_validates_the_active_piece_only_once \
+            index_log::gate_records_tests::a_validated_cold_gate_also_proves_the_collection_tail \
+            index_log::gate_records_tests::cold_collection_keeps_the_repair_pass \
+            index_log::gate_records_tests::a_changed_warm_tail_is_repaired_before_collection \
+            index_log::gate_records_tests::warm_collection_still_refuses_complete_corrupt_records \
+            index_log::tests::the_gate_reads_piece_names_not_every_record; do
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/index-gate-records.log
+            grep -q '^running 1 test$' /tmp/index-gate-records.log
+            grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/index-gate-records.log
+          done
+
       # The compile gates above are what enforce this workflow. The suite is run
       # for visibility but is NOT yet a required gate: the tree carries a small
       # number of known, pre-existing baseline failures. Flip continue-on-error
