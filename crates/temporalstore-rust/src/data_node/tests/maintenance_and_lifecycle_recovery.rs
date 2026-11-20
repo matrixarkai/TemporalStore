@@ -11017,6 +11017,68 @@ purged {:?}",
     );
 }
 
+#[test]
+fn purge_only_rounds_report_physical_work_with_both_index_modes() {
+    for (index_stage, dirty_index) in [(false, false), (false, true), (true, false), (true, true)] {
+        for retained in [false, true] {
+            let engine = TemporalEngine::default();
+            engine.load_shard(1);
+            if dirty_index {
+                assert!(engine.set_config(crate::SetConfigRequest {
+                    shard_id: 1,
+                    config: crate::Config { version: 2, async_storage: true, ..Default::default() },
+                }).ok);
+                assert!(engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet { key: "purge-report-live".into(), value: b"live".to_vec() },
+                }).status.ok);
+                assert!(engine.synthetic_address_count_for_test(1) > 0);
+            }
+            engine.block_store().install_slab(0, b"retained payload").unwrap();
+            engine.block_store().install_slab(1, b"active").unwrap();
+            engine.block_store().gc_slabs_before_with_live_refs_delayed_destroy(1, [1]).unwrap();
+            let runtime = DataNodeRuntime::new_without_workers_with_options(
+                engine,
+                DataNodeRuntimeOptions { worker_threads: 0, max_queue_depth: 4, max_background_queue_depth: 2 },
+            );
+            let options = StorageManagerOptions {
+                enable_prepare: false, enable_wal_reclaim: false, enable_memory_reclaim: false,
+                enable_expire: false, enable_evict: false, enable_block_compaction: false,
+                enable_block_gc: true, enable_index_gc: index_stage, enable_metrics_reap: false,
+                stale_block_slab_pressure: usize::MAX,
+                reclaimable_physical_bytes_pressure: u64::MAX,
+                block_gc_checkpoint_floor_slab_id: retained.then_some(0),
+                ..StorageManagerOptions::default()
+            };
+            if !retained {
+                let young = runtime.run_storage_manager_once(1, options.clone());
+                assert!(young.status.ok, "{:?}", young.status);
+                assert_eq!(runtime.engine().block_store().delayed_destroy_slab_ids().unwrap(), vec![0]);
+                assert!(young.lifecycle_report.as_ref().is_none_or(|report|
+                    report.delayed_destroy_purged_slabs.is_empty()));
+            }
+            runtime.engine().block_store().backdate_delayed_destroy_stamps_for_test(25 * 60 * 60 * 1_000).unwrap();
+            let round = runtime.run_storage_manager_once(1, options);
+            assert!(round.status.ok, "{:?}", round.status);
+            assert!(round.executed_stages.iter().any(|stage| stage == "reclaim_page"));
+            let report = round.lifecycle_report.expect("physical work must survive the purge-only route");
+            assert_eq!(report.shard_id, 1);
+            assert!(runtime.engine().block_store().delayed_destroy_slab_ids().unwrap().is_empty());
+            if retained {
+                assert!(report.delayed_destroy_purged_slabs.is_empty());
+                assert_eq!(report.delayed_destroy_restored_slabs, vec![0]);
+                assert!(report.delayed_destroy_restored_bytes > 0);
+                assert_eq!(runtime.engine().block_store().read_slab(0).unwrap(), b"retained payload");
+            } else {
+                assert_eq!(report.delayed_destroy_purged_slabs, vec![0]);
+                assert!(report.delayed_destroy_purged_bytes > 0);
+                assert!(report.delayed_destroy_restored_slabs.is_empty());
+                assert!(runtime.engine().block_store().read_slab(0).is_err());
+            }
+        }
+    }
+}
+
 /// The in-suite form of the long run: same driver, same verdicts, a corpus small enough to run on
 /// every commit.
 ///

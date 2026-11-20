@@ -35,6 +35,52 @@ pub(super) struct QuietWalReclaimKey {
     retention_inputs: u64,
 }
 
+fn record_purge_work(
+    report: &mut Option<StorageLifecycleReport>,
+    plan: &StorageLifecyclePlan,
+    purge: crate::block_store::BlockStorePurgeDelayedDestroyReport,
+    detailed_report: bool,
+) {
+    if !detailed_report
+        || (purge.purged_block_slab_ids.is_empty() && purge.restored_block_slab_ids.is_empty())
+    {
+        return;
+    }
+    // Use the plan already computed for this round; reporting must not run maintenance again.
+    let report = report.get_or_insert_with(|| StorageLifecycleReport {
+        shard_id: plan.shard_id,
+        plan: plan.clone(),
+        ..StorageLifecycleReport::default()
+    });
+    report.delayed_destroy_purged_slabs.extend(purge.purged_block_slab_ids);
+    report.delayed_destroy_purged_bytes = report.delayed_destroy_purged_bytes
+        .saturating_add(purge.purged_physical_bytes);
+    report.delayed_destroy_restored_slabs.extend(purge.restored_block_slab_ids);
+    report.delayed_destroy_restored_bytes = report.delayed_destroy_restored_bytes
+        .saturating_add(purge.restored_physical_bytes);
+    report.refresh_public_lifecycle_metrics();
+}
+
+#[cfg(test)]
+mod purge_report_tests {
+    use super::*;
+
+    #[test]
+    fn compact_scheduler_reporting_does_not_build_a_lifecycle_report() {
+        let mut report = None;
+        record_purge_work(
+            &mut report,
+            &StorageLifecyclePlan::default(),
+            crate::block_store::BlockStorePurgeDelayedDestroyReport {
+                purged_block_slab_ids: vec![1], purged_physical_bytes: 128,
+                ..Default::default()
+            },
+            false,
+        );
+        assert!(report.is_none());
+    }
+}
+
 impl DataNodeRuntime {
     fn quiet_wal_reclaim_key(
         &self,
@@ -517,6 +563,7 @@ impl DataNodeRuntime {
         let mut skipped_stages = Vec::new();
         let mut pressure_decisions = Vec::new();
         let mut lifecycle_report = None;
+        let mut block_purge_report = None;
         let mut compaction_report = None;
         let mut gc_report = None;
         let mut expired_records_removed = 0;
@@ -1320,7 +1367,7 @@ impl DataNodeRuntime {
                     crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
                 );
             if !quarantine_waits {
-                let _ = self
+                let purge = self
                     .inner
                     .engine
                     .purge_storage_delayed_destroy(&StorageLifecycleRequest {
@@ -1336,15 +1383,28 @@ impl DataNodeRuntime {
                             crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
                         ..StorageLifecycleRequest::default()
                     });
+                block_purge_report = Some(purge);
+                if !executed_stages.iter().any(|stage| stage == "reclaim_page") {
+                    executed_stages.push("reclaim_page".to_string());
+                    skipped_stages.retain(|stage| stage != "reclaim_page_no_pressure");
+                    self.inner.stats.lock().expect("runtime stats lock poisoned")
+                        .storage_manager_reclaim_block_runs += 1;
+                }
             }
         }
+        let block_gc_work = stale_block_pressure || block_purge_report.is_some();
         spans.close("reclaim_page", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
             "reclaim_page",
             options.enable_block_gc,
-            stale_block_pressure,
-            options.enable_block_gc && stale_block_pressure,
+            block_gc_work,
+            options.enable_block_gc && block_gc_work,
             vec![
+                storage_manager_pressure_signal(
+                    "quarantine_check_due",
+                    u64::from(block_purge_report.is_some()),
+                    1,
+                ),
                 storage_manager_pressure_signal(
                     "stale_page_segment_count",
                     pressure.stale_block_slab_count as u64,
@@ -1362,6 +1422,7 @@ impl DataNodeRuntime {
                 ),
             ],
             storage_manager_trigger_reasons(&[
+                (block_purge_report.is_some(), "quarantine_check_due"),
                 (
                     pressure.stale_block_slab_count >= options.stale_block_slab_pressure.max(1),
                     "stale_page_segment_pressure",
@@ -1378,7 +1439,7 @@ impl DataNodeRuntime {
             ]),
             storage_manager_skip_reason(
                 options.enable_block_gc,
-                stale_block_pressure,
+                block_gc_work,
                 "reclaim_page",
             ),
         ));
@@ -1882,6 +1943,10 @@ impl DataNodeRuntime {
         ));
 
 
+        // Later index work may replace its lifecycle report. Attach physical purge work last.
+        if let Some(purge) = block_purge_report {
+            record_purge_work(&mut lifecycle_report, &lifecycle_plan, purge, detailed_report);
+        }
         {
             // Recorded beside the round counter, so every caller gets it: the per-shard
             // scheduler, the all-shards scheduler, and the cycle endpoint.

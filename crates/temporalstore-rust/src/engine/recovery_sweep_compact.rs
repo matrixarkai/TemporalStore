@@ -5,6 +5,25 @@
 use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::*;
 
+fn visit_compaction_objects<V, H: std::hash::BuildHasher>(
+    objects: &mut std::collections::HashMap<crate::engine::state::ModelKey, V, H>,
+    selected: Option<&std::collections::HashSet<crate::engine::state::ModelKey>>,
+    mut visit: impl FnMut(&str, &mut V) -> Result<(), Status>,
+) -> Result<(), Status> {
+    if let Some(keys) = selected {
+        for key in keys {
+            if let Some(value) = objects.get_mut(&**key) {
+                visit(key, value)?;
+            }
+        }
+    } else {
+        for (key, value) in objects {
+            visit(key, value)?;
+        }
+    }
+    Ok(())
+}
+
 #[path = "compaction_slices.rs"]
 mod compaction_slices;
 pub(crate) use compaction_slices::PassSlot;
@@ -1933,21 +1952,20 @@ fn expiry_scan_budget(limit: usize) -> usize {
         Ok(())
     }
 
-    /// The arms that visit every key of their model whatever the drain set names: features, control
-    /// state and the context series. A block of those models moves only when it sits on a drain slab, but
-    /// the walk is over the whole map.
+    /// Features, control state and context objects, restricted to selected owners in a slice.
     fn relocate_unkeyed_blocks(
         &self,
         shard_id: ShardId,
         shard: &mut ShardState,
         start_routing_bucket: u32,
         end_routing_bucket: u32,
+        selected_keys: Option<&std::collections::HashSet<crate::engine::state::ModelKey>>,
         rewrite_stats: &mut CompactionRewriteStats,
     ) -> Result<(), Status> {
         let bucket_of = |key: &str| {
             block_routing_bucket(key, start_routing_bucket, end_routing_bucket)
         };
-        for (key, series) in shard.features_mut().iter_mut() {
+        visit_compaction_objects(shard.features_mut(), selected_keys, |key, series| {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
@@ -1958,8 +1976,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 series,
                 rewrite_stats,
                 routing_bucket,
-            )?;
-        }
+            )
+        })?;
         // A TWO-PASS, BECAUSE THE SHARED SIGNATURE IS DELIBERATELY LEFT ALONE.
         //
         // `compact_block_addresses` rewrites addresses through `&mut ElementEntry`, and this map's
@@ -1974,11 +1992,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // or the model id. Building a fresh record from the rewritten address would drop those,
         // and would not fail today because they are unused; the guard against that is
         // `compacting_a_record_keeps_everything_that_is_not_the_address`.
-        let mut staged: Vec<(u32, String, ElementEntry)> = shard
-            .control_state_blocks()
-            .iter()
-            .map(|(key, record)| (bucket_of(key), key.to_string(), record.address()))
-            .collect();
+        let mut staged: Vec<(u32, String, ElementEntry)> = match selected_keys {
+            Some(keys) => keys.iter().filter_map(|key| {
+                shard.control_state_blocks().get(&**key)
+                    .map(|record| (bucket_of(key), key.to_string(), record.address()))
+            }).collect(),
+            None => shard.control_state_blocks().iter()
+                .map(|(key, record)| (bucket_of(key), key.to_string(), record.address()))
+                .collect(),
+        };
         compact_block_addresses(
             &self.block_store,
             &self.cache,
@@ -1994,35 +2016,34 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 record.set_address(address);
             });
         }
-        compact_block_addresses(
-            &self.block_store,
-            &self.cache,
-            shard_id,
-            "context_node",
-            shard
-                .context_nodes_mut()
-                .iter_mut()
-                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
-            rewrite_stats,
-        )?;
+        visit_compaction_objects(shard.context_nodes_mut(), selected_keys, |key, address| {
+            compact_block_addresses(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "context_node",
+                std::iter::once((bucket_of(key), std::borrow::Cow::Borrowed(key), address)),
+                rewrite_stats,
+            )
+        })?;
         // A PLAIN `iter_mut`, where a live mirror needed a whole-map closure that re-mirrored on
         // exit. This rewrites an address in every series of every key, so under a mirror it is the
         // widest divergence window there is: every address stale in the copy a reader might be
         // served, for the whole duration of a compaction round.
-        for (key, series) in shard.context_events_mut().iter_mut() {
+        visit_compaction_objects(shard.context_events_mut(), selected_keys, |key, series| {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "context_event",
-                &**key,
+                key,
                 series,
                 rewrite_stats,
                 routing_bucket,
-            )?;
-        }
-        for (key, series) in shard.context_indexes_mut().iter_mut() {
+            )
+        })?;
+        visit_compaction_objects(shard.context_indexes_mut(), selected_keys, |key, series| {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
@@ -2033,9 +2054,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 series,
                 rewrite_stats,
                 routing_bucket,
-            )?;
-        }
-        for (key, series) in shard.context_audits_mut().iter_mut() {
+            )
+        })?;
+        visit_compaction_objects(shard.context_audits_mut(), selected_keys, |key, series| {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
@@ -2046,9 +2067,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 series,
                 rewrite_stats,
                 routing_bucket,
-            )?;
-        }
-        for (key, series) in shard.context_children_mut().iter_mut() {
+            )
+        })?;
+        visit_compaction_objects(shard.context_children_mut(), selected_keys, |key, series| {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
@@ -2059,9 +2080,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 series,
                 rewrite_stats,
                 routing_bucket,
-            )?;
-        }
-        for (key, series) in shard.context_summaries_mut().iter_mut() {
+            )
+        })?;
+        visit_compaction_objects(shard.context_summaries_mut(), selected_keys, |key, series| {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
@@ -2072,9 +2093,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 series,
                 rewrite_stats,
                 routing_bucket,
-            )?;
-        }
-        for (key, series) in shard.context_compressions_mut().iter_mut() {
+            )
+        })?;
+        visit_compaction_objects(shard.context_compressions_mut(), selected_keys, |key, series| {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
@@ -2085,13 +2106,33 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 series,
                 rewrite_stats,
                 routing_bucket,
-            )?;
-        }
+            )
+        })?;
         // THE ENTITY ARM DERIVES ITS BUCKET FROM THE PER-ENTITY KEY, not from the collection key
         // this map is keyed by: `ContextUpsertEntity` files the block under
         // `context_entity_key(..)`, which is the collection key with the entity hash appended, and
         // that is the string the bucket comes from. Composing it per entity is what the model-map
         // walk does for the same reason.
+        if let Some(keys) = selected_keys {
+            use crate::engine::timestamped_series::{TimestampedSeries, TimestampedSeriesWrite};
+            for key in keys {
+                let Some((collection, encoded_entity)) = key.rsplit_once(':') else { continue };
+                let Ok(entity) = encoded_entity.parse::<u64>() else { continue };
+                if entity.to_string() != encoded_entity { continue; }
+                let Some(series) = shard.context_entities_mut().get_mut(collection) else { continue };
+                let Some(mut address) = TimestampedSeries::get(series, entity).cloned() else { continue };
+                compact_block_addresses(
+                    &self.block_store,
+                    &self.cache,
+                    shard_id,
+                    "context_entity",
+                    std::iter::once((bucket_of(key), std::borrow::Cow::Borrowed(&**key), &mut address)),
+                    rewrite_stats,
+                )?;
+                TimestampedSeriesWrite::set(series, entity, address);
+            }
+            return Ok(());
+        }
         compact_block_addresses(
             &self.block_store,
             &self.cache,
@@ -2300,7 +2341,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &mut rewrite_stats,
             )?;
             self.relocate_unkeyed_blocks(
-                shard_id, shard, start_routing_bucket, end_routing_bucket, &mut rewrite_stats,
+                shard_id, shard, start_routing_bucket, end_routing_bucket, None, &mut rewrite_stats,
             )?;
             Self::unreadable_blocks_failure(&rewrite_stats)
         })();
