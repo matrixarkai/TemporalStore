@@ -972,12 +972,36 @@ fn a_dump_reports_the_same_write_ahead_log_release_whether_or_not_one_happened()
 
     let control_dir = tempfile::tempdir().expect("tempdir");
     let control = release_engine(control_dir.path());
+    struct ResetWalRoll;
+    impl Drop for ResetWalRoll {
+        fn drop(&mut self) {
+            crate::wal::set_wal_segment_bytes_for_test(None);
+        }
+    }
+    let _wal_roll = ResetWalRoll;
+    crate::wal::set_wal_segment_bytes_for_test(Some(8 * 1024));
     seed_one_at_a_time(&control, 0, CONTROL_RECORDS);
+    // Give reclamation obsolete records in sealed pieces, not only live payloads or padding.
+    for index in 0..CONTROL_RECORDS {
+        let reply = control.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringSet {
+                key: format!("k-{index:08}"), value: vec![b'w'; VALUE_LEN],
+            },
+        });
+        assert!(reply.status.ok, "overwrite failed: {:?}", reply.status);
+    }
     let control_wal = control.write_ahead_log_store();
-    let control_records_before = control_wal.info(SHARD).map(|info| info.records).unwrap_or(0);
+    let (control_records, truncated) = control_wal.scan_bounded(SHARD, 0, u64::MAX, 16 << 20).unwrap();
+    assert!(!truncated);
+    let control_records_before = control_records.len();
+    assert_eq!(control_records_before, 2 * CONTROL_RECORDS);
     let control_report = control
         .dump_and_reclaim_index_logs_with_min_reclaimable(SHARD, 0)
         .expect("APPARATUS: the control dump did not complete");
+    let (control_records, truncated) = control_wal.scan_bounded(SHARD, 0, u64::MAX, 16 << 20).unwrap();
+    assert!(!truncated);
+    let control_records_after = control_records.len();
     let control_released = control_report
         .wal_bytes_before
         .saturating_sub(control_report.wal_bytes_after);
@@ -1010,12 +1034,35 @@ fn a_dump_reports_the_same_write_ahead_log_release_whether_or_not_one_happened()
         "CONTROL: the control log held no records, so its release proves nothing"
     );
     assert!(
-        control_released > 0 && control_report.wal_records_removed > 0,
+        control_released > 0
+            && control_records_after < control_records_before
+            && (control_report.wal_records_removed > 0 || control_report.wal_segments_dropped > 0),
         "CONTROL: a dump against a log written one command at a time released {control_released} B \
          in {} records -- this arm exists to prove a non-zero WAL release is expressible here, and \
          without it the subject arm's zero says nothing",
         control_report.wal_records_removed
     );
+    assert!(!control_report.wal_sweep_failed);
+    assert!(control_report.wal_segments_dropped > 0);
+    assert!(control_report.wal_segment_bytes_dropped > 0);
+    control.cache.invalidate_shard(SHARD).unwrap();
+    for index in 0..CONTROL_RECORDS {
+        let reply = control.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringGet { key: format!("k-{index:08}") },
+        });
+        assert!(reply.status.ok);
+        assert_eq!(reply.response, CommandResponse::Bytes { value: Some(vec![b'w'; VALUE_LEN]) });
+    }
+    assert_eq!(empty_report.wal_segments_dropped, 0);
+    assert_eq!(empty_report.wal_segment_bytes_dropped, 0);
+    let mut old_json = serde_json::to_value(&control_report).unwrap();
+    old_json.as_object_mut().unwrap().remove("wal_segments_dropped");
+    old_json.as_object_mut().unwrap().remove("wal_segment_bytes_dropped");
+    let old: crate::engine::reports::CatalogDumpReclaimReport = serde_json::from_value(old_json).unwrap();
+    assert_eq!(old.wal_segments_dropped, 0);
+    assert_eq!(old.wal_segment_bytes_dropped, 0);
+    assert_eq!(old.wal_bytes_before, control_report.wal_bytes_before);
     // SUBJECT. This arm reported 0 B in 0 records when it was written, and the assertion here
     // said so. The cause was found -- the reclaim walk stripped a trailing delimiter off a
     // binary frame, which declares its own length, so a payload ending in `0x0A` read one byte

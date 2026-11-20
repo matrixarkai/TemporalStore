@@ -70,6 +70,11 @@ fn the_loop_report_prices_every_stage_it_reaches() {
     let options = StorageManagerOptions {
         // One stage off, so the skip path has to produce a row too.
         enable_block_compaction: false,
+        // The gate is crossed so the plans walk the dirty fixture: under the shipped byte gate a
+        // shard this small is left undumped and the only walker was the index stage's purge, which
+        // the block stage now skips while no quarantined slab can mature.
+        dirty_bucket_pressure: 1,
+        min_undumped_wal_bytes: 1,
         ..StorageManagerOptions::default()
     };
     let report = runtime.run_storage_manager_once(1, options);
@@ -1065,14 +1070,14 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
 /// A shard that takes writes between rounds is dirty at every round, and the round then builds its
 /// plans from a listing of every live block. The WAL reclaim plan needs the bucket summaries and the
 /// live digests; those come off ONE listing, so each plan build lists the shard once instead of twice
-/// and the round totals 20 listings of the shard. Counted in live-block entries visited, not timed, because a stopwatch on a shared box
+/// and the round totals 15 listings of the shard. Counted in live-block entries visited, not timed, because a stopwatch on a shared box
 /// measures the other tenants.
 ///
 /// THE BOUND IS EXACT, so a plan that lists the shard once more fails it. The bound is on the TOTAL
 /// of the round and not on one stage: dropping one stage's walks has moved them to a later stage
 /// before. The control is that the walk is large enough to mean something and that the round did
 /// dump (a round that did nothing would pass a bound trivially).
-const DIRTY_ROUND_WALK_BOUND: u64 = 20;
+const DIRTY_ROUND_WALK_BOUND: u64 = 15;
 
 #[test]
 fn a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound() {
@@ -1112,7 +1117,9 @@ fn a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound() {
         if round == 0 {
             continue;
         }
-        assert!(walked >= keys as u64 * 10, "the round listed only {walked} entries");
+        // A floor of 8 listings, not 10: the index stage no longer lists the shard to purge a quarantine
+        // that cannot mature, so a dirty round is 9 listings and not 10.
+        assert!(walked >= keys as u64 * 8, "the round listed only {walked} entries");
         assert!(
             walked <= DIRTY_ROUND_WALK_BOUND * keys as u64,
             "a dirty round listed {walked} entries = {:.1} listings of {keys} keys, bound {DIRTY_ROUND_WALK_BOUND}",
