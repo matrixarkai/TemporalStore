@@ -1471,6 +1471,7 @@ jobs:
             engine::tests::a_write_asks_the_cache_before_it_invalidates::a_cached_string_is_still_invalidated_by_a_write \
             engine::tests::a_write_asks_the_cache_before_it_invalidates::a_cached_set_is_still_invalidated_by_an_add_and_a_remove \
             engine::tests::a_write_asks_the_cache_before_it_invalidates::a_write_to_a_key_nothing_caches_invalidates_nothing \
+            engine::tests::an_encode_allocates_once::an_encoded_value_decodes_to_what_was_encoded \
             engine::tests::a_feature_range_read_takes_the_shared_lock::each_range_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_feature_range_read_takes_the_shared_lock::a_range_read_answers_what_was_appended \
             engine::tests::a_hash_and_string_point_read_takes_the_shared_lock::each_point_read_answers_while_the_shared_lock_is_held \
@@ -1646,6 +1647,7 @@ jobs:
             engine::tests::a_restating_write_names_one_bucket_not_the_shard::probe::a_restating_write_does_not_allocate_with_the_shard \
             engine::tests::a_rewritten_context_node_replaces_its_block::probe::a_node_rewrite_costs_the_same_after_many_rewrites \
             engine::tests::a_write_asks_the_cache_before_it_invalidates::probe::an_uncached_write_does_not_enter_the_invalidation_class \
+            engine::tests::an_encode_allocates_once::probe::an_encode_allocates_once_whatever_the_size \
             engine::tests::a_string_length_and_range_do_not_copy_the_value::probe::a_length_and_a_range_do_not_allocate_per_byte \
             engine::tests::an_outcome_kind_holds_a_known_kind_without_allocating::probe::a_known_outcome_kind_allocates_nothing \
             engine::tests::a_hash_field_presence_is_read_from_its_row::probe::a_presence_check_does_not_copy_the_value \
