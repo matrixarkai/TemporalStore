@@ -2215,6 +2215,48 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
 
 #[track_caller]
 fn visit_bucket_index_live_block_entries(shard: &ShardState, mut visit: impl FnMut(LiveBlockEntry)) {
+    visit_bucket_nodes_live_block_entries(shard, shard.bucket_index.bucket_map.iter(), &mut visit);
+    // A RELEASED bucket holds no block entries, and every caller of this walk -- the dump
+    // manifest, WAL reclaim, compaction, the GC snapshot -- reads "no entries" as "no live
+    // blocks". Left alone that is not a cheaper index, it is a block whose backing record may be
+    // reclaimed. So the released buckets are supplemented from the model maps, which is the same
+    // source `reload_released_bucket` would rebuild them from: what this returns is what the
+    // bucket index WOULD say if nothing were released.
+    //
+    // Exact, not approximate, because a release refuses any bucket holding a block whose KEY does
+    // not route to it -- `BucketReleaseRefusal::BlockRoutingMismatch` -- so the bucket computed
+    // below is the bucket the released node held the block under, and cannot claim a block for the
+    // wrong bucket.
+    if !shard.bucket_index.released_buckets.is_empty() {
+        let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+        for mut entry in collect_model_live_block_entries(shard) {
+            let routing_bucket = block_routing_bucket(
+                &entry.object_key,
+                start_routing_bucket,
+                end_routing_bucket,
+            );
+            if shard.bucket_index.released_buckets.contains(&routing_bucket) {
+                // The filing is known exactly here too, and a supplemented entry must not read as
+                // "not filed": the five readers downstream would then fall back to a hash over the
+                // WHOLE keyspace and name a bucket a narrow shard does not hold.
+                entry.filed_routing_bucket = routing_bucket;
+                entry.filing_is_known = true;
+                visit(entry);
+            }
+        }
+    }
+}
+
+/// The live blocks of the buckets `buckets` yields, as the whole walk emits them for those buckets,
+/// charged the same way. A sweep that holds a bucket cursor walks a few buckets per step through
+/// this and pays for those buckets only. It does NOT supplement released buckets: a caller that
+/// can meet one must use the whole walk.
+#[track_caller]
+pub(super) fn visit_bucket_nodes_live_block_entries<'a>(
+    shard: &ShardState,
+    buckets: impl Iterator<Item = (&'a u32, &'a BucketNode)>,
+    mut visit: impl FnMut(LiveBlockEntry),
+) {
     // Charged here rather than by whoever called: three production callers reach this walk
     // without going through `collect_live_block_entries`, and the wrapper's charge could not see
     // the supplement walk below either -- it charged what was RETURNED, while the walk
@@ -2222,7 +2264,7 @@ fn visit_bucket_index_live_block_entries(shard: &ShardState, mut visit: impl FnM
     let mut from_index = 0usize;
     // THE IDENTITY COMES FROM BESIDE THE BLOCK, once for the walk. `shard` is immutable here.
     let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+    for (routing_bucket, bucket) in buckets {
         // Preserve the scalar lookup's first match without rescanning all tombstones per block.
         // This borrowed map lives for one bucket only, not for the shard's lifetime.
         let mut deleted_keys = HashMap::new();
@@ -2286,35 +2328,6 @@ fn visit_bucket_index_live_block_entries(shard: &ShardState, mut visit: impl FnM
         }
     }
     note_live_block_scan(from_index);
-    // A RELEASED bucket holds no block entries, and every caller of this walk -- the dump
-    // manifest, WAL reclaim, compaction, the GC snapshot -- reads "no entries" as "no live
-    // blocks". Left alone that is not a cheaper index, it is a block whose backing record may be
-    // reclaimed. So the released buckets are supplemented from the model maps, which is the same
-    // source `reload_released_bucket` would rebuild them from: what this returns is what the
-    // bucket index WOULD say if nothing were released.
-    //
-    // Exact, not approximate, because a release refuses any bucket holding a block whose KEY does
-    // not route to it -- `BucketReleaseRefusal::BlockRoutingMismatch` -- so the bucket computed
-    // below is the bucket the released node held the block under, and cannot claim a block for the
-    // wrong bucket.
-    if !shard.bucket_index.released_buckets.is_empty() {
-        let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-        for mut entry in collect_model_live_block_entries(shard) {
-            let routing_bucket = block_routing_bucket(
-                &entry.object_key,
-                start_routing_bucket,
-                end_routing_bucket,
-            );
-            if shard.bucket_index.released_buckets.contains(&routing_bucket) {
-                // The filing is known exactly here too, and a supplemented entry must not read as
-                // "not filed": the five readers downstream would then fall back to a hash over the
-                // WHOLE keyspace and name a bucket a narrow shard does not hold.
-                entry.filed_routing_bucket = routing_bucket;
-                entry.filing_is_known = true;
-                visit(entry);
-            }
-        }
-    }
 }
 
 /// The identity a released block is compared by, so a release can prove it is reversible.

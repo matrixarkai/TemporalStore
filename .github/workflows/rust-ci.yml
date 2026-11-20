@@ -1138,7 +1138,10 @@ jobs:
             engine::recovery_sweep_compact::compaction_execution_tests::two_failed_compaction_rounds_keep_the_slabs_of_the_first \
             engine::recovery_sweep_compact::compaction_execution_tests::a_drain_round_asks_only_about_keys_that_hold_a_block_on_the_drain_slab \
             engine::recovery_sweep_compact::compaction_execution_tests::a_compaction_round_keeps_every_buckets_dirty_generation \
-            data_node::runtime_storage::maintenance_report_tests::a_compaction_step_returns_when_its_budget_is_spent_and_the_pass_resumes
+            data_node::runtime_storage::maintenance_report_tests::a_compaction_step_returns_when_its_budget_is_spent_and_the_pass_resumes \
+            engine::recovery_sweep_compact::compaction_slice_tests::a_pass_reads_the_buckets_it_reaches_and_not_the_shard \
+            engine::recovery_sweep_compact::compaction_slice_tests::the_pin_covers_a_slab_the_tally_forgot \
+            engine::recovery_sweep_compact::compaction_slice_tests::a_pass_with_nothing_on_the_drain_slabs_does_nothing
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-compact.log
             # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
