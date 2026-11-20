@@ -1201,6 +1201,8 @@ fn what_a_writer_waits_during_each_stage_of_a_dumping_round() {
         ("DUMPING", dumping),
         ("QUIET", StorageManagerOptions::default()),
     ] {
+        // Per-site walk times start from nothing for this round.
+        crate::engine::reset_live_block_scan_sites();
         let (stall, report) = crate::engine::writer_stall_probe::measure_writer_stall_with(
             &engine,
             1,
@@ -1235,7 +1237,14 @@ fn what_a_writer_waits_during_each_stage_of_a_dumping_round() {
         // The longest wait of a write that began in each PHASE the engine named while the round ran
         // (`writer_stall_probe::set_phase`, test builds): which step of the dump holds the writer.
         for (phase, max_wait_us) in &stall.max_wait_us_by_phase {
-            eprintln!("      W {label} phase {phase:<48} max wait {max_wait_us:>10} us");
+            eprintln!("      W {label} phase {phase:<72} max wait {max_wait_us:>10} us");
+        }
+        // Every whole-shard walk of the round, by calling site: how many times it ran, its total and
+        // its longest single walk. A walk under a guard holds that guard for its longest run.
+        for (site, (calls, total_us, max_us)) in crate::engine::live_block_walk_times_snapshot() {
+            eprintln!(
+                "      W {label} walk {site:<66} calls={calls:<3} total={total_us:>10} us longest={max_us:>10} us"
+            );
         }
     }
 }

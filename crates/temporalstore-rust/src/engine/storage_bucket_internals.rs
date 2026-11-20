@@ -1408,6 +1408,82 @@ pub fn reset_live_block_scan_sites() {
     if let Ok(mut sites) = live_block_scan_sites().lock() {
         sites.clear();
     }
+    #[cfg(test)]
+    {
+        if let Ok(mut times) = live_block_walk_times().lock() {
+            times.clear();
+        }
+    }
+}
+
+/// How long each whole-shard walk ran, per calling site, in test builds: `file:line -> (calls,
+/// total microseconds, longest microseconds)`. The entry counts above say how MANY blocks a site
+/// walked; this says how long it held whatever guard its caller held while it did, which is what a
+/// writer waiting on that guard sees. Also names the writer-stall probe's phase for the duration of
+/// each walk (`walk file:line`), so a write that began inside a walk is attributed to it.
+#[cfg(test)]
+fn live_block_walk_times(
+) -> &'static std::sync::Mutex<std::collections::BTreeMap<String, (u64, u128, u128)>> {
+    static TIMES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<String, (u64, u128, u128)>>,
+    > = std::sync::OnceLock::new();
+    TIMES.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
+}
+
+#[cfg(test)]
+pub fn live_block_walk_times_snapshot() -> std::collections::BTreeMap<String, (u64, u128, u128)> {
+    live_block_walk_times()
+        .lock()
+        .map(|times| times.clone())
+        .unwrap_or_default()
+}
+
+/// Times one whole-shard walk for the writer-stall probe. Test builds only.
+#[cfg(test)]
+pub(super) struct WalkTimer {
+    previous: &'static str,
+    site: String,
+    started: std::time::Instant,
+}
+
+#[cfg(test)]
+impl WalkTimer {
+    #[track_caller]
+    pub(super) fn start() -> Self {
+        let caller = std::panic::Location::caller();
+        let site = format!("{}:{}", caller.file(), caller.line());
+        // The probe's phase is a `&'static str`; one leaked label per distinct site, in tests only.
+        static LABELS: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<String, &'static str>>,
+        > = std::sync::OnceLock::new();
+        let label = *LABELS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .entry(site.clone())
+            .or_insert_with(|| Box::leak(format!("walk {site}").into_boxed_str()));
+        let previous = super::writer_stall_probe::current_phase();
+        super::writer_stall_probe::set_phase(label);
+        Self {
+            previous,
+            site,
+            started: std::time::Instant::now(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for WalkTimer {
+    fn drop(&mut self) {
+        let elapsed = self.started.elapsed().as_micros();
+        if let Ok(mut times) = live_block_walk_times().lock() {
+            let entry = times.entry(self.site.clone()).or_insert((0, 0, 0));
+            entry.0 += 1;
+            entry.1 += elapsed;
+            entry.2 = entry.2.max(elapsed);
+        }
+        super::writer_stall_probe::set_phase(self.previous);
+    }
 }
 
 /// Both arms charge themselves, so this wrapper is no longer the only counted way in. It stays
@@ -2278,6 +2354,8 @@ fn visit_bucket_nodes_live_block_entries_inner<'a>(
     scoped_bucket: Option<u32>,
     mut visit: impl FnMut(LiveBlockEntry),
 ) {
+    #[cfg(test)]
+    let _walk_timer = WalkTimer::start();
     // Charged here rather than by whoever called: three production callers reach this walk
     // without going through `collect_live_block_entries`, and the wrapper's charge could not see
     // the supplement walk below either -- it charged what was RETURNED, while the walk
@@ -3982,6 +4060,8 @@ pub(super) fn visit_model_live_blocks(
     accept: impl Fn(&str, &ElementEntry) -> bool,
     mut emit: impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
 ) {
+    #[cfg(test)]
+    let _walk_timer = WalkTimer::start();
     // THE ARM LIST. Nested so that `visit_model_live_blocks` is the only thing in the tree that
     // can reach it, and so the count wraps all fifteen arms at once instead of being repeated
     // in each -- an arm added below is charged without being told to be.
