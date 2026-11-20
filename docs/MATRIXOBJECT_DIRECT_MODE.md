@@ -12,8 +12,12 @@ same objects at the same generations.
 | Request path | node -> S3 over a socket -> gateway -> metadata group and chunk servers | node -> metadata group and chunk servers |
 | Build | any | needs the `matrixobject` cargo feature |
 
-Setting both settings without a mode is refused at start-up, as is a mode that contradicts a
-setting.
+Direct is the default. With no `TS_MATRIXOBJECT_MODE`, setting `TS_MATRIXOBJECT_META` selects
+direct, even when `TS_SHARED_STORE_URI` is set too; a gateway is used by default only when it is
+the only one configured (a node cannot reach a cluster directly without knowing its metadata
+group). Set `TS_MATRIXOBJECT_MODE=gateway` to keep a gateway when both are set. A mode whose own
+setting is missing is refused at start-up. A binary built without the `matrixobject` feature
+refuses direct mode by name instead of falling back to a gateway.
 
 ## When to use which
 

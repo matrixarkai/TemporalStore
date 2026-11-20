@@ -1558,17 +1558,6 @@ pub enum MatrixObjectModeError {
     GatewayNeedsUri,
     #[error("direct mode needs TS_MATRIXOBJECT_META, the metadata group's endpoints")]
     DirectNeedsMeta,
-    #[error(
-        "both a gateway (TS_SHARED_STORE_URI) and a direct metadata group \
-         (TS_MATRIXOBJECT_META) are configured; set TS_MATRIXOBJECT_MODE or remove one, \
-         because choosing silently would send the writes to a place the operator did not mean"
-    )]
-    Ambiguous,
-    #[error("TS_MATRIXOBJECT_MODE={mode} conflicts with {conflicting}, which is also set")]
-    Conflicting {
-        mode: &'static str,
-        conflicting: &'static str,
-    },
 }
 
 /// Pick the mode from the three settings that name it, or refuse. Pure, so every outcome is
@@ -1577,6 +1566,11 @@ pub enum MatrixObjectModeError {
 /// * `mode`: `TS_MATRIXOBJECT_MODE`.
 /// * `gateway_uri`: `TS_SHARED_STORE_URI`, which counts only when it names `matrixobject://`.
 /// * `direct_meta`: `TS_MATRIXOBJECT_META`.
+///
+/// Direct is the default: with no mode, a metadata group decides for direct whether or not a
+/// gateway is also configured, and a gateway is used only when it is the only thing configured
+/// (a node cannot reach a cluster directly without knowing its metadata group). An explicit mode
+/// wins and needs only its own setting.
 ///
 /// `Ok(None)` means no networked MatrixObject is configured at all.
 pub fn resolve_matrixobject_mode(
@@ -1590,27 +1584,18 @@ pub fn resolve_matrixobject_mode(
     let gateway = set(gateway_uri).filter(|uri| uri.starts_with("matrixobject://"));
     let direct = set(direct_meta);
     match set(mode).map(str::to_ascii_lowercase).as_deref() {
-        Some("gateway") => match (gateway, direct) {
-            (None, _) => Err(MatrixObjectModeError::GatewayNeedsUri),
-            (Some(_), Some(_)) => Err(MatrixObjectModeError::Conflicting {
-                mode: "gateway",
-                conflicting: "TS_MATRIXOBJECT_META",
-            }),
-            (Some(_), None) => Ok(Some(MatrixObjectMode::Gateway)),
+        Some("gateway") => match gateway {
+            None => Err(MatrixObjectModeError::GatewayNeedsUri),
+            Some(_) => Ok(Some(MatrixObjectMode::Gateway)),
         },
-        Some("direct") => match (direct, gateway) {
-            (None, _) => Err(MatrixObjectModeError::DirectNeedsMeta),
-            (Some(_), Some(_)) => Err(MatrixObjectModeError::Conflicting {
-                mode: "direct",
-                conflicting: "TS_SHARED_STORE_URI",
-            }),
-            (Some(_), None) => Ok(Some(MatrixObjectMode::Direct)),
+        Some("direct") => match direct {
+            None => Err(MatrixObjectModeError::DirectNeedsMeta),
+            Some(_) => Ok(Some(MatrixObjectMode::Direct)),
         },
         Some(other) => Err(MatrixObjectModeError::UnknownMode(other.to_string())),
-        None => match (gateway, direct) {
-            (Some(_), Some(_)) => Err(MatrixObjectModeError::Ambiguous),
-            (Some(_), None) => Ok(Some(MatrixObjectMode::Gateway)),
-            (None, Some(_)) => Ok(Some(MatrixObjectMode::Direct)),
+        None => match (direct, gateway) {
+            (Some(_), _) => Ok(Some(MatrixObjectMode::Direct)),
+            (None, Some(_)) => Ok(Some(MatrixObjectMode::Gateway)),
             (None, None) => Ok(None),
         },
     }
@@ -2352,7 +2337,7 @@ mod tests {
     // ---- The networked store and its mode ----
 
     #[test]
-    fn the_mode_follows_the_settings_and_an_ambiguous_one_is_refused() {
+    fn direct_is_the_default_and_an_explicit_mode_wins() {
         let gw = Some("matrixobject://host:9000");
         let meta = Some("m1:7000,m2:7000");
         let r = resolve_matrixobject_mode;
@@ -2364,21 +2349,17 @@ mod tests {
         // One side set picks that side.
         assert_eq!(r(None, gw, None), Ok(Some(MatrixObjectMode::Gateway)));
         assert_eq!(r(None, None, meta), Ok(Some(MatrixObjectMode::Direct)));
-        // Both set and no mode: refused, never a silent pick.
-        assert_eq!(r(None, gw, meta), Err(MatrixObjectModeError::Ambiguous));
-        // An explicit mode must have what it needs and nothing that contradicts it.
+        // Both set and no mode: direct is the default.
+        assert_eq!(r(None, gw, meta), Ok(Some(MatrixObjectMode::Direct)));
+        // An explicit mode must have what it needs, and wins over the other setting.
         assert_eq!(r(Some("Gateway"), gw, None), Ok(Some(MatrixObjectMode::Gateway)));
         assert_eq!(r(Some("direct"), None, meta), Ok(Some(MatrixObjectMode::Direct)));
         assert_eq!(r(Some("gateway"), None, meta), Err(MatrixObjectModeError::GatewayNeedsUri));
         assert_eq!(r(Some("direct"), gw, None), Err(MatrixObjectModeError::DirectNeedsMeta));
-        assert!(matches!(
-            r(Some("gateway"), gw, meta),
-            Err(MatrixObjectModeError::Conflicting { mode: "gateway", .. })
-        ));
-        assert!(matches!(
-            r(Some("direct"), gw, meta),
-            Err(MatrixObjectModeError::Conflicting { mode: "direct", .. })
-        ));
+        assert_eq!(r(Some("gateway"), gw, meta), Ok(Some(MatrixObjectMode::Gateway)));
+        assert_eq!(r(Some("direct"), gw, meta), Ok(Some(MatrixObjectMode::Direct)));
+        // A mode name's case does not matter.
+        assert_eq!(r(Some("DIRECT"), gw, meta), Ok(Some(MatrixObjectMode::Direct)));
         assert!(matches!(
             r(Some("both"), gw, None),
             Err(MatrixObjectModeError::UnknownMode(_))
