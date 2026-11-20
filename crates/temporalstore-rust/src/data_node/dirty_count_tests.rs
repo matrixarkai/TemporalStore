@@ -92,6 +92,49 @@ fn dirty_counts_follow_partial_bucket_clear_and_last_shard_removal() {
 }
 
 #[test]
+fn clearing_dirty_buckets_reads_the_routing_range_once_not_once_per_key() {
+    let directory = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        directory.path().join("cache"),
+        directory.path().join("blocks"),
+        directory.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let dirty = Mutex::new(DirtyTracker::default());
+    const KEYS: u64 = 512;
+    for index in 0..KEYS {
+        mark_dirty_owned(&dirty, 1, format!("object-{index}"));
+    }
+    let selected = engine.routing_bucket_for_key(1, "object-0");
+    // The control: the per-key call DOES read the info row once per key, so the counter below
+    // can fire and the single read after it means something.
+    let control_start = crate::engine::routing_range_reads::count();
+    let expected_removed = dirty
+        .lock()
+        .unwrap()
+        .by_key
+        .keys()
+        .filter(|(_, key)| engine.routing_bucket_for_key(1, key) == selected)
+        .count();
+    assert_eq!(
+        crate::engine::routing_range_reads::count() - control_start,
+        KEYS,
+        "the control must read the routing range once per key, or this guard measures nothing"
+    );
+    assert!(expected_removed > 0 && (expected_removed as u64) < KEYS);
+    let start = crate::engine::routing_range_reads::count();
+    let removed = clear_dirty_shard_buckets(&dirty, &engine, 1, &[selected]);
+    let reads = crate::engine::routing_range_reads::count() - start;
+    assert_eq!(removed, expected_removed, "the resolver must name the same buckets as the per-key call");
+    assert_eq!(
+        reads, 1,
+        "a clear over {KEYS} dirty keys read the routing range {reads} times; it must read it once"
+    );
+    assert_counts(&dirty.lock().unwrap());
+}
+
+#[test]
 fn concurrent_redirty_keeps_one_count_per_shard_and_key() {
     let dirty = std::sync::Arc::new(Mutex::new(DirtyTracker::default()));
     let handles = (0..4)
