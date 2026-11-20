@@ -289,3 +289,147 @@ fn a_torn_active_tail_is_never_cached_as_a_complete_piece() {
             .contains_key(&SHARD));
     }
 }
+
+fn collect(store: &LocalIndexLogStore, reflected: bool, count: usize) -> IndexLogGcReport {
+    if reflected {
+        store
+            .gc_reflected_before_anchor(SHARD, 1, count as u64 + 1, 0)
+            .unwrap()
+    } else {
+        store
+            .gc_before_sequence_limited(SHARD, count as u64 / 2 + 1, 4)
+            .unwrap()
+    }
+}
+
+#[test]
+fn warm_collection_validates_the_active_piece_only_once() {
+    let _rolling = Rolling::at(0);
+    for reflected in [false, true] {
+        for count in [32, 512] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalIndexLogStore::new(dir.path());
+            for item in 0..count {
+                append(&store, item);
+            }
+            let bytes = store.log_len_bytes(SHARD);
+            let before = index_log_piece_read_counts_on_this_thread();
+            let report = collect(&store, reflected, count);
+            let after = index_log_piece_read_counts_on_this_thread();
+            assert!(report.records_removed > 0);
+            assert_eq!(
+                after.0 - before.0,
+                bytes,
+                "the collector must validate records, not read the same tail twice"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_validated_cold_gate_also_proves_the_collection_tail() {
+    let _rolling = Rolling::at(0);
+    let dir = tempfile::tempdir().unwrap();
+    let writer = LocalIndexLogStore::new(dir.path());
+    for item in 0..32 {
+        append(&writer, item);
+    }
+    drop(writer);
+    let store = LocalIndexLogStore::new(dir.path());
+    let gate = store.gate_summary(SHARD, 17);
+    assert_eq!(gate.records, 32);
+    assert!(!store
+        .inner
+        .lock()
+        .unwrap()
+        .last_sequence_by_shard
+        .contains_key(&SHARD));
+    let before = index_log_piece_read_counts_on_this_thread();
+    let report = collect(&store, false, 32);
+    let after = index_log_piece_read_counts_on_this_thread();
+    assert_eq!(report.records_removed, 4);
+    assert_eq!(after.0 - before.0, gate.bytes);
+}
+
+#[test]
+fn cold_collection_keeps_the_repair_pass() {
+    let _rolling = Rolling::at(0);
+    for reflected in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = LocalIndexLogStore::new(dir.path());
+        for item in 0..32 {
+            append(&writer, item);
+        }
+        drop(writer);
+        let store = LocalIndexLogStore::new(dir.path());
+        let bytes = store.log_len_bytes(SHARD);
+        let before = index_log_piece_read_counts_on_this_thread();
+        let report = collect(&store, reflected, 32);
+        let after = index_log_piece_read_counts_on_this_thread();
+        assert!(report.records_removed > 0);
+        assert_eq!(after.0 - before.0, bytes * 2);
+    }
+}
+
+#[test]
+fn a_changed_warm_tail_is_repaired_before_collection() {
+    let _rolling = Rolling::at(0);
+    for reflected in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        for item in 0..32 {
+            append(&store, item);
+        }
+        let record = IndexLogRecord {
+            shard_id: SHARD,
+            sequence: 33,
+            index: serde_json::json!({"torn": true}),
+        };
+        let payload = encode_index_payload(&record, INDEX_LOG_SHAPE_WHOLE).unwrap();
+        let frame = crate::log_framing::encode_record(&payload);
+        OpenOptions::new()
+            .append(true)
+            .open(index_log_path(dir.path(), SHARD))
+            .unwrap()
+            .write_all(&frame[..frame.len() - 3])
+            .unwrap();
+        let report = collect(&store, reflected, 32);
+        assert!(report.records_removed > 0);
+        append(&store, 40);
+        assert_eq!(
+            store
+                .read_delta_records(SHARD, 0)
+                .unwrap()
+                .last()
+                .unwrap()
+                .sequence,
+            33
+        );
+    }
+}
+
+#[test]
+fn warm_collection_still_refuses_complete_corrupt_records() {
+    let _rolling = Rolling::at(0);
+    for reflected in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        for item in 0..32 {
+            append(&store, item);
+        }
+        let path = index_log_path(dir.path(), SHARD);
+        let mut bytes = fs::read(&path).unwrap();
+        *bytes.last_mut().unwrap() ^= 1;
+        fs::write(&path, &bytes).unwrap();
+        let result = if reflected {
+            store.gc_reflected_before_anchor(SHARD, 1, 33, 0)
+        } else {
+            store.gc_before_sequence_limited(SHARD, 17, 4)
+        };
+        assert!(
+            result.is_err(),
+            "cached metadata must not replace record validation"
+        );
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+}

@@ -1263,6 +1263,11 @@ jobs:
             index_log::gate_records_tests::anchor_and_delta_appends_share_the_same_gate_boundaries \
             index_log::gate_records_tests::undecodable_and_nonmonotonic_records_never_create_a_gate_cache \
             index_log::gate_records_tests::a_torn_active_tail_is_never_cached_as_a_complete_piece \
+            index_log::gate_records_tests::warm_collection_validates_the_active_piece_only_once \
+            index_log::gate_records_tests::a_validated_cold_gate_also_proves_the_collection_tail \
+            index_log::gate_records_tests::cold_collection_keeps_the_repair_pass \
+            index_log::gate_records_tests::a_changed_warm_tail_is_repaired_before_collection \
+            index_log::gate_records_tests::warm_collection_still_refuses_complete_corrupt_records \
             index_log::tests::the_gate_reads_piece_names_not_every_record; do
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/index-gate-records.log

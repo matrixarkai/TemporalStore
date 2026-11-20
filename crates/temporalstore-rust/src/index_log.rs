@@ -3957,7 +3957,7 @@ impl LocalIndexLogStore {
         let (dropped_segments, dropped_segment_bytes, dropped_records) =
             drop_covered_index_segments(&root, shard_id, retain_from_sequence)?;
 
-        let _ = last_sequence_at(&root, shard_id)?;
+        repair_index_gc_active_tail(&inner, shard_id, &path)?;
         let mut records_before = 0usize;
         let mut removed_this_round = 0usize;
         let mut removable_records_before_budget = 0usize;
@@ -4115,7 +4115,7 @@ impl LocalIndexLogStore {
         let (dropped_segments, dropped_segment_bytes, dropped_records) =
             drop_reflected_index_segments(&root, shard_id, wal_anchor, meta_sequence)?;
 
-        let _ = last_sequence_at(&root, shard_id)?;
+        repair_index_gc_active_tail(&inner, shard_id, &path)?;
         let mut records_before = 0usize;
         let mut retained = Vec::new();
         // `read_frame` hands back how many bytes the record OCCUPIED, which this loop used to
@@ -4610,6 +4610,26 @@ fn active_span_at(
         .get(&shard_id)
         .filter(|cached| cached.path == path && cached.len == len)
         .map(|cached| cached.span)
+}
+
+fn repair_index_gc_active_tail(
+    inner: &IndexLogInner,
+    shard_id: ShardId,
+    path: &Path,
+) -> Result<(), IndexLogError> {
+    // Completed appends and fully decoded gate scans already establish the tail.
+    // Unknown or changed pieces still need repair; collection always validates payloads.
+    let complete_tail = path.metadata().ok().is_some_and(|metadata| {
+        active_span_at(inner, shard_id, path, metadata.len()).is_some()
+            || inner
+                .active_gate_records_by_shard
+                .get(&shard_id)
+                .is_some_and(|cached| cached.path == path && cached.len == metadata.len())
+    });
+    if !complete_tail {
+        let _ = last_sequence_at(&inner.root, shard_id)?;
+    }
+    Ok(())
 }
 
 fn note_active_append(
