@@ -1296,6 +1296,7 @@ impl TemporalEngine {
             _ => false,
         };
         // Preserve the writer's proof so maintenance does not file its fields twice.
+        shard.feature_max_age_ms = config.feature_max_age_ms();
         let (outcome, hash_index_filed) = match execution_command {
             Command::HashMultiSet { key, entries } => {
                 shard.control_coalesce_persist = config.control_coalesce_persist_enabled();

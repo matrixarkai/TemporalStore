@@ -73,6 +73,20 @@ impl Config {
         }
     }
 
+    /// How old, in milliseconds before the newest point a feature series holds, a point may be
+    /// before a write that touches the series drops it. Absent, zero or unparseable means no age
+    /// cut, and the series is bounded by `feature_max_size` alone, as it always was.
+    ///
+    /// The cut is measured from the newest point IN THE SERIES, not from a wall clock, so a replayed
+    /// write reaches the same series without the clock of the first run. Like `feature_max_size`
+    /// it acts when a write touches the series: nothing is dropped on load or on a read.
+    pub fn feature_max_age_ms(&self) -> u64 {
+        self.extend_config
+            .get("feature_max_age_ms")
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(0)
+    }
+
     /// Gate for the Control State rollup ladder (O(levels) sum-family window aggregates).
     /// Off by default so the live scan path is unchanged.
     pub fn control_rollup_enabled(&self) -> bool {
