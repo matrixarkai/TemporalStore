@@ -208,11 +208,19 @@ fn a_shard_opened_over_an_undumped_tail_runs_the_stage_in_its_first_round() {
 
 /// A SHARD THAT ALWAYS HAS A DIRTY BUCKET HAS NO IDLE PROBE, AND ITS LOG MUST STILL BE BOUNDED.
 ///
-/// The idle probe is skipped while any bucket is dirty, so a hot key re-dirtied every round never
-/// takes it. The byte gate is then the only path that reclaims its already-dumped prefix, and it
-/// has to keep the log near the gate rather than letting it grow with everything written.
+/// The byte gate publishes a dump; the page stage retires its safe log prefix. Keeping the dump
+/// stage enabled while disabling page collection must not retire records through another stage.
 #[test]
 fn a_hot_bucket_dirtied_every_round_keeps_the_log_near_the_gate() {
+    check_hot_bucket_log_collection(true);
+}
+
+#[test]
+fn dump_only_rounds_keep_the_log_until_page_collection_is_enabled() {
+    check_hot_bucket_log_collection(false);
+}
+
+fn check_hot_bucket_log_collection(collect_pages: bool) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = seeded(dir.path(), 200);
     let options = StorageManagerOptions {
@@ -220,11 +228,13 @@ fn a_hot_bucket_dirtied_every_round_keeps_the_log_near_the_gate() {
         enable_index_gc: false,
         enable_memory_reclaim: false,
         enable_block_compaction: false,
-        enable_block_gc: false,
+        enable_block_gc: collect_pages,
         enable_expire: false,
         ..StorageManagerOptions::default()
     };
     let mut written = 200usize;
+    let mut dumps = 0usize;
+    let mut records_removed = 0usize;
     for round in 0..60usize {
         for index in 0..20usize {
             let response = runtime.inner.engine.execute(ExecuteRequest {
@@ -237,7 +247,20 @@ fn a_hot_bucket_dirtied_every_round_keeps_the_log_near_the_gate() {
             assert!(response.status.ok, "hot write: {:?}", response.status);
             written += 1;
         }
-        runtime.run_storage_manager_once(1, options.clone());
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        assert!(report.status.ok, "round {round}: {:?}", report.status);
+        dumps += usize::from(report.wal_reclaim_round.dumped);
+        assert_eq!(report.wal_reclaim_round.wal_records_removed, 0,
+                   "the dump stage must not collect physical log records");
+        if let Some(reclaim) = report.page_log_reclaim.as_ref() {
+            assert!(collect_pages, "a disabled page stage collected the log");
+            records_removed += reclaim.wal_records_removed;
+        }
+        if !collect_pages {
+            assert!(report.page_log_reclaim.is_none());
+            assert!(!report.executed_stages.iter().any(|stage| stage == "reclaim_page"));
+            assert!(report.skipped_stages.iter().any(|stage| stage == "reclaim_page_disabled"));
+        }
     }
     let (pressure, _) = runtime.storage_manager_pressure_snapshot(1, &options);
     // NON-VACUITY: the shard really is dirty at the end, so the idle probe was never available.
@@ -249,8 +272,51 @@ fn a_hot_bucket_dirtied_every_round_keeps_the_log_near_the_gate() {
         .scan(1, 0, u64::MAX, u64::MAX)
         .map(|records| records.len())
         .unwrap_or(usize::MAX);
-    assert!(
-        records < written / 2,
-        "the log holds {records} of {written} written records after 60 rounds with one hot          dirty bucket, so the byte gate is not reclaiming it"
-    );
+    assert!(dumps > 0, "the fixture must actually publish a dump");
+    if collect_pages {
+        assert!(records_removed > 0, "the enabled page stage never collected records");
+        assert!(
+            records < written / 2,
+            "the log holds {records} of {written} written records after 60 rounds with one hot dirty bucket"
+        );
+    } else {
+        assert_eq!(records_removed, 0);
+        assert_eq!(records, written, "dump-only rounds must retain every physical record");
+    }
+    eprintln!("page_enabled={collect_pages} dumps={dumps} removed={records_removed} remaining={records} written={written}");
+    if !collect_pages {
+        let dumped = runtime.inner.engine.storage_dump_wal_sequence(1);
+        let report = runtime.run_storage_manager_once(1, StorageManagerOptions {
+            enable_block_gc: true,
+            enable_wal_reclaim: false,
+            ..options
+        });
+        assert!(report.status.ok, "page-only round: {:?}", report.status);
+        assert!(!report.wal_reclaim_round.dumped);
+        assert!(!report.executed_stages.iter().any(|stage| stage == "reclaim_wal"));
+        assert_eq!(runtime.inner.engine.storage_dump_wal_sequence(1), dumped,
+                   "collection must use the already-published prefix");
+        let reclaimed = report.page_log_reclaim.expect("the page stage must check the published log");
+        assert!(reclaimed.applied && reclaimed.wal_records_removed > 0, "{reclaimed:?}");
+        let remaining = runtime.inner.engine.write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX).unwrap().len();
+        assert!(remaining < written / 2, "the page-only round left {remaining} of {written} records");
+        eprintln!("page_only removed={} remaining={remaining}", reclaimed.wal_records_removed);
+    }
+    drop(runtime);
+    let reopened = seeded(dir.path(), 0);
+    reopened.inner.engine.cache().invalidate_shard(1).unwrap();
+    for index in 0..=200 {
+        let (key, expected) = if index == 200 {
+            ("the-hot-key".to_string(), b"v-59-19".to_vec())
+        } else {
+            (format!("gate-{index:06}"), vec![b'v'; 96])
+        };
+        let response = reopened.inner.engine.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key: key.clone() },
+        });
+        assert!(response.status.ok, "reopen read {key}: {:?}", response.status);
+        assert_eq!(response.response, crate::CommandResponse::Bytes { value: Some(expected) },
+                   "reopen lost {key} with page collection {collect_pages}");
+    }
 }
