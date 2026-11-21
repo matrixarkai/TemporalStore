@@ -539,7 +539,7 @@ impl DataNodeRuntime {
         self.storage_manager_pressure_snapshot_with_report_details(shard_id, options, true)
     }
 
-    fn storage_manager_pressure_snapshot_with_report_details(
+    pub(super) fn storage_manager_pressure_snapshot_with_report_details(
         &self,
         shard_id: ShardId,
         options: &StorageManagerOptions,
