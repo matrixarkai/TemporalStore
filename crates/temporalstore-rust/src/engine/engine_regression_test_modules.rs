@@ -657,3 +657,9 @@ mod a_feature_series_drops_points_past_its_age_cut;
 mod a_model_read_takes_the_shared_lock;
 #[path = "tests/the_tally_names_the_walks_slabs_in_every_model.rs"]
 mod the_tally_names_the_walks_slabs_in_every_model;
+#[path = "tests/every_maintenance_step_queues_behind_a_command.rs"]
+mod every_maintenance_step_queues_behind_a_command;
+#[path = "tests/a_scalar_reporter_visits_at_most_its_cap_at_every_scale.rs"]
+mod a_scalar_reporter_visits_at_most_its_cap_at_every_scale;
+#[path = "tests/shard_lock_holds_are_attributed_by_call_site.rs"]
+mod shard_lock_holds_are_attributed_by_call_site;

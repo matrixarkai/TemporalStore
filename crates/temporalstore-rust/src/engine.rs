@@ -159,6 +159,8 @@ pub use shard_write_guard::{
     reset_index_encode_counts, reset_maintenance_mirror_sink_lookups,
     reset_maintenance_block_read_counts, IndexEncodeCounts, MaintenanceBlockReadCounts,
 };
+#[path = "engine/shard_guard.rs"]
+pub mod shard_guard;
 #[path = "engine/engine_compaction.rs"]
 mod compaction;
 // The maintenance round in `data_node` asks this before compacting; see the function's doc.
@@ -271,7 +273,7 @@ use crate::engine::timestamped_series::TimestampedSeries as _;
 
 #[derive(Debug, Clone)]
 pub struct TemporalEngine {
-    shards: Arc<RwLock<HashMap<ShardId, ShardState>>>,
+    shards: Arc<shard_guard::ShardsLock>,
     serving_admission: Arc<parking_lot::FairMutex<()>>,
     cache: MultiLayerCache,
     block_store: BlockStore,
@@ -692,13 +694,13 @@ impl TemporalEngine {
     /// Every shard in one pass. Callers that already hold a read lock on the shard table must not
     /// ask per shard: a second read on the same lock, with a writer queued between them, deadlocks.
     pub fn shard_index_lags(&self) -> Vec<(ShardId, u64)> {
-        let applied: Vec<(ShardId, u64)> = {
-            let shards = self.shards.read().expect("engine lock poisoned");
+        let applied: Vec<(ShardId, u64)> = self.shards.with_all_shards_read(|shards, visited| {
+            visited.add(shards.len() as u64);
             shards
                 .iter()
                 .map(|(shard_id, shard)| (*shard_id, shard.applied_wal_sequence.unwrap_or(0)))
                 .collect()
-        };
+        });
         applied
             .into_iter()
             .map(|(shard_id, applied)| {
@@ -718,11 +720,13 @@ impl TemporalEngine {
     /// Every shard in one pass, for the same reason as the trailing distance: a caller inside the
     /// metrics loop already holds a read lock on the shard table.
     pub fn shard_expiry_backlogs(&self) -> Vec<(ShardId, u64)> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        shards
-            .iter()
-            .map(|(shard_id, shard)| (*shard_id, shard.expires_at_ms().len() as u64))
-            .collect()
+        self.shards.with_all_shards_read(|shards, visited| {
+            visited.add(shards.len() as u64);
+            shards
+                .iter()
+                .map(|(shard_id, shard)| (*shard_id, shard.expires_at_ms().len() as u64))
+                .collect()
+        })
     }
 
     /// What a shard's rate limit has allowed and refused, if it has one.
@@ -3576,11 +3580,18 @@ impl TemporalEngine {
     /// release keeps. The per-block entries are what grows with the corpus and what a release
     /// frees, so this is the number to gate on and to assert against.
     pub fn bucket_index_resident_bytes(&self, shard_id: ShardId) -> u64 {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&shard_id)
-            .map(crate::engine::storage_bucket_internals::bucket_index_resident_bytes)
-            .unwrap_or_default()
+        let before = crate::engine::storage_bucket_internals::bucket_index_resident_bytes_visits();
+        self.shards.with_shard(shard_id, |shard, visited| {
+            let bytes = shard
+                .map(crate::engine::storage_bucket_internals::bucket_index_resident_bytes)
+                .unwrap_or_default();
+            // Nodes the cold rebuild of the cached total had to visit; zero when it was warm.
+            visited.add(
+                crate::engine::storage_bucket_internals::bucket_index_resident_bytes_visits()
+                    .saturating_sub(before),
+            );
+            bytes
+        })
     }
 
     /// Release the named buckets' resident block lists, keeping each node routable and reloadable.
@@ -4605,11 +4616,11 @@ pub mod shard_write_guard {
 /// same reason. The mark is released by the same `Drop` that releases the lock, so an early
 /// `drop(guard)` shortens the measured region exactly as much as it shortens the real one.
 struct MarkedShardWriteGuard<'a> {
-    guard: std::sync::RwLockWriteGuard<'a, HashMap<ShardId, ShardState>>,
+    guard: shard_guard::ShardsWriteGuard<'a>,
 }
 
 impl<'a> MarkedShardWriteGuard<'a> {
-    fn new(guard: std::sync::RwLockWriteGuard<'a, HashMap<ShardId, ShardState>>) -> Self {
+    fn new(guard: shard_guard::ShardsWriteGuard<'a>) -> Self {
         shard_write_guard::entered();
         Self { guard }
     }
@@ -4643,11 +4654,11 @@ impl Drop for MarkedShardWriteGuard<'_> {
 /// moving out of the region stops being counted because of WHERE IT IS, not because a wrapper
 /// was remembered.
 struct MarkedShardReadGuard<'a> {
-    guard: std::sync::RwLockReadGuard<'a, HashMap<ShardId, ShardState>>,
+    guard: shard_guard::ShardsReadGuard<'a>,
 }
 
 impl<'a> MarkedShardReadGuard<'a> {
-    fn new(guard: std::sync::RwLockReadGuard<'a, HashMap<ShardId, ShardState>>) -> Self {
+    fn new(guard: shard_guard::ShardsReadGuard<'a>) -> Self {
         shard_write_guard::entered_read();
         Self { guard }
     }

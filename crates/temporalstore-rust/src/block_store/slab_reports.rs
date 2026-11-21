@@ -169,6 +169,7 @@ impl BlockStore {
     }
 
     pub fn slab_summary(&self) -> BlockStoreSlabSummary {
+        crate::engine::shard_guard::note_store_read();
         summarize_slabs(
             &self
                 .inner

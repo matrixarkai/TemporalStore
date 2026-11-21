@@ -1083,16 +1083,20 @@ impl TemporalEngine {
     }
 
     pub(super) fn shard_stats(&self, shard_id: ShardId) -> Option<ShardStats> {
-        let shards = self.shards.read().expect("engine lock poisoned");
+        // THE BLOCK STORE IS ASKED BEFORE THE SHARD TABLE IS TAKEN. Both reads take the store's
+        // mutex; asked from inside the shard guard, every scrape nested that mutex in the shard
+        // lock and a writer (which takes them in the same order) queued behind both.
         let info = self
             .infos
             .read()
             .expect("info lock poisoned")
             .get(&shard_id)
             .cloned();
-        shards.get(&shard_id).map(|state| {
-            let block_store = self.block_store.stats();
-            let block_store_slabs = self.block_store.slab_summary();
+        let block_store = self.block_store.stats();
+        let block_store_slabs = self.block_store.slab_summary();
+        let write_ahead_log = self.wal_store.stats_without_rescan(shard_id);
+        let resident_visits_before = crate::engine::storage_bucket_internals::bucket_index_resident_bytes_visits();
+        self.shards.with_shard(shard_id, |state, visited| state.map(|state| {
             let string_records = state.strings().len();
             let hash_records = state.bucket_index.hashes.len();
             let set_records = state.bucket_index.sets.len();
@@ -1382,7 +1386,7 @@ impl TemporalEngine {
                 append_watermark: block_store.writes,
                 compaction_watermark: block_store_slabs.reclaimable_physical_bytes,
             };
-            ShardStats {
+            let stats = ShardStats {
                 shard_id,
                 loaded,
                 readonly,
@@ -1407,8 +1411,16 @@ impl TemporalEngine {
                 // whole log, which `what_one_stats_read_allocates` measures at 99.3% of everything
                 // this function allocates -- and this function is what a node answers a stats
                 // request with, so it was paid on every read. See `stats_without_rescan`.
-                write_ahead_log: self.wal_store.stats_without_rescan(shard_id),
-            }
-        })
+                write_ahead_log,
+            };
+            // What this hold walked: the slab tally (O(slabs)) plus the bucket nodes the resident
+            // bytes term had to visit when its cached total was cold.
+            visited.add(state.bucket_index.block_slab_live.iter().count() as u64);
+            visited.add(
+                crate::engine::storage_bucket_internals::bucket_index_resident_bytes_visits()
+                    .saturating_sub(resident_visits_before),
+            );
+            stats
+        }))
     }
 }
