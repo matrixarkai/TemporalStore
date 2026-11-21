@@ -1162,8 +1162,8 @@ pub struct StorageManagerOptions {
     /// gate that keeps the node-wide terms out.
     #[serde(default)]
     pub eviction_memory_pressure_threshold: u64,
-    /// Victims per batch. Zero uses the remaining per-stage victim budget.
-    #[serde(default)]
+    /// Victims per batch. Zero selects no victims and performs no eviction work.
+    #[serde(default = "default_storage_manager_eviction_batch_limit")]
     pub eviction_batch_limit: usize,
     /// Dump a bucket before freeing it, so eviction relieves log pressure as well as memory.
     ///
@@ -1332,6 +1332,10 @@ pub const DEFAULT_EVICTION_COUNT_LIMIT: usize = 100;
 
 fn default_storage_manager_eviction_count_limit() -> usize {
     DEFAULT_EVICTION_COUNT_LIMIT
+}
+
+fn default_storage_manager_eviction_batch_limit() -> usize {
+    crate::engine::reports::DEFAULT_EVICTION_BATCH_LIMIT
 }
 
 fn default_storage_manager_index_gc_max_entries_per_round() -> usize {
