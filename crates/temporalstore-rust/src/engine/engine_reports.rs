@@ -3411,9 +3411,7 @@ pub struct StorageManagerCycleRequest {
     pub warm_cache: bool,
     #[serde(default = "default_storage_manager_eviction_threshold")]
     pub eviction_memory_pressure_threshold: u64,
-    /// Buckets evicted per round. **Zero means no limit**, as it does on every other bound in
-    /// this request -- not "evict nothing", which is what the sampled selection used to read it
-    /// as while the exhaustive selection read it as "evict everything".
+    /// Buckets evicted per round. Zero selects no victims and performs no eviction work.
     #[serde(default = "default_eviction_batch_limit")]
     pub eviction_batch_limit: usize,
     #[serde(default)]

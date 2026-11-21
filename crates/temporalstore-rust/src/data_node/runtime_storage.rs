@@ -1010,7 +1010,7 @@ impl DataNodeRuntime {
                 };
             };
             let engine = &self.inner.engine;
-            if options.eviction_count_limit == 0 {
+            if options.eviction_count_limit == 0 || options.eviction_batch_limit == 0 {
                 let resident = engine.bucket_index_resident_bytes(shard_id);
                 let gate_open = resident > stage_threshold;
                 return crate::engine::reports::StorageEvictionReport {
@@ -1025,8 +1025,10 @@ impl DataNodeRuntime {
                     batch_limit: options.eviction_batch_limit,
                     dump_before_evict: options.eviction_dump_before_evict,
                     cooldown: gate_open,
-                    skipped_reason: if gate_open {
+                    skipped_reason: if gate_open && options.eviction_count_limit == 0 {
                         "eviction_count_limit"
+                    } else if gate_open {
+                        "eviction_batch_limit"
                     } else if index_bound_is_the_gate {
                         "index_resident_below_bound"
                     } else {
@@ -1068,11 +1070,7 @@ impl DataNodeRuntime {
             // keeps taking batches against a number nobody set. At the bound this term stops being
             // vacuous for the first time: a non-zero bar can actually be reached.
             let bounded_batch = |remaining_budget: usize| {
-                let limit = if options.eviction_batch_limit == 0 {
-                    remaining_budget
-                } else {
-                    options.eviction_batch_limit.min(remaining_budget)
-                };
+                let limit = options.eviction_batch_limit.min(remaining_budget);
                 batch(limit)
             };
             let first = bounded_batch(options.eviction_count_limit);

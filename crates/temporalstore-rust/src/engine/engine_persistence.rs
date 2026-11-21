@@ -196,6 +196,14 @@ impl TemporalEngine {
         &self,
         manifest: &BucketDumpManifest,
     ) -> Result<(), std::io::Error> {
+        self.persist_bucket_dump_manifest_metadata(manifest, false).map(|_| ())
+    }
+
+    pub(super) fn persist_bucket_dump_manifest_metadata(
+        &self,
+        manifest: &BucketDumpManifest,
+        capture_metadata: bool,
+    ) -> Result<Option<fs::Metadata>, std::io::Error> {
         let path =
             bucket_dump_manifest_path(&self.index_dir, manifest.shard_id, &manifest.manifest_id);
         // A bare protobuf body. This document carries one summary per bucket -- thousands of
@@ -210,7 +218,7 @@ impl TemporalEngine {
         // lost the records in between (the dumped index must be committed before
         // advancing the dumped-log id; both are waited on together). Atomic temp+rename
         // also prevents a torn manifest from hiding the whole listing on load.
-        atomic_write_bytes(&path, &bytes)
+        atomic_write_bytes_synced_metadata(&path, &bytes, true, capture_metadata)
     }
 
     pub(super) fn persist_bucket_dump_install_marker(

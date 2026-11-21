@@ -3520,6 +3520,27 @@ fn the_periodic_loop_can_evict_when_the_operator_asks() {
 }
 
 #[test]
+fn omitted_eviction_batches_use_the_default_while_explicit_zero_is_preserved() {
+    let mut periodic = serde_json::to_value(StorageManagerOptions::default()).unwrap();
+    periodic.as_object_mut().unwrap().remove("eviction_batch_limit");
+    let decoded: StorageManagerOptions = serde_json::from_value(periodic.clone()).unwrap();
+    assert_eq!(decoded.eviction_batch_limit, StorageManagerOptions::default().eviction_batch_limit);
+    assert!(decoded.eviction_batch_limit > 0);
+    periodic["eviction_batch_limit"] = serde_json::json!(0);
+    let decoded: StorageManagerOptions = serde_json::from_value(periodic).unwrap();
+    assert_eq!(decoded.eviction_batch_limit, 0);
+
+    let mut cycle = serde_json::to_value(StorageManagerCycleRequest::default()).unwrap();
+    cycle.as_object_mut().unwrap().remove("eviction_batch_limit");
+    let decoded: StorageManagerCycleRequest = serde_json::from_value(cycle.clone()).unwrap();
+    assert_eq!(decoded.eviction_batch_limit, StorageManagerCycleRequest::default().eviction_batch_limit);
+    assert!(decoded.eviction_batch_limit > 0);
+    cycle["eviction_batch_limit"] = serde_json::json!(0);
+    let decoded: StorageManagerCycleRequest = serde_json::from_value(cycle).unwrap();
+    assert_eq!(decoded.eviction_batch_limit, 0);
+}
+
+#[test]
 fn the_eviction_count_budget_bounds_the_first_batch_and_zero_does_no_work() {
     for (pressure_limit, index_limit) in [(1, 0), (0, 1)] {
         for count_limit in [0, 1] {
@@ -3540,6 +3561,7 @@ fn the_eviction_count_budget_bounds_the_first_batch_and_zero_does_no_work() {
                     DataNodeRuntimeOptions { worker_threads: 0, max_queue_depth: 4, max_background_queue_depth: 2 });
                 let resident = runtime.engine().bucket_index_resident_bytes(1);
                 assert!(resident > 1);
+                let frontier = runtime.engine().storage_dump_wal_sequence(1);
                 let round = runtime.run_storage_manager_once(1, StorageManagerOptions {
                     enable_prepare: false, enable_wal_reclaim: false, enable_memory_reclaim: false,
                     enable_expire: false, enable_block_gc: false, enable_index_gc: false,
@@ -3554,18 +3576,92 @@ fn the_eviction_count_budget_bounds_the_first_batch_and_zero_does_no_work() {
                 assert!(round.status.ok, "{:?}", round.status);
                 let report = round.eviction.as_ref().unwrap();
                 assert!(report.pressure_gate_open);
-                assert_eq!(report.selected_victims.len(), count_limit);
-                assert_eq!(report.bucket_index_buckets_released, count_limit);
+                let expected_victims = count_limit.min(batch_limit);
+                assert_eq!(report.selected_victims.len(), expected_victims);
+                assert_eq!(report.bucket_index_buckets_released, expected_victims);
                 assert_eq!(report.dropped_object_count, 0);
                 assert_eq!(report.bucket_index_bytes_before, resident);
-                if count_limit == 0 {
-                    assert_eq!(report.skipped_reason, "eviction_count_limit");
+                if expected_victims == 0 {
+                    assert_eq!(report.skipped_reason, if count_limit == 0 {
+                        "eviction_count_limit"
+                    } else {
+                        "eviction_batch_limit"
+                    });
                     assert!(report.dump_manifest_ids.is_empty());
+                    assert_eq!(runtime.engine().storage_dump_wal_sequence(1), frontier);
                     assert_eq!(runtime.engine().bucket_index_resident_bytes(1), resident);
                 } else {
                     assert!(report.skipped_reason.is_empty());
                     assert!(runtime.engine().bucket_index_resident_bytes(1) < resident);
                 }
+                drop(runtime);
+                let reopened = TemporalEngine::with_local_dirs(16 << 20,
+                    dir.path().join("cache-reopened"), dir.path().join("blocks"), dir.path().join("indexes"));
+                reopened.load_shard(1);
+                for index in 0..64 {
+                    assert_eq!(reopened.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringGet { key: format!("budget-{index:04}") },
+                    }).response, CommandResponse::Bytes { value: Some(vec![b'v'; 128]) });
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_cycle_with_zero_eviction_batch_does_no_work_under_pressure() {
+    for (pressure_limit, index_limit) in [(1, 0), (0, 1)] {
+        for batch_limit in [0, 1] {
+            let dir = tempdir().unwrap();
+            let engine = TemporalEngine::with_local_dirs(16 << 20,
+                dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"));
+            engine.load_shard(1);
+            for index in 0..64 {
+                assert!(engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet { key: format!("cycle-budget-{index:04}"), value: vec![b'v'; 128] },
+                }).status.ok);
+            }
+            let resident = engine.bucket_index_resident_bytes(1);
+            assert!(resident > 1);
+            let frontier = engine.storage_dump_wal_sequence(1);
+            let round = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+                shard_id: 1,
+                enable_prepare: false, enable_wal_reclaim: false, enable_expire: false,
+                enable_block_reclaim: false, enable_block_compaction: false, enable_index_gc: false,
+                enable_evict: true, eviction_dump_before_evict: true,
+                eviction_memory_pressure_threshold: pressure_limit,
+                index_resident_limit_bytes: index_limit,
+                eviction_batch_limit: batch_limit,
+                ..Default::default()
+            });
+            assert!(round.completed, "{round:?}");
+            let report = round.eviction_report.as_ref().unwrap();
+            assert!(report.pressure_gate_open, "{report:?}");
+            assert_eq!(report.selected_victims.len(), batch_limit);
+            assert_eq!(report.bucket_index_buckets_released, batch_limit);
+            assert_eq!(report.dropped_object_count, 0);
+            if batch_limit == 0 {
+                assert_eq!(report.skipped_reason, "eviction_batch_limit");
+                assert!(report.dump_manifest_ids.is_empty());
+                assert_eq!(engine.storage_dump_wal_sequence(1), frontier);
+                assert_eq!(engine.bucket_index_resident_bytes(1), resident);
+            } else {
+                assert!(report.skipped_reason.is_empty());
+                assert!(report.dump_manifest_ids.is_empty());
+                assert_eq!(engine.storage_dump_wal_sequence(1), frontier);
+                assert!(engine.bucket_index_resident_bytes(1) < resident);
+            }
+            drop(engine);
+            let reopened = TemporalEngine::with_local_dirs(16 << 20,
+                dir.path().join("cache-reopened"), dir.path().join("blocks"), dir.path().join("indexes"));
+            reopened.load_shard(1);
+            for index in 0..64 {
+                assert_eq!(reopened.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet { key: format!("cycle-budget-{index:04}") },
+                }).response, CommandResponse::Bytes { value: Some(vec![b'v'; 128]) });
             }
         }
     }

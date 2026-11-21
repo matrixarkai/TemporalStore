@@ -1058,6 +1058,7 @@ impl TemporalEngine {
             }
         }
         if !cleared_buckets.is_empty() {
+            storage_bucket_internals::clear_retained_inline_page_dirty_state(shard, &cleared_buckets);
             // STRAIGHT TO THE CLEARED BUCKETS' KEYS.
             //
             // The retain this replaces walked the WHOLE dirty set and re-hashed every key to
@@ -1609,7 +1610,9 @@ impl TemporalEngine {
                                         // carries no stamp of its own -- only `install_shard_state`
                                         // sets one -- so asking IT for a shard yields None and
                                         // fingerprints nothing.
-                                        bucket_generation_digests_by_bucket(shard_id, &manifest_state)
+                                        crate::engine::storage_reporting::bucket_generation_digests_for_coverage(
+                                            shard_id, &manifest_state, &manifest.bucket_ids,
+                                        )
                                     })
                             },
                         ),
@@ -2594,19 +2597,30 @@ impl TemporalEngine {
                 ..StorageEvictionReport::default()
             };
         }
-        // The gate has opened, so the per-bucket cache summaries are now worth their listing.
-        let before_cache = self.storage_cache_inspection_report(shard_id);
-        let cache_by_bucket = before_cache
-            .bucket_summaries
-            .iter()
-            .map(|summary| (summary.routing_bucket, summary.clone()))
-            .collect::<BTreeMap<_, _>>();
         let victims = if self
             .evict_sampled_lru
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            self.sampled_eviction_victims(shard_id, batch_limit, &cache_by_bucket)
+            // Sampling uses residency and recency, not cache byte totals. Inspect only the
+            // selected owners afterwards; key enumeration still belongs to the cache API.
+            let mut victims = self.sampled_eviction_victims(shard_id, batch_limit, &BTreeMap::new());
+            let buckets = victims.iter().map(|victim| victim.routing_bucket).collect();
+            let cache_by_bucket = self.storage_cache_summaries_for_buckets(shard_id, &buckets);
+            for victim in &mut victims {
+                if let Some(cache) = cache_by_bucket.get(&victim.routing_bucket) {
+                    victim.cache_memory_bytes = cache.memory_bytes;
+                    victim.cache_disk_bytes = cache.disk_bytes;
+                    victim.weight = cache.memory_bytes.saturating_mul(4)
+                        .saturating_add(cache.disk_bytes.saturating_mul(2))
+                        .saturating_add(victim.physical_bytes)
+                        .saturating_add(victim.dirty_object_count.saturating_mul(1024));
+                }
+            }
+            victims
         } else {
+            let cache_by_bucket = self.storage_cache_inspection_report(shard_id)
+                .bucket_summaries.into_iter()
+                .map(|summary| (summary.routing_bucket, summary)).collect::<BTreeMap<_, _>>();
             // BUILT IN THE ARM THAT READS IT. This clone used to be taken before the branch, and
             // the sampled arm never touched it: a whole-store copy on the way into the one
             // selection path written to avoid whole-store work. `EVICTION_RECENCY_ENTRIES_CLONED`
@@ -2710,11 +2724,22 @@ impl TemporalEngine {
             }
             victims
         };
+        let mut release = crate::engine::storage_bucket_internals::BucketReleaseOutcome::default();
+        if !delete_drop && !victims.is_empty() {
+            let candidates = victims.iter().map(|victim| victim.routing_bucket).collect::<Vec<_>>();
+            let mut shards = self.shards.write().expect("shards lock poisoned");
+            if let Some(shard) = shards.get_mut(&shard_id) {
+                let retained = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(shard, &candidates);
+                release.released_buckets = retained.released_buckets;
+                release.released_blocks = retained.released_blocks;
+            }
+        }
+        let retained_inline = release.released_buckets.iter().copied().collect::<BTreeSet<_>>();
         let mut dump_manifest_ids = Vec::new();
         if dump_before_evict {
             let dirty_buckets = victims
                 .iter()
-                .filter(|victim| victim.dirty_object_count > 0)
+                .filter(|victim| victim.dirty_object_count > 0 && !retained_inline.contains(&victim.routing_bucket))
                 .map(|victim| victim.routing_bucket)
                 .collect::<Vec<_>>();
             if !dirty_buckets.is_empty() {
@@ -2723,9 +2748,8 @@ impl TemporalEngine {
                     // Dumped means dumped. `apply_storage_lifecycle` has always paired the
                     // manifest with this clear; the eviction path created the manifest and left
                     // every bucket marked dirty, so "dump before evict" dumped and then evicted
-                    // nothing it had dumped. It also makes the release below possible at all --
-                    // a dirty bucket is refused, because the model maps carry no per-block dirty
-                    // bit for a reload to restore.
+                    // nothing it had dumped. This fallback still needs the clear for owners
+                    // whose per-page dirty state cannot be retained inline.
                     self.clear_dumped_bucket_dirty_state(shard_id, &manifest);
                 }
             }
@@ -2745,18 +2769,23 @@ impl TemporalEngine {
         // DESTROYING data. Releasing a victim's block list shrinks the index without losing
         // anything: the node stays routable and the next read loads its blocks back from the model
         // maps. Not attempted under `delete_drop`, where the victim's data is about to go.
-        let mut release = crate::engine::storage_bucket_internals::BucketReleaseOutcome::default();
         if !delete_drop && !victims.is_empty() {
             let candidates = victims
                 .iter()
                 .map(|victim| victim.routing_bucket)
+                .filter(|bucket| !retained_inline.contains(bucket))
                 .collect::<Vec<_>>();
             let mut shards = self.shards.write().expect("shards lock poisoned");
             if let Some(shard) = shards.get_mut(&shard_id) {
-                release = crate::engine::storage_bucket_internals::release_bucket_blocks(
+                let remaining = crate::engine::storage_bucket_internals::release_bucket_blocks(
                     shard,
                     &candidates,
                 );
+                release.released_buckets.extend(remaining.released_buckets);
+                release.released_buckets.sort_unstable();
+                release.released_blocks += remaining.released_blocks;
+                release.refused_buckets = remaining.refused_buckets;
+                release.refusals = remaining.refusals;
             }
         }
         let mut dropped_object_count = 0usize;
@@ -5343,7 +5372,7 @@ mod eviction_round_scale {
 /// An image names a WAL-resident block by a placement, and a block whose only durable copy is a log
 /// record needs that record until a newer image stops naming it. A resident block with no placement
 /// cannot prove a narrower floor, so it reads as 0.
-fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
+pub(super) fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
     let floor = snapshot
         .wal_resident_blocks
         .values()

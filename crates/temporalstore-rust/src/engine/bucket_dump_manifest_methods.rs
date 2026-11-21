@@ -205,6 +205,7 @@ impl TemporalEngine {
         let mut block_slab_ids = BTreeSet::new();
         let mut described_wal_blocks = 0usize;
         let mut lifecycle = ObjectLifecycleAccumulator::default();
+        let mut coverage_digests = crate::engine::storage_reporting::BucketDigestBuilder::default();
         // Consume block facts once without retaining a temporary row per field in the shard.
         let mut observe_entry = |entry: &LiveBlockEntry| {
             let slab = entry.address.block_slab_id();
@@ -218,6 +219,7 @@ impl TemporalEngine {
             let bucket = entry.filed_bucket().unwrap_or_else(|| self.routing_bucket_for_key(shard_id, &entry.object_key));
             if selected_buckets.is_empty() || selected_buckets.contains(&bucket) {
                 lifecycle.observe(shard_id, entry);
+                coverage_digests.observe(shard_id, entry);
             }
         };
         let summaries = match live_summaries {
@@ -253,6 +255,7 @@ impl TemporalEngine {
         let retirements = self.prepare_checkpoint_wal_retirements(
             shard_id, &mut dump_index_state, retained_objects, described_wal_blocks,
         );
+        let captured_wal_floor = super::storage_lifecycle_methods::wal_floor_of_index_image(&dump_index_state);
         if !retirements.is_empty() {
             captured_bytes = None;
         }
@@ -367,13 +370,16 @@ impl TemporalEngine {
         #[cfg(test)]
         super::writer_stall_probe::set_phase("dump: persist manifest + mark_dumped");
         let published = self.checkpoint_publications.publish(&publication, || {
-            self.persist_bucket_dump_manifest(&manifest)?;
+            let metadata = self.persist_bucket_dump_manifest_metadata(&manifest, true)?;
             self.wal_store.mark_dumped(shard_id);
-            Ok(())
+            Ok(metadata)
         }).map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
-        if published.is_none() {
+        let Some(metadata) = published else {
             return Err(Status::error("checkpoint_superseded", "a newer checkpoint was published during capture"));
-        }
+        };
+        bucket_dump_io::remember_published_capture(
+            &self.index_dir, &manifest, metadata.as_ref(), coverage_digests.finish(), captured_wal_floor,
+        );
         #[cfg(test)]
         super::writer_stall_probe::set_phase("dump: retirement under the shard write lock");
         self.finish_checkpoint_wal_retirements(

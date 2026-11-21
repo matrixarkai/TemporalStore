@@ -519,22 +519,38 @@ impl TemporalEngine {
                 || request.index_resident_limit_bytes < request.eviction_memory_pressure_threshold);
         let eviction_report = if request.enable_evict {
             let resident_bytes = pressure_signals.bucket_index_resident_bytes;
-            Some(if eviction_limit.is_none() || request.dry_run {
+            Some(if eviction_limit.is_none() || request.dry_run || request.eviction_batch_limit == 0 {
                 StorageEvictionReport {
                     shard_id: request.shard_id,
                     // ONE MODE, because there is one arm. The dry run used to echo the request's
                     // flag and name `delete_drop`, which is now a mode this stage cannot reach --
                     // a dry run that predicts an arm the real round will not take is worse than no
                     // prediction.
-                    mode: "evict_cache".to_string(),
+                    mode: if !request.dry_run && eviction_limit.is_some() && index_bound_is_the_gate {
+                        "index_resident_bound"
+                    } else {
+                        "evict_cache"
+                    }.to_string(),
                     pressure_before: resident_bytes,
                     pressure_after: resident_bytes,
                     bucket_index_bytes_before: resident_bytes,
                     bucket_index_bytes_after: resident_bytes,
                     memory_pressure_threshold: eviction_limit.unwrap_or(0),
+                    pressure_gate_open: !request.dry_run
+                        && eviction_limit.is_some_and(|limit| resident_bytes > limit),
                     batch_limit: request.eviction_batch_limit,
                     dump_before_evict: request.eviction_dump_before_evict,
-                    skipped_reason: if eviction_limit.is_none() { "no_memory_limit" } else { "dry_run" }.to_string(),
+                    cooldown: !request.dry_run
+                        && eviction_limit.is_some_and(|limit| resident_bytes > limit),
+                    skipped_reason: if eviction_limit.is_none() {
+                        "no_memory_limit"
+                    } else if request.dry_run {
+                        "dry_run"
+                    } else if resident_bytes <= eviction_limit.unwrap() {
+                        if index_bound_is_the_gate { "index_resident_below_bound" } else { "memory_pressure_below_threshold" }
+                    } else {
+                        "eviction_batch_limit"
+                    }.to_string(),
                     ..StorageEvictionReport::default()
                 }
             } else if index_bound_is_the_gate {
