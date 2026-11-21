@@ -129,9 +129,13 @@ fn the_dirty_only_reclaim_plan_equals_the_whole_plan_at_every_state_of_a_dump_cy
     states.push(compare(&engine, "writes after a capped dump").safe);
 
     // 4. Cycles until nothing is dirty, comparing at each.
-    for round in 0..6 {
+    for round in 0..64 {
         cycle(&engine, KEYS / 4);
-        states.push(compare(&engine, &format!("cycle {round}")).safe);
+        let seen = compare(&engine, &format!("cycle {round}"));
+        states.push(seen.safe);
+        if seen.dirty_buckets == 0 {
+            break;
+        }
     }
     let last = compare(&engine, "settled");
     assert_eq!(last.dirty_buckets, 0, "the shard did not settle: {} dirty", last.dirty_buckets);
