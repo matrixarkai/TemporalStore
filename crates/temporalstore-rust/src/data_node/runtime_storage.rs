@@ -494,22 +494,26 @@ struct LoopSpans {
     started: std::time::Instant,
     clock: std::time::Instant,
     rows: Vec<StorageManagerLoopStageSpan>,
+    io: super::stage_io_probe::StageIoProbe,
 }
 
 impl LoopSpans {
     fn start() -> Self {
         crate::engine::reset_stage_walk_charges();
+        let io = super::stage_io_probe::StageIoProbe::from_environment();
         let now = std::time::Instant::now();
         Self {
             started: now,
             clock: now,
             rows: Vec::new(),
+            io,
         }
     }
 
     /// A stage ran when its name is the last thing pushed on `executed`; stages push exactly once
     /// and in order, so no earlier entry can be mistaken for it.
     fn close(&mut self, stage: &str, executed: &[String]) {
+        self.io.mark();
         let elapsed = self.clock.elapsed();
         let start_offset = self.clock.saturating_duration_since(self.started);
         self.clock = std::time::Instant::now();
@@ -1982,7 +1986,7 @@ impl DataNodeRuntime {
         if let Some(purge) = block_purge_report {
             record_purge_work(&mut lifecycle_report, &lifecycle_plan, purge, detailed_report);
         }
-        {
+        let completed_round = {
             // Recorded beside the round counter, so every caller gets it: the per-shard
             // scheduler, the all-shards scheduler, and the cycle endpoint.
             let mut stats = self.inner.stats.lock().expect("runtime stats lock poisoned");
@@ -2019,7 +2023,9 @@ impl DataNodeRuntime {
                 timing.total_us = timing.total_us.saturating_add(row.duration_us);
                 timing.max_us = timing.max_us.max(row.duration_us);
             }
-        }
+            stats.storage_manager_loops.saturating_sub(1)
+        };
+        spans.io.emit(completed_round, shard_id, &spans.rows);
 
         // Compact execution reports above carry the dump manifest needed by index-GC fences.
         // Never expose their uncollected diagnostic fields as a complete lifecycle report.
