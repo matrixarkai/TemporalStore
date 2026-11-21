@@ -204,11 +204,13 @@ fn deleted_sealed_files_are_not_read_through_retained_descriptors() {
 fn stale_directory_generations_force_one_refresh_when_another_writer_rolls() {
     let _policy = RollPolicy::new(1);
     let dir = tempfile::tempdir().unwrap();
+    // One writer owns the directory; the store under test only reads it, so it never takes the
+    // append lock the writer holds.
+    let writer = LocalWriteAheadLogStore::new(dir.path());
+    let first = append(&writer, 7, 1);
     let store = LocalWriteAheadLogStore::new(dir.path());
-    let first = append(&store, 7, 1);
     read(&store, 7, first, 0, 1);
-    let other = LocalWriteAheadLogStore::new(dir.path());
-    let second = append(&other, 7, 2);
+    let second = append(&writer, 7, 2);
     {
         // Simulate a filesystem whose directory timestamps did not distinguish the roll.
         let mut inner = store.inner.lock().unwrap();

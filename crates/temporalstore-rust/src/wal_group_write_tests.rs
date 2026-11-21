@@ -388,8 +388,8 @@ fn group_write_a_batch_opens_the_log_once_and_asks_its_length_once() {
     store.commit_barrier(1, rec.sequence).unwrap();
     let opens = WAL_BARRIER_REOPENS.with(|opens| opens.get());
     assert_eq!(
-        asks_after_append, 1,
-        "the append that opens a batch must ask the piece's length once, not once for the piece          check and again for the tail check"
+        asks_after_append, 0,
+        "a warm append asks no length at all: the lock is held for the store life and the record end is cached"
     );
     assert_eq!(opens, 0, "the barrier must sync the handle the write went through, not reopen the log");
 }
