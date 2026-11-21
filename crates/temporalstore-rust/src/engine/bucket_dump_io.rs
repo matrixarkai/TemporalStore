@@ -417,7 +417,7 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
     raft_snapshot_refs: &[BucketDumpRaftSnapshotRef],
 ) -> Result<BucketDumpManifestPrunePlan, std::io::Error> {
     let manifests = list_bucket_dump_manifests_shared_at(index_dir, shard_id)?;
-    let mut retained = retained_bucket_dump_manifest_ids(&manifests);
+    let mut retained = retained_bucket_dump_manifest_ids_memoised(&manifests);
     let mut follower_blocks = Vec::new();
     let mut raft_snapshot_blocks = Vec::new();
     for cursor in follower_cursors
@@ -778,6 +778,7 @@ pub(super) fn clear_bucket_dump_manifest_parse_memo() {
     MANIFEST_DIGEST_MEMO.with(|memo| memo.borrow_mut().clear());
     MANIFEST_WAL_FLOOR_MEMO.with(|memo| memo.borrow_mut().clear());
     PUBLISHED_CAPTURE_FACTS.with(|memo| memo.borrow_mut().clear());
+    RETAINED_IDS_MEMO.with(|memo| memo.borrow_mut().clear());
 }
 
 type ManifestWalFloor = Result<Option<u64>, ()>;
@@ -897,6 +898,87 @@ pub fn reset_manifest_digest_memo_counts() {
     MANIFEST_DIGEST_MISSES.with(|cell| cell.set(0));
 }
 
+struct RetainedIdsEntry {
+    /// Held, not just compared, so the addresses stay this list's identity for as long as the entry
+    /// exists (the digest memo above argues the same).
+    manifests: Vec<std::sync::Arc<BucketDumpManifest>>,
+    retained: BTreeSet<String>,
+}
+
+/// WHICH MANIFESTS THE SHARD KEEPS, FOR A LIST OF MANIFESTS THIS THREAD HAS ALREADY SEEN.
+///
+/// `retained_bucket_dump_manifest_ids` walks the manifests newest first and builds the set of every
+/// bucket they cover, so one call costs a set insert per bucket per retained manifest. It is a pure
+/// function of the manifests' content, a manifest is never rewritten, and the listing hands out the
+/// same `Arc` for as long as the file is unchanged -- so the same list of allocations is the same
+/// answer. The plan asked it on every round of a drained shard, where nothing moves: about half of
+/// one quiet round's instructions at a thousand keys.
+///
+/// A NEW MANIFEST, A PRUNED ONE, OR A REWRITTEN FILE IS A DIFFERENT LIST and misses. An entry lives
+/// only while something other than this memo holds every one of its manifests, the same bound the
+/// digest memo has.
+thread_local! {
+    static RETAINED_IDS_MEMO: std::cell::RefCell<Vec<RetainedIdsEntry>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static RETAINED_IDS_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static RETAINED_IDS_MISSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+pub(super) fn retained_bucket_dump_manifest_ids_memoised(
+    manifests: &[std::sync::Arc<BucketDumpManifest>],
+) -> BTreeSet<String> {
+    let enabled = manifest_parse_memo_enabled();
+    if enabled {
+        let hit = RETAINED_IDS_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            memo.retain(|entry| {
+                entry
+                    .manifests
+                    .iter()
+                    .all(|manifest| std::sync::Arc::strong_count(manifest) > 1)
+            });
+            memo.iter()
+                .find(|entry| {
+                    entry.manifests.len() == manifests.len()
+                        && entry
+                            .manifests
+                            .iter()
+                            .zip(manifests)
+                            .all(|(held, asked)| std::sync::Arc::ptr_eq(held, asked))
+                })
+                .map(|entry| entry.retained.clone())
+        });
+        if let Some(retained) = hit {
+            RETAINED_IDS_HITS.with(|cell| cell.set(cell.get().saturating_add(1)));
+            return retained;
+        }
+    }
+    RETAINED_IDS_MISSES.with(|cell| cell.set(cell.get().saturating_add(1)));
+    let retained = retained_bucket_dump_manifest_ids(manifests);
+    if enabled {
+        RETAINED_IDS_MEMO.with(|memo| {
+            memo.borrow_mut().push(RetainedIdsEntry {
+                manifests: manifests.to_vec(),
+                retained: retained.clone(),
+            });
+        });
+    }
+    retained
+}
+
+/// How many retained-set lookups this thread served from memory, and how many computed.
+pub fn retained_ids_memo_counts() -> (u64, u64) {
+    (
+        RETAINED_IDS_HITS.with(std::cell::Cell::get),
+        RETAINED_IDS_MISSES.with(std::cell::Cell::get),
+    )
+}
+
+/// Zero the two counts, so a probe measures a round rather than a thread's history.
+pub fn reset_retained_ids_memo_counts() {
+    RETAINED_IDS_HITS.with(|cell| cell.set(0));
+    RETAINED_IDS_MISSES.with(|cell| cell.set(0));
+}
 #[cfg(test)]
 thread_local! {
     static MANIFEST_PARSE_MEMO_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

@@ -1916,3 +1916,50 @@ fn a_quiet_tick_cycle_walks_no_live_block_at_any_scale() {
         );
     }
 }
+
+/// Per-stage latency of the unattended loop's quiet round: `LOOP_KEYS=<n>`, `LOOP_ROUNDS=<n>`
+/// (default 200), `--ignored --nocapture --test-threads=1`, release. Counts are the claim; the
+/// microseconds are how long this box took.
+#[test]
+#[ignore]
+fn a_quiet_round_by_stage_p50_and_p99() {
+    let keys = std::env::var("LOOP_KEYS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000usize);
+    let rounds = std::env::var("LOOP_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200usize);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = drained_runtime(dir.path(), keys);
+    let shipped = StorageManagerOptions::default();
+    let mut totals = Vec::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut per_stage: std::collections::BTreeMap<String, (Vec<u64>, u64, usize)> = Default::default();
+    for _ in 0..rounds {
+        let report = runtime.run_storage_manager_once(1, shipped.clone());
+        totals.push(report.duration_us);
+        for span in &report.stage_spans {
+            if !order.contains(&span.stage) {
+                order.push(span.stage.clone());
+            }
+            let row = per_stage.entry(span.stage.clone()).or_default();
+            row.0.push(span.duration_us);
+            row.1 = row.1.max(span.walk.live_block_entries);
+            row.2 += usize::from(span.executed);
+        }
+    }
+    totals.sort_unstable();
+    eprintln!(
+        "QLAT keys={keys} rounds={rounds} state=[{}] round_us p50={} p99={} max={}",
+        state(&runtime, &shipped),
+        percentile(&totals, 50),
+        percentile(&totals, 99),
+        totals[totals.len() - 1]
+    );
+    for stage in &order {
+        let (mut us, walk, ran) = per_stage[stage].clone();
+        us.sort_unstable();
+        eprintln!(
+            "QLAT keys={keys} {stage:<18} ran {ran:>3}/{rounds} max_walk={walk:<6} us p50={:<6} p99={:<6} max={}",
+            percentile(&us, 50),
+            percentile(&us, 99),
+            us[us.len() - 1]
+        );
+    }
+}
