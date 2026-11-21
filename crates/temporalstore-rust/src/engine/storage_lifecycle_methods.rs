@@ -2756,15 +2756,12 @@ impl TemporalEngine {
         }
         let mut cache_entries_removed = 0usize;
         let mut cache_disk_bytes_removed = 0u64;
-        for victim in &victims {
-            if let Ok(report) = self.cache.invalidate_slot(shard_id, victim.routing_bucket) {
-                cache_entries_removed =
-                    cache_entries_removed.saturating_add(report.memory_entries_removed);
-                cache_disk_bytes_removed =
-                    cache_disk_bytes_removed.saturating_add(report.disk_bytes_removed);
-            }
+        let victim_buckets = victims.iter().map(|victim| victim.routing_bucket).collect::<Vec<_>>();
+        if let Ok(report) = self.cache.invalidate_slots(shard_id, &victim_buckets) {
+            cache_entries_removed = report.memory_entries_removed;
+            cache_disk_bytes_removed = report.disk_bytes_removed;
         }
-        // THE ACTUATOR. `invalidate_slot` above drops cached blocks and leaves every `BucketNode`
+        // THE ACTUATOR. `invalidate_slots` above drops cached blocks and leaves every `BucketNode`
         // whole, so the only mode that ever shrank the index was `delete_drop` -- which does it by
         // DESTROYING data. Releasing a victim's block list shrinks the index without losing
         // anything: the node stays routable and the next read loads its blocks back from the model
