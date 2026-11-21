@@ -64,3 +64,19 @@ Residual, the same in both modes: a request still in flight inside a slow server
 after a read-back said "absent". Closing it needs the append fence (a no-op generation bump
 published before a retry); the contract is the gateway-side "append fence" design. Until then, keep a
 sequence number in the WAL payload so a duplicate is detectable.
+
+## Cluster only
+
+MatrixObject is reached through a cluster, by a gateway or directly, and in no other way. The
+node-local, in-process MatrixObject store has been retired, together with what only it used:
+
+- `TS_MATRIXOBJECT_STORE_DIR` is **refused at start-up** by name. It used to point a node at a
+  private on-disk snapshot, which is not shared storage whatever the bucket was called.
+- `TS_MATRIXOBJECT_SYNC_FLUSH`, `TS_MATRIXOBJECT_FLUSH_INTERVAL_MS`, `TS_MATRIXOBJECT_FLUSH_BATCH`
+  and `TS_MATRIXOBJECT_CHECKPOINT_ON_START` tuned that path and are no longer read. The cluster
+  path publishes each write before it acknowledges it and has
+  `TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START`.
+- `TS_STORAGE_BACKEND=matrixobject` without `TS_SHARED_STORE_URI` or `TS_MATRIXOBJECT_META` refuses
+  to start, and `auto` no longer selects MatrixObject unless a configured
+  `TS_MATRIXOBJECT_ENDPOINT` answers.
+- The `matrixobject` cargo feature stays: direct mode needs it for the cluster client.

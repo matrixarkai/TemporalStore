@@ -3,11 +3,10 @@
 //
 // Large-file / attachment throughput bench for the shared-store blob path.
 // Measures append_blob (chunked write) MB/s + whole-object read MB/s for a
-// range of attachment sizes against the FileObjectStore backend, and against
-// the in-process MatrixObject store when built with `--features matrixobject`.
+// range of attachment sizes against the FileObjectStore backend.
 //
 // Usage:
-//   large_blob_throughput_bench [--backend file|matrixobject] \
+//   large_blob_throughput_bench [--backend file] \
 //       [--sizes-mb 1,16,128] [--chunk-kb 1024] [--root <dir>]
 
 use std::sync::Arc;
@@ -103,17 +102,8 @@ async fn main() {
             let store = Arc::new(FileObjectStore::new(std::path::PathBuf::from(&root)));
             bench_store(store, "file", &o.sizes_mb, o.chunk_kb).await;
         }
-        #[cfg(feature = "matrixobject")]
-        "matrixobject" => {
-            use matrixobjectstore_rs::StoreOptions;
-            use temporalstore_rust::MatrixObjectObjectStore;
-            let store = Arc::new(
-                MatrixObjectObjectStore::new("blob-bench", StoreOptions::default()).unwrap(),
-            );
-            bench_store(store, "matrixobject", &o.sizes_mb, o.chunk_kb).await;
-        }
         other => {
-            eprintln!("unsupported backend {other:?} (built without matrixobject feature?)");
+            eprintln!("unsupported backend {other:?} (only `file` is supported)");
             std::process::exit(2);
         }
     }

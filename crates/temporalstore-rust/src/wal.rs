@@ -2255,10 +2255,10 @@ impl LocalWriteAheadLogStore {
     /// group-commit batch window, and is the documented meaning of `TS_WAL_COMMIT_DELAY_US` /
     /// `[wal] commit_delay_us`. UNTIL THIS WRAPPER EXISTED IT WIDENED NOTHING ON THIS PATH.
     /// Renaming the function and building `--all-targets` produced ZERO diagnostics: nothing a
-    /// default build compiles called it. Its only caller in the tree is
-    /// `wire_matrixobject_durability`, which is `#[cfg(feature = "matrixobject")]` -- a
-    /// non-default feature -- and even there it configures the SHARED STORE's group commit, not
-    /// this one. The knob was read by nothing on the path its own documentation names.
+    /// default build compiles called it. Its only caller in the tree was
+    /// the node-local matrixobject wiring, which was `#[cfg(feature = "matrixobject")]` -- a
+    /// non-default feature -- and even there it configured the SHARED STORE's group commit, not
+    /// this one. That wiring has since been retired. The knob was read by nothing on the path its own documentation names.
     ///
     /// The zero-diagnostic rename is not by itself evidence: it is byte-identical to a gate
     /// that never compiled the call site. So the inverse control was run -- a planted type
@@ -7627,7 +7627,7 @@ mod tests {
     ///
     /// # WHY THIS EXISTS SEPARATELY FROM THE SHARED STORE'S FIGURE
     ///
-    /// The per-append envelope measured by `one_append_amplification_report` is the SHARED STORE's
+    /// The per-append envelope measured by the retired `one_append_amplification_report` is the SHARED STORE's
     /// (`SharedStoreWalAppendMode::ProtobufAppendBlob`, summed over objects under the shard's
     /// shared WAL prefix). This log is a different encoder on a different path, so none of that
     /// figure carries over and neither does its direction.
@@ -7907,7 +7907,7 @@ mod tests {
         /// This is the LOCAL log's record: `encode_wal_payload` (a hand-written and generated
         /// protobuf of `EngineWalRecord`, marker byte first) inside `log_framing::encode_record`
         /// (a marker, a varint length and a CRC32C). It is NOT the shared store's log frame,
-        /// which `one_append_amplification_report` measures over two objects, and it is not the
+        /// which the retired `one_append_amplification_report` measured over two objects, and it is not the
         /// `TSIDX` container, whose byte figure is a compressed size and cannot name a field.
         mod every_byte_named {
             use super::*;
