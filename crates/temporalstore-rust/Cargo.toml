@@ -74,6 +74,10 @@ matrixobject = ["dep:matrixobjectstore-rs"]
 name = "direct_vs_gateway_latency"
 required-features = ["matrixobject"]
 
+[[example]]
+name = "direct_wal_index_e2e"
+required-features = ["matrixobject"]
+
 [[bin]]
 # Needs the counting allocator to say anything; it refuses to run without it rather than printing
 # a table of zeros.
