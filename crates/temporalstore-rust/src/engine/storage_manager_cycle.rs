@@ -13,7 +13,7 @@
 //! single-shard behavior was byte-identical either way.
 
 use super::*;
-use crate::engine::reports::StageWalkCharges;
+use crate::engine::reports::{configured_eviction_memory_limit, StageWalkCharges};
 
 /// One stage's measured span: how long its WORK took, and how much of the store that work walked.
 ///
@@ -31,9 +31,7 @@ use crate::engine::reports::StageWalkCharges;
 /// was still live for four more stages, which is why the round's own breakdown could not be used
 /// to decide which stage to bound.
 ///
-/// A stage whose work is in two pieces (`reclaim_wal` dumps before it reclaims, with `evict`
-/// between) closes a span for each and adds them, so the row reports the stage rather than the
-/// interval.
+/// Dump publication and physical log retirement close separate spans at their own boundaries.
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct StageSpan {
     duration_ms: u64,
@@ -60,31 +58,6 @@ impl StageSpan {
         }
     }
 
-    /// The two pieces of a stage whose work is not one interval.
-    fn plus(self, other: Self) -> Self {
-        Self {
-            duration_ms: self.duration_ms.saturating_add(other.duration_ms),
-            duration_us: self.duration_us.saturating_add(other.duration_us),
-            walk: StageWalkCharges {
-                live_block_entries: self
-                    .walk
-                    .live_block_entries
-                    .saturating_add(other.walk.live_block_entries),
-                bucket_block_index_visits: self
-                    .walk
-                    .bucket_block_index_visits
-                    .saturating_add(other.walk.bucket_block_index_visits),
-                index_encodes: self
-                    .walk
-                    .index_encodes
-                    .saturating_add(other.walk.index_encodes),
-                index_encode_bytes: self
-                    .walk
-                    .index_encode_bytes
-                    .saturating_add(other.walk.index_encode_bytes),
-            },
-        }
-    }
 }
 
 /// How many live blocks one maintenance round checks for readability.
@@ -499,26 +472,7 @@ impl TemporalEngine {
             Some(self.apply_storage_lifecycle(lifecycle_request))
         };
         // Dump and warmup are charged to WAL reclaim; later cleanup stays in its own stage.
-        let reclaim_wal_dump_span = StageSpan::close(&mut stage_clock);
-        let wal_reclaim_plan = self.storage_wal_reclaim_plan(
-            request.shard_id,
-            request.follower_replay_cursors.clone(),
-            request.raft_snapshot_refs.clone(),
-        );
-        let wal_reclaim_report = if request.enable_wal_reclaim {
-            Some(if request.dry_run {
-                StorageWalReclaimReport {
-                    plan: wal_reclaim_plan.clone(),
-                    applied: false,
-                    ..StorageWalReclaimReport::default()
-                }
-            } else {
-                self.apply_storage_wal_reclaim(wal_reclaim_plan.clone())
-            })
-        } else {
-            None
-        };
-        let reclaim_wal_span = reclaim_wal_dump_span.plus(StageSpan::close(&mut stage_clock));
+        let reclaim_wal_span = StageSpan::close(&mut stage_clock);
         stage_boundary_order.push("reclaim_wal".to_string());
         let mut expiry_report = None;
         if request.enable_expire && !request.dry_run {
@@ -557,27 +511,54 @@ impl TemporalEngine {
             pressure_signals.memory_cache_bytes = warmed_cache.memory_bytes;
             pressure_signals.memory_cache_pressure_score = warmed_memory_pressure;
         }
+        let eviction_limit = configured_eviction_memory_limit(
+            request.eviction_memory_pressure_threshold, request.index_resident_limit_bytes,
+        );
+        let index_bound_is_the_gate = request.index_resident_limit_bytes > 0
+            && (request.eviction_memory_pressure_threshold == 0
+                || request.index_resident_limit_bytes < request.eviction_memory_pressure_threshold);
         let eviction_report = if request.enable_evict {
-            Some(if request.dry_run {
+            let resident_bytes = pressure_signals.bucket_index_resident_bytes;
+            Some(if eviction_limit.is_none() || request.dry_run || request.eviction_batch_limit == 0 {
                 StorageEvictionReport {
                     shard_id: request.shard_id,
                     // ONE MODE, because there is one arm. The dry run used to echo the request's
                     // flag and name `delete_drop`, which is now a mode this stage cannot reach --
                     // a dry run that predicts an arm the real round will not take is worse than no
                     // prediction.
-                    mode: "evict_cache".to_string(),
-                    pressure_before: pressure_signals
-                        .memory_cache_pressure_score
-                        .saturating_add(pressure_signals.disk_cache_bytes),
-                    pressure_after: pressure_signals
-                        .memory_cache_pressure_score
-                        .saturating_add(pressure_signals.disk_cache_bytes),
-                    memory_pressure_threshold: request.eviction_memory_pressure_threshold,
+                    mode: if !request.dry_run && eviction_limit.is_some() && index_bound_is_the_gate {
+                        "index_resident_bound"
+                    } else {
+                        "evict_cache"
+                    }.to_string(),
+                    pressure_before: resident_bytes,
+                    pressure_after: resident_bytes,
+                    bucket_index_bytes_before: resident_bytes,
+                    bucket_index_bytes_after: resident_bytes,
+                    memory_pressure_threshold: eviction_limit.unwrap_or(0),
+                    pressure_gate_open: !request.dry_run
+                        && eviction_limit.is_some_and(|limit| resident_bytes > limit),
                     batch_limit: request.eviction_batch_limit,
                     dump_before_evict: request.eviction_dump_before_evict,
-                    skipped_reason: "dry_run".to_string(),
+                    cooldown: !request.dry_run
+                        && eviction_limit.is_some_and(|limit| resident_bytes > limit),
+                    skipped_reason: if eviction_limit.is_none() {
+                        "no_memory_limit"
+                    } else if request.dry_run {
+                        "dry_run"
+                    } else if resident_bytes <= eviction_limit.unwrap() {
+                        if index_bound_is_the_gate { "index_resident_below_bound" } else { "memory_pressure_below_threshold" }
+                    } else {
+                        "eviction_batch_limit"
+                    }.to_string(),
                     ..StorageEvictionReport::default()
                 }
+            } else if index_bound_is_the_gate {
+                self.apply_index_resident_bound(
+                    request.shard_id,
+                    request.index_resident_limit_bytes,
+                    request.eviction_batch_limit,
+                )
             } else {
                 self.apply_storage_eviction(
                     request.shard_id,
@@ -593,21 +574,6 @@ impl TemporalEngine {
                     false,
                 )
             })
-        } else if request.index_resident_limit_bytes > 0 && !request.dry_run {
-            // THE NARROW BOUND RUNS WITH THE WIDE STAGE OFF, which is the whole reason it is a
-            // separate arm. `enable_evict` carries a threshold, and the shipped threshold is 0 --
-            // "evicts whenever it runs" -- so a bound that inherited the flag's state would have
-            // inherited an always-open gate. On the periodic loop the two are reconciled by taking
-            // the higher bar; here, where the flag is explicit in the request, the flag wins and
-            // this arm is what a caller gets by setting only the bound.
-            //
-            // It reports through the same field because it reaches the same release, so an
-            // operator reads one eviction report either way -- `mode` says which gate opened.
-            Some(self.apply_index_resident_bound(
-                request.shard_id,
-                request.index_resident_limit_bytes,
-                request.eviction_batch_limit,
-            ))
         } else {
             None
         };
@@ -615,6 +581,36 @@ impl TemporalEngine {
         // rather than to the dump that warmed the cache.
         let evict_span = StageSpan::close(&mut stage_clock);
         stage_boundary_order.push("evict".to_string());
+        let page_log_plan_built = request.enable_block_reclaim
+            && self.storage_dump_wal_sequence(request.shard_id).unwrap_or(0) > 0;
+        let mut wal_reclaim_plan = if page_log_plan_built {
+            self.storage_wal_reclaim_plan(
+                request.shard_id,
+                request.follower_replay_cursors.clone(),
+                request.raft_snapshot_refs.clone(),
+            )
+        } else {
+            StorageWalReclaimPlan {
+                shard_id: request.shard_id,
+                blocker_reasons: vec!["page_collection_has_no_published_log_work".to_string()],
+                ..Default::default()
+            }
+        };
+        let wal_reclaim_report = if request.enable_block_reclaim || request.enable_wal_reclaim {
+            Some(if request.dry_run || !page_log_plan_built {
+                StorageWalReclaimReport {
+                    plan: wal_reclaim_plan.clone(),
+                    applied: false,
+                    ..StorageWalReclaimReport::default()
+                }
+            } else {
+                self.apply_storage_wal_reclaim(wal_reclaim_plan.clone())
+            })
+        } else {
+            None
+        };
+        let page_log_work = wal_reclaim_report.as_ref()
+            .is_some_and(|report| report.wal_records_removed > 0 || report.wal_segments_dropped > 0);
         // ONE PINNED SLAB NO LONGER SUPPRESSES THE REST.
         //
         // The dependency plan already works out, per slab, which candidates are pinned and which
@@ -736,6 +732,13 @@ impl TemporalEngine {
         self.publish_block_slab_live_bytes();
         let reclaim_block_span = StageSpan::close(&mut stage_clock);
         stage_boundary_order.push("reclaim_page".to_string());
+        if request.enable_index_gc && !page_log_plan_built {
+            wal_reclaim_plan = self.storage_wal_reclaim_plan(
+                request.shard_id,
+                request.follower_replay_cursors.clone(),
+                request.raft_snapshot_refs.clone(),
+            );
+        }
         if request.enable_index_gc && !request.dry_run {
             if let Some(report) = lifecycle_report.as_mut() {
                 report.manifest_prune_plan = self.bucket_dump_manifest_prune_plan_with_follower_cursors(
@@ -772,54 +775,30 @@ impl TemporalEngine {
             stage: "reclaim_wal".to_string(),
             wal_resident_blocks_materialised,
             enabled: request.enable_wal_reclaim,
-            applied: wal_reclaim_report
-                .as_ref()
-                .map(|report| report.applied)
-                .unwrap_or(false),
+            applied: request.enable_wal_reclaim && !request.dry_run
+                && (wal_resident_blocks_materialised > 0 || lifecycle_report.as_ref()
+                    .and_then(|report| report.dump_manifest.as_ref()).is_some()),
             skipped: !request.enable_wal_reclaim
-                || plan.dump_delayed
-                || wal_reclaim_report
-                    .as_ref()
-                    .map(|report| !report.plan.safe_to_reclaim)
-                    .unwrap_or(true),
+                || plan.dump_delayed,
             reason: if !request.enable_wal_reclaim {
-                "wal reclaim disabled".to_string()
+                "dirty slot dump disabled".to_string()
             } else if plan.dump_delayed {
                 "dirty slot dump delayed until the configured undumped log threshold is reached"
                     .to_string()
-            } else if wal_reclaim_report
-                .as_ref()
-                .map(|report| !report.plan.safe_to_reclaim)
-                .unwrap_or(true)
-            {
-                format!(
-                    "WAL/index-log reclaim blocked until durable slot generations and retention cursors allow it: {}",
-                    wal_reclaim_report
-                        .as_ref()
-                        .map(|report| report.plan.blocker_reasons.join(","))
-                        .unwrap_or_default()
-                )
             } else {
-                "reclaimed WAL/index-log through the slot-generation durable dump frontier"
-                    .to_string()
+                "published dirty slot dumps; physical log retirement is deferred to page collection".to_string()
             },
             selected_buckets: plan.selected_dump_buckets.clone(),
             pressure_signal:
-                "durable_slot_generation_frontier+follower_snapshot_retention+wal_bytes+index_log_bytes"
+                "dirty_slots+undumped_wal_bytes"
                     .to_string(),
             pressure_score: pressure_signals
                 .undumped_wal_records
                 .saturating_add(pressure_signals.wal_bytes)
                 .saturating_add(pressure_signals.index_log_bytes),
-            pressure_threshold: wal_reclaim_report
-                .as_ref()
-                .map(|report| report.plan.retain_from_wal_sequence)
-                .unwrap_or(request.min_undumped_wal_records),
+            pressure_threshold: request.min_undumped_wal_records,
             pressure_triggered: request.enable_wal_reclaim
-                && wal_reclaim_report
-                    .as_ref()
-                    .map(|report| report.plan.safe_to_reclaim)
-                    .unwrap_or(false),
+                && !plan.dump_delayed,
             candidate_count: plan.dirty_buckets.len(),
             skipped_count: plan
                 .dirty_buckets
@@ -834,31 +813,6 @@ impl TemporalEngine {
                 .as_ref()
                 .and_then(|report| report.dump_manifest.as_ref())
                 .map(|manifest| manifest.bucket_ids.len())
-                .unwrap_or_default(),
-            wal_records_removed: wal_reclaim_report
-                .as_ref()
-                .map(|report| report.wal_records_removed)
-                .unwrap_or_default(),
-            index_log_records_removed: wal_reclaim_report
-                .as_ref()
-                .map(|report| report.index_log_records_removed)
-                .unwrap_or_default(),
-            retention_blockers: wal_reclaim_report
-                .as_ref()
-                .map(|report| {
-                    report
-                        .plan
-                        .follower_cursor_block_count
-                        .saturating_add(report.plan.raft_snapshot_block_count)
-                })
-                .unwrap_or_default(),
-            retain_from_wal_sequence: wal_reclaim_report
-                .as_ref()
-                .map(|report| report.plan.retain_from_wal_sequence)
-                .unwrap_or_default(),
-            retain_from_index_log_sequence: wal_reclaim_report
-                .as_ref()
-                .map(|report| report.plan.retain_from_index_log_sequence)
                 .unwrap_or_default(),
             ..StorageManagerStageReport::default()
         });
@@ -917,6 +871,7 @@ impl TemporalEngine {
                     report.cache_entries_removed > 0
                         || report.cache_disk_bytes_removed > 0
                         || report.dropped_object_count > 0
+                        || report.bucket_index_buckets_released > 0
                 })
                 .unwrap_or(false),
             skipped: !request.enable_evict
@@ -931,7 +886,7 @@ impl TemporalEngine {
                 .map(|report| !report.pressure_gate_open)
                 .unwrap_or(false)
             {
-                "eviction skipped because memory/cache pressure is below threshold".to_string()
+                eviction_report.as_ref().map(|report| report.skipped_reason.clone()).unwrap_or_default()
             } else if eviction_report
                 .as_ref()
                 .map(|report| report.cooldown)
@@ -960,16 +915,8 @@ impl TemporalEngine {
                         })
                         .unwrap_or_default(),
                 ),
-            pressure_threshold: request.eviction_memory_pressure_threshold,
-            pressure_triggered: pressure_signals.memory_cache_pressure_score > 0
-                || pressure_signals.disk_cache_bytes > 0
-                || pressure_signals.bucket_index_resident_bytes > 0
-                || eviction_report
-                    .as_ref()
-                    .map(|report| {
-                        report.cache_entries_removed > 0 || report.cache_disk_bytes_removed > 0
-                    })
-                    .unwrap_or(false),
+            pressure_threshold: eviction_limit.unwrap_or(0),
+            pressure_triggered: eviction_report.as_ref().is_some_and(|report| report.pressure_gate_open),
             before_bytes: eviction_report
                 .as_ref()
                 .map(|report| report.pressure_before)
@@ -1039,15 +986,17 @@ impl TemporalEngine {
             enabled: request.enable_block_reclaim,
             applied: request.enable_block_reclaim
                 && !request.dry_run
-                && lifecycle_report
+                && (page_log_work || lifecycle_report
                     .as_ref()
                     .map(|report| !report.delayed_destroy_purged_slabs.is_empty())
-                    .unwrap_or(false),
+                    .unwrap_or(false)),
             skipped: !request.enable_block_reclaim
-                || plan.reclaim_candidates.is_empty()
-                || reclaimable_block_slab_ids.is_empty(),
+                || (!page_log_work && (plan.reclaim_candidates.is_empty()
+                    || reclaimable_block_slab_ids.is_empty())),
             reason: if !request.enable_block_reclaim {
                 "block reclaim disabled".to_string()
+            } else if page_log_work {
+                "retired published log segments under the durable dump and retention frontiers".to_string()
             } else if plan.reclaim_candidates.is_empty() {
                 "no stale or delayed-destroy block segments are reclaimable".to_string()
             } else if reclaimable_block_slab_ids.is_empty() {
@@ -1060,7 +1009,7 @@ impl TemporalEngine {
                     .to_string()
             },
             pressure_signal:
-                "stale_block_bytes+delayed_destroy_backlog+stale_density+dependency_retention"
+                "published_log_frontier+stale_block_bytes+delayed_destroy_backlog+stale_density+dependency_retention"
                     .to_string(),
             pressure_score: pressure_signals
                 .stale_block_bytes
@@ -1068,8 +1017,8 @@ impl TemporalEngine {
                 .saturating_add(pressure_signals.block_slab_stale_density_basis_points),
             pressure_threshold: 1,
             pressure_triggered: request.enable_block_reclaim
-                && !plan.reclaim_candidates.is_empty()
-                && !reclaimable_block_slab_ids.is_empty(),
+                && (page_log_work || (!plan.reclaim_candidates.is_empty()
+                    && !reclaimable_block_slab_ids.is_empty())),
             candidate_count: reclaim_candidate_count,
             skipped_count: reclaim_skipped_count
                 .saturating_add(block_gc_dependency_plan.blocked_block_slab_ids.len()),
@@ -1078,6 +1027,13 @@ impl TemporalEngine {
             live_bytes: reclaim_live_bytes,
             stale_bytes: reclaim_stale_bytes,
             selected_block_slab_ids: block_gc_dependency_plan.reclaimable_block_slab_ids.clone(),
+            wal_records_removed: wal_reclaim_report.as_ref()
+                .map(|report| report.wal_records_removed).unwrap_or_default(),
+            retain_from_wal_sequence: wal_reclaim_report.as_ref()
+                .map(|report| report.plan.retain_from_wal_sequence).unwrap_or_default(),
+            retention_blockers: wal_reclaim_report.as_ref()
+                .map(|report| report.plan.follower_cursor_block_count + report.plan.raft_snapshot_block_count)
+                .unwrap_or_default(),
             block_slabs_reclaimed: lifecycle_report
                 .as_ref()
                 .map(|report| report.delayed_destroy_purged_slabs.len())
@@ -1206,6 +1162,15 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|report| report.records_removed)
                 .unwrap_or_default(),
+            retain_from_index_log_sequence: index_gc_report
+                .as_ref()
+                .map(|report| report.retain_from_index_log_sequence)
+                .unwrap_or_default(),
+            retention_blockers: if request.enable_index_gc {
+                wal_reclaim_plan.follower_cursor_block_count + wal_reclaim_plan.raft_snapshot_block_count
+            } else {
+                0
+            },
             ..StorageManagerStageReport::default()
         });
 

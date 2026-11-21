@@ -1299,25 +1299,57 @@ pub(super) fn bucket_generation_digests_from_entries(
     shard_id: ShardId,
     entries: &[LiveBlockEntry],
 ) -> BTreeMap<u32, BucketFingerprintDigest> {
-    let mut lines = BTreeMap::<u32, Vec<(u64, u64)>>::new();
+    let mut builder = BucketDigestBuilder::default();
     for entry in entries {
+        builder.observe(shard_id, entry);
+    }
+    builder.finish()
+}
+
+#[derive(Default)]
+pub(super) struct BucketDigestBuilder {
+    lines: BTreeMap<u32, Vec<(u64, u64)>>,
+}
+
+impl BucketDigestBuilder {
+    pub(super) fn observe(&mut self, shard_id: ShardId, entry: &LiveBlockEntry) {
         let routing_bucket = entry
             .filed_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
-        lines
+        self.lines
             .entry(routing_bucket)
             .or_default()
             .push(fingerprint_fields_hash(shard_id, entry, routing_bucket));
     }
-    lines
-        .into_iter()
-        .map(|(routing_bucket, mut hashes)| {
-            // Repeated entries do not change the bucket's fingerprint set.
-            hashes.sort_unstable();
-            hashes.dedup();
-            (routing_bucket, BucketFingerprintDigest::of_sorted(&hashes))
-        })
-        .collect()
+
+    pub(super) fn finish(self) -> BTreeMap<u32, BucketFingerprintDigest> {
+        self.lines
+            .into_iter()
+            .map(|(routing_bucket, mut hashes)| {
+                // Repeated entries do not change the bucket's fingerprint set.
+                hashes.sort_unstable();
+                hashes.dedup();
+                (routing_bucket, BucketFingerprintDigest::of_sorted(&hashes))
+            })
+            .collect()
+    }
+}
+
+pub(super) fn bucket_generation_digests_for_coverage(
+    shard_id: ShardId,
+    shard: &ShardState,
+    buckets: &[u32],
+) -> BTreeMap<u32, BucketFingerprintDigest> {
+    let wanted = buckets.iter().copied().collect::<BTreeSet<_>>();
+    let mut builder = BucketDigestBuilder::default();
+    visit_live_block_entries(shard, |entry| {
+        let bucket = entry.filed_bucket()
+            .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
+        if wanted.contains(&bucket) {
+            builder.observe(shard_id, &entry);
+        }
+    });
+    builder.finish()
 }
 
 /// The 128-bit digest of one bucket's fingerprint set. Two buckets compare equal exactly when their

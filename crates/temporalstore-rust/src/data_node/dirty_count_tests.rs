@@ -92,6 +92,104 @@ fn dirty_counts_follow_partial_bucket_clear_and_last_shard_removal() {
 }
 
 #[test]
+fn clearing_dirty_buckets_reads_the_routing_range_once_not_once_per_key() {
+    let directory = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        directory.path().join("cache"),
+        directory.path().join("blocks"),
+        directory.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let dirty = Mutex::new(DirtyTracker::default());
+    const KEYS: u64 = 512;
+    for index in 0..KEYS {
+        mark_dirty_owned(&dirty, 1, format!("object-{index}"));
+    }
+    let selected = engine.routing_bucket_for_key(1, "object-0");
+    // The control: the per-key call DOES read the info row once per key, so the counter below
+    // can fire and the single read after it means something.
+    let control_start = crate::engine::routing_range_reads::count();
+    let expected_removed = dirty
+        .lock()
+        .unwrap()
+        .by_key
+        .keys()
+        .filter(|(_, key)| engine.routing_bucket_for_key(1, key) == selected)
+        .count();
+    assert_eq!(
+        crate::engine::routing_range_reads::count() - control_start,
+        KEYS,
+        "the control must read the routing range once per key, or this guard measures nothing"
+    );
+    assert!(expected_removed > 0 && (expected_removed as u64) < KEYS);
+    let start = crate::engine::routing_range_reads::count();
+    let removed = clear_dirty_shard_buckets(&dirty, &engine, 1, &[selected]);
+    let reads = crate::engine::routing_range_reads::count() - start;
+    assert_eq!(removed, expected_removed, "the resolver must name the same buckets as the per-key call");
+    assert_eq!(
+        reads, 1,
+        "a clear over {KEYS} dirty keys read the routing range {reads} times; it must read it once"
+    );
+    assert_counts(&dirty.lock().unwrap());
+}
+
+// Measurement, not a guard: `cargo test --release ... -- --ignored --nocapture`. Times the clear over
+// 100k dirty keys against the old loop (per-key call under the same mutex), both in this binary.
+#[test]
+#[ignore]
+fn measure_clearing_dirty_buckets_per_key_call_against_one_range_read() {
+    let directory = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        directory.path().join("cache"),
+        directory.path().join("blocks"),
+        directory.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    const KEYS: usize = 100_000;
+    let fill = || {
+        let dirty = Mutex::new(DirtyTracker::default());
+        for index in 0..KEYS {
+            mark_dirty_owned(&dirty, 1, format!("object-{index}"));
+        }
+        dirty
+    };
+    let selected = engine.routing_bucket_for_key(1, "object-0");
+    let buckets = [selected];
+    let mut old_ns = Vec::new();
+    let mut new_ns = Vec::new();
+    for _ in 0..7 {
+        let dirty = fill();
+        let started = std::time::Instant::now();
+        let removed_old = {
+            let set = buckets.iter().copied().collect::<BTreeSet<_>>();
+            let mut tracker = dirty.lock().unwrap();
+            let before = tracker.by_key.len();
+            tracker.by_key.retain(|(shard, key), _| {
+                *shard != 1 || !set.contains(&engine.routing_bucket_for_key(1, key))
+            });
+            before - tracker.by_key.len()
+        };
+        old_ns.push(started.elapsed().as_nanos());
+        let dirty = fill();
+        let started = std::time::Instant::now();
+        let removed_new = clear_dirty_shard_buckets(&dirty, &engine, 1, &buckets);
+        new_ns.push(started.elapsed().as_nanos());
+        assert_eq!(removed_old, removed_new);
+    }
+    old_ns.sort();
+    new_ns.sort();
+    println!(
+        "MEASURE keys={KEYS} old_median_ms={:.2} new_median_ms={:.2} old_per_key_ns={} new_per_key_ns={}",
+        old_ns[3] as f64 / 1e6,
+        new_ns[3] as f64 / 1e6,
+        old_ns[3] / KEYS as u128,
+        new_ns[3] / KEYS as u128
+    );
+}
+
+#[test]
 fn concurrent_redirty_keeps_one_count_per_shard_and_key() {
     let dirty = std::sync::Arc::new(Mutex::new(DirtyTracker::default()));
     let handles = (0..4)

@@ -9,6 +9,59 @@ use super::*;
 
 const END_BUCKET: u32 = 1023;
 
+#[test]
+fn operator_eviction_respects_disabled_zero_and_equal_limits() {
+    use crate::engine::reports::StorageManagerCycleRequest;
+    let dir = tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 128);
+    let engine = runtime.engine();
+    let resident = engine.bucket_index_resident_bytes(1);
+    assert!(resident > 1);
+    let base = StorageManagerCycleRequest {
+        shard_id: 1,
+        enable_wal_reclaim: false,
+        enable_expire: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        enable_evict: true,
+        index_resident_limit_bytes: 0,
+        eviction_memory_pressure_threshold: 0,
+        eviction_dump_before_evict: true,
+        ..Default::default()
+    };
+    let unlimited = engine.run_storage_manager_cycle(base.clone());
+    let report = unlimited.eviction_report.as_ref().unwrap();
+    assert_eq!(report.skipped_reason, "no_memory_limit");
+    assert!(!report.pressure_gate_open);
+    assert!(report.selected_victims.is_empty());
+    assert!(report.dump_manifest_ids.is_empty());
+    let disabled = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        enable_evict: false, index_resident_limit_bytes: 1, ..base.clone()
+    });
+    assert!(disabled.eviction_report.is_none());
+    for (pressure, index) in [(resident, 0), (0, resident)] {
+        let equal = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            eviction_memory_pressure_threshold: pressure,
+            index_resident_limit_bytes: index, ..base.clone()
+        });
+        let report = equal.eviction_report.unwrap();
+        assert!(!report.pressure_gate_open, "{report:?}");
+        assert_eq!(report.bucket_index_buckets_released, 0);
+        assert_eq!(report.bucket_index_bytes_before, resident);
+        assert_eq!(report.bucket_index_bytes_after, resident);
+        assert_eq!(engine.bucket_index_resident_bytes(1), resident);
+    }
+    let active = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        index_resident_limit_bytes: 1,
+        eviction_memory_pressure_threshold: u64::MAX, ..base
+    }).eviction_report.unwrap();
+    assert!(active.pressure_gate_open, "{active:?}");
+    assert_eq!(active.memory_pressure_threshold, 1);
+    assert!(active.bucket_index_buckets_released > 0, "{active:?}");
+    assert_eq!(active.dropped_object_count, 0);
+}
+
 const LOOP_STAGES: [&str; 9] = [
     "prepare",
     "reclaim_wal",
@@ -291,13 +344,13 @@ fn what_a_quiet_loop_round_pays_stage_by_stage() {
     eprintln!("B after measuring: {}", state(&b, &shipped));
 }
 
-/// What the WAL-reclaim stage's walk charge was in one round: nonzero means it asked the question.
-fn wal_stage_walk(report: &StorageManagerLoopReport) -> u64 {
+/// The physical log collector's walk charge; dumping has its own independent byte gate.
+fn collection_stage_walk(report: &StorageManagerLoopReport) -> u64 {
     report
         .stage_spans
         .iter()
-        .find(|span| span.stage == "reclaim_wal")
-        .expect("every round reports the reclaim_wal stage")
+        .find(|span| span.stage == "reclaim_page")
+        .expect("every round reports the reclaim_page stage")
         .walk
         .live_block_entries
 }
@@ -346,28 +399,27 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
         let report = runtime.run_storage_manager_once(1, settling.clone());
         // Settled means IDLE and not asking: a round that skips the stage because the shard is
         // still dirty below the byte gate walks nothing either, and is not the memory at work.
-        if wal_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
+        if collection_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
             settled_after = Some(round);
             break;
         }
     }
     let settled_after =
-        settled_after.expect("the WAL-reclaim stage never stopped walking on an idle shard");
+        settled_after.expect("page collection never stopped walking on an idle shard");
 
     // QUIET: several further rounds, every one of them skipping the question. A stage that asked
     // once more per round would be caught here, and one that had never asked would be caught below.
     for round in 0..5 {
         let report = runtime.run_storage_manager_once(1, options.clone());
         assert_eq!(
-            wal_stage_walk(&report),
+            collection_stage_walk(&report),
             0,
             "quiet round {round} (settled after {settled_after}) walked the shard again although \
              nothing had changed"
         );
     }
 
-    // A WRITE makes the shard dirty, and a dirty shard below the byte gate is not idle: the stage
-    // does not ask the question at all (no walk), because the log bytes decide, not the memory.
+    // A write changes collection inputs even below the independent dump byte gate.
     let response = runtime.inner.engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
@@ -377,11 +429,10 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
     });
     assert!(response.status.ok, "write after the quiet rounds: {:?}", response.status);
     let report = runtime.run_storage_manager_once(1, options.clone());
-    assert_eq!(
-        wal_stage_walk(&report),
-        0,
-        "a dirty shard below the byte gate asked the WAL-reclaim question"
-    );
+    assert!(collection_stage_walk(&report) > 0,
+        "a write did not invalidate the physical log collection memo");
+    assert_eq!(report.stage_spans.iter().find(|span| span.stage == "reclaim_wal")
+        .unwrap().walk.live_block_entries, 0, "a below-threshold write caused a dump");
 
     // Release the write with a one-byte gate until the shard is clean again, then QUIET AGAIN.
     let releasing = StorageManagerOptions {
@@ -395,7 +446,7 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
     let mut quiet_again = false;
     for _ in 0..12 {
         let report = runtime.run_storage_manager_once(1, options.clone());
-        if wal_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
+        if collection_stage_walk(&report) == 0 && report.pressure.dirty_bucket_count == 0 {
             quiet_again = true;
             break;
         }
@@ -415,8 +466,8 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
     };
     let report = runtime.run_storage_manager_once(1, with_a_reader);
     assert!(
-        wal_stage_walk(&report) > 0,
-        "a new retention input did not make the WAL-reclaim stage ask again, so the memory's key \
+        collection_stage_walk(&report) > 0,
+        "a new retention input did not make page collection ask again, so the memory's key \
          does not include what the caller passes"
     );
 }
@@ -1416,6 +1467,17 @@ fn the_round_report_says_whether_the_wal_reclaim_stage_dumped() {
         StorageManagerWalReclaimRound::default(),
         "a round without the WAL reclaim stage must report none of its work"
     );
+    let page = off.page_log_reclaim.as_ref().expect("page collection still runs independently");
+    assert!(page.applied, "{page:?}");
+    assert!(page.wal_records_removed > 0, "{page:?}");
+    assert!(off.stage_spans.iter().any(|stage| stage.stage == "reclaim_page" && stage.executed));
+    let both_off = runtime.run_storage_manager_once(1, StorageManagerOptions {
+        enable_wal_reclaim: false,
+        enable_block_gc: false,
+        ..Default::default()
+    });
+    assert_eq!(both_off.wal_reclaim_round, StorageManagerWalReclaimRound::default());
+    assert!(both_off.page_log_reclaim.is_none());
 }
 
 /// A DIRTY ROUND READS THE LIVE BLOCKS OF THE SHARD NO MORE THAN `DIRTY_ROUND_WALK_BOUND` TIMES.

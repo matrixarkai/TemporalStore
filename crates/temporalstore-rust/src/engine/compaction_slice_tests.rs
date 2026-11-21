@@ -482,6 +482,53 @@ fn a_keyed_step_names_the_blocks_of_its_buckets_and_not_the_shards() {
     );
 }
 
+/// THE SETUP AND THE FINISH OF A PASS DO NOT WALK THE SHARD TO CONFIRM THE INDEX WHEN THE WRITE PATH
+/// ALREADY HAS. Each owed a promote check (a walk of every live block against the bucket index); the
+/// write path keeps the index in step once one scan has confirmed it and says so with
+/// `promote_scan_done`, which the per-command scan already consults. A shard that has taken writes
+/// is confirmed, so a whole pass runs no promote check at all. Dropping the test at either site turns
+/// this red (two checks, one per site). A shard that has NOT been confirmed still walks, which the
+/// second half asserts so the skip cannot become unconditional.
+#[test]
+fn a_pass_over_a_confirmed_index_runs_no_promote_scan() {
+    use super::super::storage_bucket_internals::{
+        promote_model_map_check_counts, reset_promote_model_map_check_counts,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let (expected, drain) = seed(&engine, 300);
+    // The seed's writes confirmed the index; a read-back command proves the latch holds.
+    assert_every_key_reads(&engine, &expected, "before the pass");
+    let confirmed = {
+        let shards = engine.shards_write_marked();
+        shards.get(&1).unwrap().promote_scan_done
+    };
+    assert!(confirmed, "the fixture's writes did not confirm the index, so this test would prove nothing");
+    reset_promote_model_map_check_counts();
+    engine.compact_shard_blocks_draining_sliced(1, drain.clone(), 32).unwrap();
+    assert_eq!(
+        promote_model_map_check_counts().0,
+        0,
+        "a pass over a confirmed index still walked the shard to promote it"
+    );
+    assert_every_key_reads(&engine, &expected, "after the pass");
+
+    // The control: an unconfirmed shard still pays the check, once at setup and once at the finish.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let (_, drain) = seed(&engine, 300);
+    {
+        let mut shards = engine.shards_write_marked();
+        shards.get_mut(&1).unwrap().promote_scan_done = false;
+    }
+    reset_promote_model_map_check_counts();
+    engine.compact_shard_blocks_draining_sliced(1, drain, 32).unwrap();
+    assert!(
+        promote_model_map_check_counts().0 >= 2,
+        "an unconfirmed index was not promoted at setup and at the finish"
+    );
+}
+
 /// THE TALLY ONLY SKIPS WORK; IT NEVER DECIDES WHAT IS SAFE. The pin that keeps reclaim away from the
 /// slabs the durable index names is the tally's slabs UNION every slab the block store holds, so a
 /// tally that forgot a slab (a counting bug, a door that did not charge) cannot leave a slab out of the
@@ -628,24 +675,33 @@ fn a_pass_reads_the_buckets_it_reaches_and_not_the_shard() {
 }
 
 /// Run by hand at scale: `SCALE_KEYS=300000 TS_COMPACTION_PHASE_TIMING=1 cargo test --release --lib
-/// repro_cursor_pass_at_scale -- --ignored --nocapture`. Prints the pass time, the longest write wait
-/// and, with the timing switch, the duration of the setup, every slice and the finish.
+/// repro_cursor_pass_at_scale -- --ignored --nocapture`. Runs the SAME fixture twice in one process, once
+/// through the whole-round function the stage used to call and once through the sliced pass it calls
+/// now, and prints for each the pass time and the longest write wait of a concurrent writer; with the
+/// timing switch it also prints the duration of the setup, every slice and the finish.
 #[test]
 #[ignore]
 fn repro_cursor_pass_at_scale() {
     let keys: usize = std::env::var("SCALE_KEYS").ok().and_then(|v| v.parse().ok()).unwrap_or(100_000);
-    let dir = tempfile::tempdir().unwrap();
-    let engine = Arc::new(open(dir.path()));
-    let (_, drain) = seed(&engine, keys);
-    let stall = super::super::writer_stall_probe::measure_writer_stall(&engine, 1, || {
-        engine.compact_shard_blocks_draining_sliced(1, drain.clone(), 200).unwrap();
-    });
-    eprintln!(
-        "SCALE keys={keys} pass {} ms, longest write wait {} ms, writes {}",
-        stall.round_us / 1000,
-        stall.max_wait_us / 1000,
-        stall.writes
-    );
+    for sliced in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Arc::new(open(dir.path()));
+        let (_, drain) = seed(&engine, keys);
+        let stall = super::super::writer_stall_probe::measure_writer_stall(&engine, 1, || {
+            if sliced {
+                engine.compact_shard_blocks_draining_sliced(1, drain.clone(), 200).unwrap();
+            } else {
+                engine.compact_shard_blocks_draining_background(1, drain.clone()).unwrap();
+            }
+        });
+        eprintln!(
+            "SCALE keys={keys} arm={} pass {} ms, longest write wait {} ms, writes {}",
+            if sliced { "sliced" } else { "whole_round" },
+            stall.round_us / 1000,
+            stall.max_wait_us / 1000,
+            stall.writes
+        );
+    }
 }
 
 /// The point of slicing: a writer waits for a slice, not for the pass.

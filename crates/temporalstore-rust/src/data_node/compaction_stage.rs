@@ -203,6 +203,7 @@ impl DataNodeRuntime {
             stage_spans: Vec::new(),
             duration_us: started.elapsed().as_micros() as u64,
             wal_reclaim_round: StorageManagerWalReclaimRound::default(),
+            page_log_reclaim: None,
         }
     }
 }

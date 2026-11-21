@@ -2343,6 +2343,7 @@ fn visit_bucket_index_live_block_entries(shard: &ShardState, mut visit: impl FnM
                 // WHOLE keyspace and name a bucket a narrow shard does not hold.
                 entry.filed_routing_bucket = routing_bucket;
                 entry.filing_is_known = true;
+                restore_retained_inline_page_state(shard, &mut entry);
                 visit(entry);
             }
         }
@@ -2705,6 +2706,10 @@ pub(super) fn settle_released_bucket_object_delete(
             classify_bucket_layout_in_place(&mut bucket);
             settled = true;
         }
+        drop(bucket);
+        if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
+            owners.forget_key(routing_bucket, object_key);
+        }
     }
     settled
 }
@@ -2726,8 +2731,7 @@ pub(super) struct BucketReleaseRefusals {
     pub(super) not_in_memory: usize,
     /// A load is in flight and the block list is not settled.
     pub(super) loading: usize,
-    /// The bucket still pins the log. Releasing it while `eviction_dump_before_evict` is false
-    /// would strand undumped writes with nothing to rebuild them from.
+    /// The bucket still pins the log and this release route cannot retain its exact dirty state.
     pub(super) bucket_dirty: usize,
     /// Deleted: its blocks are not a set a reload should rebuild.
     pub(super) bucket_deleted: usize,
@@ -2835,6 +2839,31 @@ pub(super) fn release_bucket_blocks(
     shard: &mut ShardState,
     candidates: &[u32],
 ) -> BucketReleaseOutcome {
+    release_bucket_blocks_inner(shard, candidates, false)
+}
+
+#[cfg(test)]
+#[path = "inline_page_eviction_tests.rs"]
+mod inline_page_eviction_tests;
+
+/// Inline string records retain the address and exact page flags while the derived list is cold.
+pub(super) fn release_bucket_blocks_preserving_inline_pages(
+    shard: &mut ShardState,
+    candidates: &[u32],
+) -> BucketReleaseOutcome {
+    release_bucket_blocks_inner(shard, candidates, true)
+}
+
+fn inline_string_pages(bucket: &BucketNode) -> bool {
+    !bucket.block_index.is_empty()
+        && bucket.block_index.values().all(|block| block.model_id().as_str() == "string" && !block.deleted())
+}
+
+fn release_bucket_blocks_inner(
+    shard: &mut ShardState,
+    candidates: &[u32],
+    preserve_inline_pages: bool,
+) -> BucketReleaseOutcome {
     let mut outcome = BucketReleaseOutcome::default();
     if candidates.is_empty() {
         return outcome;
@@ -2882,6 +2911,7 @@ pub(super) fn release_bucket_blocks(
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
             continue;
         };
+        let inline_pages = preserve_inline_pages && inline_string_pages(bucket);
         // The residency terms, tested in order so a refusal can name the one that decided it.
         // Same set, same order, same answer as the `||` chain this replaces -- what is new is
         // that the outcome can say WHICH, which is what makes one guard per term possible.
@@ -2889,7 +2919,7 @@ pub(super) fn release_bucket_blocks(
             Some(BucketReleaseRefusal::NotInMemory)
         } else if bucket.loading() {
             Some(BucketReleaseRefusal::Loading)
-        } else if bucket.dirty() {
+        } else if bucket.dirty() && !inline_pages {
             Some(BucketReleaseRefusal::BucketDirty)
         } else if bucket.deleted() {
             Some(BucketReleaseRefusal::BucketDeleted)
@@ -2924,7 +2954,8 @@ pub(super) fn release_bucket_blocks(
             wanted.iter().filter_map(|routing_bucket| {
                 shard.bucket_index.bucket_map.get(routing_bucket)
                     .filter(|node| {
-                        node.in_memory() && !node.loading() && !node.dirty()
+                        node.in_memory() && !node.loading()
+                            && (!node.dirty() || preserve_inline_pages && inline_string_pages(node))
                             && !node.deleted() && !node.block_index.is_empty()
                     })
                     .map(|node| {
@@ -2939,7 +2970,7 @@ pub(super) fn release_bucket_blocks(
                 // bucket's lookup entries cannot be shown to drop only its own.
                 return Some(BucketReleaseRefusal::LookupNotLocal);
             };
-            if block.dirty() {
+            if block.dirty() && !inline_pages {
                 Some(BucketReleaseRefusal::BlockDirty)
             } else if block.deleted() {
                 Some(BucketReleaseRefusal::BlockDeleted)
@@ -2957,6 +2988,10 @@ pub(super) fn release_bucket_blocks(
                 Some(BucketReleaseRefusal::BlockRoutingMismatch)
             } else if !released_model_kind_is_addressable(block.model_id().as_str()) {
                 Some(BucketReleaseRefusal::BlockKindNotAddressable)
+            } else if inline_pages && !shard.strings().get(beside.as_ref()).is_some_and(|slot| {
+                matches!(slot.record.block_address(), super::object_record::BlockAddress::One(_))
+            }) {
+                Some(BucketReleaseRefusal::ModelMapDisagreement)
             } else {
                 None
             }
@@ -3009,22 +3044,31 @@ pub(super) fn release_bucket_blocks(
             BUCKET_RELEASE_MODEL_DERIVATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             derive_released_block_identities(shard, &wanted)
         });
-        if derived.get(&routing_bucket) != Some(&resident) {
+        if derived.get(&routing_bucket) != Some(&resident)
+            || inline_pages && resident.len() != bucket.block_index.len()
+        {
             // The model maps would not rebuild what is resident. Whatever the disagreement is,
             // it is not this function's to resolve -- and releasing across it would lose blocks.
             outcome.refuse(BucketReleaseRefusal::ModelMapDisagreement);
             continue;
         }
-        let dropped: Vec<(StoredModelKind, Arc<str>)> = bucket
+        let dropped: Vec<(StoredModelKind, Arc<str>, bool, bool)> = bucket
             .block_index
             .iter()
             .filter_map(|(handle, block)| {
-                names.get(handle).map(|beside| (block.model_id(), Arc::clone(beside)))
+                names.get(handle).map(|beside| (block.model_id(), Arc::clone(beside), block.dirty(), block.deleted()))
             })
             .collect();
         let block_count = dropped.len();
+        for (kind, key, dirty, deleted) in &dropped {
+            if kind.as_str() == "string" {
+                if let Some(slot) = shard.strings_mut().get_mut(key.as_ref()) {
+                    slot.record.retain_page_state(*dirty, *deleted);
+                }
+            }
+        }
         if lookup_established {
-            for (model_id, object_key) in &dropped {
+            for (model_id, object_key, _, _) in &dropped {
                 shard.bucket_index.remove_object_block_lookup_entry(
                     model_id.as_str(),
                     object_key,
@@ -3087,9 +3131,11 @@ pub(super) fn restore_released_buckets_in_checkpoint(shard: &mut ShardState, sha
         |key, _| released.contains(&block_routing_bucket(key, start, end)),
         |kind, key, element, address| {
             let bucket = block_routing_bucket(key.as_str(), start, end);
-            by_bucket.entry(bucket).or_default().push(live_block_entry_filed(
+            let mut entry = live_block_entry_filed(
                 key.to_handle(), kind.as_str(), element.map(str::to_string), address.clone(), bucket,
-            ));
+            );
+            restore_retained_inline_page_state(shard, &mut entry);
+            by_bucket.entry(bucket).or_default().push(entry);
         },
     );
     for bucket in released {
@@ -3122,15 +3168,7 @@ fn install_released_bucket_entries(
         let address = entry.address;
         blocks.push((
             Arc::clone(&entry.object_key),
-            BlockIndex::new(
-                entry.kind,
-                address,
-                // The model maps carry no per-block dirty/deleted bit, which is exactly why
-                // release refuses a bucket holding either. Reloaded blocks are clean and live,
-                // which is the state they were released in.
-                false,
-                false,
-            ),
+            BlockIndex::new(entry.kind, address, entry.dirty, entry.deleted),
             object_id,
         ));
     }
@@ -3158,6 +3196,9 @@ fn install_released_bucket_entries(
         drop(bucket);
         shard.bucket_index.bucket_map.remove(&routing_bucket);
         shard.bucket_index.released_buckets.remove(&routing_bucket);
+        if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
+            owners.forget_bucket(routing_bucket);
+        }
         return true;
     }
     // THE LIVE SET FROM WHAT WAS JUST INSTALLED, which is every block this bucket now holds: the
@@ -3177,6 +3218,9 @@ fn install_released_bucket_entries(
         .collect();
     update_bucket_layout_with_live_objects(&mut bucket, &live_object_ids);
     drop(bucket);
+    if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
+        owners.reset_bucket(routing_bucket);
+    }
     for (handle, object_key, block) in installed {
         shard
             .bucket_index
@@ -4564,17 +4608,52 @@ pub(super) fn collect_model_live_block_entries_in_bucket(
                 == routing_bucket
         },
         |kind, object_key, element_name, address| {
-            entries.push(live_block_entry_filed(
+            let mut entry = live_block_entry_filed(
                 // Lent, not rebuilt -- see `collect_model_live_block_entries`.
                 object_key.to_handle(),
                 kind.as_str(),
                 element_name.map(str::to_string),
                 address.clone(),
                 routing_bucket,
-            ));
+            );
+            restore_retained_inline_page_state(shard, &mut entry);
+            entries.push(entry);
         },
     );
     entries
+}
+
+fn restore_retained_inline_page_state(shard: &ShardState, entry: &mut LiveBlockEntry) {
+    if entry.kind.as_str() != "string" { return; }
+    let (start, end) = shard.routing_range();
+    let bucket = entry.filed_bucket().unwrap_or_else(|| block_routing_bucket(&entry.object_key, start, end));
+    if !shard.bucket_index.released_buckets.contains(&bucket) { return; }
+    if let Some(slot) = shard.strings().get(entry.object_key.as_ref()) {
+        (entry.dirty, entry.deleted) = slot.record.retained_page_state();
+    }
+}
+
+pub(super) fn clear_retained_inline_page_dirty_state(shard: &mut ShardState, buckets: &[u32]) {
+    let wanted = buckets.iter().copied()
+        .filter(|bucket| shard.bucket_index.released_buckets.contains(bucket)).collect::<BTreeSet<_>>();
+    if wanted.is_empty() { return; }
+    let owners = shard.bucket_index.bucket_owners.get();
+    let complete = owners.is_some_and(|owners| wanted.iter().all(|bucket| owners.owners_of(*bucket).is_some()));
+    let keys = if complete {
+        wanted.iter().flat_map(|bucket| owners.unwrap().owners_of(*bucket).unwrap().iter())
+            .filter(|(kind, _)| kind.as_str() == "string")
+            .map(|(_, key)| Arc::clone(key)).collect::<Vec<_>>()
+    } else {
+        let (start, end) = shard.routing_range();
+        shard.strings().keys().filter(|key| wanted.contains(&block_routing_bucket(key, start, end)))
+            .cloned().collect::<Vec<_>>()
+    };
+    for key in keys {
+        if let Some(slot) = shard.strings_mut().get_mut(key.as_ref()) {
+            let (_, deleted) = slot.record.retained_page_state();
+            slot.record.retain_page_state(false, deleted);
+        }
+    }
 }
 
 /// What a reload would rebuild for each of the WANTED buckets, and nothing else.
@@ -7347,6 +7426,13 @@ pub(super) fn object_still_has_hot_block(shard: &ShardState, object_key: &str) -
 pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_key: &str) {
     if object_still_has_hot_block(shard, object_key) {
         return;
+    }
+    if shard.strings().contains_key(object_key) {
+        let (start, end) = shard.routing_range();
+        let bucket = block_routing_bucket(object_key, start, end);
+        if let Some(shard_id) = shard.shard_id() {
+            reload_released_bucket(shard, shard_id, bucket);
+        }
     }
     // Clearing a dirty bit needs no shard; re-deriving the object index does. Resolved here so the
     // loop below can rebuild when the state is stamped and reclassify when it is not.

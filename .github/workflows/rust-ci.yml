@@ -1239,7 +1239,9 @@ jobs:
             engine::recovery_sweep_compact::compaction_slice_tests::a_pass_reads_the_buckets_it_reaches_and_not_the_shard \
             engine::recovery_sweep_compact::compaction_slice_tests::the_pin_covers_a_slab_the_tally_forgot \
             engine::recovery_sweep_compact::compaction_slice_tests::a_pass_with_nothing_on_the_drain_slabs_does_nothing \
-            engine::recovery_sweep_compact::compaction_slice_tests::a_keyed_step_names_the_blocks_of_its_buckets_and_not_the_shards
+            engine::recovery_sweep_compact::compaction_slice_tests::a_pass_over_a_confirmed_index_runs_no_promote_scan \
+            engine::recovery_sweep_compact::compaction_slice_tests::a_keyed_step_names_the_blocks_of_its_buckets_and_not_the_shards \
+            data_node::runtime_storage::maintenance_report_tests::the_draining_stage_always_runs_the_sliced_pass
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-compact.log
             # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
@@ -1342,7 +1344,8 @@ jobs:
             engine::tests::a_counter_increment_writes_its_series_when_due::a_counter_bound_changed_between_runs_recovers_as_the_write_path_held_it \
             engine::tests::a_counter_increment_writes_its_series_when_due::a_log_cut_mid_record_recovers_a_prefix_of_the_writes_of_every_counter_arm \
             engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_digest_equals_exactly_when_the_lines_were_equal \
-            engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_retained_manifest_is_decoded_once_across_plans ; do
+            engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_retained_manifest_is_decoded_once_across_plans \
+            data_node::dirty_tracking::dirty_count_tests::clearing_dirty_buckets_reads_the_routing_range_once_not_once_per_key ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/cost-gate.log
