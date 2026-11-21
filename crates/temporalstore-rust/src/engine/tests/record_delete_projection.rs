@@ -71,8 +71,7 @@ fn complete_delete_projection_avoids_store_inversion() {
     }
 }
 
-#[test]
-fn mixed_delete_bucket_retains_full_identity_repair() {
+fn mixed_delete_bucket_case(object_local: bool) {
     let mut shard = state(0);
     file(&mut shard, "hash", "victim", 0);
     file(&mut shard, "hash", "neighbor", 1);
@@ -85,17 +84,27 @@ fn mixed_delete_bucket_retains_full_identity_repair() {
         bucket.object_index.remove(&neighbor);
         bucket.object_index.insert(bogus);
     }
+    crate::engine::disable_object_local_delete_for_test(!object_local);
     let (removed, builds) = measure_block_identity_builds_for_test(|| {
         crate::engine::mark_bucket_index_object_deleted(&mut shard, "victim")
     });
+    crate::engine::disable_object_local_delete_for_test(false);
     assert!(removed);
-    assert_eq!(builds, 1, "mixed buckets require the full projection");
     let bucket = shard.bucket_index.bucket_map.get(&0).unwrap();
     assert_eq!(bucket.block_index.len(), 1);
-    assert!(bucket.object_index.contains(&neighbor));
     assert!(!bucket.object_index.contains(&victim));
-    assert!(!bucket.object_index.contains(&bogus));
     assert!(bucket.deleted_object_index.contains(&victim));
+    if object_local {
+        // THE GUARANTEE THAT MOVED OUT OF THE DELETE PATH: the delete removes the key's own blocks by
+        // handle and does not reconcile the bucket's object list, so a list that had already drifted is
+        // left as it was until the load, release, reload, reconstruct or flag-refresh path reconciles.
+        assert_eq!(builds, 0, "a delete by handle names no bucket");
+        assert!(bucket.object_index.contains(&bogus));
+    } else {
+        assert_eq!(builds, 1, "mixed buckets require the full projection");
+        assert!(bucket.object_index.contains(&neighbor));
+        assert!(!bucket.object_index.contains(&bogus));
+    }
     assert!(shard.bucket_index.contains_object_block_address(
         "hash",
         "neighbor",
@@ -105,18 +114,30 @@ fn mixed_delete_bucket_retains_full_identity_repair() {
 }
 
 #[test]
-fn incomplete_delete_projection_preserves_unnamed_blocks() {
+fn mixed_delete_bucket_retains_full_identity_repair() {
+    // The path that names the bucket, used when no object-block lookup is retained.
+    mixed_delete_bucket_case(false);
+}
+
+#[test]
+fn mixed_delete_bucket_by_handle_leaves_a_drifted_object_list_to_the_next_reconcile() {
+    mixed_delete_bucket_case(true);
+}
+
+fn incomplete_delete_projection_case(object_local: bool) {
     let mut shard = state(0);
     file(&mut shard, "hash", "victim", 0);
     file(&mut shard, "hash", "unnamed", 1);
     shard
         .bucket_index
         .remove_object_from_block_lookup("hash", "unnamed");
+    crate::engine::disable_object_local_delete_for_test(!object_local);
     let (removed, builds) = measure_block_identity_builds_for_test(|| {
         crate::engine::mark_bucket_index_object_deleted(&mut shard, "victim")
     });
+    crate::engine::disable_object_local_delete_for_test(false);
     assert!(removed);
-    assert_eq!(builds, 1);
+    assert_eq!(builds, if object_local { 0 } else { 1 });
     let bucket = shard.bucket_index.bucket_map.get(&0).unwrap();
     assert_eq!(bucket.block_index.len(), 1);
     assert!(bucket
@@ -126,7 +147,16 @@ fn incomplete_delete_projection_preserves_unnamed_blocks() {
 }
 
 #[test]
-fn large_delete_object_skips_the_temporary_keyed_projection() {
+fn incomplete_delete_projection_preserves_unnamed_blocks() {
+    incomplete_delete_projection_case(false);
+}
+
+#[test]
+fn a_delete_by_handle_preserves_blocks_no_ref_names() {
+    incomplete_delete_projection_case(true);
+}
+
+fn large_delete_object_case(object_local: bool) {
     let mut shard = state(0);
     let count = crate::engine::MAX_DELETE_IDENTITY_PROJECTION_REFS + 1;
     for offset in 0..count {
@@ -134,11 +164,13 @@ fn large_delete_object_skips_the_temporary_keyed_projection() {
     }
     file(&mut shard, "hash", "neighbor", 10_000);
     let keyed_before = crate::engine::state::keyed_block_inversions();
+    crate::engine::disable_object_local_delete_for_test(!object_local);
     let (removed, builds) = measure_block_identity_builds_for_test(|| {
         crate::engine::mark_bucket_index_object_deleted(&mut shard, "victim")
     });
+    crate::engine::disable_object_local_delete_for_test(false);
     assert!(removed);
-    assert_eq!(builds, 1);
+    assert_eq!(builds, if object_local { 0 } else { 1 });
     assert_eq!(crate::engine::state::keyed_block_inversions(), keyed_before);
     assert_eq!(
         shard
@@ -156,4 +188,14 @@ fn large_delete_object_skips_the_temporary_keyed_projection() {
         None,
         &address(10_000)
     ));
+}
+
+#[test]
+fn large_delete_object_skips_the_temporary_keyed_projection() {
+    large_delete_object_case(false);
+}
+
+#[test]
+fn a_delete_by_handle_of_a_large_object_names_no_bucket() {
+    large_delete_object_case(true);
 }

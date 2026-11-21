@@ -6520,7 +6520,7 @@ fn classify_bucket_layout_preserving_tombstones(bucket: &mut BucketNode) {
     bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
 }
 
-fn classify_bucket_layout_after_block_removal(bucket: &mut BucketNode, removed: &BlockIndex) {
+pub(super) fn classify_bucket_layout_after_block_removal(bucket: &mut BucketNode, removed: &BlockIndex) {
     if removed.deleted() {
         classify_bucket_layout_in_place(bucket);
     } else {

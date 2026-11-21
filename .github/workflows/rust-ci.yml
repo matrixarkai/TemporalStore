@@ -1135,6 +1135,7 @@ jobs:
             data_node::tests::loop_report::the_cache_bound_stage_drops_the_cache_and_dumps_nothing \
             engine::tests::expiry_scale::a_long_run_of_due_cold_keys_does_not_starve_a_due_hot_key \
             engine::maintenance_log::tests::dense_bucket_deletions_reuse_owner_names_across_logged_frames \
+            engine::maintenance_log::tests::dense_bucket_deletions_by_handle_name_no_bucket \
             engine::maintenance_log::tests::single_object_bucket_deletions_keep_the_key_projection_fast_path \
             engine::maintenance_log::tests::maintenance_log_failure_leaves_unlogged_records_live \
             engine::maintenance_log::tests::maintenance_log_partial_failure_applies_and_mirrors_only_complete_frames \

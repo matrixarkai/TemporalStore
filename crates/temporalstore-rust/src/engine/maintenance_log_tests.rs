@@ -64,8 +64,8 @@ fn single_object_bucket_deletions_keep_the_key_projection_fast_path() {
     }
 }
 
-#[test]
-fn dense_bucket_deletions_reuse_owner_names_across_logged_frames() {
+/// The dense-bucket deletion run, by handle or by naming the bucket. Returns (identity builds, owner visits, frames).
+fn dense_bucket_deletions(object_local: bool) -> (usize, usize, usize) {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_at(dir.path(), "indexes");
     let load = LoadShardRequest {
@@ -94,16 +94,15 @@ fn dense_bucket_deletions_reuse_owner_names_across_logged_frames() {
     assert_eq!(shard.bucket_index.bucket_map.len(), 8);
     let deletions = keys.iter().map(|key| MaintenanceDeletion::capture(shard, key).unwrap()).collect();
     let mut appends = 0;
+    crate::engine::disable_object_local_delete_for_test(!object_local);
     let ((result, visits), builds) = state::measure_block_identity_builds_for_test(|| {
         state::measure_block_identity_visits_for_test(|| {
             engine.append_maintenance_deletions(1, shard, deletions, || appends += 1)
         })
     });
+    crate::engine::disable_object_local_delete_for_test(false);
     assert!(result.error.is_none());
     assert_eq!(result.removed_keys, keys.len());
-    assert_eq!(appends, 3);
-    assert_eq!(builds, 8, "each touched bucket is named once, not once per deletion");
-    assert!(visits <= keys.len() + survivors.len(), "owner visits={visits}");
     drop(shards);
     for key in &keys {
         assert_eq!(value(&engine, key), None);
@@ -121,7 +120,26 @@ fn dense_bucket_deletions_reuse_owner_names_across_logged_frames() {
     for key in &survivors {
         assert_eq!(value(&restored, key), Some(b"keep".to_vec()));
     }
-    println!("dense deletion capture: buckets=8 builds={builds} visits={visits} frames={appends}");
+    (builds, visits, appends)
+}
+
+#[test]
+fn dense_bucket_deletions_reuse_owner_names_across_logged_frames() {
+    // The path that names the bucket: used when no object-block lookup is retained.
+    let (builds, visits, appends) = dense_bucket_deletions(false);
+    assert_eq!(appends, 3);
+    assert_eq!(builds, 8, "each touched bucket is named once, not once per deletion");
+    assert!(visits <= 513 + 32, "owner visits={visits}");
+    println!("dense deletion capture, naming: buckets=8 builds={builds} visits={visits} frames={appends}");
+}
+
+#[test]
+fn dense_bucket_deletions_by_handle_name_no_bucket() {
+    let (builds, visits, appends) = dense_bucket_deletions(true);
+    assert_eq!(appends, 3);
+    assert_eq!(builds, 0, "a delete by handle names no bucket");
+    assert_eq!(visits, 0, "a delete by handle visits no owner");
+    println!("dense deletion capture, by handle: buckets=8 builds={builds} visits={visits} frames={appends}");
 }
 
 fn deletion_round_replays(expire: bool) {
