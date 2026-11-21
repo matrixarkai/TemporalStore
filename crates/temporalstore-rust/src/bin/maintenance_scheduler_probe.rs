@@ -164,8 +164,15 @@ fn main() {
     });
     let initial = runtime.stats();
     assert_eq!(initial.storage_manager_loops, 0);
+    let eviction_limit = std::env::var("TS_PROBE_EVICTION_LIMIT_BYTES")
+        .map(|value| value.parse::<u64>().expect("eviction limit must be an integer"))
+        .unwrap_or(0);
+    let options = StorageManagerOptions {
+        eviction_memory_pressure_threshold: eviction_limit,
+        ..StorageManagerOptions::default()
+    };
     let scheduler = runtime.start_storage_manager_scheduler_for_all_shards(
-        Duration::from_millis(250), StorageManagerOptions::default(),
+        Duration::from_millis(250), options,
     );
     let scheduled_started = Instant::now();
     loop {
@@ -186,6 +193,7 @@ fn main() {
     println!("SCHEDULER_COST {}", serde_json::json!({
         "keys": args.keys, "overwrites": overwrites, "rounds": args.rounds,
         "routing_end": args.routing_end, "memory_bytes": args.memory_bytes,
+        "eviction_limit_bytes": eviction_limit,
         "seed_us": seed_us, "scheduler_wall_us_including_intervals": scheduled_started.elapsed().as_micros(),
         "before": before, "after": after,
         "stage_timing": stats.storage_manager_stage_timing,

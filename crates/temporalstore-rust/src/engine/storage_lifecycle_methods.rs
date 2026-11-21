@@ -1436,6 +1436,11 @@ impl TemporalEngine {
         }
     }
 
+    pub(crate) fn storage_dump_wal_sequence(&self, shard_id: ShardId) -> Option<u64> {
+        latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id)
+            .map(|manifest| manifest.wal_sequence)
+    }
+
     pub fn storage_wal_reclaim_plan(
         &self,
         shard_id: ShardId,
@@ -2484,12 +2489,14 @@ impl TemporalEngine {
             };
         }
         let resident_before = self.bucket_index_resident_bytes(shard_id);
-        if resident_before < index_resident_limit_bytes {
+        if resident_before <= index_resident_limit_bytes {
             return StorageEvictionReport {
                 shard_id,
                 mode: "index_resident_bound".to_string(),
                 pressure_before: resident_before,
                 pressure_after: resident_before,
+                bucket_index_bytes_before: resident_before,
+                bucket_index_bytes_after: resident_before,
                 memory_pressure_threshold: index_resident_limit_bytes,
                 batch_limit,
                 skipped_reason: "index_resident_below_bound".to_string(),
@@ -2562,7 +2569,7 @@ impl TemporalEngine {
         // opens, where they are actually used.
         let bucket_index_bytes_before = self.bucket_index_resident_bytes(shard_id);
         let pressure_before = bucket_index_bytes_before;
-        if pressure_before < memory_pressure_threshold {
+        if memory_pressure_threshold != 0 && pressure_before <= memory_pressure_threshold {
             return StorageEvictionReport {
                 shard_id,
                 mode: if delete_drop {
@@ -2573,6 +2580,8 @@ impl TemporalEngine {
                 .to_string(),
                 pressure_before,
                 pressure_after: pressure_before,
+                bucket_index_bytes_before,
+                bucket_index_bytes_after: bucket_index_bytes_before,
                 memory_pressure_threshold,
                 batch_limit,
                 dump_before_evict,

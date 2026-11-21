@@ -4,6 +4,10 @@
 //! Index/manifest persistence + load/flush helper methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+#[cfg(test)]
+#[path = "catalog_checkpoint_retirement_tests.rs"]
+mod catalog_checkpoint_retirement_tests;
+
 /// WHICH WAY A LOAD OF THE PERSISTED INDEX WENT.
 ///
 /// # WHY THIS IS NOT TEST SCAFFOLDING
@@ -714,8 +718,25 @@ impl TemporalEngine {
         }
         // Capture an immutable image and its anchor before syncing their backing storage.
         // Writers during the barrier belong to the next checkpoint, not to this image.
-        let (snapshot, publication) = self.capture_shard_checkpoint(shard_id)?;
+        let (mut snapshot, publication) = self.capture_shard_checkpoint(shard_id)?;
         let anchor = snapshot.applied_wal_sequence.unwrap_or(0);
+        let retirements = if block_in_wal::has_registrations(&self.block_store, shard_id) {
+            let mut retained_objects = std::collections::HashSet::new();
+            let mut described_wal_blocks = 0;
+            visit_live_block_entries(&snapshot, |entry| {
+                if crate::wal_record::is_wal_resident(entry.address.block_slab_id()) {
+                    retained_objects.insert(expected_live_block_object_id(shard_id, &entry));
+                    if !snapshot.bucket_index.released_buckets.contains(&entry.filed_routing_bucket) {
+                        described_wal_blocks += 1;
+                    }
+                }
+            });
+            self.prepare_checkpoint_wal_retirements(
+                shard_id, &mut snapshot, retained_objects, described_wal_blocks,
+            )
+        } else {
+            Vec::new()
+        };
         let index_bytes = serialize_index(&snapshot);
         drop(snapshot);
         if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
@@ -742,6 +763,7 @@ impl TemporalEngine {
             self.index_log_store.mark_catalog_dumped(shard_id);
             Ok(sequence)
         }).ok()??;
+        self.finish_checkpoint_wal_retirements(shard_id, &publication, anchor, retirements);
         Some((anchor, meta_sequence))
     }
 
@@ -874,6 +896,14 @@ impl TemporalEngine {
             wal_segment_bytes_dropped: wal_gc
                 .as_ref()
                 .map(|report| report.dropped_segment_bytes)
+                .unwrap_or_default(),
+            wal_bytes_copied: wal_gc
+                .as_ref()
+                .map(|report| report.bytes_copied)
+                .unwrap_or_default(),
+            wal_rewrite_skipped: wal_gc
+                .as_ref()
+                .map(|report| report.skipped_not_worth_rewrite)
                 .unwrap_or_default(),
             // The `.ok()` above is kept -- a failed sweep must not fail the dump, which has
             // already completed and is what bounds the index log. What changes is that the
