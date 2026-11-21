@@ -25,7 +25,9 @@ use super::*;
 use std::cell::Cell;
 use std::panic::Location;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{LockResult, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{
+    LockResult, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError, TryLockResult,
+};
 use std::time::Instant;
 
 /// Sites kept in the table. A call site beyond this is counted in `sites_dropped`, not recorded.
@@ -210,7 +212,7 @@ impl EntriesVisited {
 }
 
 /// The shard table. Same `read()`/`write()` as `RwLock`, plus per-call-site hold attribution.
-pub(crate) struct ShardsLock {
+pub(super) struct ShardsLock {
     inner: RwLock<HashMap<ShardId, ShardState>>,
 }
 
@@ -235,6 +237,36 @@ impl ShardsLock {
             Ok(guard) => Ok(ShardsWriteGuard::new(guard, site)),
             Err(poisoned) => Err(PoisonError::new(ShardsWriteGuard::new(poisoned.into_inner(), site))),
         }
+    }
+
+    /// Like `RwLock::try_read`; a hold is recorded only when the lock was taken.
+    #[track_caller]
+    pub(crate) fn try_read(&self) -> TryLockResult<ShardsReadGuard<'_>> {
+        let site = Location::caller();
+        match self.inner.try_read() {
+            Ok(guard) => Ok(ShardsReadGuard::new(guard, site)),
+            Err(TryLockError::Poisoned(poisoned)) => Err(TryLockError::Poisoned(PoisonError::new(
+                ShardsReadGuard::new(poisoned.into_inner(), site),
+            ))),
+            Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
+        }
+    }
+
+    /// Like `RwLock::try_write`; a hold is recorded only when the lock was taken.
+    #[track_caller]
+    pub(crate) fn try_write(&self) -> TryLockResult<ShardsWriteGuard<'_>> {
+        let site = Location::caller();
+        match self.inner.try_write() {
+            Ok(guard) => Ok(ShardsWriteGuard::new(guard, site)),
+            Err(TryLockError::Poisoned(poisoned)) => Err(TryLockError::Poisoned(PoisonError::new(
+                ShardsWriteGuard::new(poisoned.into_inner(), site),
+            ))),
+            Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
+        }
+    }
+
+    pub(crate) fn is_poisoned(&self) -> bool {
+        self.inner.is_poisoned()
     }
 
     /// Run `f` on one shard under the shared guard. `f` reports the entries it touched.
@@ -265,7 +297,7 @@ impl ShardsLock {
     }
 }
 
-pub(crate) struct ShardsReadGuard<'a> {
+pub(super) struct ShardsReadGuard<'a> {
     guard: RwLockReadGuard<'a, HashMap<ShardId, ShardState>>,
     site: &'static Location<'static>,
     started: Option<Instant>,
@@ -302,7 +334,7 @@ impl Drop for ShardsReadGuard<'_> {
     }
 }
 
-pub(crate) struct ShardsWriteGuard<'a> {
+pub(super) struct ShardsWriteGuard<'a> {
     guard: RwLockWriteGuard<'a, HashMap<ShardId, ShardState>>,
     site: &'static Location<'static>,
     started: Option<Instant>,
@@ -336,6 +368,13 @@ impl Drop for ShardsWriteGuard<'_> {
             record(self.site, true, started, None);
         }
         leave();
+    }
+}
+
+impl std::fmt::Debug for ShardsLock {
+    // The table itself is never printed: only whether a panic poisoned it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShardsLock").field("poisoned", &self.inner.is_poisoned()).finish_non_exhaustive()
     }
 }
 
