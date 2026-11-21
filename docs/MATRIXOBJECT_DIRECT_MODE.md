@@ -42,8 +42,7 @@ refuses direct mode by name instead of falling back to a gateway.
 
 - It does not register with the cluster node roster, answer health probes, or listen for
   other clients. There is no S3 listener.
-- It runs the gateway's default publication path (no compact append, no next-append
-  reservation).
+- It uses plain publication unless compact append is explicitly enabled.
 - `compare_and_swap` is unsupported, as on the gateway.
 - It is one in-process gateway per node; it is not tuned for many concurrent writers.
 
@@ -64,3 +63,40 @@ Residual, the same in both modes: a request still in flight inside a slow server
 after a read-back said "absent". Closing it needs the append fence (a no-op generation bump
 published before a retry); the contract is the gateway-side "append fence" design. Until then, keep a
 sequence number in the WAL payload so a duplicate is detectable.
+
+## Bounded append publication
+
+For a cluster whose metadata voters and journal readers support compact append
+outcome versions 11 and 13, set `TS_MATRIXOBJECT_COMPACT_APPEND=1` on direct clients.
+This also enables reservation for the next append. Set
+`TS_MATRIXOBJECT_RESERVE_NEXT=0` to keep compact publication without that reservation.
+Both settings accept `0`, `1`, `false`, or `true`. Reserving without compact
+publication is refused before connecting.
+
+Compact publication keeps the durable metadata decision proportional to the newly
+written extents. A busy object's next allocation can share that decision. Enabling
+it activates the cluster publication fence: all writers must use compatible staged
+publication before this is enabled. Leave it off during a mixed-writer rollout.
+
+TemporalStore still appends its binary protobuf WAL frame and its offset index
+separately. These controls reduce metadata traffic; they do not remove either
+required append or change uncertain-outcome recovery. Segment limits still bound
+the manifest held by the client. Use the same segment position when comparing
+single-append latency across corpus sizes, and report segment rotations separately.
+
+Measure one durable WAL publication as the retained history grows:
+
+```sh
+TARGET=127.0.0.1:22111,127.0.0.1:22112,127.0.0.1:22113 \
+COMPACT=true MILESTONES=256,1024,8192 VALUE=4096 \
+cargo run --release -p temporalstore-rust --features matrixobject \
+  --example matrixobject_single_append_growth
+```
+
+Run plain and compact modes against separate disposable clusters: a cluster's
+publication fence persists. The report uses engine-produced binary outcomes,
+appends each record individually, verifies indexed reads through a fresh reader,
+and reports rotation costs separately from matched segment positions. Each sampled
+record must issue exactly two object-store appends. The fixture has one writer; engine execution and ownership-lease checks are
+outside the measured interval. A ratio printed by a busy-host run does not establish flat
+latency; repeat on an idle host with a fixed memory limit and replica policy.
