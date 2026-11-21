@@ -377,7 +377,7 @@ impl EvictionStageTally {
 }
 
 /// Take batches until the pressure is back under the threshold, the budget is spent, or a batch
-/// stops helping. `next_batch` is handed the remaining victim budget and returns the next batch.
+/// stops helping. `next_batch` is handed the remaining selection budget and returns the next batch.
 ///
 /// The loop lives here, apart from the engine, so that a test can drive it with a batch sequence
 /// of its own and assert how many ROUNDS it ran. Driving the real control rather than a copy of
@@ -410,10 +410,12 @@ where
         last: first,
     };
     let round_limit = eviction_loop_round_limit(count_limit);
+    // Selection work is charged by the requested batch, not by the number of eligible victims.
+    // Keep a minimum charge for callers using the low-level zero (unbounded) batch convention.
+    let mut charged = tally.last.batch_limit.max(1).min(count_limit);
     loop {
-        let taken = tally.victims.len();
         let terms =
-            eviction_loop_terms_for_batch(&tally.last, threshold, count_limit, taken, tally.rounds);
+            eviction_loop_terms_for_batch(&tally.last, threshold, count_limit, charged, tally.rounds);
         debug_assert!(
             terms.stops_only_on_live_conditions(threshold),
             "eviction loop stopped on a condition that cannot fire at threshold {threshold}: {terms:?}",
@@ -426,7 +428,9 @@ where
             "the eviction loop ran {} rounds against a limit of {round_limit}",
             tally.rounds,
         );
-        let report = next_batch(count_limit.saturating_sub(taken));
+        let remaining = count_limit.saturating_sub(charged);
+        let report = next_batch(remaining);
+        charged = charged.saturating_add(report.batch_limit.max(1).min(remaining));
         tally.rounds = tally.rounds.saturating_add(1);
         tally.victims.extend(report.selected_victims.iter().cloned());
         tally
@@ -2956,6 +2960,7 @@ mod eviction_loop_termination_guards {
     /// gate's early return -- i.e. every term except `made_progress` says continue.
     fn batch(victims: usize) -> StorageEvictionReport {
         StorageEvictionReport {
+            batch_limit: victims.max(1),
             pressure_gate_open: true,
             cooldown: false,
             selected_victims: vec![StorageEvictionVictim::default(); victims],
@@ -3020,6 +3025,27 @@ mod eviction_loop_termination_guards {
             tally.rounds,
         );
         assert_eq!(calls, BUDGET - 1, "batches taken and rounds counted disagree");
+    }
+
+    #[test]
+    fn sparse_selection_spends_the_requested_batch_budget() {
+        for (budget, requested, expected_remaining) in [
+            (100, 10, vec![90, 80, 70, 60, 50, 40, 30, 20, 10]),
+            (25, 10, vec![15, 5]),
+            (10, 10, vec![]),
+            (0, 10, vec![]),
+            (usize::MAX, usize::MAX, vec![]),
+        ] {
+            let mut remaining_budgets = Vec::new();
+            let first = StorageEvictionReport { batch_limit: requested, ..batch(1) };
+            let tally = run_eviction_stage(0, budget, first, |remaining| {
+                remaining_budgets.push(remaining);
+                StorageEvictionReport { batch_limit: requested.min(remaining), ..batch(1) }
+            });
+            assert_eq!(remaining_budgets, expected_remaining, "budget={budget}");
+            assert_eq!(tally.rounds, expected_remaining.len());
+            assert_eq!(tally.victims.len(), expected_remaining.len() + 1);
+        }
     }
 
     /// The ROUND half of `more_budget`, asserted where the victim half cannot reach it: `taken`
