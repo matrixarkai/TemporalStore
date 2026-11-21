@@ -96,7 +96,25 @@ cargo run --release -p temporalstore-rust --features matrixobject \
 Run plain and compact modes against separate disposable clusters: a cluster's
 publication fence persists. The report uses engine-produced binary outcomes,
 appends each record individually, verifies indexed reads through a fresh reader,
-and reports rotation costs separately from matched segment positions. Each sampled
+and reports rotation costs separately from matched segment positions. It also reports
+all non-rotation appends in each growth phase, including their maximum latency, so
+checkpoint tails outside the final sample window remain visible. Each sampled
 record must issue exactly two object-store appends. The fixture has one writer; engine execution and ownership-lease checks are
 outside the measured interval. A ratio printed by a busy-host run does not establish flat
 latency; repeat on an idle host with a fixed memory limit and replica policy.
+
+## Cluster only
+
+MatrixObject is reached through a cluster, by a gateway or directly, and in no other way. The
+node-local, in-process MatrixObject store has been retired, together with what only it used:
+
+- `TS_MATRIXOBJECT_STORE_DIR` is **refused at start-up** by name. It used to point a node at a
+  private on-disk snapshot, which is not shared storage whatever the bucket was called.
+- `TS_MATRIXOBJECT_SYNC_FLUSH`, `TS_MATRIXOBJECT_FLUSH_INTERVAL_MS`, `TS_MATRIXOBJECT_FLUSH_BATCH`
+  and `TS_MATRIXOBJECT_CHECKPOINT_ON_START` tuned that path and are no longer read. The cluster
+  path publishes each write before it acknowledges it and has
+  `TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START`.
+- `TS_STORAGE_BACKEND=matrixobject` without `TS_SHARED_STORE_URI` or `TS_MATRIXOBJECT_META` refuses
+  to start, and `auto` no longer selects MatrixObject unless a configured
+  `TS_MATRIXOBJECT_ENDPOINT` answers.
+- The `matrixobject` cargo feature stays: direct mode needs it for the cluster client.

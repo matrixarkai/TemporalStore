@@ -5,6 +5,10 @@ use super::*;
 use crate::types::{Command, CommandResponse, ExecuteRequest};
 
 fn seeded(dir: &std::path::Path) -> DataNodeRuntime {
+    seeded_keys(dir, 32)
+}
+
+fn seeded_keys(dir: &std::path::Path, keys: usize) -> DataNodeRuntime {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.join("cache"),
@@ -12,7 +16,7 @@ fn seeded(dir: &std::path::Path) -> DataNodeRuntime {
         dir.join("indexes"),
     );
     engine.load_shard(1);
-    for i in 0..32 {
+    for i in 0..keys {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
@@ -161,15 +165,12 @@ fn background_compaction_task_preserves_counters_and_error_status() {
     assert_eq!(runtime.stats().compaction_runs, 2);
 }
 
-/// The draining stage runs a whole round unless the sliced pass is switched on. A sliced pass pauses
-/// between slices, so a boundary callback that never fires is a pass that was not sliced; the
-/// control is the same drain run through the sliced entry point, which must fire it.
+/// THE DRAINING STAGE ALWAYS RUNS THE SLICED PASS. A sliced pass pauses between slices, so a boundary
+/// callback that never fires is a pass that was not sliced. The whole round it replaced held the
+/// shard write guard for the whole stage; the control is the whole-round entry point itself, which
+/// must NOT fire the callback, so the instrument can tell the two apart.
 #[test]
-fn the_draining_stage_runs_a_whole_round_unless_the_sliced_pass_is_switched_on() {
-    assert!(
-        !crate::engine::sliced_compaction_enabled(),
-        "the sliced pass must be off unless TS_SLICED_COMPACTION asks for it"
-    );
+fn the_draining_stage_always_runs_the_sliced_pass() {
     let boundaries = std::rc::Rc::new(std::cell::Cell::new(0usize));
     let count = |boundaries: &std::rc::Rc<std::cell::Cell<usize>>| {
         let boundaries = std::rc::Rc::clone(boundaries);
@@ -178,24 +179,28 @@ fn the_draining_stage_runs_a_whole_round_unless_the_sliced_pass_is_switched_on()
         })));
     };
 
+    // More keys than one slice holds, or the pass is a single slice and never pauses.
+    let keys = crate::engine::COMPACTION_SLICE_KEYS * 3;
     let dir = tempfile::tempdir().unwrap();
-    let runtime = seeded(dir.path());
+    let runtime = seeded_keys(dir.path(), keys);
     let drain: BTreeSet<u64> = runtime.engine().live_block_slab_ids(1).into_iter().collect();
     count(&boundaries);
     let status = task_execution::run_compaction_background_draining(&runtime.inner, 1, drain);
     assert!(status.ok, "{status:?}");
-    assert_eq!(boundaries.get(), 0, "the draining stage paused between slices without being asked to");
+    assert!(boundaries.get() > 0, "the draining stage did not pause between slices: it ran a whole round");
 
-    // Control: the instrument fires when the pass is sliced.
+    // Control: the whole-round entry point does not pause, so a zero above would not have meant
+    // 'the stage ran one'.
     let dir = tempfile::tempdir().unwrap();
-    let runtime = seeded(dir.path());
+    let runtime = seeded_keys(dir.path(), keys);
     let drain: BTreeSet<u64> = runtime.engine().live_block_slab_ids(1).into_iter().collect();
+    boundaries.set(0);
     runtime
         .engine()
-        .compact_shard_blocks_draining_sliced(1, drain, 8)
+        .compact_shard_blocks_draining_background(1, drain)
         .unwrap();
     crate::engine::set_slice_boundary_for_test(None);
-    assert!(boundaries.get() > 0, "the control never fired the boundary callback, so the check above proves nothing");
+    assert_eq!(boundaries.get(), 0, "the whole-round control fired the boundary callback");
 }
 
 /// A compaction step returns when its budget is spent, not when the pass is over: with room for one

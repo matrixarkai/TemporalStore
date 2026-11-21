@@ -6,6 +6,7 @@
 //! TARGET names its comma-separated endpoints; COMPACT and RESERVE accept booleans.
 //! MILESTONES defaults to 256,1024,8192 writes, VALUE to 4096 bytes, SAMPLES to 128.
 //! Samples use the same positions near each segment's end; rotations are separate.
+//! Whole-phase non-rotation percentiles also expose tails outside those windows.
 //! This measures one unfenced writer publishing WAL plus its offset index.
 //! Engine execution and ownership lease checks are outside this measurement.
 //! A quiet host and repeated runs are required before interpreting latency ratios.
@@ -137,6 +138,9 @@ async fn main() {
     let mut next = 1u64;
     let mut first_p50 = None;
     for milestone in milestones {
+        let phase_first_index = next;
+        let phase_records = milestone - phase_first_index + 1;
+        let mut phase_steady = Vec::with_capacity(phase_records as usize);
         let mut steady = Vec::with_capacity(samples);
         let mut rotations = Vec::new();
         let mut steady_requests = 0;
@@ -163,6 +167,8 @@ async fn main() {
             wal_frame_bytes += receipt.bytes_written;
             if (next - 1) % segment as u64 == 0 {
                 rotations.push(elapsed);
+            } else {
+                phase_steady.push(elapsed);
             }
             if next > milestone - samples as u64 {
                 steady.push(elapsed);
@@ -200,6 +206,9 @@ async fn main() {
             expected.wal_index = index;
             assert_eq!(actual.entry, expected, "stored outcome at {index}");
         }
+        assert_eq!(phase_steady.len() + rotations.len(), phase_records as usize);
+        let phase_p50 = percentile(&mut phase_steady, 50);
+        let phase_p99 = percentile(&mut phase_steady, 99);
         let p50 = percentile(&mut steady, 50);
         let p99 = percentile(&mut steady, 99);
         let baseline = *first_p50.get_or_insert(p50.max(1));
@@ -210,7 +219,7 @@ async fn main() {
         };
         println!(
             "{}",
-            serde_json::json!({"event":"single_append_growth", "compact_append":options.compact_append,"reserve_next":options.reserve_next,"records":milestone,"value_bytes":value_bytes,"samples":samples,"segment_appends":segment,"steady_p50_us":p50,"steady_p99_us":p99,"steady_max_us":steady.last(),"p50_growth_ratio":p50 as f64 / baseline as f64,"rotation_count":rotations.len(),"rotation_p99_us":rotation_p99,"sampled_object_store_requests":steady_requests,"wal_frame_bytes_this_phase":wal_frame_bytes,"fresh_reader_verified_indices":indices,"engine_execution_included":false,"ownership_fence_included":false,"batching":false,"latency_flatness_asserted":false})
+            serde_json::json!({"event":"single_append_growth", "compact_append":options.compact_append,"reserve_next":options.reserve_next,"records":milestone,"value_bytes":value_bytes,"samples":samples,"segment_appends":segment,"steady_p50_us":p50,"steady_p99_us":p99,"steady_max_us":steady.last(),"phase_first_index":phase_first_index,"phase_records":phase_records,"phase_non_rotation_count":phase_steady.len(),"phase_non_rotation_p50_us":phase_p50,"phase_non_rotation_p99_us":phase_p99,"phase_non_rotation_max_us":phase_steady.last(),"p50_growth_ratio":p50 as f64 / baseline as f64,"rotation_count":rotations.len(),"rotation_p99_us":rotation_p99,"sampled_object_store_requests":steady_requests,"wal_frame_bytes_this_phase":wal_frame_bytes,"fresh_reader_verified_indices":indices,"engine_execution_included":false,"ownership_fence_included":false,"batching":false,"latency_flatness_asserted":false})
         );
     }
 }
