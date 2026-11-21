@@ -1019,11 +1019,8 @@ fn the_declining_gate_pays_no_cache_listing() {
     let listed_entries = crate::engine::storage_cache_inspection_listing_entries();
     let index_visits = crate::engine::bucket_index_resident_bytes_visits();
 
-    // THE POSITIVE ARM, and the reason the zero below is not vacuous. The counter is thread-local,
-    // so a listing made on another thread would be invisible and an un-instrumented round would
-    // read zero exactly like an instrumented one that did not list. This drives the OPEN gate --
-    // threshold 0, the same round, the same thread, the same engine -- and asserts the counter sees
-    // its listing. Run AFTER the declining arm so it cannot perturb it.
+    // An open index-eviction gate also leaves the independently budgeted page cache alone.
+    // Check it after the declining arm so index release cannot perturb that measurement.
     crate::engine::reset_storage_cache_inspection_listings();
     let open_report = runtime.run_storage_manager_once(
         1,
@@ -1044,15 +1041,22 @@ fn the_declining_gate_pays_no_cache_listing() {
         .expect("the evict stage must report when it is enabled");
     assert_eq!(
         open_eviction.skipped_reason, "",
-        "the positive arm's gate did not open at threshold 0, so it cannot show the counter seeing \
-         a listing: reason={:?}",
+        "the control arm's gate did not open at threshold 1: reason={:?}",
         open_eviction.skipped_reason
     );
-    assert!(
-        open_listings > 0,
-        "the OPEN-gate round made no cache listing this thread could see, so the counter is not \
-         wired to the round at all and the zero asserted below proves nothing"
+    assert!(!open_eviction.selected_victims.is_empty());
+    assert!(open_eviction.bucket_index_buckets_released > 0);
+    assert_eq!(
+        open_listings, 0,
+        "normal index release must not inspect independently budgeted cached pages"
     );
+    // Exercise the listing instrument on this same engine and thread. A zero above must not
+    // pass merely because the counter is disconnected or the cache has no entries.
+    let inspection = engine.storage_cache_inspection_report(1);
+    assert!(!inspection.entries.is_empty());
+    assert_eq!(crate::engine::storage_cache_inspection_listings(), 1);
+    assert_eq!(crate::engine::storage_cache_inspection_listing_entries(),
+               inspection.entries.len() as u64);
 
     let eviction = report
         .eviction

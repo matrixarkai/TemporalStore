@@ -2601,20 +2601,24 @@ impl TemporalEngine {
             .evict_sampled_lru
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            // Sampling uses residency and recency, not cache byte totals. Inspect only the
-            // selected owners afterwards; key enumeration still belongs to the cache API.
+            // Index eviction leaves the independently budgeted page cache resident. Only
+            // explicit deletion needs cache-removal estimates after residency/recency sampling.
             let mut victims = self.sampled_eviction_victims(shard_id, batch_limit, &BTreeMap::new());
-            let buckets = victims.iter().map(|victim| victim.routing_bucket).collect();
-            let cache_by_bucket = self.storage_cache_summaries_for_buckets(shard_id, &buckets);
+            let cache_by_bucket = if delete_drop {
+                let buckets = victims.iter().map(|victim| victim.routing_bucket).collect();
+                self.storage_cache_summaries_for_buckets(shard_id, &buckets)
+            } else {
+                BTreeMap::new()
+            };
             for victim in &mut victims {
                 if let Some(cache) = cache_by_bucket.get(&victim.routing_bucket) {
                     victim.cache_memory_bytes = cache.memory_bytes;
                     victim.cache_disk_bytes = cache.disk_bytes;
-                    victim.weight = cache.memory_bytes.saturating_mul(4)
-                        .saturating_add(cache.disk_bytes.saturating_mul(2))
-                        .saturating_add(victim.physical_bytes)
-                        .saturating_add(victim.dirty_object_count.saturating_mul(1024));
                 }
+                victim.weight = victim.cache_memory_bytes.saturating_mul(4)
+                    .saturating_add(victim.cache_disk_bytes.saturating_mul(2))
+                    .saturating_add(victim.physical_bytes)
+                    .saturating_add(victim.dirty_object_count.saturating_mul(1024));
             }
             victims
         } else {
@@ -2756,19 +2760,16 @@ impl TemporalEngine {
         }
         let mut cache_entries_removed = 0usize;
         let mut cache_disk_bytes_removed = 0u64;
-        for victim in &victims {
-            if let Ok(report) = self.cache.invalidate_slot(shard_id, victim.routing_bucket) {
-                cache_entries_removed =
-                    cache_entries_removed.saturating_add(report.memory_entries_removed);
-                cache_disk_bytes_removed =
-                    cache_disk_bytes_removed.saturating_add(report.disk_bytes_removed);
+        if delete_drop {
+            let victim_buckets = victims.iter().map(|victim| victim.routing_bucket).collect::<Vec<_>>();
+            if let Ok(report) = self.cache.invalidate_slots(shard_id, &victim_buckets) {
+                cache_entries_removed = report.memory_entries_removed;
+                cache_disk_bytes_removed = report.disk_bytes_removed;
             }
         }
-        // THE ACTUATOR. `invalidate_slot` above drops cached blocks and leaves every `BucketNode`
-        // whole, so the only mode that ever shrank the index was `delete_drop` -- which does it by
-        // DESTROYING data. Releasing a victim's block list shrinks the index without losing
-        // anything: the node stays routable and the next read loads its blocks back from the model
-        // maps. Not attempted under `delete_drop`, where the victim's data is about to go.
+        // Release derived index state, not cached page values. The cache owns its own capacity
+        // policy; retaining a page does not prevent the bucket from becoming cold. Destructive
+        // deletion instead invalidates cached pages above and removes the records below.
         if !delete_drop && !victims.is_empty() {
             let candidates = victims
                 .iter()
