@@ -1600,6 +1600,11 @@ impl TemporalEngine {
                                     // recoverable. Declining to match costs a dump that is kept
                                     // longer than it had to be.
                                     .map(|manifest_state| {
+                                        // The retention check consumes this same immutable image.
+                                        // Share its floor before dropping the validated decode.
+                                        let _ = bucket_dump_io::manifest_wal_floor_memoised(
+                                            manifest, || Ok(wal_floor_of_index_image(&manifest_state)),
+                                        );
                                         // The shard this plan is FOR. A decoded manifest state
                                         // carries no stamp of its own -- only `install_shard_state`
                                         // sets one -- so asking IT for a shard yields None and
@@ -5355,10 +5360,17 @@ fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
             crate::wal_record::is_wal_resident(block.address.block_slab_id())
         });
     storage_bucket_internals::note_bucket_block_visits(visited);
-    let needs_wal = indexed_wal
-        || storage_bucket_internals::collect_model_live_block_entries(snapshot)
-            .iter()
-            .any(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()));
+    let needs_wal = indexed_wal || {
+        let mut model_wal = false;
+        storage_bucket_internals::visit_model_live_blocks(
+            snapshot, storage_bucket_internals::ModelWalkTally::WholeShardEntries,
+            |_, _| true,
+            |_, _, _, address| {
+                model_wal |= crate::wal_record::is_wal_resident(address.block_slab_id());
+            },
+        );
+        model_wal
+    };
     // Placement metadata can outlive its frames. A legacy frame without a placement, however,
     // cannot prove a narrower retention floor.
     if needs_wal { Some(floor.unwrap_or(0)) } else { None }

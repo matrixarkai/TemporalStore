@@ -152,3 +152,101 @@ fn direct_reclaim_honors_retention_owners_and_extended_grace() {
     assert!(released.purged_physical_bytes > 0);
     assert!(engine.block_store.read_slab(0).is_err());
 }
+
+fn owned_inventory_wal_floor(snapshot: &ShardState) -> Option<u64> {
+    let oldest = snapshot.wal_resident_blocks.values().map(|block| block.sequence).min();
+    let indexed = snapshot.bucket_index.bucket_map.values()
+        .flat_map(|bucket| bucket.block_index.values())
+        .any(|block| crate::wal_record::is_wal_resident(block.address.block_slab_id()));
+    let models = storage_bucket_internals::collect_model_live_block_entries(snapshot).iter()
+        .any(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()));
+    (indexed || models).then_some(oldest.unwrap_or(0))
+}
+
+#[test]
+fn borrowed_wal_floor_preserves_index_model_and_missing_placement_cases() {
+    let _on = crate::engine::value_once_in_test(true);
+    let root = tempfile::tempdir().unwrap();
+    let engine = open(root.path());
+    for command in [
+        Command::StringSet { key: "string".into(), value: b"value".to_vec() },
+        Command::HashSet { key: "hash".into(), field: "field".into(), value: b"value".to_vec() },
+    ] {
+        assert!(engine.execute(ExecuteRequest { shard_id: 1, command }).status.ok);
+    }
+    let mut snapshot = engine.shards.read().unwrap()[&1].clone();
+    assert!(wal_floor_of_index_image(&snapshot).is_some());
+    assert_eq!(wal_floor_of_index_image(&snapshot), owned_inventory_wal_floor(&snapshot));
+    for mut bucket in snapshot.bucket_index.bucket_map.values_mut() {
+        bucket.block_index = crate::engine::state::BlockIndexMap::Empty;
+    }
+    assert!(wal_floor_of_index_image(&snapshot).is_some(), "model-only placements still retain logs");
+    assert_eq!(wal_floor_of_index_image(&snapshot), owned_inventory_wal_floor(&snapshot));
+    snapshot.wal_resident_blocks.clear();
+    assert_eq!(wal_floor_of_index_image(&snapshot), Some(0));
+    assert_eq!(wal_floor_of_index_image(&snapshot), owned_inventory_wal_floor(&snapshot));
+
+    let mut stale = ShardState::default();
+    stale.wal_resident_blocks = engine.shards.read().unwrap()[&1].wal_resident_blocks.clone();
+    assert!(!stale.wal_resident_blocks.is_empty());
+    assert_eq!(wal_floor_of_index_image(&stale), None, "stale locators alone retain nothing");
+    assert_eq!(wal_floor_of_index_image(&stale), owned_inventory_wal_floor(&stale));
+
+    let mut indexed_only = ShardState::default();
+    indexed_only.bucket_index.bucket_map = engine.shards.read().unwrap()[&1].bucket_index.bucket_map.clone();
+    for mut bucket in indexed_only.bucket_index.bucket_map.values_mut() {
+        let handles = bucket.block_index.iter().map(|(handle, _)| *handle).collect::<Vec<_>>();
+        for handle in handles { bucket.block_index.get_mut(&handle).unwrap().set_deleted(true); }
+    }
+    assert_eq!(wal_floor_of_index_image(&indexed_only), Some(0), "indexed tombstones keep their unknown floor");
+    assert_eq!(wal_floor_of_index_image(&indexed_only), owned_inventory_wal_floor(&indexed_only));
+}
+
+#[test]
+fn generation_validation_populates_the_same_images_retention_floor() {
+    let _on = crate::engine::value_once_in_test(true);
+    let root = tempfile::tempdir().unwrap();
+    let engine = open(root.path());
+    for index in 0..8 {
+        assert!(engine.execute(ExecuteRequest { shard_id: 1,
+            command: Command::StringSet { key: format!("key-{index}"), value: vec![7; 32] },
+        }).status.ok);
+    }
+    engine.wal_store.flush(1).unwrap();
+    let mut snapshot = engine.shards.read().unwrap()[&1].clone();
+    let summaries = engine.bucket_storage_summaries(1);
+    let mut manifest = BucketDumpManifest {
+        version: 1, shard_id: 1, manifest_id: "image-retention".into(),
+        bucket_ids: summaries.iter().map(|summary| summary.routing_bucket).collect(),
+        bucket_summaries: summaries,
+        wal_sequence: engine.wal_store.stats_without_rescan(1).last_sequence,
+        index_log_sequence: engine.index_log_store.stats_without_rescan(1).last_sequence,
+        ..Default::default()
+    };
+    let expected = owned_inventory_wal_floor(&snapshot);
+    assert!(expected.is_some_and(|floor| floor > 0));
+    for expected_floor in [expected, Some(0)] {
+        if expected_floor == Some(0) { snapshot.wal_resident_blocks.clear(); }
+        manifest.index_bytes = serialize_index(&snapshot);
+        manifest.index_sha256 = sha256_hex_bytes(&manifest.index_bytes);
+        manifest.checksum.clear();
+        manifest.checksum = bucket_dump_io::bucket_dump_manifest_checksum(&manifest).unwrap();
+        engine.persist_bucket_dump_manifest(&manifest).unwrap();
+        let plan = engine.storage_wal_reclaim_plan(1, [], []);
+        assert!(plan.safe_to_reclaim, "{:?}", plan.blocker_reasons);
+        let listed = list_bucket_dump_manifests_shared_at(&engine.index_dir, 1).unwrap();
+        let held = listed.iter().find(|item| item.manifest_id == manifest.manifest_id).unwrap();
+        assert_eq!(bucket_dump_io::manifest_wal_floor_memoised(held, || {
+            panic!("a validated image must not be decoded again for its retention floor")
+        }), Ok(expected_floor));
+    }
+}
+
+#[test]
+fn wal_floor_does_not_build_an_owned_block_inventory() {
+    let source = include_str!("storage_lifecycle_methods.rs");
+    let function = source.split("fn wal_floor_of_index_image(").nth(1).unwrap()
+        .split("\n}\n").next().unwrap();
+    assert!(!function.contains("collect_model_live_block_entries("));
+    assert!(function.contains("visit_model_live_blocks("));
+}
