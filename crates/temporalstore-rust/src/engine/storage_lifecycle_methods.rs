@@ -1447,6 +1447,22 @@ impl TemporalEngine {
         follower_replay_cursors: impl IntoIterator<Item = BucketDumpFollowerReplayCursor>,
         raft_snapshot_refs: impl IntoIterator<Item = BucketDumpRaftSnapshotRef>,
     ) -> StorageWalReclaimPlan {
+        self.storage_wal_reclaim_plan_in(
+            shard_id,
+            follower_replay_cursors,
+            raft_snapshot_refs,
+            ReclaimPlanScope::DirtyBuckets,
+        )
+    }
+
+    /// The plan, over the dirty buckets or (in a test, to compare the two) over every bucket.
+    pub(super) fn storage_wal_reclaim_plan_in(
+        &self,
+        shard_id: ShardId,
+        follower_replay_cursors: impl IntoIterator<Item = BucketDumpFollowerReplayCursor>,
+        raft_snapshot_refs: impl IntoIterator<Item = BucketDumpRaftSnapshotRef>,
+        scope: ReclaimPlanScope,
+    ) -> StorageWalReclaimPlan {
         WAL_RECLAIM_PLAN_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let follower_replay_cursors = follower_replay_cursors.into_iter().collect::<Vec<_>>();
         let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
@@ -1462,32 +1478,36 @@ impl TemporalEngine {
             .last_sequence;
         // The summaries and the live shard's digests come off ONE listing of the live blocks. They
         // were two calls that each listed every block of the shard, in two lock acquisitions.
-        let (bucket_summaries, current_bucket_fingerprints) =
-            self.bucket_storage_summaries_with_digests(shard_id, true);
-        // What each bucket holds over the two logs when no manifest covers it.
+        // THE FLOORS COME ONLY FROM DIRTY BUCKETS. A clean bucket contributes no floor in either arm
+        // below; it is only counted as covered. So the summaries and digests are built for the dirty
+        // buckets alone, from their own block lists, under one read of the shard together with
+        // their claims -- the copy under the guard is O(dirty), where the whole-shard listing it
+        // replaces was O(shard). `ReclaimPlanScope::EveryBucket` is the old computation, kept to
+        // be compared against in a test.
         //
-        // A dirty bucket with no durable dump manifest is captured nowhere, so the only answer
-        // the plan could give for it was "retain everything" -- floor 0. These two claims say
-        // where the bucket's oldest undumped write actually sits, so it can hold the logs from
-        // there instead of from the beginning.
-        //
-        // AND WHICH BUCKETS ARE DIRTY, off their own nodes, in the SAME lock acquisition and the
-        // same walk that is already being made over `bucket_map`. The two checks below ask this
-        // instead of `dirty_object_count`, which answered a question about the BUCKET by counting
-        // OBJECTS in a side index -- see `dirty_bucket_nodes`. It is read here rather than added to
-        // `BucketStorageSummary` for the reason the dump ordering's claim is: a summary is stored
-        // in the dump manifest and compared field-by-field when a manifest is validated, so a new
-        // field there is a durability contract, not a report field.
-        //
-        // ONE MAP, DIRTY BUCKETS ONLY. This was a `HashMap` of both claims for EVERY bucket plus a
-        // set of the dirty ones, and the claim map was read at one site, behind the dirty test.
-        let dirty_claims = self
-            .shards
-            .read()
-            .expect("shards lock poisoned")
-            .get(&shard_id)
-            .map(crate::engine::storage_reporting::dirty_bucket_claims)
-            .unwrap_or_default();
+        // What a bucket claims over the two logs when no manifest covers it: a dirty bucket with
+        // no durable dump manifest is captured nowhere, so the claims say where its oldest undumped
+        // write sits and it holds the logs from there instead of from the beginning.
+        let (bucket_summaries, current_bucket_fingerprints, dirty_claims, bucket_node_count) = match scope {
+            ReclaimPlanScope::DirtyBuckets => {
+                let inputs = self.dirty_bucket_plan_inputs(shard_id);
+                (inputs.summaries, inputs.digests, inputs.claims, inputs.bucket_node_count)
+            }
+            ReclaimPlanScope::EveryBucket => {
+                let (summaries, digests) = self.bucket_storage_summaries_with_digests(shard_id, true);
+                let claims = self
+                    .shards
+                    .read()
+                    .expect("shards lock poisoned")
+                    .get(&shard_id)
+                    .map(crate::engine::storage_reporting::dirty_bucket_claims)
+                    .unwrap_or_default();
+                let count = summaries.len();
+                (summaries, digests, claims, count)
+            }
+        };
+        // Buckets the plan did not look at because they hold no undumped write.
+        let clean_bucket_count = bucket_node_count.saturating_sub(bucket_summaries.len());
         let manifests =
             list_bucket_dump_manifests_shared_at(&self.index_dir, shard_id).unwrap_or_default();
         let mut missing_bucket_generations = Vec::new();
@@ -1704,7 +1724,7 @@ impl TemporalEngine {
         }
 
         let mut blocker_reasons = Vec::new();
-        if bucket_summaries.is_empty() {
+        if bucket_node_count == 0 && bucket_summaries.is_empty() {
             blocker_reasons.push("no_slot_generations_to_anchor_reclaim".to_string());
             durable_wal_frontier = 0;
             durable_index_log_frontier = 0;
@@ -1779,7 +1799,7 @@ impl TemporalEngine {
         // it, or the lowest manifest sequence does not describe what is actually on disk. These
         // stay absolute -- there is no safe partial answer to a frontier that is wrong.
         let generations_durable = missing_bucket_generations.is_empty()
-            && covered_bucket_count == bucket_summaries.len()
+            && covered_bucket_count.saturating_add(clean_bucket_count) == bucket_summaries.len() + clean_bucket_count
             && durable_wal_frontier > 0
             && (current_index_log_sequence == 0 || durable_index_log_frontier > 0);
 
@@ -1850,7 +1870,7 @@ impl TemporalEngine {
             retain_from_index_log_sequence,
             current_wal_sequence,
             current_index_log_sequence,
-            covered_bucket_count,
+            covered_bucket_count: covered_bucket_count.saturating_add(clean_bucket_count),
             uncovered_bucket_count: missing_bucket_generations.len(),
             follower_cursor_block_count,
             raft_snapshot_block_count,
@@ -5332,6 +5352,15 @@ mod eviction_round_scale {
     }
 }
 
+
+/// Which buckets a reclaim plan looks at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReclaimPlanScope {
+    /// Only the buckets that hold an undumped write, which are the only ones that set a floor.
+    DirtyBuckets,
+    /// Every bucket: the computation the plan used to make, kept so a test can compare the two.
+    EveryBucket,
+}
 
 /// The lowest WAL sequence an index image still needs, or `None` when it needs none.
 ///
