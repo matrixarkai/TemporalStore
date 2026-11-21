@@ -1895,10 +1895,7 @@ impl TemporalEngine {
                 floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
             }
         }
-        let base = std::fs::read(self.index_path(shard_id))
-            .ok()
-            .and_then(|bytes| decode_index_bytes(&bytes).ok())
-            .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
+        let base = served_index_wal_floor(&self.index_path(shard_id));
         if let Some(sequence) = base {
             floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
         }
@@ -1966,10 +1963,7 @@ impl TemporalEngine {
         // The same reading a load makes -- the file as it is, no delta folded -- and the same answer
         // a manifest gives. An image that is absent names nothing; one that will not decode is not
         // what a load would use either (it falls back to the log), so neither narrows the floor.
-        let base_floor = std::fs::read(self.index_path(plan.shard_id))
-            .ok()
-            .and_then(|bytes| decode_index_bytes(&bytes).ok())
-            .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
+        let base_floor = served_index_wal_floor(&self.index_path(plan.shard_id));
         if let Some(sequence) = base_floor {
             manifest_floor = Some(manifest_floor.map_or(sequence, |old: u64| old.min(sequence)));
         }
@@ -5324,12 +5318,78 @@ mod eviction_round_scale {
 }
 
 
+#[cfg(test)]
+thread_local! {
+    /// How many times the served index file was decoded on this thread to ask for its WAL floor. A
+    /// test reads it to say whether a call paid for a decode and a whole-image walk or was answered
+    /// from the memo. Per thread, so tests running side by side cannot count each other's decodes.
+    pub(crate) static SERVED_INDEX_FLOOR_DECODES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A file's identity as the filesystem reports it: inode, length, modification time. The served
+/// index is replaced by writing a new file and renaming it over the old one, so a rewrite always
+/// presents a new inode; the length and time are the second line of defence.
+type FileVersion = (u64, u64, i128);
+
+#[cfg(unix)]
+fn file_version(meta: &std::fs::Metadata) -> Option<FileVersion> {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.ino(), meta.len(), i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec())))
+}
+
+#[cfg(not(unix))]
+fn file_version(_meta: &std::fs::Metadata) -> Option<FileVersion> {
+    None
+}
+
+/// What [`wal_floor_of_index_image`] says about the served index file, computed once per VERSION of
+/// the file instead of once per call.
+///
+/// The WAL retention floor reads this file three times in a dumping round, and every read decoded
+/// the whole index and scanned every bucket block, plus a whole-shard model listing when the image
+/// names no log-resident block. The answer is a pure function of the file's bytes, so it is kept
+/// beside the file's identity and recomputed only when the file is replaced. A file that is absent,
+/// or will not decode, names nothing (`None`), exactly as before.
+///
+/// The identity is read again after the file is read, and a result is kept only if the two agree,
+/// so a file replaced while it was being read is never stored under the identity of the old one.
+pub(super) fn served_index_wal_floor(path: &std::path::Path) -> Option<u64> {
+    static MEMO: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, (FileVersion, Option<u64>)>>,
+    > = std::sync::OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    let before = std::fs::metadata(path).ok()?;
+    let version = file_version(&before);
+    if let Some(version) = version {
+        if let Some((known, floor)) = memo.lock().ok()?.get(path) {
+            if *known == version {
+                return *floor;
+            }
+        }
+    }
+    #[cfg(test)]
+    SERVED_INDEX_FLOOR_DECODES.with(|count| count.set(count.get() + 1));
+    let floor = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| decode_index_bytes(&bytes).ok())
+        .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
+    if let Some(version) = version {
+        let after = std::fs::metadata(path).ok().and_then(|meta| file_version(&meta));
+        if after == Some(version) {
+            if let Ok(mut memo) = memo.lock() {
+                memo.insert(path.to_path_buf(), (version, floor));
+            }
+        }
+    }
+    floor
+}
+
 /// The lowest WAL sequence an index image still needs, or `None` when it needs none.
 ///
 /// An image names a WAL-resident block by a placement, and a block whose only durable copy is a log
 /// record needs that record until a newer image stops naming it. A resident block with no placement
 /// cannot prove a narrower floor, so it reads as 0.
-fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
+pub(super) fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
     let floor = snapshot
         .wal_resident_blocks
         .values()

@@ -591,6 +591,8 @@ mod a_set_length_and_membership_read_the_member_map;
 mod an_expiry_sweep_that_fails_is_counted;
 #[path = "tests/a_real_slab_block_lost_after_the_ack_is_read_from_its_log_record.rs"]
 mod a_real_slab_block_lost_after_the_ack_is_read_from_its_log_record;
+#[path = "tests/the_served_index_floor_is_read_once_per_file_version.rs"]
+mod the_served_index_floor_is_read_once_per_file_version;
 #[path = "tests/the_figure_after_a_dump_is_the_bytes_appended_since_it.rs"]
 mod the_figure_after_a_dump_is_the_bytes_appended_since_it;
 #[path = "tests/a_hash_field_presence_is_read_from_its_row.rs"]
