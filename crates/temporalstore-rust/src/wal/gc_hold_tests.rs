@@ -51,7 +51,7 @@ fn sequences(store: &LocalWriteAheadLogStore) -> Vec<u64> {
         .scan(3, 0, u64::MAX, u64::MAX)
         .unwrap()
         .iter()
-        .map(|record| record.0)
+        .map(|(_, line)| decode_wal_line(line).unwrap().sequence)
         .collect()
 }
 
@@ -182,6 +182,13 @@ fn records_appended_while_the_pass_runs_survive_it() {
     put(&store, 999);
     assert_eq!(store.stats(3).last_sequence, 313);
     assert_eq!(*sequences(&store).last().unwrap(), 313);
+    // The seam with a warm append path that trusts its cached record end: the record written after
+    // the swap must sit at the swapped piece's real end, so a fresh store reads every record.
+    drop(store);
+    let again = LocalWriteAheadLogStore::new(dir.path());
+    let mut expected_again = expected.clone();
+    expected_again.push(313);
+    assert_eq!(sequences(&again), expected_again);
 }
 
 #[test]
