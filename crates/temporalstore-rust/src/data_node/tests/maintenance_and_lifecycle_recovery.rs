@@ -3191,11 +3191,14 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     // This scenario configures a follower pinned at sequence 1 and a raft snapshot at sequence 1.
     // What a retention cursor imposes is a BOUND on how far reclaim may go, not a refusal; the
     // note below the binding says why, and what is asserted instead.
-    let reclaim_wal = running
+    let reclaim_page = running
         .last_phase_reports
         .iter()
-        .find(|stage| stage.stage == "reclaim_wal")
-        .expect("the cycle ran a reclaim_wal stage");
+        .find(|stage| stage.stage == "reclaim_page")
+        .expect("the cycle ran physical log collection in reclaim_page");
+    let index_gc = running.last_phase_reports.iter()
+        .find(|stage| stage.stage == "index_gc")
+        .expect("the cycle reported index collection separately");
     // The refusal this asserted was deliberately replaced by a CLAMP. A cursor at sequence 1
     // means everything at or below 1 is behind every reader, so reclaim may take exactly that
     // span and no more; refusing outright let one lagging follower pin the whole log for as long
@@ -3208,32 +3211,39 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     // must retain from exactly 2. The exact value is the point: >= would also pass if the clamp
     // were dropped and reclaim ran all the way to the durable frontier, which is the regression
     // being guarded here.
-    assert!(!reclaim_wal.skipped, "{reclaim_wal:?}");
+    assert!(reclaim_page.enabled, "{reclaim_page:?}");
+    if reclaim_page.skipped {
+        assert!(reclaim_page.skipped_reason.contains("retained dependencies remain"),
+            "{reclaim_page:?}");
+    }
     assert_eq!(
-        reclaim_wal.retain_from_wal_sequence, 2,
-        "reclaim must not advance past the slowest cursor: {reclaim_wal:?}"
+        reclaim_page.retain_from_wal_sequence, 2,
+        "reclaim must not advance past the slowest cursor: {reclaim_page:?}"
     );
     assert_eq!(
-        reclaim_wal.retain_from_index_log_sequence, 2,
-        "reclaim must not advance past the slowest cursor: {reclaim_wal:?}"
+        index_gc.retain_from_index_log_sequence, 2,
+        "index reclaim must not advance past the slowest cursor: {index_gc:?}"
     );
+    assert_eq!(reclaim_page.retain_from_index_log_sequence, 0,
+        "page collection must not claim index-log truncation");
     // Clamping instead of refusing did not stop the cursors being counted, nor the pressure
     // signal naming what is holding the logs.
-    assert_eq!(reclaim_wal.retention_blockers, 2, "{reclaim_wal:?}");
+    assert_eq!(reclaim_page.retention_blockers, 2, "{reclaim_page:?}");
+    assert_eq!(index_gc.retention_blockers, 2, "{index_gc:?}");
     assert!(
-        reclaim_wal
+        reclaim_page
             .pressure_signal
-            .contains("follower_snapshot_retention"),
-        "{reclaim_wal:?}"
+            .contains("dependency_retention"),
+        "{reclaim_page:?}"
     );
     assert_eq!(
-        running.last_wal_floor_sequence, reclaim_wal.wal_floor_sequence,
+        running.last_wal_floor_sequence, reclaim_page.wal_floor_sequence,
         "the manager must report the floor the stage computed: {:?}",
         running.last_skipped_reasons
     );
     assert_eq!(
         running.last_index_log_floor_sequence,
-        reclaim_wal.index_log_floor_sequence
+        index_gc.index_log_floor_sequence
     );
     assert!(running.last_retention_blockers >= 1);
     assert!(running
@@ -3249,9 +3259,8 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     // The floor is the CLAMPED frontier, not zero: reclaim ran, and stopped at the slowest cursor.
     // The refusal was asserted TWICE in this test, in two blocks about sixty lines apart, so
     // correcting the first one only moved the failure down here. Both now say the same thing.
-    assert!(reclaim_wal.retention_blockers >= 1, "{reclaim_wal:?}");
-    assert_eq!(reclaim_wal.wal_floor_sequence, 2, "{reclaim_wal:?}");
-    assert_eq!(reclaim_wal.index_log_floor_sequence, 2, "{reclaim_wal:?}");
+    assert_eq!(reclaim_page.wal_floor_sequence, 2, "{reclaim_page:?}");
+    assert_eq!(index_gc.index_log_floor_sequence, 2, "{index_gc:?}");
     assert!(running.last_phase_reports.iter().any(|stage| {
         stage.stage == "reclaim_page"
             && (stage
@@ -3912,11 +3921,11 @@ fn the_periodic_loop_actually_reclaims_the_write_ahead_log() {
     // and it is the stage under test that has to be responsible.
     let control = build(records);
     let control_before = record_count(&control);
-    let control = run(control, StorageManagerOptions { enable_wal_reclaim: false, ..cadence() });
+    let control = run(control, StorageManagerOptions { enable_block_gc: false, ..cadence() });
     let control_after = record_count(&control);
     assert_eq!(
         control_after, control_before,
-        "with reclaim_wal disabled nothing may shrink the log: {control_before} -> {control_after}"
+        "with page collection disabled nothing may shrink the log: {control_before} -> {control_after}"
     );
 }
 
@@ -7115,7 +7124,7 @@ fn can_the_index_dump_be_capped_now() {
 #[test]
 fn a_capped_index_dump_still_reclaims() {
     const BATCH: usize = 2_000;
-    const ROUNDS: usize = 6;
+    const ROUNDS: usize = 16;
     // Overwrites, so records genuinely become garbage. With distinct keys almost every record is
     // the live version of a key, nothing is reclaimable, and both arms below would report the full
     // count while proving nothing.
@@ -7143,6 +7152,7 @@ fn a_capped_index_dump_still_reclaims() {
             ..StorageManagerOptions::default()
         };
         let mut written = 0usize;
+        let mut peak_index_bytes = 0u64;
         for _ in 0..ROUNDS {
             let engine = runtime.engine();
             for index in 0..BATCH {
@@ -7155,6 +7165,13 @@ fn a_capped_index_dump_still_reclaims() {
                 });
             }
             written += BATCH;
+            peak_index_bytes = peak_index_bytes.max(runtime.engine().index_log_store().log_len_bytes(1));
+            runtime.run_storage_manager_once(1, options.clone());
+        }
+        assert!(peak_index_bytes >= 1 << 20,
+            "the fixture must cross the index collector's byte gate: peak {peak_index_bytes}");
+        // The active-piece rewrite is bounded; covered sealed pieces need no record rewrite.
+        for _ in 0..(BATCH * ROUNDS / 200) {
             runtime.run_storage_manager_once(1, options.clone());
         }
         let remaining = runtime
@@ -7163,6 +7180,16 @@ fn a_capped_index_dump_still_reclaims() {
             .scan(1, 0, u64::MAX, u64::MAX)
             .map(|records| records.len())
             .unwrap_or(0);
+        eprintln!("index cap={cap} peak_bytes={peak_index_bytes} written={written} retained={remaining}");
+        runtime.engine().invalidate_shard_cache(1);
+        for index in 0..KEYSPACE {
+            let response = runtime.engine().execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: format!("dumpcapguard-{index:08}") },
+            });
+            assert!(response.status.ok, "cold read {index}: {:?}", response.status);
+            assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![b'v'; 64]) });
+        }
         (written, remaining)
     }
 
@@ -7204,7 +7231,7 @@ fn a_capped_index_dump_still_reclaims() {
 fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
     const WIDE_KEYS: usize = 2_000;
     const HOT_KEYS: usize = 20;
-    const ROUNDS: usize = 8;
+    const ROUNDS: usize = 32;
     const BATCH: usize = 1_000;
 
     let engine = TemporalEngine::default();
@@ -7241,6 +7268,7 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
     // Phase two: keep writing, but only to a handful of keys. Every bucket the wide phase touched
     // and this one does not is now CLEAN, holding a manifest from phase one.
     let mut written = 0usize;
+    let mut peak_index_bytes = 0u64;
     for _ in 0..ROUNDS {
         let engine = runtime.engine();
         for index in 0..BATCH {
@@ -7253,10 +7281,27 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
             });
         }
         written += BATCH;
+        peak_index_bytes = peak_index_bytes.max(runtime.engine().index_log_store().log_len_bytes(1));
+        runtime.run_storage_manager_once(1, gate_crossed.clone());
+    }
+
+    assert!(peak_index_bytes >= 1 << 20,
+        "the hot writes must cross the index collector's byte gate: peak {peak_index_bytes}");
+    for _ in 0..(BATCH * ROUNDS / 200) {
         runtime.run_storage_manager_once(1, gate_crossed.clone());
     }
 
     let engine = runtime.engine();
+    engine.invalidate_shard_cache(1);
+    for key in (0..WIDE_KEYS).map(|index| format!("quiet-wide-{index:08}"))
+        .chain((0..HOT_KEYS).map(|index| format!("quiet-hot-{index:04}")))
+    {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key },
+        });
+        assert!(response.status.ok, "cold read: {:?}", response.status);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![b'v'; 64]) });
+    }
     let wal_records = engine
         .write_ahead_log_store()
         .scan(1, 0, u64::MAX, u64::MAX)
@@ -7267,6 +7312,7 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
         .scan(1, 0, u64::MAX, u64::MAX)
         .map(|records| records.len())
         .unwrap_or(0);
+    eprintln!("quiet buckets peak_bytes={peak_index_bytes} written={written} wal={wal_records} index={index_records}");
 
     // The denominator: phase two has to have written enough that a frozen floor is visible as
     // growth rather than lost in the noise of phase one.
@@ -9206,8 +9252,8 @@ fn a_quiet_shard_with_every_bucket_clean_can_reclaim_its_log() {
     );
 }
 
-/// `reclaim_wal` must not disappear from the stage list while the log is still reclaimable, and
-/// the log must actually shrink.
+/// Page collection must retire dumped log records on an idle shard. A memoized no-work
+/// decision may skip later rounds, but the dump stage must not be needed for truncation.
 ///
 /// The stage list is how an operator reads whether maintenance is alive, so the two cases it must
 /// never confuse are "the log is at its floor" and "the stage stopped running". They look
@@ -9268,7 +9314,10 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
         min_undumped_wal_records: 1,
         ..StorageManagerOptions::default()
     };
-    let first = runtime.run_storage_manager_once(1, options.clone());
+    let first = runtime.run_storage_manager_once(1, StorageManagerOptions {
+        enable_block_gc: false,
+        ..options.clone()
+    });
     assert!(
         first
             .executed_stages
@@ -9281,21 +9330,27 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
 
     let mut reclaimable_rounds = 0usize;
     let mut rounds_missing_the_stage = Vec::new();
+    let mut collection_rounds = 0usize;
     for round in 0..IDLE_ROUNDS {
         let engine = runtime.engine();
         let reclaimable = engine
             .storage_wal_reclaim_plan(1, Vec::new(), Vec::new())
             .safe_to_reclaim;
         drop(engine);
+        let bytes_before = runtime.engine().wal_store().stats(1).persistent_bytes;
         let report = runtime.run_storage_manager_once(1, options.clone());
+        let bytes_after = runtime.engine().wal_store().stats(1).persistent_bytes;
+        if report.executed_stages.iter().any(|stage| stage == "reclaim_page") {
+            collection_rounds += 1;
+        }
         if !reclaimable {
             continue;
         }
         reclaimable_rounds += 1;
-        if !report
+        if bytes_after < bytes_before && !report
             .executed_stages
             .iter()
-            .any(|stage| stage == "reclaim_wal")
+            .any(|stage| stage == "reclaim_page")
         {
             rounds_missing_the_stage.push((round, report.skipped_stages.clone()));
         }
@@ -9311,11 +9366,11 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
     );
     assert!(
         rounds_missing_the_stage.is_empty(),
-        "`reclaim_wal` left the stage list on {} of {reclaimable_rounds} rounds whose log was \
-         still reclaimable, which an operator reads as maintenance having died: {:?}",
+        "page collection was absent from {} rounds that physically reclaimed log bytes: {:?}",
         rounds_missing_the_stage.len(),
         rounds_missing_the_stage,
     );
+    assert!(collection_rounds > 0, "the idle shard never ran page collection");
     // The stage running is the operator-visible half; the log shrinking is the point of it.
     assert!(
         bytes_at_end < bytes_after_first,
@@ -12969,9 +13024,10 @@ fn a_reopen_after_gated_rounds_replays_only_the_gated_bytes_and_loses_nothing() 
                     key: format!("reopen-{index:05}"),
                 },
             });
-            if response.status.ok {
-                readable += 1;
-            }
+            assert!(response.status.ok, "cold read {index}: {:?}", response.status);
+            assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![b'v'; 64]) },
+                "cold read {index} returned the wrong value");
+            readable += 1;
         }
         (wal_records, readable, index_records, manifests)
     }
@@ -12989,14 +13045,11 @@ fn a_reopen_after_gated_rounds_replays_only_the_gated_bytes_and_loses_nothing() 
         gated_wal < ungated_wal,
         "a dump covered the log and it was not reclaimed ({gated_wal} against {ungated_wal})"
     );
-    // The index log and the manifests ride on the same dump: once the gate is crossed both must
-    // advance, and below it neither may.
+    // Publishing a dump does not bypass the independent 1 MiB index-GC gate.
     assert_eq!(ungated_manifests, 0, "a manifest was written below the gate");
     assert!(gated_manifests >= 1, "the gate was crossed and no manifest was written");
-    assert!(
-        gated_index < ungated_index,
-        "a dump covered the index log and it was not reclaimed ({gated_index} against {ungated_index})"
-    );
+    assert_eq!(gated_index, ungated_index,
+        "the small index log was truncated outside its owning stage's byte gate");
 }
 
 /// A shard that is still replaying its log gets no round from the periodic loop: the plan, the

@@ -1093,6 +1093,31 @@ impl DataNodeRuntime {
         ));
 
 
+        if options.enable_block_gc && lifecycle_plan.reasons.iter()
+            .any(|reason| reason == "slot_dump_refresh_after_relocation")
+        {
+            // Publish relocated addresses before deciding which old segments can be retired.
+            let response = self.apply_storage_lifecycle_with_report_details(
+                StorageLifecycleRequest {
+                    shard_id,
+                    selected_dump_buckets: lifecycle_plan.selected_dump_buckets.clone(),
+                    prune_bucket_dump_manifests: true,
+                    roll_forward_bucket_dump_installs: true,
+                    follower_replay_cursors: options.follower_replay_cursors.clone(),
+                    block_gc_shared_store_cursors: options.block_gc_shared_store_cursors.clone(),
+                    block_gc_raft_snapshot_refs: options.raft_snapshot_refs.clone(),
+                    block_gc_checkpoint_floor_slab_id: options.block_gc_checkpoint_floor_slab_id,
+                    block_gc_raft_install_floor_slab_id: options.block_gc_raft_install_floor_slab_id,
+                    ..StorageLifecycleRequest::default()
+                }, detailed_report,
+            );
+            if !response.status.ok {
+                status = response.status.clone();
+            }
+            lifecycle_report = Some(response.report);
+            self.inner.quiet_wal_reclaim.lock().expect("quiet wal reclaim lock poisoned")
+                .remove(&shard_id);
+        }
         let page_log_reclaim = if options.enable_block_gc {
             self.reclaim_page_log(shard_id, &options, &pressure)
         } else {

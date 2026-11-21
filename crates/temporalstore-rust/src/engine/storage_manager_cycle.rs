@@ -1157,6 +1157,15 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|report| report.records_removed)
                 .unwrap_or_default(),
+            retain_from_index_log_sequence: index_gc_report
+                .as_ref()
+                .map(|report| report.retain_from_index_log_sequence)
+                .unwrap_or_default(),
+            retention_blockers: if request.enable_index_gc {
+                wal_reclaim_plan.follower_cursor_block_count + wal_reclaim_plan.raft_snapshot_block_count
+            } else {
+                0
+            },
             ..StorageManagerStageReport::default()
         });
 
