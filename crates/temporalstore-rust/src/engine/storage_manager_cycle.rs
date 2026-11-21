@@ -13,7 +13,7 @@
 //! single-shard behavior was byte-identical either way.
 
 use super::*;
-use crate::engine::reports::StageWalkCharges;
+use crate::engine::reports::{configured_eviction_memory_limit, StageWalkCharges};
 
 /// One stage's measured span: how long its WORK took, and how much of the store that work walked.
 ///
@@ -511,8 +511,15 @@ impl TemporalEngine {
             pressure_signals.memory_cache_bytes = warmed_cache.memory_bytes;
             pressure_signals.memory_cache_pressure_score = warmed_memory_pressure;
         }
+        let eviction_limit = configured_eviction_memory_limit(
+            request.eviction_memory_pressure_threshold, request.index_resident_limit_bytes,
+        );
+        let index_bound_is_the_gate = request.index_resident_limit_bytes > 0
+            && (request.eviction_memory_pressure_threshold == 0
+                || request.index_resident_limit_bytes < request.eviction_memory_pressure_threshold);
         let eviction_report = if request.enable_evict {
-            Some(if request.dry_run {
+            let resident_bytes = pressure_signals.bucket_index_resident_bytes;
+            Some(if eviction_limit.is_none() || request.dry_run {
                 StorageEvictionReport {
                     shard_id: request.shard_id,
                     // ONE MODE, because there is one arm. The dry run used to echo the request's
@@ -520,18 +527,20 @@ impl TemporalEngine {
                     // a dry run that predicts an arm the real round will not take is worse than no
                     // prediction.
                     mode: "evict_cache".to_string(),
-                    pressure_before: pressure_signals
-                        .memory_cache_pressure_score
-                        .saturating_add(pressure_signals.disk_cache_bytes),
-                    pressure_after: pressure_signals
-                        .memory_cache_pressure_score
-                        .saturating_add(pressure_signals.disk_cache_bytes),
-                    memory_pressure_threshold: request.eviction_memory_pressure_threshold,
+                    pressure_before: resident_bytes,
+                    pressure_after: resident_bytes,
+                    memory_pressure_threshold: eviction_limit.unwrap_or(0),
                     batch_limit: request.eviction_batch_limit,
                     dump_before_evict: request.eviction_dump_before_evict,
-                    skipped_reason: "dry_run".to_string(),
+                    skipped_reason: if eviction_limit.is_none() { "no_memory_limit" } else { "dry_run" }.to_string(),
                     ..StorageEvictionReport::default()
                 }
+            } else if index_bound_is_the_gate {
+                self.apply_index_resident_bound(
+                    request.shard_id,
+                    request.index_resident_limit_bytes,
+                    request.eviction_batch_limit,
+                )
             } else {
                 self.apply_storage_eviction(
                     request.shard_id,
@@ -547,21 +556,6 @@ impl TemporalEngine {
                     false,
                 )
             })
-        } else if request.index_resident_limit_bytes > 0 && !request.dry_run {
-            // THE NARROW BOUND RUNS WITH THE WIDE STAGE OFF, which is the whole reason it is a
-            // separate arm. `enable_evict` carries a threshold, and the shipped threshold is 0 --
-            // "evicts whenever it runs" -- so a bound that inherited the flag's state would have
-            // inherited an always-open gate. On the periodic loop the two are reconciled by taking
-            // the higher bar; here, where the flag is explicit in the request, the flag wins and
-            // this arm is what a caller gets by setting only the bound.
-            //
-            // It reports through the same field because it reaches the same release, so an
-            // operator reads one eviction report either way -- `mode` says which gate opened.
-            Some(self.apply_index_resident_bound(
-                request.shard_id,
-                request.index_resident_limit_bytes,
-                request.eviction_batch_limit,
-            ))
         } else {
             None
         };
@@ -859,6 +853,7 @@ impl TemporalEngine {
                     report.cache_entries_removed > 0
                         || report.cache_disk_bytes_removed > 0
                         || report.dropped_object_count > 0
+                        || report.bucket_index_buckets_released > 0
                 })
                 .unwrap_or(false),
             skipped: !request.enable_evict
@@ -873,7 +868,7 @@ impl TemporalEngine {
                 .map(|report| !report.pressure_gate_open)
                 .unwrap_or(false)
             {
-                "eviction skipped because memory/cache pressure is below threshold".to_string()
+                eviction_report.as_ref().map(|report| report.skipped_reason.clone()).unwrap_or_default()
             } else if eviction_report
                 .as_ref()
                 .map(|report| report.cooldown)
@@ -902,16 +897,8 @@ impl TemporalEngine {
                         })
                         .unwrap_or_default(),
                 ),
-            pressure_threshold: request.eviction_memory_pressure_threshold,
-            pressure_triggered: pressure_signals.memory_cache_pressure_score > 0
-                || pressure_signals.disk_cache_bytes > 0
-                || pressure_signals.bucket_index_resident_bytes > 0
-                || eviction_report
-                    .as_ref()
-                    .map(|report| {
-                        report.cache_entries_removed > 0 || report.cache_disk_bytes_removed > 0
-                    })
-                    .unwrap_or(false),
+            pressure_threshold: eviction_limit.unwrap_or(0),
+            pressure_triggered: eviction_report.as_ref().is_some_and(|report| report.pressure_gate_open),
             before_bytes: eviction_report
                 .as_ref()
                 .map(|report| report.pressure_before)

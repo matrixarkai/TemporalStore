@@ -177,6 +177,8 @@ impl TemporalEngine {
         // the live shard for them. Every other dump summarises the CAPTURED state off the one
         // listing taken of it below, instead of listing the live shard first and the capture again.
         let live_summaries = bulk_ingest_mode().then(|| self.bucket_storage_summaries(shard_id));
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: capture checkpoint (clone under read guard)");
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let (mut dump_index_state, mut captured_bytes, publication) = if bulk_ingest_mode() {
             let publication = {
@@ -197,6 +199,8 @@ impl TemporalEngine {
                     "shard is unloaded or its WAL application is incomplete"))?;
             (snapshot, None, publication)
         };
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: summaries walk of the captured copy");
         let mut retained_objects = std::collections::HashSet::new();
         let mut block_slab_ids = BTreeSet::new();
         let mut described_wal_blocks = 0usize;
@@ -244,6 +248,8 @@ impl TemporalEngine {
             })
             .collect::<Vec<_>>();
         bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: WAL-resident retirements");
         let retirements = self.prepare_checkpoint_wal_retirements(
             shard_id, &mut dump_index_state, retained_objects, described_wal_blocks,
         );
@@ -252,13 +258,21 @@ impl TemporalEngine {
         }
         // Keep the owned capture until its final form is ready. Encoding and then
         // decoding it here used to duplicate every model map and repack its trees.
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: serialize_index");
         let index_bytes = captured_bytes.unwrap_or_else(|| serialize_index(&dump_index_state));
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: sha256 of the image");
         let index_sha256 = sha256_hex_bytes(&index_bytes);
         // Capture first, then sync, then publish. A writer can advance the served index
         // while the barrier runs; capturing afterwards could publish data it did not cover.
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: block store sync_durable");
         self.block_store.sync_durable().map_err(|err| {
             Status::error("slot_dump_failed", format!("block durability barrier failed before dump publication: {err}"))
         })?;
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: wal flush");
         self.wal_store.flush(shard_id).map_err(|err| {
             Status::error("slot_dump_failed", format!("wal flush failed before dump publication: {err}"))
         })?;
@@ -350,6 +364,8 @@ impl TemporalEngine {
         manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
         let manifest_checksum = bucket_dump_manifest_checksum_in_place(&mut manifest)?;
         manifest.checksum = manifest_checksum;
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: persist manifest + mark_dumped");
         let published = self.checkpoint_publications.publish(&publication, || {
             self.persist_bucket_dump_manifest(&manifest)?;
             self.wal_store.mark_dumped(shard_id);
@@ -358,6 +374,8 @@ impl TemporalEngine {
         if published.is_none() {
             return Err(Status::error("checkpoint_superseded", "a newer checkpoint was published during capture"));
         }
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: retirement under the shard write lock");
         self.finish_checkpoint_wal_retirements(
             shard_id, &publication, wal_sequence, retirements,
         );
@@ -374,6 +392,8 @@ impl TemporalEngine {
         // (this manifest-create path has no visibility into those consumers), and
         // `install_latest_manifest_if_newer_on_load` bridges the on-disk base to the manifest
         // anchor on reload, so fold(base + retained deltas) stays complete.
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("after the dump (rest of the round)");
         Ok(manifest)
     }
 

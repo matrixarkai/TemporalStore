@@ -2489,7 +2489,7 @@ impl TemporalEngine {
             };
         }
         let resident_before = self.bucket_index_resident_bytes(shard_id);
-        if resident_before < index_resident_limit_bytes {
+        if resident_before <= index_resident_limit_bytes {
             return StorageEvictionReport {
                 shard_id,
                 mode: "index_resident_bound".to_string(),
@@ -2567,7 +2567,7 @@ impl TemporalEngine {
         // opens, where they are actually used.
         let bucket_index_bytes_before = self.bucket_index_resident_bytes(shard_id);
         let pressure_before = bucket_index_bytes_before;
-        if pressure_before < memory_pressure_threshold {
+        if memory_pressure_threshold != 0 && pressure_before <= memory_pressure_threshold {
             return StorageEvictionReport {
                 shard_id,
                 mode: if delete_drop {

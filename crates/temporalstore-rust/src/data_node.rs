@@ -1139,32 +1139,10 @@ pub struct StorageManagerOptions {
     /// Zero turns the per-bucket gauges off and leaves the rest of the reap running.
     #[serde(default = "default_reap_metrics_max_buckets_per_round")]
     pub reap_metrics_max_buckets_per_round: usize,
-    /// Whether the periodic loop may EVICT, not merely invalidate cached blocks.
-    ///
-    /// DEFAULTS TO TRUE, with the other eight stage flags, and what changed is not an appetite for
-    /// eviction -- it is that the stage now has a bound to run under. Until this field existed the
-    /// eviction machinery -- `apply_storage_eviction`, with dump-before-evict, delete-drop, a batch
-    /// limit and a pressure threshold -- was reachable only from the on-demand cycle, so the loop
-    /// the server actually starts could not evict at ANY setting. Wiring it made it reachable; this
-    /// default makes it live.
-    ///
-    /// WHY ON IS SAFE, AND IT IS NOT THIS FLAG THAT MAKES IT SO. `eviction_memory_pressure_threshold`
-    /// below is still 0, and 0 is documented as "evicts whenever it runs": the wide gate is
-    /// `pressure_before < threshold`, which no shard that has ever held a record can satisfy. On its
-    /// own, therefore, flipping this flag is an ALWAYS-OPEN gate -- every loaded shard releasing
-    /// buckets on every round of
-    /// `start_storage_manager_scheduler_for_all_shards`.
-    /// `the_change_that_moves_only_this_flag_cannot_close_its_gate` measures exactly that.
-    ///
-    /// What makes the shipped pair safe is `index_resident_limit_bytes`, which in the same change
-    /// stops being 0. The loop takes the HIGHER BAR of the two (`runtime_storage.rs`), so a bound of
-    /// 64 MiB over a threshold of 0 means the round that actually runs is
-    /// `apply_index_resident_bound` -- one per-shard quantity, this shard's own resident index --
-    /// and the wide arm is unreachable at the shipped settings. The two defaults are one decision
-    /// and neither should be moved without the other.
+    /// Enable pressure-driven eviction. With no nonzero memory limit configured, it does no work.
     #[serde(default)]
     pub enable_evict: bool,
-    /// Bytes above which the evict stage acts. 0 evicts whenever it runs.
+    /// Resident-index bytes above which eviction acts. Zero disables this limit.
     ///
     /// THE QUANTITY IS `bucket_index_resident_bytes(shard_id)`, and nothing else. One term, and it
     /// belongs to the shard this setting is gating. `StorageManagerPressureSnapshot::\
@@ -1247,47 +1225,8 @@ pub struct StorageManagerOptions {
     /// exactly one batch.
     #[serde(default = "default_storage_manager_eviction_count_limit")]
     pub eviction_count_limit: usize,
-    /// A bound on THIS shard's resident bucket index, in bytes. 0 means DISABLED.
-    ///
-    /// `apply_index_resident_bound` is the eviction gate that reads one per-shard quantity and
-    /// gates on ITSELF rather than on `enable_evict`. Until this field existed it was reachable
-    /// only from `run_storage_manager_cycle`, which runs on an inbound
-    /// `TaskRequest::StorageManager` -- so on the periodic loop a server actually starts
-    /// (`start_storage_manager_scheduler_for_all_shards`) there was no route to it at any setting,
-    /// and a gate nothing calls bounds nothing.
-    ///
-    /// WHICH GATE WINS WHEN BOTH ARE SET. Since the evict stage's own signal was narrowed, this and
-    /// `eviction_memory_pressure_threshold` bound the SAME quantity -- `bucket_index_resident_bytes`
-    /// for this shard. Two settings cannot both gate one number, so the HIGHER BAR opens the stage
-    /// and `StorageEvictionReport::mode` says which one did: `index_resident_bound` or
-    /// `evict_cache`/`delete_drop`. One decision, one report, which is the shape
-    /// `run_storage_manager_cycle` already uses for the same reason.
-    ///
-    /// WHAT IT GIVES UP WHEN IT IS THE GATE: `apply_index_resident_bound` releases with the dump on
-    /// unconditionally, so `eviction_dump_before_evict` does not reach it. It matches its own
-    /// default, so this only matters to an operator who changed it. Neither arm can delete: both
-    /// stage entry points pass `delete_drop` false, so the two now differ only in which gate
-    /// opened.
-    ///
-    /// DEFAULTS TO `DEFAULT_INDEX_RESIDENT_LIMIT_BYTES`, the same value the cycle request has
-    /// always shipped, and in the same change as `enable_evict`. That pairing is the whole point:
-    /// the flag alone is an always-open gate at a threshold of 0, and this is the bar that closes
-    /// it. See `enable_evict` above for the pair.
-    ///
-    /// WHAT THE NUMBER IS DERIVED FROM: 64 MiB of `bucket_index_resident_bytes` for one shard. On
-    /// the shipped `0..1023` routing range the resident index runs about 39 B a key once the bucket
-    /// nodes exist -- the marginal cost, not the ratio at a fixture size, which carries the fixed
-    /// node term and reads several times higher. 64 MiB is therefore crossed somewhere around 1.7 M
-    /// keys in ONE shard. `the_default_bound_is_far_above_any_fixture_and_reached_at_a_known_scale`
-    /// re-derives both from a two-point slope rather than quoting them.
-    ///
-    /// WHICH FIXTURES THIS MOVED, because a non-zero default becomes the higher bar in every
-    /// fixture that forces the gate open at a threshold of 0 or 1. Each such fixture now pins
-    /// `index_resident_limit_bytes: 0` for itself, so it keeps exercising the wide arm it was
-    /// written for; the pins are in `data_node::tests::evict_live` and `data_node::tests::part3`.
-    /// The three round-cost measurements whose run time puts them out of reach of a gate --
-    /// `round_stage_cost`, `round_walk_scope`, `round_backlog_cost` -- build
-    /// `StorageManagerCycleRequest`, not this struct, so they are untouched by this default.
+    /// Resident bucket-index limit in bytes. Zero disables this limit.
+    /// Requires `enable_evict`; the lower nonzero memory limit controls the stage.
     #[serde(default)]
     pub index_resident_limit_bytes: u64,
     /// How many hot buckets one expire stage may take. 0 means NO LIMIT, which is what this
@@ -1904,6 +1843,26 @@ pub struct StorageManagerLoopReport {
     /// sum never exceeds it; the remainder is the bookkeeping after the last stage.
     #[serde(default)]
     pub duration_us: u64,
+    /// What the WAL reclaim stage did this round, as the loop knew it. All zero when the stage did
+    /// not run or answered from the quiet-reclaim memo, which is the loop's own statement that a
+    /// previous round found nothing and nothing it reads has moved since.
+    #[serde(default)]
+    pub wal_reclaim_round: StorageManagerWalReclaimRound,
+    /// Physical log collection performed by the page stage, including its retention fences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_log_reclaim: Option<crate::engine::reports::StorageWalReclaimReport>,
+}
+
+/// The three things a WAL reclaim round does, named so a round that stays busy on an idle shard
+/// says which of them keeps it busy.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageManagerWalReclaimRound {
+    /// The round took a bucket dump.
+    pub dumped: bool,
+    /// Blocks moved out of WAL records into the block store.
+    pub moved_blocks: usize,
+    /// Records retired by this stage. Physical page-stage retirement is reported separately.
+    pub wal_records_removed: u64,
 }
 
 /// What one stage of the periodic loop cost: how long its work took and how much of the store

@@ -170,11 +170,11 @@ impl DataNodeRuntime {
 /// loop in `run_storage_manager_round_inner` for which and why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EvictionLoopTerms {
-    /// `apply_storage_eviction` did not take its `pressure_before < threshold` early return.
+    /// `apply_storage_eviction` did not take its `pressure_before <= threshold` early return.
     pub(crate) pressure_gate_open: bool,
     /// The per-call victim count budget has room left.
     pub(crate) more_budget: bool,
-    /// `pressure_after >= threshold` -- the loop has not reached its goal.
+    /// Usage exceeds the configured limit, or this is an explicit forced batch (threshold zero).
     pub(crate) still_over: bool,
     /// The last batch took victims and was not in cooldown.
     pub(crate) made_progress: bool,
@@ -234,7 +234,7 @@ pub(crate) fn eviction_loop_terms_for_batch(
     EvictionLoopTerms {
         pressure_gate_open: report.pressure_gate_open,
         more_budget: count_limit > taken && rounds < eviction_loop_round_limit(count_limit),
-        still_over: report.pressure_after >= threshold,
+        still_over: threshold == 0 || report.pressure_after > threshold,
         // A batch that freed nothing, or found nobody, means the next will not do better.
         made_progress: !report.cooldown && !report.selected_victims.is_empty(),
     }
@@ -544,7 +544,7 @@ impl DataNodeRuntime {
         self.run_storage_manager_once_with_report_details(shard_id, options, true)
     }
 
-    fn run_storage_manager_once_with_report_details(
+    pub(crate) fn run_storage_manager_once_with_report_details(
         &self,
         shard_id: ShardId,
         options: StorageManagerOptions,
@@ -580,6 +580,8 @@ impl DataNodeRuntime {
                 status: Status::ok(),
                 stage_spans: Vec::new(),
                 duration_us: 0,
+                wal_reclaim_round: StorageManagerWalReclaimRound::default(),
+                page_log_reclaim: None,
             };
         }
         // The stage walk counters are read-and-cleared at each stage boundary, so the first span
@@ -695,11 +697,12 @@ impl DataNodeRuntime {
             super::compaction_stage::stale_block_pressure(&pressure, &options);
 
         // This stage publishes dumps. Physical log retirement belongs to page collection.
+        let mut wal_reclaim_round = StorageManagerWalReclaimRound::default();
         if options.enable_wal_reclaim && dump_pressure {
             let dump_started = std::time::Instant::now();
             // Publish relocated addresses before the dump captures their generations.
             let resident = self.inner.engine.wal_resident_block_count(shard_id);
-            if resident > 0 {
+            let moved_blocks = if resident > 0 {
                 self.inner.engine.materialize_oldest_resident_blocks(
                     shard_id,
                     resident.saturating_sub(if options.max_dump_buckets_per_round == 0 {
@@ -707,8 +710,11 @@ impl DataNodeRuntime {
                     } else {
                         options.max_dump_buckets_per_round
                     }),
-                );
-            }
+                )
+            } else {
+                0
+            };
+            wal_reclaim_round.moved_blocks = moved_blocks;
             let response = self.apply_storage_lifecycle_with_report_details(StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
@@ -754,6 +760,7 @@ impl DataNodeRuntime {
                     stats.storage_manager_dump_us_total.saturating_add(dump_us);
                 stats.storage_manager_dump_us_max = stats.storage_manager_dump_us_max.max(dump_us);
             }
+            wal_reclaim_round.dumped = response.report.dump_manifest.is_some();
             lifecycle_report = Some(response.report);
             executed_stages.push("reclaim_wal".to_string());
         } else if !options.enable_wal_reclaim {
@@ -858,50 +865,26 @@ impl DataNodeRuntime {
         // guard as stronger than it is, so the terms are named in `EvictionLoopTerms` and the
         // count is asserted rather than described.
         //
-        //   `more_budget`        -- bounds the work: the victim budget AND the round count.
-        //                           It has to be both. `taken` is `victims.len()`, which only
-        //                           grows when a batch RETURNS victims, so a batch that returns
-        //                           none leaves the victim half of this term exactly where it
-        //                           was -- at a budget of 100 it never goes false, however many
-        //                           rounds the loop takes. Live at every threshold.
-        //   `made_progress`      -- a batch that freed nothing (`cooldown`) or found no victims
-        //                           means the next will not do better; this is what stops the loop
-        //                           spinning on a shard whose memory eviction cannot reclaim.
-        //                           Live at every threshold.
-        //   `still_over`         -- `pressure_after >= threshold`. The goal. VACUOUS at threshold
-        //                           0: both are `u64`, so the comparison is a constant `true`.
-        //   `pressure_gate_open` -- set only on the path that did not take the early return at
-        //                           `storage_lifecycle_methods.rs`, whose test is
-        //                           `pressure_before < threshold`. Also VACUOUS at threshold 0,
-        //                           and for the same reason: no `u64` is below 0, so the early
-        //                           return is unreachable and the field is a constant `true`.
-        //
-        // Neither vacuous term is deleted, and on the SHIPPED path neither is vacuous any more.
-        // Both vacuity arguments above are about the threshold, and `stage_threshold` below is the
-        // bar the gate actually used: the shipped default pairs `enable_evict: true` with a 64 MiB
-        // `index_resident_limit_bytes`, the bound is the higher bar, so the number these terms are
-        // read against is 64 MiB rather than 0. They are vacuous only on the wide arm, which the
-        // shipped settings cannot reach; see `data_node.rs`. What is NOT supported is leaning on
-        // `still_over` to terminate the loop while the bar in force is 0, because at 0 it cannot
-        // terminate anything -- the guard below pins that, and
-        // `eviction_loop_live_stopping_conditions` is its denominator.
-        // WHICH GATE OPENS THE STAGE, and there is exactly one of them.
-        //
-        // `index_resident_limit_bytes` and `eviction_memory_pressure_threshold` bound the SAME
-        // quantity since the evict signal was narrowed: `bucket_index_resident_bytes` for this
-        // shard. So the higher bar wins, and `mode` on the report says which one it was. Blending
-        // them arithmetically would publish a bar no operator set.
-        //
-        // AND THE BOUND IS GATED ON ITSELF, NOT ON `enable_evict`. That is the point of it:
-        // `apply_index_resident_bound` is the narrow per-shard gate, and until this field existed
-        // it had no route from this loop at all -- its one non-test caller is inside
-        // `run_storage_manager_cycle`, which runs on an inbound `TaskRequest::StorageManager`,
-        // while this is the loop `start_storage_manager_scheduler_for_all_shards` starts. A safe
-        // trigger reachable only by also switching on the stage it was written to replace is not
-        // reachable.
+        // Both limits measure resident index bytes. Zero disables a limit; either configured
+        // limit can open the stage, and the enable flag controls both eviction routes.
+        let configured_limit = crate::engine::reports::configured_eviction_memory_limit(
+            options.eviction_memory_pressure_threshold, options.index_resident_limit_bytes,
+        );
         let index_bound_is_the_gate = options.index_resident_limit_bytes > 0
-            && options.index_resident_limit_bytes > options.eviction_memory_pressure_threshold;
-        let eviction = (index_bound_is_the_gate || options.enable_evict).then(|| {
+            && (options.eviction_memory_pressure_threshold == 0
+                || options.index_resident_limit_bytes < options.eviction_memory_pressure_threshold);
+        let eviction = options.enable_evict.then(|| {
+            let Some(stage_threshold) = configured_limit else {
+                return crate::engine::reports::StorageEvictionReport {
+                    shard_id,
+                    mode: "evict_cache".to_string(),
+                    pressure_before: pressure.eviction_memory_pressure_bytes,
+                    pressure_after: pressure.eviction_memory_pressure_bytes,
+                    batch_limit: options.eviction_batch_limit,
+                    skipped_reason: "no_memory_limit".to_string(),
+                    ..Default::default()
+                };
+            };
             let engine = &self.inner.engine;
             // ONE batch function for both arms, so the repeat path cannot call a different gate
             // from the first one. It did not, and could not, when there was only one gate; with
@@ -935,11 +918,6 @@ impl DataNodeRuntime {
             // The bar `still_over` is read against has to be the one the gate used, or the stage
             // keeps taking batches against a number nobody set. At the bound this term stops being
             // vacuous for the first time: a non-zero bar can actually be reached.
-            let stage_threshold = if index_bound_is_the_gate {
-                options.index_resident_limit_bytes
-            } else {
-                options.eviction_memory_pressure_threshold
-            };
             let first = batch(options.eviction_batch_limit);
             run_eviction_stage(
                 stage_threshold,
@@ -962,54 +940,34 @@ impl DataNodeRuntime {
         spans.close("evict", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
             "evict",
-            // `enable_evict` is no longer the only thing that can enable this stage, so the
-            // decision reports whether the stage RAN rather than re-reading one of the two flags
-            // that could have started it.
             eviction.is_some(),
-            true,
+            eviction.as_ref().is_some_and(|report| report.pressure_gate_open),
             eviction.is_some(),
-            // The observed value, against the threshold it is actually compared with.
-            //
-            // This used to pass `eviction_memory_pressure_threshold` as the OBSERVED number and 1
-            // as the threshold, so the signal said `observed = threshold, over_threshold = true`
-            // on every round regardless of the shard -- a reading that cannot distinguish a shard
-            // under pressure from an empty one, under a name ("cache_memory_bytes") that was not
-            // what it held either.
-            vec![
+            configured_limit.map(|limit| vec![
                 storage_manager_pressure_signal(
                     "eviction_memory_pressure_bytes",
-                    pressure.eviction_memory_pressure_bytes,
-                    options.eviction_memory_pressure_threshold,
+                    pressure.eviction_memory_pressure_bytes, limit,
                 ),
-                // Broken out because it is the term the evict stage can give back, and the one
-                // every other memory signal here omits.
                 storage_manager_pressure_signal(
                     "bucket_index_resident_bytes",
-                    pressure.bucket_index_resident_bytes,
-                    options.eviction_memory_pressure_threshold,
+                    pressure.bucket_index_resident_bytes, limit,
                 ),
-                // THE BAR THE STAGE ACTUALLY USED, against the same observed quantity. With two
-                // settings on one number, a decision that published only one of them cannot be
-                // read: an operator seeing `observed=1,200 threshold=1` would conclude the stage
-                // fired when the bound had in fact refused it.
                 storage_manager_pressure_signal(
                     "index_resident_limit_bytes",
-                    pressure.bucket_index_resident_bytes,
-                    if index_bound_is_the_gate {
-                        options.index_resident_limit_bytes
-                    } else {
-                        options.eviction_memory_pressure_threshold
-                    },
+                    pressure.bucket_index_resident_bytes, limit,
                 ),
-            ],
+            ]).unwrap_or_default(),
             vec![if index_bound_is_the_gate {
                 "index_resident_bound_set".to_string()
             } else {
                 "operator_enabled_eviction".to_string()
             }],
-            eviction
-                .is_none()
-                .then(|| "evict_disabled".to_string()),
+            if eviction.is_none() {
+                Some("evict_disabled".to_string())
+            } else {
+                eviction.as_ref().filter(|report| !report.skipped_reason.is_empty())
+                    .map(|report| report.skipped_reason.clone())
+            },
         ));
 
         // Expire and evict run BEFORE the cache invalidation below, not after it.
@@ -1932,6 +1890,8 @@ impl DataNodeRuntime {
             status,
             stage_spans: spans.rows,
             duration_us,
+            wal_reclaim_round,
+            page_log_reclaim,
         }
     }
 
@@ -2582,42 +2542,28 @@ mod eviction_loop_terms_tests {
         }
     }
 
-    /// THE THRESHOLD IS STILL THE VACUOUS ONE, AND THE SHIPPED ROUND NO LONGER USES IT.
-    ///
-    /// RESTATED, not re-goldened. This asserted `!options.enable_evict` and read "the threshold of
-    /// 0 is only safe because the stage does not run by default". The stage now runs by default,
-    /// and the thing that makes a threshold of 0 safe is no longer the stage being off -- it is
-    /// that `index_resident_limit_bytes` is the higher bar, so `stage_threshold` in the loop above
-    /// is 64 MiB and not 0. All four claims above are read against whichever bar the gate used.
-    ///
-    /// Three facts, each of which the vacuity reasoning needs, and each pinned separately so a
-    /// later edit to the `Default` impl has to come past the one it breaks.
     #[test]
-    fn the_shipped_bar_is_the_bound_and_the_vacuous_threshold_is_not_the_one_in_force() {
+    fn the_batch_loop_stops_exactly_at_its_configured_limit() {
+        let report = crate::engine::reports::StorageEvictionReport {
+            pressure_gate_open: true,
+            pressure_after: 64,
+            ..Default::default()
+        };
+        let terms = super::eviction_loop_terms_for_batch(&report, 64, 100, 1, 1);
+        assert!(!terms.still_over);
+        assert!(!terms.should_continue());
+        assert!(super::eviction_loop_terms_for_batch(&report, 63, 100, 1, 1).still_over);
+    }
+
+    #[test]
+    fn the_shipped_configuration_has_no_implicit_memory_limit() {
         let options = StorageManagerOptions::default();
-        assert_eq!(
-            options.eviction_memory_pressure_threshold, 0,
-            "the vacuity documented at the eviction loop is derived from a threshold of 0",
-        );
-        assert!(
-            options.enable_evict,
-            "enable_evict ships off again; the loop above describes a stage that runs",
-        );
-        // THE BAR IN FORCE. `index_bound_is_the_gate` in the loop above is exactly this
-        // comparison, so asserting it here is asserting that the shipped round takes the bound.
-        assert!(
-            options.index_resident_limit_bytes > options.eviction_memory_pressure_threshold,
-            "the bound ({}) is no longer above the threshold ({}), so the shipped round falls back \
-             on the wide arm, where both terms above ARE vacuous and nothing closes the gate",
-            options.index_resident_limit_bytes,
-            options.eviction_memory_pressure_threshold,
-        );
-        assert_eq!(
-            options.index_resident_limit_bytes,
-            crate::engine::reports::DEFAULT_INDEX_RESIDENT_LIMIT_BYTES,
-            "the periodic loop's bound has drifted off the named constant the cycle request uses, \
-             so the two pipelines no longer agree on it",
-        );
+        assert!(options.enable_evict);
+        assert_eq!(options.eviction_memory_pressure_threshold, 0);
+        assert_eq!(options.index_resident_limit_bytes, 0);
+        assert_eq!(crate::engine::reports::configured_eviction_memory_limit(
+            options.eviction_memory_pressure_threshold, options.index_resident_limit_bytes,
+        ), None);
     }
 
     /// The denominator: 2 of the 4 terms can stop the loop at the shipped default, 4 of 4 above
