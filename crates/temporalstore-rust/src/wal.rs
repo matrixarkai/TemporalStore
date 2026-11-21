@@ -1208,6 +1208,13 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// The local write-ahead log of one data directory.
+///
+/// A log directory has ONE writer process. A store takes the shard's lock file exclusively, without
+/// waiting, at its first append to that shard and keeps it until the store (and its clones) drop; a
+/// second store appending to the same shard, in this process or another, gets
+/// [`WAL_DIRECTORY_OWNED_BY_ANOTHER_PROCESS`]. Reading is not writing and needs no lock. Deleting
+/// the lock file out from under a running store violates the contract and is not defended against.
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
     inner: Arc<Mutex<WriteAheadLogInner>>,
