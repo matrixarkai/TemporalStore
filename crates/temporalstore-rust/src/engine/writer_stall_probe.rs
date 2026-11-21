@@ -41,7 +41,7 @@ pub(crate) fn set_phase(name: &'static str) {
     *PHASE.lock().expect("phase marker poisoned") = name;
 }
 
-fn current_phase() -> &'static str {
+pub(crate) fn current_phase() -> &'static str {
     *PHASE.lock().expect("phase marker poisoned")
 }
 

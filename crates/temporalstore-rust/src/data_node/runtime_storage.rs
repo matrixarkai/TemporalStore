@@ -585,7 +585,7 @@ impl DataNodeRuntime {
         self.run_storage_manager_once_with_report_details(shard_id, options, true)
     }
 
-    fn run_storage_manager_once_with_report_details(
+    pub(crate) fn run_storage_manager_once_with_report_details(
         &self,
         shard_id: ShardId,
         options: StorageManagerOptions,
@@ -621,6 +621,7 @@ impl DataNodeRuntime {
                 status: Status::ok(),
                 stage_spans: Vec::new(),
                 duration_us: 0,
+                wal_reclaim_round: StorageManagerWalReclaimRound::default(),
             };
         }
         // The stage walk counters are read-and-cleared at each stage boundary, so the first span
@@ -804,6 +805,7 @@ impl DataNodeRuntime {
         // What the decision record reports. A remembered reclaimable shard IS under reclaim
         // pressure -- it just has nothing to free -- so the record must not read as "no pressure".
         let wal_reclaim_reported = wal_reclaim_pressure || memo_hit == Some(true);
+        let mut wal_reclaim_round = StorageManagerWalReclaimRound::default();
         if options.enable_wal_reclaim && wal_reclaim_pressure {
             let dump_started = std::time::Instant::now();
             // Publish relocated addresses before the dump captures their generations.
@@ -866,6 +868,7 @@ impl DataNodeRuntime {
                 stats.storage_manager_dump_us_max = stats.storage_manager_dump_us_max.max(dump_us);
             }
             let dumped = response.report.dump_manifest.is_some();
+            wal_reclaim_round.dumped = dumped;
             lifecycle_report = Some(response.report);
             // Dumping and spilling make the log RECLAIMABLE. Neither frees a byte of it.
             //
@@ -891,6 +894,8 @@ impl DataNodeRuntime {
                 options.raft_snapshot_refs.clone(),
             );
             let wal_reclaim = self.inner.engine.apply_storage_wal_reclaim(wal_reclaim_plan);
+            wal_reclaim_round.moved_blocks = moved_blocks;
+            wal_reclaim_round.wal_records_removed = wal_reclaim.wal_records_removed as u64;
             if wal_reclaim.applied {
                 tracing::debug!(
                     shard_id,
@@ -2071,6 +2076,7 @@ impl DataNodeRuntime {
             status,
             stage_spans: spans.rows,
             duration_us,
+            wal_reclaim_round,
         }
     }
 

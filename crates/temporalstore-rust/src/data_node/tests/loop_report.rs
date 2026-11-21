@@ -62,6 +62,19 @@ fn seeded_runtime(dir: &std::path::Path, keys: usize) -> DataNodeRuntime {
 /// Every stage the loop reaches has a row, in order; a row says whether its stage ran; the rows
 /// are intervals of the round's own clock so they cannot add up to more than the round; and the
 /// walk charge reaches the row of the stage that did the walking.
+/// Whether the measurement harnesses run their rounds with the detailed report the way `run_storage_manager_once`
+/// does (`LOOP_DETAILED=1`), or the way the server's loop and tick do (the default). The detailed report builds
+/// the post-stage snapshots, which walk the shard after the stages have run; the production loop never does, so
+/// numbers taken with it include walks no served round takes.
+fn harness_detailed() -> bool {
+    std::env::var("LOOP_DETAILED").is_ok_and(|value| value == "1")
+}
+
+/// One round as the harnesses take it: production-faithful (`detailed_report` false) unless `LOOP_DETAILED=1`.
+fn harness_round(runtime: &DataNodeRuntime, options: StorageManagerOptions) -> StorageManagerLoopReport {
+    runtime.run_storage_manager_once_with_report_details(1, options, harness_detailed())
+}
+
 #[test]
 fn the_loop_report_prices_every_stage_it_reaches() {
     let dir = tempfile::tempdir().unwrap();
@@ -960,6 +973,7 @@ fn the_expire_and_evict_counts_are_each_stages_own_runs() {
 #[test]
 #[ignore]
 fn what_a_dirty_loop_round_walks_by_call_site() {
+    eprintln!("H detailed_report={} (production loop and tick use false; LOOP_DETAILED=1 selects true)", harness_detailed());
     let keys = std::env::var("LOOP_KEYS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -1004,7 +1018,7 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
         }
     }
     for _ in 0..6 {
-        runtime.run_storage_manager_once(1, shipped.clone());
+        harness_round(&runtime, shipped.clone());
     }
     let engine = runtime.engine();
     for round in 0..rounds {
@@ -1020,7 +1034,7 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
             assert!(response.status.ok, "write {index}: {:?}", response.status);
         }
         crate::engine::reset_live_block_scan_sites();
-        let report = runtime.run_storage_manager_once(1, shipped.clone());
+        let report = harness_round(&runtime, shipped.clone());
         let walked: u64 = report.stage_spans.iter().map(|s| s.walk.live_block_entries).sum();
         eprintln!(
             "D round {round}: {} us, walk_entries={walked} (= {:.1} whole-shard walks of {keys})",
@@ -1048,21 +1062,360 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(4usize);
+    // THE IDLE PHASE RUNS THE SHIPPED OPTIONS unless `LOOP_IDLE_FORCED=1` keeps the write phase's
+    // forced-dump options. `LOOP_DUMP=1` crosses the byte gate so that every round dumps, which is
+    // right for pricing a dump and wrong for an idle round: a round that is forced to dump is never
+    // quiet, and the quiet-reclaim memo is never consulted for it.
+    let idle_options = if std::env::var("LOOP_IDLE_FORCED").is_ok() {
+        shipped.clone()
+    } else {
+        StorageManagerOptions::default()
+    };
+    eprintln!(
+        "I options: forced={} dirty_bucket_pressure={} min_undumped_wal_bytes={}",
+        std::env::var("LOOP_IDLE_FORCED").is_ok(),
+        idle_options.dirty_bucket_pressure,
+        idle_options.min_undumped_wal_bytes
+    );
     for round in 0..idle_rounds {
-        let report = runtime.run_storage_manager_once(1, shipped.clone());
+        crate::engine::reset_live_block_scan_sites();
+        // What the quiet-reclaim memo holds BEFORE the round: a remembered key that still equals
+        // the round's key is a hit, so the round's own plan walk is skipped.
+        let memo_before = runtime
+            .inner
+            .quiet_wal_reclaim
+            .lock()
+            .unwrap()
+            .get(&1)
+            .map(|(key, reclaimable)| format!("{key:?} reclaimable={reclaimable}"));
+        let report = harness_round(&runtime, idle_options.clone());
+        let memo_after = runtime
+            .inner
+            .quiet_wal_reclaim
+            .lock()
+            .unwrap()
+            .get(&1)
+            .map(|(key, reclaimable)| format!("{key:?} reclaimable={reclaimable}"));
+        eprintln!(
+            "      I{round} memo before: {}",
+            memo_before.as_deref().unwrap_or("none")
+        );
+        eprintln!(
+            "      I{round} memo after : {}",
+            memo_after.as_deref().unwrap_or("none")
+        );
+        eprintln!(
+            "      I{round} pressure: dirty_buckets={} undumped_wal_records={} wal_reclaim_round={:?} executed={:?} skipped={:?}",
+            report.pressure.dirty_bucket_count,
+            report.pressure.undumped_wal_records,
+            report.wal_reclaim_round,
+            report.executed_stages,
+            report.skipped_stages
+        );
+        // The decision record of every stage the round owner asked about, with its signals.
+        for decision in report
+            .pressure_decisions
+            .iter()
+            .filter(|decision| decision.stage == "reclaim_wal" || decision.stage == "compact_pages")
+        {
+            let signals: Vec<String> = decision
+                .signals
+                .iter()
+                .map(|signal| {
+                    format!(
+                        "{}={}/{}{}",
+                        signal.name,
+                        signal.observed,
+                        signal.threshold,
+                        if signal.over_threshold { "!" } else { "" }
+                    )
+                })
+                .collect();
+            eprintln!(
+                "      I{round} decision {} enabled={} pressure_active={} executed={} reasons={:?} skip={:?} signals=[{}]",
+                decision.stage,
+                decision.enabled,
+                decision.pressure_active,
+                decision.executed,
+                decision.trigger_reasons,
+                decision.skip_reason,
+                signals.join(" ")
+            );
+        }
         let index = report
             .stage_spans
             .iter()
             .find(|span| span.stage == "reclaim_index")
             .expect("every round reports the reclaim_index stage");
+        let walked: u64 = report.stage_spans.iter().map(|s| s.walk.live_block_entries).sum();
+        let spans_us: u64 = report.stage_spans.iter().map(|s| s.duration_us).sum();
         eprintln!(
-            "I round {round}: {} us whole round, reclaim_index {} us walk={} encodes={}",
+            "I round {round}: {} us whole round, reclaim_index {} us walk={} encodes={}; round walk_entries={walked} (= {:.1} whole-shard walks of {keys}), stage spans sum {spans_us} us, outside every span {} us",
             report.duration_us,
             index.duration_us,
             index.walk.live_block_entries,
-            index.walk.index_encodes
+            index.walk.index_encodes,
+            walked as f64 / keys as f64,
+            report.duration_us.saturating_sub(spans_us)
         );
+        // EVERY span of the idle round, executed or skipped, so the owner of an idle round's time
+        // is in the data and not inferred from the one stage that happens to be cheap.
+        for span in &report.stage_spans {
+            eprintln!(
+                "      I{round} span {:<20} ran={} {:>10} us walk={} encodes={}",
+                span.stage,
+                span.executed,
+                span.duration_us,
+                span.walk.live_block_entries,
+                span.walk.index_encodes
+            );
+        }
+        for (site, entries) in crate::engine::live_block_scan_sites_snapshot() {
+            eprintln!(
+                "      I{round} site {site:<60} {entries:>8} entries ({:.1}x)",
+                entries as f64 / keys as f64
+            );
+        }
     }
+}
+
+/// Measurement harness, not a gate: what a writer waits inside each stage window of one round, at
+/// `LOOP_KEYS` keys. `--ignored --nocapture`, one test thread. Two rounds are measured on a fresh
+/// shard: a DUMPING round (`dirty_bucket_pressure` and the byte gate crossed, so the index stage
+/// dumps the whole dirty set) and then a QUIET round on the shipped options. For each, one line per
+/// stage window with the writes that began in it and their p50, p99 and longest wait, so the stall
+/// a stage causes is read from the stage's own window and not from the round's total.
+#[test]
+#[ignore]
+fn what_a_writer_waits_during_each_stage_of_a_dumping_round() {
+    eprintln!("H detailed_report={} (production loop and tick use false; LOOP_DETAILED=1 selects true)", harness_detailed());
+    let keys = std::env::var("LOOP_KEYS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1500usize);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    let engine = std::sync::Arc::new(runtime.engine());
+    // Dirty the shard so the dumping round has a dirty set to dump.
+    for index in 0..keys.min(2000) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("loop-{index:06}"),
+                value: vec![b'w'; 96],
+            },
+        });
+        assert!(response.status.ok, "dirtying write {index}: {:?}", response.status);
+    }
+    let dumping = StorageManagerOptions {
+        dirty_bucket_pressure: 1,
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
+    for (label, options) in [
+        ("DUMPING", dumping),
+        ("QUIET", StorageManagerOptions::default()),
+    ] {
+        // Per-site walk times start from nothing for this round, and are only taken for it.
+        crate::engine::reset_live_block_scan_sites();
+        crate::engine::set_walk_timing(true);
+        let (stall, report) = crate::engine::writer_stall_probe::measure_writer_stall_with(
+            &engine,
+            1,
+            || harness_round(&runtime, options.clone()),
+        );
+        eprintln!(
+            "W {label} keys={keys}: round {} us, writer saw {} writes, longest wait {} us",
+            stall.round_us, stall.writes, stall.max_wait_us
+        );
+        let windows: Vec<(String, u64, u64)> = report
+            .stage_spans
+            .iter()
+            .map(|span| (span.stage.clone(), span.start_offset_us, span.duration_us))
+            .collect();
+        for window in stall.window_stalls(&windows) {
+            let stage_us = report
+                .stage_spans
+                .iter()
+                .find(|span| span.stage == window.name)
+                .map(|span| span.duration_us)
+                .unwrap_or(0);
+            eprintln!(
+                "      W {label} stage {:<18} {:>10} us  writes={:<6} p50={:>8} us p99={:>9} us max={:>10} us",
+                window.name, stage_us, window.writes, window.p50_us, window.p99_us, window.max_wait_us
+            );
+        }
+        let idle = stall.idle_baseline();
+        eprintln!(
+            "      W {label} outside the round: writes={} p50={} us p99={} us max={} us",
+            idle.writes, idle.p50_us, idle.p99_us, idle.max_wait_us
+        );
+        // The longest wait of a write that began in each PHASE the engine named while the round ran
+        // (`writer_stall_probe::set_phase`, test builds): which step of the dump holds the writer.
+        for (phase, max_wait_us) in &stall.max_wait_us_by_phase {
+            eprintln!("      W {label} phase {phase:<72} max wait {max_wait_us:>10} us");
+        }
+        // Every whole-shard walk of the round, by calling site: how many times it ran, its total and
+        // its longest single walk. A walk under a guard holds that guard for its longest run.
+        crate::engine::set_walk_timing(false);
+        for (site, (calls, total_us, max_us)) in crate::engine::live_block_walk_times_snapshot() {
+            eprintln!(
+                "      W {label} walk {site:<66} calls={calls:<3} total={total_us:>10} us longest={max_us:>10} us"
+            );
+        }
+    }
+}
+
+/// Measurement harness, not a gate: how many rounds a shard that has just been written to takes to
+/// go QUIET on the shipped options, at `LOOP_KEYS` keys. Quiet means the WAL reclaim stage did not
+/// walk the shard (it answered from the quiet-reclaim memo) and the compaction stage did not run.
+/// One line per round with the memo's key before and after (a key that moves every round is a memo
+/// that can never hit), the stage walks, and what the compaction plan says it could relocate. The
+/// last line is the number of rounds it took, or NEVER within `LOOP_QUIET_MAX` (default 20).
+///
+/// `wal_reclaim_round` on the report names, per round, whether the stage dumped, how many blocks it
+/// moved and how many WAL records it removed; a memo that ends a round as `reclaimable=true` is the
+/// loop's own statement that all three were zero.
+#[test]
+#[ignore]
+fn how_many_rounds_a_written_shard_takes_to_go_quiet() {
+    eprintln!("H detailed_report={} (production loop and tick use false; LOOP_DETAILED=1 selects true)", harness_detailed());
+    let keys = std::env::var("LOOP_KEYS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1500usize);
+    let max_rounds = std::env::var("LOOP_QUIET_MAX")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(20usize);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    let engine = runtime.engine();
+    for index in 0..keys.min(2000) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("loop-{index:06}"),
+                value: vec![b'w'; 96],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let options = StorageManagerOptions::default();
+    let mut quiet_after = None;
+    for round in 1..=max_rounds {
+        crate::engine::reset_live_block_scan_sites();
+        let memo_of = |runtime: &DataNodeRuntime| {
+            runtime
+                .inner
+                .quiet_wal_reclaim
+                .lock()
+                .unwrap()
+                .get(&1)
+                .map(|(key, reclaimable)| format!("{key:?} reclaimable={reclaimable}"))
+        };
+        let before = memo_of(&runtime);
+        let report = harness_round(&runtime, options.clone());
+        let after = memo_of(&runtime);
+        let span = |name: &str| {
+            report
+                .stage_spans
+                .iter()
+                .find(|span| span.stage == name)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let wal = span("reclaim_wal");
+        let compact = span("compact_pages");
+        let relocatable =
+            crate::engine::compaction_relocatable_block_refs(&report.lifecycle_plan.reclaim_candidates);
+        eprintln!(
+            "Q round {round}: whole {} us; reclaim_wal {} us walk={} ran={}; compact_pages {} us walk={} ran={}; \
+             compaction_relocatable_block_refs={relocatable} reclaim_candidates={} dump_manifest={}; \
+             dirty_buckets={} undumped_wal_records={} wal_reclaim_round={:?}",
+            report.duration_us,
+            wal.duration_us,
+            wal.walk.live_block_entries,
+            wal.executed,
+            compact.duration_us,
+            compact.walk.live_block_entries,
+            compact.executed,
+            report.lifecycle_plan.reclaim_candidates.len(),
+            report
+                .lifecycle_report
+                .as_ref()
+                .map(|lifecycle| lifecycle.dump_manifest.is_some())
+                .unwrap_or(false),
+            report.pressure.dirty_bucket_count,
+            report.pressure.undumped_wal_records,
+            report.wal_reclaim_round
+        );
+        eprintln!("      Q{round} memo before: {}", before.as_deref().unwrap_or("none"));
+        eprintln!("      Q{round} memo after : {}", after.as_deref().unwrap_or("none"));
+        let quiet = wal.walk.live_block_entries == 0 && !compact.executed;
+        if quiet && quiet_after.is_none() {
+            quiet_after = Some(round);
+            // One more round to show it stays quiet.
+            if round < max_rounds {
+                continue;
+            }
+        }
+        if quiet_after.is_some() && quiet {
+            break;
+        }
+    }
+    match quiet_after {
+        Some(rounds) => eprintln!("Q RESULT keys={keys}: quiet after {rounds} round(s)"),
+        None => eprintln!("Q RESULT keys={keys}: NEVER quiet within {max_rounds} rounds"),
+    }
+}
+
+/// THE ROUND REPORT SAYS WHETHER THE WAL RECLAIM STAGE DUMPED, so a shard that stays busy while idle
+/// names the work that keeps it busy. A round forced over the byte gate on a dirty shard reports a
+/// dump; a round with the stage switched off reports none of its work.
+///
+/// Planted fault: dropping the `wal_reclaim_round.dumped = dumped` assignment in the loop leaves the
+/// first assertion false.
+#[test]
+fn the_round_report_says_whether_the_wal_reclaim_stage_dumped() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 300);
+    let engine = runtime.engine();
+    for index in 0..40usize {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("loop-{index:06}"),
+                value: vec![b'w'; 96],
+            },
+        });
+        assert!(response.status.ok);
+    }
+    let forced = StorageManagerOptions {
+        dirty_bucket_pressure: 1,
+        min_undumped_wal_bytes: 1,
+        ..StorageManagerOptions::default()
+    };
+    let dumping = runtime.run_storage_manager_once(1, forced);
+    assert!(
+        dumping.wal_reclaim_round.dumped,
+        "a round forced over the byte gate on a dirty shard must report its dump: {:?}",
+        dumping.wal_reclaim_round
+    );
+    // The control: a round with the stage switched off reports nothing, so the first assertion
+    // cannot be satisfied by a field that is simply always true.
+    let off = runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            enable_wal_reclaim: false,
+            ..StorageManagerOptions::default()
+        },
+    );
+    assert_eq!(
+        off.wal_reclaim_round,
+        StorageManagerWalReclaimRound::default(),
+        "a round without the WAL reclaim stage must report none of its work"
+    );
 }
 
 /// A DIRTY ROUND READS THE LIVE BLOCKS OF THE SHARD NO MORE THAN `DIRTY_ROUND_WALK_BOUND` TIMES.
