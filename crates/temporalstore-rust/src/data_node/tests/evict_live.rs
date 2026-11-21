@@ -361,28 +361,10 @@ fn what_pressure_a_shard_carries_at_three_corpus_sizes() {
     );
 }
 
-/// WHAT THE DUMP COSTS, AND WHICH HALF OF DUMP-THEN-RELEASE RECOVERS THE INDEX.
-///
-/// The recovery figure for a default-on change was measured with `dump_before_evict` TRUE, and a
-/// release without a dump recovers nothing: a release requires every block clean and undeleted, and a
-/// freshly written store is entirely dirty, so every candidate is refused on the dirty term alone.
-/// That makes the change dump-then-release rather than release, and it means the recovery is only a
-/// win NET OF THE DUMP -- which writes a manifest and cleans every dirty block it touches.
-///
-/// THREE ARMS, each on its own freshly seeded store so no arm inherits another's cleaning:
-///
-///   A  the shipped default -- evict OFF. What the REST of the round does to the resident index, so
-///      the other two arms are read against a baseline rather than against zero.
-///   B  evict ON, dump OFF. The arm that should recover NOTHING.
-///   C  evict ON, dump ON. The proposed configuration.
-///
-/// Without arm A, arm C's drop is credited entirely to eviction when part of it may belong to a
-/// stage that was already running. Without arm B, "dump-then-release recovers X" cannot be
-/// distinguished from "release recovers X".
-///
-/// rust-internal: measures this crate's own resident structures, no product behaviour
+/// Inline string eviction retains exact page metadata without a checkpoint. Both fallback
+/// settings must release the same memory; the disabled-stage arm isolates the eviction work.
 #[test]
-fn what_the_dump_costs_and_which_half_recovers_the_index() {
+fn inline_string_pages_recover_with_or_without_dump_fallback() {
     const KEYS: usize = 4_000;
 
     struct Arm {
@@ -491,33 +473,18 @@ release-without-dump recovers {} B ({} of {} candidates refused)",
         arm_b.refused + arm_b.released,
     );
 
-    // THE FINDING THIS ARM EXISTS FOR: without the dump, the release gives nothing back.
-    assert_eq!(
-        arm_b.released, 0,
-        "arm B released {} buckets without a dump, which contradicts the dirty precondition -- \
-         if this now passes, the precondition changed and the whole case for defaulting \
-         dump_before_evict on has to be re-argued",
-        arm_b.released
-    );
-    assert!(
-        arm_b.refused > 0,
-        "arm B refused nothing and released nothing, so the stage did not reach the release path \
-         at all and this arm measures nothing"
-    );
-
-    // AND THE ONE THAT MAKES THE CHANGE WORTH MAKING.
+    assert!(arm_b.released > 0, "inline pages must release without a dump");
+    assert_eq!((arm_b.refused, arm_b.manifests), (0, 0));
+    assert_eq!((arm_c.refused, arm_c.manifests), (0, 0));
+    assert_eq!(arm_b.released, arm_c.released);
     assert!(
         arm_c.released > 0,
         "arm C released nothing, so the proposed configuration does not recover index memory: \
          refused={}",
         arm_c.refused
     );
-    assert!(
-        recovered(&arm_c) > recovered(&arm_b),
-        "dump-then-release ({} B) did not recover more than release alone ({} B)",
-        recovered(&arm_c),
-        recovered(&arm_b)
-    );
+    assert!(recovered(&arm_b) > recovered(&arm_a));
+    assert_eq!(recovered(&arm_c), recovered(&arm_b));
 }
 
 /// THE ORDERING RACE, WHICH UNDER LOAD IS THE NORMAL CASE: a write that lands while the cycle runs.

@@ -91,6 +91,17 @@ impl BucketOwners {
         self.by_bucket.get(&routing_bucket)
     }
 
+    pub(super) fn forget_bucket(&mut self, routing_bucket: u32) {
+        self.by_bucket.remove(&routing_bucket);
+    }
+
+    pub(super) fn reset_bucket(&mut self, routing_bucket: u32) {
+        if let Some(list) = self.by_bucket.get_mut(&routing_bucket) {
+            list.kinds.clear();
+            list.keys.clear();
+        }
+    }
+
     /// Release the growth slack, for a set that was just built.
     pub(super) fn shrink(&mut self) {
         for list in self.by_bucket.values_mut() {

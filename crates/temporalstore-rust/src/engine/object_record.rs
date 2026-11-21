@@ -301,6 +301,17 @@ impl Default for ObjectRecord {
 }
 
 impl ObjectRecord {
+    /// Exact single-page flags while the owning bucket is released; hot blocks own these flags
+    /// otherwise, and refresh this copy on the next release.
+    pub(super) fn retained_page_state(&self) -> (bool, bool) {
+        (self.flags.get(RecordFlags::BLOCK_DIRTY), self.flags.get(RecordFlags::BLOCK_DELETED))
+    }
+
+    pub(super) fn retain_page_state(&mut self, dirty: bool, deleted: bool) {
+        self.flags.set(RecordFlags::BLOCK_DIRTY, dirty);
+        self.flags.set(RecordFlags::BLOCK_DELETED, deleted);
+    }
+
     // --- The tagged words, as arms. ---
 
 

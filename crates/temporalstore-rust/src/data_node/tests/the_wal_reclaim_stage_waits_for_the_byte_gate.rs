@@ -212,15 +212,25 @@ fn a_shard_opened_over_an_undumped_tail_runs_the_stage_in_its_first_round() {
 /// stage enabled while disabling page collection must not retire records through another stage.
 #[test]
 fn a_hot_bucket_dirtied_every_round_keeps_the_log_near_the_gate() {
-    check_hot_bucket_log_collection(true);
+    check_hot_bucket_log_collection(true, false);
 }
 
 #[test]
 fn dump_only_rounds_keep_the_log_until_page_collection_is_enabled() {
-    check_hot_bucket_log_collection(false);
+    check_hot_bucket_log_collection(false, false);
 }
 
-fn check_hot_bucket_log_collection(collect_pages: bool) {
+#[test]
+fn cold_inline_pages_keep_dump_publication_and_log_collection_separate() {
+    check_hot_bucket_log_collection(true, true);
+}
+
+#[test]
+fn cold_inline_eviction_does_not_collect_logs_with_the_page_stage_disabled() {
+    check_hot_bucket_log_collection(false, true);
+}
+
+fn check_hot_bucket_log_collection(collect_pages: bool, evict_inline: bool) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = seeded(dir.path(), 200);
     let options = StorageManagerOptions {
@@ -230,11 +240,18 @@ fn check_hot_bucket_log_collection(collect_pages: bool) {
         enable_block_compaction: false,
         enable_block_gc: collect_pages,
         enable_expire: false,
+        eviction_memory_pressure_threshold: if evict_inline { 1 } else {
+            StorageManagerOptions::default().eviction_memory_pressure_threshold
+        },
+        index_resident_limit_bytes: if evict_inline { 0 } else {
+            StorageManagerOptions::default().index_resident_limit_bytes
+        },
         ..StorageManagerOptions::default()
     };
     let mut written = 200usize;
     let mut dumps = 0usize;
     let mut records_removed = 0usize;
+    let mut released_buckets = 0usize;
     for round in 0..60usize {
         for index in 0..20usize {
             let response = runtime.inner.engine.execute(ExecuteRequest {
@@ -249,6 +266,14 @@ fn check_hot_bucket_log_collection(collect_pages: bool) {
         }
         let report = runtime.run_storage_manager_once(1, options.clone());
         assert!(report.status.ok, "round {round}: {:?}", report.status);
+        if evict_inline {
+            if let Some(eviction) = report.eviction.as_ref() {
+                assert!(eviction.dump_manifest_ids.is_empty(),
+                    "inline eviction must not publish outside the dump stage: {eviction:?}");
+                assert_eq!(eviction.dropped_object_count, 0);
+                released_buckets += eviction.bucket_index_buckets_released;
+            }
+        }
         dumps += usize::from(report.wal_reclaim_round.dumped);
         assert_eq!(report.wal_reclaim_round.wal_records_removed, 0,
                    "the dump stage must not collect physical log records");
@@ -273,6 +298,9 @@ fn check_hot_bucket_log_collection(collect_pages: bool) {
         .map(|records| records.len())
         .unwrap_or(usize::MAX);
     assert!(dumps > 0, "the fixture must actually publish a dump");
+    if evict_inline {
+        assert!(released_buckets > 0, "the fixture never released an inline page");
+    }
     if collect_pages {
         assert!(records_removed > 0, "the enabled page stage never collected records");
         assert!(
@@ -283,7 +311,7 @@ fn check_hot_bucket_log_collection(collect_pages: bool) {
         assert_eq!(records_removed, 0);
         assert_eq!(records, written, "dump-only rounds must retain every physical record");
     }
-    eprintln!("page_enabled={collect_pages} dumps={dumps} removed={records_removed} remaining={records} written={written}");
+    eprintln!("page_enabled={collect_pages} inline_eviction={evict_inline} released={released_buckets} dumps={dumps} removed={records_removed} remaining={records} written={written}");
     if !collect_pages {
         let dumped = runtime.inner.engine.storage_dump_wal_sequence(1);
         let report = runtime.run_storage_manager_once(1, StorageManagerOptions {
