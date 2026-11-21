@@ -4929,3 +4929,77 @@ fn a_long_run_of_due_cold_keys_does_not_starve_a_due_hot_key() {
     let (held, _) = deadline_census(&engine, 1);
     assert_eq!(held, COLD, "only the cold keys should remain");
 }
+
+/// A DUE ROUND VISITS ITS CAP, HOWEVER LARGE THE DUE BACKLOG, AND THE NEXT ROUND RESUMES.
+///
+/// Entries visited per round is counted through `keep`, which `due_window` calls once per entry it
+/// examines. At three backlog sizes (1,000, 8,000 and 64,000 due keys) a round with the shipped
+/// hot limit examines exactly that limit and selects exactly that limit, so the count is the
+/// documented cap and is flat across the backlog. After a round's keys are removed the next round
+/// starts at the following deadline and again examines exactly the cap: the backlog drains from
+/// the front, which is the resume point.
+///
+/// THE CONTROL is the unbounded call (limit 0, no scan budget) on the same shard: it examines
+/// the whole backlog, so a counter that read zero because it was not wired, or a bound that was
+/// ignored, cannot pass the flat assertion by accident.
+#[test]
+fn a_due_round_examines_its_cap_however_large_the_backlog_and_the_next_round_resumes() {
+    fn examined(
+        shard: &ShardState,
+        now: u64,
+        limit: usize,
+        scan_budget: usize,
+    ) -> (usize, Vec<(String, u64)>) {
+        let visits = std::cell::Cell::new(0usize);
+        let selected = crate::engine::due_window(shard, now, limit, scan_budget, |_| {
+            visits.set(visits.get() + 1);
+            true
+        });
+        (visits.get(), selected)
+    }
+
+    let mut per_size = Vec::new();
+    for backlog in [1_000usize, 8_000, 64_000] {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).unwrap();
+        for index in 0..backlog {
+            crate::engine::set_expiry(shard, format!("due-{index:06}"), 1);
+        }
+        let now = now_ms();
+
+        // CONTROL: unbounded examines the whole backlog.
+        let (whole, _) = examined(shard, now, 0, 0);
+        assert_eq!(whole, backlog, "the control walk did not see the whole backlog");
+
+        // THE CLAIM, first round.
+        let (first_visits, first) = examined(shard, now, HOT_LIMIT, 64);
+        assert_eq!(
+            (first_visits, first.len()),
+            (HOT_LIMIT, HOT_LIMIT),
+            "{backlog} due keys: a round examined {first_visits} and selected {}, not the cap \
+             {HOT_LIMIT}",
+            first.len()
+        );
+
+        // RESUME: remove what the round took; the next round starts at the following deadline.
+        let taken: Vec<String> = first.iter().map(|(key, _)| key.clone()).collect();
+        for key in &taken {
+            assert!(crate::engine::clear_expiry(shard, key));
+        }
+        let (second_visits, second) = examined(shard, now, HOT_LIMIT, 64);
+        assert_eq!(second_visits, HOT_LIMIT, "{backlog} due keys: the resumed round examined {second_visits}");
+        assert!(
+            second.iter().all(|(key, _)| !taken.contains(key)),
+            "the resumed round re-selected a key the previous round took"
+        );
+        per_size.push((backlog, first_visits, whole));
+    }
+
+    // FLAT: the examined count is identical at every size while the control grows 64x.
+    assert!(
+        per_size.windows(2).all(|pair| pair[0].1 == pair[1].1 && pair[1].2 > pair[0].2),
+        "entries examined per round must be flat while the whole-backlog control grows: {per_size:?}"
+    );
+}

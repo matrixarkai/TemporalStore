@@ -1147,7 +1147,8 @@ jobs:
             engine::tests::evict_scale::a_releasing_round_walks_nothing_whether_it_takes_one_victim_or_many \
             engine::tests::evict_scale::the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers \
             engine::storage_bucket_internals::release_walk_scale::releasing_four_buckets_walks_nothing_however_large_the_store \
-            engine::storage_bucket_internals::release_refusal_guards::a_model_map_disagreement_is_found_by_verify_and_the_release_does_not_walk
+            engine::storage_bucket_internals::release_refusal_guards::a_model_map_disagreement_is_found_by_verify_and_the_release_does_not_walk \
+            engine::tests::expiry_scale::a_due_round_examines_its_cap_however_large_the_backlog_and_the_next_round_resumes
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-memory-stages.log
             # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
