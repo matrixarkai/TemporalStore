@@ -61,6 +61,8 @@ pub mod llm_context;
 pub(crate) mod log_framing;
 #[cfg(feature = "matrixobject")]
 pub mod matrixobject_direct;
+#[cfg(all(test, feature = "matrixobject"))]
+pub(crate) mod matrixobject_test_plane;
 pub mod meta;
 pub mod partition_id;
 pub mod proxy;
