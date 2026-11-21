@@ -307,6 +307,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     // a generous /gc could lose the index update while the records backing it were already
     // gone. One plan answers both -- resolved once, and only when something is actually asked
     // for, since it deserializes every retained manifest.
+    let reclaim_plan_started = std::time::Instant::now();
     let reclaim_plan = (request.retain_wal_from_sequence.is_some()
         || request.retain_index_log_from_sequence.is_some())
     .then(|| {
@@ -315,6 +316,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             .storage_wal_reclaim_plan(request.shard_id, Vec::new(), Vec::new())
     });
     if let Some(plan) = reclaim_plan.as_ref() {
+        record_gc_phase(inner, "wal_reclaim_plan", reclaim_plan_started);
         gc_durable_index_backed = plan.safe_to_reclaim;
     }
     if let Some(retain_from_sequence) = request.retain_wal_from_sequence {
@@ -336,6 +338,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             // the log store reads, and nothing else guarantees it is current on this path: left as
             // it was last stored (often nothing), a retain point at the log's tail removed every
             // record while live registrations still pointed into it.
+            let wal_gc_started = std::time::Instant::now();
             if inner.engine.refresh_wal_retention_floor(request.shard_id).is_err() {
                 status = Status::error(
                     "wal_gc_refused",
@@ -351,6 +354,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             } else {
                 Ok(crate::wal::WriteAheadLogGcReport::default())
             };
+            record_gc_phase(inner, "wal_gc", wal_gc_started);
             match wal_gc_result {
                 Ok(report) => {
                     wal_records_removed = report.records_removed;
@@ -374,11 +378,13 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
                 _ => u64::MAX,
             };
             index_log_gc_clamped_by_durable_index = retain_from_sequence > ceiling;
-            match inner
+            let index_log_gc_started = std::time::Instant::now();
+            let index_log_gc_result = inner
                 .engine
                 .index_log_store()
-                .gc_before_sequence(request.shard_id, retain_from_sequence.min(ceiling))
-            {
+                .gc_before_sequence(request.shard_id, retain_from_sequence.min(ceiling));
+            record_gc_phase(inner, "index_log_gc", index_log_gc_started);
+            match index_log_gc_result {
                 Ok(report) => index_log_records_removed = report.records_removed,
                 Err(err) => {
                     status = Status::error("index_log_gc_failed", &err.to_string());
@@ -586,7 +592,9 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
         || index_log_records_removed > 0
     {
         GC_HEAP_TRIMS.with(|trims| trims.set(trims.get() + 1));
+        let trim_started = std::time::Instant::now();
         let _ = crate::memory_trim::release_free_heap_to_os();
+        record_gc_phase(inner, "heap_trim", trim_started);
     }
     GcResponse {
         status,
