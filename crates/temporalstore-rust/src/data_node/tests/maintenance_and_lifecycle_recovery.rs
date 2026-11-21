@@ -3649,7 +3649,8 @@ fn a_cycle_with_zero_eviction_batch_does_no_work_under_pressure() {
                 assert_eq!(engine.bucket_index_resident_bytes(1), resident);
             } else {
                 assert!(report.skipped_reason.is_empty());
-                assert!(!report.dump_manifest_ids.is_empty());
+                assert!(report.dump_manifest_ids.is_empty());
+                assert_eq!(engine.storage_dump_wal_sequence(1), frontier);
                 assert!(engine.bucket_index_resident_bytes(1) < resident);
             }
             drop(engine);
