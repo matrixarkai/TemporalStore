@@ -174,6 +174,18 @@ impl DataNodeRuntime {
             if step.progress == StageProgress::Done {
                 stats.compaction_runs += 1;
             }
+            // THE SCRAPE'S PER-STAGE TIMING IS FED FROM A ROUND'S SPANS, AND A TICK STEP RETURNS
+            // NONE. Without this a tick-mode server ran compaction and exported no series for it,
+            // so its busy time and longest step were invisible. One entry per executed step: the
+            // maximum is the longest step, the total is the busy time.
+            let step_us = started.elapsed().as_micros() as u64;
+            let timing = stats
+                .storage_manager_stage_timing
+                .entry(<CompactionStage<'_> as BoundedStage>::NAME.to_string())
+                .or_default();
+            timing.rounds_executed += 1;
+            timing.total_us = timing.total_us.saturating_add(step_us);
+            timing.max_us = timing.max_us.max(step_us);
         }
         let now = std::time::Instant::now();
         match step.progress {
