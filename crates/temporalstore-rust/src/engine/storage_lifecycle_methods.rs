@@ -1058,6 +1058,7 @@ impl TemporalEngine {
             }
         }
         if !cleared_buckets.is_empty() {
+            storage_bucket_internals::clear_retained_inline_page_dirty_state(shard, &cleared_buckets);
             // STRAIGHT TO THE CLEARED BUCKETS' KEYS.
             //
             // The retain this replaces walked the WHOLE dirty set and re-hashed every key to
@@ -2723,11 +2724,22 @@ impl TemporalEngine {
             }
             victims
         };
+        let mut release = crate::engine::storage_bucket_internals::BucketReleaseOutcome::default();
+        if !delete_drop && !victims.is_empty() {
+            let candidates = victims.iter().map(|victim| victim.routing_bucket).collect::<Vec<_>>();
+            let mut shards = self.shards.write().expect("shards lock poisoned");
+            if let Some(shard) = shards.get_mut(&shard_id) {
+                let retained = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(shard, &candidates);
+                release.released_buckets = retained.released_buckets;
+                release.released_blocks = retained.released_blocks;
+            }
+        }
+        let retained_inline = release.released_buckets.iter().copied().collect::<BTreeSet<_>>();
         let mut dump_manifest_ids = Vec::new();
         if dump_before_evict {
             let dirty_buckets = victims
                 .iter()
-                .filter(|victim| victim.dirty_object_count > 0)
+                .filter(|victim| victim.dirty_object_count > 0 && !retained_inline.contains(&victim.routing_bucket))
                 .map(|victim| victim.routing_bucket)
                 .collect::<Vec<_>>();
             if !dirty_buckets.is_empty() {
@@ -2736,9 +2748,8 @@ impl TemporalEngine {
                     // Dumped means dumped. `apply_storage_lifecycle` has always paired the
                     // manifest with this clear; the eviction path created the manifest and left
                     // every bucket marked dirty, so "dump before evict" dumped and then evicted
-                    // nothing it had dumped. It also makes the release below possible at all --
-                    // a dirty bucket is refused, because the model maps carry no per-block dirty
-                    // bit for a reload to restore.
+                    // nothing it had dumped. This fallback still needs the clear for owners
+                    // whose per-page dirty state cannot be retained inline.
                     self.clear_dumped_bucket_dirty_state(shard_id, &manifest);
                 }
             }
@@ -2758,18 +2769,23 @@ impl TemporalEngine {
         // DESTROYING data. Releasing a victim's block list shrinks the index without losing
         // anything: the node stays routable and the next read loads its blocks back from the model
         // maps. Not attempted under `delete_drop`, where the victim's data is about to go.
-        let mut release = crate::engine::storage_bucket_internals::BucketReleaseOutcome::default();
         if !delete_drop && !victims.is_empty() {
             let candidates = victims
                 .iter()
                 .map(|victim| victim.routing_bucket)
+                .filter(|bucket| !retained_inline.contains(bucket))
                 .collect::<Vec<_>>();
             let mut shards = self.shards.write().expect("shards lock poisoned");
             if let Some(shard) = shards.get_mut(&shard_id) {
-                release = crate::engine::storage_bucket_internals::release_bucket_blocks(
+                let remaining = crate::engine::storage_bucket_internals::release_bucket_blocks(
                     shard,
                     &candidates,
                 );
+                release.released_buckets.extend(remaining.released_buckets);
+                release.released_buckets.sort_unstable();
+                release.released_blocks += remaining.released_blocks;
+                release.refused_buckets = remaining.refused_buckets;
+                release.refusals = remaining.refusals;
             }
         }
         let mut dropped_object_count = 0usize;

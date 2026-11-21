@@ -761,39 +761,11 @@ fn dump_everything_and_clear(engine: &TemporalEngine) -> usize {
         .unwrap_or(0)
 }
 
-/// WHAT A DUMP COSTS FOR AN OBJECT NOTHING HAS CHANGED SINCE ITS LAST DUMP: measured, and it is
-/// ZERO BYTES AND ZERO MANIFESTS.
-///
-/// The rule this store holds is that an object unchanged since it was dumped is dropped from
-/// memory DIRECTLY -- its durable copy already exists, so there is nothing to write first -- while
-/// a changed object is dumped and then dropped. The question this answers is whether the shipped
-/// round pays a dump for the first case anyway.
-///
-/// IT DOES NOT, AND THE SELECTION IS WHERE THAT LIVES. `apply_storage_eviction` builds its dump
-/// list as the victims with `dirty_object_count > 0`; a clean victim is not in it, and when no
-/// victim is dirty no manifest is created at all. The release then takes the clean bucket, because
-/// `release_bucket_blocks` REFUSES a dirty one -- so the two cases are not merely distinguished,
-/// they are each other's precondition.
-///
-/// THREE ARMS ON MATCHED CORPORA, each driven by ONE `apply_storage_eviction` call so the bytes
-/// are attributable to it:
-///
-///   A  everything changed       -> a manifest is created, bytes are written, buckets release
-///   B  everything dumped first  -> NO manifest, ZERO bytes, buckets still release
-///   C  one object changed       -> a manifest is created, and it writes the WHOLE index
-///
-/// Arm A is what makes arm B a finding: without it, "no bytes written" is also what a round that
-/// never reached the dump would report. Arm C is the residual and it is stated rather than
-/// removed: a manifest carries the whole-shard index by construction, because install writes the
-/// decoded index as THE index for the shard and a manifest narrowed to its own buckets installs a
-/// shard missing every bucket it did not name. So the bytes an unchanged object contributes to
-/// SOMEONE ELSE's dump are load-bearing, and the only cost this store can decline is the one arm
-/// B measures at zero.
-///
-/// Arm B also carries the correctness proof in both directions: cold read-back, a reload on a
-/// fresh engine over the same directories, and the never-written control.
+/// Dirty, clean and restated strings release without eviction checkpoint I/O. An explicit
+/// checkpoint afterward remains a positive writer control and must contain the whole index.
+/// Every arm checks exact cold values, fresh recovery and never-written keys.
 #[test]
-fn an_object_unchanged_since_its_dump_is_released_without_being_dumped_again() {
+fn string_eviction_writes_no_checkpoint_for_dirty_clean_or_restated_owners() {
     const KEYS: usize = 1_200;
     const BATCH: usize = 16;
 
@@ -829,7 +801,7 @@ fn an_object_unchanged_since_its_dump_is_released_without_being_dumped_again() {
         }
     }
 
-    // --- ARM A: everything changed. The dump is needed, and it costs. ---
+    // --- ARM A: everything changed, without an existing checkpoint. ---
     let dir_a = tempdir().unwrap();
     let engine_a = seeded_engine(dir_a.path(), KEYS);
     let _ = engine_a.cache().invalidate_shard(1);
@@ -851,14 +823,9 @@ fn an_object_unchanged_since_its_dump_is_released_without_being_dumped_again() {
     let dir_c = tempdir().unwrap();
     let engine_c = seeded_engine(dir_c.path(), KEYS);
     assert!(dump_everything_and_clear(&engine_c) > 0, "arm C did not dump");
-    let changed = engine_c.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringSet {
-            key: key_of(0),
-            value: keyed_value(0),
-        },
-    });
-    assert!(changed.status.ok, "arm C could not change one record");
+    assert!(engine_c.execute(ExecuteRequest { shard_id: 1,
+        command: Command::StringSet { key: key_of(0), value: keyed_value(0) },
+    }).status.ok);
     let index_image_c = engine_c
         .export_index_bytes(1)
         .expect("arm C could not export its index")
@@ -884,6 +851,9 @@ fn an_object_unchanged_since_its_dump_is_released_without_being_dumped_again() {
         "arm", "manifests", "bytes_written", "released", "refused", "dropped", "round_us"
     );
     for arm in [&arm_a, &arm_b, &arm_c] {
+        assert!(arm.released > 0, "{}: nothing released", arm.label);
+        assert_eq!((arm.refused, arm.dropped), (0, 0), "{}", arm.label);
+        assert_eq!((arm.manifests, arm.bytes_written), (0, 0), "{}", arm.label);
         eprintln!(
             "    {:<30} {:>10} {:>14} {:>9} {:>8} {:>8} {:>12}",
             arm.label,
@@ -896,19 +866,13 @@ fn an_object_unchanged_since_its_dump_is_released_without_being_dumped_again() {
         );
     }
 
-    // --- THE FINDING: an unchanged object costs no dump at all. ---
+    // No string state requires an eviction checkpoint.
     assert_eq!(
-        arm_a.manifests, 1,
-        "arm A created {} manifests. With every object changed the round has to dump before it \
-         can release, so this arm is what makes arm B's zero a finding",
+        arm_a.manifests, 0,
+        "arm A created {} manifests for inline string pages",
         arm_a.manifests
     );
-    assert!(
-        arm_a.bytes_written > 0,
-        "arm A wrote no bytes although it created {} manifest(s), so the byte bracket above is \
-         not measuring the dump",
-        arm_a.manifests
-    );
+    assert_eq!(arm_a.bytes_written, 0);
     assert_eq!(
         arm_b.manifests, 0,
         "arm B created {} manifest(s) for victims nothing has changed since their dump. Their \
@@ -933,32 +897,49 @@ fn an_object_unchanged_since_its_dump_is_released_without_being_dumped_again() {
         arm_b.dropped
     );
 
-    // --- THE RESIDUAL, stated with its number. ---
+    // An explicit checkpoint still writes a complete image, independent of eviction.
     assert_eq!(
-        arm_c.manifests, 1,
+        arm_c.manifests, 0,
         "arm C created {} manifests for one changed object",
         arm_c.manifests
     );
+    let before_dump = bytes_under(&dir_c.path().join("indexes")) + bytes_under(&dir_c.path().join("blocks"));
+    assert!(dump_everything_and_clear(&engine_c) > 0, "the explicit checkpoint must publish");
+    let dump_bytes = (bytes_under(&dir_c.path().join("indexes")) + bytes_under(&dir_c.path().join("blocks")))
+        .saturating_sub(before_dump);
     assert!(
-        arm_c.bytes_written >= index_image_c,
-        "arm C wrote {} bytes for one changed object against a {index_image_c} B whole-shard \
+        dump_bytes >= index_image_c,
+        "the explicit checkpoint wrote {} bytes for one changed object against a {index_image_c} B whole-shard \
          index image. A manifest carries the whole index by construction, so this is the floor, \
          and if it is now lower the manifest has been narrowed -- which installs a shard missing \
          every bucket it did not name",
-        arm_c.bytes_written
+        dump_bytes
     );
     eprintln!(
-        "    => an unchanged object costs {} B and {} manifests of its OWN round (arm B). The \
-residual is arm C: one changed object out of {KEYS} dumps a {index_image_c} B whole-shard index \
-image ({} B written), so about {:.2}% of those bytes describe objects nothing has changed -- and \
-that is required, because install writes the decoded index as THE index for the shard",
+        "    => eviction costs {} B and {} manifests in arm B. The separate explicit checkpoint \
+writes {dump_bytes} B against a {index_image_c} B whole-shard image",
         arm_b.bytes_written,
         arm_b.manifests,
-        arm_c.bytes_written,
-        100.0 * (KEYS - 1) as f64 / KEYS as f64,
     );
 
-    // --- CORRECTNESS, BOTH DIRECTIONS, on the arm that took the no-dump path. ---
+    for (label, engine, directory) in [("A", engine_a, dir_a), ("C", engine_c, dir_c)] {
+        let cold = read_back_all(&engine, KEYS);
+        assert_eq!(cold.verified(), KEYS, "{label}");
+        assert!(cold.missing.is_empty() && cold.wrong.is_empty(),
+            "{label}: {:?} {:?}", cold.missing, cold.wrong);
+        assert_eq!(never_written_keys_that_answered(&engine, CONTROL_PROBES), 0);
+        engine.write_ahead_log_store().flush(1).unwrap();
+        drop(engine);
+        let reloaded = engine_at(directory.path());
+        load_shard_on_shipped_range(&reloaded, 2);
+        let fresh = read_back_all(&reloaded, KEYS);
+        assert_eq!(fresh.verified(), KEYS, "{label}");
+        assert!(fresh.missing.is_empty() && fresh.wrong.is_empty(),
+            "{label}: {:?} {:?}", fresh.missing, fresh.wrong);
+        assert_eq!(never_written_keys_that_answered(&reloaded, CONTROL_PROBES), 0);
+    }
+
+    // The clean arm also recovers without a new index flush.
     let reads = read_back_all(&engine_b, KEYS);
     assert!(
         reads.missing.is_empty() && reads.wrong.is_empty(),
@@ -981,7 +962,7 @@ that is required, because install writes the decoded index as THE index for the 
         "a key this fixture never wrote answered with a value, so the read-back above is not \
          evidence that the store knows what it holds"
     );
-    engine_b.flush_shard_index(1);
+    engine_b.write_ahead_log_store().flush(1).unwrap();
     drop(engine_b);
 
     let reloaded = engine_at(dir_b.path());

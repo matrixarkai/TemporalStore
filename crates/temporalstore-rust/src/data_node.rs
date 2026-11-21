@@ -1165,15 +1165,9 @@ pub struct StorageManagerOptions {
     /// Victims per batch. Zero selects no victims and performs no eviction work.
     #[serde(default = "default_storage_manager_eviction_batch_limit")]
     pub eviction_batch_limit: usize,
-    /// Dump a bucket before freeing it, so eviction relieves log pressure as well as memory.
-    ///
-    /// Defaults TRUE. "Without it an evicted dirty bucket still pins the log" is what this said and
-    /// it understates the case: without it the bucket is not freed at all. A release requires every
-    /// block clean and undeleted, a written-and-undumped bucket is dirty, so the actuator REFUSES
-    /// every candidate -- 16 of 16 refused and 0 released, measured in
-    /// `data_node::tests::evict_live::what_the_dump_costs_and_which_half_recovers_the_index`, against
-    /// 4 released with the dump on. Turning this off therefore does not make eviction cheaper; it
-    /// makes the round pay its whole-store release walk and give nothing back.
+    /// Dump fallback for dirty owners whose exact page state cannot be retained inline.
+    /// Single-page string owners retain their address and flags without a checkpoint. Other
+    /// dirty owners require a dump before release. Defaults TRUE.
     #[serde(default)]
     pub eviction_dump_before_evict: bool,
     // `eviction_delete_drop` WAS HERE, AND IT IS RETIRED RATHER THAN DEFAULTED AWAY. An operator
