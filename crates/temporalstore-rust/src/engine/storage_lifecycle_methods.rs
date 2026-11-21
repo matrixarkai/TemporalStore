@@ -1609,7 +1609,9 @@ impl TemporalEngine {
                                         // carries no stamp of its own -- only `install_shard_state`
                                         // sets one -- so asking IT for a shard yields None and
                                         // fingerprints nothing.
-                                        bucket_generation_digests_by_bucket(shard_id, &manifest_state)
+                                        crate::engine::storage_reporting::bucket_generation_digests_for_coverage(
+                                            shard_id, &manifest_state, &manifest.bucket_ids,
+                                        )
                                     })
                             },
                         ),
@@ -5354,7 +5356,7 @@ mod eviction_round_scale {
 /// An image names a WAL-resident block by a placement, and a block whose only durable copy is a log
 /// record needs that record until a newer image stops naming it. A resident block with no placement
 /// cannot prove a narrower floor, so it reads as 0.
-fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
+pub(super) fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
     let floor = snapshot
         .wal_resident_blocks
         .values()
