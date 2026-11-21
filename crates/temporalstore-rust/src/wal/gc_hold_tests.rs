@@ -211,7 +211,9 @@ fn a_roll_during_the_pass_refuses_the_swap_and_loses_nothing() {
     let after = sequences(&store);
     assert!(before.iter().all(|sequence| after.contains(sequence)) || report.dropped_segments > 0);
     assert_eq!(*after.last().unwrap(), 240);
-    // The next pass runs from the new piece and succeeds.
+    // The next pass runs from the new piece and succeeds. The hook that rolled the piece must not
+    // fire again, or it would race this pass the same way.
+    GC_PHASE_HOOK.with(|hook| *hook.borrow_mut() = None);
     let next = store.gc_before_sequence_unchecked(3, 230).unwrap();
     assert!(!next.skipped_raced, "{next:?}");
     let reopened = LocalWriteAheadLogStore::new(dir.path());
