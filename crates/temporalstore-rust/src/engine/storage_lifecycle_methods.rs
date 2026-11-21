@@ -1609,7 +1609,9 @@ impl TemporalEngine {
                                         // carries no stamp of its own -- only `install_shard_state`
                                         // sets one -- so asking IT for a shard yields None and
                                         // fingerprints nothing.
-                                        bucket_generation_digests_by_bucket(shard_id, &manifest_state)
+                                        crate::engine::storage_reporting::bucket_generation_digests_for_coverage(
+                                            shard_id, &manifest_state, &manifest.bucket_ids,
+                                        )
                                     })
                             },
                         ),
@@ -2594,19 +2596,30 @@ impl TemporalEngine {
                 ..StorageEvictionReport::default()
             };
         }
-        // The gate has opened, so the per-bucket cache summaries are now worth their listing.
-        let before_cache = self.storage_cache_inspection_report(shard_id);
-        let cache_by_bucket = before_cache
-            .bucket_summaries
-            .iter()
-            .map(|summary| (summary.routing_bucket, summary.clone()))
-            .collect::<BTreeMap<_, _>>();
         let victims = if self
             .evict_sampled_lru
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            self.sampled_eviction_victims(shard_id, batch_limit, &cache_by_bucket)
+            // Sampling uses residency and recency, not cache byte totals. Inspect only the
+            // selected owners afterwards; key enumeration still belongs to the cache API.
+            let mut victims = self.sampled_eviction_victims(shard_id, batch_limit, &BTreeMap::new());
+            let buckets = victims.iter().map(|victim| victim.routing_bucket).collect();
+            let cache_by_bucket = self.storage_cache_summaries_for_buckets(shard_id, &buckets);
+            for victim in &mut victims {
+                if let Some(cache) = cache_by_bucket.get(&victim.routing_bucket) {
+                    victim.cache_memory_bytes = cache.memory_bytes;
+                    victim.cache_disk_bytes = cache.disk_bytes;
+                    victim.weight = cache.memory_bytes.saturating_mul(4)
+                        .saturating_add(cache.disk_bytes.saturating_mul(2))
+                        .saturating_add(victim.physical_bytes)
+                        .saturating_add(victim.dirty_object_count.saturating_mul(1024));
+                }
+            }
+            victims
         } else {
+            let cache_by_bucket = self.storage_cache_inspection_report(shard_id)
+                .bucket_summaries.into_iter()
+                .map(|summary| (summary.routing_bucket, summary)).collect::<BTreeMap<_, _>>();
             // BUILT IN THE ARM THAT READS IT. This clone used to be taken before the branch, and
             // the sampled arm never touched it: a whole-store copy on the way into the one
             // selection path written to avoid whole-store work. `EVICTION_RECENCY_ENTRIES_CLONED`
@@ -5343,7 +5356,7 @@ mod eviction_round_scale {
 /// An image names a WAL-resident block by a placement, and a block whose only durable copy is a log
 /// record needs that record until a newer image stops naming it. A resident block with no placement
 /// cannot prove a narrower floor, so it reads as 0.
-fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
+pub(super) fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
     let floor = snapshot
         .wal_resident_blocks
         .values()

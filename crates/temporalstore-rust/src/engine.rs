@@ -6930,6 +6930,15 @@ fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
 /// longer WAL suffix -- no acked write is lost. Durability-critical writers (dump
 /// manifest, manifest install-on-load) MUST pass sync=true.
 fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<(), std::io::Error> {
+    atomic_write_bytes_synced_metadata(path, bytes, sync, false).map(|_| ())
+}
+
+fn atomic_write_bytes_synced_metadata(
+    path: &Path,
+    bytes: &[u8],
+    sync: bool,
+    capture_metadata: bool,
+) -> Result<Option<fs::Metadata>, std::io::Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let file_name = path
@@ -6947,6 +6956,8 @@ fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<()
         if sync {
             file.sync_all()?;
         }
+        // Capture the inode we wrote, not whichever file occupies the path after rename.
+        let metadata = capture_metadata.then(|| file.metadata().ok()).flatten();
         drop(file);
         fs::rename(&temp_path, path)?;
         if sync {
@@ -6961,7 +6972,7 @@ fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<()
             // block_store) already syncs the parent dir here.
             sync_parent_dir(path)?;
         }
-        Ok(())
+        Ok(metadata)
     })();
     if write_result.is_err() {
         let _ = fs::remove_file(&temp_path);

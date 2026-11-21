@@ -4,6 +4,25 @@
 //! Storage readiness / compatibility / cache-warmup / recovery-boundary reports for TemporalEngine, split from engine.rs.
 use super::*;
 
+fn summarize_cache_buckets(entries: &[CacheEntryInfo]) -> BTreeMap<u32, StorageCacheBucketSummary> {
+    let mut buckets = BTreeMap::<u32, StorageCacheBucketSummary>::new();
+    for entry in entries {
+        let Some(routing_bucket) = cache_entry_routing_bucket(entry) else { continue; };
+        let summary = buckets.entry(routing_bucket).or_insert_with(|| StorageCacheBucketSummary {
+            routing_bucket,
+            ..Default::default()
+        });
+        summary.entry_count = summary.entry_count.saturating_add(1);
+        summary.memory_bytes = summary.memory_bytes.saturating_add(entry.memory_bytes);
+        summary.disk_bytes = summary.disk_bytes.saturating_add(entry.disk_bytes);
+        if entry.pinned {
+            summary.pinned_entries = summary.pinned_entries.saturating_add(1);
+            summary.pinned_bytes = summary.pinned_bytes.saturating_add(entry.memory_bytes);
+        }
+    }
+    buckets
+}
+
 impl TemporalEngine {
     /// A BOUNDED, RESUMABLE SWEEP OF PER-BUCKET GAUGES: at most `max` buckets after `after`, in
     /// routing order, each with how many objects and blocks it holds and how many bytes those
@@ -655,32 +674,32 @@ impl TemporalEngine {
         let entries = self.cache.entries_for_shard(shard_id);
         STORAGE_CACHE_INSPECTION_LISTING_ENTRIES
             .with(|cell| cell.set(cell.get().saturating_add(entries.len() as u64)));
-        let mut bucket_summaries = BTreeMap::<u32, StorageCacheBucketSummary>::new();
-        for entry in &entries {
-            let Some(routing_bucket) = cache_entry_routing_bucket(entry) else {
-                continue;
-            };
-            let summary =
-                bucket_summaries
-                    .entry(routing_bucket)
-                    .or_insert(StorageCacheBucketSummary {
-                        routing_bucket,
-                        ..StorageCacheBucketSummary::default()
-                    });
-            summary.entry_count = summary.entry_count.saturating_add(1);
-            summary.memory_bytes = summary.memory_bytes.saturating_add(entry.memory_bytes);
-            summary.disk_bytes = summary.disk_bytes.saturating_add(entry.disk_bytes);
-            if entry.pinned {
-                summary.pinned_entries = summary.pinned_entries.saturating_add(1);
-                summary.pinned_bytes = summary.pinned_bytes.saturating_add(entry.memory_bytes);
-            }
-        }
+        let bucket_summaries = summarize_cache_buckets(&entries);
         StorageCacheInspectionReport {
             shard_id,
             stats: self.cache.stats(),
             entries,
             bucket_summaries: bucket_summaries.into_values().collect(),
         }
+    }
+
+    pub(super) fn storage_cache_summaries_for_buckets(
+        &self,
+        shard_id: ShardId,
+        buckets: &BTreeSet<u32>,
+    ) -> BTreeMap<u32, StorageCacheBucketSummary> {
+        if buckets.is_empty() {
+            return BTreeMap::new();
+        }
+        STORAGE_CACHE_INSPECTION_LISTINGS.with(|cell| cell.set(cell.get().saturating_add(1)));
+        let entries = self.cache.entries_for_shard_matching(shard_id, |key| {
+            key.selector.strip_prefix("slot-").and_then(|suffix| suffix.split(':').next())
+                .and_then(|slot| slot.parse::<u32>().ok())
+                .is_some_and(|slot| buckets.contains(&slot))
+        });
+        STORAGE_CACHE_INSPECTION_LISTING_ENTRIES
+            .with(|cell| cell.set(cell.get().saturating_add(entries.len() as u64)));
+        summarize_cache_buckets(&entries)
     }
 
     pub fn invalidate_storage_cache_bucket(
@@ -814,8 +833,7 @@ impl TemporalEngine {
     }
 }
 
-/// Calls to [`TemporalEngine::storage_cache_inspection_report`], which is the only cache listing
-/// the storage-manager round makes.
+/// Full or selected-bucket cache inspection calls made on this thread.
 ///
 /// WHY THIS IS COUNTED AND NOT TIMED. The listing is `MultiLayerCache::entries_for_shard`, which
 /// materialises and SORTS one entry per cached record for the shard and falls through to a
@@ -838,7 +856,7 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
-/// Cache listings made by `storage_cache_inspection_report` ON THIS THREAD since the last reset.
+/// Full or selected-bucket cache listings ON THIS THREAD since the last reset.
 pub fn storage_cache_inspection_listings() -> u64 {
     STORAGE_CACHE_INSPECTION_LISTINGS.with(|cell| cell.get())
 }
@@ -857,3 +875,7 @@ pub fn reset_storage_cache_inspection_listings() {
 #[cfg(test)]
 #[path = "recovery_dirty_bucket_tests.rs"]
 mod recovery_dirty_bucket_tests;
+
+#[cfg(test)]
+#[path = "selected_cache_inspection_tests.rs"]
+mod selected_cache_inspection_tests;

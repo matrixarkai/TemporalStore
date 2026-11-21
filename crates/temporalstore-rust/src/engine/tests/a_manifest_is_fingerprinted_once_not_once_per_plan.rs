@@ -161,6 +161,8 @@ fn a_retained_manifest_is_decoded_once_across_plans() {
     let manifests = engine.list_bucket_dump_manifests(1).len();
     assert!(manifests >= 3, "need several retained manifests, got {manifests}");
 
+    // Exercise a cold listing rather than the publisher's captured-state seed.
+    crate::engine::bucket_dump_io::clear_bucket_dump_manifest_parse_memo();
     // WITH THE MEMO.
     crate::engine::reset_manifest_digest_memo_counts();
     let first = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
