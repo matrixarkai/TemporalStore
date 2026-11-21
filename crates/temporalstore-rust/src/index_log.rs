@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -2621,6 +2622,9 @@ pub struct LocalIndexLogStore {
     /// One barrier gate per shard log, so appends that arrive while an fsync is in flight ride it
     /// instead of queueing to take an identical one.
     flush_gates: Arc<crate::flush_gate::FlushRegistry>,
+    /// Whether the loop flusher thread is running. It starts with the first queued record and
+    /// exits after a couple of idle seconds, so a store nothing is appending to has no thread.
+    flusher_started: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -2676,6 +2680,13 @@ struct IndexLogInner {
     /// Separate from the one above because the frame is built from the payload, so the two are
     /// alive at the same moment.
     frame_scratch: Vec<u8>,
+    /// Delta records `append_delta` has accepted and numbered but not yet written, in the order
+    /// they were accepted. Written as one batch per shard by the loop flusher, or by whichever
+    /// call needs the log to be complete first.
+    queued: Vec<QueuedDelta>,
+    /// Batches whose write failed, already encoded, in order. They are written again, whole and
+    /// before anything newer, so a transient error costs a delay and never a hole.
+    stuck: Vec<StuckBatch>,
 }
 
 /// The largest scratch buffer worth keeping between appends.
@@ -2881,7 +2892,7 @@ impl LocalIndexLogStore {
     /// length" signal for the threshold-dump cadence: the growth of this file since the last
     /// dumped watermark is the undumped-length signal.
     pub fn log_len_bytes(&self, shard_id: ShardId) -> u64 {
-        let inner = self.inner.lock().expect("index log lock poisoned");
+        let inner = self.lock_flushed();
         // Every piece, not just the one being written. After a roll the active piece is the
         // NEWEST and smallest part of the log, so reporting its length as the log's length makes
         // a log SHRINK as it grows -- and the dump cadence that reads this would stop firing
@@ -2897,7 +2908,7 @@ impl LocalIndexLogStore {
     /// Milliseconds since this shard's last catalog dump, or `None` if it has not dumped in
     /// this process. Feeds `should_dump_index_catalog_now`'s interval check.
     pub fn ms_since_catalog_dump(&self, shard_id: ShardId) -> Option<u64> {
-        let inner = self.inner.lock().expect("index log lock poisoned");
+        let inner = self.lock_flushed();
         inner
             .last_dumped_at_by_shard
             .get(&shard_id)
@@ -2905,7 +2916,7 @@ impl LocalIndexLogStore {
     }
 
     pub fn undumped_len_since_dump(&self, shard_id: ShardId) -> u64 {
-        let inner = self.inner.lock().expect("index log lock poisoned");
+        let inner = self.lock_flushed();
         let current = index_log_total_bytes(&inner.root, shard_id);
         let dumped = inner
             .last_dumped_len_by_shard
@@ -2920,7 +2931,7 @@ impl LocalIndexLogStore {
     /// index + folded anchor are durably written, so the watermark never advances past
     /// non-durable state (restart-during-dump re-dumps rather than skipping).
     pub fn mark_catalog_dumped(&self, shard_id: ShardId) {
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let mut inner = self.lock_flushed();
         let current = index_log_total_bytes(&inner.root, shard_id);
         inner.last_dumped_len_by_shard.insert(shard_id, current);
         // Stamped in the same call as the length, so the two halves of the cadence -- how much
@@ -2967,8 +2978,11 @@ impl LocalIndexLogStore {
                 root_created,
                 encode_scratch: Vec::new(),
                 frame_scratch: Vec::new(),
+                queued: Vec::new(),
+                stuck: Vec::new(),
             })),
             flush_gates: Arc::new(crate::flush_gate::FlushRegistry::default()),
+            flusher_started: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -2990,7 +3004,7 @@ impl LocalIndexLogStore {
             "index-log anchor was handed {} bytes that are not a served index in any known format",
             index_bytes.len()
         );
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let mut inner = self.lock_flushed();
         inner.ensure_root()?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
             Some(sequence) => sequence,
@@ -3177,6 +3191,7 @@ impl LocalIndexLogStore {
         if bulk_ingest_mode() || !indexlog_enabled() {
             return Ok(0);
         }
+        // NOT `lock_flushed`: this is the writer, and what is already queued stays queued.
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         inner.ensure_root()?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
@@ -3187,6 +3202,24 @@ impl LocalIndexLogStore {
                 sequence
             }
         };
+        // A record nothing waits on is QUEUED, not written: it is numbered here, under the caller's
+        // locks, and the encode, the frame, the digest and the write happen once for the whole batch
+        // away from them. See `enqueue_delta`.
+        if !durable && index_log_group_write_enabled() {
+            return self.enqueue_delta(
+                inner,
+                shard_id,
+                last_sequence.saturating_add(1),
+                items,
+                key_states,
+                applied_wal_sequence,
+                meta,
+                upsert,
+            );
+        }
+        // This record is written now, so whatever is still queued goes first and the log stays in
+        // sequence order.
+        flush_queued_locked(&mut inner)?;
         // Seal the piece being written if this record would take it past the rolling threshold,
         // so reclaim has whole pieces to unlink instead of a file to rewrite. The check is a
         // stat; the piece is walked only when the in-memory span is unavailable, never to
@@ -3212,64 +3245,15 @@ impl LocalIndexLogStore {
             active = active_index_log(&inner.root, shard_id).0;
         }
         let next_sequence = last_sequence.saturating_add(1);
-        // Do not write what the item already says. Each item carries `object_id` and
-        // `routing_bucket`, and the address it points at repeats both -- 18 bytes of a 142-byte
-        // item. `restore_address_repeats` at the decode site puts them back.
-        let mut items = items;
-        let mut previous_object_id: Option<(String, std::sync::Arc<str>, u64)> = None;
-        for item in items.iter_mut() {
-            item.strip_block_ref_key_repeat();
-            item.strip_size_repeat();
-            // The address first, because it is stripped against the item's id, and the item's
-            // id is what goes next.
-            item.strip_address_repeats();
-            let derived = match previous_object_id.as_ref() {
-                Some((model_id, object_key, object_id))
-                    if model_id == &item.model_id && object_key == &item.object_key => *object_id,
-                _ => {
-                    let object_id = item.derived_object_id(shard_id);
-                    previous_object_id = Some((
-                        item.model_id.clone(),
-                        item.object_key.clone(),
-                        object_id,
-                    ));
-                    object_id
-                }
-            };
-            item.strip_object_id_repeat_with_derived(derived);
-        }
-        // Hoist the object key when at least two items name the same one, and blank the copies.
-        // A one-item record has no repeated key to remove: moving its key to the record writes the
-        // same number of bytes while allocating a String here and rebuilding an Arc on replay.
-        //
-        // LAST, after the strips above. `strip_block_ref_key_repeat` DERIVES the block handle from
-        // the item's own fields and `object_key` is one of them, so blanking the key first would
-        // derive a different handle and the strip would decline -- costing more than this saves.
-        let shared_object_key = match items.split_first() {
-            Some((first, rest))
-                if !rest.is_empty()
-                    && rest.iter().all(|item| item.object_key == first.object_key) =>
-            {
-                Some(first.object_key.to_string())
-            }
-            _ => None,
-        };
-        if shared_object_key.is_some() {
-            let blank = empty_object_key();
-            for item in items.iter_mut() {
-                item.object_key = blank.clone();
-            }
-        }
-        let record = IndexDeltaRecord {
+        let record = prepare_delta_record(
             shard_id,
-            sequence: next_sequence,
+            next_sequence,
             items,
-            meta,
-            applied_wal_sequence,
             key_states,
+            applied_wal_sequence,
+            meta,
             upsert,
-            shared_object_key,
-        };
+        );
         // Frame the delta record with a length + SHA-256 digest (crate::log_framing) so a
         // value-preserving bit-flip (e.g. a flipped `deleted` flag or block address) in this
         // committed line is detected on read rather than replayed as truth on recovery.
@@ -3451,7 +3435,7 @@ impl LocalIndexLogStore {
         base_anchor: u64,
         mut take: impl FnMut(IndexDeltaRecord),
     ) -> Result<(), IndexLogError> {
-        let inner = self.inner.lock().expect("index log lock poisoned");
+        let inner = self.lock_flushed();
         // Every piece of the log, oldest first. A log that has never rolled is one file, and this
         // is then the single path this fold has always read.
         //
@@ -3595,7 +3579,7 @@ impl LocalIndexLogStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, IndexLogError> {
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let mut inner = self.lock_flushed();
         let mut bytes: Vec<u8> = Vec::new();
         let mut at = 0_u64;
         let mut tally = IndexLogReadTally::start();
@@ -3680,7 +3664,7 @@ impl LocalIndexLogStore {
         max_bytes: u64,
         mut take: impl FnMut(u64, Vec<u8>) -> T,
     ) -> Result<(Vec<T>, bool), IndexLogError> {
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let mut inner = self.lock_flushed();
         let segments = index_log_segment_paths(&inner.root, shard_id)
             .into_iter()
             .filter(|path| path.exists())
@@ -3773,7 +3757,7 @@ impl LocalIndexLogStore {
         shard_id: ShardId,
         retain_from_sequence: u64,
     ) -> IndexLogGateSummary {
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let mut inner = self.lock_flushed();
         let root = inner.root.clone();
         let active = index_log_path(&root, shard_id);
         let mut summary = IndexLogGateSummary {
@@ -3893,7 +3877,7 @@ impl LocalIndexLogStore {
 
     /// How many files this shard's log is in, the one being written included.
     pub fn piece_count(&self, shard_id: ShardId) -> usize {
-        let inner = self.inner.lock().expect("index log lock poisoned");
+        let inner = self.lock_flushed();
         index_log_segment_paths(&inner.root, shard_id)
             .into_iter()
             .filter(|path| path.exists())
@@ -3930,7 +3914,7 @@ impl LocalIndexLogStore {
         // long as a sweep runs the shard's index log accepts no record. What bounds that hold is
         // therefore what bounds the sweep, and `max_entries_per_round` is not it: see the note
         // on the parameter above.
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let mut inner = self.lock_flushed();
         // AFTER the guard, so it drops BEFORE it: the release reading is taken while the lock is
         // still held. `a_sweep_holds_the_lock_every_append_needs` reads the two.
         #[cfg(test)]
@@ -4090,7 +4074,7 @@ impl LocalIndexLogStore {
         probe::SWEEP_ENTRIES_POST_DUMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Held to the end of the function, exactly as the budgeted sweep holds it, and for the
         // same reason: this is the lock `append_index_bytes` takes.
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let mut inner = self.lock_flushed();
         #[cfg(test)]
         let _lock_span = probe::SweepLockSpan::new();
         fs::create_dir_all(&inner.root)?;
@@ -4233,7 +4217,7 @@ impl LocalIndexLogStore {
     }
 
     pub fn stats(&self, shard_id: ShardId) -> IndexLogStats {
-        let inner = self.inner.lock().expect("index log lock poisoned");
+        let inner = self.lock_flushed();
         TAIL_SCANS.with(|cell| cell.set(cell.get().saturating_add(1)));
         IndexLogStats {
             last_sequence: last_sequence_at(&inner.root, shard_id).unwrap_or_default(),
@@ -4260,7 +4244,7 @@ impl LocalIndexLogStore {
     /// on the first append, which is where a tail can have been torn; nothing tears it afterwards
     /// without a restart, and a restart starts with an empty cache.
     pub fn stats_without_rescan(&self, shard_id: ShardId) -> IndexLogStats {
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let mut inner = self.lock_flushed();
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
             Some(sequence) => sequence,
             None => {
@@ -4279,6 +4263,445 @@ impl LocalIndexLogStore {
             ..inner.stats
         }
     }
+}
+
+/// The record a delta append writes: the items stripped of what the log can derive, the shared
+/// object key hoisted, and the sequence stamped. Built the same way whether the record is written
+/// at once or after it has been queued.
+#[allow(clippy::too_many_arguments)]
+fn prepare_delta_record(
+    shard_id: ShardId,
+    next_sequence: u64,
+    items: Vec<IndexItem>,
+    key_states: Vec<KeyState>,
+    applied_wal_sequence: Option<u64>,
+    meta: Option<MetaItem>,
+    upsert: bool,
+) -> IndexDeltaRecord<KeyState> {
+    // Do not write what the item already says. Each item carries `object_id` and
+    // `routing_bucket`, and the address it points at repeats both -- 18 bytes of a 142-byte
+    // item. `restore_address_repeats` at the decode site puts them back.
+    let mut items = items;
+    let mut previous_object_id: Option<(String, std::sync::Arc<str>, u64)> = None;
+    for item in items.iter_mut() {
+        item.strip_block_ref_key_repeat();
+        item.strip_size_repeat();
+        // The address first, because it is stripped against the item's id, and the item's
+        // id is what goes next.
+        item.strip_address_repeats();
+        let derived = match previous_object_id.as_ref() {
+            Some((model_id, object_key, object_id))
+                if model_id == &item.model_id && object_key == &item.object_key => *object_id,
+            _ => {
+                let object_id = item.derived_object_id(shard_id);
+                previous_object_id = Some((
+                    item.model_id.clone(),
+                    item.object_key.clone(),
+                    object_id,
+                ));
+                object_id
+            }
+        };
+        item.strip_object_id_repeat_with_derived(derived);
+    }
+    // Hoist the object key when at least two items name the same one, and blank the copies.
+    // A one-item record has no repeated key to remove: moving its key to the record writes the
+    // same number of bytes while allocating a String here and rebuilding an Arc on replay.
+    //
+    // LAST, after the strips above. `strip_block_ref_key_repeat` DERIVES the block handle from
+    // the item's own fields and `object_key` is one of them, so blanking the key first would
+    // derive a different handle and the strip would decline -- costing more than this saves.
+    let shared_object_key = match items.split_first() {
+        Some((first, rest))
+            if !rest.is_empty()
+                && rest.iter().all(|item| item.object_key == first.object_key) =>
+        {
+            Some(first.object_key.to_string())
+        }
+        _ => None,
+    };
+    if shared_object_key.is_some() {
+        let blank = empty_object_key();
+        for item in items.iter_mut() {
+            item.object_key = blank.clone();
+        }
+    }
+    IndexDeltaRecord {
+        shard_id,
+        sequence: next_sequence,
+        items,
+        meta,
+        applied_wal_sequence,
+        key_states,
+        upsert,
+        shared_object_key,
+    }
+}
+
+// =================================================================================================
+// GROUP WRITE: the delta records of concurrent writers reach the log as ONE WRITE PER BATCH
+// =================================================================================================
+//
+// Every set used to run, under the engine's write guard, an `open`, a probe of the active piece, an
+// encode, a framing with a SHA-256 digest, a `write` and a `close` of this log -- for a record
+// nothing waits on: under the single-barrier default the ack is the WAL barrier, and a delta tail
+// lost in a crash is rebuilt by WAL replay (the note on `append_delta` says so for every caller that
+// does not ask for `durable`).
+//
+// Now such a record is NUMBERED and QUEUED under the caller's locks, which costs a move into a
+// vector, and a loop flusher (or whichever call needs the log complete first) writes everything
+// that has queued for a shard as one frame buffer in one `write`. Order is the order of the
+// numbers. A caller that does ask for `durable` writes at once, after the queue, as before.
+
+/// How often the loop flusher writes what has queued, in milliseconds.
+const INDEX_LOG_FLUSH_INTERVAL_MS: u64 = 2;
+/// Idle ticks (about two seconds) after which the flusher thread exits. The next queued record
+/// starts one again.
+const INDEX_LOG_FLUSHER_IDLE_TICKS: u32 = 1000;
+/// The most records held back at once. A log that cannot be written must not grow the queue without
+/// bound, and past this an append FAILS, exactly as one whose write failed always did: nothing was
+/// numbered, so no sequence is promised that the log will not keep.
+const MAX_QUEUED_DELTAS: usize = 50_000;
+
+/// A delta record accepted and numbered, waiting for its write.
+struct QueuedDelta {
+    shard_id: ShardId,
+    sequence: u64,
+    items: Vec<IndexItem>,
+    key_states: Vec<KeyState>,
+    applied_wal_sequence: Option<u64>,
+    meta: Option<MetaItem>,
+    upsert: bool,
+}
+
+impl std::fmt::Debug for QueuedDelta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueuedDelta")
+            .field("shard_id", &self.shard_id)
+            .field("sequence", &self.sequence)
+            .field("items", &self.items.len())
+            .finish()
+    }
+}
+
+/// What the bookkeeping after a write needs to know about one framed record in the batch.
+#[derive(Debug, Clone, Copy)]
+struct FrameMeta {
+    sequence: u64,
+    applied_wal_sequence: Option<u64>,
+    carries_content: bool,
+    len: u64,
+}
+
+/// A batch whose write failed: its bytes, as framed, and what each record in it was.
+#[derive(Debug)]
+struct StuckBatch {
+    shard_id: ShardId,
+    bytes: Vec<u8>,
+    frames: Vec<FrameMeta>,
+}
+
+/// Whether delta records that nothing waits on are queued and written as a batch.
+///
+/// ON by default. `TS_INDEX_LOG_GROUP_WRITE=0` writes each record at once, as before.
+fn index_log_group_write_enabled() -> bool {
+    #[cfg(test)]
+    let default_on = GROUP_WRITE_IN_TEST.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let default_on = true;
+    crate::env_flag::env_bool("TS_INDEX_LOG_GROUP_WRITE", default_on)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test builds default the switch OFF on the thread, so the many tests written against the
+    /// write-at-once behaviour (they read the file the moment an append returns) keep meaning what
+    /// they say. The tests of the batch turn it on.
+    static GROUP_WRITE_IN_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether a test wants the loop flusher thread. Off by default, so a test decides when the
+    /// queue is written.
+    static FLUSHER_IN_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Fail the next batch write, once, before any byte is written.
+    static FAIL_NEXT_FRAME_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Make the next batch write stop after this many bytes and then fail, once.
+    static FAIL_PARTIAL_FRAME_WRITE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Turn the batched write on or off for this thread until the guard drops.
+#[cfg(test)]
+pub(crate) fn group_write_in_test(on: bool) -> impl Drop {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            GROUP_WRITE_IN_TEST.with(|cell| cell.set(self.0));
+        }
+    }
+    Restore(GROUP_WRITE_IN_TEST.with(|cell| cell.replace(on)))
+}
+
+#[cfg(test)]
+pub(crate) fn flusher_in_test(on: bool) -> impl Drop {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FLUSHER_IN_TEST.with(|cell| cell.set(self.0));
+        }
+    }
+    Restore(FLUSHER_IN_TEST.with(|cell| cell.replace(on)))
+}
+
+impl LocalIndexLogStore {
+    /// Lock the store with the log COMPLETE: anything queued is written first, so a reader, a sweep,
+    /// a length or a sequence asked of the store sees every record `append_delta` has returned a
+    /// number for. A flush that fails is logged and the call goes on with what is on disk, which is
+    /// what a caller would have seen had the write failed at the append.
+    fn lock_flushed(&self) -> std::sync::MutexGuard<'_, IndexLogInner> {
+        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        if !inner.queued.is_empty() || !inner.stuck.is_empty() {
+            if let Err(err) = flush_queued_locked(&mut inner) {
+                tracing::error!(error = %err, "index log batch write failed");
+            }
+        }
+        inner
+    }
+
+    /// Number a record and queue it. Returns the sequence it will be written under.
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_delta(
+        &self,
+        mut inner: std::sync::MutexGuard<'_, IndexLogInner>,
+        shard_id: ShardId,
+        next_sequence: u64,
+        items: Vec<IndexItem>,
+        key_states: Vec<KeyState>,
+        applied_wal_sequence: Option<u64>,
+        meta: Option<MetaItem>,
+        upsert: bool,
+    ) -> Result<u64, IndexLogError> {
+        if inner.queued.len() >= MAX_QUEUED_DELTAS {
+            flush_queued_locked(&mut inner)?;
+            if inner.queued.len() >= MAX_QUEUED_DELTAS {
+                return Err(IndexLogError::Io(std::io::Error::other(
+                    "the index log queue is full: its writes are failing",
+                )));
+            }
+        }
+        inner.queued.push(QueuedDelta {
+            shard_id,
+            sequence: next_sequence,
+            items,
+            key_states,
+            applied_wal_sequence,
+            meta,
+            upsert,
+        });
+        inner.last_sequence_by_shard.insert(shard_id, next_sequence);
+        inner.stats.last_sequence = next_sequence;
+        drop(inner);
+        self.ensure_flusher();
+        Ok(next_sequence)
+    }
+
+    /// A thread that writes what has queued every few milliseconds, so a record is on disk soon
+    /// after it is accepted even when nothing asks for the log. Holds only weak handles, exits when
+    /// the store is gone, and exits after a couple of idle seconds so an idle store has no thread.
+    fn ensure_flusher(&self) {
+        #[cfg(test)]
+        if !FLUSHER_IN_TEST.with(std::cell::Cell::get) {
+            return;
+        }
+        if self.flusher_started.swap(true, AtomicOrdering::AcqRel) {
+            return;
+        }
+        let inner = Arc::downgrade(&self.inner);
+        let started = Arc::downgrade(&self.flusher_started);
+        let spawned = std::thread::Builder::new()
+            .name("index-log-flush".to_string())
+            .spawn(move || {
+                let mut idle = 0u32;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(INDEX_LOG_FLUSH_INTERVAL_MS));
+                    let (Some(inner), Some(started)) = (inner.upgrade(), started.upgrade()) else {
+                        return;
+                    };
+                    let Ok(mut guard) = inner.lock() else {
+                        return;
+                    };
+                    if guard.queued.is_empty() && guard.stuck.is_empty() {
+                        idle += 1;
+                        if idle >= INDEX_LOG_FLUSHER_IDLE_TICKS {
+                            // Decided while holding the lock the writers queue under, so a record
+                            // queued after this sees the flag cleared and starts a new thread.
+                            started.store(false, AtomicOrdering::Release);
+                            return;
+                        }
+                        continue;
+                    }
+                    idle = 0;
+                    if let Err(err) = flush_queued_locked(&mut guard) {
+                        tracing::error!(error = %err, "index log batch write failed; it will be retried");
+                    }
+                }
+            });
+        if spawned.is_err() {
+            self.flusher_started.store(false, AtomicOrdering::Release);
+        }
+    }
+}
+
+impl Drop for IndexLogInner {
+    /// The last handle going away writes the tail. A crash loses it and replay rebuilds it; an
+    /// orderly stop has no reason to.
+    fn drop(&mut self) {
+        if !self.queued.is_empty() || !self.stuck.is_empty() {
+            let _ = flush_queued_locked(self);
+        }
+    }
+}
+
+/// Write everything queued, one write per shard, after anything that failed before.
+fn flush_queued_locked(inner: &mut IndexLogInner) -> Result<(), IndexLogError> {
+    while !inner.stuck.is_empty() {
+        let batch = inner.stuck.remove(0);
+        if let Err(err) = write_frames_locked(inner, batch.shard_id, &batch.bytes, &batch.frames) {
+            inner.stuck.insert(0, batch);
+            return Err(err);
+        }
+    }
+    if inner.queued.is_empty() {
+        return Ok(());
+    }
+    let queued = std::mem::take(&mut inner.queued);
+    // One batch per shard, each shard's records in the order they were numbered.
+    let mut shards: Vec<(ShardId, Vec<QueuedDelta>)> = Vec::new();
+    for record in queued {
+        match shards.iter_mut().find(|(shard, _)| *shard == record.shard_id) {
+            Some((_, records)) => records.push(record),
+            None => shards.push((record.shard_id, vec![record])),
+        }
+    }
+    let mut first_error: Option<IndexLogError> = None;
+    for (shard_id, records) in shards {
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut frames: Vec<FrameMeta> = Vec::with_capacity(records.len());
+        let mut payload = std::mem::take(&mut inner.encode_scratch);
+        let mut frame = std::mem::take(&mut inner.frame_scratch);
+        for queued in records {
+            let record = prepare_delta_record(
+                queued.shard_id,
+                queued.sequence,
+                queued.items,
+                queued.key_states,
+                queued.applied_wal_sequence,
+                queued.meta,
+                queued.upsert,
+            );
+            let encoded = if index_log_protobuf_enabled() {
+                encode_delta_protobuf_into(&record, &mut payload)
+            } else {
+                encode_index_payload_into(&record, INDEX_LOG_SHAPE_DELTA, &mut payload)
+            };
+            match encoded {
+                Ok(()) => {
+                    crate::log_framing::encode_record_into(&payload, &mut frame);
+                    frames.push(FrameMeta {
+                        sequence: record.sequence,
+                        applied_wal_sequence: record.applied_wal_sequence,
+                        carries_content: delta_record_carries_content_of(&record),
+                        len: frame.len() as u64,
+                    });
+                    bytes.extend_from_slice(&frame);
+                }
+                Err(err) => {
+                    // A record that cannot be encoded cannot be written by any retry. It is
+                    // reported and left out; the WAL holds the write it describes.
+                    tracing::error!(shard_id, sequence = record.sequence, error = %err, "an index log record could not be encoded and was dropped");
+                    first_error.get_or_insert(err);
+                }
+            }
+        }
+        if payload.capacity() > MAX_INDEX_ENCODE_SCRATCH_BYTES {
+            payload = Vec::new();
+        }
+        if frame.capacity() > MAX_INDEX_ENCODE_SCRATCH_BYTES {
+            frame = Vec::new();
+        }
+        inner.encode_scratch = payload;
+        inner.frame_scratch = frame;
+        if frames.is_empty() {
+            continue;
+        }
+        if let Err(err) = write_frames_locked(inner, shard_id, &bytes, &frames) {
+            inner.stuck.push(StuckBatch {
+                shard_id,
+                bytes,
+                frames,
+            });
+            first_error.get_or_insert(err);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// One write of a batch of framed records onto the end of a shard's active piece.
+///
+/// The piece is resolved and rolled ONCE for the batch, as it was once per record. A failed write
+/// cuts the piece back to where it started before returning, so the retry writes the same bytes
+/// over the same place and never leaves a torn record in front of a whole one.
+fn write_frames_locked(
+    inner: &mut IndexLogInner,
+    shard_id: ShardId,
+    bytes: &[u8],
+    frames: &[FrameMeta],
+) -> Result<(), IndexLogError> {
+    #[cfg(test)]
+    if FAIL_NEXT_FRAME_WRITE.with(|cell| cell.replace(false)) {
+        return Err(IndexLogError::Io(std::io::Error::other(
+            "injected: the batch write failed",
+        )));
+    }
+    inner.ensure_root()?;
+    let (mut active, active_len) = active_index_log(&inner.root, shard_id);
+    let cached_span = active_span_at(inner, shard_id, &active, active_len);
+    let rolled = roll_index_log_segment_at(&inner.root, shard_id, &active, active_len, cached_span)?;
+    if rolled {
+        inner.active_span_by_shard.remove(&shard_id);
+        active = active_index_log(&inner.root, shard_id).0;
+    }
+    let base_len = if rolled { 0 } else { active_len };
+    let mut file = OpenOptions::new().create(true).append(true).open(&active)?;
+    let written = (|| -> std::io::Result<()> {
+        #[cfg(test)]
+        if let Some(cut) = FAIL_PARTIAL_FRAME_WRITE.with(|cell| cell.take()) {
+            file.write_all(&bytes[..cut.min(bytes.len())])?;
+            return Err(std::io::Error::other("injected: the write stopped part-way"));
+        }
+        file.write_all(bytes)?;
+        file.flush()
+    })();
+    if let Err(err) = written {
+        let _ = file.set_len(base_len);
+        return Err(err.into());
+    }
+    let mut previous_len = base_len;
+    for frame in frames {
+        note_active_append(
+            inner,
+            shard_id,
+            &active,
+            previous_len,
+            frame.len,
+            frame.sequence,
+            frame.applied_wal_sequence,
+            frame.carries_content,
+        );
+        previous_len = previous_len.saturating_add(frame.len);
+    }
+    inner.stats.writes += 1;
+    inner.stats.bytes_written += bytes.len() as u64;
+    #[cfg(test)]
+    probe::APPENDS_COMPLETED.fetch_add(frames.len() as u64, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
 }
 
 impl Default for LocalIndexLogStore {
@@ -5071,6 +5494,10 @@ mod index_log_read_bytes;
 #[cfg(test)]
 #[path = "index_log_gate_records_tests.rs"]
 mod gate_records_tests;
+
+#[cfg(test)]
+#[path = "index_log_group_write_tests.rs"]
+mod index_log_group_write_tests;
 
 #[cfg(test)]
 mod tests {
