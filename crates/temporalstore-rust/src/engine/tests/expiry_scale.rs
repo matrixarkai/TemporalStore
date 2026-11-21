@@ -929,6 +929,7 @@ fn an_expired_key_stays_expired_across_load_manifest_install_and_wal_replay() {
             .expect("the base index should exist before the round")
             .len();
 
+        drop(engine);
         let engine = make_engine();
         engine.load_shard(1);
         sweep_after(&engine);
@@ -945,6 +946,7 @@ fn an_expired_key_stays_expired_across_load_manifest_install_and_wal_replay() {
         );
 
         // No unload: a crash-shaped reload onto the stale base.
+        drop(engine);
         let engine = make_engine();
         engine.load_shard(1);
         assert_recovered(&engine, "LOAD (stale base + WAL tail)");
