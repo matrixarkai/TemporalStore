@@ -1232,6 +1232,13 @@ pub struct StorageManagerOptions {
     /// The cold half of the same bound. 0 means no limit.
     #[serde(default)]
     pub max_expire_cold_buckets_per_round: usize,
+    /// How long, in microseconds, the expire stage keeps taking slices of due keys in one round.
+    /// A slice is the two per-round key bounds above. With the bounds alone a round removed at
+    /// most that many keys however many were due, so a shard whose deadlines passed faster than
+    /// that fell further behind every round: measured, 1,000 keys made due per round against a
+    /// bound of 100 left 90,000 overdue after 100 rounds. 0 takes one slice, the old behaviour.
+    #[serde(default = "default_expire_round_budget_micros")]
+    pub expire_round_budget_micros: u64,
     /// How many index-log records one round may reclaim.
     ///
     /// `apply_periodic_index_gc` built the cycle's request internally, so this loop could not
@@ -1419,6 +1426,10 @@ impl StorageManagerOptions {
     }
 }
 
+fn default_expire_round_budget_micros() -> u64 {
+    crate::engine::reports::DEFAULT_EXPIRE_ROUND_BUDGET_MICROS
+}
+
 impl Default for StorageManagerOptions {
     fn default() -> Self {
         Self {
@@ -1505,6 +1516,7 @@ impl Default for StorageManagerOptions {
                 crate::engine::reports::DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND,
             max_expire_cold_buckets_per_round:
                 crate::engine::reports::DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND,
+            expire_round_budget_micros: crate::engine::reports::DEFAULT_EXPIRE_ROUND_BUDGET_MICROS,
             index_gc_max_entries_per_round:
                 crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND,
             index_gc_max_dump_buckets_per_round: 0,
