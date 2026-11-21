@@ -1194,7 +1194,8 @@ jobs:
             data_node::runtime_storage::maintenance_report_tests::a_compaction_step_returns_when_its_budget_is_spent_and_the_pass_resumes \
             engine::recovery_sweep_compact::compaction_slice_tests::a_pass_reads_the_buckets_it_reaches_and_not_the_shard \
             engine::recovery_sweep_compact::compaction_slice_tests::the_pin_covers_a_slab_the_tally_forgot \
-            engine::recovery_sweep_compact::compaction_slice_tests::a_pass_with_nothing_on_the_drain_slabs_does_nothing
+            engine::recovery_sweep_compact::compaction_slice_tests::a_pass_with_nothing_on_the_drain_slabs_does_nothing \
+            engine::recovery_sweep_compact::compaction_slice_tests::a_keyed_step_names_the_blocks_of_its_buckets_and_not_the_shards
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-compact.log
             # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
