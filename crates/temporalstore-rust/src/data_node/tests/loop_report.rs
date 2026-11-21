@@ -48,6 +48,8 @@ fn operator_eviction_respects_disabled_zero_and_equal_limits() {
         let report = equal.eviction_report.unwrap();
         assert!(!report.pressure_gate_open, "{report:?}");
         assert_eq!(report.bucket_index_buckets_released, 0);
+        assert_eq!(report.bucket_index_bytes_before, resident);
+        assert_eq!(report.bucket_index_bytes_after, resident);
         assert_eq!(engine.bucket_index_resident_bytes(1), resident);
     }
     let active = engine.run_storage_manager_cycle(StorageManagerCycleRequest {

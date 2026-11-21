@@ -3885,73 +3885,6 @@ impl SharedStoreReplicator<NetworkedMatrixObjectStore> {
     }
 }
 
-/// Lazy read-through source for the NODE-LOCAL matrixobject backend
-/// ([`crate::matrixobject_store::MatrixObjectObjectStore`]): the same contract as
-/// [`MatrixObjectSlabSource`], resolved against the in-process store under its mutex
-/// instead of a networked GET, verifying the checkpoint checksum before the block
-/// store caches it.
-#[cfg(feature = "matrixobject")]
-#[derive(Debug)]
-pub struct MatrixObjectLocalSlabSource {
-    object_store: Arc<crate::matrixobject_store::MatrixObjectObjectStore>,
-    slabs: BTreeMap<u64, SharedSlabAddress>,
-}
-
-#[cfg(feature = "matrixobject")]
-impl SharedSlabSource for MatrixObjectLocalSlabSource {
-    fn fetch_slab(&self, block_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
-        let Some(address) = self.slabs.get(&block_slab_id) else {
-            return Ok(None);
-        };
-        let bytes = self
-            .object_store
-            .get_blocking(&address.key)
-            .map_err(|err| {
-                BlockStoreError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    err.to_string(),
-                ))
-            })?
-            .to_vec();
-        // Conformance with restore_checkpoint: reject a corrupt shared slab before caching it.
-        let actual = sha256_hex(&bytes);
-        if bytes.len() as u64 != address.byte_size || actual != address.sha256 {
-            return Err(BlockStoreError::ChecksumMismatch {
-                block_slab_id,
-                offset: 0,
-                length: address.byte_size,
-                expected: address.sha256.clone(),
-                actual,
-            });
-        }
-        Ok(Some(bytes))
-    }
-}
-
-#[cfg(feature = "matrixobject")]
-impl SharedStoreReplicator<crate::matrixobject_store::MatrixObjectObjectStore> {
-    /// Conformance LAZY restore for the node-local matrixobject backend: install the
-    /// served INDEX and a per-slab shared address map WITHOUT installing any slab
-    /// bytes; old (pre-checkpoint) blocks are read lazily out of the local store on the
-    /// first read that needs them. The same flow the shared-filesystem and networked
-    /// backends already run -- it is what lets this backend's recovery replay only the
-    /// WAL tail after a checkpoint instead of all history.
-    pub async fn restore_index_and_block_addresses(
-        &self,
-        shard_id: ShardId,
-        engine: &TemporalEngine,
-        block_store: &BlockStore,
-    ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
-        self.restore_index_and_block_addresses_with(shard_id, engine, block_store, |store, slabs| {
-            Arc::new(MatrixObjectLocalSlabSource {
-                object_store: store,
-                slabs,
-            }) as Arc<dyn SharedSlabSource>
-        })
-        .await
-    }
-}
-
 /// Build a per-entry [`SharedStoreWriteReport`] from an optional append receipt (PerKeyObject mode
 /// has no receipt; append-blob mode carries the byte range).
 fn write_report_from_receipt(
@@ -6886,7 +6819,7 @@ mod tests {
     /// retired its checksum, so an earlier saving in this same effort is what made a later one
     /// unsafe.
     ///
-    /// The figures are fitted by `one_append_amplification_report`, which is the only thing that
+    /// The figures are fitted by the retired `one_append_amplification_report`, which is the only thing that
     /// can state them: a term measured here is a term of one frame, and the envelope is two
     /// frames plus what the object store does with them. These terms must SUM toward that figure,
     /// and the report's own ceiling is what fails if they stop doing so.
@@ -9028,93 +8961,6 @@ mod tests {
             CommandResponse::Bytes {
                 value: Some(b"keep-value".to_vec())
             }
-        );
-    }
-
-    #[cfg(feature = "matrixobject")]
-    #[tokio::test]
-    async fn matrixobject_local_lazy_restore_replays_only_wal_tail() {
-        // The node-local matrixobject backend recovers like every other shared backend:
-        // checkpoint index + lazy addresses, then ONLY the WAL tail -- not all history.
-        use crate::matrixobject_store::MatrixObjectObjectStore;
-
-        let dir = tempfile::tempdir().unwrap();
-        let primary = test_engine(dir.path(), "primary");
-        primary.load_shard(1);
-        primary.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::StringSet {
-                key: "before".to_string(),
-                value: b"snapshot-value".to_vec(),
-            },
-        });
-        let store = Arc::new(
-            MatrixObjectObjectStore::with_default_options("temporalstore-shared").unwrap(),
-        );
-        let replicator = SharedStoreReplicator::new("cluster-a", store);
-        let manifest = replicator
-            .publish_checkpoint(1, 1, &primary, &primary.block_store())
-            .await
-            .unwrap();
-        assert!(!manifest.block_slabs.is_empty());
-        replicator
-            .publish_wal_entry(SharedStoreWalEntry {
-                shard_id: 1,
-                wal_index: 2,
-                command: Some(Command::StringSet {
-                    key: "after".to_string(),
-                    value: b"wal-value".to_vec(),
-                }),
-            
-                                   staged_blocks: Vec::new(),
-                                               outcomes: Vec::new(),
-            })
-            .await
-            .unwrap();
-
-        let follower = test_engine(dir.path(), "follower");
-        let restored = replicator
-            .restore_index_and_block_addresses(1, &follower, &follower.block_store())
-            .await
-            .unwrap();
-        assert_eq!(restored.checkpoint_wal_index, 1);
-        assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
-        follower.load_shard(1);
-        let report = replicator
-            .replay_wal(1, restored.checkpoint_wal_index, &follower)
-            .await
-            .unwrap();
-        assert_eq!(report.applied, 1, "only the tail entry replays");
-        assert_eq!(
-            follower
-                .execute(ExecuteRequest {
-                    shard_id: 1,
-                    command: Command::StringGet {
-                        key: "after".to_string()
-                    },
-                })
-                .response,
-            CommandResponse::Bytes {
-                value: Some(b"wal-value".to_vec())
-            }
-        );
-        assert_eq!(
-            follower
-                .execute(ExecuteRequest {
-                    shard_id: 1,
-                    command: Command::StringGet {
-                        key: "before".to_string()
-                    },
-                })
-                .response,
-            CommandResponse::Bytes {
-                value: Some(b"snapshot-value".to_vec())
-            }
-        );
-        assert_eq!(
-            follower.block_store().stats().shared_slab_fetches,
-            1,
-            "the old key is served by exactly one on-demand slab fetch"
         );
     }
 
@@ -13253,132 +13099,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "matrixobject")]
-    #[tokio::test]
-    async fn shared_store_protobuf_append_blob_replays_matrixobject_blob() {
-        use crate::matrixobject_store::MatrixObjectObjectStore;
-        use matrixobjectstore_rs::StoreOptions;
-
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(
-            MatrixObjectObjectStore::new(
-                "temporalstore-shared",
-                StoreOptions {
-                    // `segment_size` BECAME `slab_size` AND IS NOW `page_size`, following the
-                    // store dropping its slab tier -- the tiers are chunk > block > fragment.
-                    //
-                    // AND THAT LAST STEP IS NOT A RENAME. A slab was its own tier and bore no
-                    // relation to the chunk size; a block sits BELOW a chunk, so the store enforces
-                    // `1 <= page_size < chunk_size`. Carrying `16` and `4` across the rename
-                    // inverted that and the constructor refused with "page_size must be
-                    // 1..chunk_size", which only running it revealed.
-                    page_size: 4,
-                    max_extent_bytes: 4,
-                    chunk_size: 16,
-                    ..StoreOptions::default()
-                },
-            )
-            .unwrap(),
-        );
-        let replicator = SharedStoreReplicator::new("cluster-a", store.clone())
-            .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
-
-        let mut append_receipts = Vec::new();
-        for (wal_index, key, value) in [
-            (1, "proto-a", b"one".to_vec()),
-            (2, "proto-b", b"two".to_vec()),
-        ] {
-            let receipt = replicator
-                .publish_wal_entry(SharedStoreWalEntry {
-                    shard_id: 1,
-                    wal_index,
-                    command: Some(Command::StringSet {
-                        key: key.to_string(),
-                        value,
-                    }),
-                
-                                       staged_blocks: Vec::new(),
-                                                       outcomes: Vec::new(),
-                })
-                .await
-                .unwrap();
-            append_receipts.push(receipt.expect("protobuf append blob should return offsets"));
-        }
-        assert_eq!(append_receipts[0].start_offset, 0);
-        assert_eq!(
-            append_receipts[0].end_offset,
-            append_receipts[1].start_offset
-        );
-        assert_eq!(
-            append_receipts[1].end_offset,
-            append_receipts[1].object_length
-        );
-        assert!(append_receipts[1].physical_slab_count > 1);
-
-        let blob_key = "cluster-a/shards/1/shared/wal/seg_00000000000000000001.wal.protobuf.blob";
-        let offset_index_key = "cluster-a/shards/1/shared/wal/seg_00000000000000000001.index.protobuf.blob";
-        assert_eq!(
-            store
-                .list("cluster-a/shards/1/shared/wal/")
-                .await
-                .unwrap(),
-            vec![offset_index_key.to_string(), blob_key.to_string()]
-        );
-        assert!(!store.get(blob_key).await.unwrap().is_empty());
-        assert!(!store.get(offset_index_key).await.unwrap().is_empty());
-        let offset_metadata = replicator.load_wal_offset_metadata(1).await.unwrap();
-        assert_eq!(offset_metadata.len(), append_receipts.len());
-        for (index, receipt) in append_receipts.iter().enumerate() {
-            let metadata = offset_metadata
-                .get(&(index as u64 + 1))
-                .expect("offset metadata by wal index");
-            assert_eq!(metadata.wal_blob_key, blob_key);
-            assert_eq!(metadata.wal_blob_start_offset, receipt.start_offset);
-            assert_eq!(metadata.wal_blob_end_offset, receipt.end_offset);
-            assert_eq!(metadata.wal_blob_bytes_written, receipt.bytes_written);
-        }
-        let matrixobject_blob = store
-            .inner()
-            .lock()
-            .expect("matrixobject lock poisoned")
-            .get_object("temporalstore-shared", blob_key)
-            .unwrap();
-        assert!(
-            matrixobject_blob.metadata.extents.len() > 1,
-            "protobuf WAL frames should be appended into one MatrixObject blob"
-        );
-
-        let restarted = SharedStoreReplicator::new("cluster-a", store)
-            .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
-        let follower = test_engine(dir.path(), "follower");
-        follower.load_shard(1);
-        assert_eq!(
-            restarted.replay_wal_strict(1, 0, &follower).await.unwrap(),
-            ReplayReport {
-                applied: 2,
-                last_wal_index: 2,
-                offset_index_reads: 2,
-                range_bytes_read: append_receipts
-                    .iter()
-                    .map(|receipt| receipt.bytes_written)
-                    .sum(),
-            }
-        );
-        for (key, value) in [("proto-a", b"one".to_vec()), ("proto-b", b"two".to_vec())] {
-            assert_eq!(
-                follower
-                    .execute(ExecuteRequest {
-                        shard_id: 1,
-                        command: Command::StringGet {
-                            key: key.to_string()
-                        },
-                    })
-                    .response,
-                CommandResponse::Bytes { value: Some(value) }
-            );
-        }
-    }
-
     /// R2: a durable, cross-owner single-writer fence. Proves rejection happens at the STORE
     /// layer (a superseded stale owner cannot double-append to the shared WAL), not merely via
     /// an in-memory load_version check.
@@ -14462,12 +14182,10 @@ mod tests {
     // both halves at once, so it passes with either half deleted; these two arms each leave
     // one half false, and the third is the control that the source serves anything at all.
     //
-    // ONLY `SharedPathSlabSource` IS COVERED HERE. That guard is spelled three times with
-    // byte-identical bodies, once per implementation: this one (a filesystem read),
-    // `MatrixObjectSlabSource` (a networked GET, which needs a server to drive) and
-    // `MatrixObjectLocalSlabSource` (behind the `matrixobject` feature, off by default, so it
-    // is not compiled in this gate at all). Covering one copy leaves the other two free to
-    // keep a defect this one cannot have.
+    // ONLY `SharedPathSlabSource` IS COVERED HERE. That guard is spelled twice with
+    // byte-identical bodies, once per implementation: this one (a filesystem read) and
+    // `MatrixObjectSlabSource` (a networked GET, which needs a server to drive). Covering one
+    // copy leaves the other free to keep a defect this one cannot have.
 
     /// Right length, wrong bytes: only the digest half of the guard can reject this.
     #[tokio::test]

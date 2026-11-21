@@ -457,6 +457,31 @@ fn a_pass_with_nothing_on_the_drain_slabs_does_nothing() {
     );
 }
 
+/// A KEYED STEP NAMES THE BLOCKS OF ITS OWN BUCKETS, NOT THE SHARD'S. Naming a block's object needs an
+/// inversion of the object tables; built with the whole-shard walk once per bucket a 200-key step
+/// visited every object of every kind about 200 times, which measured 4.1 s a step at 100k keys and
+/// 18 s at 300k. Built from the buckets' own recorded owners it visits only those buckets' objects. The
+/// count of objects visited while naming blocks is the instrument: it must stay a small multiple of the
+/// keys of the step, far below the shard's objects.
+#[test]
+fn a_keyed_step_names_the_blocks_of_its_buckets_and_not_the_shards() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let (_expected, drain) = seed(&engine, 900);
+    // The setup step, then one keyed step that records the bucket owners the later steps reuse.
+    assert_eq!(engine.compact_shard_blocks_slice(1, &drain, 16).unwrap(), super::SliceProgress::More);
+    assert_eq!(engine.compact_shard_blocks_slice(1, &drain, 16).unwrap(), super::SliceProgress::More);
+    let (progress, visits) = crate::engine::state::measure_block_identity_visits_for_test(|| {
+        engine.compact_shard_blocks_slice(1, &drain, 16).unwrap()
+    });
+    assert_eq!(progress, super::SliceProgress::More);
+    eprintln!("COMPACTION_STEP_IDENTITY_VISITS visits={visits} keys_per_step=16 shard_objects>=900");
+    assert!(
+        visits <= 16 * 8,
+        "a 16-key step visited {visits} objects while naming blocks: it inverted the shard"
+    );
+}
+
 /// THE TALLY ONLY SKIPS WORK; IT NEVER DECIDES WHAT IS SAFE. The pin that keeps reclaim away from the
 /// slabs the durable index names is the tally's slabs UNION every slab the block store holds, so a
 /// tally that forgot a slab (a counting bug, a door that did not charge) cannot leave a slab out of the

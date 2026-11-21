@@ -7810,6 +7810,48 @@ fn delete_record_exact_with_identity_batch(
 
 const MAX_DELETE_IDENTITY_PROJECTION_REFS: usize = 256;
 
+/// The bucket's bookkeeping when an object's blocks have just left it.
+///
+/// An empty bucket retains the deleted id as a tombstone. A mixed bucket must drop it before any
+/// reconciliation, or a normal delete is reported as divergence.
+fn note_object_left_bucket(bucket: &mut BucketNode, deleted_object_ids: &BTreeSet<u64>) {
+    if bucket.block_index.is_empty() {
+        bucket.object_index.extend(deleted_object_ids.iter().copied());
+    } else {
+        for object_id in deleted_object_ids {
+            bucket.object_index.remove(object_id);
+        }
+    }
+    bucket.set_dirty(true);
+    let next_flag = bucket.block_index.is_empty();
+    bucket.set_deleted(next_flag);
+    bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
+    bucket.set_meta_loaded(true);
+    let next_flag = !bucket.block_index.is_empty();
+    bucket.set_in_memory(next_flag);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test switch: take the path that names the whole bucket instead of removing by handle.
+    static OBJECT_LOCAL_DELETE_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn object_local_delete_disabled() -> bool {
+    OBJECT_LOCAL_DELETE_DISABLED.with(std::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+fn object_local_delete_disabled() -> bool {
+    false
+}
+
+#[cfg(test)]
+fn disable_object_local_delete_for_test(disabled: bool) {
+    OBJECT_LOCAL_DELETE_DISABLED.with(|flag| flag.set(disabled));
+}
+
 fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     mark_bucket_index_object_deleted_with_identity_batch(shard, key, None)
 }
@@ -7856,7 +7898,51 @@ fn mark_bucket_index_object_deleted_with_identity_batch(
                 [key],
             )
         });
+    // THE OBJECT'S OWN REFS NAME ITS OWN BLOCKS. With the lookup retained, the handles of this key's
+    // blocks in a bucket are exactly the refs the key holds there, so the blocks are removed by
+    // handle and nothing else in the bucket is read. Without the lookup the key's blocks can only be
+    // found by naming the whole bucket, which is the path below.
+    let object_local = !shard.bucket_index.names_no_object_blocks() && !object_local_delete_disabled();
     for routing_bucket in target_buckets {
+        if object_local {
+            let own_handles: Vec<u64> = storage_model_kinds()
+                .iter()
+                .filter_map(|kind| shard.bucket_index.object_block_refs(kind, key))
+                .flat_map(|refs| {
+                    refs.iter()
+                        .filter(|block_ref| block_ref.routing_bucket == routing_bucket)
+                        .map(|block_ref| block_ref.block_ref_key)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+                continue;
+            };
+            let mut deleted_object_ids = BTreeSet::new();
+            for handle in own_handles {
+                let Some(block) = bucket.block_index.remove(
+                    &handle,
+                    &mut shard.bucket_index.block_slab_live,
+                    crate::engine::state::StaleCause::Removed,
+                ) else {
+                    continue;
+                };
+                deleted_object_ids.insert(block.object_id(shard_id, key));
+                removed = true;
+                crate::engine::storage_bucket_internals::classify_bucket_layout_after_block_removal(
+                    &mut bucket,
+                    &block,
+                );
+            }
+            if !deleted_object_ids.is_empty() {
+                note_object_left_bucket(&mut bucket, &deleted_object_ids);
+                bucket.deleted_object_index.extend(deleted_object_ids);
+                if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
+                    owners.forget_key(routing_bucket, key);
+                }
+            }
+            continue;
+        }
         if let Some(batch) = identities.as_deref_mut() {
             batch.capture_bucket(shard, routing_bucket);
         }
@@ -7913,22 +7999,7 @@ fn mark_bucket_index_object_deleted_with_identity_batch(
             }
         });
         if !deleted_object_ids.is_empty() {
-            // An empty bucket retains the deleted id as a tombstone. A mixed bucket must
-            // drop it before reconciliation, or a normal delete is reported as divergence.
-            if bucket.block_index.is_empty() {
-                bucket.object_index.extend(deleted_object_ids.iter().copied());
-            } else {
-                for object_id in &deleted_object_ids {
-                    bucket.object_index.remove(object_id);
-                }
-            }
-            bucket.set_dirty(true);
-            let next_flag = bucket.block_index.is_empty();
-            bucket.set_deleted(next_flag);
-            bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
-            bucket.set_meta_loaded(true);
-            let next_flag = !bucket.block_index.is_empty();
-            bucket.set_in_memory(next_flag);
+            note_object_left_bucket(&mut bucket, &deleted_object_ids);
             // THE REPAIR AT THE REMOVAL SITE, over this bucket's own blocks. A delta over the
             // ids this delete dropped stood here and was wrong -- it left drift that the reconcile
             // it replaced had been repairing silently. All three arms of that reconcile are kept,

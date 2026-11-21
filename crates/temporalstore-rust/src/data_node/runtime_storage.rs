@@ -20,20 +20,61 @@ use std::time::Duration;
 /// When the last round that asked found nothing to reclaim, this is what the next round compares
 /// against: if none of it has moved, the answer cannot have either.
 ///
-/// A WRITE moves `wal_last_sequence`. A dump or an index-log truncate moves
-/// `index_log_bytes` or `wal_persistent_bytes`. Moving a block out of the log moves
-/// `resident_blocks`, which lowers the retention floor without touching any sequence. A change
-/// to the cursors or snapshot references the caller passes moves `retention_inputs`.
+/// A WRITE moves `wal_last_sequence`. A truncate of the write-ahead log moves
+/// `wal_persistent_bytes`. A dump clears dirty buckets, which moves `dirty_buckets` and
+/// `undumped_wal_records`. Moving a block out of the log moves `resident_blocks`, which lowers the
+/// retention floor without touching any sequence. A change to the cursors or snapshot references
+/// the caller passes moves `retention_inputs`.
+///
+/// THE INDEX LOG'S LENGTH IS NOT PART OF THE KEY. It was, and a compaction step that moves blocks
+/// appends one small index record per round, so on a shard that is draining stale slabs the key
+/// moved every round and the stage built the reclaim plan, which walks every live block, every
+/// round: the log grew by 53 bytes a round and the stage paid five whole-shard walks for it.
+/// Nothing that decides whether the write-ahead log is reclaimable lives in the index log's tail:
+/// the floors come from the write-ahead log, the retained dumps and the resident blocks, and the
+/// index log is truncated by its own stage.
+///
+/// `quiet_minute` is the backstop for any input this key does not see: a remembered answer
+/// is good for at most one minute (until the wall clock's minute changes), then the stage asks
+/// again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct QuietWalReclaimKey {
     dump_wal_sequence: u64,
     wal_last_sequence: u64,
     wal_persistent_bytes: u64,
-    index_log_bytes: u64,
     resident_blocks: usize,
     dirty_buckets: usize,
     undumped_wal_records: u64,
     retention_inputs: u64,
+    quiet_minute: u64,
+}
+
+/// How long a remembered "nothing to reclaim" stays good, in seconds.
+pub(super) const QUIET_WAL_RECLAIM_MAX_AGE_SECS: u64 = 60;
+
+impl QuietWalReclaimKey {
+    /// The key from its inputs. Kept apart from the reads so a test can move one input at a time.
+    pub(super) fn from_inputs(
+        dump_wal_sequence: u64,
+        wal_last_sequence: u64,
+        wal_persistent_bytes: u64,
+        resident_blocks: usize,
+        dirty_buckets: usize,
+        undumped_wal_records: u64,
+        retention_inputs: u64,
+        now_unix_secs: u64,
+    ) -> Self {
+        Self {
+            dump_wal_sequence,
+            wal_last_sequence,
+            wal_persistent_bytes,
+            resident_blocks,
+            dirty_buckets,
+            undumped_wal_records,
+            retention_inputs,
+            quiet_minute: now_unix_secs / QUIET_WAL_RECLAIM_MAX_AGE_SECS,
+        }
+    }
 }
 
 fn record_purge_work(
@@ -111,21 +152,23 @@ impl DataNodeRuntime {
             .hash(&mut hasher);
             hasher.finish()
         };
-        QuietWalReclaimKey {
-            dump_wal_sequence: self.inner.engine.storage_dump_wal_sequence(shard_id).unwrap_or(0),
-            wal_last_sequence: wal.last_sequence,
-            wal_persistent_bytes: wal.persistent_bytes,
-            // The log's LENGTH, not its last sequence: the sequence is read by scanning the active
-            // piece, while the length is one directory listing and a stat per piece. An append, a
-            // truncate and a collect each change it, so the key keeps what it needs.
-            index_log_bytes: self.inner.engine.index_log_store().log_len_bytes(shard_id),
-            resident_blocks: self.inner.engine.wal_resident_block_count(shard_id),
+        QuietWalReclaimKey::from_inputs(
+            self.inner.engine.storage_dump_wal_sequence(shard_id).unwrap_or(0),
+            wal.last_sequence,
+            wal.persistent_bytes,
+            self.inner.engine.wal_resident_block_count(shard_id),
             dirty_buckets,
             undumped_wal_records,
             retention_inputs,
-        }
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs())
+                .unwrap_or(0),
+        )
     }
+}
 
+impl DataNodeRuntime {
     fn reclaim_page_log(
         &self,
         shard_id: ShardId,
@@ -160,6 +203,41 @@ impl DataNodeRuntime {
             memo.remove(&shard_id);
         }
         Some(report)
+    }
+}
+
+#[cfg(test)]
+mod quiet_wal_reclaim_key_tests {
+    use super::*;
+    const NOW: u64 = 1_800_000_000;
+
+    fn base() -> QuietWalReclaimKey {
+        QuietWalReclaimKey::from_inputs(9, 10, 4096, 3, 0, 0, 0, NOW)
+    }
+
+    #[test]
+    fn each_input_the_key_keeps_moves_it_and_nothing_else_does() {
+        assert_eq!(base(), base());
+        let moved = [
+            ("dump_wal_sequence", QuietWalReclaimKey::from_inputs(10, 10, 4096, 3, 0, 0, 0, NOW)),
+            ("wal_last_sequence", QuietWalReclaimKey::from_inputs(9, 11, 4096, 3, 0, 0, 0, NOW)),
+            ("wal_persistent_bytes", QuietWalReclaimKey::from_inputs(9, 10, 8192, 3, 0, 0, 0, NOW)),
+            ("resident_blocks", QuietWalReclaimKey::from_inputs(9, 10, 4096, 2, 0, 0, 0, NOW)),
+            ("dirty_buckets", QuietWalReclaimKey::from_inputs(9, 10, 4096, 3, 1, 0, 0, NOW)),
+            ("undumped_wal_records", QuietWalReclaimKey::from_inputs(9, 10, 4096, 3, 0, 1, 0, NOW)),
+            ("retention_inputs", QuietWalReclaimKey::from_inputs(9, 10, 4096, 3, 0, 0, 7, NOW)),
+        ];
+        for (name, key) in moved {
+            assert_ne!(base(), key, "{name} must move the key");
+        }
+    }
+
+    #[test]
+    fn a_remembered_answer_is_good_for_a_minute_and_no_longer() {
+        let start = (NOW / QUIET_WAL_RECLAIM_MAX_AGE_SECS) * QUIET_WAL_RECLAIM_MAX_AGE_SECS;
+        let at = |secs: u64| QuietWalReclaimKey::from_inputs(9, 10, 4096, 3, 0, 0, 0, start + secs);
+        assert_eq!(at(0), at(QUIET_WAL_RECLAIM_MAX_AGE_SECS - 1));
+        assert_ne!(at(0), at(QUIET_WAL_RECLAIM_MAX_AGE_SECS));
     }
 }
 
@@ -252,6 +330,13 @@ pub(crate) struct EvictionStageTally {
     pub(crate) cache_entries_removed: usize,
     pub(crate) cache_disk_bytes_removed: u64,
     pub(crate) dropped_object_count: usize,
+    pub(crate) bucket_index_buckets_released: usize,
+    pub(crate) bucket_index_blocks_released: usize,
+    pub(crate) bucket_index_release_refused: usize,
+    pub(crate) first_bucket_index_bytes_before: u64,
+    pub(crate) first_batch_limit: usize,
+    pub(crate) pressure_gate_open: bool,
+    pub(crate) dump_before_evict: bool,
     /// Batches taken AFTER the first. Bounded by `eviction_loop_round_limit`, and the number a
     /// termination guard asserts on.
     pub(crate) rounds: usize,
@@ -264,6 +349,11 @@ impl EvictionStageTally {
     /// `pressure_after` from the last.
     pub(crate) fn into_stage_report(self) -> crate::engine::reports::StorageEvictionReport {
         let first_pressure_before = self.first_pressure_before;
+        let skipped_reason = if self.pressure_gate_open {
+            String::new()
+        } else {
+            self.last.skipped_reason.clone()
+        };
         crate::engine::reports::StorageEvictionReport {
             pressure_before: first_pressure_before,
             selected_victims: self.victims,
@@ -271,6 +361,14 @@ impl EvictionStageTally {
             cache_entries_removed: self.cache_entries_removed,
             cache_disk_bytes_removed: self.cache_disk_bytes_removed,
             dropped_object_count: self.dropped_object_count,
+            bucket_index_buckets_released: self.bucket_index_buckets_released,
+            bucket_index_blocks_released: self.bucket_index_blocks_released,
+            bucket_index_release_refused: self.bucket_index_release_refused,
+            bucket_index_bytes_before: self.first_bucket_index_bytes_before,
+            batch_limit: self.first_batch_limit,
+            pressure_gate_open: self.pressure_gate_open,
+            dump_before_evict: self.dump_before_evict,
+            skipped_reason,
             // `cooldown` means the STAGE freed nothing, not that its last batch did.
             cooldown: self.last.pressure_after >= first_pressure_before,
             ..self.last
@@ -300,6 +398,13 @@ where
         cache_entries_removed: first.cache_entries_removed,
         cache_disk_bytes_removed: first.cache_disk_bytes_removed,
         dropped_object_count: first.dropped_object_count,
+        bucket_index_buckets_released: first.bucket_index_buckets_released,
+        bucket_index_blocks_released: first.bucket_index_blocks_released,
+        bucket_index_release_refused: first.bucket_index_release_refused,
+        first_bucket_index_bytes_before: first.bucket_index_bytes_before,
+        first_batch_limit: first.batch_limit,
+        pressure_gate_open: first.pressure_gate_open,
+        dump_before_evict: first.dump_before_evict,
         rounds: 0,
         first_pressure_before: first.pressure_before,
         last: first,
@@ -336,6 +441,14 @@ where
         tally.dropped_object_count = tally
             .dropped_object_count
             .saturating_add(report.dropped_object_count);
+        tally.bucket_index_buckets_released = tally.bucket_index_buckets_released
+            .saturating_add(report.bucket_index_buckets_released);
+        tally.bucket_index_blocks_released = tally.bucket_index_blocks_released
+            .saturating_add(report.bucket_index_blocks_released);
+        tally.bucket_index_release_refused = tally.bucket_index_release_refused
+            .saturating_add(report.bucket_index_release_refused);
+        tally.pressure_gate_open |= report.pressure_gate_open;
+        tally.dump_before_evict |= report.dump_before_evict;
         tally.last = report;
     }
     tally
@@ -880,12 +993,40 @@ impl DataNodeRuntime {
                     mode: "evict_cache".to_string(),
                     pressure_before: pressure.eviction_memory_pressure_bytes,
                     pressure_after: pressure.eviction_memory_pressure_bytes,
+                    bucket_index_bytes_before: pressure.eviction_memory_pressure_bytes,
+                    bucket_index_bytes_after: pressure.eviction_memory_pressure_bytes,
                     batch_limit: options.eviction_batch_limit,
+                    dump_before_evict: options.eviction_dump_before_evict,
                     skipped_reason: "no_memory_limit".to_string(),
                     ..Default::default()
                 };
             };
             let engine = &self.inner.engine;
+            if options.eviction_count_limit == 0 {
+                let resident = engine.bucket_index_resident_bytes(shard_id);
+                let gate_open = resident > stage_threshold;
+                return crate::engine::reports::StorageEvictionReport {
+                    shard_id,
+                    mode: if index_bound_is_the_gate { "index_resident_bound" } else { "evict_cache" }.to_string(),
+                    pressure_before: resident,
+                    pressure_after: resident,
+                    bucket_index_bytes_before: resident,
+                    bucket_index_bytes_after: resident,
+                    memory_pressure_threshold: stage_threshold,
+                    pressure_gate_open: gate_open,
+                    batch_limit: options.eviction_batch_limit,
+                    dump_before_evict: options.eviction_dump_before_evict,
+                    cooldown: gate_open,
+                    skipped_reason: if gate_open {
+                        "eviction_count_limit"
+                    } else if index_bound_is_the_gate {
+                        "index_resident_below_bound"
+                    } else {
+                        "memory_pressure_below_threshold"
+                    }.to_string(),
+                    ..Default::default()
+                };
+            }
             // ONE batch function for both arms, so the repeat path cannot call a different gate
             // from the first one. It did not, and could not, when there was only one gate; with
             // two it is the obvious way to get a stage that opens on one and loops on the other.
@@ -918,12 +1059,20 @@ impl DataNodeRuntime {
             // The bar `still_over` is read against has to be the one the gate used, or the stage
             // keeps taking batches against a number nobody set. At the bound this term stops being
             // vacuous for the first time: a non-zero bar can actually be reached.
-            let first = batch(options.eviction_batch_limit);
+            let bounded_batch = |remaining_budget: usize| {
+                let limit = if options.eviction_batch_limit == 0 {
+                    remaining_budget
+                } else {
+                    options.eviction_batch_limit.min(remaining_budget)
+                };
+                batch(limit)
+            };
+            let first = bounded_batch(options.eviction_count_limit);
             run_eviction_stage(
                 stage_threshold,
                 options.eviction_count_limit,
                 first,
-                |remaining_budget| batch(options.eviction_batch_limit.min(remaining_budget)),
+                bounded_batch,
             )
             .into_stage_report()
         });
@@ -2733,6 +2882,75 @@ mod eviction_loop_termination_guards {
 
     /// The shipped victim budget, which is also the round limit derived from it.
     const BUDGET: usize = crate::data_node::DEFAULT_EVICTION_COUNT_LIMIT;
+
+    #[test]
+    fn the_terminal_batch_keeps_all_resident_release_work() {
+        for gate_closed in [false, true] {
+            let first = StorageEvictionReport {
+                pressure_before: 1100, pressure_after: 700,
+                bucket_index_bytes_before: 1000, bucket_index_bytes_after: 700,
+                bucket_index_buckets_released: 2, bucket_index_blocks_released: 4,
+                bucket_index_release_refused: 1, batch_limit: 10, dump_before_evict: true,
+                ..batch(2)
+            };
+            let mut calls = 0;
+            let stage = run_eviction_stage(400, 100, first, |_| {
+                calls += 1;
+                match calls {
+                    1 => StorageEvictionReport {
+                        pressure_before: 700, pressure_after: 500,
+                        bucket_index_bytes_before: 700, bucket_index_bytes_after: 500,
+                        bucket_index_buckets_released: 3, bucket_index_blocks_released: 7,
+                        bucket_index_release_refused: 2, batch_limit: 5, ..batch(3)
+                    },
+                    2 => StorageEvictionReport {
+                        pressure_before: if gate_closed { 301 } else { 500 },
+                        pressure_after: if gate_closed { 301 } else { 500 },
+                        bucket_index_bytes_before: if gate_closed { 300 } else { 500 },
+                        bucket_index_bytes_after: if gate_closed { 300 } else { 500 },
+                        pressure_gate_open: !gate_closed,
+                        cooldown: !gate_closed,
+                        skipped_reason: if gate_closed { "memory_pressure_below_threshold" } else { "" }.into(),
+                        batch_limit: 5, ..Default::default()
+                    },
+                    _ => panic!("the terminal batch must stop the stage"),
+                }
+            }).into_stage_report();
+            assert_eq!(calls, 2);
+            assert_eq!(stage.selected_victims.len(), 5);
+            assert_eq!(stage.bucket_index_buckets_released, 5);
+            assert_eq!(stage.bucket_index_blocks_released, 11);
+            assert_eq!(stage.bucket_index_release_refused, 3);
+            assert_eq!(stage.bucket_index_bytes_before, 1000);
+            assert_eq!(stage.bucket_index_bytes_after, if gate_closed { 300 } else { 500 });
+            assert_eq!(stage.pressure_before, 1100);
+            assert_eq!(stage.pressure_after, if gate_closed { 301 } else { 500 });
+            assert_eq!(stage.batch_limit, 10);
+            assert!(stage.pressure_gate_open);
+            assert!(stage.dump_before_evict);
+            assert!(!stage.cooldown);
+            assert!(stage.skipped_reason.is_empty());
+        }
+    }
+
+    #[test]
+    fn accumulated_resident_release_counts_saturate() {
+        let first = StorageEvictionReport {
+            bucket_index_buckets_released: usize::MAX,
+            bucket_index_blocks_released: usize::MAX,
+            bucket_index_release_refused: usize::MAX,
+            ..batch(1)
+        };
+        let stage = run_eviction_stage(0, 2, first, |_| StorageEvictionReport {
+            bucket_index_buckets_released: 1,
+            bucket_index_blocks_released: 1,
+            bucket_index_release_refused: 1,
+            ..batch(1)
+        }).into_stage_report();
+        assert_eq!(stage.bucket_index_buckets_released, usize::MAX);
+        assert_eq!(stage.bucket_index_blocks_released, usize::MAX);
+        assert_eq!(stage.bucket_index_release_refused, usize::MAX);
+    }
 
     /// A batch that took `victims` victims, was not in cooldown, and did not take the pressure
     /// gate's early return -- i.e. every term except `made_progress` says continue.

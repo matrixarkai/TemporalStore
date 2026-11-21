@@ -1161,7 +1161,7 @@ pub struct StorageManagerOptions {
     /// gate that keeps the node-wide terms out.
     #[serde(default)]
     pub eviction_memory_pressure_threshold: u64,
-    /// How many buckets one evict stage may take. 0 means no limit.
+    /// Victims per batch. Zero uses the remaining per-stage victim budget.
     #[serde(default)]
     pub eviction_batch_limit: usize,
     /// Dump a bucket before freeing it, so eviction relieves log pressure as well as memory.
@@ -1212,17 +1212,7 @@ pub struct StorageManagerOptions {
     // `data_node::tests::evict_dump_drop` holds both measurements, and
     // `the_memory_pressure_stage_cannot_route_into_the_arm_that_deletes` is what FAILS if a route
     // to that arm is wired back. A retired default is a value; a missing route is a property.
-    /// How many victims one evict STAGE may take in total, across repeated batches.
-    ///
-    /// The stage took a single batch of `eviction_batch_limit` and returned, however far the
-    /// pressure still was from the threshold. Measured: 16 victims freeing about 4,800 bytes a
-    /// round against a 1,775,000-byte overage -- roughly 370 rounds, or three hours at a round
-    /// every thirty seconds.
-    ///
-    /// The design being followed keeps taking batches until usage is back under the limit,
-    /// stopping on a per-call COUNT budget rather than after the first batch, and logs that it hit
-    /// the budget rather than that it finished. This is that budget. 0 keeps the old behaviour of
-    /// exactly one batch.
+    /// Maximum victims across all batches of one eviction stage. Zero permits no victim work.
     #[serde(default = "default_storage_manager_eviction_count_limit")]
     pub eviction_count_limit: usize,
     /// Resident bucket-index limit in bytes. Zero disables this limit.

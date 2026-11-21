@@ -529,6 +529,8 @@ impl TemporalEngine {
                     mode: "evict_cache".to_string(),
                     pressure_before: resident_bytes,
                     pressure_after: resident_bytes,
+                    bucket_index_bytes_before: resident_bytes,
+                    bucket_index_bytes_after: resident_bytes,
                     memory_pressure_threshold: eviction_limit.unwrap_or(0),
                     batch_limit: request.eviction_batch_limit,
                     dump_before_evict: request.eviction_dump_before_evict,
