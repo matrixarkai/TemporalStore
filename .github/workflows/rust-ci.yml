@@ -1109,7 +1109,7 @@ jobs:
             data_node::tests::part3::the_periodic_loop_holds_a_quarantined_slab_for_a_day \
             data_node::tests::part3::a_quiet_shard_with_every_bucket_clean_can_reclaim_its_log \
             data_node::tests::part3::the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable \
-            data_node::round_budget::tests::the_whole_round_loop_is_the_default_and_the_tick_loop_is_opt_in
+            data_node::round_budget::tests::the_server_default_runs_the_tick_loop_and_zero_selects_the_whole_round
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-loop.log
             # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.

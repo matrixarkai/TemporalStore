@@ -306,10 +306,10 @@ fn main() {
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(30_000);
     //
-    // MATRIXARK_STORAGE_MANAGER_TICK_MS opts in to a short TICK (for example 30 ms) that does the
+    // MATRIXARK_STORAGE_MANAGER_TICK_MS sets the short TICK (30 ms unless set) that does the
     // cheap work and at most one heavy stage; each heavy stage falls due once per `interval`
     // above, the five spread across it, so a request waits behind one stage and not behind all of
-    // them. Unset or 0 runs the whole-round loop once per interval.
+    // them. 0 runs the whole-round loop once per interval.
     let storage_manager_tick_ms = temporalstore_rust::data_node::storage_manager_tick_ms(
         std::env::var("MATRIXARK_STORAGE_MANAGER_TICK_MS")
             .ok()
