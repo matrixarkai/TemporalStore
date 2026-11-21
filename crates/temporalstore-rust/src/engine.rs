@@ -132,6 +132,8 @@ pub use storage_bucket_internals::{
     reset_stage_walk_charges, take_stage_walk_charges,
     BLOCK_SLAB_LIVE_DRIFTS, BLOCK_SLAB_LIVE_RECONCILES,
 };
+#[cfg(test)]
+pub use storage_bucket_internals::{live_block_walk_times_snapshot, set_walk_timing};
 pub use storage_reports::{
     reset_storage_cache_inspection_listings, storage_cache_inspection_listing_entries,
     storage_cache_inspection_listings,
