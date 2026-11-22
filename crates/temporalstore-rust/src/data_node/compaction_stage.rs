@@ -74,7 +74,15 @@ impl<'a> CompactionStage<'a> {
         {
             return None;
         }
-        let (pressure, plan) = self.runtime.storage_manager_pressure_snapshot(shard, options);
+        // THE PRODUCTION-MODE SNAPSHOT, not the detailed one. `storage_manager_pressure_snapshot` is
+        // the detailed form: on a dirty shard its plan lists every live block to build the bucket
+        // summaries only a report reads, and this gate reads none of them. Asked every time a pass is
+        // considered, that was one whole-shard listing per quiet round (1.09 s of a 1.11 s quiet round at
+        // 300k keys, 0.2 s at 100k), so a quiet round grew with the corpus. The slab fields the gate
+        // reads (`stale_block_slab_count`, `reclaim_candidate_count`, `reclaimable_physical_bytes`
+        // and the candidates themselves) are the same in both forms.
+        let (pressure, plan) =
+            self.runtime.storage_manager_pressure_snapshot_with_report_details(shard, options, false);
         if !stale_block_pressure(&pressure, options)
             || crate::engine::compaction_relocatable_block_refs(&plan.reclaim_candidates) == 0
         {

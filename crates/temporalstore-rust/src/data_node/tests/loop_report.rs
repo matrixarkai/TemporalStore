@@ -1810,3 +1810,49 @@ fn the_tally_names_the_slabs_the_walk_does_across_overwrites_and_collection() {
         assert_eq!(from_tally, walked, "round {round}: the tally and the walk name different slabs");
     }
 }
+
+/// The compaction stage asks whether a pass is worth starting from the production-mode pressure
+/// snapshot, so a step that finds nothing to do walks no live block, at any corpus size.
+///
+/// It asked the detailed snapshot, whose plan lists every live block of a dirty shard to build
+/// summaries nothing here reads: a quiet round then cost one whole-shard listing, 1.09 s of a 1.11 s
+/// round at 300k keys against 0.2 s at 100k. The control is the detailed snapshot on the SAME
+/// fixture, which must walk at least the corpus, so a fixture that stops being dirty (and the guard
+/// with it) fails on the control instead of passing vacuously.
+#[test]
+fn a_compaction_gate_check_walks_no_live_block_at_any_scale() {
+    use crate::data_node::compaction_stage::{CompactionCursor, CompactionStage};
+    use crate::data_node::round_budget::{BoundedStage, StageBudget, StageContext, StageProgress};
+
+    for keys in [1_000usize, 8_000, 64_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = seeded_runtime(dir.path(), keys);
+        let options = StorageManagerOptions::default();
+
+        crate::engine::reset_stage_walk_charges();
+        let _ = runtime.storage_manager_pressure_snapshot(1, &options);
+        let control = crate::engine::take_stage_walk_charges().live_block_entries;
+        assert!(
+            control >= keys as u64,
+            "control: the detailed snapshot must walk the corpus on this fixture, walked {control} \
+             of {keys}; the guard below would pass for the wrong reason"
+        );
+
+        crate::engine::reset_stage_walk_charges();
+        let stage = CompactionStage::new(&runtime);
+        let mut cursor = CompactionCursor::default();
+        let mut budget = StageBudget::new(std::time::Duration::from_millis(10), 200);
+        let context = StageContext { options: &options, plan: None };
+        let step = stage.step(1, &mut cursor, &mut budget, &context);
+        let walked = crate::engine::take_stage_walk_charges().live_block_entries;
+        assert_eq!(
+            step.progress,
+            StageProgress::Idle,
+            "a freshly written shard has no stale slab to drain, so the step must be idle"
+        );
+        assert_eq!(
+            walked, 0,
+            "a quiet compaction step walked {walked} live blocks at {keys} keys; it must walk none"
+        );
+    }
+}

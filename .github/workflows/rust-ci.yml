@@ -1218,6 +1218,23 @@ jobs:
             grep -q 'test result: ok. 1 passed' /tmp/pin-memo.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
+      - name: cargo test (compaction gate walks no live block, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # The compaction stage asks its gate question from the production-mode pressure snapshot, so
+          # a step that finds nothing to do lists no live block at any corpus size. Pinned by exact
+          # name: it ran only in the advisory suite.
+          t=data_node::tests::loop_report::a_compaction_gate_check_walks_no_live_block_at_any_scale
+          cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-compaction-gate.log
+          # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+          ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-compaction-gate.log | head -1)
+          if [ "$ran" != "1" ]; then
+            echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+            exit 1
+          fi
+          grep -q 'test result: ok. 1 passed' /tmp/pin-compaction-gate.log \
+            || { echo "::error::$t did not pass"; exit 1; }
       - name: cargo test (compaction hold and drain guards, hard gate)
         timeout-minutes: 20
         run: |
