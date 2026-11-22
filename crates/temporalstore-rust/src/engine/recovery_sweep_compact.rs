@@ -240,24 +240,14 @@ struct ExpiryIndexDelta {
     applied_wal_sequence: Option<u64>,
 }
 
-fn expiry_record_is_hot(shard: &ShardState, key: &str) -> bool {
+pub(super) fn expiry_record_is_hot(shard: &ShardState, key: &str) -> bool {
     if shard.bucket_index.released_buckets.is_empty() {
-        return record_exists(shard, key);
+        return record_exists_exact(shard, key);
     }
     let (start, end) = shard.routing_range();
-    let mut exists = false;
-    for record_key in associated_record_keys(key) {
-        if !record_exists_exact(shard, &record_key) {
-            continue;
-        }
-        exists = true;
-        // Released buckets retain model locators. Presence in those maps is not residency.
-        let bucket = block_routing_bucket(&record_key, start, end);
-        if shard.bucket_index.released_buckets.contains(&bucket) {
-            return false;
-        }
-    }
-    exists
+    // Released buckets retain model locators, but related records have independent residency.
+    let bucket = block_routing_bucket(key, start, end);
+    !shard.bucket_index.released_buckets.contains(&bucket) && record_exists_exact(shard, key)
 }
 
 impl TemporalEngine {
@@ -1223,8 +1213,24 @@ fn expiry_scan_budget(limit: usize) -> usize {
         &self,
         request: ShardExpirySweepRequest,
     ) -> Result<ShardExpirySweepReport, Status> {
+        self.sweep_expired_records_with_budget_mode(request, false)
+    }
+
+    /// Maintenance budgets disable a residency class at zero; explicit sweeps remain unbounded.
+    pub(crate) fn sweep_expired_records_for_maintenance(
+        &self,
+        request: ShardExpirySweepRequest,
+    ) -> Result<ShardExpirySweepReport, Status> {
+        self.sweep_expired_records_with_budget_mode(request, true)
+    }
+
+    fn sweep_expired_records_with_budget_mode(
+        &self,
+        request: ShardExpirySweepRequest,
+        zero_disables: bool,
+    ) -> Result<ShardExpirySweepReport, Status> {
         let shard_id = request.shard_id;
-        let outcome = self.sweep_expired_records_with_request_uncounted(request);
+        let outcome = self.sweep_expired_records_with_request_uncounted(request, zero_disables);
         if let Err(status) = &outcome {
             // The runtime drops this error and moves to the next shard, so without a count a
             // sweep that fails every tick is indistinguishable from one with nothing due.
@@ -1242,7 +1248,20 @@ fn expiry_scan_budget(limit: usize) -> usize {
     fn sweep_expired_records_with_request_uncounted(
         &self,
         request: ShardExpirySweepRequest,
+        zero_disables: bool,
     ) -> Result<ShardExpirySweepReport, Status> {
+        if zero_disables && request.max_hot_buckets_per_round == 0
+            && request.max_cold_buckets_per_round == 0
+        {
+            if !self.shards.read().expect("engine lock poisoned").contains_key(&request.shard_id) {
+                return Err(Status::error("shard_not_loaded", "shard is not loaded"));
+            }
+            return Ok(ShardExpirySweepReport {
+                shard_id: request.shard_id,
+                load_on_expire_only_when_needed: true,
+                ..ShardExpirySweepReport::default()
+            });
+        }
         let mut shards = self.shards_write_marked();
         // Started AFTER the guard is acquired, so this is the HOLD and not the wait for it.
         let guard_held = std::time::Instant::now();
@@ -1269,14 +1288,20 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // request and report fields that carried them are gone.
         let phase = std::time::Instant::now();
         crate::engine::ensure_expiry_order(shard);
-        let hot_selected =
+        let hot_selected = if zero_disables && hot_limit == 0 {
+            Vec::new()
+        } else {
             crate::engine::due_window(shard, now, hot_limit, scan_budget, |key| {
                 expiry_record_is_hot(shard, key)
-            });
-        let cold_selected =
+            })
+        };
+        let cold_selected = if zero_disables && cold_limit == 0 {
+            Vec::new()
+        } else {
             crate::engine::due_window(shard, now, cold_limit, scan_budget, |key| {
                 !expiry_record_is_hot(shard, key)
-            });
+            })
+        };
         EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.select, phase);
         let mut expired_records_removed = 0;
         let mut skipped_records = 0usize;
@@ -1288,7 +1313,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         for (key, expires_at) in hot_selected.iter() {
             if *expires_at <= now {
                 let phase = std::time::Instant::now();
-                let removed = super::maintenance_log::MaintenanceDeletion::capture(shard, key);
+                let removed = super::maintenance_log::MaintenanceDeletion::capture_exact(shard, key);
                 EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
                 if let Some(deletion) = removed {
                     deletions.push(deletion);
@@ -1303,7 +1328,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             if *expires_at <= now {
                 if request.load_cold_buckets {
                     let phase = std::time::Instant::now();
-                    let removed = super::maintenance_log::MaintenanceDeletion::capture(shard, key);
+                    let removed = super::maintenance_log::MaintenanceDeletion::capture_exact(shard, key);
                     EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
                     if let Some(deletion) = removed {
                         deletions.push(deletion);
@@ -1359,6 +1384,16 @@ fn expiry_scan_budget(limit: usize) -> usize {
             EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.invalidate, phase);
         }
         if expired_records_removed > 0 {
+            // Capture the logged deletion set before applying it. Absent family names have no
+            // tombstone to describe and must not inflate checkpoint sorting or state capture.
+            let phase = std::time::Instant::now();
+            let delta_keys: Vec<String> = deletions
+                .iter()
+                .flat_map(|deletion| deletion.records().iter().cloned())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.checkpoint, phase);
             // Expiry IS a logged,
             // replicated delete. Batch exact-record tombstones into buffered, unfsynced
             // WAL frames, preserving the fire-and-forget commit, so followers and WAL
@@ -1448,15 +1483,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 {
                     ExpiryIndexCheckpoint::Whole(Box::new(shard.clone()))
                 } else {
-                    // `delete_record` removed each expired key AND every record key associated
-                    // with it (the control-state families), so the delta has to cover the same
-                    // set or the fold would restore what the round deleted.
-                    let delta_keys: Vec<String> = expired_keys
-                        .iter()
-                        .flat_map(|key| super::associated_record_keys(key))
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .into_iter()
-                        .collect();
+                    // Existing related records are already included in the captured deletion
+                    // groups. Use that exact set rather than generating absent family names.
                     ExpiryIndexCheckpoint::Delta(Box::new(ExpiryIndexDelta {
                         // NO BLOCK ITEMS, and that is the whole content of the record's block half.
                         //

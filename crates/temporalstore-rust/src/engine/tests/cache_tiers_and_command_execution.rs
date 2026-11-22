@@ -2957,12 +2957,13 @@ fn the_shipped_dump_cap_still_lets_the_log_be_reclaimed() {
 /// for ever while every round still reports success. Nothing else here would notice: the cycle
 /// completes, the stages report applied, and only the disk fills.
 ///
-/// So this writes the same working set every round and requires the floor to reach the head each
-/// time. Twelve rounds and 6,000 writes: every round removes exactly what that round wrote, the
-/// floor advances to `last_sequence + 1`, and the log's on-disk size never moves off the
-/// preallocated segment.
+/// Each burst rewrites the same working set, then drains it through the shipped bounded dump
+/// passes. Collection must reach the head within that budget, free real bytes, retain at most
+/// one working set of records, and preserve every latest value through a fresh reopen.
 #[test]
 fn the_log_stays_bounded_under_continuous_writing() {
+    const KEYS: usize = 500;
+    const ROUNDS: u64 = 12;
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         8 << 20,
@@ -2972,75 +2973,80 @@ fn the_log_stays_bounded_under_continuous_writing() {
     );
     engine.load_shard(1);
 
+    let cap = StorageManagerCycleRequest::default().max_dump_buckets_per_round;
+    assert!(cap > 0, "this fixture must exercise a bounded dump policy");
+    let max_passes = KEYS.div_ceil(cap);
     let mut bytes_seen: Vec<u64> = Vec::new();
-    for round in 1..=12u64 {
-        // The same 500 keys every round, so everything written is superseded and the whole log
-        // below the floor is reclaimable. A shard that cannot free THIS cannot free anything.
-        for index in 0..500 {
-            write_string(&engine, &format!("bound-{index:04}"), &[b'v'; 256]);
+    for round in 1..=ROUNDS {
+        for index in 0..KEYS {
+            write_string(&engine, &format!("bound-{index:04}"), &[round as u8; 256]);
         }
-        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
-            shard_id: 1,
-            min_undumped_wal_records: 0,
-            min_undumped_wal_bytes: 0,
-            ..StorageManagerCycleRequest::default()
-        });
+        let bytes_before = engine.write_ahead_log_store().stats(1).persistent_bytes;
+        let mut removed = 0usize;
+        let mut last_floor = 0;
+        let mut drained = false;
+        for pass in 0..max_passes {
+            let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+                shard_id: 1,
+                min_undumped_wal_records: 0,
+                min_undumped_wal_bytes: 0,
+                ..StorageManagerCycleRequest::default()
+            });
+            assert!(report.completed && report.errors.is_empty(), "{report:?}");
+            if report.plan.selected_dump_buckets.len() > cap {
+                assert!(report.plan.reasons.iter().any(|reason| reason == "slot_dump_refresh_after_relocation"),
+                    "round {round} pass {pass}: dirty dump exceeded cap {cap}: {:?}", report.plan);
+                assert!(report.plan.dirty_buckets.is_empty());
+                let expected = report.plan.bucket_summaries.as_ref()
+                    .expect("a full relocation refresh must report its bucket inventory")
+                    .iter().map(|summary| summary.routing_bucket)
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert_eq!(report.plan.selected_dump_buckets.len(), expected.len());
+                assert_eq!(report.plan.selected_dump_buckets.iter().copied()
+                    .collect::<std::collections::BTreeSet<_>>(), expected);
+            }
+            let wal = report.wal_reclaim_report.as_ref().expect("the pass must run WAL reclaim");
+            let floor = wal.plan.retain_from_wal_sequence;
+            assert!(floor >= last_floor, "round {round} pass {pass}: reclaim moved backwards");
+            last_floor = floor;
+            removed = removed.saturating_add(wal.wal_records_removed);
+            if floor == engine.write_ahead_log_store().stats(1).last_sequence.saturating_add(1) {
+                drained = true;
+                break;
+            }
+        }
         let stats = engine.write_ahead_log_store().stats(1);
-        let wal = report
-            .wal_reclaim_report
-            .as_ref()
-            .expect("the round must run WAL reclaim");
-        assert_eq!(
-            wal.plan.retain_from_wal_sequence,
-            stats.last_sequence.saturating_add(1),
-            "round {round}: the reclaim floor did not reach the head, so a bucket is starving \
-             the log: last_sequence={} retain_from={}",
-            stats.last_sequence,
-            wal.plan.retain_from_wal_sequence,
-        );
+        assert!(drained, "round {round}: floor {last_floor} did not reach {} in {max_passes} bounded passes",
+            stats.last_sequence.saturating_add(1));
         assert!(
-            wal.wal_records_removed > 0,
+            removed > 0,
             "round {round}: nothing was reclaimed, though 500 records were written into it"
         );
+        // A reservation-sized constant cannot pass this control, even if the settled encoded
+        // tail has the same length every burst.
+        assert!(stats.persistent_bytes < bytes_before,
+            "round {round}: retained log bytes did not fall: {bytes_before} -> {}", stats.persistent_bytes);
+        let retained = engine.write_ahead_log_store().record_count(1).unwrap();
+        assert!(retained <= KEYS + 1,
+            "round {round}: {retained} retained records exceed one working set plus the continuity tail");
         bytes_seen.push(stats.persistent_bytes);
     }
 
-    // The log warms up over the first rounds and then stops moving: measured
-    // [39898, 40602, 41602, 41605, 41605, ...], flat from round four to round twelve.
-    //
-    // This used to assert all twelve rounds were IDENTICAL, and they were -- at 262,144 every
-    // round, which is neither the log's size nor a quantity that could respond to anything.
-    // Under preallocation `persistent_bytes` reported the file's RESERVATION, a 256 KiB chunk
-    // boundary, so the bound this test exists to prove was being satisfied by a constant. A
-    // guard that holds a number which cannot move is not guarding.
-    //
-    // So the first assertion now is that the figure DOES move, which is what tells a live
-    // measurement from a constant, and only then that it settles and stays settled.
+    // Encoded sequence widths can change without accumulating records. Bound bytes across
+    // bursts as well as record counts, without requiring a particular encoding's warm-up.
     let first = bytes_seen[0];
-    let plateau = bytes_seen[bytes_seen.len() - 1];
-    assert_ne!(
-        first, plateau,
-        "the durable byte figure was the same in round 1 and round {} ({first}). That is what a \
-         reservation looks like -- a number fixed by the preallocation chunk rather than by the \
-         log -- and this test cannot bound a log through one: {bytes_seen:?}",
-        bytes_seen.len()
-    );
+    let maximum = *bytes_seen.iter().max().unwrap();
     assert!(
-        bytes_seen.windows(2).all(|pair| pair[1] >= pair[0]),
-        "the log did not settle monotonically, so neither the warm-up nor the plateau below \
-         describes it: {bytes_seen:?}"
+        maximum < first.saturating_mul(2),
+        "the log accumulated across bounded drain passes: {bytes_seen:?}"
     );
-    let tail = &bytes_seen[4..];
-    assert!(
-        tail.iter().all(|bytes| *bytes == plateau),
-        "the log was still growing after four rounds of rewriting the same 500 keys: \
-         {bytes_seen:?}"
-    );
-    assert!(
-        plateau < first.saturating_mul(2),
-        "the settled log ({plateau} bytes) is more than twice its first round ({first}), so the \
-         rewrites are accumulating rather than superseding: {bytes_seen:?}"
-    );
+    drop(engine);
+    let reader = TemporalEngine::with_local_dirs(8 << 20, dir.path().join("fresh-cache"),
+        dir.path().join("blocks"), dir.path().join("indexes"));
+    reader.load_shard(1);
+    for index in 0..KEYS {
+        assert_eq!(read_string(&reader, &format!("bound-{index:04}")), Some(vec![ROUNDS as u8; 256]));
+    }
 }
 
 /// A bucket remembers the log sequence of its OLDEST undumped write.

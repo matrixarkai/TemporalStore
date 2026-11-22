@@ -17,6 +17,7 @@ pub mod golden;
 pub mod reports;
 
 mod admin_report;
+mod base_checkpoint_anchor;
 #[path = "engine/engine_constants.rs"]
 pub(crate) mod constants;
 mod container_membership;
@@ -516,6 +517,10 @@ mod log_backed_string_tests;
 #[cfg(test)]
 #[path = "engine/expiry_residency_tests.rs"]
 mod expiry_residency_tests;
+
+#[cfg(test)]
+#[path = "engine/ttl_index_maintenance_tests.rs"]
+mod ttl_index_maintenance_tests;
 
 #[cfg(test)]
 #[path = "engine/writer_stall_probe.rs"]
@@ -8536,7 +8541,14 @@ fn mark_bucket_index_block_deleted_recording(
     removed
 }
 
+#[cfg(test)]
+thread_local! {
+    static ASSOCIATED_KEY_BUILDS_FOR_TEST: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn associated_record_keys(key: &str) -> Vec<String> {
+    #[cfg(test)]
+    ASSOCIATED_KEY_BUILDS_FOR_TEST.with(|count| count.set(count.get() + 1));
     if key.starts_with("control_state:") {
         return vec![key.to_string()];
     }

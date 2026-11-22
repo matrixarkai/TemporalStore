@@ -3992,6 +3992,29 @@ where
         shard_id: ShardId,
         command: Command,
     ) -> Result<SharedStoreWriteReport, SharedStoreReplicationError> {
+        self.write_entry(shard_id, Some(command), Vec::new()).await
+    }
+
+    pub async fn write_outcomes(
+        &self,
+        shard_id: ShardId,
+        outcomes: Vec<crate::wal::WalOutcomeItem>,
+    ) -> Result<SharedStoreWriteReport, SharedStoreReplicationError> {
+        if outcomes.is_empty() {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "a shared maintenance frame must contain outcomes",
+            )));
+        }
+        self.write_entry(shard_id, None, outcomes).await
+    }
+
+    async fn write_entry(
+        &self,
+        shard_id: ShardId,
+        command: Option<Command>,
+        outcomes: Vec<crate::wal::WalOutcomeItem>,
+    ) -> Result<SharedStoreWriteReport, SharedStoreReplicationError> {
         // An open hole refuses the write BEFORE it is numbered: numbering N+1 over an open N would
         // make the hole permanent.
         self.refuse_if_hole()?;
@@ -4009,9 +4032,9 @@ where
         let entry = SharedStoreWalEntry {
             shard_id,
             wal_index,
-            command: Some(command),
+            command,
             staged_blocks: Vec::new(),
-            outcomes: Vec::new(),
+            outcomes,
         };
         match self.mode {
             SharedStoreStorageMode::Sync if self.group_commit => {
@@ -9740,7 +9763,7 @@ mod tests {
     // `MatrixObjectHttpStore` spoke and that NOTHING else implemented -- so these tests passed
     // against a fiction while `TS_SHARED_STORE_URI=matrixobject://host:port` could not work
     // against anything real. The client speaks S3 now, so the fixture is matrixobject's own
-    // `ObjectHttpServer`, in this process on an ephemeral port. These tests therefore exercise
+    // the cluster gateway, in this process on an ephemeral port over an in-memory plane. These tests therefore exercise
     // the server an operator actually runs.
     //
     // Feature-gated because the server comes from the optional dependency. That is a real
@@ -9748,21 +9771,18 @@ mod tests {
     // covered before was a protocol with no counterpart.
     #[cfg(feature = "matrixobject")]
     fn spawn_matrixobject_object_server() -> (matrixobjectstore_rs::net::ServerHandle, String) {
+        use crate::matrixobject_test_plane::{gateway_over, Shared};
         use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
-        use matrixobjectstore_rs::{MatrixObjectStore, StoreOptions};
 
-        let mut store = MatrixObjectStore::new(StoreOptions::default()).expect("the store starts");
-        store
-            .create_bucket(temporalstore_snapshot::object_store::DEFAULT_HTTP_BUCKET)
-            .expect("the bucket the client will address");
-        let server = ObjectHttpServer::bind(
+        let cluster = Arc::new(Mutex::new(Shared::default()));
+        let gateway = gateway_over(&cluster, temporalstore_snapshot::object_store::DEFAULT_HTTP_BUCKET);
+        let server = ObjectHttpServer::bind_handler(
             "127.0.0.1:0",
-            Arc::new(Mutex::new(store)),
+            Arc::new(gateway),
             ServerOptions {
                 worker_threads: 2,
                 read_timeout: Duration::from_secs(10),
                 write_timeout: Duration::from_secs(10),
-                accept_poll_interval: Duration::from_millis(5),
                 ..ServerOptions::default()
             },
         )
@@ -10478,6 +10498,154 @@ mod tests {
             round_tripped.staged_blocks, entry.staged_blocks,
             "the blocks must survive the trip, not just the command"
         );
+    }
+
+    fn maintenance_tombstones(root: &Path, keys: &[String]) -> Vec<crate::wal::WalOutcomeItem> {
+        let engine = test_engine(root, "tombstones");
+        engine.load_shard(1);
+        for key in keys {
+            assert!(engine.execute(ExecuteRequest { shard_id: 1,
+                command: Command::StringSet { key: key.clone(), value: b"old".to_vec() },
+            }).status.ok);
+        }
+        let before = engine.wal_store().cached_last_sequence(1);
+        let removed = engine.apply_storage_eviction(1, 0, 0, false, true);
+        assert_eq!(removed.dropped_object_count, keys.len());
+        let (records, truncated) = engine.wal_store().scan_decoded(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert!(!truncated);
+        let outcomes: Vec<_> = records.into_iter().filter(|(_, record)| record.sequence > before)
+            .flat_map(|(_, record)| record.outcomes).collect();
+        assert_eq!(outcomes.len(), keys.len());
+        assert!(outcomes.iter().all(|item| item.kind == "record" && item.deleted && item.meta));
+        outcomes
+    }
+
+    #[tokio::test]
+    async fn maintenance_outcomes_keep_exact_scope_through_all_writer_modes() {
+        for append_mode in [SharedStoreWalAppendMode::PerKeyObject, SharedStoreWalAppendMode::ProtobufAppendBlob] {
+            for (mode, group) in [(SharedStoreStorageMode::Sync, false),
+                (SharedStoreStorageMode::Sync, true), (SharedStoreStorageMode::Async, false)] {
+                let dir = tempfile::tempdir().unwrap();
+                let base = "aaa-shared-expiry".to_string();
+                let family = format!("control_state:h:{base}");
+                let outcomes = maintenance_tombstones(dir.path(), &[base.clone()]);
+                let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+                let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+                    .with_wal_append_mode(append_mode);
+                let writer = replicator.storage_writer(mode, 1)
+                    .with_group_commit(group, Duration::ZERO).with_max_pending(1);
+                let empty = writer.write_outcomes(1, Vec::new()).await.unwrap_err();
+                assert!(matches!(empty, SharedStoreReplicationError::Io(error)
+                    if error.kind() == std::io::ErrorKind::InvalidInput));
+                assert_eq!(writer.next_wal_index.load(Ordering::Relaxed), 1);
+                assert_eq!(writer.queued_len(), 0);
+                assert_eq!(writer.unresolved_hole(), None);
+                for key in [&base, &family] {
+                    writer.write(1, Command::StringSet { key: key.clone(), value: b"old".to_vec() }).await.unwrap();
+                    writer.flush_pending(16).await.unwrap();
+                }
+                let removed = writer.write_outcomes(1, outcomes.clone()).await.unwrap();
+                assert_eq!(removed.wal_index, 3);
+                assert_eq!(removed.queued, mode == SharedStoreStorageMode::Async);
+                assert_eq!(removed.published, mode == SharedStoreStorageMode::Sync);
+                let tail = writer.write(1, Command::StringSet { key: base.clone(), value: b"new".to_vec() }).await.unwrap();
+                assert_eq!(tail.wal_index, 4);
+                assert!(tail.published && !tail.queued);
+                if mode == SharedStoreStorageMode::Async {
+                    assert_eq!(writer.queued_len(), 1);
+                    assert_eq!(writer.queue_capacity_hits(), 1);
+                }
+                writer.flush_pending(16).await.unwrap();
+                assert_eq!(writer.queued_len(), 0);
+                let reader = SharedStoreReplicator::new(TEST_CLUSTER_ID, store).with_wal_append_mode(append_mode);
+                assert_eq!(reader.latest_persisted_wal_index(1).await.unwrap(), 4);
+                let deletion = match append_mode {
+                    SharedStoreWalAppendMode::PerKeyObject => {
+                        let mut entries = reader.load_wal_entries(1).await.unwrap();
+                        assert_eq!(entries.keys().copied().collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+                        entries.remove(&3).unwrap()
+                    }
+                    SharedStoreWalAppendMode::ProtobufAppendBlob => {
+                        let metadata = reader.load_wal_offset_metadata(1).await.unwrap();
+                        assert_eq!(metadata.keys().copied().collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+                        reader.read_wal_entry_by_offset_metadata(1, 3).await.unwrap().unwrap().entry
+                    }
+                };
+                assert!(deletion.command.is_none());
+                assert_eq!(deletion.outcomes, outcomes);
+                let follower = test_engine(dir.path(), "follower");
+                follower.load_shard(1);
+                assert_eq!(reader.replay_wal_strict(1, 0, &follower).await.unwrap().applied, 4);
+                for (key, expected) in [(base, b"new".to_vec()), (family, b"old".to_vec())] {
+                    assert_eq!(follower.execute(ExecuteRequest { shard_id: 1, command: Command::StringGet { key } }).response,
+                        CommandResponse::Bytes { value: Some(expected) });
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn maintenance_outcomes_refuse_open_holes_before_numbering() {
+        for group in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let outcomes = maintenance_tombstones(dir.path(), &["remove".to_string()]);
+            let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, Arc::new(FailingAppendStore))
+                .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+            let writer = replicator.storage_writer(SharedStoreStorageMode::Sync, 1)
+                .with_group_commit(group, Duration::ZERO);
+            assert!(writer.write_outcomes(1, outcomes.clone()).await.is_err());
+            assert_eq!(writer.unresolved_hole(), Some((1, 1)));
+            assert!(matches!(writer.write_outcomes(1, outcomes).await,
+                Err(SharedStoreReplicationError::UnresolvedWalHole { .. })));
+            assert_eq!(writer.next_wal_index.load(Ordering::Relaxed), 2);
+            assert_eq!(writer.unresolved_hole(), Some((1, 1)));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn maintenance_outcomes_share_group_commit_with_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys: Vec<_> = (0..8).map(|i| format!("remove-{i}")).collect();
+        let outcomes = maintenance_tombstones(dir.path(), &keys);
+        let store = Arc::new(CountingObjectStore::new(FileObjectStore::new(dir.path().join("objects"))));
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+        let writer = Arc::new(replicator.storage_writer(SharedStoreStorageMode::Sync, 1)
+            .with_group_commit(true, Duration::from_millis(5)));
+        for key in &keys {
+            writer.write(1, Command::StringSet { key: key.clone(), value: b"old".to_vec() }).await.unwrap();
+        }
+        let before = store.append_blob_count();
+        let mut handles = Vec::new();
+        for item in outcomes {
+            let writer = writer.clone();
+            handles.push(tokio::spawn(async move { writer.write_outcomes(1, vec![item]).await }));
+        }
+        for i in 0..8 {
+            let writer = writer.clone();
+            handles.push(tokio::spawn(async move {
+                writer.write(1, Command::StringSet { key: format!("keep-{i}"), value: b"new".to_vec() }).await
+            }));
+        }
+        let mut indexes = std::collections::BTreeSet::new();
+        for handle in handles {
+            let report = handle.await.unwrap().unwrap();
+            assert!(report.published && !report.queued);
+            assert!(indexes.insert(report.wal_index));
+        }
+        assert_eq!(indexes, (9..=24).collect());
+        assert!(store.append_blob_count() - before < 16);
+        let reader = SharedStoreReplicator::new(TEST_CLUSTER_ID, store)
+            .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+        let follower = test_engine(dir.path(), "follower");
+        follower.load_shard(1);
+        assert_eq!(reader.replay_wal_strict(1, 0, &follower).await.unwrap().applied, 24);
+        for i in 0..8 {
+            for (key, value) in [(format!("remove-{i}"), None), (format!("keep-{i}"), Some(b"new".to_vec()))] {
+                assert_eq!(follower.execute(ExecuteRequest { shard_id: 1, command: Command::StringGet { key } }).response,
+                    CommandResponse::Bytes { value });
+            }
+        }
     }
 
     #[tokio::test]

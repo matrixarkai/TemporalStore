@@ -30,69 +30,8 @@ use matrixobjectstore_rs::cluster::{
     ApiTlsConfig, ObjectWriteOptions, RemoteMetaClient, ReplicaClientOptions,
 };
 use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
-use matrixobjectstore_rs::net::http::percent_decode;
-use matrixobjectstore_rs::net::{Request, RequestHandler};
-use temporalstore_snapshot::object_store::{
-    DoorReply, InProcessDoor, NetworkedMatrixObjectStore, DEFAULT_HTTP_BUCKET,
-};
-
-/// A gateway's request handling, served to the networked store as function calls.
-pub struct ClusterDoor {
-    gateway: ClusterGateway,
-}
-
-impl std::fmt::Debug for ClusterDoor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ClusterDoor").finish_non_exhaustive()
-    }
-}
-
-impl ClusterDoor {
-    pub fn new(gateway: ClusterGateway) -> Self {
-        Self { gateway }
-    }
-}
-
-/// The request the gateway would have parsed off a socket: the target split into its decoded
-/// path and its raw query, and header names lowercased.
-pub fn request_from_target(
-    method: &str,
-    target: &str,
-    headers: &[(&str, String)],
-    body: &[u8],
-) -> Request {
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    Request {
-        method: method.to_ascii_uppercase(),
-        path: percent_decode(path),
-        query: query.to_string(),
-        headers: headers
-            .iter()
-            .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_string()))
-            .collect(),
-        body: body.to_vec(),
-        keep_alive: false,
-    }
-}
-
-impl InProcessDoor for ClusterDoor {
-    fn serve(
-        &self,
-        method: &str,
-        target: &str,
-        headers: &[(&str, String)],
-        body: &[u8],
-    ) -> Result<DoorReply, String> {
-        let response = self
-            .gateway
-            .handle(&request_from_target(method, target, headers, body));
-        Ok(DoorReply {
-            status: response.status,
-            headers: response.headers,
-            body: response.body,
-        })
-    }
-}
+use matrixobjectstore_rs::net::InProcessDoor;
+use temporalstore_snapshot::object_store::{NetworkedMatrixObjectStore, DEFAULT_HTTP_BUCKET};
 
 /// Publication controls for direct append traffic.
 /// Compact publication requires compatible metadata voters and journal readers.
@@ -267,7 +206,7 @@ impl DirectConfig {
             ClusterGateway::over_sdk(move || (*open)(), options, self.bucket.clone())
         };
         Ok(NetworkedMatrixObjectStore::direct(
-            Arc::new(ClusterDoor::new(gateway)),
+            Arc::new(InProcessDoor::new(Arc::new(gateway))),
             &self.bucket,
         ))
     }
@@ -280,12 +219,7 @@ mod tests {
     use std::sync::Mutex;
 
     use bytes::Bytes;
-    use matrixobjectstore_rs::net::cluster_gateway::{ObjectPlane, PlaneFailure};
     use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
-    use matrixobjectstore_rs::object_manifest::{
-        ManifestListPage, ManifestSummary, ObjectExtent, ObjectManifest,
-    };
-    use matrixobjectstore_rs::ObjectError;
     use temporalstore_snapshot::object_store::{MatrixObjectMode, ObjectStore};
 
     #[test]
@@ -338,191 +272,13 @@ mod tests {
         );
     }
 
-    // ---- a cluster that lives in memory, behind the gateway's own plane trait ----
-
-    #[derive(Default)]
-    struct Shared {
-        objects: BTreeMap<(String, String), (ObjectManifest, Vec<u8>)>,
-        /// The next append commits and then reports its publication unconfirmed.
-        commit_then_unconfirmed: bool,
-        /// The next append is lost before it commits and reports its publication unconfirmed.
-        lose_then_unconfirmed: bool,
-        appends: usize,
-        /// How many unchanged publications (fences) the plane has been asked for.
-        fences: usize,
-    }
-
-    struct MemoryPlane(Arc<Mutex<Shared>>);
-
-    fn manifest(bucket: &str, key: &str, generation: u64, length: u64, extents: usize) -> ObjectManifest {
-        ObjectManifest {
-            format_version: 2,
-            bucket: bucket.into(),
-            key: key.into(),
-            generation,
-            length,
-            extents: (0..extents).map(|_| ObjectExtent::default()).collect(),
-            deleted: false,
-        }
-    }
-
-    impl ObjectPlane for MemoryPlane {
-        fn read_manifest(&mut self, bucket: &str, key: &str) -> Result<ObjectManifest, ObjectError> {
-            let shared = self.0.lock().unwrap();
-            shared
-                .objects
-                .get(&(bucket.to_string(), key.to_string()))
-                .map(|(m, _)| m.clone())
-                .ok_or_else(|| ObjectError::NotFound("manifest".into()))
-        }
-
-        fn write(
-            &mut self,
-            bucket: &str,
-            key: &str,
-            expected: Option<ObjectManifest>,
-            data: &[u8],
-        ) -> Result<ObjectManifest, PlaneFailure> {
-            let mut shared = self.0.lock().unwrap();
-            let slot = (bucket.to_string(), key.to_string());
-            let current = shared.objects.get(&slot).map(|(m, _)| m.clone());
-            if current != expected {
-                return Err(ObjectError::PreconditionFailed("object manifest changed before write".into()).into());
-            }
-            let generation = current.map_or(1, |m| m.generation + 1);
-            let m = manifest(bucket, key, generation, data.len() as u64, usize::from(!data.is_empty()));
-            shared.objects.insert(slot, (m.clone(), data.to_vec()));
-            Ok(m)
-        }
-
-        fn append(&mut self, expected: ObjectManifest, data: &[u8]) -> Result<ObjectManifest, PlaneFailure> {
-            let mut shared = self.0.lock().unwrap();
-            shared.appends += 1;
-            let unconfirmed = std::mem::take(&mut shared.commit_then_unconfirmed);
-            if std::mem::take(&mut shared.lose_then_unconfirmed) {
-                return Err(PlaneFailure {
-                    error: ObjectError::PreconditionFailed("the publication is unconfirmed".into()),
-                    unconfirmed: true,
-                });
-            }
-            let slot = (expected.bucket.clone(), expected.key.clone());
-            let Some((current, bytes)) = shared.objects.get_mut(&slot) else {
-                return Err(ObjectError::NotFound("append target".into()).into());
-            };
-            if *current != expected {
-                return Err(ObjectError::PreconditionFailed("object manifest changed before write".into()).into());
-            }
-            bytes.extend_from_slice(data);
-            *current = manifest(
-                &expected.bucket,
-                &expected.key,
-                current.generation + 1,
-                bytes.len() as u64,
-                current.extents.len() + 1,
-            );
-            let published = current.clone();
-            if unconfirmed {
-                return Err(PlaneFailure {
-                    error: ObjectError::PreconditionFailed("the publication is unconfirmed".into()),
-                    unconfirmed: true,
-                });
-            }
-            Ok(published)
-        }
-
-        fn publish_unchanged(&mut self, expected: &ObjectManifest) -> Result<ObjectManifest, PlaneFailure> {
-            let mut shared = self.0.lock().unwrap();
-            shared.fences += 1;
-            let slot = (expected.bucket.clone(), expected.key.clone());
-            let Some((current, bytes)) = shared.objects.get(&slot).cloned() else {
-                return Err(ObjectError::NotFound("manifest".into()).into());
-            };
-            if &current != expected {
-                return Err(ObjectError::PreconditionFailed("object manifest changed before write".into()).into());
-            }
-            let mut next = current;
-            next.generation += 1;
-            shared.objects.insert(slot, (next.clone(), bytes));
-            Ok(next)
-        }
-
-        fn read(&mut self, bucket: &str, key: &str) -> Result<(ObjectManifest, Vec<u8>), ObjectError> {
-            let shared = self.0.lock().unwrap();
-            match shared.objects.get(&(bucket.to_string(), key.to_string())) {
-                Some((m, bytes)) if !m.deleted => Ok((m.clone(), bytes.clone())),
-                _ => Err(ObjectError::NotFound("object".into())),
-            }
-        }
-
-        fn read_range(
-            &mut self,
-            bucket: &str,
-            key: &str,
-            offset: u64,
-            length: u64,
-        ) -> Result<(ObjectManifest, Vec<u8>), ObjectError> {
-            let shared = self.0.lock().unwrap();
-            match shared.objects.get(&(bucket.to_string(), key.to_string())) {
-                Some((m, bytes)) if !m.deleted => {
-                    if offset + length > m.length {
-                        return Err(ObjectError::InvalidArgument("object read range exceeds length".into()));
-                    }
-                    Ok((m.clone(), bytes[offset as usize..(offset + length) as usize].to_vec()))
-                }
-                _ => Err(ObjectError::NotFound("object".into())),
-            }
-        }
-
-        fn delete(&mut self, bucket: &str, key: &str) -> Result<ObjectManifest, ObjectError> {
-            let mut shared = self.0.lock().unwrap();
-            let slot = (bucket.to_string(), key.to_string());
-            let Some((current, _)) = shared.objects.get(&slot).cloned() else {
-                return Err(ObjectError::NotFound("manifest".into()));
-            };
-            let mut tomb = current;
-            tomb.generation += 1;
-            tomb.length = 0;
-            tomb.extents.clear();
-            tomb.deleted = true;
-            shared.objects.insert(slot, (tomb.clone(), Vec::new()));
-            Ok(tomb)
-        }
-
-        fn list(&mut self, bucket: &str, after: Option<&str>, limit: u32) -> Result<ManifestListPage, ObjectError> {
-            let shared = self.0.lock().unwrap();
-            let mut entries: Vec<ManifestSummary> = shared
-                .objects
-                .iter()
-                .filter(|((b, k), _)| b == bucket && after.map_or(true, |a| k.as_str() > a))
-                .map(|((b, k), (m, _))| ManifestSummary {
-                    key: k.clone(),
-                    generation: m.generation,
-                    length: m.length,
-                    deleted: m.deleted,
-                    bucket: b.clone(),
-                })
-                .collect();
-            let has_more = entries.len() > limit as usize;
-            entries.truncate(limit as usize);
-            Ok(ManifestListPage {
-                version: 1,
-                bucket: bucket.into(),
-                entries,
-                has_more,
-                revision: Vec::new(),
-            })
-        }
-    }
+    use crate::matrixobject_test_plane::{gateway_over as plane_gateway, MemoryPlane, Shared};
+    use matrixobjectstore_rs::net::cluster_gateway::ObjectPlane;
 
     const BUCKET: &str = "temporalstore";
 
     fn gateway_over(shared: &Arc<Mutex<Shared>>) -> ClusterGateway {
-        let handle = Arc::clone(shared);
-        ClusterGateway::new(
-            move || Ok(Box::new(MemoryPlane(Arc::clone(&handle))) as Box<dyn ObjectPlane>),
-            GatewayOptions::default(),
-            BUCKET,
-        )
+        plane_gateway(shared, BUCKET)
     }
 
     /// Both ways in, each over its own cluster: a gateway served on a socket and read through
@@ -555,7 +311,7 @@ mod tests {
         Pair {
             gateway: NetworkedMatrixObjectStore::connect(MatrixObjectMode::Gateway, &uri).unwrap(),
             direct: NetworkedMatrixObjectStore::direct(
-                Arc::new(ClusterDoor::new(gateway_over(&direct_cluster))),
+                Arc::new(InProcessDoor::new(Arc::new(gateway_over(&direct_cluster)))),
                 BUCKET,
             ),
             gateway_cluster,
@@ -607,22 +363,6 @@ mod tests {
         seen.push(format!("delete again {:?}", store.delete("a/2").await.map_err(|e| e.to_string())));
         seen.push(format!("get deleted {:?}", store.get("a/2").await.map_err(|e| e.to_string())));
         seen
-    }
-
-    #[test]
-    fn a_target_is_split_into_its_decoded_path_and_its_raw_query() {
-        let request = request_from_target(
-            "get",
-            "/temporalstore/a%20b/c?list-type=2&prefix=a%2F&start-after=x",
-            &[("Range", " bytes=0-3 ".to_string())],
-            b"",
-        );
-        assert_eq!(request.method, "GET");
-        assert_eq!(request.path, "/temporalstore/a b/c");
-        assert_eq!(request.query, "list-type=2&prefix=a%2F&start-after=x");
-        assert_eq!(request.query_param("prefix").as_deref(), Some("a/"));
-        assert_eq!(request.header("range"), Some("bytes=0-3"));
-        assert!(!request.keep_alive);
     }
 
     #[test]
@@ -700,7 +440,9 @@ mod tests {
         for (cluster, stale) in [&pair.gateway_cluster, &pair.direct_cluster].into_iter().zip(stale) {
             {
                 let shared = cluster.lock().unwrap();
-                assert_eq!(shared.fences, 1, "the lost attempt was fenced exactly once");
+                // The gateway fences the lost attempt when it decides the append, and again when the
+                // client asks it to resolve that attempt: two fences, and the object is unchanged by both.
+                assert_eq!(shared.fences, 2, "the lost attempt was fenced by the gateway and by the resolve");
                 assert_eq!(shared.appends, 2, "the lost attempt, then the retry");
             }
             // The attempt that was lost can never commit now: it builds on a generation the fence passed.
