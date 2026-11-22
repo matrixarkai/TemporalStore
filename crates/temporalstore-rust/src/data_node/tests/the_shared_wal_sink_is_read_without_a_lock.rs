@@ -20,6 +20,7 @@ use super::*;
 struct Sink;
 impl SharedWalSink for Sink {
     fn record_write(&self, _: ShardId, _: &Command) {}
+    fn record_outcomes(&self, _: ShardId, _: &[crate::wal::WalOutcomeItem]) {}
 }
 
 #[test]
