@@ -287,6 +287,56 @@ fn a_compaction_step_returns_when_its_budget_is_spent_and_the_pass_resumes() {
     assert_eq!(idle.progress, StageProgress::Idle);
 }
 
+/// A tick-mode compaction step is exported under the same stage name a whole round uses, so the
+/// scrape shows its busy time and longest step. A step that left the timing table alone ran
+/// compaction and exported nothing for it.
+#[test]
+fn a_tick_compaction_step_is_timed_under_the_compaction_stage_name() {
+    use super::round_budget::ShardRoundState;
+
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded(dir.path());
+    runtime.engine().block_store().roll_slab().unwrap();
+    for i in 0..16 {
+        assert!(
+            runtime
+                .engine()
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet { key: format!("key-{i}"), value: vec![42; 96] },
+                })
+                .status
+                .ok
+        );
+    }
+    let options = StorageManagerOptions {
+        enable_block_compaction: true,
+        stale_block_slab_pressure: 1,
+        reclaimable_physical_bytes_pressure: 1,
+        ..options()
+    };
+    assert!(
+        runtime.stats().storage_manager_stage_timing.get("compact_pages").is_none(),
+        "nothing has run yet"
+    );
+    let period = std::time::Duration::from_secs(30);
+    let mut state = ShardRoundState::new(std::time::Instant::now(), period);
+    let report = runtime.run_compaction_step(1, &options, &mut state, period);
+    assert!(report.status.ok, "{:?}", report.status);
+    assert!(
+        report.executed_stages.iter().any(|stage| stage == "compact_pages"),
+        "the step did not run compaction: {report:?}"
+    );
+    let timing = runtime
+        .stats()
+        .storage_manager_stage_timing
+        .get("compact_pages")
+        .cloned()
+        .expect("a tick compaction step must be timed under the stage name the scrape exports");
+    assert_eq!(timing.rounds_executed, 1);
+    assert!(timing.total_us > 0 && timing.max_us == timing.total_us, "{timing:?}");
+}
+
 #[test]
 fn timer_manager_compacts_without_a_partial_response_while_explicit_calls_keep_details() {
     for detailed in [false, true] {
