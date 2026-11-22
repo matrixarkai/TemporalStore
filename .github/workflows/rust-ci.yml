@@ -1225,6 +1225,22 @@ jobs:
             grep -q 'test result: ok. 1 passed' /tmp/pin-memo.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
+      - name: cargo test (a quiet tick cycle walks no live block, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          # Once the work a corpus created is done, a full cycle of the tick loop reads no corpus.
+          # Pinned by exact name: it ran only in the advisory suite.
+          t=data_node::tests::loop_report::a_quiet_tick_cycle_walks_no_live_block_at_any_scale
+          cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-quiet-tick.log
+          # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+          ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-quiet-tick.log | head -1)
+          if [ "$ran" != "1" ]; then
+            echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+            exit 1
+          fi
+          grep -q 'test result: ok. 1 passed' /tmp/pin-quiet-tick.log \
+            || { echo "::error::$t did not pass"; exit 1; }
       - name: cargo test (compaction gate walks no live block, hard gate)
         timeout-minutes: 20
         run: |
@@ -1265,6 +1281,23 @@ jobs:
             fi
             grep -q 'test result: ok. 1 passed' /tmp/pin-shard-guard.log \
               || { echo "::error::$t did not pass"; exit 1; }
+          done
+      - name: cargo test (shared WAL sink read without a lock, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # The shared WAL sink is installed once and every write reads it without a lock; a second
+          # install is refused. Pinned by exact name: they ran only in the advisory suite.
+          for t in             data_node::tests::the_shared_wal_sink_is_read_without_a_lock::the_shared_wal_sink_is_read_without_a_lock             data_node::tests::the_shared_wal_sink_is_read_without_a_lock::a_second_install_of_the_shared_wal_sink_is_refused
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-wal-sink.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-wal-sink.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok. 1 passed' /tmp/pin-wal-sink.log               || { echo "::error::$t did not pass"; exit 1; }
           done
       - name: cargo test (compaction hold and drain guards, hard gate)
         timeout-minutes: 20
@@ -1394,7 +1427,8 @@ jobs:
             engine::tests::a_counter_increment_writes_its_series_when_due::a_log_cut_mid_record_recovers_a_prefix_of_the_writes_of_every_counter_arm \
             engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_digest_equals_exactly_when_the_lines_were_equal \
             engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_retained_manifest_is_decoded_once_across_plans \
-            data_node::dirty_tracking::dirty_count_tests::clearing_dirty_buckets_reads_the_routing_range_once_not_once_per_key ; do
+            data_node::dirty_tracking::dirty_count_tests::clearing_dirty_buckets_reads_the_routing_range_once_not_once_per_key \
+            engine::tests::a_retained_manifest_set_is_computed_once_per_list::the_retained_manifest_set_is_computed_once_across_rounds_and_again_after_a_new_dump ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/cost-gate.log

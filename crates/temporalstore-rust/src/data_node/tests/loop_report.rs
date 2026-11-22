@@ -1856,3 +1856,110 @@ fn a_compaction_gate_check_walks_no_live_block_at_any_scale() {
         );
     }
 }
+
+/// Once the work a corpus created is done, a full cycle of the tick loop walks no live block, at any
+/// corpus size: every heavy slot answers its own gate from counters and returns.
+///
+/// A cycle is the five heavy slots, each once. The first cycle on a freshly written shard is the
+/// CONTROL: it dumps and plans, so it must walk, or the counter is not reading this loop. Cycles
+/// then repeat until one walks nothing (the dump is capped per round, so a larger corpus takes more
+/// of them), and one more must still walk nothing. The cost of a quiet cycle then does not grow
+/// with the corpus because it reads no corpus.
+#[test]
+fn a_quiet_tick_cycle_walks_no_live_block_at_any_scale() {
+    use crate::data_node::round_budget::ShardRoundState;
+    let period = std::time::Duration::from_secs(600);
+    for keys in [1_000usize, 8_000, 64_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = seeded_runtime(dir.path(), keys);
+        // The byte gate crossed, so the WAL slot dumps the writes the seed left dirty.
+        let options = StorageManagerOptions {
+            dirty_bucket_pressure: 1,
+            min_undumped_wal_bytes: 1,
+            ..StorageManagerOptions::default()
+        };
+        let cycle = || -> u64 {
+            crate::engine::reset_live_block_scan_sites();
+            let mut state = ShardRoundState::new(std::time::Instant::now() - period * 2, period);
+            let mut ticks = 0;
+            while runtime
+                .run_storage_manager_tick(1, &options, &mut state, period)
+                .is_some()
+            {
+                ticks += 1;
+                assert!(ticks <= 20, "a cycle ran more than its five slots");
+            }
+            crate::engine::live_block_scan_sites_snapshot().values().sum()
+        };
+        let first = cycle();
+        assert!(
+            first > 0,
+            "control: the first cycle on a freshly written shard of {keys} keys walked nothing, so \
+             the counter is not reading this loop"
+        );
+        let mut quiet_after = None;
+        for round in 0..40 {
+            if cycle() == 0 {
+                quiet_after = Some(round);
+                break;
+            }
+        }
+        assert!(
+            quiet_after.is_some(),
+            "{keys} keys: no cycle in 40 walked nothing; the loop never goes quiet (first cycle \
+             walked {first})"
+        );
+        assert_eq!(
+            cycle(),
+            0,
+            "{keys} keys: a quiet loop walked live blocks on the cycle after it went quiet"
+        );
+    }
+}
+
+/// Per-stage latency of the unattended loop's quiet round: `LOOP_KEYS=<n>`, `LOOP_ROUNDS=<n>`
+/// (default 200), `--ignored --nocapture --test-threads=1`, release. Counts are the claim; the
+/// microseconds are how long this box took.
+#[test]
+#[ignore]
+fn a_quiet_round_by_stage_p50_and_p99() {
+    let keys = std::env::var("LOOP_KEYS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000usize);
+    let rounds = std::env::var("LOOP_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200usize);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = drained_runtime(dir.path(), keys);
+    let shipped = StorageManagerOptions::default();
+    let mut totals = Vec::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut per_stage: std::collections::BTreeMap<String, (Vec<u64>, u64, usize)> = Default::default();
+    for _ in 0..rounds {
+        let report = runtime.run_storage_manager_once(1, shipped.clone());
+        totals.push(report.duration_us);
+        for span in &report.stage_spans {
+            if !order.contains(&span.stage) {
+                order.push(span.stage.clone());
+            }
+            let row = per_stage.entry(span.stage.clone()).or_default();
+            row.0.push(span.duration_us);
+            row.1 = row.1.max(span.walk.live_block_entries);
+            row.2 += usize::from(span.executed);
+        }
+    }
+    totals.sort_unstable();
+    eprintln!(
+        "QLAT keys={keys} rounds={rounds} state=[{}] round_us p50={} p99={} max={}",
+        state(&runtime, &shipped),
+        percentile(&totals, 50),
+        percentile(&totals, 99),
+        totals[totals.len() - 1]
+    );
+    for stage in &order {
+        let (mut us, walk, ran) = per_stage[stage].clone();
+        us.sort_unstable();
+        eprintln!(
+            "QLAT keys={keys} {stage:<18} ran {ran:>3}/{rounds} max_walk={walk:<6} us p50={:<6} p99={:<6} max={}",
+            percentile(&us, 50),
+            percentile(&us, 99),
+            us[us.len() - 1]
+        );
+    }
+}

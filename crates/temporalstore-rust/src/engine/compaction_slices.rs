@@ -61,6 +61,24 @@ fn phase_timing(phase: &str, shard_id: ShardId, started: std::time::Instant) {
     }
 }
 
+/// One line per pass, to stderr, under the same switch: how many slices it ran and how many block
+/// references it moved. A pass that moved none ran only to find nothing to do, and the line is what
+/// tells the two apart from the outside.
+fn pass_summary(shard_id: ShardId, pass: &SlicedPass) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on = *ON.get_or_init(|| {
+        matches!(std::env::var("TS_COMPACTION_PHASE_TIMING").as_deref(), Ok("1") | Ok("true"))
+    });
+    if on {
+        eprintln!(
+            "COMPACTION_PASS shard={shard_id} slices={} moved_refs={} drain_slabs={}",
+            pass.slices,
+            pass.rewritten_block_refs,
+            pass.drain_block_slab_ids.len()
+        );
+    }
+}
+
 /// Keys a slice moves when the caller does not say.
 pub(crate) const COMPACTION_SLICE_KEYS: usize = 128;
 
@@ -91,6 +109,8 @@ pub(crate) struct SlicedPass {
     /// had at that slice. The finish passes on the ones whose placement is still that one.
     relocated_wal_blocks: Vec<super::compaction::RelocatedWalBlock>,
     rewritten_block_refs: usize,
+    /// Slices run so far; read only by the per-pass summary line.
+    slices: usize,
     bytes_written_before_relocation: u64,
 }
 
@@ -242,6 +262,7 @@ impl TemporalEngine {
             return Ok(SliceProgress::More);
         }
         let pass = slot.take().expect("the pass is in flight");
+        pass_summary(shard_id, &pass);
         match moved {
             Err(err) => Err(self.fail_pass(shard_id, shard, pass, err)),
             Ok(()) => {
@@ -363,6 +384,7 @@ impl TemporalEngine {
             wal_placements_seen: HashMap::new(),
             relocated_wal_blocks: Vec::new(),
             rewritten_block_refs: 0,
+            slices: 0,
             bytes_written_before_relocation,
         }))
     }
@@ -617,5 +639,6 @@ impl SlicedPass {
         }
         self.retired_container_wal_blocks.extend(stats.retired_container_wal_blocks);
         self.rewritten_block_refs += stats.rewritten_block_refs;
+        self.slices += 1;
     }
 }

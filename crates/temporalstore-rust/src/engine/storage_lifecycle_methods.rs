@@ -5473,12 +5473,18 @@ pub(super) fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
         });
     storage_bucket_internals::note_bucket_block_visits(visited);
     let needs_wal = indexed_wal || {
+        // The only question is whether ANY model block is log-resident, so the walk is asked for
+        // exactly those. It used to accept every block and test residency in the emit, which made
+        // an image with no log-resident block pay (and be charged for) a full second listing of
+        // its blocks on top of the one a dump manifest already takes. The filter runs before the
+        // walk's own per-block dedup, and the answer is the same: a block the dedup merges shares
+        // a slab and so shares residency.
         let mut model_wal = false;
         storage_bucket_internals::visit_model_live_blocks(
             snapshot, storage_bucket_internals::ModelWalkTally::WholeShardEntries,
-            |_, _| true,
-            |_, _, _, address| {
-                model_wal |= crate::wal_record::is_wal_resident(address.block_slab_id());
+            |_, address| crate::wal_record::is_wal_resident(address.block_slab_id()),
+            |_, _, _, _| {
+                model_wal = true;
             },
         );
         model_wal

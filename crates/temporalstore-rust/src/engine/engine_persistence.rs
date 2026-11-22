@@ -5,6 +5,25 @@
 use super::*;
 
 #[cfg(test)]
+thread_local! {
+    /// Whether the base-only load folds durable relocation records on this thread. The reader's tests
+    /// turn it on; production leaves it off until a writer emits the records.
+    pub(crate) static RELOCATION_FOLD_ON_BASE_ONLY_LOAD: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+fn relocation_fold_on_base_only_load() -> bool {
+    #[cfg(test)]
+    {
+        RELOCATION_FOLD_ON_BASE_ONLY_LOAD.with(|flag| flag.get())
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+#[cfg(test)]
 #[path = "catalog_checkpoint_retirement_tests.rs"]
 mod catalog_checkpoint_retirement_tests;
 
@@ -383,6 +402,18 @@ impl TemporalEngine {
         // block counts and losing the recorded slab layout.
         if fold_deltas {
             self.fold_index_log_deltas(shard_id, &mut shard)?;
+        } else if relocation_fold_on_base_only_load() {
+            // THE BASE-ONLY LOAD FOLDS ONE KIND OF RECORD: the durable relocation records. Ordinary
+            // deltas stay unfolded here, for the reason `load_index_base_only` gives; a relocation is
+            // fsynced after the blocks it names and is applied only to a block the base still names
+            // at the old address, so it can neither name unsynced bytes nor apply a write twice.
+            //
+            // OFF IN PRODUCTION UNTIL A WRITER EMITS THESE RECORDS. The fold reads the index-log tail
+            // above the base's anchor, and the default load is pinned to read none of it
+            // (`index_log_replay_reach`); nothing writes a relocation record yet, so turning it on now
+            // would charge every load a log listing for records that cannot exist. The change that
+            // writes them turns this on together with that guard's new premise.
+            self.fold_relocation_records(shard_id, &mut shard, true);
         }
         // object_*_lookup is a derived serving accelerator and is no longer persisted -- and it
         // is MAINTAINED now rather than rebuilt here. The decoder files each block as it decodes,
@@ -428,6 +459,49 @@ impl TemporalEngine {
         }
         refresh_bucket_runtime_flags(&mut shard);
         Ok(Some(shard))
+    }
+
+    /// Apply the durable relocation records above the base to a state loaded from the base image
+    /// alone. See `IndexDeltaRecord::relocated_from` and `fold_relocation_record`.
+    ///
+    /// NEVER FAILS THE LOAD. A relocation only repoints a block the base already names, so skipping
+    /// one (a corrupt or holed log, a record that does not pair its items) leaves the base's own
+    /// address, which is where the block was when the base was cut and stays readable while the old
+    /// slab is pinned. Refusing the load instead would throw away a good base over a log it does not
+    /// need.
+    pub(super) fn fold_relocation_records(
+        &self,
+        shard_id: ShardId,
+        shard: &mut ShardState,
+        repoint_blocks: bool,
+    ) {
+        let base_anchor = shard.applied_wal_sequence.unwrap_or(0);
+        let mut applied = 0usize;
+        let _ = self
+            .index_log_store
+            .for_each_delta_record_above_anchor(shard_id, 0, base_anchor, |record| {
+                if record.relocated_from.is_empty() {
+                    return;
+                }
+                applied += fold_relocation_record(
+                    shard,
+                    &record.relocated_from,
+                    &record.items,
+                    &record.relocated_elements,
+                    repoint_blocks,
+                );
+            });
+        if applied == 0 {
+            return;
+        }
+        let index = &mut shard.bucket_index;
+        let keys = crate::engine::state::BlockKeysByPosition::from_parts(
+            &index.objects,
+            &index.object_block_lookup,
+        );
+        for bucket in index.bucket_map.values_mut() {
+            update_bucket_layout(shard_id, bucket, &keys);
+        }
     }
 
     /// Fold the append-only index-log deltas onto a (possibly empty) base `ShardState`,
@@ -492,6 +566,23 @@ impl TemporalEngine {
                 // then dropped them. `delta_record_is_reflected_by` is the predicate all three
                 // now ask, so they cannot disagree about a record again.
                 if crate::index_log::delta_record_is_reflected_by(&record, base_anchor) {
+                    return;
+                }
+                // A RELOCATION RECORD IS NOT AN UPSERT OF ITS ITEMS. Folded as one it would file the new
+                // block beside the old (the upsert supersedes the block at the NEW address, which does
+                // not exist yet), so it goes through the conditional relocation fold, in log order
+                // with the ordinary records around it.
+                if !record.relocated_from.is_empty() {
+                    if fold_relocation_record(
+                        shard,
+                        &record.relocated_from,
+                        &record.items,
+                        &record.relocated_elements,
+                        true,
+                    ) > 0
+                    {
+                        applied = true;
+                    }
                     return;
                 }
                 let covered = delta_record_covered_keys(&record);

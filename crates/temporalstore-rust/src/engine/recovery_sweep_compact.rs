@@ -44,6 +44,10 @@ mod compaction_retention_tests;
 #[path = "compaction_slice_tests.rs"]
 mod compaction_slice_tests;
 
+#[cfg(test)]
+#[path = "relocation_fold_tests.rs"]
+mod relocation_fold_tests;
+
 /// OBSERVATION SEAM: was the shard-table write guard still held when a round PUBLISHED its
 /// durable index?
 ///

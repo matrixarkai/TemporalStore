@@ -2151,6 +2151,38 @@ pub struct IndexDeltaRecord<K = serde_json::Value> {
     /// item however much it repeats.
     #[serde(rename = "sk", default)]
     pub shared_object_key: Option<String>,
+    /// A RELOCATION RECORD: where each of `items` WAS. `relocated_from[i]` is the same block as
+    /// `items[i]` (same kind, object, routing bucket) carrying its OLD address; `items[i]` carries the
+    /// new one. Empty for every other record. A compaction moves blocks without writing the WAL, so
+    /// nothing else can say where a block went, and the recovery that loads only the base image (the
+    /// default) cannot fold ordinary deltas, because their fsync is deferred.
+    ///
+    /// THE FOLD OF THESE IS CONDITIONAL, and the condition is the whole safety of it: an item is
+    /// applied only when the base state still names that block at exactly the old address.
+    /// Otherwise the key was written again after the base, the WAL tail re-executes that write, and
+    /// applying the relocation too would apply the write twice. The old address is the identity: a
+    /// block is append-only, so (slab, offset, length) names immutable content and no digest is
+    /// needed.
+    ///
+    /// Appended at the END, the only safe place to add to a positional record; `default` makes every
+    /// record written before it read as "not a relocation".
+    #[serde(rename = "rf", default)]
+    pub relocated_from: Vec<IndexItem>,
+    /// The container ELEMENT each relocated block belongs to, one per `relocated_from`, in the same
+    /// order: the hash field, the set or zset member's element name, the list position's element name;
+    /// empty for a string. An index entry names a BLOCK, not an element, and the container maps that
+    /// recovery reads back are keyed by element, so the fold cannot find the element whose address
+    /// moved without it. Empty for every record that is not a relocation.
+    #[serde(rename = "re", default)]
+    pub relocated_elements: Vec<String>,
+}
+
+/// What a relocation record adds to an ordinary delta record: where each block was, and which
+/// container element it carries. Empty for every other record.
+#[derive(Default)]
+struct Relocation {
+    from: Vec<IndexItem>,
+    elements: Vec<String>,
 }
 
 /// The key a block is written under, from its parts.
@@ -3242,6 +3274,50 @@ impl LocalIndexLogStore {
                 meta,
                 upsert,
                 durable,
+                Relocation::default(),
+            )
+        })
+    }
+
+    /// Append ONE durable relocation record: `to[i]` is where block `from[i]` now lives.
+    ///
+    /// The record carries NO WAL anchor, on purpose. The load fold skips a record whose anchor is at
+    /// or below the base image's as already folded, and a relocation moves blocks without advancing
+    /// any WAL sequence, so an anchored record would be skipped while the base still names the old
+    /// slab. An anchor-less record with content is "reflected by nothing": its piece is sealed under
+    /// the UNREFLECTED name, so the post-dump sweep never unlinks it, and the replay anchor does not
+    /// move.
+    ///
+    /// Always `durable` (fsynced before this returns) and always an upsert. The caller must have
+    /// fsynced the blocks `to` names BEFORE calling, so no durable record names bytes that are not on
+    /// disk. Returns the record's sequence, or 0 when nothing was written (bulk ingest or a disabled
+    /// log): a caller must treat 0 as "not durable".
+    pub fn append_relocation(
+        &self,
+        shard_id: ShardId,
+        from: Vec<IndexItem>,
+        to: Vec<IndexItem>,
+        elements: Vec<String>,
+    ) -> Result<u64, IndexLogError> {
+        if from.len() != to.len() || from.len() != elements.len() {
+            return Err(IndexLogError::Encoding(format!(
+                "a relocation record needs one old placement and one element name per new \
+                 placement, got {}, {} and {}",
+                from.len(),
+                to.len(),
+                elements.len()
+            )));
+        }
+        crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::IndexLogDelta, || {
+            self.append_delta_inner(
+                shard_id,
+                to,
+                Vec::new(),
+                None,
+                None,
+                true,
+                true,
+                Relocation { from, elements },
             )
         })
     }
@@ -3256,6 +3332,7 @@ impl LocalIndexLogStore {
         meta: Option<MetaItem>,
         upsert: bool,
         durable: bool,
+        relocation: Relocation,
     ) -> Result<u64, IndexLogError> {
         if bulk_ingest_mode() || !indexlog_enabled() {
             return Ok(0);
@@ -3316,7 +3393,7 @@ impl LocalIndexLogStore {
             active = active_index_log(&inner.root, shard_id).0;
         }
         let next_sequence = last_sequence.saturating_add(1);
-        let record = prepare_delta_record(
+        let mut record = prepare_delta_record(
             shard_id,
             next_sequence,
             items,
@@ -3325,6 +3402,8 @@ impl LocalIndexLogStore {
             meta,
             upsert,
         );
+        record.relocated_from = relocation.from;
+        record.relocated_elements = relocation.elements;
         // Frame the delta record with a length + SHA-256 digest (crate::log_framing) so a
         // value-preserving bit-flip (e.g. a flipped `deleted` flag or block address) in this
         // committed line is detected on read rather than replayed as truth on recovery.
@@ -4531,6 +4610,8 @@ fn prepare_delta_record(
         key_states,
         upsert,
         shared_object_key,
+        relocated_from: Vec::new(),
+        relocated_elements: Vec::new(),
     }
 }
 
@@ -6243,6 +6324,8 @@ mod tests {
                     Vec::new()
                 },
                 shared_object_key: None,
+                relocated_from: Vec::new(),
+                relocated_elements: Vec::new(),
             };
             let answer = super::delta_record_is_reflected_by(&record, *base_anchor);
             if answer != *reflected {
@@ -6355,6 +6438,8 @@ mod tests {
             upsert: true,
             key_states: Vec::new(),
             shared_object_key: None,
+            relocated_from: Vec::new(),
+            relocated_elements: Vec::new(),
         };
         let encoded = serde_json::to_string(&record).unwrap();
         assert!(encoded.contains("\"items\""), "the discriminator must survive: {encoded}");
@@ -7855,6 +7940,8 @@ mod tests {
             upsert: true,
             key_states: Vec::new(),
             shared_object_key,
+            relocated_from: Vec::new(),
+            relocated_elements: Vec::new(),
         };
         let inline = encode_index_payload(&record(item.clone(), None), INDEX_LOG_SHAPE_DELTA).unwrap();
         let moved = encode_index_payload(
@@ -7923,6 +8010,8 @@ mod tests {
                 upsert: true,
                 key_states: Vec::new(),
                 shared_object_key: None,
+                relocated_from: Vec::new(),
+                relocated_elements: Vec::new(),
             },
             INDEX_LOG_SHAPE_DELTA,
         )
@@ -7938,6 +8027,8 @@ mod tests {
                 upsert: true,
                 key_states: Vec::new(),
                 shared_object_key: Some(shared.to_string()),
+                relocated_from: Vec::new(),
+                relocated_elements: Vec::new(),
             },
             INDEX_LOG_SHAPE_DELTA,
         )
@@ -8860,6 +8951,8 @@ mod tests {
             upsert: false,
             key_states: Vec::new(),
             shared_object_key: None,
+            relocated_from: Vec::new(),
+            relocated_elements: Vec::new(),
         };
         let binary_record = IndexDeltaRecord {
             sequence: 2,
@@ -8916,6 +9009,8 @@ mod tests {
             upsert: true,
             key_states: Vec::new(),
             shared_object_key: None,
+            relocated_from: Vec::new(),
+            relocated_elements: Vec::new(),
         };
         let mut packed = Vec::new();
         let mut ser = rmp_serde::Serializer::new(&mut packed).with_struct_map();
@@ -10440,6 +10535,8 @@ flag exists to say",
                 upsert: true,
                 key_states: Vec::new(),
                 shared_object_key: None,
+                relocated_from: Vec::new(),
+                relocated_elements: Vec::new(),
             };
             // The payload WITHOUT compression, so the figure is the record's own shape rather
             // than zstd's opinion of this fixture's repetitiveness.
@@ -10977,6 +11074,8 @@ flag exists to say",
             upsert: true,
             key_states: Vec::new(),
             shared_object_key: None,
+            relocated_from: Vec::new(),
+            relocated_elements: Vec::new(),
         };
         let path = append_binary_framed(dir.path(), &record);
         let on_disk = std::fs::read(&path).unwrap();
@@ -11016,6 +11115,8 @@ flag exists to say",
             upsert: true,
             key_states: vec![serde_json::json!({"k": 1})],
             shared_object_key: None,
+            relocated_from: Vec::new(),
+            relocated_elements: Vec::new(),
         };
         let mut payload =
             vec![index_container_byte(INDEX_LOG_CODEC_PROTOBUF, INDEX_LOG_SHAPE_DELTA)];
@@ -11121,6 +11222,8 @@ flag exists to say",
             upsert: false,
             key_states: Vec::new(),
             shared_object_key: None,
+            relocated_from: Vec::new(),
+            relocated_elements: Vec::new(),
         };
         let body = crate::index_log_wire::encode_delta_record(&record).unwrap();
         for shape in [INDEX_LOG_SHAPE_WHOLE, INDEX_LOG_SHAPE_ANCHOR] {
@@ -11157,6 +11260,8 @@ flag exists to say",
             upsert: true,
             key_states: Vec::new(),
             shared_object_key: None,
+            relocated_from: Vec::new(),
+            relocated_elements: Vec::new(),
         };
         let path = append_binary_framed(dir.path(), &record);
         let before = std::fs::metadata(&path).unwrap().len();
@@ -11191,6 +11296,8 @@ flag exists to say",
             upsert: true,
             key_states: Vec::new(),
             shared_object_key: None,
+            relocated_from: Vec::new(),
+            relocated_elements: Vec::new(),
         };
         append_binary_framed(dir.path(), &record);
 
@@ -11229,6 +11336,8 @@ flag exists to say",
             upsert: true,
             key_states: Vec::new(),
             shared_object_key: None,
+            relocated_from: Vec::new(),
+            relocated_elements: Vec::new(),
         };
         let path = append_binary_framed(dir.path(), &record);
         let whole = std::fs::metadata(&path).unwrap().len();
@@ -12216,6 +12325,8 @@ flag exists to say",
             upsert: true,
             key_states: Vec::new(),
             shared_object_key: None,
+            relocated_from: Vec::new(),
+            relocated_elements: Vec::new(),
         };
         let payload = encode_index_payload(&record, INDEX_LOG_SHAPE_DELTA).expect("encode");
 
