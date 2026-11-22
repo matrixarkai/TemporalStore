@@ -1427,7 +1427,8 @@ jobs:
             engine::tests::a_counter_increment_writes_its_series_when_due::a_log_cut_mid_record_recovers_a_prefix_of_the_writes_of_every_counter_arm \
             engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_digest_equals_exactly_when_the_lines_were_equal \
             engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_retained_manifest_is_decoded_once_across_plans \
-            data_node::dirty_tracking::dirty_count_tests::clearing_dirty_buckets_reads_the_routing_range_once_not_once_per_key ; do
+            data_node::dirty_tracking::dirty_count_tests::clearing_dirty_buckets_reads_the_routing_range_once_not_once_per_key \
+            engine::tests::a_retained_manifest_set_is_computed_once_per_list::the_retained_manifest_set_is_computed_once_across_rounds_and_again_after_a_new_dump ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/cost-gate.log

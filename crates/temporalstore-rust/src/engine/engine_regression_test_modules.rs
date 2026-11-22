@@ -160,6 +160,8 @@ mod a_compaction_does_not_lose_a_dirty_objects_dump;
 mod a_counter_increment_writes_its_series_when_due;
 #[path = "tests/a_manifest_is_fingerprinted_once_not_once_per_plan.rs"]
 mod a_manifest_is_fingerprinted_once_not_once_per_plan;
+#[path = "tests/a_retained_manifest_set_is_computed_once_per_list.rs"]
+mod a_retained_manifest_set_is_computed_once_per_list;
 #[path = "tests/a_hash_get_all_shares_its_block_keys.rs"]
 mod a_hash_get_all_shares_its_block_keys;
 #[path = "tests/a_feature_sum_reads_each_point_in_place.rs"]
