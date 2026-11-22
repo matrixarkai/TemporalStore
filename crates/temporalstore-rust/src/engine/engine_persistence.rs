@@ -5,25 +5,6 @@
 use super::*;
 
 #[cfg(test)]
-thread_local! {
-    /// Whether the base-only load folds durable relocation records on this thread. The reader's tests
-    /// turn it on; production leaves it off until a writer emits the records.
-    pub(crate) static RELOCATION_FOLD_ON_BASE_ONLY_LOAD: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-}
-
-fn relocation_fold_on_base_only_load() -> bool {
-    #[cfg(test)]
-    {
-        RELOCATION_FOLD_ON_BASE_ONLY_LOAD.with(|flag| flag.get())
-    }
-    #[cfg(not(test))]
-    {
-        false
-    }
-}
-
-#[cfg(test)]
 #[path = "catalog_checkpoint_retirement_tests.rs"]
 mod catalog_checkpoint_retirement_tests;
 
@@ -402,17 +383,13 @@ impl TemporalEngine {
         // block counts and losing the recorded slab layout.
         if fold_deltas {
             self.fold_index_log_deltas(shard_id, &mut shard)?;
-        } else if relocation_fold_on_base_only_load() {
+        } else {
             // THE BASE-ONLY LOAD FOLDS ONE KIND OF RECORD: the durable relocation records. Ordinary
             // deltas stay unfolded here, for the reason `load_index_base_only` gives; a relocation is
             // fsynced after the blocks it names and is applied only to a block the base still names
             // at the old address, so it can neither name unsynced bytes nor apply a write twice.
-            //
-            // OFF IN PRODUCTION UNTIL A WRITER EMITS THESE RECORDS. The fold reads the index-log tail
-            // above the base's anchor, and the default load is pinned to read none of it
-            // (`index_log_replay_reach`); nothing writes a relocation record yet, so turning it on now
-            // would charge every load a log listing for records that cannot exist. The change that
-            // writes them turns this on together with that guard's new premise.
+            // Compaction writes these records per slice, so the load reads the index-log tail above
+            // the base's anchor for them (and for nothing else).
             self.fold_relocation_records(shard_id, &mut shard, true);
         }
         // object_*_lookup is a derived serving accelerator and is no longer persisted -- and it

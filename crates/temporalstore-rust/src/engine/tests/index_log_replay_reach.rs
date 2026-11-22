@@ -214,11 +214,14 @@ fn the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does() 
     );
     assert!(folded.is_some(), "APPARATUS: the fold-aware load returned no state");
 
-    // THE FINDING: the default arm reaches none of it.
-    assert_eq!(
-        default_declined, 0,
-        "the default load path declined {default_declined} pieces -- it now reaches the \
-         anchor-aware fold, and this module's whole premise has changed"
+    // THE PREMISE, CHANGED ON PURPOSE: the default arm now reads the index-log tail, for the durable
+    // relocation records compaction writes per slice, and no more of it than the fold-aware load
+    // does. It folds nothing else (that is what `fold_deltas == false` still means), so it never reads
+    // more frames than the fold-aware arm.
+    assert!(
+        default_frames <= checked_frames,
+        "the default load read {default_frames} frames, more than the fold-aware load's \
+         {checked_frames}: it must read the tail only for relocation records"
     );
     // And the decline is exactly the pieces the base covers -- not everything, and not a
     // count that happens to match. The sealed pieces above the base are still read, and so is

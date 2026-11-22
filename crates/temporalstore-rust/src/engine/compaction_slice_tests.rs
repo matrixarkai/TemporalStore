@@ -518,6 +518,31 @@ fn a_pass_with_nothing_on_the_drain_slabs_does_nothing() {
     );
 }
 
+/// A PASS MAKES THE RELOCATION OF EVERY BLOCK IT MOVED DURABLE. Each slice's moves become relocation
+/// records (old item, new item, element name, one of each per block), appended after the blocks they
+/// name are synced, so recovery can repoint a block from the base image plus the records. Not
+/// appending them (dropping `flush_relocation_records`, or its call at the finish) leaves the log with
+/// none, and this turns red.
+#[test]
+fn a_pass_writes_a_durable_relocation_record_for_every_block_it_moved() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let (_, drain) = seed(&engine, 60);
+    engine.compact_shard_blocks_draining_sliced(1, drain, 32).unwrap();
+    let mut recorded = 0usize;
+    let mut unpaired = 0usize;
+    let _ = engine.index_log_store.for_each_delta_record_above_anchor(1, 0, 0, |record| {
+        recorded += record.relocated_from.len();
+        if record.relocated_from.len() != record.items.len()
+            || record.relocated_elements.len() != record.items.len()
+        {
+            unpaired += 1;
+        }
+    });
+    assert!(recorded > 0, "the pass moved blocks and wrote no relocation record");
+    assert_eq!(unpaired, 0, "a relocation record did not pair its old items, new items and element names");
+}
+
 /// A KEYED STEP NAMES THE BLOCKS OF ITS OWN BUCKETS, NOT THE SHARD'S. Naming a block's object needs an
 /// inversion of the object tables; built with the whole-shard walk once per bucket a 200-key step
 /// visited every object of every kind about 200 times, which measured 4.1 s a step at 100k keys and
