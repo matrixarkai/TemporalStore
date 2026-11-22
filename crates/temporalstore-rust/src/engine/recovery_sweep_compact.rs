@@ -240,24 +240,14 @@ struct ExpiryIndexDelta {
     applied_wal_sequence: Option<u64>,
 }
 
-fn expiry_record_is_hot(shard: &ShardState, key: &str) -> bool {
+pub(super) fn expiry_record_is_hot(shard: &ShardState, key: &str) -> bool {
     if shard.bucket_index.released_buckets.is_empty() {
-        return record_exists(shard, key);
+        return record_exists_exact(shard, key);
     }
     let (start, end) = shard.routing_range();
-    let mut exists = false;
-    for record_key in associated_record_keys(key) {
-        if !record_exists_exact(shard, &record_key) {
-            continue;
-        }
-        exists = true;
-        // Released buckets retain model locators. Presence in those maps is not residency.
-        let bucket = block_routing_bucket(&record_key, start, end);
-        if shard.bucket_index.released_buckets.contains(&bucket) {
-            return false;
-        }
-    }
-    exists
+    // Released buckets retain model locators, but related records have independent residency.
+    let bucket = block_routing_bucket(key, start, end);
+    !shard.bucket_index.released_buckets.contains(&bucket) && record_exists_exact(shard, key)
 }
 
 impl TemporalEngine {

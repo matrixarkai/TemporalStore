@@ -8541,7 +8541,14 @@ fn mark_bucket_index_block_deleted_recording(
     removed
 }
 
+#[cfg(test)]
+thread_local! {
+    static ASSOCIATED_KEY_BUILDS_FOR_TEST: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn associated_record_keys(key: &str) -> Vec<String> {
+    #[cfg(test)]
+    ASSOCIATED_KEY_BUILDS_FOR_TEST.with(|count| count.set(count.get() + 1));
     if key.starts_with("control_state:") {
         return vec![key.to_string()];
     }
