@@ -126,7 +126,7 @@ fn main() {
     // `TS_BLOCK_STORE_DIR` is the one name. The DEFAULT is deliberately left where it was:
     // changing it would move where an operator who sets neither name keeps their blocks.
     let block_store_dir = block_store_dir_from_env();
-    // Directory for the streamed attachment/blob tier (POST/GET /blob/<key>);
+    // Directory for the streamed attachment/blob tier (PUT/GET/DELETE /blob/<key>);
     // computed here so it does not outlive the move of `block_store_dir`.
     let blob_store_dir =
         std::env::var("TS_BLOB_STORE_DIR").unwrap_or_else(|_| format!("{block_store_dir}/blobs"));
@@ -1480,12 +1480,32 @@ fn handle_blob_stream(
             }
             StreamAction::Handled
         }
+        "DELETE" => {
+            let _ = transfer.drain_body();
+            if key.is_empty() {
+                write_stream_json(
+                    transfer,
+                    400,
+                    &Status::error("bad_request", "missing blob key"),
+                );
+                return StreamAction::Handled;
+            }
+            match runtime.block_on(blob_store.delete(key)) {
+                Ok(()) => write_stream_json(transfer, 200, &Status::ok()),
+                Err(err) => write_stream_json(
+                    transfer,
+                    500,
+                    &Status::error("blob_delete_failed", err.to_string()),
+                ),
+            }
+            StreamAction::Handled
+        }
         _ => {
             let _ = transfer.drain_body();
             write_stream_json(
                 transfer,
                 405,
-                &Status::error("method_not_allowed", "use POST or GET on /blob/<key>"),
+                &Status::error("method_not_allowed", "use POST, PUT, GET or DELETE on /blob/<key>"),
             );
             StreamAction::Handled
         }
