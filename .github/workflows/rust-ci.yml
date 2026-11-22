@@ -1256,6 +1256,7 @@ jobs:
             engine::recovery_sweep_compact::compaction_slice_tests::the_pin_covers_a_slab_the_tally_forgot \
             engine::recovery_sweep_compact::compaction_slice_tests::a_pass_with_nothing_on_the_drain_slabs_does_nothing \
             engine::recovery_sweep_compact::compaction_slice_tests::a_pass_over_a_confirmed_index_runs_no_promote_scan \
+            engine::recovery_sweep_compact::compaction_slice_tests::a_round_names_the_log_placements_of_the_blocks_it_moved \
             engine::recovery_sweep_compact::compaction_slice_tests::a_keyed_step_names_the_blocks_of_its_buckets_and_not_the_shards \
             data_node::runtime_storage::maintenance_report_tests::the_draining_stage_always_runs_the_sliced_pass
           do

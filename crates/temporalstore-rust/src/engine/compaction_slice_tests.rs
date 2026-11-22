@@ -431,6 +431,67 @@ fn a_sliced_pass_keeps_every_key_readable_and_the_index_consistent_between_slice
     );
 }
 
+/// A ROUND NAMES THE BLOCKS THE LOG WAS HOLDING THAT IT TOOK OUT, each with the placement it had.
+/// A string or series block is found by its object alone, a container element by its object AND its
+/// element name, and a block with no registration is not named. Two elements of one object with one
+/// registered must name exactly that one: looking an element up by its object alone would name both
+/// or neither. Dropping the element name from the lookup turns this red.
+#[test]
+fn a_round_names_the_log_placements_of_the_blocks_it_moved() {
+    use super::super::block_in_wal::wal_resident_key;
+    use super::super::compaction::{CompactionRewriteStats, MovedBlock, RelocatedWalBlock};
+    use super::super::hashing::stable_block_object_id;
+    use super::super::state::WalResidentBlock;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let entry = crate::block_store::ElementEntry::default;
+    let moved = |model: &str, key: &str, element: Option<&str>| MovedBlock {
+        model_id: model.to_string(),
+        object_key: key.to_string(),
+        element_name: element.map(str::to_string),
+        old: entry(),
+        new: entry(),
+    };
+    let string_object = stable_block_object_id(1, "string", "held");
+    let hash_object = stable_block_object_id(1, "hash", "catalog");
+    {
+        let mut shards = engine.shards_write_marked();
+        let shard = shards.get_mut(&1).unwrap();
+        shard.wal_resident_blocks.insert(
+            wal_resident_key(string_object, None),
+            WalResidentBlock { log_id: 3, sequence: 41 },
+        );
+        shard.wal_resident_blocks.insert(
+            wal_resident_key(hash_object, Some("f-1")),
+            WalResidentBlock { log_id: 3, sequence: 42 },
+        );
+    }
+    let mut stats = CompactionRewriteStats::for_drain_round(1, u64::MAX, usize::MAX, BTreeSet::new());
+    stats.moved = vec![
+        moved("string", "held", None),
+        moved("string", "never-in-the-log", None),
+        moved("hash", "catalog", Some("f-1")),
+        moved("hash", "catalog", Some("f-2")),
+    ];
+    {
+        let shards = engine.shards_write_marked();
+        stats.note_relocated_wal_blocks(1, shards.get(&1).unwrap());
+    }
+    assert_eq!(
+        stats.relocated_wal_blocks,
+        vec![
+            RelocatedWalBlock { object_id: string_object, element_name: None, from_log_id: 3, from_sequence: 41 },
+            RelocatedWalBlock {
+                object_id: hash_object,
+                element_name: Some("f-1".to_string()),
+                from_log_id: 3,
+                from_sequence: 42,
+            },
+        ],
+        "a round must name exactly the moved blocks the log held, one per registration"
+    );
+}
+
 /// A second pass over slabs nothing is left on does no work: no roll, no publish.
 #[test]
 fn a_pass_with_nothing_on_the_drain_slabs_does_nothing() {

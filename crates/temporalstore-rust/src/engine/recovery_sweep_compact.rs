@@ -2401,6 +2401,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     ),
                 ));
             }
+            rewrite_stats.note_relocated_wal_blocks(shard_id, shard);
             let partial_index_bytes = match self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id) {
                 Ok(bytes) => bytes,
                 Err(publish) => {
@@ -2493,6 +2494,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             note_compaction_flush_publish();
             LAST_ROUND_DECISIONS.with(|cell| cell.set(rewrite_stats.decisions));
         }
+        rewrite_stats.note_relocated_wal_blocks(shard_id, shard);
         let index_bytes = match self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id) {
             Ok(bytes) => bytes,
             Err(publish) => {

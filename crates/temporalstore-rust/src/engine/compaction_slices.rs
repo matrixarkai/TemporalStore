@@ -87,6 +87,9 @@ pub(crate) struct SlicedPass {
     /// then. The finish retires a registration only if it is still that placement.
     retired_container_wal_blocks: Vec<(u64, String)>,
     wal_placements_seen: HashMap<u64, (u64, u64)>,
+    /// Every block a slice moved that the log was holding, any address kind, with the placement it
+    /// had at that slice. The finish passes on the ones whose placement is still that one.
+    relocated_wal_blocks: Vec<super::compaction::RelocatedWalBlock>,
     rewritten_block_refs: usize,
     bytes_written_before_relocation: u64,
 }
@@ -227,7 +230,7 @@ impl TemporalEngine {
             shard_id, shard, start_routing_bucket, end_routing_bucket, &stats.moved,
             CompactionIndexRefresh::ChangedBuckets,
         );
-        pass.note_slice(shard, stats);
+        pass.note_slice(shard_id, shard, stats);
         phase_timing("slice", shard_id, slice_started);
         let pass_ended = moved.is_err()
             || if pass.by_bucket {
@@ -358,6 +361,7 @@ impl TemporalEngine {
             buckets_exhausted: false,
             retired_container_wal_blocks: Vec::new(),
             wal_placements_seen: HashMap::new(),
+            relocated_wal_blocks: Vec::new(),
             rewritten_block_refs: 0,
             bytes_written_before_relocation,
         }))
@@ -566,6 +570,24 @@ impl TemporalEngine {
             })
             .cloned()
             .collect();
+        // THE BLOCKS THE LOG WAS HOLDING THAT THIS PASS TOOK OUT, those whose placement is still the
+        // one a slice saw. A registration a writer has replaced since names a newer record, which the
+        // pass did not move and must not be told it may retire.
+        stats.relocated_wal_blocks = pass
+            .relocated_wal_blocks
+            .iter()
+            .filter(|block| {
+                let key = crate::engine::block_in_wal::wal_resident_key(
+                    block.object_id,
+                    block.element_name.as_deref(),
+                );
+                shard
+                    .wal_resident_blocks
+                    .get(&key)
+                    .is_some_and(|now| now.log_id == block.from_log_id && now.sequence == block.from_sequence)
+            })
+            .cloned()
+            .collect();
         let index_bytes = self.publish_compacted_container_index(
             shard_id, shard, &stats, pass.target_block_slab_id,
         )?;
@@ -582,7 +604,9 @@ impl SlicedPass {
     /// Fold one slice's outcome into the pass, and record the placement each container block the
     /// slice retired had in the log when it did, so the finish can tell a registration a writer has
     /// since replaced from one nobody has touched.
-    fn note_slice(&mut self, shard: &ShardState, stats: CompactionRewriteStats) {
+    fn note_slice(&mut self, shard_id: ShardId, shard: &ShardState, mut stats: CompactionRewriteStats) {
+        stats.note_relocated_wal_blocks(shard_id, shard);
+        self.relocated_wal_blocks.append(&mut stats.relocated_wal_blocks);
         for (object_id, element_name) in &stats.retired_container_wal_blocks {
             let key = crate::engine::block_in_wal::wal_resident_key(*object_id, Some(element_name));
             if let Some(placement) = shard.wal_resident_blocks.get(&key) {

@@ -314,6 +314,10 @@ pub(super) struct CompactionRewriteStats {
     /// Every block this round moved, old address beside new. The bucket index is updated for
     /// exactly these blocks, so a round no longer rebuilds the whole index from the model maps.
     pub(super) moved: Vec<MovedBlock>,
+    /// The blocks of `moved` that the log held, each with its placement. Filled by
+    /// [`CompactionRewriteStats::note_relocated_wal_blocks`], which the round calls once it has moved
+    /// what it is going to move.
+    pub(super) relocated_wal_blocks: Vec<RelocatedWalBlock>,
 }
 
 /// One block a round relocated: the object it belongs to, the model that holds it, and where it
@@ -322,8 +326,42 @@ pub(super) struct CompactionRewriteStats {
 pub(super) struct MovedBlock {
     pub(super) model_id: String,
     pub(super) object_key: String,
+    /// The element the block holds, for a container element; `None` for a string or a series block.
+    pub(super) element_name: Option<String>,
     pub(super) old: ElementEntry,
     pub(super) new: ElementEntry,
+}
+
+/// A block a round relocated that the log was holding, with the placement it had then. A log record
+/// may be reclaimed only once nothing needs the placement any more, and the round is what knows
+/// which blocks it took out of the log: this names each, and the placement lets the finish tell a
+/// registration nobody has touched from one a writer has replaced since.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RelocatedWalBlock {
+    pub(super) object_id: u64,
+    pub(super) element_name: Option<String>,
+    pub(super) from_log_id: u64,
+    pub(super) from_sequence: u64,
+}
+
+impl CompactionRewriteStats {
+    /// Name, for every block this round moved, the log placement it held when it moved, if it held
+    /// one. Any address kind: a string or series block is looked up by its object alone, a
+    /// container element by its object and element name. A block with no registration is not named.
+    pub(super) fn note_relocated_wal_blocks(&mut self, shard_id: ShardId, shard: &ShardState) {
+        for moved in &self.moved {
+            let object_id = stable_block_object_id(shard_id, &moved.model_id, &moved.object_key);
+            let key = super::block_in_wal::wal_resident_key(object_id, moved.element_name.as_deref());
+            if let Some(placement) = shard.wal_resident_blocks.get(&key) {
+                self.relocated_wal_blocks.push(RelocatedWalBlock {
+                    object_id,
+                    element_name: moved.element_name.clone(),
+                    from_log_id: placement.log_id,
+                    from_sequence: placement.sequence,
+                });
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1151,17 +1189,16 @@ fn flush_container_batch(
     );
     let folded = destinations.len();
     for (destination, (key, _)) in destinations.drain(..).zip(items.iter()) {
+        let element_name = super::container_blocks::element_name_from_element_key(spelling, key);
         if crate::wal_record::is_wal_resident(destination.block_slab_id()) {
-            if let (Some(object_id), Some(element_name)) = (
-                object_id,
-                super::container_blocks::element_name_from_element_key(spelling, key),
-            ) {
+            if let (Some(object_id), Some(element_name)) = (object_id, element_name.clone()) {
                 rewrite_stats.retired_container_wal_blocks.push((object_id, element_name));
             }
         }
         rewrite_stats.moved.push(MovedBlock {
             model_id: model_id.to_string(),
             object_key: object_key.to_string(),
+            element_name,
             old: destination.clone(),
             new: new_address.clone(),
         });
@@ -1261,6 +1298,7 @@ pub(super) fn compact_block_addresses<'a>(
         rewrite_stats.moved.push(MovedBlock {
             model_id: model_id.to_string(),
             object_key: object_key.to_string(),
+            element_name: None,
             old: address.clone(),
             new: new_address.clone(),
         });
@@ -1337,6 +1375,7 @@ pub(super) fn compact_feature_block_addresses(
         rewrite_stats.moved.push(MovedBlock {
             model_id: model_id.to_string(),
             object_key: object_key.to_string(),
+            element_name: None,
             old: old_address.clone(),
             new: new_address.clone(),
         });
