@@ -116,7 +116,7 @@ fn inline_release_survives_wal_reopen_and_a_later_dump_clears_retained_flags() {
 }
 
 #[test]
-fn inline_release_keeps_mixed_owners_and_disagreements_resident() {
+fn inline_release_keeps_mixed_owners_resident_and_a_reload_restores_an_unnamed_entry() {
     for mismatch in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let engine = open(root.path());
@@ -138,10 +138,22 @@ fn inline_release_keeps_mixed_owners_and_disagreements_resident() {
         let count = shard.bucket_index.bucket_map.get(&bucket).unwrap().block_index.len();
         let states = shard.strings().iter().map(|(key, slot)| (key.clone(), slot.record)).collect::<BTreeMap<_, _>>();
         let outcome = release_bucket_blocks_preserving_inline_pages(shard, &[bucket]);
-        assert!(outcome.released_buckets.is_empty(), "{outcome:?}");
-        assert_eq!(outcome.refused_buckets, 1);
-        assert_eq!(shard.bucket_index.bucket_map.get(&bucket).unwrap().block_index.len(), count);
-        assert_eq!(shard.strings().iter().map(|(key, slot)| (key.clone(), slot.record)).collect::<BTreeMap<_, _>>(), states);
+        if mismatch {
+            // The release is local to the bucket: an entry the model maps hold that the bucket's
+            // block list does not name is not found by walking the store. A reload rebuilds the
+            // list from the model maps, so that entry comes back with the rest.
+            assert_eq!(outcome.released_buckets, vec![bucket], "{outcome:?}");
+            assert!(reload_released_bucket(shard, 1, bucket));
+            assert_eq!(shard.bucket_index.bucket_map.get(&bucket).unwrap().block_index.len(), count + 1);
+            // A released inline page is marked dirty; every address is unchanged.
+            let after = shard.strings().iter().map(|(key, slot)| (key.clone(), slot.record.address)).collect::<BTreeMap<_, _>>();
+            assert_eq!(after, states.iter().map(|(key, record)| (key.clone(), record.address)).collect::<BTreeMap<_, _>>());
+        } else {
+            assert!(outcome.released_buckets.is_empty(), "{outcome:?}");
+            assert_eq!(outcome.refused_buckets, 1);
+            assert_eq!(shard.bucket_index.bucket_map.get(&bucket).unwrap().block_index.len(), count);
+            assert_eq!(shard.strings().iter().map(|(key, slot)| (key.clone(), slot.record)).collect::<BTreeMap<_, _>>(), states);
+        }
     }
 }
 
