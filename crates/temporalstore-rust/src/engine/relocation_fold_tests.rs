@@ -214,6 +214,74 @@ fn a_protobuf_checkpoint_reclaims_a_move_only_after_persisting_its_destination()
     checkpoint_reclaims_a_relocation_after_persisting_its_destination(true);
 }
 
+fn item_for_live_entry(entry: &LiveBlockEntry) -> IndexItem {
+    IndexItem {
+        kind: crate::index_log::IndexItemKind::Block,
+        routing_bucket: block_routing_bucket(&entry.object_key, 0, u32::MAX),
+        block_ref_key: String::new(),
+        object_key: entry.object_key.clone(),
+        model_id: entry.kind.as_str().to_string(),
+        object_id: stable_block_object_id(1, entry.kind.as_str(), &entry.object_key),
+        entry: Some(entry.address.clone()),
+        deleted: false,
+    }
+}
+
+#[test]
+fn relocation_repoints_every_live_model_and_is_idempotent() {
+    use storage_bucket_internals::{model_kind_registry_guards, ModelKind};
+    let mut shard = model_kind_registry_guards::shard_holding_one_block_of_every_kind();
+    let entries = collect_model_live_block_entries(&shard);
+    let emitted = entries.iter().map(|entry| entry.kind.as_str()).collect::<BTreeSet<_>>();
+    let declared = ModelKind::ALL.iter().map(|kind| kind.as_str()).collect::<BTreeSet<_>>();
+    assert!(declared.len() >= 15);
+    assert_eq!(emitted, declared);
+    let from = entries.iter().map(item_for_live_entry).collect::<Vec<_>>();
+    let mut to = from.clone();
+    let destination = ElementEntry::from_parts(99, 256, 64, Some(0), None);
+    for item in &mut to { item.entry = Some(destination.clone()); }
+    let elements = entries.iter().map(|entry| entry.element_name.as_deref()
+        .unwrap_or_default().to_string()).collect::<Vec<_>>();
+    assert_eq!(fold_relocation_record(&mut shard, &from, &to, &elements, false), entries.len());
+    let moved = collect_model_live_block_entries(&shard);
+    assert_eq!(moved.len(), entries.len());
+    assert!(moved.iter().all(|entry| entry.address == destination), "{moved:?}");
+    assert_eq!(fold_relocation_record(&mut shard, &from, &to, &elements, false), 0);
+}
+
+#[test]
+fn series_relocation_moves_shared_points_in_order_without_overwriting_newer_points() {
+    use timestamped_series::TimestampedSeries;
+    let mut shard = ShardState::default();
+    let old = ElementEntry::from_parts(7, 128, 64, Some(0), None);
+    let middle = ElementEntry::from_parts(8, 128, 64, Some(0), None);
+    let destination = ElementEntry::from_parts(9, 128, 64, Some(0), None);
+    let newer = ElementEntry::from_parts(10, 128, 64, Some(0), None);
+    let mut points = (0..10_000).map(|at| (at, old.clone())).collect::<BTreeMap<_, _>>();
+    points.insert(10_001, newer.clone());
+    shard.features_mut().insert("sequence".into(), points.into());
+    shard.features_mut().insert("unrelated".into(), BTreeMap::from([(1, old.clone())]).into());
+    let mut first = IndexItem {
+        kind: crate::index_log::IndexItemKind::Block,
+        routing_bucket: 1, block_ref_key: String::new(), object_key: "sequence".into(),
+        model_id: "feature".into(), object_id: 1, entry: Some(old.clone()), deleted: false,
+    };
+    let mut second = first.clone();
+    second.entry = Some(middle.clone());
+    let mut last = first.clone();
+    last.entry = Some(destination.clone());
+    let from = [first.clone(), second.clone()];
+    let to = [second, last];
+    assert_eq!(fold_relocation_record(&mut shard, &from, &to, &[String::new(), String::new()], false), 2);
+    let series = shard.features().get("sequence").unwrap();
+    for (at, address) in series.points() {
+        assert_eq!(*address, if at == 10_001 { newer.clone() } else { destination.clone() });
+    }
+    assert_eq!(TimestampedSeries::get(shard.features().get("unrelated").unwrap(), 1), Some(&old));
+    first.entry = Some(old);
+    assert_eq!(fold_relocation_record(&mut shard, &[first], &to[..1], &[String::new()], false), 0);
+}
+
 /// (ii) THE KEY WAS WRITTEN AFTER THE BASE. The relocation names the block the increment made, which
 /// the base never named, so applying it would put the incremented value at the new address and the
 /// WAL replay would then increment it again. The record must be skipped and the key must end at the

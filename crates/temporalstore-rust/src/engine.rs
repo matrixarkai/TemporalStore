@@ -6556,11 +6556,12 @@ fn fold_relocation_record(
     }
     let mut applied = 0;
     let no_covered_keys = BTreeSet::new();
-    for ((old, new), element) in from.iter().zip(to.iter()).zip(elements.iter()) {
+    let series_applied = fold_series_relocations(shard, from, to);
+    for (index, ((old, new), element)) in from.iter().zip(to.iter()).zip(elements.iter()).enumerate() {
         // THE ELEMENT IS THE IDENTITY, and it is checked in the model map recovery reads back: the
         // element must still be at the old address. An element rewritten after the base is not, and
         // the WAL tail re-derives it, so the record is skipped for it.
-        if !repoint_model_element(shard, old, new, element) {
+        if !series_applied[index] && !repoint_model_element(shard, old, new, element) {
             continue;
         }
         applied += 1;
@@ -6576,6 +6577,54 @@ fn fold_relocation_record(
                 std::slice::from_ref(new),
                 true,
             );
+        }
+    }
+    applied
+}
+
+/// A series record names blocks, not points. Rewrite all points sharing a moved block in one
+/// owner walk, preserving pair order for chained moves and leaving newer addresses untouched.
+fn fold_series_relocations(
+    shard: &mut ShardState,
+    from: &[crate::index_log::IndexItem],
+    to: &[crate::index_log::IndexItem],
+) -> Vec<bool> {
+    use storage_bucket_internals::StoredModelKind;
+    use timestamped_series::TimestampedSeries;
+
+    let mut applied = vec![false; from.len()];
+    let mut owners = HashMap::<
+        (StoredModelKind, &str),
+        HashMap<ElementEntry, Vec<(usize, &ElementEntry)>>,
+    >::new();
+    for (index, (old, new)) in from.iter().zip(to).enumerate() {
+        let Some(kind) = StoredModelKind::from_stored_name(&old.model_id) else { continue };
+        if !matches!(kind,
+            StoredModelKind::Feature | StoredModelKind::ContextEvent
+                | StoredModelKind::ContextIndex | StoredModelKind::ContextAudit
+                | StoredModelKind::ContextChild | StoredModelKind::ContextSummary
+                | StoredModelKind::ContextCompression
+        ) {
+            continue;
+        }
+        let (Some(source), Some(destination)) = (old.entry.as_ref(), new.entry.as_ref()) else {
+            continue;
+        };
+        owners.entry((kind, old.object_key.as_ref())).or_default()
+            .entry(source.clone()).or_default().push((index, destination));
+    }
+    for ((kind, key), moves) in owners {
+        let Some(series) = shard.bucket_index.objects.get_mut(&kind)
+            .and_then(|objects| objects.get_mut(key)) else { continue };
+        for (_, address) in series.points_mut() {
+            let mut next_index = 0;
+            while let Some((index, destination)) = moves.get(&*address)
+                .and_then(|pairs| pairs.iter().find(|(index, _)| *index >= next_index))
+            {
+                *address = (*destination).clone();
+                applied[*index] = true;
+                next_index = *index + 1;
+            }
         }
     }
     applied
@@ -6676,6 +6725,28 @@ fn repoint_model_element(
                 Ok::<_, ()>(())
             });
             done
+        }
+        "control_state" => shard.with_control_state_block_mut(key, |record| {
+            if record.address() != *old { return false; }
+            record.set_address(new);
+            true
+        }).unwrap_or(false),
+        "context_node" => match shard.context_nodes_mut().get_mut(key) {
+            Some(address) if *address == *old => {
+                *address = new.clone();
+                true
+            }
+            _ => false,
+        },
+        "context_entity" => {
+            use timestamped_series::{TimestampedSeries, TimestampedSeriesWrite};
+            let Some((collection, encoded_entity)) = key.rsplit_once(':') else { return false };
+            let Ok(entity) = encoded_entity.parse::<u64>() else { return false };
+            if entity.to_string() != encoded_entity { return false; }
+            let Some(series) = shard.context_entities_mut().get_mut(collection) else { return false };
+            if TimestampedSeries::get(series, entity) != Some(old) { return false; }
+            TimestampedSeriesWrite::set(series, entity, new.clone());
+            true
         }
         _ => false,
     }
