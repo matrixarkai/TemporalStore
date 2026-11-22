@@ -1918,7 +1918,22 @@ struct ReadView {
     root: PathBuf,
     source: std::sync::RwLock<Option<Arc<dyn SharedSlabSource>>>,
     counters: slab_backend::ReadCounters,
+    /// What `slab_block_counts` last counted for each slab, with the file's length and
+    /// modification time at that moment. See [`BlockStore::slab_block_counts`].
+    slab_count_memo: Mutex<BTreeMap<u64, SlabCountMemo>>,
+    /// How many slab files `slab_block_counts` has read and header-walked on this store.
+    slab_count_file_reads: std::sync::atomic::AtomicU64,
 }
+
+/// One slab's counted answer and the file state it was counted at.
+#[derive(Debug, Clone, Copy)]
+struct SlabCountMemo {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    physical_bytes: u64,
+    block_count: u64,
+}
+
 
 #[derive(Debug)]
 struct BlockStoreIdentity(usize);
@@ -2277,6 +2292,8 @@ impl BlockStore {
             root: root.clone(),
             source: std::sync::RwLock::new(None),
             counters: slab_backend::ReadCounters::default(),
+            slab_count_memo: Mutex::new(BTreeMap::new()),
+            slab_count_file_reads: std::sync::atomic::AtomicU64::new(0),
         });
         Self {
             identity: identity.0,
@@ -3203,21 +3220,58 @@ impl BlockStore {
     ///
     /// What the reclaim planner needs out of `slab_reports()`, at the cost of a header walk
     /// instead of a CRC-and-decompress of every record in the store.
+    ///
+    /// A SLAB IS READ AGAIN ONLY WHEN ITS FILE CHANGED. The planner asks this every round, and
+    /// the header walk reads every byte of every slab file, so a round cost the size of the
+    /// store whether or not anything had been written. The answer for a slab is a function of
+    /// that slab's bytes, so it is remembered against the file's length and modification time
+    /// and reused while both still match: a sealed slab is counted once, and only the slab being
+    /// appended to is counted again. A file whose metadata cannot be read is counted from its
+    /// bytes, as before, and is not remembered.
     pub fn slab_block_counts(&self) -> Result<Vec<(u64, u64, u64)>, BlockStoreError> {
-        let root = self
-            .inner
-            .lock()
-            .expect("block store lock poisoned")
-            .root
-            .clone();
+        let root = self.read_view.root.clone();
         let mut tally = BlockStoreReadTally::start();
         let mut out = Vec::new();
-        for block_slab_id in slab_ids_at(&root)? {
+        let ids = slab_ids_at(&root)?;
+        let mut memo = self
+            .read_view
+            .slab_count_memo
+            .lock()
+            .expect("slab count memo lock poisoned");
+        // A slab that is no longer on disk is forgotten, so the memo is never larger than the
+        // directory and a recycled id cannot meet a stale answer.
+        memo.retain(|id, _| ids.binary_search(id).is_ok());
+        for block_slab_id in ids {
+            let stamp = std::fs::metadata(paths::slab_path(&root, block_slab_id))
+                .ok()
+                .map(|meta| (meta.len(), meta.modified().ok()));
+            if let Some((len, modified)) = stamp {
+                if let Some(hit) = memo
+                    .get(&block_slab_id)
+                    .filter(|hit| hit.len == len && hit.modified == modified)
+                {
+                    out.push((block_slab_id, hit.physical_bytes, hit.block_count));
+                    continue;
+                }
+            }
+            self.read_view
+                .slab_count_file_reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let bytes = LocalSlabBackend::new(&root)
                 .read_all(block_slab_id, &mut tally)?
                 .into_bytes_charged_to_the_process_only();
             let (block_count, physical_bytes) =
                 crate::block_store::record::count_slab_blocks(&bytes, block_slab_id);
+            if let Some((len, modified)) = stamp {
+                // The length that was counted is the length the bytes had, not the one the
+                // stat saw: a file that grew between the two is not remembered as the old size.
+                if bytes.len() as u64 == len {
+                    memo.insert(
+                        block_slab_id,
+                        SlabCountMemo { len, modified, physical_bytes, block_count },
+                    );
+                }
+            }
             out.push((block_slab_id, physical_bytes, block_count));
         }
         Ok(out)
@@ -10225,3 +10279,6 @@ const _: () = assert!(std::mem::size_of::<(String, ElementEntry)>() == 40);
 
 #[cfg(test)]
 mod reads_do_not_take_the_store_mutex;
+
+#[cfg(test)]
+mod slab_block_counts_are_read_once_per_slab_version;
