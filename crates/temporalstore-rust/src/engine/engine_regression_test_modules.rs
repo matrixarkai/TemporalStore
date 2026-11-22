@@ -653,3 +653,5 @@ mod an_apply_lists_the_shard_once_for_its_report;
 mod a_feature_series_drops_points_past_its_age_cut;
 #[path = "tests/a_model_read_takes_the_shared_lock.rs"]
 mod a_model_read_takes_the_shared_lock;
+#[path = "tests/the_tally_names_the_walks_slabs_in_every_model.rs"]
+mod the_tally_names_the_walks_slabs_in_every_model;
