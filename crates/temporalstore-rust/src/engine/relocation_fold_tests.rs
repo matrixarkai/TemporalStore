@@ -240,8 +240,14 @@ fn relocation_repoints_every_live_model_and_is_idempotent() {
     let mut to = from.clone();
     let destination = ElementEntry::from_parts(99, 256, 64, Some(0), None);
     for item in &mut to { item.entry = Some(destination.clone()); }
-    let elements = entries.iter().map(|entry| entry.element_name.as_deref()
-        .unwrap_or_default().to_string()).collect::<Vec<_>>();
+    // The block projection omits container names; use the elements installed by this fixture.
+    let elements = entries.iter().map(|entry| match entry.kind.as_str() {
+        "hash" => "f".to_string(),
+        "set" => container_blocks::member_element_name(&[2]),
+        "zset" => container_blocks::member_element_name(&[1]),
+        "list" => format!("{:016x}", (0i64 as u64).wrapping_sub(i64::MIN as u64)),
+        _ => entry.element_name.as_deref().unwrap_or_default().to_string(),
+    }).collect::<Vec<_>>();
     assert_eq!(fold_relocation_record(&mut shard, &from, &to, &elements, false), entries.len());
     let moved = collect_model_live_block_entries(&shard);
     assert_eq!(moved.len(), entries.len());
