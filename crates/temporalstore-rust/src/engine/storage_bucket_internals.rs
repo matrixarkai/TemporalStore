@@ -7432,6 +7432,60 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
     }
 }
 
+/// Refresh the runtime flags of the named routing buckets only, recomputing their TTL minimum and
+/// rebuilding their object index, which is what the full sweep does to each of them.
+///
+/// UNBUILT, AND NOT YET CHEAPER. A TTL `Recompute` needs the shard-wide block-to-object inversion
+/// (see `refresh_all_bucket_runtime_flags`), so it is built once here exactly as the full sweep
+/// builds it. What this skips is the per-block scan of every bucket NOT named. The inversion itself
+/// is the remaining O(shard) term, and removing it needs the TTL computed on demand instead of at
+/// publication.
+///
+/// Falls back to the full sweep when the named set is half the shard or more, as the targeted write
+/// path does, because per-bucket lookups then cost more than one ordered pass.
+#[cfg_attr(test, track_caller)]
+pub(super) fn refresh_named_bucket_runtime_flags(
+    shard: &mut ShardState,
+    routing_buckets: &std::collections::BTreeSet<u32>,
+) {
+    if routing_buckets.is_empty() {
+        return;
+    }
+    if routing_buckets.len().saturating_mul(2) >= shard.bucket_index.bucket_map.len() {
+        refresh_bucket_runtime_flags(shard);
+        return;
+    }
+    static EMPTY_EXPIRY_NAMED: std::collections::BTreeMap<crate::engine::state::ModelKey, u64> =
+        std::collections::BTreeMap::new();
+    let now = now_ms();
+    let shard_id = shard.shard_id();
+    let index = &mut shard.bucket_index;
+    let keys = crate::engine::state::BlockKeysByPosition::from_parts(
+        &index.objects,
+        &index.object_block_lookup,
+    );
+    let expiry = crate::engine::state::u64s_ref(
+        &shard.side_tables,
+        crate::engine::state::SideTable::Expiry,
+    )
+    .unwrap_or(&EMPTY_EXPIRY_NAMED);
+    for routing_bucket in routing_buckets {
+        let Some(mut bucket) = index.bucket_map.get_mut(routing_bucket) else {
+            continue;
+        };
+        refresh_one_bucket_runtime_flags(
+            shard_id,
+            &mut bucket,
+            now,
+            &shard.dirty_objects,
+            expiry,
+            Some(&keys),
+            true,
+            BucketTtlRollup::Recompute,
+        );
+    }
+}
+
 pub(super) fn object_still_has_hot_block(shard: &ShardState, object_key: &str) -> bool {
     shard
         .strings()
