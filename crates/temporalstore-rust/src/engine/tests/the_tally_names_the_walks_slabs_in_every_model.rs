@@ -347,6 +347,16 @@ fn scenario(model: &Model) {
     let _ = run(&engine, (model.wipe)(2));
     agree(&engine, name, "after a whole-key removal");
 
+    // Maintenance arms: each rewrites or drops blocks without a client write, which is exactly
+    // where a maintained tally can drift from the maps.
+    let _ = engine.compact_shard_blocks(1);
+    agree(&engine, name, "after a compaction");
+    let _ = engine.dump_index_catalog(1);
+    agree(&engine, name, "after an index dump");
+    let (released_buckets, _, _) = engine.release_all_releasable_bucket_index_blocks(1);
+    agree(&engine, name, "after a bucket release");
+    println!("maintenance arms ran: {name} released_buckets={released_buckets}");
+
     engine.unload_shard(1);
     engine.load_shard(1);
     agree(&engine, name, "after unload and load");
