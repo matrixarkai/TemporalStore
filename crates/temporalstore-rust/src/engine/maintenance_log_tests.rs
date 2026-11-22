@@ -221,6 +221,15 @@ fn deletion_round_replays(expire: bool) {
         removed,
         keys.iter().cloned().chain([family.clone()]).collect()
     );
+    if expire {
+        let deltas = engine.index_log_store.read_delta_records(1, 0).unwrap();
+        let delta = deltas.last().expect("expiry checkpoint");
+        let covered: BTreeSet<String> = delta.key_states.iter()
+            .map(|state| state["key"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(covered, removed, "checkpoint and WAL must name the same records");
+        assert_eq!(delta.applied_wal_sequence, Some(after));
+    }
     write(&engine, &keys[0], b"new");
     engine.wal_store.flush(1).unwrap();
     drop(engine);

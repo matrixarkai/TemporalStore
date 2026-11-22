@@ -17,6 +17,7 @@ pub mod golden;
 pub mod reports;
 
 mod admin_report;
+mod base_checkpoint_anchor;
 #[path = "engine/engine_constants.rs"]
 pub(crate) mod constants;
 mod container_membership;
