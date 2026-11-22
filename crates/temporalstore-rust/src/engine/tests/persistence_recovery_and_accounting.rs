@@ -16431,12 +16431,19 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     // also what a counter that never fires reports. A command genuinely missing from
     // `command_updates_bucket_index_directly` still rebuilds, so this shows the counter is wired
     // up on the very path the batch assertion measures.
+    {
+        let mut shards = engine.shards.write().unwrap();
+        crate::engine::set_expiry(
+            shards.get_mut(&1).unwrap(),
+            "unrelated-00000000".to_string(),
+            crate::engine::resolve_now_ms().saturating_sub(60_000),
+        );
+    }
     crate::engine::bucket_visit_sites::reset();
     let control = engine.batch_execute(BatchExecuteRequest {
         shard_id: 1,
-        commands: vec![Command::CommonExpire {
+        commands: vec![Command::CommonTtl {
             key: "unrelated-00000000".to_string(),
-            ttl_ms: 60_000,
         }],
     });
     let (control_visits, ..) = crate::engine::bucket_visit_sites::snapshot();

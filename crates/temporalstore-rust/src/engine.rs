@@ -518,6 +518,10 @@ mod log_backed_string_tests;
 mod expiry_residency_tests;
 
 #[cfg(test)]
+#[path = "engine/ttl_index_maintenance_tests.rs"]
+mod ttl_index_maintenance_tests;
+
+#[cfg(test)]
 #[path = "engine/writer_stall_probe.rs"]
 pub(crate) mod writer_stall_probe;
 

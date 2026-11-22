@@ -96,7 +96,13 @@ fn process_io() -> std::collections::BTreeMap<String, u64> {
     result
 }
 
+fn expiry_setup(phase: &str, keys: usize, elapsed_us: u128) {
+    println!("EXPIRY_SETUP {}", serde_json::json!({ "phase": phase, "keys": keys, "elapsed_us": elapsed_us }));
+}
+
 fn expiry_probe(engine: &TemporalEngine, args: &Args) {
+    expiry_setup("warm_start", args.keys, 0);
+    let warm_started = Instant::now();
     for index in 0..args.keys {
         let command = if args.hash {
             Command::HashGet { key: key(index), field: "f".into() }
@@ -107,13 +113,19 @@ fn expiry_probe(engine: &TemporalEngine, args: &Args) {
             value: Some(value(index, overwritten(args, index))),
         });
     }
+    expiry_setup("warm_complete", args.keys, warm_started.elapsed().as_micros());
+    expiry_setup("ttl_start", args.keys, 0);
+    let ttl_started = Instant::now();
     for index in (0..args.keys).filter(|&index| expires_in_probe(index)) {
         let result = engine.execute(ExecuteRequest { shard_id: SHARD,
             command: Command::CommonExpire { key: key(index), ttl_ms: 1 },
         });
         assert!(result.status.ok, "TTL {index}: {:?}", result.status);
     }
+    expiry_setup("ttl_complete", args.keys, ttl_started.elapsed().as_micros());
+    let ttl_barrier = Instant::now();
     engine.write_ahead_log_store().flush(SHARD).expect("flush TTL records");
+    expiry_setup("ttl_durable", args.keys, ttl_barrier.elapsed().as_micros());
     std::thread::sleep(Duration::from_millis(20));
     let runtime = DataNodeRuntime::new(engine.clone(), DataNodeRuntimeOptions {
         worker_threads: 1, max_queue_depth: 4, max_background_queue_depth: 2,
@@ -218,6 +230,7 @@ fn main() {
         shard_id: SHARD, config: Config { version: 2, async_storage: true, ..Default::default() },
     }).ok);
     let seed_started = Instant::now();
+    if args.expiry { expiry_setup("seed_start", args.keys, 0); }
     for index in 0..args.keys {
         write(&engine, &args, index, false);
     }
@@ -230,6 +243,7 @@ fn main() {
     }
     engine.write_ahead_log_store().flush(SHARD).expect("flush seeded log");
     if args.expiry {
+        expiry_setup("seed_complete", args.keys, seed_started.elapsed().as_micros());
         expiry_probe(&engine, &args);
         return;
     }
