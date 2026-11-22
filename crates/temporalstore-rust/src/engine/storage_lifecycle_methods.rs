@@ -689,7 +689,14 @@ impl TemporalEngine {
         if request.purge_delayed_destroy && !delayed_destroy_reports.is_empty() {
             reasons.push("delayed_destroy_purge".to_string());
         }
-        if !reclaim_candidates.is_empty() {
+        // THE DEPENDENCY PLAN IS BUILT FOR A REPORT, SO ONLY A REPORT PAYS FOR IT.
+        //
+        // Its one product here is the `block_gc_dependency_blocked` reason, and nothing reads that
+        // reason: the collector builds its own dependency plan when it runs. A round that asked for
+        // no detailed report (the maintenance loop's) still built it whenever one stale slab stood
+        // waiting, which on a settled shard is every round, and it walks the shard's live blocks
+        // for their slab ids: 1.4 ms at 100,000 keys inside a 3.8 ms plan.
+        if detailed_report && !reclaim_candidates.is_empty() {
             let block_gc_dependency_plan = self.storage_block_gc_dependency_plan(
                 request.shard_id,
                 reclaim_candidates
