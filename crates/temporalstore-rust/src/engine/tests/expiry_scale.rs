@@ -320,6 +320,7 @@ fn the_deadline_index_is_rebuilt_on_load_manifest_install_and_wal_replay() {
         assert_eq!(held, LIVE_KEYS + DUE_KEYS, "the fixture did not land");
         engine.unload_shard(1);
 
+        drop(engine);
         let engine = make_engine();
         engine.load_shard(1);
         // The view is not in the persisted format, so it is built when the state is installed
@@ -382,6 +383,7 @@ fn the_deadline_index_is_rebuilt_on_load_manifest_install_and_wal_replay() {
         let removed = std::fs::remove_file(index_dir.join("shard-1.index.json")).is_ok();
         assert!(removed, "the base index should exist to be removed");
 
+        drop(engine);
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
@@ -929,6 +931,7 @@ fn an_expired_key_stays_expired_across_load_manifest_install_and_wal_replay() {
             .expect("the base index should exist before the round")
             .len();
 
+        drop(engine);
         let engine = make_engine();
         engine.load_shard(1);
         sweep_after(&engine);
@@ -945,6 +948,7 @@ fn an_expired_key_stays_expired_across_load_manifest_install_and_wal_replay() {
         );
 
         // No unload: a crash-shaped reload onto the stale base.
+        drop(engine);
         let engine = make_engine();
         engine.load_shard(1);
         assert_recovered(&engine, "LOAD (stale base + WAL tail)");

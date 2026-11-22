@@ -1208,6 +1208,13 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// The local write-ahead log of one data directory.
+///
+/// A log directory has ONE writer process. A store takes the shard's lock file exclusively, without
+/// waiting, at its first append to that shard and keeps it until the store (and its clones) drop; a
+/// second store appending to the same shard, in this process or another, gets
+/// [`WAL_DIRECTORY_OWNED_BY_ANOTHER_PROCESS`]. Reading is not writing and needs no lock. Deleting
+/// the lock file out from under a running store violates the contract and is not defended against.
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
     inner: Arc<Mutex<WriteAheadLogInner>>,
@@ -1292,6 +1299,10 @@ mod read_retention_tests;
 #[cfg(test)]
 #[path = "wal/gc_hold_tests.rs"]
 mod gc_hold_tests;
+
+#[cfg(test)]
+#[path = "wal/append_lock_tests.rs"]
+mod append_lock_tests;
 
 #[path = "wal/registration_records.rs"]
 mod registration_records;
@@ -4483,6 +4494,11 @@ fn ensure_active_wal_segment_len(
     inner: &mut WriteAheadLogInner,
     shard_id: ShardId,
 ) -> Result<Option<u64>, WriteAheadLogError> {
+    // Established once: after the first append this process created or verified the piece itself,
+    // and nothing else writes to this directory.
+    if inner.verified_len_by_shard.contains_key(&shard_id) {
+        return Ok(None);
+    }
     let path = active_wal_path(inner, shard_id);
     // A piece of zero length is one that was created and never got its header, which a crash
     // between the two leaves behind. It has to be treated as absent: `read_wal_base` reads an
@@ -4525,7 +4541,13 @@ fn roll_wal_segment_if_due(
         return Ok(false);
     }
     let path = active_wal_path(inner, shard_id);
-    let length = wal_path_len(path.as_path()).unwrap_or(0);
+    // The caller that has just written a record knows where the records end, and the answer to
+    // "is the piece full" needs nothing else, so the file's length is asked for only by a caller
+    // that has no record end, or once a roll is actually due. It was one `statx` on every append.
+    let length = match record_end {
+        Some(end) => end,
+        None => wal_path_len(path.as_path()).unwrap_or(0),
+    };
     // From the cache, not the file. This runs on EVERY append to answer "is the piece full", and
     // `read_wal_base` opens the file and reads its header to do it -- through a `BufReader`, whose
     // buffer is eight kilobytes. That was 8,240 bytes and an open per write, to learn a number the
@@ -4541,6 +4563,10 @@ fn roll_wal_segment_if_due(
     if holds < threshold {
         return Ok(false);
     }
+    // A roll is due: now the file's real length matters, because a preallocated reservation past
+    // the records is trimmed before the piece is sealed.
+    let length = wal_path_len(path.as_path()).unwrap_or(0);
+    let record_end = record_end.min(length);
 
     // Trim the reservation before sealing, so a sealed piece's length IS its contents and every
     // reader that derives a sealed piece's end from its file length keeps being right.
@@ -4878,91 +4904,73 @@ fn locate_log_id(
     Ok(None)
 }
 
-/// Whether a handle still refers to a file that exists under some name.
+/// The error text a second process gets when it opens a log another process already owns.
+pub const WAL_DIRECTORY_OWNED_BY_ANOTHER_PROCESS: &str = "wal_directory_owned_by_another_process";
+
+/// The append lock is a marker: the lock itself is taken ONCE per (store, shard) and kept.
 ///
-/// A descriptor outlives the unlinking of its file, and `flock` on an unlinked inode succeeds --
-/// so a cached lock handle whose file has been removed would grant a lock nobody else contends
-/// for. Checked per acquisition; a link count of zero means re-open.
-#[cfg(unix)]
-fn still_linked(file: &File) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    file.metadata().map(|meta| meta.nlink() > 0).unwrap_or(false)
-}
-
-/// Locks are advisory no-ops off unix, so a stale handle costs nothing there.
-#[cfg(not(unix))]
-fn still_linked(_file: &File) -> bool {
-    true
-}
-
-struct WalAppendLock {
-    file: std::sync::Arc<File>,
-}
+/// THE CONTRACT: a log directory has one writer process. The lock file is locked exclusively and
+/// without waiting the first time a store appends to a shard, and the descriptor is kept for the
+/// life of the store, so a second process opening the same directory is refused at its first
+/// append instead of interleaving with this one. It used to be taken and released around every
+/// append -- a `flock` pair, an `fstat` and the probes that went with them, on every acked write,
+/// to guard against a writer the deployment does not have.
+///
+/// `flock` is per open file description, so a second store on the same directory in the SAME
+/// process is refused too: that is a second writer, and nothing else in this module would keep
+/// the two from placing bytes at the same offset.
+struct WalAppendLock;
 
 impl WalAppendLock {
-    /// Take the append lock, opening the lock file only the first time this shard needs it.
-    ///
-    /// An `Arc` clone is a refcount bump, so taking the lock allocates nothing once the handle
-    /// exists. What still happens every time is the `flock` and its release -- that is the lock.
     fn acquire(
         inner: &mut WriteAheadLogInner,
         shard_id: ShardId,
     ) -> Result<Self, WriteAheadLogError> {
-        let file = match inner.append_lock_by_shard.get(&shard_id) {
-            // Only if the handle still names a file. A cached descriptor on an UNLINKED inode
-            // would still lock successfully while another process, opening the path afresh, locked
-            // a different inode -- both would think they held the append lock. Re-opening by path
-            // every time made that impossible; this restores the guarantee for the cost of one
-            // fstat, which is still cheaper than the open and close it replaces.
-            Some(file) if still_linked(file) => file.clone(),
-            _ => {
-                fs::create_dir_all(&inner.root)?;
-                let path = inner.root.join(format!("shard-{shard_id}.wal.lock"));
-                let file = std::sync::Arc::new(
-                    OpenOptions::new()
-                        .create(true)
-                        .read(true)
-                        .write(true)
-                        .open(path)?,
-                );
-                inner.append_lock_by_shard.insert(shard_id, file.clone());
-                file
-            }
-        };
-        lock_file_exclusive(&file)?;
-        Ok(Self { file })
+        if inner.append_lock_by_shard.contains_key(&shard_id) {
+            return Ok(Self);
+        }
+        fs::create_dir_all(&inner.root)?;
+        let path = inner.root.join(format!("shard-{shard_id}.wal.lock"));
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        #[cfg(test)]
+        WAL_LOCK_ACQUISITIONS.with(|count| count.set(count.get() + 1));
+        try_lock_file_exclusive(&file)?;
+        inner.append_lock_by_shard.insert(shard_id, std::sync::Arc::new(file));
+        Ok(Self)
     }
 }
 
-impl Drop for WalAppendLock {
-    fn drop(&mut self) {
-        let _ = unlock_file(&self.file);
-    }
+/// How many times a log took its lock file. Test-only: the contract is that it is once per shard,
+/// however many appends follow.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static WAL_LOCK_ACQUISITIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(unix)]
-fn lock_file_exclusive(file: &File) -> Result<(), std::io::Error> {
+fn try_lock_file_exclusive(file: &File) -> Result<(), std::io::Error> {
     const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
     loop {
-        let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX) };
+        let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
         if rc == 0 {
             return Ok(());
         }
         let err = std::io::Error::last_os_error();
-        if err.kind() != std::io::ErrorKind::Interrupted {
-            return Err(err);
+        match err.kind() {
+            std::io::ErrorKind::Interrupted => continue,
+            std::io::ErrorKind::WouldBlock => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    WAL_DIRECTORY_OWNED_BY_ANOTHER_PROCESS,
+                ));
+            }
+            _ => return Err(err),
         }
-    }
-}
-
-#[cfg(unix)]
-fn unlock_file(file: &File) -> Result<(), std::io::Error> {
-    const LOCK_UN: i32 = 8;
-    let rc = unsafe { flock(file.as_raw_fd(), LOCK_UN) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -4971,13 +4979,9 @@ unsafe extern "C" {
     fn flock(fd: i32, operation: i32) -> i32;
 }
 
+/// Locks are advisory no-ops off unix.
 #[cfg(not(unix))]
-fn lock_file_exclusive(_file: &File) -> Result<(), std::io::Error> {
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn unlock_file(_file: &File) -> Result<(), std::io::Error> {
+fn try_lock_file_exclusive(_file: &File) -> Result<(), std::io::Error> {
     Ok(())
 }
 
@@ -5030,36 +5034,12 @@ fn resolve_last_sequence_for_append_known(
             inner.last_sequence_by_shard.contains_key(&shard_id),
             inner.verified_len_by_shard.get(&shard_id),
         ) {
-            let path = active_wal_path(inner, shard_id);
-            let on_disk_len = match known_len {
-                Some(length) => length,
-                None => wal_path_len(path.as_path()).unwrap_or(0),
-            };
-            // Under preallocation the file is allowed to be longer than the records; unchanged
-            // means "still exactly the size this process grew it to". Either way, the offset
-            // handed back is where the RECORDS end, which is where the next one goes.
-            let expected_physical = if wal_preallocate_enabled() {
-                inner
-                    .prealloc_physical_by_shard
-                    .get(&shard_id)
-                    .copied()
-                    .unwrap_or(verified_len)
-            } else {
-                verified_len
-            };
-            if on_disk_len == expected_physical {
-                // An unchanged length is not enough under preallocation: another process
-                // appending INSIDE the reservation leaves the file the same size. Its write
-                // starts with a frame byte, never NUL, so one byte read at our record end tells
-                // the two apart -- zero (or reading at the very end) means the reservation is
-                // still ours from here on.
-                let interloper = wal_preallocate_enabled()
-                    && verified_len < on_disk_len
-                    && byte_at(&path, verified_len)?.is_some_and(|byte| byte != 0);
-                if !interloper {
-                    return Ok((cached_last_sequence, verified_len));
-                }
-            }
+            // This process is the log's only writer (the lock above is held for the store's life),
+            // so the cached pair is authoritative: no `statx` to compare the length, and no
+            // one-byte read to look for another process inside the reservation. The first append
+            // after open has no cache and takes the scan below, which is the one tail check.
+            let _ = known_len;
+            return Ok((cached_last_sequence, verified_len));
         }
     }
     inner.stats.append_full_scans = inner.stats.append_full_scans.saturating_add(1);
@@ -9351,52 +9331,6 @@ mod tests {
         }
     }
 
-    /// A lock file that was removed gets opened again, rather than locked as a ghost.
-    ///
-    /// The append lock handle is kept open per shard now, instead of being opened and closed on
-    /// every append. That is safe only while the handle still names a file: a descriptor outlives
-    /// the unlinking of its file, and `flock` on an unlinked inode SUCCEEDS -- so a stale handle
-    /// would hand out a lock that another process, opening the path afresh, could hold at the same
-    /// time. Two writers, both certain they held the append lock.
-    ///
-    /// Removing the file is the observable form of that: if the handle were reused blindly, the
-    /// file would never come back.
-    #[test]
-    fn a_removed_lock_file_is_opened_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = LocalWriteAheadLogStore::new(dir.path());
-        let write = |index: usize| {
-            store
-                .append(
-                    1,
-                    Command::StringSet {
-                        key: format!("k{index}"),
-                        value: b"v".to_vec(),
-                    },
-                )
-                .unwrap()
-        };
-
-        write(0);
-        let lock_path = dir.path().join("shard-1.wal.lock");
-        assert!(lock_path.exists(), "the first append must create the lock file");
-
-        // Someone removes it out from under the running store.
-        std::fs::remove_file(&lock_path).expect("remove the lock file");
-        assert!(!lock_path.exists(), "the probe must actually remove it");
-
-        let record = write(1);
-        assert_eq!(record.sequence, 2, "the append must still succeed");
-        assert!(
-            lock_path.exists(),
-            "the lock file must be opened again, not locked as an unlinked ghost"
-        );
-
-        // And the log itself is intact across it.
-        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
-        assert_eq!(scanned.len(), 2, "both records must be readable: {scanned:?}");
-    }
-
     /// Every `Command` variant's payload, sized by the compiler rather than by eye.
     ///
     /// `large_enum_variant` stays silent when the top variants are all wide -- it compares the
@@ -10476,7 +10410,6 @@ mod tests {
     fn wal_interleaved_processes_refresh_sequence_from_disk() {
         let dir = tempfile::tempdir().unwrap();
         let first = LocalWriteAheadLogStore::new(dir.path());
-        let second = LocalWriteAheadLogStore::new(dir.path());
 
         let one = first
             .append(
@@ -10487,7 +10420,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let two = second
+        let two = first
             .append(
                 1,
                 Command::StringSet {
@@ -10496,7 +10429,9 @@ mod tests {
                 },
             )
             .unwrap();
-        let three = first
+        drop(first);
+        let second = LocalWriteAheadLogStore::new(dir.path());
+        let three = second
             .append(
                 1,
                 Command::StringSet {
@@ -10743,6 +10678,7 @@ mod tests {
             file.sync_all().unwrap();
         }
 
+        drop(store);
         let reopened = LocalWriteAheadLogStore::new(dir.path());
         assert_eq!(reopened.stats(7).last_sequence, 2);
         assert_eq!(reopened.scan(7, 0, u64::MAX, u64::MAX).unwrap().len(), 2);
@@ -11936,6 +11872,7 @@ mod tests {
         assert_eq!(info.current_sequence, 8);
 
         // the sequence cache rebuilt from disk, which drives the next append
+        drop(store);
         let store_reopened = LocalWriteAheadLogStore::new(dir.path());
         let report = store_reopened
             .append(
@@ -13325,6 +13262,7 @@ mod tests {
             "the highest-sequence record must survive a full reclaim"
         );
         // And a reopened log continues rather than reusing a sequence.
+        drop(store);
         let reopened = LocalWriteAheadLogStore::new(dir.path());
         let next = reopened
             .append_with_sync(
