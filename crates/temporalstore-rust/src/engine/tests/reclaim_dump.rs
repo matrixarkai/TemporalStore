@@ -455,6 +455,68 @@ fn resident_materialization_does_not_replace_a_newer_write() {
 }
 
 #[test]
+fn bounded_materialization_owns_only_the_selected_resident_strings() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "selected-capture");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Default::default() },
+    }).ok);
+    let keys = (0..128).map(|index| format!("selected-{index:04}-{}", "k".repeat(256)))
+        .collect::<Vec<_>>();
+    write_one_at_a_time(&engine, &keys);
+    assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), keys.len());
+    let selected = keys.iter().take(3).map(|key| stable_block_object_id(
+        RECLAIM_DUMP_SHARD, "string", key,
+    )).collect::<std::collections::HashSet<_>>();
+    let calls = std::cell::Cell::new(0);
+    let (captured, start, end) = engine.capture_resident_string_blocks(
+        RECLAIM_DUMP_SHARD, |object_id| {
+            calls.set(calls.get() + 1);
+            selected.contains(&object_id)
+        },
+    ).unwrap();
+    assert_eq!(calls.get(), keys.len(), "selection still inspects every resident candidate");
+    assert_eq!(captured.len(), selected.len(), "unselected keys must not become owned rows");
+    let captured_keys = captured.iter().map(|(key, address, object_id)| {
+        assert!(crate::wal_record::is_wal_resident(address.block_slab_id()));
+        assert_eq!(*object_id, stable_block_object_id(RECLAIM_DUMP_SHARD, "string", key));
+        assert!(selected.contains(object_id));
+        key.to_string()
+    }).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(captured_keys, keys.iter().take(3).cloned().collect());
+    {
+        let shards = engine.shards.read().unwrap();
+        let shard = shards.get(&RECLAIM_DUMP_SHARD).unwrap();
+        assert_eq!((start, end), shard.routing_range());
+        for (key, address, _) in &captured {
+            assert_eq!(shard.string_address(key).as_ref(), Some(address));
+            let (original_key, _) = shard.strings().get_key_value(key.as_ref()).unwrap();
+            assert!(std::sync::Arc::ptr_eq(original_key, key), "capture must share the original key");
+        }
+    }
+    assert!(engine.capture_resident_string_blocks(RECLAIM_DUMP_SHARD, |_| false)
+        .unwrap().0.is_empty());
+    assert!(engine.capture_resident_string_blocks(u64::MAX, |_| true).is_none());
+    assert_eq!(engine.materialize_resident_blocks_with_before_publish(
+        RECLAIM_DUMP_SHARD, |object_id| selected.contains(&object_id), |_| {},
+    ), selected.len());
+    let remaining = engine.capture_resident_string_blocks(RECLAIM_DUMP_SHARD, |_| true).unwrap().0;
+    assert_eq!(remaining.len(), keys.len() - selected.len());
+    assert!(remaining.iter().all(|(key, _, _)| !captured_keys.contains(key.as_ref())));
+    assert_eq!(engine.materialize_synthetic_blocks(RECLAIM_DUMP_SHARD), remaining.len());
+    assert!(engine.capture_resident_string_blocks(RECLAIM_DUMP_SHARD, |_| true).unwrap().0.is_empty());
+    for key in &keys {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD, command: Command::StringGet { key: key.clone() },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![118u8; 64]) });
+    }
+}
+
+#[test]
 fn resident_materialization_does_not_resurrect_a_deleted_key() {
     resident_materialization_race(true);
 }
