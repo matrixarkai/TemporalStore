@@ -3203,6 +3203,13 @@ impl BlockStore {
     ///
     /// What the reclaim planner needs out of `slab_reports()`, at the cost of a header walk
     /// instead of a CRC-and-decompress of every record in the store.
+    ///
+    /// A slab is read and counted only when its file is not the one last counted: the answer for
+    /// a file is a function of its bytes, a sealed slab is never written again, and the written
+    /// one grows, so its length (and modification time) move. Every other slab costs one `stat`.
+    /// Before this the call read EVERY slab file in full on every maintenance round, so a
+    /// quiet shard paid for the whole store's size each time: 3.8 ms at 100,000 keys and 13.4 ms
+    /// at 300,000 inside one pressure snapshot.
     pub fn slab_block_counts(&self) -> Result<Vec<(u64, u64, u64)>, BlockStoreError> {
         let root = self
             .inner
@@ -3212,14 +3219,36 @@ impl BlockStore {
             .clone();
         let mut tally = BlockStoreReadTally::start();
         let mut out = Vec::new();
+        let mut seen = BTreeSet::new();
         for block_slab_id in slab_ids_at(&root)? {
+            // Taken BEFORE the read: a file that grows in between is then recorded under the
+            // shorter length, and the next call sees a mismatch and counts it again.
+            let signature = std::fs::metadata(slab_path(&root, block_slab_id))
+                .ok()
+                .and_then(|meta| meta.modified().ok().map(|modified| (meta.len(), modified)));
+            if let Some(signature) = signature {
+                if let Some((physical_bytes, block_count)) =
+                    slab_count_memo_get(&root, block_slab_id, signature)
+                {
+                    seen.insert(block_slab_id);
+                    out.push((block_slab_id, physical_bytes, block_count));
+                    continue;
+                }
+            }
             let bytes = LocalSlabBackend::new(&root)
                 .read_all(block_slab_id, &mut tally)?
                 .into_bytes_charged_to_the_process_only();
+            #[cfg(test)]
+            SLAB_COUNT_FULL_READS.with(|cell| cell.set(cell.get() + 1));
             let (block_count, physical_bytes) =
                 crate::block_store::record::count_slab_blocks(&bytes, block_slab_id);
+            if let Some(signature) = signature {
+                slab_count_memo_put(&root, block_slab_id, signature, physical_bytes, block_count);
+                seen.insert(block_slab_id);
+            }
             out.push((block_slab_id, physical_bytes, block_count));
         }
+        slab_count_memo_retain(&root, &seen);
         Ok(out)
     }
 
@@ -3531,6 +3560,56 @@ fn compute_slab_usage(
         };
     }
     usage_by_slab.into_values().map(|acc| acc.usage).collect()
+}
+
+/// The last count of each slab file, keyed by the store's root and the slab id, and valid while the
+/// file's length and modification time are the ones it was counted at.
+type SlabCountSignature = (u64, std::time::SystemTime);
+type SlabCountMemo = std::collections::HashMap<(PathBuf, u64), (SlabCountSignature, u64, u64)>;
+
+fn slab_count_memo() -> &'static Mutex<SlabCountMemo> {
+    static MEMO: std::sync::OnceLock<Mutex<SlabCountMemo>> = std::sync::OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(SlabCountMemo::new()))
+}
+
+fn slab_count_memo_get(
+    root: &PathBuf,
+    block_slab_id: u64,
+    signature: SlabCountSignature,
+) -> Option<(u64, u64)> {
+    let memo = slab_count_memo().lock().ok()?;
+    memo.get(&(root.clone(), block_slab_id))
+        .filter(|(held, _, _)| *held == signature)
+        .map(|(_, physical_bytes, block_count)| (*physical_bytes, *block_count))
+}
+
+fn slab_count_memo_put(
+    root: &PathBuf,
+    block_slab_id: u64,
+    signature: SlabCountSignature,
+    physical_bytes: u64,
+    block_count: u64,
+) {
+    if let Ok(mut memo) = slab_count_memo().lock() {
+        // Bounded: a process that opens many roots (tests) must not grow this without limit.
+        if memo.len() > 65_536 {
+            memo.clear();
+        }
+        memo.insert((root.clone(), block_slab_id), (signature, physical_bytes, block_count));
+    }
+}
+
+/// Forget the slabs of `root` that this listing did not see: they were destroyed.
+fn slab_count_memo_retain(root: &PathBuf, seen: &BTreeSet<u64>) {
+    if let Ok(mut memo) = slab_count_memo().lock() {
+        memo.retain(|(memo_root, block_slab_id), _| memo_root != root || seen.contains(block_slab_id));
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Slab files `slab_block_counts` read in full on this thread.
+    static SLAB_COUNT_FULL_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 impl Default for BlockStore {
@@ -9107,6 +9186,40 @@ const RETIRED_NAMES: &[&str] = &[
             block_slab_id += 1;
         }
         BlockStore::new(root)
+    }
+
+    fn slab_count_full_reads() -> u64 {
+        SLAB_COUNT_FULL_READS.with(|cell| cell.get())
+    }
+
+    /// A slab that has not changed is counted once, not on every call, and one that grew is counted
+    /// again. The call used to read every slab file in full every time.
+    #[test]
+    fn a_slab_that_has_not_changed_is_not_read_again_to_be_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = rolled_store_fixture(dir.path(), 6);
+        let start = slab_count_full_reads();
+        let first = store.slab_block_counts().unwrap();
+        let after_first = slab_count_full_reads();
+        assert_eq!(after_first - start, 6, "the first call counts every slab");
+        let second = store.slab_block_counts().unwrap();
+        assert_eq!(first, second, "an unchanged store counts the same");
+        assert_eq!(
+            slab_count_full_reads(),
+            after_first,
+            "the second call read a slab file it had already counted",
+        );
+        // A write to one slab moves its length, so exactly that slab is counted again.
+        {
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(slab_path(dir.path(), 3))
+                .unwrap();
+            file.write_all(&[0u8; 16]).unwrap();
+        }
+        let third = store.slab_block_counts().unwrap();
+        assert_eq!(slab_count_full_reads(), after_first + 1, "only the changed slab is read");
+        assert_eq!(third.len(), first.len());
     }
 
     /// One roll against a store that already holds `slabs` slabs, timed and counted. Prints;
