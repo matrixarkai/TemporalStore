@@ -448,6 +448,114 @@ fn mixed_budget_fixture(root: &std::path::Path) -> TemporalEngine {
 }
 
 #[test]
+fn expiry_residency_uses_only_exact_records_without_family_key_builds() {
+    for (cold_base, cold_family) in [(false, false), (true, false), (false, true), (true, true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_at(dir.path(), "residency-cache");
+        let base = "residency-base";
+        let family = control_state_family_key(ControlStateFamily::Counter, base);
+        seed(&engine, [base, family.as_str()].into_iter().map(|key| Command::StringSet {
+            key: key.to_owned(), value: b"present".to_vec(),
+        }).collect());
+        let base_bucket = engine.routing_bucket_for_key(1, base);
+        let family_bucket = engine.routing_bucket_for_key(1, &family);
+        assert_ne!(base_bucket, family_bucket);
+        let mut shards = engine.shards.write().unwrap();
+        let shard = shards.get_mut(&1).unwrap();
+        for (cold, bucket) in [(cold_base, base_bucket), (cold_family, family_bucket)] {
+            if cold {
+                let released = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(shard, &[bucket]);
+                assert_eq!(released.released_buckets, vec![bucket]);
+            }
+        }
+        let before = ASSOCIATED_KEY_BUILDS_FOR_TEST.with(|count| count.get());
+        assert_eq!(associated_record_keys(base).len(), 4);
+        assert_eq!(ASSOCIATED_KEY_BUILDS_FOR_TEST.with(|count| count.get()), before + 1);
+        let before = ASSOCIATED_KEY_BUILDS_FOR_TEST.with(|count| count.get());
+        for _ in 0..1024 {
+            assert_eq!(recovery_sweep_compact::expiry_record_is_hot(shard, base), !cold_base);
+            assert_eq!(recovery_sweep_compact::expiry_record_is_hot(shard, &family), !cold_family);
+        }
+        assert_eq!(ASSOCIATED_KEY_BUILDS_FOR_TEST.with(|count| count.get()), before,
+            "residency classification must not construct associated names");
+        assert!(delete_record_exact(shard, base));
+        assert!(record_exists_exact(shard, &family));
+        assert!(!recovery_sweep_compact::expiry_record_is_hot(shard, base),
+            "an absent record cannot inherit a related record's residency");
+    }
+}
+
+#[test]
+fn hot_expiry_proceeds_while_an_independently_live_related_record_is_cold() {
+    for expire_family in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_at(dir.path(), "hot-due-cache");
+        let base = "hot-due-base".to_string();
+        let family = control_state_family_key(ControlStateFamily::Counter, &base);
+        let (due, live) = if expire_family { (&family, &base) } else { (&base, &family) };
+        seed(&engine, [&base, &family].into_iter().map(|key| Command::StringSetEx {
+            key: key.clone(), value: key.as_bytes().to_vec(), ttl_ms: 60_000,
+        }).collect());
+        seed(&engine, vec![Command::StringSetEx {
+            key: due.clone(), value: due.as_bytes().to_vec(), ttl_ms: 1,
+        }]);
+        if !expire_family {
+            seed(&engine, vec![Command::StringSetEx {
+                key: live.clone(), value: live.as_bytes().to_vec(), ttl_ms: 60_000,
+            }]);
+        }
+        let due_bucket = engine.routing_bucket_for_key(1, due);
+        let live_bucket = engine.routing_bucket_for_key(1, live);
+        assert_ne!(due_bucket, live_bucket);
+        {
+            let mut shards = engine.shards.write().unwrap();
+            let shard = shards.get_mut(&1).unwrap();
+            assert!(shard.strings().contains_key(due.as_str()));
+            assert!(shard.strings().contains_key(live.as_str()));
+            let released = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(shard, &[live_bucket]);
+            assert_eq!(released.released_buckets, vec![live_bucket]);
+            assert!(!shard.bucket_index.released_buckets.contains(&due_bucket));
+        }
+        engine.write_ahead_log_store().flush(1).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let before = engine.write_ahead_log_store().cached_last_sequence(1);
+        let report = engine.sweep_expired_records_for_maintenance(ShardExpirySweepRequest {
+            shard_id: 1, max_hot_buckets_per_round: 1, max_cold_buckets_per_round: 0,
+            load_cold_buckets: false,
+        }).unwrap();
+        assert_eq!(report.expired_records_removed, 1);
+        assert_eq!(report.hot_buckets_scanned, 1);
+        assert_eq!(report.cold_buckets_scanned, 0);
+        assert_eq!(report.loaded_for_expire, 0);
+        {
+            let shards = engine.shards.read().unwrap();
+            assert!(!shards[&1].strings().contains_key(due.as_str()));
+            assert!(shards[&1].strings().contains_key(live.as_str()));
+            assert!(shards[&1].bucket_index.released_buckets.contains(&live_bucket));
+        }
+        let wal = engine.write_ahead_log_store();
+        let (records, truncated) = wal.scan_decoded(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert!(!truncated);
+        let deleted: Vec<_> = records.iter().filter(|(_, record)| record.sequence > before)
+            .flat_map(|(_, record)| record.outcomes.iter().map(|item| item.object_key.as_str())).collect();
+        assert_eq!(deleted, vec![due.as_str()]);
+        wal.flush(1).unwrap();
+        drop(wal);
+        drop(engine);
+        let restored = TemporalEngine::with_local_dirs(64 * 1024,
+            dir.path().join("fresh-cache"), dir.path().join("blocks"), dir.path().join("indexes"));
+        restored.load_shard(1);
+        for (key, expected) in [(due, None), (live, Some(live.as_bytes().to_vec()))] {
+            let response = restored.execute(ExecuteRequest { shard_id: 1,
+                command: Command::StringGet { key: key.clone() },
+            });
+            assert!(response.status.ok);
+            assert_eq!(response.response, CommandResponse::Bytes { value: expected });
+        }
+    }
+}
+
+#[test]
 fn maintenance_zero_expiry_budgets_leave_both_residency_classes_untouched() {
     let dir = tempfile::tempdir().unwrap();
     let engine = mixed_budget_fixture(dir.path());
