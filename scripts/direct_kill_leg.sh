@@ -3,6 +3,8 @@
 # interrupt appends. The restart command is yours, because the rig that started the server knows
 # how: pass it as RESTART. Usage:
 #   PORT=24401 RESTART='bash start_chunk.sh' ROUNDS=10 PAUSE=5 scripts/direct_kill_leg.sh
+# A server this script restarts is NOT in the pid file of the rig that started the cluster, so that rig's
+# `down` will not stop it: stop the restarted servers yourself (by their port) when the run ends.
 set -u
 PORT=${PORT:?PORT of the server to kill}
 RESTART=${RESTART:?command that restarts it}
