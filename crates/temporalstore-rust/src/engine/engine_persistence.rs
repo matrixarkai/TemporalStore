@@ -471,6 +471,10 @@ impl TemporalEngine {
         if applied == 0 {
             return;
         }
+        self.refresh_relocated_layouts(shard_id, shard);
+    }
+
+    fn refresh_relocated_layouts(&self, shard_id: ShardId, shard: &mut ShardState) {
         let index = &mut shard.bucket_index;
         let keys = crate::engine::state::BlockKeysByPosition::from_parts(
             &index.objects,
@@ -781,6 +785,14 @@ impl TemporalEngine {
     /// below the anchor, index-log records whose own anchor is at or below it) is redundant,
     /// while the folded anchor record itself must survive.
     pub(super) fn dump_index_catalog_anchored(&self, shard_id: ShardId) -> Option<(u64, u64)> {
+        self.dump_index_catalog_with_relocations(shard_id)
+            .map(|(anchor, meta_sequence, _)| (anchor, meta_sequence))
+    }
+
+    fn dump_index_catalog_with_relocations(
+        &self,
+        shard_id: ShardId,
+    ) -> Option<(u64, u64, crate::index_log::CapturedRelocations)> {
         // A dump for a shard this engine does not serve is a no-op; check BEFORE the durability
         // barrier so a background caller polling an unloaded shard does not pay (or issue) an
         // fsync for nothing.
@@ -796,7 +808,29 @@ impl TemporalEngine {
         // Writers during the barrier belong to the next checkpoint, not to this image.
         let (mut snapshot, publication) = self.capture_shard_checkpoint(shard_id)?;
         let anchor = snapshot.applied_wal_sequence.unwrap_or(0);
-        let retirements = if block_in_wal::has_registrations(&self.block_store, shard_id) {
+        let mut relocated = 0;
+        let relocations = self.index_log_store.capture_checkpoint_relocations(
+            shard_id,
+            anchor,
+            |record| {
+                relocated += fold_relocation_record(
+                    &mut snapshot,
+                    &record.relocated_from,
+                    &record.items,
+                    &record.relocated_elements,
+                    true,
+                );
+            },
+        ).ok()?;
+        if relocated > 0 {
+            self.refresh_relocated_layouts(shard_id, &mut snapshot);
+        }
+        snapshot.captured_relocation_sequence = relocations.through_sequence();
+        // Folding can change the owned image without changing the served state. Such a capture
+        // is not proof that the served state stopped using its registrations.
+        let retirements = if relocated == 0
+            && block_in_wal::has_registrations(&self.block_store, shard_id)
+        {
             let mut retained_objects = std::collections::HashSet::new();
             let mut described_wal_blocks = 0;
             visit_live_block_entries(&snapshot, |entry| {
@@ -840,7 +874,7 @@ impl TemporalEngine {
             Ok(sequence)
         }).ok()??;
         self.finish_checkpoint_wal_retirements(shard_id, &publication, anchor, retirements);
-        Some((anchor, meta_sequence))
+        Some((anchor, meta_sequence, relocations))
     }
 
     /// Embedded-path log maintenance: when the undumped index-log gap has crossed
@@ -891,13 +925,16 @@ impl TemporalEngine {
         shard_id: ShardId,
         min_reclaimable_bytes: u64,
     ) -> Option<super::reports::CatalogDumpReclaimReport> {
-        let (wal_anchor, meta_sequence) = self.dump_index_catalog_anchored(shard_id)?;
+        let (wal_anchor, meta_sequence, relocations) =
+            self.dump_index_catalog_with_relocations(shard_id)?;
         // Index-log first: drop every record the durable base already reflects (per-record WAL
         // anchor at or below the dump's), keeping the folded catalog anchor and any delta a
         // concurrent writer landed after the dump serialized.
         let index_gc = self
             .index_log_store
-            .gc_reflected_before_anchor(shard_id, wal_anchor, meta_sequence, min_reclaimable_bytes)
+            .gc_reflected_after_relocations(
+                shard_id, wal_anchor, meta_sequence, min_reclaimable_bytes, &relocations,
+            )
             .ok();
         // The sweep rewrote (shrank) the log file; re-mark the dumped watermark so the next
         // threshold measures growth from the POST-reclaim length. Without this the gap signal

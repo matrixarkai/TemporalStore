@@ -174,6 +174,46 @@ fn a_durable_relocation_is_applied_in_the_protobuf_codec_too() {
     relocation_applies_when_the_base_names_the_old_block(true);
 }
 
+fn checkpoint_reclaims_a_relocation_after_persisting_its_destination(protobuf: bool) {
+    run_with_codec(protobuf, || {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path());
+        set(&engine, "moved", b"checkpointed value");
+        engine.flush_shard_index(1);
+        let from = string_item(&engine, "moved");
+        let to = moved_copy(&engine, &from);
+        relocate(&engine, &from, &to);
+        let moves = engine.index_log_store.read_delta_records(1, 0).unwrap();
+        let sequence = moves.iter().find(|record| !record.relocated_from.is_empty())
+            .expect("the fixture wrote a move").sequence;
+        assert_eq!(address_of(&engine, "moved"), from.entry.clone().unwrap());
+
+        engine.dump_and_reclaim_index_logs_with_min_reclaimable(1, 0)
+            .expect("the checkpoint was published");
+        let image = decode_index_bytes(&std::fs::read(engine.index_path(1)).unwrap()).unwrap();
+        assert_eq!(image.string_address("moved"), to.entry);
+        assert!(image.captured_relocation_sequence >= sequence);
+        assert!(engine.index_log_store.read_delta_records(1, 0).unwrap().iter()
+            .all(|record| record.relocated_from.is_empty()));
+        assert_eq!(read(&engine, "moved").as_deref(), Some(&b"checkpointed value"[..]));
+        drop(engine);
+
+        let reloaded = open(dir.path());
+        assert_eq!(address_of(&reloaded, "moved"), to.entry.unwrap());
+        assert_eq!(read(&reloaded, "moved").as_deref(), Some(&b"checkpointed value"[..]));
+    });
+}
+
+#[test]
+fn a_checkpoint_reclaims_a_move_only_after_persisting_its_destination() {
+    checkpoint_reclaims_a_relocation_after_persisting_its_destination(false);
+}
+
+#[test]
+fn a_protobuf_checkpoint_reclaims_a_move_only_after_persisting_its_destination() {
+    checkpoint_reclaims_a_relocation_after_persisting_its_destination(true);
+}
+
 /// (ii) THE KEY WAS WRITTEN AFTER THE BASE. The relocation names the block the increment made, which
 /// the base never named, so applying it would put the incremented value at the new address and the
 /// WAL replay would then increment it again. The record must be skipped and the key must end at the
