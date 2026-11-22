@@ -146,8 +146,8 @@ fn inline_release_keeps_mixed_owners_resident_and_a_reload_restores_an_unnamed_e
             assert!(reload_released_bucket(shard, 1, bucket));
             assert_eq!(shard.bucket_index.bucket_map.get(&bucket).unwrap().block_index.len(), count + 1);
             // A released inline page is marked dirty; every address is unchanged.
-            let after = shard.strings().iter().map(|(key, slot)| (key.clone(), slot.record.address)).collect::<BTreeMap<_, _>>();
-            assert_eq!(after, states.iter().map(|(key, record)| (key.clone(), record.address)).collect::<BTreeMap<_, _>>());
+            let after = shard.strings().iter().map(|(key, slot)| (key.clone(), format!("{:?}", slot.record.address()))).collect::<BTreeMap<_, _>>();
+            assert_eq!(after, states.iter().map(|(key, record)| (key.clone(), format!("{:?}", record.address()))).collect::<BTreeMap<_, _>>());
         } else {
             assert!(outcome.released_buckets.is_empty(), "{outcome:?}");
             assert_eq!(outcome.refused_buckets, 1);
