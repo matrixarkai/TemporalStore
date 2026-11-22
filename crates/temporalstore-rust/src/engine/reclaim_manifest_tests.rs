@@ -202,6 +202,78 @@ fn borrowed_wal_floor_preserves_index_model_and_missing_placement_cases() {
     assert_eq!(wal_floor_of_index_image(&indexed_only), owned_inventory_wal_floor(&indexed_only));
 }
 
+/// WHERE NO BLOCK IS LOG-RESIDENT THE FLOOR IS NONE, AND ASKING FOR IT LISTS NO BLOCK.
+///
+/// The floor only needs to know whether ANY model block is log-resident, so its model walk accepts
+/// exactly those. An image written with the two-copy placement has none, and the walk must emit
+/// nothing for it; it used to accept every block and be charged a second full listing. The answer
+/// is compared with the inventory oracle on the images that matter: a populated one, a released one
+/// and an empty one.
+#[test]
+fn the_floor_agrees_with_the_inventory_oracle_where_nothing_is_log_resident_and_lists_no_block() {
+    let _off = crate::engine::value_once_in_test(false);
+    let root = tempfile::tempdir().unwrap();
+    let engine = open(root.path());
+    const KEYS: usize = 64;
+    for index in 0..KEYS {
+        assert!(engine.execute(ExecuteRequest { shard_id: 1,
+            command: Command::StringSet { key: format!("key-{index}"), value: vec![7; 32] },
+        }).status.ok);
+    }
+    assert!(engine.execute(ExecuteRequest { shard_id: 1,
+        command: Command::HashSet { key: "hash".into(), field: "field".into(), value: b"value".to_vec() },
+    }).status.ok);
+    let populated = engine.shards.read().unwrap()[&1].clone();
+    // The counter is global: assert on the walk of THIS call, not on a ratio across tests.
+    storage_bucket_internals::reset_live_block_scan_entries();
+    let floor = wal_floor_of_index_image(&populated);
+    let listed = storage_bucket_internals::live_block_scan_entries();
+    assert_eq!(floor, None, "no block is log-resident, so no log is retained");
+    assert_eq!(floor, owned_inventory_wal_floor(&populated));
+    assert!(listed < KEYS as u64, "the floor listed {listed} blocks of {KEYS}; it should list none");
+
+    // A released image answers the same way as the oracle does.
+    let mut released = populated.clone();
+    let ids = released.bucket_index.bucket_map.keys().copied().collect::<Vec<_>>();
+    for id in ids { released.bucket_index.released_buckets.insert(id); }
+    assert_eq!(wal_floor_of_index_image(&released), owned_inventory_wal_floor(&released));
+
+    // So does an empty one.
+    let empty = ShardState::default();
+    assert_eq!(wal_floor_of_index_image(&empty), None);
+    assert_eq!(wal_floor_of_index_image(&empty), owned_inventory_wal_floor(&empty));
+}
+
+/// A STRING WHOSE VALUE LIVES ONLY IN THE LOG IS FOUND BY THE FLOOR'S FILTERED WALK.
+///
+/// The model walk accepts only log-resident blocks, so it is safe only if the residency test is true
+/// for every model block whose value exists nowhere else. A string written with the single-copy
+/// placement is such a block: with the index entry present and with it removed (a model-only image
+/// with no placement), the floor must retain the log, and must equal the inventory oracle.
+#[test]
+fn the_floor_retains_the_log_for_a_string_whose_value_lives_only_in_it() {
+    let _on = crate::engine::value_once_in_test(true);
+    let root = tempfile::tempdir().unwrap();
+    let engine = open(root.path());
+    assert!(engine.execute(ExecuteRequest { shard_id: 1,
+        command: Command::StringSet { key: "only-in-the-log".into(), value: b"value".to_vec() },
+    }).status.ok);
+    let mut snapshot = engine.shards.read().unwrap()[&1].clone();
+    assert!(
+        snapshot.strings().iter().any(|(_, slot)| crate::wal_record::is_wal_resident(slot.address().block_slab_id())),
+        "the fixture must hold a string whose only copy is its log record"
+    );
+    assert!(wal_floor_of_index_image(&snapshot).is_some(), "an indexed log-resident string retains the log");
+    assert_eq!(wal_floor_of_index_image(&snapshot), owned_inventory_wal_floor(&snapshot));
+    // Model-only: no index entry names it, and no registration places it.
+    for mut bucket in snapshot.bucket_index.bucket_map.values_mut() {
+        bucket.block_index = crate::engine::state::BlockIndexMap::Empty;
+    }
+    snapshot.wal_resident_blocks.clear();
+    assert_eq!(wal_floor_of_index_image(&snapshot), Some(0), "a log-resident string with no placement reads as floor 0");
+    assert_eq!(wal_floor_of_index_image(&snapshot), owned_inventory_wal_floor(&snapshot));
+}
+
 #[test]
 fn generation_validation_populates_the_same_images_retention_floor() {
     let _on = crate::engine::value_once_in_test(true);
