@@ -1394,6 +1394,16 @@ fn expiry_scan_budget(limit: usize) -> usize {
             EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.invalidate, phase);
         }
         if expired_records_removed > 0 {
+            // Capture the logged deletion set before applying it. Absent family names have no
+            // tombstone to describe and must not inflate checkpoint sorting or state capture.
+            let phase = std::time::Instant::now();
+            let delta_keys: Vec<String> = deletions
+                .iter()
+                .flat_map(|deletion| deletion.records().iter().cloned())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.checkpoint, phase);
             // Expiry IS a logged,
             // replicated delete. Batch exact-record tombstones into buffered, unfsynced
             // WAL frames, preserving the fire-and-forget commit, so followers and WAL
@@ -1483,15 +1493,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 {
                     ExpiryIndexCheckpoint::Whole(Box::new(shard.clone()))
                 } else {
-                    // `delete_record` removed each expired key AND every record key associated
-                    // with it (the control-state families), so the delta has to cover the same
-                    // set or the fold would restore what the round deleted.
-                    let delta_keys: Vec<String> = expired_keys
-                        .iter()
-                        .flat_map(|key| super::associated_record_keys(key))
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .into_iter()
-                        .collect();
+                    // Existing related records are already included in the captured deletion
+                    // groups. Use that exact set rather than generating absent family names.
                     ExpiryIndexCheckpoint::Delta(Box::new(ExpiryIndexDelta {
                         // NO BLOCK ITEMS, and that is the whole content of the record's block half.
                         //

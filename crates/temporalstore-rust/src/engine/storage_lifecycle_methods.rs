@@ -1722,32 +1722,27 @@ impl TemporalEngine {
         }
 
         if durable_wal_frontier == u64::MAX {
-            // EXPERIMENT 2: no bucket held the floor, which means every bucket is dumped and
-            // nothing needs the log retained -- so the floor is the CURRENT position, not zero.
-            // Zero here reads as "retain everything" and is what took the plan unsafe in the
-            // first experiment.
-            //
-            // THE INVARIANT THIS LINE HAS TO KEEP, and the one place in the plan that could
-            // break it. Everywhere else the frontier is a MINIMUM over bucket dump manifests,
-            // and `load_shard_with` raises its own replay point to the LATEST of those same
-            // manifests -- a minimum over a set cannot exceed a member of it, so the floor can
-            // never climb above the point a load starts replaying from. Here the frontier comes
-            // from the current log position instead, which no load path consults. It is safe
-            // because a cycle DUMPS (`prepare`) before it RECLAIMS (`reclaim_wal`), so a
-            // manifest at this position already exists by the time this is read.
-            //
-            // What makes that load-bearing rather than incidental: the default load path folds
-            // no index-log deltas (#1644), so the expiry round's delta (#1633) can advance the
-            // served anchor well past the base index FILE's -- measured 9 against 1 -- and
-            // reclaim now drops whole segment files (#1622). A floor above the replay point
-            // would free records that a load still has to replay, with nothing else holding
-            // them. `wal_reclaim_never_frees_what_the_default_load_path_replays`
-            // (engine/tests/expiry_scale.rs) asserts the relation against a real load's
-            // recorded watermark at every state a production cycle passes through.
             durable_wal_frontier = current_wal_sequence;
         }
+        // A clean bucket can still have a later expiry tombstone in the WAL. The default
+        // loader does not fold index-log deltas, so only its actual load base can release it.
+        if durable_wal_frontier > 0 {
+            let recovery_manifest = manifests.iter().max_by_key(|manifest| {
+                (manifest.wal_sequence, manifest.index_log_sequence, manifest.created_unix_ms)
+            }).filter(|manifest| {
+                bucket_dump_io::manifest_wal_floor_memoised(manifest, || {
+                    let image = decode_index_bytes(installable_image(manifest).map_err(|_| ())?)
+                        .map_err(|_| ())?;
+                    Ok(wal_floor_of_index_image(&image))
+                }).is_ok()
+            });
+            let manifest_anchor = recovery_manifest.map_or(0, |manifest| manifest.wal_sequence);
+            if manifest_anchor < durable_wal_frontier {
+                let base_anchor = base_checkpoint_anchor::read(&self.index_path(shard_id));
+                durable_wal_frontier = durable_wal_frontier.min(base_anchor.max(manifest_anchor));
+            }
+        }
         if durable_index_log_frontier == u64::MAX {
-            // EXPERIMENT 2, the index-log half, same reasoning.
             durable_index_log_frontier = current_index_log_sequence;
         }
         let mut follower_cursor_block_count = 0usize;
@@ -1908,10 +1903,7 @@ impl TemporalEngine {
                 floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
             }
         }
-        let base = std::fs::read(self.index_path(shard_id))
-            .ok()
-            .and_then(|bytes| decode_index_bytes(&bytes).ok())
-            .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
+        let base = base_checkpoint_anchor::wal_floor(&self.index_path(shard_id));
         if let Some(sequence) = base {
             floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
         }
@@ -1979,10 +1971,7 @@ impl TemporalEngine {
         // The same reading a load makes -- the file as it is, no delta folded -- and the same answer
         // a manifest gives. An image that is absent names nothing; one that will not decode is not
         // what a load would use either (it falls back to the log), so neither narrows the floor.
-        let base_floor = std::fs::read(self.index_path(plan.shard_id))
-            .ok()
-            .and_then(|bytes| decode_index_bytes(&bytes).ok())
-            .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
+        let base_floor = base_checkpoint_anchor::wal_floor(&self.index_path(plan.shard_id));
         if let Some(sequence) = base_floor {
             manifest_floor = Some(manifest_floor.map_or(sequence, |old: u64| old.min(sequence)));
         }
