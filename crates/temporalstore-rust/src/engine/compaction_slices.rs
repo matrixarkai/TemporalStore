@@ -71,16 +71,56 @@ fn pass_summary(shard_id: ShardId, pass: &SlicedPass) {
     });
     if on {
         eprintln!(
-            "COMPACTION_PASS shard={shard_id} slices={} moved_refs={} drain_slabs={}",
+            "COMPACTION_PASS shard={shard_id} slices={} moved_refs={} drain_slabs={} records={} records_complete={}",
             pass.slices,
             pass.rewritten_block_refs,
-            pass.drain_block_slab_ids.len()
+            pass.drain_block_slab_ids.len(),
+            pass.records_written,
+            pass.records_complete
         );
     }
 }
 
 /// Keys a slice moves when the caller does not say.
 pub(crate) const COMPACTION_SLICE_KEYS: usize = 128;
+
+/// Moved blocks a pass lets pile up before it makes their records durable: one block fsync and one
+/// fsynced index-log record per this many blocks instead of per slice. A crash in between loses only
+/// records, never data: the base still names the old addresses and the old slabs stay pinned.
+const RELOCATION_FLUSH_BLOCKS: usize = 1024;
+
+/// The two index items a relocation record carries for one moved block, and its element name: the
+/// block named at its old address and at its new one. Built from the block's own parts, the same
+/// way the write path builds an item, so the record names it exactly as the index does.
+fn relocation_pair(
+    shard_id: ShardId,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    moved: &super::compaction::MovedBlock,
+) -> (crate::index_log::IndexItem, crate::index_log::IndexItem, String) {
+    let routing_bucket = block_routing_bucket(&moved.object_key, start_routing_bucket, end_routing_bucket);
+    let object_id = stable_block_object_id(shard_id, &moved.model_id, &moved.object_key);
+    let item = |address: &crate::block_store::ElementEntry| crate::index_log::IndexItem {
+        kind: crate::index_log::IndexItemKind::Block,
+        routing_bucket,
+        block_ref_key: crate::index_log::block_ref_key_from_parts(
+            &moved.model_id,
+            &moved.object_key,
+            None,
+            address.block_slab_id(),
+            address.offset(),
+            address.length(),
+            address.block_id().unwrap_or_default(),
+            address.generation().unwrap_or_default(),
+        ),
+        object_key: std::sync::Arc::from(moved.object_key.as_str()),
+        model_id: moved.model_id.clone(),
+        object_id,
+        deleted: false,
+        entry: Some(address.clone()),
+    };
+    (item(&moved.old), item(&moved.new), moved.element_name.clone().unwrap_or_default())
+}
 
 /// One shard's pass in flight. Memory only: a restart starts a new pass, which is safe because a
 /// pass only moves blocks that are still on a drain slab.
@@ -111,6 +151,14 @@ pub(crate) struct SlicedPass {
     rewritten_block_refs: usize,
     /// Slices run so far; read only by the per-pass summary line.
     slices: usize,
+    /// Relocation records (old item, new item, element name) for the blocks moved since the last
+    /// flush. Made durable, blocks first, by [`TemporalEngine::flush_relocation_records`].
+    pending_relocations: Vec<(crate::index_log::IndexItem, crate::index_log::IndexItem, String)>,
+    /// Blocks whose relocation record is durable, and whether every moved block's record is (false
+    /// once a block sync or a record append failed). Read by the summary line today; the finish that
+    /// publishes no whole image is the reader of the flag.
+    records_written: usize,
+    records_complete: bool,
     bytes_written_before_relocation: u64,
 }
 
@@ -207,6 +255,13 @@ impl TemporalEngine {
             .get(&shard_id)
             .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
             .unwrap_or((0, u32::MAX));
+        // THE RECORDS OF THE SLICES BEFORE THIS ONE, made durable here: no shard guard is held yet, so
+        // the block fsync they need (blocks first, then the record that names them) stalls no writer.
+        if let Some(pass) = slot.as_mut() {
+            if pass.pending_relocations.len() >= RELOCATION_FLUSH_BLOCKS {
+                self.flush_relocation_records(shard_id, pass, true);
+            }
+        }
         let mut shards = self.shards_write_marked();
         let Some(shard) = shards.get_mut(&shard_id) else {
             *slot = None;
@@ -250,7 +305,7 @@ impl TemporalEngine {
             shard_id, shard, start_routing_bucket, end_routing_bucket, &stats.moved,
             CompactionIndexRefresh::ChangedBuckets,
         );
-        pass.note_slice(shard_id, shard, stats);
+        pass.note_slice(shard_id, shard, stats, start_routing_bucket, end_routing_bucket);
         phase_timing("slice", shard_id, slice_started);
         let pass_ended = moved.is_err()
             || if pass.by_bucket {
@@ -385,6 +440,9 @@ impl TemporalEngine {
             relocated_wal_blocks: Vec::new(),
             rewritten_block_refs: 0,
             slices: 0,
+            pending_relocations: Vec::new(),
+            records_written: 0,
+            records_complete: true,
             bytes_written_before_relocation,
         }))
     }
@@ -517,6 +575,37 @@ impl TemporalEngine {
         }
     }
 
+    /// Make the relocation records of the blocks a pass has moved durable: the blocks they name first
+    /// (`sync_block_store`), then ONE fsynced record. A record must never name bytes that are not on
+    /// disk, so a failed block sync writes no record and marks the pass incomplete; a failed append
+    /// marks it incomplete too. Nothing is lost either way: the base still names the old addresses and
+    /// the pass's pin keeps the old slabs.
+    fn flush_relocation_records(&self, shard_id: ShardId, pass: &mut SlicedPass, sync_block_store: bool) {
+        if pass.pending_relocations.is_empty() {
+            return;
+        }
+        let batch = std::mem::take(&mut pass.pending_relocations);
+        // The block store's own sync, not `compaction_barrier`: that one carries the injected-failure
+        // seam the barrier tests arm for the finish.
+        if sync_block_store && self.block_store.sync_durable().is_err() {
+            pass.records_complete = false;
+            return;
+        }
+        let blocks = batch.len();
+        let mut from = Vec::with_capacity(blocks);
+        let mut to = Vec::with_capacity(blocks);
+        let mut elements = Vec::with_capacity(blocks);
+        for (old, new, element) in batch {
+            from.push(old);
+            to.push(new);
+            elements.push(element);
+        }
+        match self.index_log_store.append_relocation(shard_id, from, to, elements) {
+            Ok(sequence) if sequence > 0 => pass.records_written += blocks,
+            _ => pass.records_complete = false,
+        }
+    }
+
     /// Every slice is done: complete the index, fsync, publish, release the pin and the anchor.
     fn finish_pass(
         &self,
@@ -545,6 +634,9 @@ impl TemporalEngine {
             ));
         }
         phase_timing("finish_barrier", shard_id, barrier_started);
+        // The barrier just synced every block, so the last records follow it with no second sync.
+        let mut pass = pass;
+        self.flush_relocation_records(shard_id, &mut pass, false);
         if let Err(publish) = self.publish_pass(shard_id, shard, &pass) {
             self.pin_unpublished_compaction(shard_id, &pass.pre_round_slabs);
             return Err(publish);
@@ -626,7 +718,26 @@ impl SlicedPass {
     /// Fold one slice's outcome into the pass, and record the placement each container block the
     /// slice retired had in the log when it did, so the finish can tell a registration a writer has
     /// since replaced from one nobody has touched.
-    fn note_slice(&mut self, shard_id: ShardId, shard: &ShardState, mut stats: CompactionRewriteStats) {
+    fn note_slice(
+        &mut self,
+        shard_id: ShardId,
+        shard: &ShardState,
+        mut stats: CompactionRewriteStats,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+    ) {
+        // THE RECORDS FOR WHAT THIS SLICE MOVED are built here, under the guard that moved it, and made
+        // durable later, outside it (see `flush_relocation_records`).
+        for moved in &stats.moved {
+            if moved.old != moved.new {
+                self.pending_relocations.push(relocation_pair(
+                    shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    moved,
+                ));
+            }
+        }
         stats.note_relocated_wal_blocks(shard_id, shard);
         self.relocated_wal_blocks.append(&mut stats.relocated_wal_blocks);
         for (object_id, element_name) in &stats.retired_container_wal_blocks {

@@ -13,9 +13,6 @@ use crate::block_store::ElementEntry;
 use crate::index_log::IndexItem;
 
 fn open(dir: &std::path::Path) -> TemporalEngine {
-    // The reader under test is off by default (see `relocation_fold_on_base_only_load`); every load
-    // these tests make runs with it on, on this test's own thread.
-    crate::engine::persistence::RELOCATION_FOLD_ON_BASE_ONLY_LOAD.with(|flag| flag.set(true));
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.join("cache"),
