@@ -2090,13 +2090,11 @@ fn matrixobject_networked_target() -> Option<(MatrixObjectMode, String)> {
 }
 
 /// The networked store for `mode`. Direct mode runs the gateway's request handling in this
-/// process against the metadata group named by `TS_MATRIXOBJECT_META`, and needs a binary built
-/// with the `matrixobject` feature.
+/// process against the metadata group named by `TS_MATRIXOBJECT_META`.
 fn connect_networked_store(
     mode: MatrixObjectMode,
     target: &str,
 ) -> Result<NetworkedMatrixObjectStore, String> {
-    #[cfg(feature = "matrixobject")]
     if mode == MatrixObjectMode::Direct {
         return temporalstore_rust::matrixobject_direct::DirectConfig::from_env(target)?.connect();
     }

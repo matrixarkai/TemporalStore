@@ -9769,7 +9769,6 @@ mod tests {
     // Feature-gated because the server comes from the optional dependency. That is a real
     // reduction in what a default-feature run covers, and it is the right trade: what it
     // covered before was a protocol with no counterpart.
-    #[cfg(feature = "matrixobject")]
     fn spawn_matrixobject_object_server() -> (matrixobjectstore_rs::net::ServerHandle, String) {
         use crate::matrixobject_test_plane::{gateway_over, Shared};
         use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
@@ -9804,7 +9803,6 @@ mod tests {
         (store, replicator)
     }
 
-    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn a_replay_reads_a_contiguous_run_in_one_request() {
         // A REPLAY USED TO SPEND A REQUEST PER ENTRY ON BYTES ONE REQUEST COVERS.
@@ -9883,7 +9881,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn an_async_flush_is_one_group_commit_not_one_per_entry() {
         // THE QUEUE WAS ASSEMBLING A BATCH AND SPENDING IT SINGLY.
@@ -9979,7 +9976,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn the_shared_path_opens_one_connection_not_one_per_request() {
         // WHAT CONNECTION REUSE BUYS IS INVISIBLE TO THE BYTE COUNTERS.
@@ -10036,7 +10032,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn what_the_shared_path_spends_on_the_wire_per_record() {
         // WHAT A RECORD COSTS OVER A NETWORK, which no instrument here measured.
@@ -10108,7 +10103,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn an_append_over_the_shared_path_costs_one_request_not_two() {
         // WHAT THE SHARED PATH SPENDS OVER A NETWORK IS REQUESTS, NOT ONLY BYTES.
@@ -10196,7 +10190,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn matrixobject_get_blocking_round_trips_over_the_socket() {
         // The sync accessor the lazy slab source relies on must round-trip a real
@@ -10217,7 +10210,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn matrixobject_networked_lazy_restore_reads_old_block_on_demand() {
         // Conformance lazy data-follow over the NETWORK: a fresh node with only
@@ -10341,7 +10333,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn matrixobject_networked_lazy_restore_replays_only_wal_tail() {
         // Networked WAL-tail replay is O(recent): applied == post-checkpoint records.
@@ -10413,7 +10404,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn matrixobject_networked_lazy_restore_no_checkpoint_falls_back_to_full_replay() {
         // Backward compatible over the network: with no checkpoint published, the lazy
@@ -13758,7 +13748,6 @@ mod tests {
     /// about six times; the tail read gives one. The same test pins what `get_range_from` answers
     /// the door for a tail, an empty tail, an offset past the end and a missing key, because the
     /// 206, 416 and 404 arms of the override are only exercised against a server.
-    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn a_follower_replaying_after_every_write_reads_a_flat_amount_from_the_door() {
         let (_server, uri) = spawn_matrixobject_object_server();

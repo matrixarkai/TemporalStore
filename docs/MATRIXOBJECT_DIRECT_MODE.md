@@ -10,14 +10,14 @@ same objects at the same generations.
 | Mode switch | `TS_MATRIXOBJECT_MODE=gateway` | `TS_MATRIXOBJECT_MODE=direct` |
 | Extra process | a gateway per cluster (or per few nodes) | none |
 | Request path | node -> S3 over a socket -> gateway -> metadata group and chunk servers | node -> metadata group and chunk servers |
-| Build | any | needs the `matrixobject` cargo feature |
+| Build | the default build | the default build |
 
 Direct is the default. With no `TS_MATRIXOBJECT_MODE`, setting `TS_MATRIXOBJECT_META` selects
 direct, even when `TS_SHARED_STORE_URI` is set too; a gateway is used by default only when it is
 the only one configured (a node cannot reach a cluster directly without knowing its metadata
 group). Set `TS_MATRIXOBJECT_MODE=gateway` to keep a gateway when both are set. A mode whose own
-setting is missing is refused at start-up. A binary built without the `matrixobject` feature
-refuses direct mode by name instead of falling back to a gateway.
+setting is missing is refused at start-up. Direct mode is part of the default build: there is no
+cargo feature to enable.
 
 ## When to use which
 
@@ -25,8 +25,7 @@ refuses direct mode by name instead of falling back to a gateway.
   hop fewer and no gateway to run, secure or keep alive. The gateway's request handling runs
   inside the node, so nothing about append, read-back, listing or ranged reads is different.
 - **Gateway** when nodes cannot reach the chunk servers (network zones), when many nodes
-  should share one set of cluster connections, or when the node binary is built without the
-  `matrixobject` feature.
+  should share one set of cluster connections.
 
 ## What a direct node needs
 
@@ -74,7 +73,7 @@ through a gateway and through the in-process door, then compares what each left 
 ```text
 GATEWAY=matrixobject://127.0.0.1:24410 META=127.0.0.1:24404,127.0.0.1:24405,127.0.0.1:24406 \
   TS_MATRIXOBJECT_META_GROUP=1 SEGMENTS=6 WRITERS=4 \
-  cargo run --release -p temporalstore-rust --features matrixobject --example direct_wal_index_e2e
+  cargo run --release -p temporalstore-rust --example direct_wal_index_e2e
 ```
 
 `MODES=gateway` or `MODES=direct` runs one mode, `WRITERS` sets the concurrent writers, and
@@ -141,7 +140,7 @@ Measure one durable WAL publication as the retained history grows:
 ```sh
 TARGET=127.0.0.1:22111,127.0.0.1:22112,127.0.0.1:22113 \
 MILESTONES=256,1024,8192 VALUE=4096 \
-cargo run --release -p temporalstore-rust --features matrixobject \
+cargo run --release -p temporalstore-rust \
   --example matrixobject_single_append_growth
 ```
 

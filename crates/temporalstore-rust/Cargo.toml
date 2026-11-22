@@ -26,7 +26,7 @@ bloomfilter = { version = "3.0.2", default-features = false }
 sha2 = "0.10"
 matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "58fb9573db087635877323dfbc2bb2ddf2e65702" }
 matrixcache = { git = "https://github.com/matrixarkai/matrixcache.git", rev = "bcf26e100f1fe414076a4771468fbaec704eafc3", features = ["rocksdb-ssd"] }
-matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "0b886514a633a21173e7383814f214af2a6a3593", optional = true }
+matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "0b886514a633a21173e7383814f214af2a6a3593" }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }
@@ -52,35 +52,10 @@ open-source-surface = []
 # tool has no business perturbing the suite that is meant to be checking the change.
 #   cargo test --features alloc-probe --lib what_a_retrieve_allocates -- --ignored --nocapture
 alloc-probe = []
-# The object-store backend, used to put a shared store behind a set of
-# otherwise stateless nodes. The store crate is Apache-2.0 open source and is
-# pinned by revision above, exactly as the cache and consensus dependencies
-# are, so this feature builds from a clean checkout with nothing to re-add.
-#
-# It is OFF BY DEFAULT and the code is fully gated by
-# `#[cfg(feature = "matrixobject")]`, because the backend is a deployment
-# choice rather than a default: a single-node store needs nothing of it.
-#
-# It was an inert stub for as long as the crate had no public source, and
-# "inert" meant nobody compiled it -- the examples drifted out of step with
-# the store's API while the stub hid it. Enabling it in CI is what keeps that
-# from happening again.
-matrixobject = ["dep:matrixobjectstore-rs"]
-
-# These examples link the optional MatrixObject SDK crate; gate them behind the
-# `matrixobject` feature so the default `cargo build --all-targets` does not try
-# to compile them without the dependency enabled.
-[[example]]
-name = "direct_vs_gateway_latency"
-required-features = ["matrixobject"]
-
-[[example]]
-name = "direct_wal_index_e2e"
-required-features = ["matrixobject"]
-
-[[example]]
-name = "direct_surface_cluster"
-required-features = ["matrixobject"]
+# MatrixObject is reached only through a cluster, directly or through a gateway, and the
+# crate that does it is an ordinary dependency (Apache-2.0, pinned by revision above like the
+# cache and consensus dependencies). There is no feature to switch it on: a build that
+# compiled without it could not serve the cluster path every node is configured for.
 
 [[bin]]
 # Needs the counting allocator to say anything; it refuses to run without it rather than printing
@@ -132,4 +107,3 @@ path = "src/bin/temporalstore_data_server.rs"
 
 [[example]]
 name = "matrixobject_single_append_growth"
-required-features = ["matrixobject"]
