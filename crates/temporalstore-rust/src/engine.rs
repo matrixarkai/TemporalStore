@@ -3196,6 +3196,33 @@ impl TemporalEngine {
         (summaries, digests)
     }
 
+    /// What the reclaim plan asks of the shard, taken under ONE read of it: the dirty buckets and
+    /// their claims, the summaries and digests of those buckets only, and how many bucket nodes
+    /// the shard has. The copy under the guard is O(dirty buckets); the rest of the shard is not
+    /// listed.
+    pub(crate) fn dirty_bucket_plan_inputs(&self, shard_id: ShardId) -> DirtyBucketPlanInputs {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return DirtyBucketPlanInputs::default();
+        };
+        let info = self.infos.read().expect("info lock poisoned").get(&shard_id).cloned();
+        let start = info.as_ref().map(|info| info.start_routing_bucket).unwrap_or_default();
+        let end = info.as_ref().map(|info| info.end_routing_bucket).unwrap_or(u32::MAX);
+        let claims = storage_reporting::dirty_bucket_claims(shard);
+        let dirty: BTreeSet<u32> = claims.keys().copied().collect();
+        let listing = storage_reporting::capture_live_listing_for(shard, &dirty);
+        let bucket_node_count = shard.bucket_index.bucket_map.len();
+        drop(shards);
+        let (summaries, digests) = storage_reporting::build_summaries_and_digests(shard_id, listing, start, end, true);
+        let summaries =
+            if let Some(manifest) = latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id) {
+                merge_last_dump_sequence(summaries, &manifest)
+            } else {
+                summaries
+            };
+        DirtyBucketPlanInputs { claims, summaries, digests, bucket_node_count }
+    }
+
     pub fn storage_physical_index_report(&self, shard_id: ShardId) -> StoragePhysicalIndexReport {
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
@@ -10765,4 +10792,14 @@ mod key_state_shape_tests {
             "a key in no map should carry only its own name, got {object:?}"
         );
     }
+}
+
+/// The inputs of a reclaim plan that asks only about dirty buckets. See
+/// `TemporalEngine::dirty_bucket_plan_inputs`.
+#[derive(Default)]
+pub(crate) struct DirtyBucketPlanInputs {
+    pub(crate) claims: BTreeMap<u32, (u64, u64)>,
+    pub(crate) summaries: Vec<BucketStorageSummary>,
+    pub(crate) digests: BTreeMap<u32, BucketFingerprintDigest>,
+    pub(crate) bucket_node_count: usize,
 }

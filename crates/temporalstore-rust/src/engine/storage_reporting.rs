@@ -430,6 +430,53 @@ pub(super) fn capture_live_listing(shard: &ShardState) -> LiveListing {
     }
 }
 
+/// [`capture_live_listing`] for a SET of buckets: the live blocks filed under those buckets and
+/// those buckets' own records, and nothing of the rest of the shard. The copy under the caller's
+/// read of the shard is O(the named buckets), not O(the shard).
+///
+/// The blocks come from each bucket's own block list (`visit_bucket_nodes_live_block_entries`), so
+/// they are the FILED blocks; a live block with no filing is not reached. The reclaim plan asks
+/// this only about dirty buckets, and the differential test of the plan names any difference from
+/// the whole-shard walk.
+pub(super) fn capture_live_listing_for(
+    shard: &ShardState,
+    buckets: &BTreeSet<u32>,
+) -> LiveListing {
+    let mut entries = Vec::new();
+    visit_bucket_nodes_live_block_entries(
+        shard,
+        buckets
+            .iter()
+            .filter_map(|routing_bucket| {
+                shard.bucket_index.bucket_map.get(routing_bucket).map(|node| (routing_bucket, node))
+            }),
+        |entry| entries.push(entry),
+    );
+    LiveListing {
+        entries,
+        facts: BucketNodeFacts {
+            nodes: buckets
+                .iter()
+                .filter_map(|routing_bucket| {
+                    shard.bucket_index.bucket_map.get(routing_bucket).map(|bucket| {
+                        (
+                            *routing_bucket,
+                            bucket.dirty(),
+                            bucket.object_index.object_count() as u64,
+                            bucket.dirty_generation,
+                        )
+                    })
+                })
+                .collect(),
+            dirty_object_counts: shard
+                .dirty_objects
+                .bucket_counts()
+                .filter(|(routing_bucket, _)| buckets.contains(routing_bucket))
+                .collect(),
+        },
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static LISTING_RELEASED_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
