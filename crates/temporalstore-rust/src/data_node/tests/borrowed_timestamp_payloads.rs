@@ -183,6 +183,9 @@ fn borrowed_timestamp_payloads_mirror_owned_commands_after_the_body_is_gone() {
         fn record_write(&self, _: ShardId, command: &Command) {
             self.0.lock().unwrap().push(command.clone());
         }
+        fn record_outcomes(&self, _: ShardId, _: &[crate::wal::WalOutcomeItem]) {
+            panic!("unexpected maintenance frame");
+        }
     }
     let dir = tempfile::tempdir().unwrap();
     let runtime = open(dir.path(), true);

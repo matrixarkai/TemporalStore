@@ -545,10 +545,10 @@ impl DataNodeRuntime {
         options: &StorageManagerOptions,
         detailed_report: bool,
     ) -> (StorageManagerPressureSnapshot, StorageLifecyclePlan) {
-        let plan = self
+        let (plan, undumped_wal_bytes) = self
             .inner
             .engine
-            .storage_lifecycle_plan_with_report_details(StorageLifecycleRequest {
+            .storage_lifecycle_pressure_plan(StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
                 selected_dump_buckets: Vec::new(),
@@ -613,7 +613,7 @@ impl DataNodeRuntime {
                 undumped_wal_records: plan.undumped_wal_records,
                 // BYTES, as the field says. This was the record count copied into a field named for
                 // bytes, which is what the byte gate would have read had anything read it.
-                wal_bytes: self.inner.engine.undumped_wal_bytes_above_oldest_dirty(shard_id),
+                wal_bytes: undumped_wal_bytes,
                 index_log_bytes: log_pressure.index_log_bytes,
                 stale_block_slab_count: plan.stale_block_slab_ids.len(),
                 reclaim_candidate_count: plan.reclaim_candidates.len(),
@@ -1384,6 +1384,7 @@ impl DataNodeRuntime {
                     crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
                 );
             if !quarantine_waits {
+                let purge_started = std::time::Instant::now();
                 let purge = self
                     .inner
                     .engine
@@ -1400,6 +1401,7 @@ impl DataNodeRuntime {
                             crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
                         ..StorageLifecycleRequest::default()
                     });
+                super::task_execution::record_gc_phase(&self.inner, "purge", purge_started);
                 block_purge_report = Some(purge);
                 if !executed_stages.iter().any(|stage| stage == "reclaim_page") {
                     executed_stages.push("reclaim_page".to_string());
@@ -2172,7 +2174,7 @@ impl DataNodeRuntime {
             let removed = self
                 .inner
                 .engine
-                .sweep_expired_records_with_request(crate::engine::reports::ShardExpirySweepRequest {
+                .sweep_expired_records_for_maintenance(crate::engine::reports::ShardExpirySweepRequest {
                     shard_id,
                     max_hot_buckets_per_round: options.max_expire_hot_buckets_per_round,
                     max_cold_buckets_per_round: options.max_expire_cold_buckets_per_round,
@@ -2560,7 +2562,7 @@ impl DataNodeRuntime {
 
     /// Sweep every loaded shard with a per-round bound.
     ///
-    /// `hot_limit` / `cold_limit` of 0 mean no limit. With a bound a round takes at most that many
+    /// `hot_limit` / `cold_limit` of 0 disable that residency class. A round takes at most that many
     /// due keys from the front of the deadline-ordered view, so there is nothing to resume: what
     /// is due is always the front, and a key not reached this round is still there next round.
     pub fn sweep_expired_records_bounded(
@@ -2576,7 +2578,7 @@ impl DataNodeRuntime {
         let removed = self
             .inner
             .engine
-            .sweep_expired_records_with_request(crate::engine::reports::ShardExpirySweepRequest {
+            .sweep_expired_records_for_maintenance(crate::engine::reports::ShardExpirySweepRequest {
                 shard_id,
                 max_hot_buckets_per_round: hot_limit,
                 max_cold_buckets_per_round: cold_limit,
@@ -3227,5 +3229,66 @@ impl BoundedStage for PageGcStage<'_> {
         context: &StageContext<'_>,
     ) -> StageStep {
         self.run(shard, cursor, budget, context).0
+    }
+}
+
+#[cfg(test)]
+mod maintenance_expiry_budget_routes {
+    use super::*;
+
+    fn fixture(root: &std::path::Path) -> (TemporalEngine, DataNodeRuntime) {
+        let engine = TemporalEngine::with_local_dirs(1 << 20,
+            root.join("cache"), root.join("blocks"), root.join("indexes"));
+        engine.load_shard(1);
+        for index in 0..8 {
+            assert!(engine.execute(crate::types::ExecuteRequest { shard_id: 1,
+                command: crate::types::Command::StringSetEx {
+                    key: format!("budget-due-{index}"), value: vec![index; 16], ttl_ms: 1,
+                },
+            }).status.ok);
+        }
+        engine.write_ahead_log_store().flush(1).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        let runtime = DataNodeRuntime::new_without_workers_with_options(engine.clone(),
+            DataNodeRuntimeOptions { worker_threads: 0, max_queue_depth: 4,
+                max_background_queue_depth: 2 });
+        (engine, runtime)
+    }
+
+    fn options() -> StorageManagerOptions {
+        StorageManagerOptions {
+            enable_prepare: false, enable_wal_reclaim: false, enable_memory_reclaim: false,
+            enable_expire: true, enable_block_gc: false, enable_block_compaction: false,
+            enable_index_gc: false, enable_metrics_reap: false, enable_evict: false,
+            max_expire_hot_buckets_per_round: 0, max_expire_cold_buckets_per_round: 0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn full_maintenance_round_preserves_due_records_at_zero_expiry_budgets() {
+        let root = tempfile::tempdir().unwrap();
+        let (engine, runtime) = fixture(root.path());
+        let writes = engine.write_ahead_log_store().stats(1).writes;
+        let report = runtime.run_storage_manager_once(1, options());
+        assert!(report.status.ok, "{report:?}");
+        assert_eq!(report.expired_records_removed, 0);
+        assert_eq!(runtime.stats().storage_manager_expire_runs, 1);
+        assert_eq!(engine.write_ahead_log_store().stats(1).writes, writes);
+        assert_eq!(engine.sweep_expired_records(1).unwrap().expired_records_removed, 8);
+    }
+
+    #[test]
+    fn cheap_maintenance_tick_preserves_due_records_at_zero_expiry_budgets() {
+        let root = tempfile::tempdir().unwrap();
+        let (engine, runtime) = fixture(root.path());
+        let writes = engine.write_ahead_log_store().stats(1).writes;
+        let period = Duration::from_secs(3600);
+        let mut state = ShardRoundState::new(std::time::Instant::now(), period);
+        assert!(runtime.run_storage_manager_tick(1, &options(), &mut state, period).is_none());
+        assert_eq!(runtime.stats().storage_manager_expire_runs, 1);
+        assert_eq!(runtime.stats().expired_records_removed, 0);
+        assert_eq!(engine.write_ahead_log_store().stats(1).writes, writes);
+        assert_eq!(engine.sweep_expired_records(1).unwrap().expired_records_removed, 8);
     }
 }

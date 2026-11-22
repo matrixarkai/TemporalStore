@@ -1086,6 +1086,18 @@ pub struct WriteAheadLogGcReport {
     /// What those pieces held.
     #[serde(default)]
     pub dropped_segment_bytes: u64,
+    /// The pass did nothing because the piece it planned against was rolled, a reader appeared
+    /// that needs a record it would have dropped, or another pass for the shard was in flight.
+    /// The next pass starts again.
+    #[serde(default)]
+    pub skipped_raced: bool,
+    /// Whole-log scans the pass made under the append mutex. Zero when the append path's cache
+    /// vouched for the piece, which is every pass after the first of a process lifetime.
+    #[serde(default)]
+    pub full_scans_under_mutex: u32,
+    /// Bytes copied under the append mutex: only what was appended while the pass ran.
+    #[serde(default)]
+    pub bytes_copied_under_mutex: u64,
 }
 
 /// Evidence that the durable served index for a shard already reflects every WAL record at or
@@ -1277,6 +1289,10 @@ fn retained_block_floor(inner: &WriteAheadLogInner, readers: &ReadRetentions, sh
 #[path = "wal/read_retention_tests.rs"]
 mod read_retention_tests;
 
+#[cfg(test)]
+#[path = "wal/gc_hold_tests.rs"]
+mod gc_hold_tests;
+
 #[path = "wal/registration_records.rs"]
 mod registration_records;
 
@@ -1436,6 +1452,11 @@ struct WriteAheadLogInner {
     // skipped. Any mismatch (external append, or first touch this process lifetime) falls back to
     // the full scan. Only consulted when `flat_append()`; harmless to maintain when off.
     verified_len_by_shard: HashMap<ShardId, u64>,
+    /// Bumped each time a roll replaces a shard's active piece. A reclaim pass that copied from the
+    /// piece it saw when it planned refuses to swap if this moved.
+    gc_epoch_by_shard: HashMap<ShardId, u64>,
+    /// Shards with a reclaim pass in flight. A second pass is declined, not queued.
+    gc_running: HashSet<ShardId>,
     // Lowest sequence whose record may still hold the only copy of a block's bytes -- the dump
     // watermark. A block written into the WAL is addressed by the byte offset of its record and
     // has no copy in a slab until it is dumped, so reclaiming that record destroys the block.
@@ -1586,6 +1607,8 @@ impl LocalWriteAheadLogStore {
                 block_mode_by_shard: HashMap::new(),
                 durable_sequence_by_shard: HashMap::new(),
                 verified_len_by_shard: HashMap::new(),
+                gc_epoch_by_shard: HashMap::new(),
+                gc_running: HashSet::new(),
                 block_retention_floor_by_shard: HashMap::new(),
                 base_by_shard: HashMap::new(),
                 prealloc_physical_by_shard: HashMap::new(),
@@ -3499,136 +3522,78 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         retain_from_sequence: u64,
     ) -> Result<WriteAheadLogGcReport, WriteAheadLogError> {
-        let mut inner = self.lock_inner();
-        fs::create_dir_all(&inner.root)?;
-        let path = active_wal_path(&mut inner, shard_id);
-        if !path.exists() {
-            return Ok(WriteAheadLogGcReport {
-                shard_id,
-                retain_from_sequence,
-                effective_retain_from_sequence: retain_from_sequence,
-                ..WriteAheadLogGcReport::default()
-            });
-            // (an absent log has reclaimed nothing, so the default base of 0 is correct)
-        }
-
-        let bytes_before = path.metadata()?.len();
-        let (last_sequence, _) = last_wal_sequence_at(&inner.root, shard_id)?;
-        // Never delete the highest-sequence record. The WAL file is the sequence-generator
-        // source on restart (append seeds last_sequence_by_shard from last_wal_sequence_at), so
-        // emptying it entirely on a full reclaim (retain_from > max) would regress the next
-        // append to sequence 1 -> sequence REUSE + silent loss: the re-used seq is <= the
-        // persisted applied_wal_sequence anchor, so replay's `sequence > watermark` filter drops
-        // it. the zone-aligned wal Truncate always retains the tail zone holding the highest
-        // sequence for exactly this continuity reason. Clamp the retain floor to keep the tail.
-        let effective_retain = retain_from_sequence.min(last_sequence);
-        // Never reclaim past the block-retention floor. A record at or above it may carry the
-        // only copy of a block's bytes -- a block in the WAL has no copy in a slab until it is
-        // dumped -- so removing it loses data that the served index still points at, and the
-        // read fails at some later, unrelated moment.
-        let floor = {
-            let readers = self.read_retention.lock().expect("read retention lock poisoned");
-            retained_block_floor(&inner, &readers, shard_id).unwrap_or(u64::MAX)
-        };
-        let clamped_by_block_retention = effective_retain > floor;
-        let effective_retain = effective_retain.min(floor);
-        // Whole pieces below the retain point go without being read or copied. This uses the
-        // NARROWED point, not the one the caller asked for: the two clamps above exist to keep the
-        // highest-sequence record and anything a block still depends on, and a piece unlinked here
-        // is gone in a way the copy path below could never undo. What remains is the piece being
-        // written, which that path handles as it always has.
-        inner.point_readers.clear_shard(shard_id);
-        let (dropped_segments, dropped_bytes) =
-            drop_covered_wal_segments(&inner.root, shard_id, effective_retain)?;
-        // Records are appended in strictly ascending sequence -- the live path increments under
-        // the append lock, and the replay path refuses anything at or below the last sequence --
-        // so the records to keep are a contiguous SUFFIX and the ones to drop are a prefix.
-        // That is what makes the whole reclaim expressible as one number: every survivor moves
-        // down by exactly the length of the removed prefix.
-        let (base_offset, header_len) = read_wal_base(&path)?;
-        // Where the records stop. Under preallocation the file continues past them as a zeros
-        // reservation, which this pass must neither decode as a record nor copy into the
-        // rewritten file; the tail scan also repairs any torn non-zero tail first, exactly as
-        // an append would.
-        let (_, record_end) = last_wal_sequence_in(&path)?;
-        // One line at a time. A log is not bounded by memory, so neither this search nor the
-        // copy below may hold it: reclaiming a large log otherwise costs a transient allocation
-        // the size of the whole file.
+        // THE MUTEX IS HELD FOR A DECISION AND A SWAP, NOT FOR THE WORK.
+        //
+        // The append mutex used to be held from the first line of this function to the last: the
+        // directory listing and every unlink of a covered piece, three walks of the active piece
+        // (last sequence, record end, the split), the copy of the survivors, their fsync, the
+        // rename and the directory fsync. Every writer in the shard waited behind all of it.
+        //
+        //   1. UNDER THE MUTEX, a decision: the retain point (clamped to the last record and to
+        //      the block-retention floor), the active piece's record end from the append path's own
+        //      cache, one open of the piece, and the roll epoch. No record is read.
+        //   2. WITHOUT THE MUTEX, the work: unlink the covered pieces, find the split, copy the
+        //      survivors into a temp file and make it durable. Appends continue meanwhile; they
+        //      only add bytes past the record end this pass saw.
+        //   3. UNDER THE MUTEX, a validate-and-swap: the piece was not rolled, the floor did not
+        //      move below what the pass intends to drop; then the few bytes appended meanwhile are
+        //      added to the temp file, it is made durable, renamed over the piece, and the caches
+        //      are moved.
+        //
+        // One pass per shard at a time: a second caller is declined, not queued, because the pass
+        // it would have run is the one already in flight.
         let mut tally = WalReadTally::start();
-        let mut source = open_wal_read(path.as_path(), &mut tally)?;
-        source.seek(SeekFrom::Start(header_len))?;
-        // Bounded by the cursor below rather than by `take`, because a Take is not seekable and
-        // stepping over a block's footer is a seek. the reclaim walk crosses blocks now.
+        let (plan, source) = {
+            let mut inner = self.lock_inner();
+            if !inner.gc_running.insert(shard_id) {
+                return Ok(WriteAheadLogGcReport {
+                    shard_id,
+                    retain_from_sequence,
+                    effective_retain_from_sequence: retain_from_sequence,
+                    skipped_raced: true,
+                    ..WriteAheadLogGcReport::default()
+                });
+            }
+            let readers = self.read_retention.lock().expect("read retention lock poisoned");
+            match plan_gc_locked(&mut inner, shard_id, retain_from_sequence, self.flat_append(), &readers, &mut tally) {
+                Ok(Some(planned)) => planned,
+                Ok(None) => {
+                    inner.gc_running.remove(&shard_id);
+                    // (an absent log has reclaimed nothing, so the default base of 0 is correct)
+                    return Ok(WriteAheadLogGcReport {
+                        shard_id,
+                        retain_from_sequence,
+                        effective_retain_from_sequence: retain_from_sequence,
+                        ..WriteAheadLogGcReport::default()
+                    });
+                }
+                Err(err) => {
+                    inner.gc_running.remove(&shard_id);
+                    return Err(err);
+                }
+            }
+        };
+        let _running = GcRunning { store: self, shard_id };
+        let full_scans_under_mutex = plan.full_scans;
+        gc_phase("planned");
+
+        // Whole pieces below the retain point go without being read or copied. This uses the
+        // NARROWED point, not the one the caller asked for: a piece unlinked here is gone in a way
+        // the copy path below could never undo. Only sealed pieces are touched, and a sealed piece
+        // is never written again; the roll adds pieces at the HIGH end, so a listing taken without
+        // the mutex cannot disagree with the unlinks about the prefix.
+        let (dropped_segments, dropped_bytes) =
+            drop_covered_wal_segments(&plan.root, shard_id, plan.effective_retain)?;
+
+        // One line at a time. A log is not bounded by memory, so neither this search nor the
+        // copy below may hold it. The handle was opened under the mutex, so it names the piece
+        // the plan describes even if a roll renames it from here on.
         let mut reader = BufReader::new(source);
-        let walk_until = record_end;
-        let mut records_before = 0usize;
-        let mut records_after = 0usize;
-        let mut split = None;
-        let mut cursor = header_len;
-        loop {
-            if cursor >= walk_until {
-                break;
-            }
-            // Step over a block footer this lands on, before reading. The branch below only
-            // catches a boundary with PADDING in front of its footer; a block whose records end
-            // flush against the footer has none, and the footer is then read as a record -- its
-            // first byte is not a frame marker, so the reader falls to newline-delimited mode and
-            // returns a fragment.
-            //
-            // That matters more here than in a scan that only counts: `cursor` becomes `split`
-            // below, the byte offset this reclaim keeps from. A fragment read at a boundary moves
-            // the line between what is copied and what is dropped, so the pass can retain or
-            // discard the wrong records rather than merely report the wrong number of them.
-            let stepped = skip_block_footer_if_due(&mut reader, cursor, header_len)?;
-            if stepped != cursor {
-                cursor = stepped;
-                if cursor >= walk_until {
-                    break;
-                }
-            }
-            let Some(packed_frames::ReadRecord { bytes: line, physical_bytes: read }) = read_raw_record(&mut reader)? else {
-                // Padding before a closed block's footer, or the end. The footer decides.
-                match block_is_closed(&mut reader, cursor, header_len, walk_until)? {
-                    Some(next) => {
-                        cursor = next;
-                        continue;
-                    }
-                    None => break,
-                }
-            };
-            if read == 0 {
-                break;
-            }
-            // The delimiter comes off a text record and NOTHING comes off a binary frame, which
-            // ends where its declared length ends. Stripping a trailing `0x0A` off a frame takes
-            // a byte of the payload, and `decode_wal_line` below then refuses the whole sweep
-            // with `binary record is incomplete` -- so a log whose records happen to end in that
-            // byte reclaimed nothing at all, and the caller's `.ok()` rendered it as success.
-            // `info_at`'s walk already applied this rule; this one did not.
-            let trimmed = if line.first() == Some(&packed_frames::MAGIC) {
-                line.as_slice()
-            } else {
-                crate::log_framing::record_body(line.as_slice())
-            };
-            if !trimmed.iter().all(|byte| byte.is_ascii_whitespace()) {
-                records_before += 1;
-                if split.is_some() {
-                    // Past the split every remaining record is retained, and the sequence is
-                    // ascending, so there is nothing left to decide -- count it and move on
-                    // rather than parsing it again.
-                    records_after += 1;
-                } else if decode_wal_line(trimmed)?.sequence >= effective_retain {
-                    split = Some(cursor);
-                    records_after += 1;
-                }
-            }
-            cursor = cursor.saturating_add(read as u64);
-        }
-        // Nothing retained means everything before the end goes; the split is the end of file.
-        let split = split.unwrap_or(cursor);
-        let removed_bytes = split.saturating_sub(header_len);
-        let new_base = base_offset.saturating_add(removed_bytes);
-        let retained_bytes = cursor.saturating_sub(split);
+        let scan = scan_wal_prefix_for_split(&mut reader, plan.header_len, plan.record_end, plan.effective_retain)?;
+        let split = scan.split.unwrap_or(scan.cursor);
+        let removed_bytes = split.saturating_sub(plan.header_len);
+        let new_base = plan.base_offset.saturating_add(removed_bytes);
+        let retained_bytes = scan.cursor.saturating_sub(split);
 
         // Copying the survivors IS the cost of a pass, so reclaiming a sliver off the front of a
         // large log rewrites almost all of it to buy almost nothing. Decline that and let the
@@ -3642,9 +3607,9 @@ impl LocalWriteAheadLogStore {
         // on: the copy has to stay verbatim, and `block_is_closed` is what handles the footer it
         // displaces. This is here so a test can say "the case was reached".
         let retained_carries_a_block_footer = retained_bytes > 0 && {
-            let block = block_of(split.saturating_sub(header_len));
-            let slot = header_len + block_footer_at(block);
-            split <= slot && slot + WAL_BLOCK_FOOTER_BYTES <= record_end
+            let block = block_of(split.saturating_sub(plan.header_len));
+            let slot = plan.header_len + block_footer_at(block);
+            split <= slot && slot + WAL_BLOCK_FOOTER_BYTES <= plan.record_end
         };
         let worth_rewriting = reclaim_is_worth_rewriting(
             removed_bytes,
@@ -3652,56 +3617,92 @@ impl LocalWriteAheadLogStore {
             reclaim_min_copy_bytes(),
             reclaim_min_freed_percent(),
         );
+        let declined = |skipped_not_worth_rewrite: bool, skipped_raced: bool| WriteAheadLogGcReport {
+            shard_id,
+            retain_from_sequence,
+            effective_retain_from_sequence: plan.effective_retain,
+            clamped_by_block_retention: plan.clamped_by_block_retention,
+            clamped_by_durable_index: false,
+            records_before: scan.records_before,
+            records_after: scan.records_before,
+            records_removed: 0,
+            bytes_before: plan.bytes_before,
+            bytes_after: plan.bytes_before,
+            base_offset: plan.base_offset,
+            bytes_copied: 0,
+            skipped_not_worth_rewrite,
+            skipped_raced,
+            retained_bytes_carry_a_block_footer: retained_carries_a_block_footer,
+            dropped_segments,
+            dropped_segment_bytes: dropped_bytes,
+            full_scans_under_mutex,
+            bytes_copied_under_mutex: 0,
+        };
         if !worth_rewriting {
-            return Ok(WriteAheadLogGcReport {
-                shard_id,
-                retain_from_sequence,
-                effective_retain_from_sequence: effective_retain,
-                clamped_by_block_retention,
-                clamped_by_durable_index: false,
-                records_before,
-                records_after: records_before,
-                records_removed: 0,
-                bytes_before,
-                bytes_after: bytes_before,
-                base_offset,
-                bytes_copied: 0,
-                skipped_not_worth_rewrite: true,
-                retained_bytes_carry_a_block_footer: retained_carries_a_block_footer,
-                dropped_segments,
-                dropped_segment_bytes: dropped_bytes,
-            });
+            // The covered pieces are gone from the directory; a reader that cached the listing
+            // must not be sent to one of them.
+            self.lock_inner().point_readers.clear_shard(shard_id);
+            return Ok(declined(true, false));
         }
 
-        let temp_path = path.with_extension("jsonl.tmp");
-        {
-            let mut temp = File::create(&temp_path)?;
-            // The base goes inside the file so it is swapped in by the same rename as the bytes
-            // it describes. A base kept beside the file could survive a crash disagreeing with
-            // them, and every address would then resolve to the wrong record.
-            temp.write_all(&crate::log_framing::encode_base_header(new_base))?;
-            // Copy the retained records byte for byte rather than decoding and re-encoding
-            // them. Re-encoding could change a record's length, which would break the offset
-            // arithmetic this whole scheme rests on, and it costs a parse per record.
-            let mut copy_tally = WalReadTally::start();
-            let mut source = open_wal_read(path.as_path(), &mut copy_tally)?;
-            source.seek(SeekFrom::Start(split))?;
-            std::io::copy(
-                &mut BufReader::new(source.take(record_end.saturating_sub(split))),
-                &mut temp,
-            )?;
-            temp.flush()?;
-            temp.sync_all()?;
+        let temp_path = plan.path.with_extension("jsonl.tmp");
+        let mut temp = File::create(&temp_path)?;
+        // The base goes inside the file so it is swapped in by the same rename as the bytes
+        // it describes. A base kept beside the file could survive a crash disagreeing with
+        // them, and every address would then resolve to the wrong record.
+        temp.write_all(&crate::log_framing::encode_base_header(new_base))?;
+        // Copy the retained records byte for byte rather than decoding and re-encoding
+        // them. Re-encoding could change a record's length, which would break the offset
+        // arithmetic this whole scheme rests on, and it costs a parse per record.
+        let mut source = reader.into_inner();
+        source.seek(SeekFrom::Start(split))?;
+        std::io::copy(
+            &mut BufReader::new((&mut source).take(plan.record_end.saturating_sub(split))),
+            &mut temp,
+        )?;
+        // Durable BEFORE the mutex is taken: the swap below then only has to make the few bytes
+        // appended meanwhile durable, not the whole survivor set.
+        temp.flush()?;
+        temp.sync_all()?;
+        gc_phase("scanned");
+
+        let mut inner = self.lock_inner();
+        inner.point_readers.clear_shard(shard_id);
+        let epoch_now = inner.gc_epoch_by_shard.get(&shard_id).copied().unwrap_or(0);
+        let floor_now = {
+            let readers = self.read_retention.lock().expect("read retention lock poisoned");
+            retained_block_floor(&inner, &readers, shard_id).unwrap_or(u64::MAX)
+        };
+        let record_end_now = active_record_end(&mut inner, shard_id);
+        // Refused, not repaired: a roll renamed the piece this pass copied from, or a reader
+        // appeared that needs a record this pass was about to drop. The temp file describes a
+        // piece that no longer exists in that form. The next pass starts again from the new one.
+        if epoch_now != plan.epoch || plan.effective_retain > floor_now || record_end_now < plan.record_end {
+            drop(temp);
+            let _ = fs::remove_file(&temp_path);
+            return Ok(declined(false, true));
         }
-        fs::rename(&temp_path, path.as_path())?;
-        sync_parent_dir(&path)?;
+        // The bytes appended since the plan, which is all that can have changed: the prefix is
+        // never written again, and the records are only ever added at the end.
+        let tail = record_end_now - plan.record_end;
+        if tail > 0 {
+            let mut tail_tally = WalReadTally::start();
+            let mut live = open_wal_read(plan.path.as_path(), &mut tail_tally)?;
+            live.seek(SeekFrom::Start(plan.record_end))?;
+            std::io::copy(&mut BufReader::new(live.take(tail)), &mut temp)?;
+        }
+        temp.flush()?;
+        temp.sync_all()?;
+        drop(temp);
+        fs::rename(&temp_path, plan.path.as_path())?;
+        sync_parent_dir(&plan.path)?;
         // Reclaim is the only thing that moves the base, so refresh the cache here rather than
         // letting an append compute a log id against a stale one.
         let new_header_len = crate::log_framing::encode_base_header(new_base).len() as u64;
         inner
             .base_by_shard
             .insert(shard_id, (new_base, new_header_len));
-        let bytes_after = path.metadata()?.len();
+        let bytes_after = plan.path.metadata()?.len();
         // The rewritten file ends exactly at its records: no reservation survives the rename,
         // and the record end IS the file length again. Leaving the old entries in place would
         // make the next append place its bytes against the pre-rewrite file.
@@ -3727,20 +3728,23 @@ impl LocalWriteAheadLogStore {
         Ok(WriteAheadLogGcReport {
             shard_id,
             retain_from_sequence,
-            records_before,
-            records_after,
-            records_removed: records_before.saturating_sub(records_after),
-            bytes_before,
+            records_before: scan.records_before,
+            records_after: scan.records_after,
+            records_removed: scan.records_before.saturating_sub(scan.records_after),
+            bytes_before: plan.bytes_before,
             bytes_after,
             base_offset: new_base,
-            effective_retain_from_sequence: effective_retain,
-            clamped_by_block_retention,
+            effective_retain_from_sequence: plan.effective_retain,
+            clamped_by_block_retention: plan.clamped_by_block_retention,
             clamped_by_durable_index: false,
-            bytes_copied: retained_bytes,
+            bytes_copied: retained_bytes + tail,
             skipped_not_worth_rewrite: false,
+            skipped_raced: false,
             retained_bytes_carry_a_block_footer: retained_carries_a_block_footer,
             dropped_segments,
             dropped_segment_bytes: dropped_bytes,
+            full_scans_under_mutex,
+            bytes_copied_under_mutex: tail,
         })
     }
 
@@ -4153,6 +4157,207 @@ fn drop_covered_wal_segments(
     Ok((dropped, freed))
 }
 
+/// What the reclaim pass decides under the append mutex, and then carries out without it.
+struct WalGcPlan {
+    root: PathBuf,
+    path: PathBuf,
+    effective_retain: u64,
+    clamped_by_block_retention: bool,
+    /// Where the active piece's records ended when the plan was made.
+    record_end: u64,
+    base_offset: u64,
+    header_len: u64,
+    bytes_before: u64,
+    /// The active piece's roll epoch. A swap is refused if it moved.
+    epoch: u64,
+    /// Whole-log scans the plan had to make because the append path's cache could not vouch for
+    /// the piece (first touch this process lifetime, or a foreign writer). Zero in steady state.
+    full_scans: u32,
+}
+
+/// The decision step of a reclaim pass. Runs under the append mutex and reads no record when the
+/// append path's cache is warm: the retain point comes from the cached last sequence, the record
+/// end from the cached record end, and the piece is opened once.
+///
+/// `Ok(None)` is an absent log.
+fn plan_gc_locked<'t>(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+    retain_from_sequence: u64,
+    flat_append: bool,
+    readers: &ReadRetentions,
+    tally: &'t mut WalReadTally,
+) -> Result<Option<(WalGcPlan, CountedWalFile<'t>)>, WriteAheadLogError> {
+    fs::create_dir_all(&inner.root)?;
+    let path = active_wal_path(inner, shard_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes_before = path.metadata()?.len();
+    let scans_before = inner.stats.append_full_scans;
+    // The same resolution an append makes: warm, it is the cached pair after one stat and, under
+    // preallocation, one byte read; cold, it is the whole-log scan, which also repairs a torn tail.
+    #[cfg(test)]
+    let flat_append = flat_append && !GC_PLAN_FORCES_FULL_SCAN.with(|force| force.get());
+    let (last_sequence, record_end) = resolve_last_sequence_for_append(inner, shard_id, flat_append)?;
+    let full_scans = inner.stats.append_full_scans.saturating_sub(scans_before) as u32;
+    // Never delete the highest-sequence record. The WAL file is the sequence-generator
+    // source on restart (append seeds last_sequence_by_shard from last_wal_sequence_at), so
+    // emptying it entirely on a full reclaim (retain_from > max) would regress the next
+    // append to sequence 1 -> sequence REUSE + silent loss: the re-used seq is <= the
+    // persisted applied_wal_sequence anchor, so replay's `sequence > watermark` filter drops
+    // it. the zone-aligned wal Truncate always retains the tail zone holding the highest
+    // sequence for exactly this continuity reason. Clamp the retain floor to keep the tail.
+    let effective_retain = retain_from_sequence.min(last_sequence);
+    // Never reclaim past the block-retention floor. A record at or above it may carry the
+    // only copy of a block's bytes -- a block in the WAL has no copy in a slab until it is
+    // dumped -- so removing it loses data that the served index still points at, and the
+    // read fails at some later, unrelated moment.
+    let floor = retained_block_floor(inner, readers, shard_id).unwrap_or(u64::MAX);
+    let clamped_by_block_retention = effective_retain > floor;
+    let effective_retain = effective_retain.min(floor);
+    // The cache of open readers names pieces this pass is about to unlink.
+    inner.point_readers.clear_shard(shard_id);
+    let (base_offset, header_len) = cached_wal_base(inner, shard_id)?;
+    let source = open_wal_read(path.as_path(), tally)?;
+    let epoch = inner.gc_epoch_by_shard.get(&shard_id).copied().unwrap_or(0);
+    Ok(Some((
+        WalGcPlan {
+            root: inner.root.clone(),
+            path: (*path).clone(),
+            effective_retain,
+            clamped_by_block_retention,
+            record_end,
+            base_offset,
+            header_len,
+            bytes_before,
+            epoch,
+            full_scans,
+        },
+        source,
+    )))
+}
+
+/// Clears a shard's "a reclaim pass is running" mark on every way out, including an error and a
+/// panic, so one failed pass cannot decline every later one.
+struct GcRunning<'a> {
+    store: &'a LocalWriteAheadLogStore,
+    shard_id: ShardId,
+}
+
+impl Drop for GcRunning<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut inner) = self.store.inner.lock() {
+            inner.gc_running.remove(&self.shard_id);
+        }
+    }
+}
+
+/// What the walk over the retained prefix found.
+struct WalPrefixScan {
+    records_before: usize,
+    records_after: usize,
+    /// The offset of the first record at or above the retain point; `None` when there is none.
+    split: Option<u64>,
+    /// Where the walk stopped.
+    cursor: u64,
+}
+
+/// Walk the active piece's records from `header_len` to `walk_until` and find the first record at
+/// or above `effective_retain`. Reads only; takes no lock. Bounded by `walk_until` -- the record
+/// end the plan saw -- so a record appended meanwhile is never decoded here.
+fn scan_wal_prefix_for_split(
+    reader: &mut BufReader<CountedWalFile<'_>>,
+    header_len: u64,
+    walk_until: u64,
+    effective_retain: u64,
+) -> Result<WalPrefixScan, WriteAheadLogError> {
+    reader.seek(SeekFrom::Start(header_len))?;
+    let mut records_before = 0usize;
+    let mut records_after = 0usize;
+    let mut split = None;
+    let mut cursor = header_len;
+    loop {
+        if cursor >= walk_until {
+            break;
+        }
+        // Step over a block footer this lands on, before reading. The branch below only
+        // catches a boundary with PADDING in front of its footer; a block whose records end
+        // flush against the footer has none, and the footer is then read as a record -- its
+        // first byte is not a frame marker, so the reader falls to newline-delimited mode and
+        // returns a fragment.
+        //
+        // That matters more here than in a scan that only counts: `cursor` becomes `split`
+        // below, the byte offset this reclaim keeps from. A fragment read at a boundary moves
+        // the line between what is copied and what is dropped, so the pass can retain or
+        // discard the wrong records rather than merely report the wrong number of them.
+        let stepped = skip_block_footer_if_due(reader, cursor, header_len)?;
+        if stepped != cursor {
+            cursor = stepped;
+            if cursor >= walk_until {
+                break;
+            }
+        }
+        let Some(packed_frames::ReadRecord { bytes: line, physical_bytes: read }) = read_raw_record(reader)? else {
+            // Padding before a closed block's footer, or the end. The footer decides.
+            match block_is_closed(reader, cursor, header_len, walk_until)? {
+                Some(next) => {
+                    cursor = next;
+                    continue;
+                }
+                None => break,
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        // The delimiter comes off a text record and NOTHING comes off a binary frame, which
+        // ends where its declared length ends. Stripping a trailing `0x0A` off a frame takes
+        // a byte of the payload, and `decode_wal_line` below then refuses the whole sweep
+        // with `binary record is incomplete` -- so a log whose records happen to end in that
+        // byte reclaimed nothing at all, and the caller's `.ok()` rendered it as success.
+        // `info_at`'s walk already applied this rule; this one did not.
+        let trimmed = if line.first() == Some(&packed_frames::MAGIC) {
+            line.as_slice()
+        } else {
+            crate::log_framing::record_body(line.as_slice())
+        };
+        if !trimmed.iter().all(|byte| byte.is_ascii_whitespace()) {
+            records_before += 1;
+            if split.is_some() {
+                // Past the split every remaining record is retained, and the sequence is
+                // ascending, so there is nothing left to decide -- count it and move on
+                // rather than parsing it again.
+                records_after += 1;
+            } else if decode_wal_line(trimmed)?.sequence >= effective_retain {
+                split = Some(cursor);
+                records_after += 1;
+            }
+        }
+        cursor = cursor.saturating_add(read as u64);
+    }
+    Ok(WalPrefixScan { records_before, records_after, split, cursor })
+}
+
+/// Test hook: called at the named points of a reclaim pass, on the pass's own thread, with the
+/// append mutex NOT held, so a test can append, roll or count what a pass did between its steps.
+fn gc_phase(_phase: &'static str) {
+    #[cfg(test)]
+    GC_PHASE_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(_phase);
+        }
+    });
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static GC_PHASE_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&'static str)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Plants the old behaviour in the plan step: resolve the log by walking it all, under the mutex.
+    pub(crate) static GC_PLAN_FORCES_FULL_SCAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// One byte at `offset`, or None at/past the end of the file.
 fn byte_at(path: &Path, offset: u64) -> Result<Option<u8>, WriteAheadLogError> {
     let mut tally = WalReadTally::start();
@@ -4366,6 +4571,7 @@ fn roll_wal_segment_if_due(
     inner.point_readers.clear_directory(shard_id);
     let sealed = sealed_wal_path(&inner.root, shard_id, base);
     fs::rename(path.as_path(), &sealed)?;
+    *inner.gc_epoch_by_shard.entry(shard_id).or_default() += 1;
     sync_parent_dir(&sealed)?;
     // Sealed, and nothing to append to yet. A crash here leaves a log whose pieces are all sealed,
     // and an absent piece reads as starting at log id zero -- which those pieces already own.

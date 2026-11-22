@@ -16,7 +16,6 @@ thread_local! {
 }
 
 pub(super) struct MaintenanceDeletion {
-    key: String,
     records: Vec<String>,
 }
 
@@ -91,6 +90,11 @@ impl MaintenanceDeletion {
         &self.records
     }
 
+    pub(super) fn capture_exact(shard: &ShardState, key: &str) -> Option<Self> {
+        (shard.expires_at_ms().contains_key(key) || record_exists_exact(shard, key))
+            .then(|| Self { records: vec![key.to_owned()] })
+    }
+
     pub(super) fn capture(shard: &ShardState, key: &str) -> Option<Self> {
         let records = associated_record_keys(key)
             .into_iter()
@@ -99,10 +103,7 @@ impl MaintenanceDeletion {
                     || shard.expires_at_ms().contains_key(record_key.as_str())
             })
             .collect::<Vec<_>>();
-        (!records.is_empty()).then(|| Self {
-            key: key.to_string(),
-            records,
-        })
+        (!records.is_empty()).then_some(Self { records })
     }
 }
 
@@ -117,7 +118,7 @@ impl TemporalEngine {
         let mirror = self.maintenance_mirror_sink();
         let (start, end) = shard.routing_range();
         let mut outcomes = Vec::new();
-        let mut keys = Vec::new();
+        let mut keys = 0usize;
         let mut bytes = 0usize;
         let mut removed_keys = 0usize;
         let mut apply_ns = 0u64;
@@ -125,7 +126,7 @@ impl TemporalEngine {
         let mut identities = DeletionIdentityBatch::for_deletions(shard, &deletions);
         let mut flush = |shard: &mut ShardState,
                          outcomes: &mut Vec<crate::wal::WalOutcomeItem>,
-                         keys: &mut Vec<String>| {
+                         keys: &mut usize| {
             if outcomes.is_empty() {
                 return Ok((0usize, 0u64));
             }
@@ -171,13 +172,9 @@ impl TemporalEngine {
             }
             shard.note_wal_application(record.sequence, record.sequence);
             let applied_ns = apply_started.elapsed().as_nanos() as u64;
-            let applied_keys = keys.len();
+            let applied_keys = std::mem::take(keys);
             if let Some(sink) = mirror.as_ref() {
-                for key in keys.drain(..) {
-                    sink.record_write(shard_id, &Command::CommonDelete { key });
-                }
-            } else {
-                keys.clear();
+                sink.record_outcomes(shard_id, &record.outcomes);
             }
             Ok((applied_keys, applied_ns))
         };
@@ -215,8 +212,8 @@ impl TemporalEngine {
                     .records
                     .into_iter()
                     .filter(|key| {
-                        (record_exists_exact(shard, key)
-                            || shard.expires_at_ms().contains_key(key.as_str()))
+                        (shard.expires_at_ms().contains_key(key.as_str())
+                            || record_exists_exact(shard, key))
                             && pending.insert(key.clone())
                     })
                     .map(|key| crate::wal::WalOutcomeItem {
@@ -233,7 +230,7 @@ impl TemporalEngine {
                     }),
             );
             if outcomes.len() > before {
-                keys.push(deletion.key);
+                keys += 1;
             }
         }
         let error = match flush(shard, &mut outcomes, &mut keys) {

@@ -332,8 +332,8 @@ where
 /// guards were inert -- they can only hold back a manifest that would otherwise be pruned, so
 /// their block counters were structurally stuck at zero.
 ///
-/// Anything older is now prunable unless a follower cursor or raft snapshot ref pins it, which
-/// is exactly what those cursors are for.
+/// Older images remain only for bucket coverage, the recovery anchor, or follower/snapshot
+/// dependencies.
 pub(super) fn retained_bucket_dump_manifest_ids<M>(manifests: &[M]) -> BTreeSet<String>
 where
     M: std::borrow::Borrow<BucketDumpManifest>,
@@ -370,7 +370,35 @@ where
             covered.extend(manifest.bucket_ids.iter().copied());
         }
     }
+    // Recovery chooses the highest WAL anchor, which need not be the newest index-log item.
+    if let Some(manifest) = manifests.iter().map(std::borrow::Borrow::borrow).max_by_key(|m| {
+        (m.wal_sequence, m.index_log_sequence, m.created_unix_ms)
+    }) {
+        retained.insert(manifest.manifest_id.clone());
+    }
     retained
+}
+
+#[cfg(test)]
+mod recovery_anchor_retention_tests {
+    use super::*;
+
+    #[test]
+    fn pruning_preserves_the_highest_wal_anchor_without_retaining_obsolete_images() {
+        let image = |id: &str, wal_sequence, index_log_sequence| BucketDumpManifest {
+            manifest_id: id.into(), wal_sequence, index_log_sequence,
+            bucket_ids: vec![1], ..Default::default()
+        };
+        let mut images = vec![image("obsolete", 2, 1), image("recovery", 10, 2), image("newest", 3, 3)];
+        assert_eq!(retained_bucket_dump_manifest_ids(&images),
+            BTreeSet::from(["newest".into(), "recovery".into()]));
+        images.push(image("advanced", 11, 4));
+        assert_eq!(retained_bucket_dump_manifest_ids(&images), BTreeSet::from(["advanced".into()]));
+        images.push(BucketDumpManifest { manifest_id: "empty".into(),
+            index_log_sequence: 5, ..Default::default() });
+        assert_eq!(retained_bucket_dump_manifest_ids(&images),
+            BTreeSet::from(["advanced".into(), "empty".into()]));
+    }
 }
 
 /// A cursor older than every manifest we kept: nothing retained can serve it. Named because the

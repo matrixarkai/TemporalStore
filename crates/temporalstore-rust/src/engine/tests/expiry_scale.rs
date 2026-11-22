@@ -1102,6 +1102,10 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
         .filter_map(|blob| blob.get("key").and_then(|value| value.as_str()))
         .map(str::to_string)
         .collect();
+    assert_eq!(
+        named, logged_keys,
+        "the checkpoint must cover the logged deletion set, not absent related records"
+    );
     assert!(
         !named.is_empty(),
         "the expiry delta named no keys at all. `delta_record_covered_keys` reads the covered set \
@@ -1833,6 +1837,15 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     // `index_log_sequence` here measured floor 9 (retain_from 10) against a load replaying from 1.
     observe(&engine, "manifest orderings diverged");
 
+    let prune = engine.bucket_dump_manifest_prune_plan(1);
+    let recovery_ids = engine.list_bucket_dump_manifests(1).into_iter()
+        .filter(|manifest| manifest.wal_sequence == highest_anchor)
+        .map(|manifest| manifest.manifest_id).collect::<Vec<_>>();
+    assert!(recovery_ids.iter().any(|id| prune.retained_manifest_ids.contains(id)),
+        "pruning must preserve the actual recovery anchor: {prune:?}");
+    engine.apply_bucket_dump_manifest_prune(1);
+    observe(&engine, "inverted ordering after pruning");
+
     // ...and then the rest of the cycle the expiry round was in the middle of, so the states the
     // original run covered are still covered, now with the divergent manifest on disk.
     cycle(&engine);
@@ -1840,9 +1853,7 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     cycle(&engine);
     observe(&engine, "settled");
 
-    // Current reclaim publication refreshes the base before authorizing collection. Restore
-    // the earlier durable base explicitly so the cold-load probe must use the newer manifest,
-    // rather than relying on the normal cycle to leave that older ordering on disk.
+    // Restore the earlier durable base so the cold-load probe must still use the retained dump.
     std::fs::write(engine.index_path(1), seeded_index).expect("restore the earlier base image");
     observe(&engine, "earlier base with settled manifest");
 

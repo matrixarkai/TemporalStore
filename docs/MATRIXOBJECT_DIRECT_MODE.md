@@ -52,17 +52,49 @@ An append is never sent twice on an ambiguous result.
 
 - **Definitive refusal** (a 412 that names a lost race, a 4xx): returned as the error; the
   caller decides.
-- **Ambiguous** (timeout, connection reset, 503, an in-process door that failed to answer):
-  the store reads back `[offset, offset+len)` and compares. Landed: the receipt is returned as
-  if the first attempt had been acknowledged. Absent: the append is retried as a new append.
-  Unreadable: `ObjectStoreError::OutcomeUnknown` is returned and nothing is repeated.
+- **Ambiguous** (timeout, connection reset, 503, a 409 `AppendAmbiguous`, an in-process door that
+  failed to answer): every attempt carries its own `x-amz-attempt-id`, and the store asks the
+  gateway about THAT attempt (`?append-resolve&attempt=`). Landed: the receipt is returned as if
+  the first attempt had been acknowledged. Absent (the attempt is fenced out, so a late copy is
+  refused): the append is retried as a new attempt with a new id. Ambiguous, or a gateway that
+  cannot answer by attempt: `ObjectStoreError::OutcomeUnknown` is returned and nothing is
+  repeated. The object is never read back to decide, because equal bytes at the offset do not
+  prove they are this writer's.
+- **Appends to one object from one process are serialised** by a lock per object key held
+  around the append and its settlement, so tasks of one process do not race for the same end.
+  The offset condition still arbitrates between processes.
 - **Leader changes** are the metadata client's: it rotates to another endpoint when one
   refuses, and a write is never sent again after it was submitted.
 
-Residual, the same in both modes: a request still in flight inside a slow server can commit
-after a read-back said "absent". Closing it needs the append fence (a no-op generation bump
-published before a retry); the contract is the gateway-side "append fence" design. Until then, keep a
-sequence number in the WAL payload so a duplicate is detectable.
+## Checking both modes on a real cluster
+
+`direct_wal_index_e2e` writes a shard's WAL through the shared store's own appender, rotates
+segments, replays from the cluster alone on a fresh connection, trims, and appends concurrently,
+through a gateway and through the in-process door, then compares what each left behind.
+
+```text
+GATEWAY=matrixobject://127.0.0.1:24410 META=127.0.0.1:24404,127.0.0.1:24405,127.0.0.1:24406 \
+  TS_MATRIXOBJECT_META_GROUP=1 SEGMENTS=6 WRITERS=4 \
+  cargo run --release -p temporalstore-rust --features matrixobject --example direct_wal_index_e2e
+```
+
+`MODES=gateway` or `MODES=direct` runs one mode, `WRITERS` sets the concurrent writers, and
+`IDENTICAL=1` makes every writer append the same bytes, which is the case a byte comparison
+cannot settle. The concurrent leg prints an `ANALYSIS` line: appends, acknowledged, errors,
+records and bytes in the object, overlapping receipts, receipts that do not match the object.
+It passes only with no errors, adjacent receipts that do not overlap, and the object holding
+exactly what was acknowledged.
+
+Measured on a three-node cluster whose gateway has attempt identity (2 and 4 writers, both
+modes, distinct and identical payloads): all eight runs had no errors and every acknowledged
+record in the object once, with no overlapping receipts. Against a gateway without attempt
+identity, identical payloads were all acknowledged while the object held fewer records than
+were acknowledged (50 acknowledged and 37 in the object at 2 writers), which is why an append
+is settled by its attempt.
+
+The run also prints one `FINDING` line: the shard lease cannot be acquired over the networked
+store, because the store does not offer a conditional replace. Appends and replay do not need
+it.
 
 ## Bounded append publication
 

@@ -227,9 +227,17 @@ fn oldest_dirty_bucket_claims(
         manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>()
     }).unwrap_or_default();
     let sequence = manifest.map_or(0, |manifest| manifest.index_log_sequence);
-    rank_dirty_buckets(claims.keys().map(|&bucket| {
-        (bucket, if covered.contains(&bucket) { sequence } else { 0 })
-    }), claims)
+    let mut ranked = Vec::with_capacity(claims.len());
+    for (&bucket, &(wal, _)) in claims {
+        #[cfg(test)]
+        DUMP_RANK_LOOKUPS.with(|count| count.set(count.get() + 1));
+        ranked.push((
+            if wal == 0 { u64::MAX } else { wal },
+            if covered.contains(&bucket) { sequence } else { 0 },
+            bucket,
+        ));
+    }
+    sorted_dirty_bucket_ids(ranked)
 }
 
 fn rank_dirty_buckets(
@@ -245,6 +253,10 @@ fn rank_dirty_buckets(
             ranked.push((oldest, last_dump_sequence, bucket));
         }
     }
+    sorted_dirty_bucket_ids(ranked)
+}
+
+fn sorted_dirty_bucket_ids(mut ranked: Vec<(u64, u64, u32)>) -> Vec<u32> {
     // Bucket ID is the final key, so equal ranks have identical output IDs. No stable sort
     // or repeated claim lookup is needed inside the comparator.
     ranked.sort_unstable();
@@ -326,12 +338,30 @@ impl TemporalEngine {
         self.storage_lifecycle_plan_with_inventory(request, detailed_report, detailed_report)
     }
 
+    pub(crate) fn storage_lifecycle_pressure_plan(
+        &self,
+        request: StorageLifecycleRequest,
+        detailed_report: bool,
+    ) -> (StorageLifecyclePlan, u64) {
+        // The pressure signal and dump decision use the same captured dirty claims.
+        self.storage_lifecycle_plan_and_pressure_with_inventory(request, detailed_report, detailed_report)
+    }
+
     fn storage_lifecycle_plan_with_inventory(
         &self,
         request: StorageLifecycleRequest,
         detailed_report: bool,
         authoritative_inventory: bool,
     ) -> StorageLifecyclePlan {
+        self.storage_lifecycle_plan_and_pressure_with_inventory(request, detailed_report, authoritative_inventory).0
+    }
+
+    fn storage_lifecycle_plan_and_pressure_with_inventory(
+        &self,
+        request: StorageLifecycleRequest,
+        detailed_report: bool,
+        authoritative_inventory: bool,
+    ) -> (StorageLifecyclePlan, u64) {
         LIFECYCLE_PLAN_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // DO NOT WALK THE SHARD TO FIND OUT THERE IS NOTHING TO DO.
         //
@@ -370,10 +400,9 @@ impl TemporalEngine {
             .expect("engine lock poisoned")
             .get(&request.shard_id)
             .map(|shard| {
-                let claims = crate::engine::storage_reporting::dirty_bucket_claims(shard);
-                let claims_are_summarized = detailed_report || claims.keys().all(|bucket| {
-                    shard.bucket_index.bucket_map.get(bucket).is_some_and(|node| node.dirty())
-                });
+                let (claims, all_marked_dirty) =
+                    crate::engine::storage_reporting::dirty_bucket_claims_with_summary_state(shard);
+                let claims_are_summarized = detailed_report || all_marked_dirty;
                 (
                     !shard.dirty_objects.is_empty(),
                     claims,
@@ -696,7 +725,7 @@ impl TemporalEngine {
         if request.invalidate_cache {
             reasons.push("cache_invalidation".to_string());
         }
-        StorageLifecyclePlan {
+        (StorageLifecyclePlan {
             full_dump_forced_by_item_amplification,
             shard_id: request.shard_id,
             dirty_buckets,
@@ -717,7 +746,7 @@ impl TemporalEngine {
                 .map(|report| report.physical_bytes)
                 .sum(),
             reasons,
-        }
+        }, undumped_wal_bytes)
     }
 
     pub fn storage_block_gc_dependency_plan(
@@ -1722,32 +1751,27 @@ impl TemporalEngine {
         }
 
         if durable_wal_frontier == u64::MAX {
-            // EXPERIMENT 2: no bucket held the floor, which means every bucket is dumped and
-            // nothing needs the log retained -- so the floor is the CURRENT position, not zero.
-            // Zero here reads as "retain everything" and is what took the plan unsafe in the
-            // first experiment.
-            //
-            // THE INVARIANT THIS LINE HAS TO KEEP, and the one place in the plan that could
-            // break it. Everywhere else the frontier is a MINIMUM over bucket dump manifests,
-            // and `load_shard_with` raises its own replay point to the LATEST of those same
-            // manifests -- a minimum over a set cannot exceed a member of it, so the floor can
-            // never climb above the point a load starts replaying from. Here the frontier comes
-            // from the current log position instead, which no load path consults. It is safe
-            // because a cycle DUMPS (`prepare`) before it RECLAIMS (`reclaim_wal`), so a
-            // manifest at this position already exists by the time this is read.
-            //
-            // What makes that load-bearing rather than incidental: the default load path folds
-            // no index-log deltas (#1644), so the expiry round's delta (#1633) can advance the
-            // served anchor well past the base index FILE's -- measured 9 against 1 -- and
-            // reclaim now drops whole segment files (#1622). A floor above the replay point
-            // would free records that a load still has to replay, with nothing else holding
-            // them. `wal_reclaim_never_frees_what_the_default_load_path_replays`
-            // (engine/tests/expiry_scale.rs) asserts the relation against a real load's
-            // recorded watermark at every state a production cycle passes through.
             durable_wal_frontier = current_wal_sequence;
         }
+        // A clean bucket can still have a later expiry tombstone in the WAL. The default
+        // loader does not fold index-log deltas, so only its actual load base can release it.
+        if durable_wal_frontier > 0 {
+            let recovery_manifest = manifests.iter().max_by_key(|manifest| {
+                (manifest.wal_sequence, manifest.index_log_sequence, manifest.created_unix_ms)
+            }).filter(|manifest| {
+                bucket_dump_io::manifest_wal_floor_memoised(manifest, || {
+                    let image = decode_index_bytes(installable_image(manifest).map_err(|_| ())?)
+                        .map_err(|_| ())?;
+                    Ok(wal_floor_of_index_image(&image))
+                }).is_ok()
+            });
+            let manifest_anchor = recovery_manifest.map_or(0, |manifest| manifest.wal_sequence);
+            if manifest_anchor < durable_wal_frontier {
+                let base_anchor = base_checkpoint_anchor::read(&self.index_path(shard_id));
+                durable_wal_frontier = durable_wal_frontier.min(base_anchor.max(manifest_anchor));
+            }
+        }
         if durable_index_log_frontier == u64::MAX {
-            // EXPERIMENT 2, the index-log half, same reasoning.
             durable_index_log_frontier = current_index_log_sequence;
         }
         let mut follower_cursor_block_count = 0usize;
@@ -1908,10 +1932,7 @@ impl TemporalEngine {
                 floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
             }
         }
-        let base = std::fs::read(self.index_path(shard_id))
-            .ok()
-            .and_then(|bytes| decode_index_bytes(&bytes).ok())
-            .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
+        let base = base_checkpoint_anchor::wal_floor(&self.index_path(shard_id));
         if let Some(sequence) = base {
             floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
         }
@@ -1979,10 +2000,7 @@ impl TemporalEngine {
         // The same reading a load makes -- the file as it is, no delta folded -- and the same answer
         // a manifest gives. An image that is absent names nothing; one that will not decode is not
         // what a load would use either (it falls back to the log), so neither narrows the floor.
-        let base_floor = std::fs::read(self.index_path(plan.shard_id))
-            .ok()
-            .and_then(|bytes| decode_index_bytes(&bytes).ok())
-            .and_then(|snapshot| wal_floor_of_index_image(&snapshot));
+        let base_floor = base_checkpoint_anchor::wal_floor(&self.index_path(plan.shard_id));
         if let Some(sequence) = base_floor {
             manifest_floor = Some(manifest_floor.map_or(sequence, |old: u64| old.min(sequence)));
         }
@@ -2601,20 +2619,24 @@ impl TemporalEngine {
             .evict_sampled_lru
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            // Sampling uses residency and recency, not cache byte totals. Inspect only the
-            // selected owners afterwards; key enumeration still belongs to the cache API.
+            // Index eviction leaves the independently budgeted page cache resident. Only
+            // explicit deletion needs cache-removal estimates after residency/recency sampling.
             let mut victims = self.sampled_eviction_victims(shard_id, batch_limit, &BTreeMap::new());
-            let buckets = victims.iter().map(|victim| victim.routing_bucket).collect();
-            let cache_by_bucket = self.storage_cache_summaries_for_buckets(shard_id, &buckets);
+            let cache_by_bucket = if delete_drop {
+                let buckets = victims.iter().map(|victim| victim.routing_bucket).collect();
+                self.storage_cache_summaries_for_buckets(shard_id, &buckets)
+            } else {
+                BTreeMap::new()
+            };
             for victim in &mut victims {
                 if let Some(cache) = cache_by_bucket.get(&victim.routing_bucket) {
                     victim.cache_memory_bytes = cache.memory_bytes;
                     victim.cache_disk_bytes = cache.disk_bytes;
-                    victim.weight = cache.memory_bytes.saturating_mul(4)
-                        .saturating_add(cache.disk_bytes.saturating_mul(2))
-                        .saturating_add(victim.physical_bytes)
-                        .saturating_add(victim.dirty_object_count.saturating_mul(1024));
                 }
+                victim.weight = victim.cache_memory_bytes.saturating_mul(4)
+                    .saturating_add(victim.cache_disk_bytes.saturating_mul(2))
+                    .saturating_add(victim.physical_bytes)
+                    .saturating_add(victim.dirty_object_count.saturating_mul(1024));
             }
             victims
         } else {
@@ -2756,19 +2778,16 @@ impl TemporalEngine {
         }
         let mut cache_entries_removed = 0usize;
         let mut cache_disk_bytes_removed = 0u64;
-        for victim in &victims {
-            if let Ok(report) = self.cache.invalidate_slot(shard_id, victim.routing_bucket) {
-                cache_entries_removed =
-                    cache_entries_removed.saturating_add(report.memory_entries_removed);
-                cache_disk_bytes_removed =
-                    cache_disk_bytes_removed.saturating_add(report.disk_bytes_removed);
+        if delete_drop {
+            let victim_buckets = victims.iter().map(|victim| victim.routing_bucket).collect::<Vec<_>>();
+            if let Ok(report) = self.cache.invalidate_slots(shard_id, &victim_buckets) {
+                cache_entries_removed = report.memory_entries_removed;
+                cache_disk_bytes_removed = report.disk_bytes_removed;
             }
         }
-        // THE ACTUATOR. `invalidate_slot` above drops cached blocks and leaves every `BucketNode`
-        // whole, so the only mode that ever shrank the index was `delete_drop` -- which does it by
-        // DESTROYING data. Releasing a victim's block list shrinks the index without losing
-        // anything: the node stays routable and the next read loads its blocks back from the model
-        // maps. Not attempted under `delete_drop`, where the victim's data is about to go.
+        // Release derived index state, not cached page values. The cache owns its own capacity
+        // policy; retaining a page does not prevent the bucket from becoming cold. Destructive
+        // deletion instead invalidates cached pages above and removes the records below.
         if !delete_drop && !victims.is_empty() {
             let candidates = victims
                 .iter()

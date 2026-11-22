@@ -476,7 +476,7 @@ impl TemporalEngine {
         stage_boundary_order.push("reclaim_wal".to_string());
         let mut expiry_report = None;
         if request.enable_expire && !request.dry_run {
-            match self.sweep_expired_records_with_request(ShardExpirySweepRequest {
+            match self.sweep_expired_records_for_maintenance(ShardExpirySweepRequest {
                 shard_id: request.shard_id,
                 max_hot_buckets_per_round: request.max_expire_hot_buckets_per_round,
                 max_cold_buckets_per_round: request.max_expire_cold_buckets_per_round,

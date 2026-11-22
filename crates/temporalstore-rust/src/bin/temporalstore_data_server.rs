@@ -2122,11 +2122,30 @@ impl std::fmt::Debug for MatrixObjectNetworkedWalSink {
 
 impl temporalstore_rust::SharedWalSink for MatrixObjectNetworkedWalSink {
     fn record_write(&self, shard_id: u64, command: &Command) {
+        self.record_entry(shard_id, Some(command.clone()), Vec::new());
+    }
+
+    fn record_outcomes(&self, shard_id: u64, outcomes: &[temporalstore_rust::wal::WalOutcomeItem]) {
+        self.record_entry(shard_id, None, outcomes.to_vec());
+    }
+}
+
+impl MatrixObjectNetworkedWalSink {
+    fn record_entry(
+        &self,
+        shard_id: u64,
+        command: Option<Command>,
+        outcomes: Vec<temporalstore_rust::wal::WalOutcomeItem>,
+    ) {
         let writer = Arc::clone(&self.writer);
-        let command = command.clone();
         let result = self
             .handle
-            .block_on(async move { writer.write(shard_id, command).await });
+            .block_on(async move {
+                match command {
+                    Some(command) => writer.write(shard_id, command).await,
+                    None => writer.write_outcomes(shard_id, outcomes).await,
+                }
+            });
         match result {
             Ok(_) => {}
             Err(err) => {

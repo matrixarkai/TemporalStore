@@ -14,6 +14,7 @@ async-trait = "0.1"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 hex = "0.4"
+matrixobject-client = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "bb93078f82f839941c1b86794eb81e588fafb6cf" }
 prometheus-client = "=0.22.3"
 prost = "0.13"
 serde = { version = "1", features = ["derive"] }
