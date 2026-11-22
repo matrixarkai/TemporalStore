@@ -101,6 +101,11 @@ pub(crate) struct SlicedPass {
     bucket_cursor: Option<u32>,
     pending_bucket_owners: Vec<(crate::engine::state::ModelKey, bool)>,
     buckets_exhausted: bool,
+    /// The routing buckets a cursor slice found owning at least one block on a drain slab -- the
+    /// only buckets whose blocks the pass moves. The finish refreshes the runtime flags of these
+    /// instead of sweeping every bucket in the shard. Empty, and unused, for a pass that was not
+    /// the cursor pass, which does not know its buckets and takes the full sweep.
+    touched_buckets: BTreeSet<u32>,
     /// Container blocks that were in the log before a slice moved them, and the placement each had
     /// then. The finish retires a registration only if it is still that placement.
     retired_container_wal_blocks: Vec<(u64, String)>,
@@ -380,6 +385,7 @@ impl TemporalEngine {
             bucket_cursor: None,
             pending_bucket_owners: Vec::new(),
             buckets_exhausted: false,
+            touched_buckets: BTreeSet::new(),
             retired_container_wal_blocks: Vec::new(),
             wal_placements_seen: HashMap::new(),
             relocated_wal_blocks: Vec::new(),
@@ -484,6 +490,9 @@ impl TemporalEngine {
                 owners.entry(entry.object_key)
                     .and_modify(|held| *held |= on_drain).or_insert(on_drain);
             }
+            if owners.values().any(|on_drain| *on_drain) {
+                pass.touched_buckets.insert(*routing_bucket);
+            }
             if owners.is_empty() { examined += 1; }
             pass.pending_bucket_owners = owners.into_iter().rev().collect();
         }
@@ -570,7 +579,16 @@ impl TemporalEngine {
     ) -> Result<(), Status> {
         // Publication owes complete flags and TTL rollups; intermediate slices do not.
         let flags_started = std::time::Instant::now();
-        refresh_bucket_runtime_flags(shard);
+        if pass.by_bucket {
+            // The cursor pass knows which buckets it moved blocks in, so only those owe a refresh.
+            // The TTL is still recomputed for them, which is what the full sweep did.
+            storage_bucket_internals::refresh_named_bucket_runtime_flags(
+                shard,
+                &pass.touched_buckets,
+            );
+        } else {
+            refresh_bucket_runtime_flags(shard);
+        }
         phase_timing("finish_flags", shard_id, flags_started);
         let publish_started = std::time::Instant::now();
         let mut stats = CompactionRewriteStats::for_drain_round(
