@@ -645,6 +645,7 @@ impl BlockStore {
                     // A slab nobody has checked against a live set yet. See
                     // `BlockStore::quarantine_waits_for_age`.
                     inner.quarantine_arrivals += 1;
+                    inner.quarantine_known_empty = false;
                     delayed_destroy_ids.push(block_slab_id);
                     delayed_destroy_physical_bytes += slab_physical_bytes;
                 } else {
