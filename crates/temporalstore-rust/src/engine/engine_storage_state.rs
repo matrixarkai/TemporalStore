@@ -1733,7 +1733,7 @@ impl<'a> BlockKeysByPosition<'a> {
     pub(super) fn from_owned_buckets(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
-            HashMap<ModelKey, super::object_record::ObjectSlot>,
+            ObjectTable,
         >,
         lookup: &'a ObjectBlockLookup,
         owners: Option<&super::bucket_owners::BucketOwners>,
