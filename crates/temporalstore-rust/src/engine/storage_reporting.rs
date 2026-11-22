@@ -276,6 +276,11 @@ pub(super) fn dirty_bucket_nodes(shard: &ShardState) -> BTreeSet<u32> {
     dirty_bucket_claims(shard).into_keys().collect()
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static DIRTY_CLAIM_BUILDS_FOR_TEST: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// THE DIRTY BUCKETS AND THE LOG POSITIONS EACH ONE HOLDS, read off the map's own dirty set.
 ///
 /// This is [`dirty_bucket_nodes`] with the two claims the callers used to fetch separately. Each of
@@ -291,23 +296,29 @@ pub(super) fn dirty_bucket_nodes(shard: &ShardState) -> BTreeSet<u32> {
 ///
 /// `(wal, index_log)`, 0 meaning no claim recorded, exactly as the node holds them.
 pub(super) fn dirty_bucket_claims(shard: &ShardState) -> BTreeMap<u32, (u64, u64)> {
+    dirty_bucket_claims_with_summary_state(shard).0
+}
+
+pub(super) fn dirty_bucket_claims_with_summary_state(
+    shard: &ShardState,
+) -> (BTreeMap<u32, (u64, u64)>, bool) {
+    #[cfg(test)]
+    DIRTY_CLAIM_BUILDS_FOR_TEST.with(|count| count.set(count.get() + 1));
     let buckets = &shard.bucket_index.bucket_map;
     let dirty = buckets.dirty_buckets();
     crate::engine::state::count_bucket_node_scan_visits(dirty.len() as u64);
-    dirty
-        .iter()
-        .filter_map(|routing_bucket| {
-            buckets.get(routing_bucket).map(|bucket| {
-                (
-                    *routing_bucket,
-                    (
-                        bucket.first_dirty_wal_sequence,
-                        bucket.first_dirty_index_log_sequence,
-                    ),
-                )
-            })
-        })
-        .collect()
+    let mut all_marked_dirty = true;
+    let mut capture = |routing_bucket, bucket: &BucketNode| {
+        all_marked_dirty &= bucket.dirty();
+        (routing_bucket, (bucket.first_dirty_wal_sequence, bucket.first_dirty_index_log_sequence))
+    };
+    // Membership names only filed nodes; equal counts cover the map without per-key seeks.
+    let claims = if dirty.len() == buckets.len() {
+        buckets.iter().map(|(&key, node)| capture(key, node)).collect()
+    } else {
+        dirty.iter().filter_map(|key| buckets.get(key).map(|node| capture(*key, node))).collect()
+    };
+    (claims, all_marked_dirty)
 }
 
 /// How many times [`dirty_generations_of`] had to fall back to the whole-shard summaries, across

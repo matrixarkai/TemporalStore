@@ -545,10 +545,10 @@ impl DataNodeRuntime {
         options: &StorageManagerOptions,
         detailed_report: bool,
     ) -> (StorageManagerPressureSnapshot, StorageLifecyclePlan) {
-        let plan = self
+        let (plan, undumped_wal_bytes) = self
             .inner
             .engine
-            .storage_lifecycle_plan_with_report_details(StorageLifecycleRequest {
+            .storage_lifecycle_pressure_plan(StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
                 selected_dump_buckets: Vec::new(),
@@ -613,7 +613,7 @@ impl DataNodeRuntime {
                 undumped_wal_records: plan.undumped_wal_records,
                 // BYTES, as the field says. This was the record count copied into a field named for
                 // bytes, which is what the byte gate would have read had anything read it.
-                wal_bytes: self.inner.engine.undumped_wal_bytes_above_oldest_dirty(shard_id),
+                wal_bytes: undumped_wal_bytes,
                 index_log_bytes: log_pressure.index_log_bytes,
                 stale_block_slab_count: plan.stale_block_slab_ids.len(),
                 reclaim_candidate_count: plan.reclaim_candidates.len(),
