@@ -642,22 +642,37 @@ fn retained_manifest_wal_dependencies_are_decoded_once_per_allocation() {
     let dir = tempfile::tempdir().unwrap();
     let engine = reclaim_dump_engine(dir.path(), "dependency-memo");
     engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Default::default() },
+    }).ok);
     write_one_at_a_time(&engine, &["live".into()]);
     engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
-    let manifest = bucket_dump_io::list_bucket_dump_manifests_shared_at(
+    let published = bucket_dump_io::list_bucket_dump_manifests_shared_at(
         &engine.index_dir, RECLAIM_DUMP_SHARD,
     ).unwrap().pop().unwrap();
-    let mut calls = 0;
+    let snapshot = decode_index_bytes(&published.index_bytes).unwrap();
+    let expected = snapshot.wal_resident_blocks.values().map(|placement| placement.sequence).min();
+    assert!(expected.is_some(), "the fixture must retain a live WAL dependency");
+    assert_eq!(bucket_dump_io::manifest_wal_floor_memoised(&published, || {
+        panic!("publication already primed this allocation's dependency")
+    }), Ok(expected));
+    // Publication primes its allocation; an independent allocation exercises the cold path.
+    let manifest = std::sync::Arc::new((*published).clone());
+    let calls = std::cell::Cell::new(0);
     let mut compute = || {
-        calls += 1;
+        calls.set(calls.get() + 1);
         let snapshot = decode_index_bytes(&manifest.index_bytes).map_err(|_| ())?;
         Ok(snapshot.wal_resident_blocks.values().map(|placement| placement.sequence).min())
     };
     let first = bucket_dump_io::manifest_wal_floor_memoised(&manifest, &mut compute);
+    assert_eq!(first, Ok(expected));
+    assert_eq!(calls.get(), 1);
     assert_eq!(bucket_dump_io::manifest_wal_floor_memoised(&manifest, &mut compute), first);
+    assert_eq!(calls.get(), 1, "an unchanged allocation must reuse its dependency");
     let replacement = std::sync::Arc::new((*manifest).clone());
     assert_eq!(bucket_dump_io::manifest_wal_floor_memoised(&replacement, &mut compute), first);
-    assert_eq!(calls, 2);
+    assert_eq!(calls.get(), 2);
 }
 
 #[test]
