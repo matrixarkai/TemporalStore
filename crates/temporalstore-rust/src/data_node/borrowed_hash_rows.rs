@@ -42,9 +42,8 @@ impl DataNodeRuntime {
         {
             return BatchConditionalWriteResponse { status, applied: 0, skipped: 0, errors: Vec::new() };
         }
-        let shared_wal_sink = self.inner.shared_wal_sink.read().expect("shared wal sink lock poisoned");
+        let shared_wal_sink = self.inner.shared_wal_sink.get();
         if shared_wal_sink.is_some() {
-            drop(shared_wal_sink);
             return self.batch_hash_timestamp_set(request.into_owned());
         }
         let shard = request.shard_id;

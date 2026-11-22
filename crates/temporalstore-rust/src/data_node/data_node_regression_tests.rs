@@ -40,3 +40,6 @@ mod an_idle_collection_round_does_not_walk_the_shard;
 mod page_gc_resumes_behind_its_window;
 #[path = "tests/reclaim_page_reports_its_time_per_phase.rs"]
 mod reclaim_page_reports_its_time_per_phase;
+
+#[path = "tests/the_shared_wal_sink_is_read_without_a_lock.rs"]
+mod the_shared_wal_sink_is_read_without_a_lock;
