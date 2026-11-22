@@ -2627,6 +2627,15 @@ pub struct LocalIndexLogStore {
     flusher_started: Arc<AtomicBool>,
 }
 
+/// One sealed piece as the gate's ledger remembers it: what the piece's NAME says it holds and what
+/// its file measured when it was sealed. `span` is `None` for a file under a sealed name that does
+/// not parse, which the gate counts by size and never by records, exactly as a directory walk does.
+#[derive(Debug, Clone, Copy)]
+struct SealedPieceFact {
+    span: Option<IndexSegmentSpan>,
+    bytes: u64,
+}
+
 #[derive(Debug)]
 struct IndexLogInner {
     root: PathBuf,
@@ -2636,6 +2645,12 @@ struct IndexLogInner {
     active_span_by_shard: HashMap<ShardId, ActiveIndexSegment>,
     // Append-maintained sequence/frame ends, never record payloads.
     active_gate_records_by_shard: HashMap<ShardId, ActiveIndexGateRecords>,
+    /// Every SEALED piece of each shard, in log order, so the index-GC gate is arithmetic over
+    /// memory instead of a directory listing and a `stat` per piece. Built by one listing the first
+    /// time a shard's gate is asked and kept in step at the only three places the sealed set
+    /// changes: the seal in `append_*`, and the two unlinkers, which drop it. Absent means "not
+    /// known", never "empty". One store instance per log directory is what makes this sound.
+    sealed_ledger_by_shard: HashMap<ShardId, Vec<SealedPieceFact>>,
     /// MANIFEST-CONFORMANCE FOLD: the index-log byte length recorded at the last catalog dump, per
     /// shard. `undumped_len_since_dump` subtracts this from the current on-disk length to get the
     /// undumped gap that drives the threshold-dump cadence. Reset to 0
@@ -2697,6 +2712,43 @@ struct IndexLogInner {
 const MAX_INDEX_ENCODE_SCRATCH_BYTES: usize = 1024 * 1024;
 
 impl IndexLogInner {
+    /// The piece being written was just sealed under `span` at `bytes`: add it to the shard's
+    /// sealed ledger if one is kept. A shard with no ledger yet needs nothing, because the first
+    /// ledger it is given is read from the directory, sealed piece included.
+    ///
+    /// A new piece always has the highest sequence, so appending keeps the ledger in log order.
+    fn note_sealed_piece(&mut self, shard_id: ShardId, span: IndexSegmentSpan, bytes: u64) {
+        if let Some(ledger) = self.sealed_ledger_by_shard.get_mut(&shard_id) {
+            ledger.push(SealedPieceFact {
+                span: Some(span),
+                bytes,
+            });
+        }
+    }
+
+    /// The sealed ledger of a shard, built by one listing if it is not kept yet.
+    fn ensure_sealed_ledger(&mut self, shard_id: ShardId) {
+        if self.sealed_ledger_by_shard.contains_key(&shard_id) {
+            return;
+        }
+        let active = index_log_path(&self.root, shard_id);
+        let mut facts = Vec::new();
+        for path in index_log_segment_paths(&self.root, shard_id) {
+            if path == active {
+                continue;
+            }
+            // A piece unlinked out from under the listing is simply not counted, as in the walk.
+            let Ok(metadata) = path.metadata() else {
+                continue;
+            };
+            facts.push(SealedPieceFact {
+                span: sealed_index_log_span(&path, shard_id),
+                bytes: metadata.len(),
+            });
+        }
+        self.sealed_ledger_by_shard.insert(shard_id, facts);
+    }
+
     /// Make the log directory if `new` could not, and then never ask again.
     ///
     /// `new` already created it, and NOTHING IN THIS TREE REMOVES IT UNDER A LIVE STORE: the
@@ -2892,12 +2944,26 @@ impl LocalIndexLogStore {
     /// length" signal for the threshold-dump cadence: the growth of this file since the last
     /// dumped watermark is the undumped-length signal.
     pub fn log_len_bytes(&self, shard_id: ShardId) -> u64 {
-        let inner = self.lock_flushed();
+        let mut inner = self.lock_flushed();
         // Every piece, not just the one being written. After a roll the active piece is the
         // NEWEST and smallest part of the log, so reporting its length as the log's length makes
         // a log SHRINK as it grows -- and the dump cadence that reads this would stop firing
         // exactly when there is most to dump.
-        index_log_total_bytes(&inner.root, shard_id)
+        //
+        // The sealed pieces come from the ledger (no directory listing, no `stat` per piece once
+        // the shard's ledger is kept) and the piece being written costs one `stat`. Equal to
+        // `index_log_total_bytes`, which the test over the ledger compares it against.
+        inner.ensure_sealed_ledger(shard_id);
+        let sealed = inner
+            .sealed_ledger_by_shard
+            .get(&shard_id)
+            .map(|ledger| ledger.iter().map(|fact| fact.bytes).sum::<u64>())
+            .unwrap_or(0);
+        let active = index_log_path(&inner.root, shard_id)
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        sealed.saturating_add(active)
     }
 
     /// Undumped index-log length for a shard: the on-disk byte growth since the last catalog
@@ -2972,6 +3038,7 @@ impl LocalIndexLogStore {
                 last_sequence_by_shard: HashMap::new(),
                 active_span_by_shard: HashMap::new(),
                 active_gate_records_by_shard: HashMap::new(),
+                sealed_ledger_by_shard: HashMap::new(),
                 last_dumped_len_by_shard: HashMap::new(),
                 last_dumped_at_by_shard: HashMap::new(),
                 scratch: None,
@@ -3028,9 +3095,11 @@ impl LocalIndexLogStore {
         // and asking separately is what made the append probe the same path twice per record.
         let (mut active, active_len) = active_index_log(&inner.root, shard_id);
         let cached_span = active_span_at(&inner, shard_id, &active, active_len);
-        let rolled =
+        let sealed =
             roll_index_log_segment_at(&inner.root, shard_id, &active, active_len, cached_span)?;
-        if rolled {
+        let rolled = sealed.is_some();
+        if let Some(span) = sealed {
+            inner.note_sealed_piece(shard_id, span, active_len);
             inner.active_span_by_shard.remove(&shard_id);
             // Re-resolve ONLY here. The seal RENAMES the piece away, and that rename is the one
             // event that can change which name the next record belongs under -- so the answer is
@@ -3234,9 +3303,11 @@ impl LocalIndexLogStore {
         // and asking separately is what made the append probe the same path twice per record.
         let (mut active, active_len) = active_index_log(&inner.root, shard_id);
         let cached_span = active_span_at(&inner, shard_id, &active, active_len);
-        let rolled =
+        let sealed =
             roll_index_log_segment_at(&inner.root, shard_id, &active, active_len, cached_span)?;
-        if rolled {
+        let rolled = sealed.is_some();
+        if let Some(span) = sealed {
+            inner.note_sealed_piece(shard_id, span, active_len);
             inner.active_span_by_shard.remove(&shard_id);
             // Re-resolve ONLY here. The seal RENAMES the piece away, and that rename is the one
             // event that can change which name the next record belongs under -- so the answer is
@@ -3758,6 +3829,122 @@ impl LocalIndexLogStore {
         retain_from_sequence: u64,
     ) -> IndexLogGateSummary {
         let mut inner = self.lock_flushed();
+        let active = index_log_path(&inner.root, shard_id);
+        inner.ensure_sealed_ledger(shard_id);
+        let mut summary = IndexLogGateSummary {
+            shard_id,
+            retain_from_sequence,
+            ..IndexLogGateSummary::default()
+        };
+        // The sealed pieces from the ledger: no directory listing and no `stat` per piece once the
+        // shard's ledger is kept. The arithmetic is the walk's own (`add_sealed_piece`).
+        if let Some(ledger) = inner.sealed_ledger_by_shard.get(&shard_id) {
+            for fact in ledger {
+                summary.pieces += 1;
+                summary.bytes = summary.bytes.saturating_add(fact.bytes);
+                if let Some(span) = fact.span {
+                    add_sealed_piece(&mut summary, span, fact.bytes, retain_from_sequence);
+                }
+            }
+        }
+        // The piece being written: one `stat`, then the append-maintained record boundaries when they
+        // still describe the file, or one walk of the piece (at most the rolling threshold).
+        if let Ok(metadata) = active.metadata() {
+            summary.pieces += 1;
+            summary.bytes = summary.bytes.saturating_add(metadata.len());
+            let mut tally = IndexLogReadTally::start();
+            let cached = inner
+                .active_gate_records_by_shard
+                .get(&shard_id)
+                .filter(|cached| cached.path == active && cached.len == metadata.len())
+                .map(|cached| {
+                    let removable = cached
+                        .records
+                        .partition_point(|(sequence, _)| *sequence < retain_from_sequence);
+                    let removable_bytes = if removable > 0 {
+                        cached.records[removable - 1].1
+                    } else {
+                        0
+                    };
+                    (cached.records.len(), removable, removable_bytes)
+                });
+            if let Some((held, removable, removable_bytes)) = cached {
+                summary.records = summary.records.saturating_add(held);
+                summary.removable_records = summary.removable_records.saturating_add(removable);
+                summary.removable_bytes = summary.removable_bytes.saturating_add(removable_bytes);
+            } else {
+                inner.active_gate_records_by_shard.remove(&shard_id);
+                if let Ok(file) = open_index_log_read(&active, &mut tally) {
+                    let mut reader = BufReader::new(file);
+                    let mut gate_records = Vec::new();
+                    let mut cacheable = true;
+                    let mut consumed = 0_u64;
+                    loop {
+                        let (frame_bytes, payload) = match crate::log_framing::read_frame(&mut reader) {
+                            Ok(Some(frame)) => frame,
+                            Ok(None) => break,
+                            Err(_) => {
+                                cacheable = false;
+                                break;
+                            }
+                        };
+                        consumed = consumed.saturating_add(frame_bytes as u64);
+                        summary.bytes_decoded = summary.bytes_decoded.saturating_add(frame_bytes as u64);
+                        if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
+                            cacheable = false;
+                            continue;
+                        }
+                        summary.records_decoded += 1;
+                        summary.records += 1;
+                        // Only the HEAD of the record: two shapes share this log and both carry a
+                        // sequence. A record that will not decode is COUNTED but not called
+                        // removable, so it can only ever decline a round, never fire one.
+                        if let Ok(head) = decode_index_payload::<IndexRecordHead>(&payload) {
+                            if head.sequence < retain_from_sequence {
+                                summary.removable_records += 1;
+                                summary.removable_bytes =
+                                    summary.removable_bytes.saturating_add(frame_bytes as u64);
+                            }
+                            if cacheable {
+                                if gate_records.len() < MAX_ACTIVE_GATE_RECORDS
+                                    && gate_records.last().is_none_or(|(sequence, _)| *sequence < head.sequence)
+                                {
+                                    gate_records.push((head.sequence, consumed));
+                                } else {
+                                    cacheable = false;
+                                    gate_records.clear();
+                                }
+                            }
+                        } else {
+                            cacheable = false;
+                            gate_records.clear();
+                        }
+                    }
+                    if cacheable && consumed == metadata.len() {
+                        inner.active_gate_records_by_shard.insert(shard_id, ActiveIndexGateRecords {
+                            path: active.clone(),
+                            len: consumed,
+                            records: gate_records,
+                        });
+                    }
+                }
+            }
+        }
+        inner.stats.scans += 1;
+        inner.stats.bytes_read += summary.bytes_decoded;
+        inner.stats.records_read += summary.records_decoded as u64;
+        summary
+    }
+
+    /// The walking gate this one replaced: a directory listing and a `stat` per piece. Kept for the
+    /// test that compares the ledger-backed answer against it through every change to the log.
+    #[cfg(test)]
+    pub fn gate_summary_walked(
+        &self,
+        shard_id: ShardId,
+        retain_from_sequence: u64,
+    ) -> IndexLogGateSummary {
+        let mut inner = self.lock_flushed();
         let root = inner.root.clone();
         let active = index_log_path(&root, shard_id);
         let mut summary = IndexLogGateSummary {
@@ -3938,8 +4125,13 @@ impl LocalIndexLogStore {
         // Whole earlier pieces first. A piece whose sequences all sit below the floor is unlinked
         // without being opened, so what it HELD costs nothing -- which is the point: this round
         // used to pay for every record it kept.
-        let (dropped_segments, dropped_segment_bytes, dropped_records) =
-            drop_covered_index_segments(&root, shard_id, retain_from_sequence)?;
+        let dropped = drop_covered_index_segments(&root, shard_id, retain_from_sequence);
+        // Forgotten when any piece went, and when the unlinks failed part-way: a partial failure
+        // leaves the set changed. The ledger is rebuilt by one listing the next time the gate asks.
+        if dropped.as_ref().map_or(true, |(pieces, _, _)| *pieces > 0) {
+            inner.sealed_ledger_by_shard.remove(&shard_id);
+        }
+        let (dropped_segments, dropped_segment_bytes, dropped_records) = dropped?;
 
         repair_index_gc_active_tail(&inner, shard_id, &path)?;
         let mut records_before = 0usize;
@@ -4096,8 +4288,12 @@ impl LocalIndexLogStore {
         // a REWRITE that copies almost everything to reclaim almost nothing, and an unlink copies
         // nothing at all. A piece only goes when its name says every record in it is both below
         // the position bound and reflected by the base the dump wrote.
-        let (dropped_segments, dropped_segment_bytes, dropped_records) =
-            drop_reflected_index_segments(&root, shard_id, wal_anchor, meta_sequence)?;
+        let dropped = drop_reflected_index_segments(&root, shard_id, wal_anchor, meta_sequence);
+        // Forgotten when any piece went or the unlinks failed; see the budgeted sweep.
+        if dropped.as_ref().map_or(true, |(pieces, _, _)| *pieces > 0) {
+            inner.sealed_ledger_by_shard.remove(&shard_id);
+        }
+        let (dropped_segments, dropped_segment_bytes, dropped_records) = dropped?;
 
         repair_index_gc_active_tail(&inner, shard_id, &path)?;
         let mut records_before = 0usize;
@@ -4663,7 +4859,12 @@ fn write_frames_locked(
     inner.ensure_root()?;
     let (mut active, active_len) = active_index_log(&inner.root, shard_id);
     let cached_span = active_span_at(inner, shard_id, &active, active_len);
-    let rolled = roll_index_log_segment_at(&inner.root, shard_id, &active, active_len, cached_span)?;
+    let sealed = roll_index_log_segment_at(&inner.root, shard_id, &active, active_len, cached_span)?;
+    let rolled = sealed.is_some();
+    if let Some(span) = sealed {
+        // The seal is a piece the gate's ledger must hold, here as at the two single-record writers.
+        inner.note_sealed_piece(shard_id, span, active_len);
+    }
     if rolled {
         inner.active_span_by_shard.remove(&shard_id);
         active = active_index_log(&inner.root, shard_id).0;
@@ -5117,6 +5318,28 @@ fn sealed_index_log_path(root: &Path, shard_id: ShardId, span: IndexSegmentSpan)
     ))
 }
 
+/// Add one sealed piece's share to a gate summary: the records its name says it holds, how many of
+/// them sit below the floor, and the bytes those occupy (the piece's length scaled by the removable
+/// share, exact for a piece wholly below or wholly above the floor).
+fn add_sealed_piece(
+    summary: &mut IndexLogGateSummary,
+    span: IndexSegmentSpan,
+    bytes: u64,
+    retain_from_sequence: u64,
+) {
+    summary.pieces_named += 1;
+    let held = span.end.saturating_sub(span.start);
+    let removable = span.end.min(retain_from_sequence).saturating_sub(span.start);
+    summary.records = summary.records.saturating_add(held as usize);
+    summary.removable_records = summary.removable_records.saturating_add(removable as usize);
+    if held > 0 {
+        let share = (bytes as u128).saturating_mul(removable as u128) / held as u128;
+        summary.removable_bytes = summary
+            .removable_bytes
+            .saturating_add(u64::try_from(share).unwrap_or(u64::MAX));
+    }
+}
+
 /// Whether this file is a sealed piece of the given shard's index log, and what it holds.
 ///
 /// The piece being written has no numbers in its name, so it is not one of these.
@@ -5288,7 +5511,7 @@ fn index_log_segment_span_of(path: &Path) -> Result<Option<IndexSegmentSpan>, In
 /// piece rather than growing the one just sealed.
 fn roll_index_log_segment_if_due(root: &Path, shard_id: ShardId) -> Result<bool, IndexLogError> {
     let (path, length) = active_index_log(root, shard_id);
-    roll_index_log_segment_at(root, shard_id, &path, length, None)
+    roll_index_log_segment_at(root, shard_id, &path, length, None).map(|sealed| sealed.is_some())
 }
 
 /// The roll, given a piece the caller has ALREADY resolved and measured.
@@ -5304,20 +5527,20 @@ fn roll_index_log_segment_at(
     path: &Path,
     length: u64,
     cached_span: Option<IndexSegmentSpan>,
-) -> Result<bool, IndexLogError> {
+) -> Result<Option<IndexSegmentSpan>, IndexLogError> {
     let threshold = index_log_segment_bytes();
     if threshold == 0 {
-        return Ok(false);
+        return Ok(None);
     }
     if length < threshold {
-        return Ok(false);
+        return Ok(None);
     }
     let span = match cached_span {
         Some(span) => Some(span),
         None => index_log_segment_span_of(path)?,
     };
     let Some(span) = span else {
-        return Ok(false);
+        return Ok(None);
     };
 
     // Make the piece durable BEFORE sealing it. Index-log appends defer their fsync under the
@@ -5336,7 +5559,7 @@ fn roll_index_log_segment_at(
     let sealed = sealed_index_log_path(root, shard_id, span);
     fs::rename(path, &sealed)?;
     sync_parent_dir(&sealed)?;
-    Ok(true)
+    Ok(Some(span))
 }
 
 /// Drop whole pieces that hold nothing at or above the retain floor.
@@ -7754,6 +7977,185 @@ mod tests {
     fn roll_at(bytes: u64) -> RollingThreshold {
         set_index_log_segment_bytes_for_test(Some(bytes));
         RollingThreshold
+    }
+
+    /// Measurement harness, not a gate: what one index-GC gate call costs on a DEEP log, ledger against
+    /// walk. `--ignored --nocapture`, one test thread, `LOG_PIECES=<n>` (default 2000) pieces of the
+    /// shipped 64 KiB (about 128 MiB of log). Prints microseconds per call for the ledger-backed gate,
+    /// the walked gate, the ledger length and the walked length, and the directory listings each made.
+    #[test]
+    #[ignore]
+    fn what_the_index_gate_costs_on_a_deep_log() {
+        let pieces: usize = std::env::var("LOG_PIECES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2000);
+        let _rolling = roll_at(64 * 1024);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        let mut value = 0usize;
+        while store.piece_count(7) < pieces {
+            for _ in 0..2000 {
+                store.append_index_bytes(7, &fixture_index(value)).unwrap();
+                value += 1;
+            }
+        }
+        let floor = last_sequence_at(dir.path(), 7).unwrap() / 2;
+        let calls = 200u32;
+        let time = |name: &str, f: &dyn Fn()| {
+            f();
+            let listings = probe::dir_listings();
+            let started = std::time::Instant::now();
+            for _ in 0..calls {
+                f();
+            }
+            let per_call = started.elapsed().as_micros() as f64 / f64::from(calls);
+            eprintln!(
+                "G {name:<22} {per_call:>10.1} us/call  dir listings in {calls} calls: {}",
+                probe::dir_listings() - listings
+            );
+        };
+        eprintln!("G log: {} pieces, {} records, {} bytes", store.piece_count(7), value, index_log_total_bytes(dir.path(), 7));
+        time("gate_summary (ledger)", &|| {
+            store.gate_summary(7, floor);
+        });
+        time("gate_summary_walked", &|| {
+            store.gate_summary_walked(7, floor);
+        });
+        time("log_len_bytes (ledger)", &|| {
+            store.log_len_bytes(7);
+        });
+        time("index_log_total_bytes", &|| {
+            index_log_total_bytes(dir.path(), 7);
+        });
+    }
+
+    /// THE GATE THAT ANSWERS FROM MEMORY AGREES WITH THE ONE THAT WALKS THE DIRECTORY, through every
+    /// way the log changes, and it stops listing the directory once it is warm.
+    ///
+    /// `gate_summary_walked` lists the directory and `stat`s every piece on each call; `gate_summary`
+    /// keeps the sealed pieces in a ledger and the piece being written in the append-maintained record
+    /// boundaries. A ledger is only as good as the places that keep it in step, so this drives each of
+    /// them -- appends that seal pieces, both collectors that unlink them, a rewrite of the piece being
+    /// written, and a second store opened over the same directory -- and compares ALL the gate's counts
+    /// after each, at floors below, inside and above the log.
+    ///
+    /// Planted faults: dropping the push in `note_sealed_piece` leaves the ledger a piece short after
+    /// the first seal; keeping the ledger after the budgeted collector unlinked pieces leaves it with
+    /// pieces that no longer exist. Both fail the comparison right after the change.
+    #[test]
+    fn the_ledger_gate_agrees_with_the_walked_gate_through_every_change_to_the_log() {
+        let _rolling = roll_at(2 * 1024);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        let mut compared = 0usize;
+        let compare = |store: &LocalIndexLogStore, what: &str, compared: &mut usize| {
+            let last = last_sequence_at(dir.path(), 7).unwrap_or(0);
+            for floor in [0, 1, last / 3, last / 2, last.saturating_sub(1), last + 1, u64::MAX / 2] {
+                let walked = store.gate_summary_walked(7, floor);
+                let ledger = store.gate_summary(7, floor);
+                assert_eq!(
+                    (
+                        ledger.records,
+                        ledger.removable_records,
+                        ledger.removable_bytes,
+                        ledger.bytes,
+                        ledger.pieces,
+                        ledger.pieces_named
+                    ),
+                    (
+                        walked.records,
+                        walked.removable_records,
+                        walked.removable_bytes,
+                        walked.bytes,
+                        walked.pieces,
+                        walked.pieces_named
+                    ),
+                    "{what}: the ledger gate disagrees with the walked one at floor {floor} \
+                     (ledger {ledger:?}, walked {walked:?})"
+                );
+                *compared += 1;
+            }
+            assert_eq!(
+                store.log_len_bytes(7),
+                index_log_total_bytes(dir.path(), 7),
+                "{what}: the ledger length disagrees with the walked one"
+            );
+        };
+
+        // Asked BEFORE the first append, so the ledger exists and every seal that follows has to be
+        // pushed onto it rather than found by a listing.
+        compare(&store, "empty log", &mut compared);
+        for value in 0..500usize {
+            if value % 2 == 0 {
+                store.append_index_bytes(7, &fixture_index(value)).unwrap();
+            } else {
+                store
+                    .append_delta(
+                        7,
+                        vec![block_item(1, &format!("k{value}"), false)],
+                        Vec::new(),
+                        Some(value as u64 / 4),
+                        None,
+                        false,
+                        true,
+                    )
+                    .unwrap();
+            }
+            if value % 23 == 0 {
+                compare(&store, &format!("after append {value}"), &mut compared);
+            }
+        }
+        assert!(
+            store.piece_count(7) >= 8,
+            "the fixture must seal several pieces or the ledger is untested: {}",
+            store.piece_count(7)
+        );
+        compare(&store, "after the appends", &mut compared);
+
+        // Warm, the ledger gate lists no directory and the walked one lists it every call.
+        let before = probe::dir_listings();
+        for _ in 0..20 {
+            store.gate_summary(7, 100);
+        }
+        assert_eq!(
+            probe::dir_listings(),
+            before,
+            "a warm ledger gate must not list the log directory"
+        );
+        let before = probe::dir_listings();
+        store.gate_summary_walked(7, 100);
+        assert!(probe::dir_listings() > before, "the walked gate lists it: that is the cost");
+
+        // A second store over the same directory sees the same log.
+        let peer = LocalIndexLogStore::new(dir.path());
+        compare(&peer, "a second store over the same directory", &mut compared);
+
+        // The collector that unlinks covered pieces forgets the ledger; the next gate rebuilds it.
+        let last = last_sequence_at(dir.path(), 7).unwrap();
+        let report = store.gc_before_sequence_limited(7, last / 2, 0).unwrap();
+        assert!(report.dropped_segments > 0, "fixture: pieces must go: {report:?}");
+        compare(&store, "after the budgeted sweep unlinked pieces", &mut compared);
+
+        // A rewrite of the piece being written changes its length, so its boundaries are rebuilt.
+        let _ = store.gc_before_sequence_limited(7, last - 2, 5).unwrap();
+        compare(&store, "after a rewrite of the piece being written", &mut compared);
+
+        // The post-dump collector, then more appends over the rebuilt ledger.
+        let meta_sequence = store
+            .append_delta(7, Vec::new(), Vec::new(), Some(50), Some(MetaItem::default()), false, true)
+            .unwrap();
+        compare(&store, "after a meta record", &mut compared);
+        let _ = store.gc_reflected_before_anchor(7, 50, meta_sequence, 0).unwrap();
+        compare(&store, "after the post-dump collector", &mut compared);
+        for value in 0..200usize {
+            store.append_index_bytes(7, &fixture_index(value + 1000)).unwrap();
+            if value % 29 == 0 {
+                compare(&store, &format!("after append {} on the rebuilt ledger", value + 1000), &mut compared);
+            }
+        }
+        compare(&store, "at the end", &mut compared);
+        assert!(compared >= 60, "the comparison must run many times: {compared}");
     }
 
     /// Reclaim costs what it REMOVES, not what it KEEPS.
