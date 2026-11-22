@@ -1323,7 +1323,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         for (key, expires_at) in hot_selected.iter() {
             if *expires_at <= now {
                 let phase = std::time::Instant::now();
-                let removed = super::maintenance_log::MaintenanceDeletion::capture(shard, key);
+                let removed = super::maintenance_log::MaintenanceDeletion::capture_exact(shard, key);
                 EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
                 if let Some(deletion) = removed {
                     deletions.push(deletion);
@@ -1338,7 +1338,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             if *expires_at <= now {
                 if request.load_cold_buckets {
                     let phase = std::time::Instant::now();
-                    let removed = super::maintenance_log::MaintenanceDeletion::capture(shard, key);
+                    let removed = super::maintenance_log::MaintenanceDeletion::capture_exact(shard, key);
                     EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
                     if let Some(deletion) = removed {
                         deletions.push(deletion);

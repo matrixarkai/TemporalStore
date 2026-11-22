@@ -2811,6 +2811,7 @@ fn string_setex_sets_value_and_ttl() {
 #[derive(Debug, Default)]
 struct RecordingWalSink {
     seen: std::sync::Mutex<Vec<(ShardId, Command)>>,
+    frames: std::sync::Mutex<Vec<(ShardId, Vec<crate::wal::WalOutcomeItem>)>>,
 }
 
 impl crate::data_node::SharedWalSink for RecordingWalSink {
@@ -2819,6 +2820,9 @@ impl crate::data_node::SharedWalSink for RecordingWalSink {
             .lock()
             .expect("recording sink lock poisoned")
             .push((shard_id, command.clone()));
+    }
+    fn record_outcomes(&self, shard_id: ShardId, outcomes: &[crate::wal::WalOutcomeItem]) {
+        self.frames.lock().unwrap().push((shard_id, outcomes.to_vec()));
     }
 }
 
@@ -2855,21 +2859,15 @@ fn an_expiry_deletion_reaches_the_maintenance_mirror() {
     let report = engine.sweep_expired_records(1).unwrap();
     assert_eq!(report.expired_records_removed, 1);
 
-    let seen = sink
-        .seen
-        .lock()
-        .expect("recording sink lock poisoned")
-        .clone();
-    assert_eq!(
-        seen,
-        vec![(
-            1u64,
-            Command::CommonDelete {
-                key: "expire-me".to_string()
-            }
-        )],
-        "the expiry tombstone must reach the mirror, not just the local log"
-    );
+    assert!(sink.seen.lock().unwrap().is_empty());
+    let frames = sink.frames.lock().unwrap();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].0, 1);
+    assert_eq!(frames[0].1.len(), 1);
+    let item = &frames[0].1[0];
+    assert_eq!(item.object_key, "expire-me");
+    assert_eq!(item.kind, "record");
+    assert!(item.deleted && item.meta && item.address.is_none());
 }
 
 /// The mirror sink is looked up ONCE per round, not once per expired key.
@@ -2921,15 +2919,15 @@ fn the_maintenance_mirror_is_looked_up_once_per_round_not_once_per_key() {
         })
         .expect("sweep");
     let sweep_lookups = crate::engine::maintenance_mirror_sink_lookups();
-    let mirrored = sink
-        .seen
-        .lock()
-        .expect("recording sink lock poisoned")
-        .len();
+    let mirrored = {
+        let frames = sink.frames.lock().unwrap();
+        assert_eq!(frames.len(), 1, "one committed frame must use one mirror call");
+        frames.iter().map(|(_, outcomes)| outcomes.len()).sum::<usize>()
+    };
 
     eprintln!(
         "[mirror lookup] {sweep_lookups} lookup(s) for {} expired record(s), {mirrored} \
-command(s) mirrored",
+outcome(s) mirrored",
         report.expired_records_removed,
     );
 

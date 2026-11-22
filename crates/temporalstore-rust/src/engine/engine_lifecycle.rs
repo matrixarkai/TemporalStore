@@ -1720,6 +1720,23 @@ impl TemporalEngine {
         outcomes: &[crate::wal::WalOutcomeItem],
         carried: &[crate::wal::StagedBlock],
     ) -> bool {
+        if !outcomes.is_empty() && outcomes.iter().all(|item| {
+            item.kind == "record" && item.deleted && item.meta && item.address.is_none()
+                && item.element_name.is_none() && item.value.is_none() && item.ttl.is_none()
+        }) {
+            let mut shards = self.shards.write().expect("engine lock poisoned");
+            let Some(shard) = shards.get_mut(&shard_id) else {
+                return false;
+            };
+            let keys: Vec<_> = outcomes.iter().map(|item| item.object_key.as_str()).collect();
+            // Invalidate the frame under the deletion guard so warm followers cannot serve stale values.
+            super::invalidate_records_all_batched(&self.cache, shard_id, &keys, &super::CACHE_SWEEP_COUNTS);
+            for key in keys {
+                super::delete_record_exact(shard, key);
+            }
+            self.replay_installs.fetch_add(outcomes.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            return true;
+        }
         let mut localised = Vec::with_capacity(outcomes.len());
         for item in outcomes {
             let mut item = item.clone();

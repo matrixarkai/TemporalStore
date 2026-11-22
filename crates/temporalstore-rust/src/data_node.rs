@@ -2150,6 +2150,9 @@ impl Drop for StorageManagerRuntime {
 pub trait SharedWalSink: std::fmt::Debug + Send + Sync {
     /// Record a single successfully-applied write `command` for `shard_id`.
     fn record_write(&self, shard_id: ShardId, command: &Command);
+
+    /// Record one successfully applied maintenance frame without widening its record scope.
+    fn record_outcomes(&self, shard_id: ShardId, outcomes: &[crate::wal::WalOutcomeItem]);
 }
 
 /// What this node knows about its own role for one shard. THREE states, not two.
