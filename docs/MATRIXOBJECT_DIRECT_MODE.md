@@ -96,6 +96,40 @@ The run also prints one `FINDING` line: the shard lease cannot be acquired over 
 store, because the store does not offer a conditional replace. Appends and replay do not need
 it.
 
+## Checking the object surface and killing servers mid-append
+
+`direct_surface_cluster` has two legs.
+
+- `LEG=surface` runs put, get, ranged get (inside, ending at, and past the end), list and
+  list-after, delete and a read of the deleted object, and an append to an existing object, and
+  prints one `OBS` line per call. Run it once per mode with the same `PREFIX` and `diff` the
+  outputs. On a three-node cluster all 19 observations were identical through a gateway and
+  directly.
+- `LEG=append` appends records one at a time to one object and prints `PROGRESS`. While it runs,
+  `scripts/direct_kill_leg.sh` SIGKILLs a server on a port and restarts it
+  (`PORT=24401 RESTART='bash restart_chunk1.sh' ROUNDS=4 PAUSE=3 scripts/direct_kill_leg.sh`). At the
+  end the example reads the object back and requires it to equal the acknowledged records, in order,
+  each exactly once, and prints a `RESOLUTIONS landed=.. absent=.. ambiguous=..` line from the
+  store's append-resolution counters (`append_resolutions()`).
+
+The run says `INCONCLUSIVE` unless the kills produced both a `landed` and an `absent` answer, because
+a kill that never interrupted an append, or that only ever produced one kind of answer, has not
+exercised the settlement.
+
+Measured on a three-node cluster, 1,500 appends per run, four kills per run:
+
+| killed | mode | appends that returned an error | requests | resolutions | every record stored once | verdict |
+|---|---|---|---|---|---|---|
+| one chunk server | direct | 15 | 1,894 | landed 0, absent 126 | yes | INCONCLUSIVE (no `landed`) |
+| one chunk server | gateway | 14 | 1,908 | landed 0, absent 131 | yes | INCONCLUSIVE (no `landed`) |
+| each of the three metadata nodes | direct | 0 | 1,501 | none | yes | INCONCLUSIVE (no append was interrupted) |
+
+So killing a chunk server exercised the `absent` settlement 126 and 131 times with no record lost or
+duplicated; an append whose retries ran out returned an error to the caller, which read the object
+and retried only when the record was not there. The `landed` answer was not produced in any run, and
+killing a metadata node did not interrupt an append at all, so neither case is covered by this
+measurement.
+
 ## Bounded append publication
 
 For a cluster whose metadata voters and journal readers support compact append

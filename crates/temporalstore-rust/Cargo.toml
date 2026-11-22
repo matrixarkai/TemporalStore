@@ -78,6 +78,10 @@ required-features = ["matrixobject"]
 name = "direct_wal_index_e2e"
 required-features = ["matrixobject"]
 
+[[example]]
+name = "direct_surface_cluster"
+required-features = ["matrixobject"]
+
 [[bin]]
 # Needs the counting allocator to say anything; it refuses to run without it rather than printing
 # a table of zeros.
