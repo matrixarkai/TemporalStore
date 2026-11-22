@@ -424,3 +424,102 @@ fn periodic_cold_expiry_defaults_match_between_typed_and_serialized_requests() {
     .unwrap();
     assert!(!disabled.load_cold_buckets_for_expire);
 }
+
+fn mixed_budget_fixture(root: &std::path::Path) -> TemporalEngine {
+    let engine = engine_at(root, "cache-budget");
+    for key in ["hot-budget-due", "cold-budget-due"] {
+        assert!(engine.execute(ExecuteRequest { shard_id: 1,
+            command: Command::StringSetEx { key: key.into(), value: vec![7; 16], ttl_ms: 1 },
+        }).status.ok);
+    }
+    let hot = engine.routing_bucket_for_key(1, "hot-budget-due");
+    let cold = engine.routing_bucket_for_key(1, "cold-budget-due");
+    assert_ne!(hot, cold);
+    {
+        let mut shards = engine.shards.write().unwrap();
+        let released = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(
+            shards.get_mut(&1).unwrap(), &[cold],
+        );
+        assert_eq!(released.released_buckets, vec![cold]);
+    }
+    engine.write_ahead_log_store().flush(1).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    engine
+}
+
+#[test]
+fn maintenance_zero_expiry_budgets_leave_both_residency_classes_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = mixed_budget_fixture(dir.path());
+    let wal = engine.write_ahead_log_store().stats(1);
+    let invalidations = engine.cache().stats().invalidations;
+    let report = engine.sweep_expired_records_for_maintenance(ShardExpirySweepRequest {
+        shard_id: 1, load_cold_buckets: true, ..Default::default()
+    }).unwrap();
+    assert_eq!(report.expired_records_removed, 0);
+    assert_eq!(report.scanned_records, 0);
+    assert_eq!(report.loaded_for_expire, 0);
+    assert_eq!(engine.write_ahead_log_store().stats(1).writes, wal.writes);
+    assert_eq!(engine.cache().stats().invalidations, invalidations);
+    let shards = engine.shards.read().unwrap();
+    assert_eq!(shards[&1].expires_at_ms().len(), 2);
+    assert_eq!(shards[&1].strings().len(), 2);
+    drop(shards);
+    assert_eq!(engine.sweep_expired_records(1).unwrap().expired_records_removed, 2,
+               "the explicit manual sweep must still find both due records");
+}
+
+#[test]
+fn maintenance_zero_expiry_budget_disables_only_the_requested_residency_class() {
+    for (hot_limit, cold_limit, removed, retained) in [
+        (1, 0, "hot-budget-due", "cold-budget-due"),
+        (0, 1, "cold-budget-due", "hot-budget-due"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = mixed_budget_fixture(dir.path());
+        let report = engine.sweep_expired_records_for_maintenance(ShardExpirySweepRequest {
+            shard_id: 1, max_hot_buckets_per_round: hot_limit,
+            max_cold_buckets_per_round: cold_limit, load_cold_buckets: true,
+        }).unwrap();
+        assert_eq!(report.expired_records_removed, 1);
+        assert_eq!(report.hot_buckets_scanned, hot_limit);
+        assert_eq!(report.cold_buckets_scanned, cold_limit);
+        assert_eq!(report.loaded_for_expire, 0);
+        let shards = engine.shards.read().unwrap();
+        assert!(!shards[&1].strings().contains_key(removed));
+        assert!(shards[&1].strings().contains_key(retained));
+        assert!(shards[&1].expires_at_ms().contains_key(retained));
+        drop(shards);
+        assert_eq!(engine.sweep_expired_records(1).unwrap().expired_records_removed, 1);
+    }
+}
+
+#[test]
+fn operator_cycle_zero_expiry_budgets_preserve_due_records_for_a_later_sweep() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = mixed_budget_fixture(dir.path());
+    let wal = engine.write_ahead_log_store().stats(1);
+    let report = engine.run_storage_manager_cycle(reports::StorageManagerCycleRequest {
+        shard_id: 1, enable_prepare: false, enable_wal_reclaim: false, enable_evict: false,
+        enable_expire: true, enable_block_reclaim: false, enable_block_compaction: false,
+        enable_index_gc: false, min_undumped_wal_records: u64::MAX,
+        min_undumped_wal_bytes: u64::MAX, max_expire_hot_buckets_per_round: 0,
+        max_expire_cold_buckets_per_round: 0, ..Default::default()
+    });
+    assert!(report.completed, "{:?}", report.errors);
+    assert_eq!(report.expiry_report.unwrap().expired_records_removed, 0);
+    assert_eq!(engine.write_ahead_log_store().stats(1).writes, wal.writes);
+    assert_eq!(engine.sweep_expired_records(1).unwrap().expired_records_removed, 2);
+}
+
+#[test]
+fn explicit_sweep_zero_expiry_limits_keep_their_unbounded_meaning() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = mixed_budget_fixture(dir.path());
+    let report = engine.sweep_expired_records_with_request(ShardExpirySweepRequest {
+        shard_id: 1, load_cold_buckets: true, ..Default::default()
+    }).unwrap();
+    assert_eq!(report.expired_records_removed, 2);
+    assert_eq!(report.hot_buckets_scanned, 1);
+    assert_eq!(report.cold_buckets_scanned, 1);
+}

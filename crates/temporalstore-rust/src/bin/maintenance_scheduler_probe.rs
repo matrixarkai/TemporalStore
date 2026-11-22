@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! Run bounded scheduled maintenance, then verify the same directory in a new process.
-//! Usage: maintenance_scheduler_probe <seed-run|verify> <directory> <string|hash>
+//! Usage: maintenance_scheduler_probe <seed-run|verify|expiry-run|expiry-verify> <directory> <string|hash>
 //! <keys> <rounds> <overwrite_every> <routing_end> <memory_bytes>
 
 use std::path::PathBuf;
@@ -17,6 +17,7 @@ const SHARD: u64 = 1;
 #[derive(Debug)]
 struct Args {
     verify: bool,
+    expiry: bool,
     directory: PathBuf,
     hash: bool,
     keys: usize,
@@ -28,10 +29,11 @@ struct Args {
 
 fn arguments(args: &[String]) -> Args {
     assert_eq!(args.len(), 9, "expected phase, directory, model, keys, rounds, overwrite_every, routing_end, memory_bytes");
-    assert!(matches!(args[1].as_str(), "seed-run" | "verify"));
+    assert!(matches!(args[1].as_str(), "seed-run" | "verify" | "expiry-run" | "expiry-verify"));
     assert!(matches!(args[3].as_str(), "string" | "hash"));
     let result = Args {
-        verify: args[1] == "verify",
+        verify: matches!(args[1].as_str(), "verify" | "expiry-verify"),
+        expiry: matches!(args[1].as_str(), "expiry-run" | "expiry-verify"),
         directory: PathBuf::from(&args[2]),
         hash: args[3] == "hash",
         keys: args[4].parse().expect("keys must be an integer"),
@@ -75,6 +77,72 @@ fn value(index: usize, overwritten: bool) -> Vec<u8> {
 
 fn overwritten(args: &Args, index: usize) -> bool {
     args.overwrite_every != 0 && index % args.overwrite_every == 0
+}
+
+fn expires_in_probe(index: usize) -> bool {
+    index % 16 != 15
+}
+
+fn process_io() -> std::collections::BTreeMap<String, u64> {
+    let fields = ["read_bytes", "write_bytes", "cancelled_write_bytes", "rchar", "wchar"];
+    let mut result = std::collections::BTreeMap::new();
+    for line in std::fs::read_to_string("/proc/self/io").expect("process I/O counters").lines() {
+        let (name, value) = line.split_once(':').expect("counter pair");
+        if fields.contains(&name) {
+            assert!(result.insert(name.to_owned(), value.trim().parse().expect("counter integer")).is_none());
+        }
+    }
+    assert_eq!(result.len(), fields.len());
+    result
+}
+
+fn expiry_probe(engine: &TemporalEngine, args: &Args) {
+    for index in 0..args.keys {
+        let command = if args.hash {
+            Command::HashGet { key: key(index), field: "f".into() }
+        } else { Command::StringGet { key: key(index) } };
+        let result = engine.execute(ExecuteRequest { shard_id: SHARD, command });
+        assert!(result.status.ok);
+        assert_eq!(result.response, CommandResponse::Bytes {
+            value: Some(value(index, overwritten(args, index))),
+        });
+    }
+    for index in (0..args.keys).filter(|&index| expires_in_probe(index)) {
+        let result = engine.execute(ExecuteRequest { shard_id: SHARD,
+            command: Command::CommonExpire { key: key(index), ttl_ms: 1 },
+        });
+        assert!(result.status.ok, "TTL {index}: {:?}", result.status);
+    }
+    engine.write_ahead_log_store().flush(SHARD).expect("flush TTL records");
+    std::thread::sleep(Duration::from_millis(20));
+    let runtime = DataNodeRuntime::new(engine.clone(), DataNodeRuntimeOptions {
+        worker_threads: 1, max_queue_depth: 4, max_background_queue_depth: 2,
+    });
+    let expected = (0..args.keys).filter(|&index| expires_in_probe(index)).count();
+    for (name, hot, expected_removed) in [("zero", 0, 0), ("hot", args.keys, expected)] {
+        let wal_before = engine.write_ahead_log_store().stats(SHARD);
+        let io_before = process_io();
+        let started = Instant::now();
+        let removed = runtime.sweep_expired_records_bounded(SHARD, hot, 0);
+        let elapsed_us = started.elapsed().as_micros();
+        let barrier = Instant::now();
+        engine.write_ahead_log_store().flush(SHARD).expect("expiry barrier");
+        let barrier_us = barrier.elapsed().as_micros();
+        let io_after = process_io();
+        let io = io_after.iter().map(|(name, after)| {
+            (name.clone(), after.checked_sub(io_before[name]).expect("monotonic counter"))
+        }).collect::<std::collections::BTreeMap<_, _>>();
+        let wal_after = engine.write_ahead_log_store().stats(SHARD);
+        println!("EXPIRY_STAGE_COST {}", serde_json::json!({
+            "stage": name, "keys": args.keys, "due": expected, "hot_limit": hot, "cold_limit": 0,
+            "removed": removed, "elapsed_us": elapsed_us, "barrier_us": barrier_us, "io": io,
+            "wal_write_calls": wal_after.writes.saturating_sub(wal_before.writes),
+            "wal_bytes": wal_after.persistent_bytes.saturating_sub(wal_before.persistent_bytes),
+        }));
+        assert_eq!(removed, expected_removed, "{name} expiry work");
+        if hot == 0 { assert_eq!(wal_after.writes, wal_before.writes); }
+    }
+    println!("EXPIRY_COMPLETE keys={} removed={expected} live={}", args.keys, args.keys - expected);
 }
 
 fn write(engine: &TemporalEngine, args: &Args, index: usize, overwrite: bool) {
@@ -133,12 +201,16 @@ fn main() {
             let result = engine.execute(ExecuteRequest { shard_id: SHARD, command });
             assert!(result.status.ok, "read {index}: {:?}", result.status);
             assert_eq!(result.response,
-                CommandResponse::Bytes { value: Some(value(index, overwritten(&args, index))) },
+                CommandResponse::Bytes { value: (!(args.expiry && expires_in_probe(index)))
+                    .then(|| value(index, overwritten(&args, index))) },
                 "restored value {index}");
         }
         println!("SCHEDULER_RESTORE {}", serde_json::json!({
             "keys": args.keys, "verified_exact": args.keys, "load_us": load_us,
             "open_load_us": open_load_us, "fresh_process": true, "cold_filesystem_cache": false,
+            "expiry_expected_missing": if args.expiry {
+                (0..args.keys).filter(|&index| expires_in_probe(index)).count()
+            } else { 0 },
         }));
         return;
     }
@@ -157,6 +229,10 @@ fn main() {
         }
     }
     engine.write_ahead_log_store().flush(SHARD).expect("flush seeded log");
+    if args.expiry {
+        expiry_probe(&engine, &args);
+        return;
+    }
     let seed_us = seed_started.elapsed().as_micros();
     let before = snapshot(&engine);
     let runtime = DataNodeRuntime::new(engine.clone(), DataNodeRuntimeOptions {
@@ -236,6 +312,26 @@ mod tests {
         assert!(overwritten(&configured, 3));
         configured.overwrite_every = 0;
         assert!(!overwritten(&configured, 0));
+    }
+
+    #[test]
+    fn expiry_phases_keep_recovery_separate_from_stage_execution() {
+        let mut configured = args();
+        configured[1] = "expiry-run".into();
+        let run = arguments(&configured);
+        assert!(run.expiry && !run.verify);
+        configured[1] = "expiry-verify".into();
+        let verify = arguments(&configured);
+        assert!(verify.expiry && verify.verify);
+    }
+
+    #[test]
+    fn expiry_population_includes_live_controls_at_both_scales() {
+        for keys in [128, 100_000] {
+            let due = (0..keys).filter(|&index| expires_in_probe(index)).count();
+            assert_eq!(due, keys - keys / 16);
+            assert!(due > 0 && due < keys);
+        }
     }
 
     #[test]

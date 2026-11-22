@@ -1223,8 +1223,24 @@ fn expiry_scan_budget(limit: usize) -> usize {
         &self,
         request: ShardExpirySweepRequest,
     ) -> Result<ShardExpirySweepReport, Status> {
+        self.sweep_expired_records_with_budget_mode(request, false)
+    }
+
+    /// Maintenance budgets disable a residency class at zero; explicit sweeps remain unbounded.
+    pub(crate) fn sweep_expired_records_for_maintenance(
+        &self,
+        request: ShardExpirySweepRequest,
+    ) -> Result<ShardExpirySweepReport, Status> {
+        self.sweep_expired_records_with_budget_mode(request, true)
+    }
+
+    fn sweep_expired_records_with_budget_mode(
+        &self,
+        request: ShardExpirySweepRequest,
+        zero_disables: bool,
+    ) -> Result<ShardExpirySweepReport, Status> {
         let shard_id = request.shard_id;
-        let outcome = self.sweep_expired_records_with_request_uncounted(request);
+        let outcome = self.sweep_expired_records_with_request_uncounted(request, zero_disables);
         if let Err(status) = &outcome {
             // The runtime drops this error and moves to the next shard, so without a count a
             // sweep that fails every tick is indistinguishable from one with nothing due.
@@ -1242,7 +1258,20 @@ fn expiry_scan_budget(limit: usize) -> usize {
     fn sweep_expired_records_with_request_uncounted(
         &self,
         request: ShardExpirySweepRequest,
+        zero_disables: bool,
     ) -> Result<ShardExpirySweepReport, Status> {
+        if zero_disables && request.max_hot_buckets_per_round == 0
+            && request.max_cold_buckets_per_round == 0
+        {
+            if !self.shards.read().expect("engine lock poisoned").contains_key(&request.shard_id) {
+                return Err(Status::error("shard_not_loaded", "shard is not loaded"));
+            }
+            return Ok(ShardExpirySweepReport {
+                shard_id: request.shard_id,
+                load_on_expire_only_when_needed: true,
+                ..ShardExpirySweepReport::default()
+            });
+        }
         let mut shards = self.shards_write_marked();
         // Started AFTER the guard is acquired, so this is the HOLD and not the wait for it.
         let guard_held = std::time::Instant::now();
@@ -1269,14 +1298,20 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // request and report fields that carried them are gone.
         let phase = std::time::Instant::now();
         crate::engine::ensure_expiry_order(shard);
-        let hot_selected =
+        let hot_selected = if zero_disables && hot_limit == 0 {
+            Vec::new()
+        } else {
             crate::engine::due_window(shard, now, hot_limit, scan_budget, |key| {
                 expiry_record_is_hot(shard, key)
-            });
-        let cold_selected =
+            })
+        };
+        let cold_selected = if zero_disables && cold_limit == 0 {
+            Vec::new()
+        } else {
             crate::engine::due_window(shard, now, cold_limit, scan_budget, |key| {
                 !expiry_record_is_hot(shard, key)
-            });
+            })
+        };
         EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.select, phase);
         let mut expired_records_removed = 0;
         let mut skipped_records = 0usize;
