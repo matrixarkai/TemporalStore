@@ -45,16 +45,6 @@ pub(crate) enum SliceProgress {
     Done,
 }
 
-/// Whether the data node's draining stage runs a sliced pass. OFF unless `TS_SLICED_COMPACTION` is
-/// `1` or `true`. Slices use selected-owner lookups across all models; setup and final publication
-/// still perform whole-shard work.
-pub(crate) fn sliced_compaction_enabled() -> bool {
-    matches!(
-        std::env::var("TS_SLICED_COMPACTION").as_deref(),
-        Ok("1") | Ok("true")
-    )
-}
-
 /// One line per phase of a pass, to stderr, when `TS_COMPACTION_PHASE_TIMING=1`: the duration of the
 /// setup, of each slice and of the finish, each of which holds the shard write guard once. Off by
 /// default; the read is one cached env lookup.
@@ -131,6 +121,15 @@ impl TemporalEngine {
     #[cfg(test)]
     pub(crate) fn compaction_pass_in_flight(&self, shard_id: ShardId) -> bool {
         self.sliced_pass_active(shard_id)
+    }
+
+    /// Whether a full promote scan has already confirmed this shard's bucket index in step with its
+    /// model maps AND the write path keeps it so: the same test the per-command scan uses to skip
+    /// itself (`flat_append` and `promote_scan_done`). `promote_scan_done` is not serialized, so a
+    /// freshly loaded shard answers `false` until its first command pays one scan; a compaction that
+    /// meets such a shard still walks, as before.
+    fn bucket_index_is_confirmed_authoritative(&self, shard: &ShardState) -> bool {
+        self.wal_store.flat_append() && shard.promote_scan_done
     }
 
     /// Whether a sliced pass owns this shard's compaction, so a whole round must not start.
@@ -341,9 +340,13 @@ impl TemporalEngine {
             .insert(shard_id, (previous_block_slab_id, target_block_slab_id));
         self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
         // The bucket index must name every live block before any block moves; see the whole round.
-        storage_bucket_internals::promote_model_maps_to_bucket_index_authority(
-            shard_id, shard, start_routing_bucket, end_routing_bucket,
-        );
+        // The check walks every live block of the shard, so it is skipped while the write path has
+        // already confirmed the index authoritative (`bucket_index_is_confirmed_authoritative`).
+        if !self.bucket_index_is_confirmed_authoritative(shard) {
+            storage_bucket_internals::promote_model_maps_to_bucket_index_authority(
+                shard_id, shard, start_routing_bucket, end_routing_bucket,
+            );
+        }
         Ok(Some(SlicedPass {
             target_block_slab_id,
             drain_block_slab_ids: drain_block_slab_ids.clone(),
@@ -498,10 +501,14 @@ impl TemporalEngine {
         end_routing_bucket: u32,
     ) -> Result<(), Status> {
         // Blocks written between slices may be missing from the bucket index; complete it before the
-        // image is cut, as the setup did before anything moved.
-        storage_bucket_internals::promote_model_maps_to_bucket_index_authority(
-            shard_id, shard, start_routing_bucket, end_routing_bucket,
-        );
+        // image is cut, as the setup did before anything moved. A confirmed-authoritative index is
+        // kept complete by every write, so the walk is only owed when it is not.
+        if !self.bucket_index_is_confirmed_authoritative(shard) {
+            storage_bucket_internals::promote_model_maps_to_bucket_index_authority(
+                shard_id, shard, start_routing_bucket, end_routing_bucket,
+            );
+        }
+        let barrier_started = std::time::Instant::now();
         if let Err(barrier) = self.compaction_barrier() {
             self.pin_unpublished_compaction(shard_id, &pass.pre_round_slabs);
             return Err(Status::error(
@@ -511,6 +518,7 @@ impl TemporalEngine {
                 ),
             ));
         }
+        phase_timing("finish_barrier", shard_id, barrier_started);
         if let Err(publish) = self.publish_pass(shard_id, shard, &pass) {
             self.pin_unpublished_compaction(shard_id, &pass.pre_round_slabs);
             return Err(publish);
@@ -535,7 +543,10 @@ impl TemporalEngine {
         pass: &SlicedPass,
     ) -> Result<(), Status> {
         // Publication owes complete flags and TTL rollups; intermediate slices do not.
+        let flags_started = std::time::Instant::now();
         refresh_bucket_runtime_flags(shard);
+        phase_timing("finish_flags", shard_id, flags_started);
+        let publish_started = std::time::Instant::now();
         let mut stats = CompactionRewriteStats::for_drain_round(
             pass.target_block_slab_id,
             u64::MAX,
@@ -558,8 +569,11 @@ impl TemporalEngine {
         let index_bytes = self.publish_compacted_container_index(
             shard_id, shard, &stats, pass.target_block_slab_id,
         )?;
+        phase_timing("finish_publish", shard_id, publish_started);
         self.clear_unpublished_compaction(shard_id);
+        let anchor_started = std::time::Instant::now();
         let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
+        phase_timing("finish_anchor", shard_id, anchor_started);
         Ok(())
     }
 }

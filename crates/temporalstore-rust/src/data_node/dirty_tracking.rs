@@ -60,11 +60,17 @@ pub(super) fn clear_dirty_shard_buckets(
         return 0;
     }
     let selected_buckets = selected_buckets.iter().copied().collect::<BTreeSet<_>>();
+    // THE ROUTING RANGE IS READ ONCE, BEFORE THE DIRTY MUTEX IS TAKEN. Every write takes that mutex
+    // to mark its key dirty, and this loop visits every dirty key. `routing_bucket_for_key` takes
+    // the info lock and clones the shard's info row on each call, so asking it per key put an
+    // `infos` read and a clone per dirty key inside the writers' critical section, and took the
+    // `infos` lock while the dirty mutex was held. The resolver holds the two range ends and
+    // gives the same answer without a lock or an allocation.
+    let bucket_of = engine.routing_bucket_resolver(shard_id);
     let mut dirty = dirty.lock().expect("dirty tracker lock poisoned");
     let before = dirty.by_key.len();
     dirty.by_key.retain(|(dirty_shard_id, key), _| {
-        *dirty_shard_id != shard_id
-            || !selected_buckets.contains(&engine.routing_bucket_for_key(shard_id, key))
+        *dirty_shard_id != shard_id || !selected_buckets.contains(&bucket_of(key))
     });
     let removed = before - dirty.by_key.len();
     if removed != 0 {

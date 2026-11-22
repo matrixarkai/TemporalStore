@@ -656,6 +656,65 @@ fn remember_manifest(
     });
 }
 
+struct PublishedCaptureFacts {
+    identity: ManifestFileIdentity,
+    checksum: String,
+    digests: BTreeMap<u32, super::storage_reporting::BucketFingerprintDigest>,
+    wal_floor: Option<u64>,
+}
+
+thread_local! {
+    static PUBLISHED_CAPTURE_FACTS: std::cell::RefCell<
+        BTreeMap<PathBuf, BTreeMap<PathBuf, PublishedCaptureFacts>>,
+    > = std::cell::RefCell::new(BTreeMap::new());
+}
+
+/// Retain small owner facts, not another copy of the manifest's whole-shard image.
+/// The listing must still read and checksum-verify the exact published document.
+pub(super) fn remember_published_capture(
+    index_dir: &Path,
+    manifest: &BucketDumpManifest,
+    metadata: Option<&std::fs::Metadata>,
+    mut digests: BTreeMap<u32, super::storage_reporting::BucketFingerprintDigest>,
+    wal_floor: Option<u64>,
+) {
+    if !manifest_parse_memo_enabled() {
+        return;
+    }
+    let Some(identity) = metadata.and_then(manifest_file_identity) else { return; };
+    let path = bucket_dump_manifest_path(index_dir, manifest.shard_id, &manifest.manifest_id);
+    let Some(dir) = path.parent().map(Path::to_path_buf) else { return; };
+    let coverage = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
+    digests.retain(|bucket, _| coverage.contains(bucket));
+    PUBLISHED_CAPTURE_FACTS.with(|memo| {
+        memo.borrow_mut().entry(dir).or_default().insert(path,
+            PublishedCaptureFacts { identity, checksum: manifest.checksum.clone(), digests, wal_floor });
+    });
+}
+
+fn adopt_published_capture(
+    dir: &Path,
+    path: &Path,
+    identity: ManifestFileIdentity,
+    manifest: &std::sync::Arc<BucketDumpManifest>,
+) {
+    let facts = PUBLISHED_CAPTURE_FACTS.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        let entries = memo.get_mut(dir)?;
+        let facts = entries.remove(path);
+        if entries.is_empty() { memo.remove(dir); }
+        facts
+    });
+    let Some(facts) = facts else { return; };
+    // A stat-before-read can observe an old inode before reading its replacement.
+    // Bind the facts to the verified document too, not just to the stat result.
+    if facts.identity != identity || facts.checksum != manifest.checksum || manifest.checksum.is_empty() {
+        return;
+    }
+    manifest_digests_memoised(manifest.shard_id, manifest, || Some(facts.digests));
+    let _ = manifest_wal_floor_memoised(manifest, || Ok(facts.wal_floor));
+}
+
 /// Bound the memo by the directory it describes, so a pruned manifest cannot be remembered for
 /// ever: a listing that saw the whole directory drops everything the directory no longer holds.
 fn retain_memoised_manifests(dir: &std::path::Path, present: &std::collections::BTreeSet<PathBuf>) {
@@ -666,6 +725,13 @@ fn retain_memoised_manifests(dir: &std::path::Path, present: &std::collections::
             if entries.is_empty() {
                 memo.remove(dir);
             }
+        }
+    });
+    PUBLISHED_CAPTURE_FACTS.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if let Some(entries) = memo.get_mut(dir) {
+            entries.retain(|path, _| present.contains(path));
+            if entries.is_empty() { memo.remove(dir); }
         }
     });
 }
@@ -683,6 +749,7 @@ pub(super) fn clear_bucket_dump_manifest_parse_memo() {
     MANIFEST_PARSE_MEMO.with(|memo| memo.borrow_mut().clear());
     MANIFEST_DIGEST_MEMO.with(|memo| memo.borrow_mut().clear());
     MANIFEST_WAL_FLOOR_MEMO.with(|memo| memo.borrow_mut().clear());
+    PUBLISHED_CAPTURE_FACTS.with(|memo| memo.borrow_mut().clear());
 }
 
 type ManifestWalFloor = Result<Option<u64>, ()>;
@@ -749,6 +816,7 @@ thread_local! {
     static MANIFEST_DIGEST_MISSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// Digests describe only the owners in `bucket_ids`, not every owner in the embedded shard image.
 /// `compute` runs only for a manifest this thread has not computed for, and its answer -- including
 /// "this manifest cannot be fingerprinted" -- is kept with the manifest.
 pub(super) fn manifest_digests_memoised(
@@ -941,6 +1009,7 @@ fn list_bucket_dump_manifests_with_policy_at(
             .and_then(manifest_file_identity);
         if let Some(identity) = identity {
             if let Some(manifest) = memoised_manifest(&dir, &path, identity) {
+                adopt_published_capture(&dir, &path, identity, &manifest);
                 MANIFEST_PARSE_HITS.with(|cell| cell.set(cell.get().saturating_add(1)));
                 manifests.push(manifest);
                 continue;
@@ -989,6 +1058,7 @@ fn list_bucket_dump_manifests_with_policy_at(
         let manifest = std::sync::Arc::new(manifest);
         if let Some(identity) = identity {
             remember_manifest(&dir, &path, identity, &manifest);
+            adopt_published_capture(&dir, &path, identity, &manifest);
         }
         manifests.push(manifest);
     }

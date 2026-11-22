@@ -110,13 +110,26 @@ pub mod resource_blobs;
 #[path = "engine/engine_quota.rs"]
 pub mod quota;
 pub(crate) mod eviction_sampler;
+/// How many times this thread read the shard info row for a routing range, so a test can say that a
+/// loop over many keys read it once and not once per key.
+#[cfg(test)]
+pub(crate) mod routing_range_reads {
+    use std::cell::Cell;
+    thread_local! {
+        static READS: Cell<u64> = const { Cell::new(0) };
+    }
+    pub(crate) fn bump() {
+        READS.with(|reads| reads.set(reads.get() + 1));
+    }
+    pub(crate) fn count() -> u64 {
+        READS.with(Cell::get)
+    }
+}
 // Single source of truth for write-command classification (shared with the data_node layer,
 // which previously kept a drifted subset that mis-classified context/control-state writes
 // as reads -> lifecycle-write-barrier bypass + missing dump scheduling).
 pub(crate) use command_validation::{command_object_keys, is_write_command};
-pub(crate) use recovery_sweep_compact::{
-    sliced_compaction_enabled, SliceProgress, COMPACTION_SLICE_KEYS,
-};
+pub(crate) use recovery_sweep_compact::{SliceProgress, COMPACTION_SLICE_KEYS};
 #[cfg(test)]
 pub(crate) use recovery_sweep_compact::set_slice_boundary_for_test;
 #[cfg(test)]
@@ -3445,6 +3458,8 @@ impl TemporalEngine {
     /// behaviour it had, and a shard that IS loaded gets the range it was loaded with. The same
     /// default `routing_bucket_for_key` has always used, now shared rather than restated.
     pub(crate) fn shard_routing_range(&self, shard_id: ShardId) -> (u32, u32) {
+        #[cfg(test)]
+        routing_range_reads::bump();
         let info = self
             .infos
             .read()
@@ -3465,6 +3480,19 @@ impl TemporalEngine {
     pub fn routing_bucket_for_key(&self, shard_id: ShardId, key: &str) -> u32 {
         let (start, end) = self.shard_routing_range(shard_id);
         block_routing_bucket(key, start, end)
+    }
+
+    /// `routing_bucket_for_key` for MANY keys of one shard: the info row is read, and cloned, ONCE
+    /// here instead of once per key.
+    ///
+    /// `routing_bucket_for_key` takes `infos.read()` and clones the shard's info row on every call,
+    /// which is the right price for one key and the wrong one inside a loop over a shard's dirty
+    /// keys. The returned closure holds only the two range ends, so it takes no lock and
+    /// allocates nothing per key, and gives exactly the answer `routing_bucket_for_key` gives for
+    /// the range read at this call.
+    pub fn routing_bucket_resolver(&self, shard_id: ShardId) -> impl Fn(&str) -> u32 {
+        let (start, end) = self.shard_routing_range(shard_id);
+        move |key: &str| block_routing_bucket(key, start, end)
     }
 
     /// THE ONE WAY A `ShardState` ENTERS THE SERVED MAP, and the one place its routing range is
@@ -6902,6 +6930,15 @@ fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
 /// longer WAL suffix -- no acked write is lost. Durability-critical writers (dump
 /// manifest, manifest install-on-load) MUST pass sync=true.
 fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<(), std::io::Error> {
+    atomic_write_bytes_synced_metadata(path, bytes, sync, false).map(|_| ())
+}
+
+fn atomic_write_bytes_synced_metadata(
+    path: &Path,
+    bytes: &[u8],
+    sync: bool,
+    capture_metadata: bool,
+) -> Result<Option<fs::Metadata>, std::io::Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let file_name = path
@@ -6919,6 +6956,8 @@ fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<()
         if sync {
             file.sync_all()?;
         }
+        // Capture the inode we wrote, not whichever file occupies the path after rename.
+        let metadata = capture_metadata.then(|| file.metadata().ok()).flatten();
         drop(file);
         fs::rename(&temp_path, path)?;
         if sync {
@@ -6933,7 +6972,7 @@ fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<()
             // block_store) already syncs the parent dir here.
             sync_parent_dir(path)?;
         }
-        Ok(())
+        Ok(metadata)
     })();
     if write_result.is_err() {
         let _ = fs::remove_file(&temp_path);

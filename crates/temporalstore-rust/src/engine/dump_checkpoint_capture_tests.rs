@@ -48,6 +48,130 @@ fn check_catalog_wal_models(engine: &TemporalEngine, queries: &[(Command, Comman
 }
 
 #[test]
+fn published_capture_reuses_exact_owner_digests_and_retention_floor() {
+    for selected_key in [None, Some("catalog-string"), Some("catalog-hash"), Some("catalog-feature")] {
+        let root = tempfile::tempdir().unwrap();
+        let engine = engine_at(root.path());
+        let queries = seed_catalog_wal_models(&engine);
+        for index in 0..128 {
+            execute(&engine, Command::StringSet {
+                key: format!("unrelated-{index:04}"), value: vec![index as u8; 48],
+            });
+        }
+        let selected = selected_key.map(|key| vec![engine.routing_bucket_for_key(1, key)])
+            .unwrap_or_default();
+        let before = bucket_dump_io::bucket_dump_manifest_io_counts();
+        let manifest = engine.create_bucket_dump_manifest(1, selected).unwrap();
+        let after_write = bucket_dump_io::bucket_dump_manifest_io_counts();
+        assert_eq!(after_write.owned_copies - before.owned_copies, 0);
+        assert_eq!(after_write.owned_copy_bytes - before.owned_copy_bytes, 0);
+        let decoded = decode_index_bytes(&manifest.index_bytes).unwrap();
+        let mut expected = crate::engine::storage_reporting::bucket_generation_digests_by_bucket(1, &decoded);
+        assert!(expected.len() > 100, "unrelated owners must be present in the image");
+        expected.retain(|bucket, _| manifest.bucket_ids.contains(bucket));
+        if selected_key.is_some() { assert_eq!(expected.len(), 1); }
+        let floor = super::super::storage_lifecycle_methods::wal_floor_of_index_image(&decoded);
+        assert!(floor.is_some_and(|sequence| sequence > 0));
+        let decode_count = CHECKPOINT_DECODES.with(|count| count.get());
+        let listed = bucket_dump_io::list_bucket_dump_manifests_shared_at(&engine.index_dir, 1).unwrap();
+        assert_eq!(listed.len(), 1);
+        let digests = bucket_dump_io::manifest_digests_memoised(1, &listed[0], || {
+            panic!("published owner facts must not require another image decode")
+        }).unwrap();
+        assert_eq!(&*digests, &expected);
+        assert_eq!(bucket_dump_io::manifest_wal_floor_memoised(&listed[0], || {
+            panic!("published retention floor must not require another image decode")
+        }), Ok(floor));
+        assert_eq!(CHECKPOINT_DECODES.with(|count| count.get()), decode_count);
+        let after_read = bucket_dump_io::bucket_dump_manifest_io_counts();
+        assert_eq!(after_read.file_reads - after_write.file_reads, 1);
+        assert_eq!(after_read.checksum_serializes - after_write.checksum_serializes, 1);
+        let warm_plan = engine.storage_wal_reclaim_plan(1, [], []);
+        assert_eq!(CHECKPOINT_DECODES.with(|count| count.get()), decode_count,
+            "the production reclaim plan must use the published owner facts");
+        let off = bucket_dump_io::ManifestParseMemoOff::new();
+        let cold_plan = engine.storage_wal_reclaim_plan(1, [], []);
+        assert!(CHECKPOINT_DECODES.with(|count| count.get()) > decode_count,
+            "the cold control must actually decode the durable image");
+        drop(off);
+        assert_eq!(warm_plan, cold_plan, "capture reuse must not change a reclaim decision");
+        check_catalog_wal_models(&engine, &queries);
+    }
+}
+
+#[test]
+fn a_replacement_cannot_inherit_a_published_captures_file_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let engine = engine_at(root.path());
+    seed_catalog_wal_models(&engine);
+    let manifest = engine.create_bucket_dump_manifest(1, vec![]).unwrap();
+    let listed = bucket_dump_io::list_bucket_dump_manifests_shared_at(&engine.index_dir, 1).unwrap();
+    let before = bucket_dump_io::bucket_dump_manifest_io_counts();
+    let mut replacement = manifest.clone();
+    replacement.wal_sequence += 1000;
+    replacement.checksum = bucket_dump_io::bucket_dump_manifest_checksum_in_place(&mut replacement).unwrap();
+    engine.persist_bucket_dump_manifest(&replacement).unwrap();
+    let updated = bucket_dump_io::list_bucket_dump_manifests_shared_at(&engine.index_dir, 1).unwrap();
+    assert_eq!(updated[0].wal_sequence, replacement.wal_sequence);
+    assert!(!Arc::ptr_eq(&listed[0], &updated[0]));
+    assert_eq!(bucket_dump_io::bucket_dump_manifest_io_counts().file_reads - before.file_reads, 1);
+    let mut recomputed = false;
+    bucket_dump_io::manifest_digests_memoised(1, &updated[0], || {
+        recomputed = true;
+        Some(BTreeMap::new())
+    });
+    assert!(recomputed, "the old allocation's digest seed must not survive a file replacement");
+}
+
+#[test]
+fn published_owner_facts_require_the_verified_documents_checksum() {
+    let root = tempfile::tempdir().unwrap();
+    let engine = engine_at(root.path());
+    seed_catalog_wal_models(&engine);
+    let manifest = engine.create_bucket_dump_manifest(1, vec![]).unwrap();
+    let mut replacement = manifest.clone();
+    replacement.wal_sequence += 1000;
+    replacement.checksum = bucket_dump_io::bucket_dump_manifest_checksum_in_place(&mut replacement).unwrap();
+    assert_ne!(manifest.checksum, replacement.checksum);
+    engine.persist_bucket_dump_manifest(&replacement).unwrap();
+    let path = bucket_dump_manifest_path(&engine.index_dir, 1, &manifest.manifest_id);
+    let replacement_metadata = fs::metadata(path).unwrap();
+    // Deliberately pair the old facts with the new inode, isolating checksum binding
+    // from the file-identity guard. Neither facts value is valid for the new document.
+    bucket_dump_io::remember_published_capture(&engine.index_dir, &manifest,
+        Some(&replacement_metadata), BTreeMap::new(), Some(u64::MAX));
+    let listed = bucket_dump_io::list_bucket_dump_manifests_shared_at(&engine.index_dir, 1).unwrap();
+    assert_eq!(listed[0].checksum, replacement.checksum);
+    let mut recomputed = false;
+    assert_eq!(bucket_dump_io::manifest_wal_floor_memoised(&listed[0], || {
+        recomputed = true;
+        Ok(None)
+    }), Ok(None));
+    assert!(recomputed, "a matching stat must not attach facts from another document");
+    let mut digests_computed = false;
+    bucket_dump_io::manifest_digests_memoised(1, &listed[0], || {
+        digests_computed = true;
+        Some(BTreeMap::new())
+    });
+    assert!(digests_computed);
+}
+
+#[test]
+fn publication_identity_is_taken_from_the_open_file_before_rename() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("identity");
+    let original = atomic_write_bytes_synced_metadata(&path, b"first", true, true).unwrap().unwrap();
+    atomic_write_bytes(&path, b"other").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_ne!(original.ino(), fs::metadata(&path).unwrap().ino());
+    }
+    assert_eq!(original.len(), 5);
+    assert_eq!(fs::read(path).unwrap(), b"other");
+}
+
+#[test]
 fn catalog_checkpoint_keeps_locators_for_live_wal_backed_models() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_at(dir.path());

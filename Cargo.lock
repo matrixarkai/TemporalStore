@@ -839,10 +839,11 @@ checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 [[package]]
 name = "matrixcache"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/MatrixCache.git?rev=5db2696701f3900e8d88f19977c02e1de2369c6f#5db2696701f3900e8d88f19977c02e1de2369c6f"
+source = "git+https://github.com/matrixarkai/matrixcache.git?rev=bcf26e100f1fe414076a4771468fbaec704eafc3#bcf26e100f1fe414076a4771468fbaec704eafc3"
 dependencies = [
  "ahash",
  "core_affinity",
+ "crc32c",
  "rocksdb",
  "serde",
  "smallvec",
@@ -853,7 +854,7 @@ dependencies = [
 [[package]]
 name = "matrixobjectstore-rs"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/MatrixObject.git?rev=43b5756a80bd9f9f4740b062ecdd20c0164a7400#43b5756a80bd9f9f4740b062ecdd20c0164a7400"
+source = "git+https://github.com/matrixarkai/MatrixObject.git?rev=dff522b0e22b6d4afbd154cfeb774f4636701fdd#dff522b0e22b6d4afbd154cfeb774f4636701fdd"
 dependencies = [
  "fs2",
  "libc",

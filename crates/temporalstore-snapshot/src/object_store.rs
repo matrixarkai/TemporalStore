@@ -236,6 +236,13 @@ pub struct MatrixObjectHttpStore {
     /// Shared through the `Arc` every caller holds this store behind, so appends from one
     /// process cooperate instead of each paying its own HEAD.
     known_lengths: Arc<Mutex<std::collections::HashMap<String, u64>>>,
+    /// One lock per object key, held around an append and its settlement.
+    ///
+    /// Concurrent tasks of ONE process that append to the same object would otherwise read the
+    /// same end, race for it, and lose with a 412 over and over: the contention is of this
+    /// process's own making. Serialising them here removes that. It does NOT replace the
+    /// offset condition, which still arbitrates between processes.
+    append_locks: Arc<Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     /// How many HTTP requests this store has issued.
     ///
     /// The shared path's cost over a network is REQUESTS, not just bytes: the byte envelope
@@ -313,6 +320,7 @@ impl MatrixObjectHttpStore {
             uri: trimmed.trim_end_matches('/').to_string(),
             bucket: bucket.to_string(),
             known_lengths: Arc::default(),
+            append_locks: Arc::default(),
             requests: Arc::default(),
             wire_sent: Arc::default(),
             wire_received: Arc::default(),
@@ -334,6 +342,7 @@ impl MatrixObjectHttpStore {
             uri: format!("matrixobject://in-process/{bucket}"),
             bucket: bucket.to_string(),
             known_lengths: Arc::default(),
+            append_locks: Arc::default(),
             requests: Arc::default(),
             wire_sent: Arc::default(),
             wire_received: Arc::default(),
@@ -547,68 +556,39 @@ impl MatrixObjectHttpStore {
     /// Paged rather than assumed to fit: the door answers a bounded number of keys and says so
     /// with `IsTruncated`, and a caller reading only the first page would silently see a prefix
     /// of its own log.
-    /// Did `bytes` land at `start_offset` of `key`? A receipt if so, `None` if they are not
-    /// there, and `OutcomeUnknown` when the object could not be read to find out.
+    /// Did the append identified by `attempt` land at `start_offset` of `key`? A receipt if so,
+    /// `None` if it did not and cannot still, and `OutcomeUnknown` when that is not decided.
     ///
-    /// An append names the offset it expects and the server appends there or refuses, so bytes
-    /// found at that offset are this append's and bytes not found are not in the object. The
-    /// object may be longer than the append's end, because later appends follow it.
+    /// THE ATTEMPT IS THE IDENTITY, NEVER THE BYTES. Two writers that append identical bytes at
+    /// one offset leave one copy; a comparison of what is at the offset tells both that its own
+    /// copy landed, and one of them is wrong. That was found on a real cluster: every append of an
+    /// identical payload was acknowledged while the object held fewer records than were
+    /// acknowledged. So the object is never read back to decide, and a gateway that cannot
+    /// answer by attempt leaves the outcome undecided instead.
     fn settle_append(
         &self,
         key: &str,
+        attempt: &str,
         start_offset: u64,
         bytes: &Bytes,
     ) -> Result<Option<AppendBlobReceipt>, ObjectStoreError> {
         if bytes.is_empty() {
             return Ok(None);
         }
-        let unknown = |detail: String| ObjectStoreError::OutcomeUnknown {
-            key: key.to_string(),
-            detail,
-        };
         let length = bytes.len() as u64;
-        let last = start_offset
-            .checked_add(length)
-            .and_then(|end| end.checked_sub(1))
-            .ok_or_else(|| ObjectStoreError::InvalidKey(format!("{key}: range overflow")))?;
-        // ASK THE GATEWAY BEFORE READING. A read can say the bytes are in the object, but it cannot
-        // say that an attempt still in flight inside a slow server will never commit: reading
-        // "absent" and then writing again can store the bytes twice. A resolve answers landed, or
-        // absent with the late attempt fenced out, so an absent answer is safe to retry on.
-        match self.resolve_append(key, start_offset, bytes)? {
-            Some(Resolved::Landed) => return self.landed_receipt(key, start_offset, length),
-            Some(Resolved::Absent) => return Ok(None),
-            // A gateway that does not know the route: read the object back, as before.
-            None => {}
+        // A read can say the bytes are in the object, but it cannot say that an attempt still in
+        // flight inside a slow server will never commit. A resolve answers landed, or absent
+        // with the late attempt fenced out, so an absent answer is safe to retry on.
+        match self.resolve_append(key, attempt, start_offset, bytes)? {
+            Resolved::Landed => self.landed_receipt(key, start_offset, length),
+            Resolved::Absent => Ok(None),
+            Resolved::Ambiguous => Err(ObjectStoreError::OutcomeUnknown {
+                key: key.to_string(),
+                detail: "the gateway found equal bytes at the offset but cannot prove they are \
+                         this attempt's"
+                    .to_string(),
+            }),
         }
-        let response = self
-            .send(
-                "GET",
-                &self.object_target(key),
-                &[("range", format!("bytes={start_offset}-{last}"))],
-                &[],
-            )
-            .map_err(|error| unknown(format!("the append could not be read back: {error}")))?;
-        let present = match response.status {
-            206 => response.body.as_slice() == bytes.as_ref(),
-            200 => {
-                let start = start_offset as usize;
-                response
-                    .body
-                    .get(start..start + bytes.len())
-                    .is_some_and(|found| found == bytes.as_ref())
-            }
-            404 | 416 => false,
-            status => {
-                return Err(unknown(format!(
-                    "the append could not be read back: the store answered {status}"
-                )))
-            }
-        };
-        if !present {
-            return Ok(None);
-        }
-        self.landed_receipt(key, start_offset, length)
     }
 
     /// The receipt of an append that is known to be in the object: where it landed and how long
@@ -639,16 +619,19 @@ impl MatrixObjectHttpStore {
     }
 
     /// Ask the gateway whether an append whose reply was lost landed:
-    /// `POST /bucket/key?append-resolve&offset=O&length=N&sha256=<hex>`. `landed` means these bytes
-    /// are at that offset; `absent` means they are not and no attempt still in flight can put them
-    /// there, so a retry as a new append is safe. `None` means the gateway has no such route.
-    /// Anything else the gateway says is an undecided outcome, and never a reason to write again.
+    /// `POST /bucket/key?append-resolve&attempt=<id>&offset=O&length=N&sha256=<hex>`. `landed`
+    /// means this attempt's bytes are at that offset; `absent` means they are not and no attempt
+    /// still in flight can put them there, so a retry as a new append is safe; `ambiguous` means
+    /// equal bytes are there but they cannot be proved to be this attempt's. Anything else the
+    /// gateway says, including not knowing the route, is an undecided outcome, and never a reason
+    /// to write again.
     fn resolve_append(
         &self,
         key: &str,
+        attempt: &str,
         start_offset: u64,
         bytes: &Bytes,
-    ) -> Result<Option<Resolved>, ObjectStoreError> {
+    ) -> Result<Resolved, ObjectStoreError> {
         use sha2::{Digest, Sha256};
         let unknown = |detail: String| ObjectStoreError::OutcomeUnknown {
             key: key.to_string(),
@@ -656,7 +639,7 @@ impl MatrixObjectHttpStore {
         };
         let digest = hex::encode(Sha256::digest(bytes.as_ref()));
         let target = format!(
-            "{}?append-resolve&offset={start_offset}&length={}&sha256={digest}",
+            "{}?append-resolve&attempt={attempt}&offset={start_offset}&length={}&sha256={digest}",
             self.object_target(key),
             bytes.len()
         );
@@ -665,15 +648,29 @@ impl MatrixObjectHttpStore {
             .map_err(|error| unknown(format!("the append could not be resolved: {error}")))?;
         match (response.status, response.header("x-append-resolution")) {
             (200, Some(word)) => match word.trim() {
-                "landed" => Ok(Some(Resolved::Landed)),
-                "absent" => Ok(Some(Resolved::Absent)),
+                "landed" => Ok(Resolved::Landed),
+                "absent" => Ok(Resolved::Absent),
+                "ambiguous" => Ok(Resolved::Ambiguous),
                 other => Err(unknown(format!("the gateway resolved the append as {other:?}"))),
             },
             (503, _) => Err(unknown(
                 "the gateway could not decide whether the append landed".to_string(),
             )),
-            _ => Ok(None),
+            (status, _) => Err(unknown(format!(
+                "the gateway cannot resolve an append by attempt (it answered {status}), so the \
+                 outcome is undecided"
+            ))),
         }
+    }
+
+    /// The lock that serialises appends to `key` within this process.
+    fn append_lock(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.append_locks.lock().expect("matrixobject append locks poisoned");
+        // Bound the table: drop locks nobody holds or waits on once it has grown.
+        if locks.len() >= 1024 {
+            locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        }
+        locks.entry(key.to_string()).or_default().clone()
     }
 
     fn list_v2_blocking(
@@ -774,14 +771,22 @@ impl ObjectStore for MatrixObjectHttpStore {
         // a connection that failed after the request left, or a server error. Settled by reading
         // the object BEFORE anything is written again: an offset is a condition, so bytes that
         // are not at it are not in the object, and bytes that are there must not be stored twice.
-        let mut unsettled: Option<u64> = None;
+        // Settled by the attempt's identity, so the id travels with the offset.
+        let mut unsettled: Option<(u64, String)> = None;
+
+        // ONE APPEND PER OBJECT AT A TIME WITHIN THIS PROCESS: see `append_locks`.
+        let lock = self.append_lock(key);
+        let _serialised = lock.lock().await;
 
         for attempt in 0..APPEND_ATTEMPTS {
-            if let Some(start_offset) = unsettled.take() {
-                if let Some(receipt) = self.settle_append(key, start_offset, &bytes)? {
+            if let Some((start_offset, attempt_id)) = unsettled.take() {
+                if let Some(receipt) = self.settle_append(key, &attempt_id, start_offset, &bytes)? {
                     return Ok(receipt);
                 }
             }
+            // A FRESH IDENTITY PER ATTEMPT, reused only by the transport's own repeats of this
+            // one send. 16 random bytes as 32 hex characters.
+            let attempt_id = uuid::Uuid::new_v4().simple().to_string();
             // ONE ROUND TRIP INSTEAD OF TWO, when this client already knows the end. The first
             // attempt may use the cached length; a retry never does, because a retry exists
             // precisely because the end moved.
@@ -792,14 +797,17 @@ impl ObjectStore for MatrixObjectHttpStore {
             let response = match self.send(
                 "PUT",
                 &self.object_target(key),
-                &[("x-amz-write-offset-bytes", start_offset.to_string())],
+                &[
+                    ("x-amz-write-offset-bytes", start_offset.to_string()),
+                    ("x-amz-attempt-id", attempt_id.clone()),
+                ],
                 bytes.as_ref(),
             ) {
                 Ok(response) => response,
                 Err(error) => {
                     // The request may have been served before the connection failed.
                     self.forget_length(key);
-                    unsettled = Some(start_offset);
+                    unsettled = Some((start_offset, attempt_id));
                     last_conflict = Some(error);
                     continue;
                 }
@@ -840,13 +848,21 @@ impl ObjectStore for MatrixObjectHttpStore {
                 // very append landed on an earlier send. Settle before writing again.
                 412 => {
                     self.forget_length(key);
-                    unsettled = Some(start_offset);
+                    unsettled = Some((start_offset, attempt_id));
                     last_conflict = Some(response.failure(412, key));
+                }
+                // The gateway could not decide whether this append landed. Settled by the
+                // attempt like any other unknown outcome; an answer that is still ambiguous
+                // ends the append as unconfirmed rather than being guessed from the bytes.
+                409 => {
+                    self.forget_length(key);
+                    unsettled = Some((start_offset, attempt_id));
+                    last_conflict = Some(response.failure(409, key));
                 }
                 // A server error says nothing about whether the append was committed.
                 500..=599 => {
                     self.forget_length(key);
-                    unsettled = Some(start_offset);
+                    unsettled = Some((start_offset, attempt_id));
                     last_conflict = Some(response.failure(response.status, key));
                 }
                 status => return Err(response.failure(status, key)),
@@ -855,8 +871,8 @@ impl ObjectStore for MatrixObjectHttpStore {
 
         // The last attempt may have left something unsettled; a failure must not be reported as
         // "not written" when it was.
-        if let Some(start_offset) = unsettled.take() {
-            if let Some(receipt) = self.settle_append(key, start_offset, &bytes)? {
+        if let Some((start_offset, attempt_id)) = unsettled.take() {
+            if let Some(receipt) = self.settle_append(key, &attempt_id, start_offset, &bytes)? {
                 return Ok(receipt);
             }
         }
@@ -1019,6 +1035,8 @@ enum Resolved {
     Landed,
     /// They are not, and no attempt still in flight can put them there.
     Absent,
+    /// Equal bytes are there, but nothing proves they are this attempt's.
+    Ambiguous,
 }
 
 /// One HTTP response, kept whole so a caller can read a header and the body.
@@ -1968,8 +1986,12 @@ mod tests {
         existing: bool,
         puts: usize,
         fault_on_first_put: Fault,
-        /// Every GET with a range answers 500.
+        /// Every resolve answers 503 (the gateway cannot decide).
         reads_fail: bool,
+        /// The attempt ids of the appends this object committed.
+        committed_attempts: Vec<String>,
+        /// Every attempt id a PUT arrived with, committed or not.
+        put_attempts: Vec<String>,
     }
 
     /// What the scripted one-object door answers, as raw HTTP bytes, or `None` to drop the
@@ -1978,6 +2000,7 @@ mod tests {
     fn scripted_respond(
         shared: &Mutex<ScriptedState>,
         method: &str,
+        target: &str,
         header: &dyn Fn(&str) -> Option<String>,
         body: &[u8],
     ) -> Option<Vec<u8>> {
@@ -2001,10 +2024,22 @@ mod tests {
                 &vec![0u8; state.data.len()],
                 false,
             )),
-            "GET" => {
+            "POST" if target.contains("append-resolve") => {
+                let attempt = target
+                    .split(['?', '&'])
+                    .find_map(|part| part.strip_prefix("attempt="))
+                    .unwrap_or_default()
+                    .to_string();
                 if state.reads_fail {
-                    Some(reply("500 Internal Server Error", "", b"read failed", true))
-                } else if !state.existing {
+                    Some(reply("503 Service Unavailable", "", b"undecided", true))
+                } else if state.committed_attempts.contains(&attempt) {
+                    Some(reply("200 OK", "x-append-resolution: landed\r\n", b"landed\n", true))
+                } else {
+                    Some(reply("200 OK", "x-append-resolution: absent\r\n", b"absent\n", true))
+                }
+            }
+            "GET" => {
+                if !state.existing {
                     Some(reply("404 Not Found", "", b"", true))
                 } else if let Some(range) = header("range") {
                     let spec = range.trim_start_matches("bytes=");
@@ -2030,6 +2065,10 @@ mod tests {
             }
             "PUT" => {
                 state.puts += 1;
+                let attempt_id = header("x-amz-attempt-id").expect("an append carries its attempt id");
+                assert_eq!(attempt_id.len(), 32, "{attempt_id}");
+                assert!(attempt_id.chars().all(|c| c.is_ascii_hexdigit()), "{attempt_id}");
+                state.put_attempts.push(attempt_id.clone());
                 let fault = if state.puts == 1 { state.fault_on_first_put } else { Fault::None };
                 let offset: usize = header("x-amz-write-offset-bytes")
                     .and_then(|value| value.parse().ok())
@@ -2040,6 +2079,7 @@ mod tests {
                     Some(reply("503 Service Unavailable", "", b"try later", true))
                 } else {
                     state.data.extend_from_slice(body);
+                    state.committed_attempts.push(attempt_id);
                     state.existing = true;
                     match fault {
                         Fault::CommitThenDrop => None,
@@ -2077,6 +2117,8 @@ mod tests {
             puts: 0,
             fault_on_first_put,
             reads_fail,
+            committed_attempts: Vec::new(),
+            put_attempts: Vec::new(),
         }));
         let shared = state.clone();
         std::thread::spawn(move || {
@@ -2099,6 +2141,7 @@ mod tests {
                 let mut lines = head.lines();
                 let request_line = lines.next().unwrap_or_default().to_string();
                 let method = request_line.split(' ').next().unwrap_or_default().to_string();
+                let target = request_line.split(' ').nth(1).unwrap_or_default().to_string();
                 let header = |name: &str| -> Option<String> {
                     head.lines().find_map(|line| {
                         let (key, value) = line.split_once(':')?;
@@ -2116,7 +2159,7 @@ mod tests {
                     raw.extend_from_slice(&chunk[..n]);
                 }
                 let body = raw[head_end..].to_vec();
-                let answer = scripted_respond(&shared, &method, &header, &body);
+                let answer = scripted_respond(&shared, &method, &target, &header, &body);
                 if let Some(answer) = answer {
                     let _ = stream.write_all(&answer);
                 }
@@ -2243,7 +2286,8 @@ mod tests {
             "HEAD" => canned_reply(200, &[("x-amz-object-size", "10")], b""),
             "PUT" => canned_reply(503, &[], b"the publication is unconfirmed"),
             "POST" => {
-                assert!(target.starts_with("/temporalstore/wal?append-resolve&offset=0&length=10&sha256="), "{target}");
+                assert!(target.starts_with("/temporalstore/wal?append-resolve&attempt="), "{target}");
+                assert!(target.contains("&offset=0&length=10&sha256="), "{target}");
                 canned_reply(200, &[("x-append-resolution", "landed")], b"landed\n")
             }
             other => panic!("unexpected {other} {target}"),
@@ -2300,22 +2344,173 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_gateway_without_the_resolve_route_is_read_back_as_before() {
-        let (store, door) = canned_store(Box::new(|method, target, before| match method {
-            "HEAD" if before == 0 => canned_reply(404, &[], b""),
-            "HEAD" => canned_reply(200, &[("x-amz-object-size", "10")], b""),
+    async fn a_gateway_without_the_resolve_route_leaves_the_outcome_undecided_and_is_not_read_back() {
+        // Equal bytes at the offset prove nothing about WHOSE they are, so the object is not
+        // read back to decide; the append ends as unconfirmed.
+        let (store, door) = canned_store(Box::new(|method, target, _| match method {
+            "HEAD" => canned_reply(404, &[], b""),
             "PUT" => canned_reply(503, &[], b"the publication is unconfirmed"),
             "POST" => canned_reply(405, &[], b""),
             "GET" => canned_reply(206, &[], b"record-one"),
             other => panic!("unexpected {other} {target}"),
         }));
-        let receipt = store
+        let error = store
             .append_blob("wal", Bytes::from_static(b"record-one"))
             .await
-            .expect("settled by reading the object");
-        assert_eq!((receipt.start_offset, receipt.end_offset), (0, 10));
+            .expect_err("without a resolve by attempt the outcome is undecided");
+        assert!(matches!(error, ObjectStoreError::OutcomeUnknown { .. }), "got {error:?}");
         assert_eq!(count(&door, "PUT"), 1);
-        assert_eq!(count(&door, "GET"), 1, "the read-back is the fallback");
+        assert_eq!(count(&door, "GET"), 0, "equality of bytes is never evidence");
+    }
+
+    #[tokio::test]
+    async fn an_ambiguous_resolve_is_unconfirmed_never_landed() {
+        // Another writer appended the same bytes at the same offset: the object holds equal bytes
+        // there, and the gateway says it cannot prove they are this attempt's.
+        let (store, door) = canned_store(Box::new(|method, target, _| match method {
+            "HEAD" => canned_reply(404, &[], b""),
+            "PUT" => canned_reply(503, &[], b"the publication is unconfirmed"),
+            "POST" => canned_reply(200, &[("x-append-resolution", "ambiguous")], b"ambiguous\n"),
+            other => panic!("unexpected {other} {target}"),
+        }));
+        let error = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect_err("ambiguous is not a receipt");
+        assert!(matches!(error, ObjectStoreError::OutcomeUnknown { .. }), "got {error:?}");
+        assert_eq!(count(&door, "PUT"), 1, "an unconfirmed append is not sent again");
+    }
+
+    #[tokio::test]
+    async fn an_append_the_gateway_calls_ambiguous_with_a_409_is_settled_by_attempt() {
+        let (store, door) = canned_store(Box::new(|method, target, _| match method {
+            "HEAD" => canned_reply(404, &[], b""),
+            "PUT" => canned_reply(409, &[("x-amz-append-state", "ambiguous")], b"AppendAmbiguous"),
+            "POST" => canned_reply(200, &[("x-append-resolution", "ambiguous")], b"ambiguous\n"),
+            other => panic!("unexpected {other} {target}"),
+        }));
+        let error = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect_err("a 409 AppendAmbiguous that stays ambiguous is unconfirmed");
+        assert!(matches!(error, ObjectStoreError::OutcomeUnknown { .. }), "got {error:?}");
+        assert_eq!(count(&door, "POST"), 1);
+        assert_eq!(count(&door, "PUT"), 1);
+    }
+
+    #[tokio::test]
+    async fn every_attempt_has_its_own_id_and_a_resolve_names_the_one_that_was_lost() {
+        let ids: Arc<Mutex<Vec<String>>> = Arc::default();
+        let seen = ids.clone();
+        let (store, _door) = {
+            struct Recording(Arc<CannedDoor>, Arc<Mutex<Vec<String>>>);
+            impl std::fmt::Debug for Recording {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("Recording")
+                }
+            }
+            impl InProcessDoor for Recording {
+                fn serve(
+                    &self,
+                    method: &str,
+                    target: &str,
+                    headers: &[(&str, String)],
+                    body: &[u8],
+                ) -> Result<DoorReply, String> {
+                    if let Some((_, id)) = headers.iter().find(|(k, _)| *k == "x-amz-attempt-id") {
+                        self.1.lock().unwrap().push(id.clone());
+                    }
+                    if method == "POST" {
+                        let id = target.split(['?', '&']).find_map(|p| p.strip_prefix("attempt=")).unwrap();
+                        self.1.lock().unwrap().push(format!("resolve:{id}"));
+                    }
+                    self.0.serve(method, target, headers, body)
+                }
+            }
+            let inner = Arc::new(CannedDoor {
+                log: Mutex::new(Vec::new()),
+                answer: Box::new(|method, target, before| match method {
+                    "HEAD" => canned_reply(404, &[], b""),
+                    "PUT" if before == 0 => canned_reply(503, &[], b"the publication is unconfirmed"),
+                    "PUT" => canned_reply(200, &[("x-amz-object-size", "10")], b""),
+                    "POST" => canned_reply(200, &[("x-append-resolution", "absent")], b"absent\n"),
+                    other => panic!("unexpected {other} {target}"),
+                }),
+            });
+            let door = Arc::new(Recording(inner.clone(), seen));
+            (NetworkedMatrixObjectStore::direct(door, "temporalstore"), inner)
+        };
+        store.append_blob("wal", Bytes::from_static(b"record-one")).await.unwrap();
+        let ids = ids.lock().unwrap().clone();
+        // PUT(first), resolve(first), PUT(second).
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        assert_eq!(ids[0].len(), 32);
+        assert_eq!(ids[1], format!("resolve:{}", ids[0]), "the resolve names the attempt that was lost");
+        assert_ne!(ids[2], ids[0], "a retry after absent is a NEW attempt");
+        assert_eq!(ids[2].len(), 32);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_appends_of_one_object_in_one_process_are_serialised() {
+        // Two tasks appending to the same key never overlap inside the store: the door sees one
+        // PUT finish before the next starts, so they never race for the same end.
+        let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let overlapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        struct Probe(Arc<std::sync::atomic::AtomicUsize>, Arc<std::sync::atomic::AtomicBool>, Mutex<u64>);
+        impl std::fmt::Debug for Probe {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("Probe")
+            }
+        }
+        impl InProcessDoor for Probe {
+            fn serve(
+                &self,
+                method: &str,
+                _target: &str,
+                _headers: &[(&str, String)],
+                body: &[u8],
+            ) -> Result<DoorReply, String> {
+                use std::sync::atomic::Ordering::SeqCst;
+                match method {
+                    "HEAD" => {
+                        let length = *self.2.lock().unwrap();
+                        if length == 0 {
+                            canned_reply(404, &[], b"")
+                        } else {
+                            canned_reply(200, &[("x-amz-object-size", length.to_string().as_str())], b"")
+                        }
+                    }
+                    "PUT" => {
+                        if self.0.fetch_add(1, SeqCst) != 0 {
+                            self.1.store(true, SeqCst);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        let mut length = self.2.lock().unwrap();
+                        *length += body.len() as u64;
+                        let reply = canned_reply(200, &[("x-amz-object-size", length.to_string().as_str())], b"");
+                        self.0.fetch_sub(1, SeqCst);
+                        reply
+                    }
+                    other => panic!("unexpected {other}"),
+                }
+            }
+        }
+        let probe = Arc::new(Probe(in_flight, overlapped.clone(), Mutex::new(0)));
+        let store = Arc::new(NetworkedMatrixObjectStore::direct(probe, "temporalstore"));
+        let mut tasks = Vec::new();
+        for _ in 0..6 {
+            let store = store.clone();
+            tasks.push(tokio::spawn(async move {
+                store.append_blob("wal", Bytes::from_static(b"record-one")).await
+            }));
+        }
+        let mut ends = Vec::new();
+        for task in tasks {
+            ends.push(task.await.unwrap().expect("serialised appends all land").end_offset);
+        }
+        ends.sort_unstable();
+        assert_eq!(ends, vec![10, 20, 30, 40, 50, 60], "each landed at the end the last one left");
+        assert!(!overlapped.load(std::sync::atomic::Ordering::SeqCst), "two appends were in flight at once");
     }
 
     #[tokio::test]
@@ -2403,7 +2598,7 @@ mod tests {
         fn serve(
             &self,
             method: &str,
-            _target: &str,
+            target: &str,
             headers: &[(&str, String)],
             body: &[u8],
         ) -> Result<DoorReply, String> {
@@ -2413,7 +2608,7 @@ mod tests {
                     .find(|(key, _)| key.eq_ignore_ascii_case(name))
                     .map(|(_, value)| value.clone())
             };
-            let raw = scripted_respond(&self.0, method, &header, body)
+            let raw = scripted_respond(&self.0, method, target, &header, body)
                 .ok_or_else(|| "the door dropped the request".to_string())?;
             let head_end = raw.windows(4).position(|w| w == b"\r\n\r\n").expect("a reply head") + 4;
             let head = String::from_utf8_lossy(&raw[..head_end]).to_string();
@@ -2445,6 +2640,8 @@ mod tests {
             puts: 0,
             fault_on_first_put,
             reads_fail,
+            committed_attempts: Vec::new(),
+            put_attempts: Vec::new(),
         }));
         let store = NetworkedMatrixObjectStore::direct(Arc::new(ScriptedDoor(state.clone())), "temporalstore");
         (store, state)

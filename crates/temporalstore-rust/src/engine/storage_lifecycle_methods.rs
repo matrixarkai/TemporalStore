@@ -1058,6 +1058,7 @@ impl TemporalEngine {
             }
         }
         if !cleared_buckets.is_empty() {
+            storage_bucket_internals::clear_retained_inline_page_dirty_state(shard, &cleared_buckets);
             // STRAIGHT TO THE CLEARED BUCKETS' KEYS.
             //
             // The retain this replaces walked the WHOLE dirty set and re-hashed every key to
@@ -1436,6 +1437,11 @@ impl TemporalEngine {
         }
     }
 
+    pub(crate) fn storage_dump_wal_sequence(&self, shard_id: ShardId) -> Option<u64> {
+        latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id)
+            .map(|manifest| manifest.wal_sequence)
+    }
+
     pub fn storage_wal_reclaim_plan(
         &self,
         shard_id: ShardId,
@@ -1595,11 +1601,18 @@ impl TemporalEngine {
                                     // recoverable. Declining to match costs a dump that is kept
                                     // longer than it had to be.
                                     .map(|manifest_state| {
+                                        // The retention check consumes this same immutable image.
+                                        // Share its floor before dropping the validated decode.
+                                        let _ = bucket_dump_io::manifest_wal_floor_memoised(
+                                            manifest, || Ok(wal_floor_of_index_image(&manifest_state)),
+                                        );
                                         // The shard this plan is FOR. A decoded manifest state
                                         // carries no stamp of its own -- only `install_shard_state`
                                         // sets one -- so asking IT for a shard yields None and
                                         // fingerprints nothing.
-                                        bucket_generation_digests_by_bucket(shard_id, &manifest_state)
+                                        crate::engine::storage_reporting::bucket_generation_digests_for_coverage(
+                                            shard_id, &manifest_state, &manifest.bucket_ids,
+                                        )
                                     })
                             },
                         ),
@@ -2478,12 +2491,14 @@ impl TemporalEngine {
             };
         }
         let resident_before = self.bucket_index_resident_bytes(shard_id);
-        if resident_before < index_resident_limit_bytes {
+        if resident_before <= index_resident_limit_bytes {
             return StorageEvictionReport {
                 shard_id,
                 mode: "index_resident_bound".to_string(),
                 pressure_before: resident_before,
                 pressure_after: resident_before,
+                bucket_index_bytes_before: resident_before,
+                bucket_index_bytes_after: resident_before,
                 memory_pressure_threshold: index_resident_limit_bytes,
                 batch_limit,
                 skipped_reason: "index_resident_below_bound".to_string(),
@@ -2556,7 +2571,7 @@ impl TemporalEngine {
         // opens, where they are actually used.
         let bucket_index_bytes_before = self.bucket_index_resident_bytes(shard_id);
         let pressure_before = bucket_index_bytes_before;
-        if pressure_before < memory_pressure_threshold {
+        if memory_pressure_threshold != 0 && pressure_before <= memory_pressure_threshold {
             return StorageEvictionReport {
                 shard_id,
                 mode: if delete_drop {
@@ -2567,6 +2582,8 @@ impl TemporalEngine {
                 .to_string(),
                 pressure_before,
                 pressure_after: pressure_before,
+                bucket_index_bytes_before,
+                bucket_index_bytes_after: bucket_index_bytes_before,
                 memory_pressure_threshold,
                 batch_limit,
                 dump_before_evict,
@@ -2574,19 +2591,34 @@ impl TemporalEngine {
                 ..StorageEvictionReport::default()
             };
         }
-        // The gate has opened, so the per-bucket cache summaries are now worth their listing.
-        let before_cache = self.storage_cache_inspection_report(shard_id);
-        let cache_by_bucket = before_cache
-            .bucket_summaries
-            .iter()
-            .map(|summary| (summary.routing_bucket, summary.clone()))
-            .collect::<BTreeMap<_, _>>();
         let victims = if self
             .evict_sampled_lru
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            self.sampled_eviction_victims(shard_id, batch_limit, &cache_by_bucket)
+            // Index eviction leaves the independently budgeted page cache resident. Only
+            // explicit deletion needs cache-removal estimates after residency/recency sampling.
+            let mut victims = self.sampled_eviction_victims(shard_id, batch_limit, &BTreeMap::new());
+            let cache_by_bucket = if delete_drop {
+                let buckets = victims.iter().map(|victim| victim.routing_bucket).collect();
+                self.storage_cache_summaries_for_buckets(shard_id, &buckets)
+            } else {
+                BTreeMap::new()
+            };
+            for victim in &mut victims {
+                if let Some(cache) = cache_by_bucket.get(&victim.routing_bucket) {
+                    victim.cache_memory_bytes = cache.memory_bytes;
+                    victim.cache_disk_bytes = cache.disk_bytes;
+                }
+                victim.weight = victim.cache_memory_bytes.saturating_mul(4)
+                    .saturating_add(victim.cache_disk_bytes.saturating_mul(2))
+                    .saturating_add(victim.physical_bytes)
+                    .saturating_add(victim.dirty_object_count.saturating_mul(1024));
+            }
+            victims
         } else {
+            let cache_by_bucket = self.storage_cache_inspection_report(shard_id)
+                .bucket_summaries.into_iter()
+                .map(|summary| (summary.routing_bucket, summary)).collect::<BTreeMap<_, _>>();
             // BUILT IN THE ARM THAT READS IT. This clone used to be taken before the branch, and
             // the sampled arm never touched it: a whole-store copy on the way into the one
             // selection path written to avoid whole-store work. `EVICTION_RECENCY_ENTRIES_CLONED`
@@ -2690,11 +2722,22 @@ impl TemporalEngine {
             }
             victims
         };
+        let mut release = crate::engine::storage_bucket_internals::BucketReleaseOutcome::default();
+        if !delete_drop && !victims.is_empty() {
+            let candidates = victims.iter().map(|victim| victim.routing_bucket).collect::<Vec<_>>();
+            let mut shards = self.shards.write().expect("shards lock poisoned");
+            if let Some(shard) = shards.get_mut(&shard_id) {
+                let retained = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(shard, &candidates);
+                release.released_buckets = retained.released_buckets;
+                release.released_blocks = retained.released_blocks;
+            }
+        }
+        let retained_inline = release.released_buckets.iter().copied().collect::<BTreeSet<_>>();
         let mut dump_manifest_ids = Vec::new();
         if dump_before_evict {
             let dirty_buckets = victims
                 .iter()
-                .filter(|victim| victim.dirty_object_count > 0)
+                .filter(|victim| victim.dirty_object_count > 0 && !retained_inline.contains(&victim.routing_bucket))
                 .map(|victim| victim.routing_bucket)
                 .collect::<Vec<_>>();
             if !dirty_buckets.is_empty() {
@@ -2703,40 +2746,41 @@ impl TemporalEngine {
                     // Dumped means dumped. `apply_storage_lifecycle` has always paired the
                     // manifest with this clear; the eviction path created the manifest and left
                     // every bucket marked dirty, so "dump before evict" dumped and then evicted
-                    // nothing it had dumped. It also makes the release below possible at all --
-                    // a dirty bucket is refused, because the model maps carry no per-block dirty
-                    // bit for a reload to restore.
+                    // nothing it had dumped. This fallback still needs the clear for owners
+                    // whose per-page dirty state cannot be retained inline.
                     self.clear_dumped_bucket_dirty_state(shard_id, &manifest);
                 }
             }
         }
         let mut cache_entries_removed = 0usize;
         let mut cache_disk_bytes_removed = 0u64;
-        for victim in &victims {
-            if let Ok(report) = self.cache.invalidate_slot(shard_id, victim.routing_bucket) {
-                cache_entries_removed =
-                    cache_entries_removed.saturating_add(report.memory_entries_removed);
-                cache_disk_bytes_removed =
-                    cache_disk_bytes_removed.saturating_add(report.disk_bytes_removed);
+        if delete_drop {
+            let victim_buckets = victims.iter().map(|victim| victim.routing_bucket).collect::<Vec<_>>();
+            if let Ok(report) = self.cache.invalidate_slots(shard_id, &victim_buckets) {
+                cache_entries_removed = report.memory_entries_removed;
+                cache_disk_bytes_removed = report.disk_bytes_removed;
             }
         }
-        // THE ACTUATOR. `invalidate_slot` above drops cached blocks and leaves every `BucketNode`
-        // whole, so the only mode that ever shrank the index was `delete_drop` -- which does it by
-        // DESTROYING data. Releasing a victim's block list shrinks the index without losing
-        // anything: the node stays routable and the next read loads its blocks back from the model
-        // maps. Not attempted under `delete_drop`, where the victim's data is about to go.
-        let mut release = crate::engine::storage_bucket_internals::BucketReleaseOutcome::default();
+        // Release derived index state, not cached page values. The cache owns its own capacity
+        // policy; retaining a page does not prevent the bucket from becoming cold. Destructive
+        // deletion instead invalidates cached pages above and removes the records below.
         if !delete_drop && !victims.is_empty() {
             let candidates = victims
                 .iter()
                 .map(|victim| victim.routing_bucket)
+                .filter(|bucket| !retained_inline.contains(bucket))
                 .collect::<Vec<_>>();
             let mut shards = self.shards.write().expect("shards lock poisoned");
             if let Some(shard) = shards.get_mut(&shard_id) {
-                release = crate::engine::storage_bucket_internals::release_bucket_blocks(
+                let remaining = crate::engine::storage_bucket_internals::release_bucket_blocks(
                     shard,
                     &candidates,
                 );
+                release.released_buckets.extend(remaining.released_buckets);
+                release.released_buckets.sort_unstable();
+                release.released_blocks += remaining.released_blocks;
+                release.refused_buckets = remaining.refused_buckets;
+                release.refusals = remaining.refusals;
             }
         }
         let mut dropped_object_count = 0usize;
@@ -5406,10 +5450,17 @@ pub(super) fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
             crate::wal_record::is_wal_resident(block.address.block_slab_id())
         });
     storage_bucket_internals::note_bucket_block_visits(visited);
-    let needs_wal = indexed_wal
-        || storage_bucket_internals::collect_model_live_block_entries(snapshot)
-            .iter()
-            .any(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()));
+    let needs_wal = indexed_wal || {
+        let mut model_wal = false;
+        storage_bucket_internals::visit_model_live_blocks(
+            snapshot, storage_bucket_internals::ModelWalkTally::WholeShardEntries,
+            |_, _| true,
+            |_, _, _, address| {
+                model_wal |= crate::wal_record::is_wal_resident(address.block_slab_id());
+            },
+        );
+        model_wal
+    };
     // Placement metadata can outlive its frames. A legacy frame without a placement, however,
     // cannot prove a narrower retention floor.
     if needs_wal { Some(floor.unwrap_or(0)) } else { None }

@@ -42,8 +42,7 @@ refuses direct mode by name instead of falling back to a gateway.
 
 - It does not register with the cluster node roster, answer health probes, or listen for
   other clients. There is no S3 listener.
-- It runs the gateway's default publication path (no compact append, no next-append
-  reservation).
+- It uses plain publication unless compact append is explicitly enabled.
 - `compare_and_swap` is unsupported, as on the gateway.
 - It is one in-process gateway per node; it is not tuned for many concurrent writers.
 
@@ -53,17 +52,88 @@ An append is never sent twice on an ambiguous result.
 
 - **Definitive refusal** (a 412 that names a lost race, a 4xx): returned as the error; the
   caller decides.
-- **Ambiguous** (timeout, connection reset, 503, an in-process door that failed to answer):
-  the store reads back `[offset, offset+len)` and compares. Landed: the receipt is returned as
-  if the first attempt had been acknowledged. Absent: the append is retried as a new append.
-  Unreadable: `ObjectStoreError::OutcomeUnknown` is returned and nothing is repeated.
+- **Ambiguous** (timeout, connection reset, 503, a 409 `AppendAmbiguous`, an in-process door that
+  failed to answer): every attempt carries its own `x-amz-attempt-id`, and the store asks the
+  gateway about THAT attempt (`?append-resolve&attempt=`). Landed: the receipt is returned as if
+  the first attempt had been acknowledged. Absent (the attempt is fenced out, so a late copy is
+  refused): the append is retried as a new attempt with a new id. Ambiguous, or a gateway that
+  cannot answer by attempt: `ObjectStoreError::OutcomeUnknown` is returned and nothing is
+  repeated. The object is never read back to decide, because equal bytes at the offset do not
+  prove they are this writer's.
+- **Appends to one object from one process are serialised** by a lock per object key held
+  around the append and its settlement, so tasks of one process do not race for the same end.
+  The offset condition still arbitrates between processes.
 - **Leader changes** are the metadata client's: it rotates to another endpoint when one
   refuses, and a write is never sent again after it was submitted.
 
-Residual, the same in both modes: a request still in flight inside a slow server can commit
-after a read-back said "absent". Closing it needs the append fence (a no-op generation bump
-published before a retry); the contract is the gateway-side "append fence" design. Until then, keep a
-sequence number in the WAL payload so a duplicate is detectable.
+## Checking both modes on a real cluster
+
+`direct_wal_index_e2e` writes a shard's WAL through the shared store's own appender, rotates
+segments, replays from the cluster alone on a fresh connection, trims, and appends concurrently,
+through a gateway and through the in-process door, then compares what each left behind.
+
+```text
+GATEWAY=matrixobject://127.0.0.1:24410 META=127.0.0.1:24404,127.0.0.1:24405,127.0.0.1:24406 \
+  TS_MATRIXOBJECT_META_GROUP=1 SEGMENTS=6 WRITERS=4 \
+  cargo run --release -p temporalstore-rust --features matrixobject --example direct_wal_index_e2e
+```
+
+`MODES=gateway` or `MODES=direct` runs one mode, `WRITERS` sets the concurrent writers, and
+`IDENTICAL=1` makes every writer append the same bytes, which is the case a byte comparison
+cannot settle. The concurrent leg prints an `ANALYSIS` line: appends, acknowledged, errors,
+records and bytes in the object, overlapping receipts, receipts that do not match the object.
+It passes only with no errors, adjacent receipts that do not overlap, and the object holding
+exactly what was acknowledged.
+
+Measured on a three-node cluster whose gateway has attempt identity (2 and 4 writers, both
+modes, distinct and identical payloads): all eight runs had no errors and every acknowledged
+record in the object once, with no overlapping receipts. Against a gateway without attempt
+identity, identical payloads were all acknowledged while the object held fewer records than
+were acknowledged (50 acknowledged and 37 in the object at 2 writers), which is why an append
+is settled by its attempt.
+
+The run also prints one `FINDING` line: the shard lease cannot be acquired over the networked
+store, because the store does not offer a conditional replace. Appends and replay do not need
+it.
+
+## Bounded append publication
+
+For a cluster whose metadata voters and journal readers support compact append
+outcome versions 11 and 13, set `TS_MATRIXOBJECT_COMPACT_APPEND=1` on direct clients.
+This also enables reservation for the next append. Set
+`TS_MATRIXOBJECT_RESERVE_NEXT=0` to keep compact publication without that reservation.
+Both settings accept `0`, `1`, `false`, or `true`. Reserving without compact
+publication is refused before connecting.
+
+Compact publication keeps the durable metadata decision proportional to the newly
+written extents. A busy object's next allocation can share that decision. Enabling
+it activates the cluster publication fence: all writers must use compatible staged
+publication before this is enabled. Leave it off during a mixed-writer rollout.
+
+TemporalStore still appends its binary protobuf WAL frame and its offset index
+separately. These controls reduce metadata traffic; they do not remove either
+required append or change uncertain-outcome recovery. Segment limits still bound
+the manifest held by the client. Use the same segment position when comparing
+single-append latency across corpus sizes, and report segment rotations separately.
+
+Measure one durable WAL publication as the retained history grows:
+
+```sh
+TARGET=127.0.0.1:22111,127.0.0.1:22112,127.0.0.1:22113 \
+COMPACT=true MILESTONES=256,1024,8192 VALUE=4096 \
+cargo run --release -p temporalstore-rust --features matrixobject \
+  --example matrixobject_single_append_growth
+```
+
+Run plain and compact modes against separate disposable clusters: a cluster's
+publication fence persists. The report uses engine-produced binary outcomes,
+appends each record individually, verifies indexed reads through a fresh reader,
+and reports rotation costs separately from matched segment positions. It also reports
+all non-rotation appends in each growth phase, including their maximum latency, so
+checkpoint tails outside the final sample window remain visible. Each sampled
+record must issue exactly two object-store appends. The fixture has one writer; engine execution and ownership-lease checks are
+outside the measured interval. A ratio printed by a busy-host run does not establish flat
+latency; repeat on an idle host with a fixed memory limit and replica policy.
 
 ## Cluster only
 

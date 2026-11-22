@@ -383,6 +383,7 @@ fn cache_replacement_policy_soak() {
         )
     };
 
+    let cached_pages = engine.cache().entries_for_shard(1);
     let evict_report = engine.apply_storage_eviction(1, 1, 4, true, false);
     assert_eq!(evict_report.mode, "evict_cache");
     assert!(evict_report.pressure_gate_open, "{evict_report:?}");
@@ -392,13 +393,13 @@ fn cache_replacement_policy_soak() {
         "{evict_report:?}"
     );
     assert!(
-        !evict_report.dump_manifest_ids.is_empty(),
-        "dump-before-evict should durably dump dirty victim slots: {evict_report:?}"
+        evict_report.dump_manifest_ids.is_empty(),
+        "inline string eviction must not publish an unnecessary dump: {evict_report:?}"
     );
-    assert!(
-        evict_report.cache_entries_removed > 0 || evict_report.cache_disk_bytes_removed > 0,
-        "eviction should remove at least one cache entry or disk-cache block: {evict_report:?}"
-    );
+    assert!(evict_report.bucket_index_buckets_released > 0, "{evict_report:?}");
+    assert_eq!(evict_report.cache_entries_removed, 0);
+    assert_eq!(evict_report.cache_disk_bytes_removed, 0);
+    assert_eq!(engine.cache().entries_for_shard(1), cached_pages);
 
     let _ = engine.cache().invalidate(&target_block_key);
     engine.cache().clear_memory_for_test();

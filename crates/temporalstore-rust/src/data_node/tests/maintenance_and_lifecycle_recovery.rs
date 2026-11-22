@@ -56,46 +56,13 @@ fn every_maintenance_phase_is_enabled_under_the_shipped_default() {
         .filter(|stage| stage.ends_with("_disabled"))
         .cloned()
         .collect::<Vec<_>>();
-    // NINE OF NINE STAGES NOW SHIP ON, and this list is EMPTY. It used to be
-    // `vec!["evict_disabled"]`, and its comment read "so does `evict` being quietly switched on" --
-    // which is the tooth that fired when the ninth stage was defaulted on, exactly as intended.
-    // The assertion is restated rather than relaxed, and it keeps both teeth: any stage going off
-    // still fails here, and so would a tenth stage arriving switched off.
-    assert!(
-        disabled.is_empty(),
-        "phases switched off under the options the server ships with: {disabled:?}. All nine \
-         stages ship enabled -- `evict` was the last, defaulted on together with the \
-         `index_resident_limit_bytes` bound that keeps its gate shut on a shard under the bound \
-         (executed: {:?}, skipped: {:?})",
-        report.executed_stages,
-        report.skipped_stages
-    );
-    // AND THE NINTH STAGE RAN BOUNDED, not merely "ran". A stage that is enabled and unbounded is
-    // the thing the bound exists to prevent, and `executed_stages` alone cannot tell the two
-    // apart -- it says "evict" either way. So read the report: the gate that opened must be the
-    // bound, it must have declined on this 64-record shard, and it must have released nothing.
-    let eviction = report
-        .eviction
-        .as_ref()
-        .expect("the ninth stage ships on, so a shipped round must report it");
-    assert_eq!(
-        eviction.mode, "index_resident_bound",
-        "the shipped round opened the WIDE eviction gate rather than the bound: mode={} \
-         threshold={}. At the shipped threshold of 0 the wide gate cannot close, so this is an \
-         always-open release on every loaded shard",
-        eviction.mode, eviction.memory_pressure_threshold
-    );
-    assert_eq!(
-        eviction.skipped_reason, "index_resident_below_bound",
-        "a 64-record shard was not under the shipped bound: reason={:?} pressure_before={} \
-         threshold={}",
-        eviction.skipped_reason, eviction.pressure_before, eviction.memory_pressure_threshold
-    );
-    assert_eq!(
-        eviction.bucket_index_buckets_released, 0,
-        "the shipped round released {} buckets from a 64-record shard",
-        eviction.bucket_index_buckets_released
-    );
+    assert!(disabled.is_empty(),
+        "phases disabled under shipped options: {disabled:?}");
+    let eviction = report.eviction.as_ref().expect("enabled eviction reports its decision");
+    assert_eq!(eviction.skipped_reason, "no_memory_limit");
+    assert!(!eviction.pressure_gate_open);
+    assert!(eviction.selected_victims.is_empty());
+    assert_eq!(eviction.bucket_index_buckets_released, 0);
 
     // Every phase must have reported SOMETHING -- ran, or declined for a reason that is not
     // "disabled". A phase in neither list has gone missing from the cycle.
@@ -3191,11 +3158,14 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     // This scenario configures a follower pinned at sequence 1 and a raft snapshot at sequence 1.
     // What a retention cursor imposes is a BOUND on how far reclaim may go, not a refusal; the
     // note below the binding says why, and what is asserted instead.
-    let reclaim_wal = running
+    let reclaim_page = running
         .last_phase_reports
         .iter()
-        .find(|stage| stage.stage == "reclaim_wal")
-        .expect("the cycle ran a reclaim_wal stage");
+        .find(|stage| stage.stage == "reclaim_page")
+        .expect("the cycle ran physical log collection in reclaim_page");
+    let index_gc = running.last_phase_reports.iter()
+        .find(|stage| stage.stage == "index_gc")
+        .expect("the cycle reported index collection separately");
     // The refusal this asserted was deliberately replaced by a CLAMP. A cursor at sequence 1
     // means everything at or below 1 is behind every reader, so reclaim may take exactly that
     // span and no more; refusing outright let one lagging follower pin the whole log for as long
@@ -3208,32 +3178,39 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     // must retain from exactly 2. The exact value is the point: >= would also pass if the clamp
     // were dropped and reclaim ran all the way to the durable frontier, which is the regression
     // being guarded here.
-    assert!(!reclaim_wal.skipped, "{reclaim_wal:?}");
+    assert!(reclaim_page.enabled, "{reclaim_page:?}");
+    if reclaim_page.skipped {
+        assert!(reclaim_page.skipped_reason.contains("retained dependencies remain"),
+            "{reclaim_page:?}");
+    }
     assert_eq!(
-        reclaim_wal.retain_from_wal_sequence, 2,
-        "reclaim must not advance past the slowest cursor: {reclaim_wal:?}"
+        reclaim_page.retain_from_wal_sequence, 2,
+        "reclaim must not advance past the slowest cursor: {reclaim_page:?}"
     );
     assert_eq!(
-        reclaim_wal.retain_from_index_log_sequence, 2,
-        "reclaim must not advance past the slowest cursor: {reclaim_wal:?}"
+        index_gc.retain_from_index_log_sequence, 2,
+        "index reclaim must not advance past the slowest cursor: {index_gc:?}"
     );
+    assert_eq!(reclaim_page.retain_from_index_log_sequence, 0,
+        "page collection must not claim index-log truncation");
     // Clamping instead of refusing did not stop the cursors being counted, nor the pressure
     // signal naming what is holding the logs.
-    assert_eq!(reclaim_wal.retention_blockers, 2, "{reclaim_wal:?}");
+    assert_eq!(reclaim_page.retention_blockers, 2, "{reclaim_page:?}");
+    assert_eq!(index_gc.retention_blockers, 2, "{index_gc:?}");
     assert!(
-        reclaim_wal
+        reclaim_page
             .pressure_signal
-            .contains("follower_snapshot_retention"),
-        "{reclaim_wal:?}"
+            .contains("dependency_retention"),
+        "{reclaim_page:?}"
     );
     assert_eq!(
-        running.last_wal_floor_sequence, reclaim_wal.wal_floor_sequence,
+        running.last_wal_floor_sequence, reclaim_page.wal_floor_sequence,
         "the manager must report the floor the stage computed: {:?}",
         running.last_skipped_reasons
     );
     assert_eq!(
         running.last_index_log_floor_sequence,
-        reclaim_wal.index_log_floor_sequence
+        index_gc.index_log_floor_sequence
     );
     assert!(running.last_retention_blockers >= 1);
     assert!(running
@@ -3249,9 +3226,8 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     // The floor is the CLAMPED frontier, not zero: reclaim ran, and stopped at the slowest cursor.
     // The refusal was asserted TWICE in this test, in two blocks about sixty lines apart, so
     // correcting the first one only moved the failure down here. Both now say the same thing.
-    assert!(reclaim_wal.retention_blockers >= 1, "{reclaim_wal:?}");
-    assert_eq!(reclaim_wal.wal_floor_sequence, 2, "{reclaim_wal:?}");
-    assert_eq!(reclaim_wal.index_log_floor_sequence, 2, "{reclaim_wal:?}");
+    assert_eq!(reclaim_page.wal_floor_sequence, 2, "{reclaim_page:?}");
+    assert_eq!(index_gc.index_log_floor_sequence, 2, "{index_gc:?}");
     assert!(running.last_phase_reports.iter().any(|stage| {
         stage.stage == "reclaim_page"
             && (stage
@@ -3506,97 +3482,189 @@ fn what_each_maintenance_stage_costs() {
 
 #[test]
 fn the_periodic_loop_can_evict_when_the_operator_asks() {
-    // Until this stage existed the periodic loop -- the one the server actually starts -- relieved
-    // memory by invalidating cached blocks and nothing else. `apply_storage_eviction`, with
-    // dump-before-evict, delete-drop, a batch limit and a pressure threshold, was reachable ONLY
-    // from the on-demand cycle, so eviction could not happen on the running loop at ANY setting.
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for index in 0..64 {
-        let response = engine.execute(ExecuteRequest {
+        assert!(engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
-                key: format!("evict-{index:04}"),
-                value: vec![b'v'; 128],
+                key: format!("evict-{index:04}"), value: vec![b'v'; 128],
             },
-        });
-        assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }).status.ok);
     }
-    let runtime = DataNodeRuntime::new_without_workers_with_options(
-        engine,
-        DataNodeRuntimeOptions {
-            worker_threads: 0,
-            max_queue_depth: 4,
-            max_background_queue_depth: 2,
-        },
-    );
-
-    // CONTROL, RESTATED. This asserted `evict_disabled` and read "the shipped default must not
-    // evict ... the change is opt-in". The stage now ships ON, so the control is no longer "it
-    // does not run" -- it is "it runs and RELEASES NOTHING", because the shipped
-    // `index_resident_limit_bytes` is the higher bar and this 64-record shard is far under it.
-    // That is the half that says defaulting the stage on did not silently change how every
-    // deployment relieves memory.
+    let runtime = DataNodeRuntime::new_without_workers_with_options(engine,
+        DataNodeRuntimeOptions { worker_threads: 0, max_queue_depth: 4, max_background_queue_depth: 2 });
     let default_report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
-    let default_eviction = default_report
-        .eviction
-        .as_ref()
-        .expect("the stage ships on, so a default round reports it");
-    assert_eq!(
-        default_eviction.mode, "index_resident_bound",
-        "the shipped default opened the wide gate: mode={} threshold={}",
-        default_eviction.mode, default_eviction.memory_pressure_threshold
-    );
-    assert_eq!(
-        default_eviction.skipped_reason, "index_resident_below_bound",
-        "the shipped default acted on a 64-record shard: reason={:?} pressure_before={}",
-        default_eviction.skipped_reason, default_eviction.pressure_before
-    );
-    assert_eq!(
-        default_eviction.bucket_index_buckets_released, 0,
-        "the shipped default released {} buckets from a 64-record shard",
-        default_eviction.bucket_index_buckets_released
-    );
+    assert!(default_report.status.ok, "{:?}", default_report.status);
+    let default_eviction = default_report.eviction.as_ref().unwrap();
+    assert_eq!(default_eviction.skipped_reason, "no_memory_limit");
+    assert!(!default_eviction.pressure_gate_open);
+    assert!(default_eviction.selected_victims.is_empty());
+    assert_eq!(default_eviction.bucket_index_buckets_released, 0);
 
-    // And with the operator lowering the bound out of the way, the wide stage runs and acts.
-    let enabled_report = runtime.run_storage_manager_once(
-        1,
-        StorageManagerOptions {
-            enable_evict: true,
-            eviction_dump_before_evict: true,
-            // The one field that differs from the control above.
-            index_resident_limit_bytes: 0,
-            ..StorageManagerOptions::default()
-        },
-    );
-    assert!(
-        enabled_report.executed_stages.iter().any(|stage| stage == "evict"),
-        "enabling eviction must reach the stage, got executed={:?} skipped={:?}",
-        enabled_report.executed_stages,
-        enabled_report.skipped_stages
-    );
-    // AND IT TOOK THE WIDE ARM, which is what makes the control's `index_resident_bound` a
-    // statement about the BOUND rather than about this fixture.
-    let enabled_eviction = enabled_report
-        .eviction
-        .as_ref()
-        .expect("the stage reports when it is enabled");
-    assert_eq!(
-        enabled_eviction.mode, "evict_cache",
-        "removing the bound did not fall back on the wide gate: mode={}",
-        enabled_eviction.mode
-    );
-    assert_eq!(
-        enabled_eviction.skipped_reason, "",
-        "the wide gate declined at a threshold of 0: reason={:?}",
-        enabled_eviction.skipped_reason
-    );
-    // Two rounds have run and BOTH reached the stage: the default one bounded, this one wide.
-    assert_eq!(
-        runtime.stats().storage_manager_evict_runs,
-        2,
-        "the stage must be counted once per round that reached it"
-    );
+    let enabled = runtime.run_storage_manager_once(1, StorageManagerOptions {
+        enable_evict: true,
+        eviction_memory_pressure_threshold: 1,
+        eviction_dump_before_evict: true,
+        index_resident_limit_bytes: 0,
+        ..Default::default()
+    });
+    assert!(enabled.status.ok, "{:?}", enabled.status);
+    let eviction = enabled.eviction.as_ref().unwrap();
+    assert_eq!(eviction.mode, "evict_cache");
+    assert_eq!(eviction.memory_pressure_threshold, 1);
+    assert!(eviction.pressure_gate_open, "{eviction:?}");
+    assert!(eviction.bucket_index_buckets_released > 0, "{eviction:?}");
+    assert_eq!(eviction.dropped_object_count, 0);
+    assert_eq!(runtime.stats().storage_manager_evict_runs, 2);
+}
+
+#[test]
+fn omitted_eviction_batches_use_the_default_while_explicit_zero_is_preserved() {
+    let mut periodic = serde_json::to_value(StorageManagerOptions::default()).unwrap();
+    periodic.as_object_mut().unwrap().remove("eviction_batch_limit");
+    let decoded: StorageManagerOptions = serde_json::from_value(periodic.clone()).unwrap();
+    assert_eq!(decoded.eviction_batch_limit, StorageManagerOptions::default().eviction_batch_limit);
+    assert!(decoded.eviction_batch_limit > 0);
+    periodic["eviction_batch_limit"] = serde_json::json!(0);
+    let decoded: StorageManagerOptions = serde_json::from_value(periodic).unwrap();
+    assert_eq!(decoded.eviction_batch_limit, 0);
+
+    let mut cycle = serde_json::to_value(StorageManagerCycleRequest::default()).unwrap();
+    cycle.as_object_mut().unwrap().remove("eviction_batch_limit");
+    let decoded: StorageManagerCycleRequest = serde_json::from_value(cycle.clone()).unwrap();
+    assert_eq!(decoded.eviction_batch_limit, StorageManagerCycleRequest::default().eviction_batch_limit);
+    assert!(decoded.eviction_batch_limit > 0);
+    cycle["eviction_batch_limit"] = serde_json::json!(0);
+    let decoded: StorageManagerCycleRequest = serde_json::from_value(cycle).unwrap();
+    assert_eq!(decoded.eviction_batch_limit, 0);
+}
+
+#[test]
+fn the_eviction_count_budget_bounds_the_first_batch_and_zero_does_no_work() {
+    for (pressure_limit, index_limit) in [(1, 0), (0, 1)] {
+        for count_limit in [0, 1] {
+            for batch_limit in [0, 64] {
+                let dir = tempdir().unwrap();
+                let engine = TemporalEngine::with_local_dirs(16 << 20,
+                    dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"));
+                engine.load_shard(1);
+                for index in 0..64 {
+                    assert!(engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: format!("budget-{index:04}"), value: vec![b'v'; 128],
+                        },
+                    }).status.ok);
+                }
+                let runtime = DataNodeRuntime::new_without_workers_with_options(engine,
+                    DataNodeRuntimeOptions { worker_threads: 0, max_queue_depth: 4, max_background_queue_depth: 2 });
+                let resident = runtime.engine().bucket_index_resident_bytes(1);
+                assert!(resident > 1);
+                let frontier = runtime.engine().storage_dump_wal_sequence(1);
+                let round = runtime.run_storage_manager_once(1, StorageManagerOptions {
+                    enable_prepare: false, enable_wal_reclaim: false, enable_memory_reclaim: false,
+                    enable_expire: false, enable_block_gc: false, enable_index_gc: false,
+                    enable_block_compaction: false, enable_metrics_reap: false,
+                    enable_evict: true,
+                    eviction_memory_pressure_threshold: pressure_limit,
+                    index_resident_limit_bytes: index_limit,
+                    eviction_count_limit: count_limit,
+                    eviction_batch_limit: batch_limit,
+                    ..Default::default()
+                });
+                assert!(round.status.ok, "{:?}", round.status);
+                let report = round.eviction.as_ref().unwrap();
+                assert!(report.pressure_gate_open);
+                let expected_victims = count_limit.min(batch_limit);
+                assert_eq!(report.selected_victims.len(), expected_victims);
+                assert_eq!(report.bucket_index_buckets_released, expected_victims);
+                assert_eq!(report.dropped_object_count, 0);
+                assert_eq!(report.bucket_index_bytes_before, resident);
+                if expected_victims == 0 {
+                    assert_eq!(report.skipped_reason, if count_limit == 0 {
+                        "eviction_count_limit"
+                    } else {
+                        "eviction_batch_limit"
+                    });
+                    assert!(report.dump_manifest_ids.is_empty());
+                    assert_eq!(runtime.engine().storage_dump_wal_sequence(1), frontier);
+                    assert_eq!(runtime.engine().bucket_index_resident_bytes(1), resident);
+                } else {
+                    assert!(report.skipped_reason.is_empty());
+                    assert!(runtime.engine().bucket_index_resident_bytes(1) < resident);
+                }
+                drop(runtime);
+                let reopened = TemporalEngine::with_local_dirs(16 << 20,
+                    dir.path().join("cache-reopened"), dir.path().join("blocks"), dir.path().join("indexes"));
+                reopened.load_shard(1);
+                for index in 0..64 {
+                    assert_eq!(reopened.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringGet { key: format!("budget-{index:04}") },
+                    }).response, CommandResponse::Bytes { value: Some(vec![b'v'; 128]) });
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_cycle_with_zero_eviction_batch_does_no_work_under_pressure() {
+    for (pressure_limit, index_limit) in [(1, 0), (0, 1)] {
+        for batch_limit in [0, 1] {
+            let dir = tempdir().unwrap();
+            let engine = TemporalEngine::with_local_dirs(16 << 20,
+                dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"));
+            engine.load_shard(1);
+            for index in 0..64 {
+                assert!(engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet { key: format!("cycle-budget-{index:04}"), value: vec![b'v'; 128] },
+                }).status.ok);
+            }
+            let resident = engine.bucket_index_resident_bytes(1);
+            assert!(resident > 1);
+            let frontier = engine.storage_dump_wal_sequence(1);
+            let round = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+                shard_id: 1,
+                enable_prepare: false, enable_wal_reclaim: false, enable_expire: false,
+                enable_block_reclaim: false, enable_block_compaction: false, enable_index_gc: false,
+                enable_evict: true, eviction_dump_before_evict: true,
+                eviction_memory_pressure_threshold: pressure_limit,
+                index_resident_limit_bytes: index_limit,
+                eviction_batch_limit: batch_limit,
+                ..Default::default()
+            });
+            assert!(round.completed, "{round:?}");
+            let report = round.eviction_report.as_ref().unwrap();
+            assert!(report.pressure_gate_open, "{report:?}");
+            assert_eq!(report.selected_victims.len(), batch_limit);
+            assert_eq!(report.bucket_index_buckets_released, batch_limit);
+            assert_eq!(report.dropped_object_count, 0);
+            if batch_limit == 0 {
+                assert_eq!(report.skipped_reason, "eviction_batch_limit");
+                assert!(report.dump_manifest_ids.is_empty());
+                assert_eq!(engine.storage_dump_wal_sequence(1), frontier);
+                assert_eq!(engine.bucket_index_resident_bytes(1), resident);
+            } else {
+                assert!(report.skipped_reason.is_empty());
+                assert!(report.dump_manifest_ids.is_empty());
+                assert_eq!(engine.storage_dump_wal_sequence(1), frontier);
+                assert!(engine.bucket_index_resident_bytes(1) < resident);
+            }
+            drop(engine);
+            let reopened = TemporalEngine::with_local_dirs(16 << 20,
+                dir.path().join("cache-reopened"), dir.path().join("blocks"), dir.path().join("indexes"));
+            reopened.load_shard(1);
+            for index in 0..64 {
+                assert_eq!(reopened.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet { key: format!("cycle-budget-{index:04}") },
+                }).response, CommandResponse::Bytes { value: Some(vec![b'v'; 128]) });
+            }
+        }
+    }
 }
 
 #[test]
@@ -3912,11 +3980,11 @@ fn the_periodic_loop_actually_reclaims_the_write_ahead_log() {
     // and it is the stage under test that has to be responsible.
     let control = build(records);
     let control_before = record_count(&control);
-    let control = run(control, StorageManagerOptions { enable_wal_reclaim: false, ..cadence() });
+    let control = run(control, StorageManagerOptions { enable_block_gc: false, ..cadence() });
     let control_after = record_count(&control);
     assert_eq!(
         control_after, control_before,
-        "with reclaim_wal disabled nothing may shrink the log: {control_before} -> {control_after}"
+        "with page collection disabled nothing may shrink the log: {control_before} -> {control_after}"
     );
 }
 
@@ -7115,7 +7183,7 @@ fn can_the_index_dump_be_capped_now() {
 #[test]
 fn a_capped_index_dump_still_reclaims() {
     const BATCH: usize = 2_000;
-    const ROUNDS: usize = 6;
+    const ROUNDS: usize = 16;
     // Overwrites, so records genuinely become garbage. With distinct keys almost every record is
     // the live version of a key, nothing is reclaimable, and both arms below would report the full
     // count while proving nothing.
@@ -7143,6 +7211,7 @@ fn a_capped_index_dump_still_reclaims() {
             ..StorageManagerOptions::default()
         };
         let mut written = 0usize;
+        let mut peak_index_bytes = 0u64;
         for _ in 0..ROUNDS {
             let engine = runtime.engine();
             for index in 0..BATCH {
@@ -7155,6 +7224,13 @@ fn a_capped_index_dump_still_reclaims() {
                 });
             }
             written += BATCH;
+            peak_index_bytes = peak_index_bytes.max(runtime.engine().index_log_store().log_len_bytes(1));
+            runtime.run_storage_manager_once(1, options.clone());
+        }
+        assert!(peak_index_bytes >= 1 << 20,
+            "the fixture must cross the index collector's byte gate: peak {peak_index_bytes}");
+        // The active-piece rewrite is bounded; covered sealed pieces need no record rewrite.
+        for _ in 0..(BATCH * ROUNDS / 200) {
             runtime.run_storage_manager_once(1, options.clone());
         }
         let remaining = runtime
@@ -7163,6 +7239,16 @@ fn a_capped_index_dump_still_reclaims() {
             .scan(1, 0, u64::MAX, u64::MAX)
             .map(|records| records.len())
             .unwrap_or(0);
+        eprintln!("index cap={cap} peak_bytes={peak_index_bytes} written={written} retained={remaining}");
+        runtime.engine().invalidate_shard_cache(1);
+        for index in 0..KEYSPACE {
+            let response = runtime.engine().execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: format!("dumpcapguard-{index:08}") },
+            });
+            assert!(response.status.ok, "cold read {index}: {:?}", response.status);
+            assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![b'v'; 64]) });
+        }
         (written, remaining)
     }
 
@@ -7204,7 +7290,7 @@ fn a_capped_index_dump_still_reclaims() {
 fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
     const WIDE_KEYS: usize = 2_000;
     const HOT_KEYS: usize = 20;
-    const ROUNDS: usize = 8;
+    const ROUNDS: usize = 32;
     const BATCH: usize = 1_000;
 
     let engine = TemporalEngine::default();
@@ -7241,6 +7327,7 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
     // Phase two: keep writing, but only to a handful of keys. Every bucket the wide phase touched
     // and this one does not is now CLEAN, holding a manifest from phase one.
     let mut written = 0usize;
+    let mut peak_index_bytes = 0u64;
     for _ in 0..ROUNDS {
         let engine = runtime.engine();
         for index in 0..BATCH {
@@ -7253,10 +7340,27 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
             });
         }
         written += BATCH;
+        peak_index_bytes = peak_index_bytes.max(runtime.engine().index_log_store().log_len_bytes(1));
+        runtime.run_storage_manager_once(1, gate_crossed.clone());
+    }
+
+    assert!(peak_index_bytes >= 1 << 20,
+        "the hot writes must cross the index collector's byte gate: peak {peak_index_bytes}");
+    for _ in 0..(BATCH * ROUNDS / 200) {
         runtime.run_storage_manager_once(1, gate_crossed.clone());
     }
 
     let engine = runtime.engine();
+    engine.invalidate_shard_cache(1);
+    for key in (0..WIDE_KEYS).map(|index| format!("quiet-wide-{index:08}"))
+        .chain((0..HOT_KEYS).map(|index| format!("quiet-hot-{index:04}")))
+    {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key },
+        });
+        assert!(response.status.ok, "cold read: {:?}", response.status);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![b'v'; 64]) });
+    }
     let wal_records = engine
         .write_ahead_log_store()
         .scan(1, 0, u64::MAX, u64::MAX)
@@ -7267,6 +7371,7 @@ fn a_bucket_that_went_quiet_does_not_pin_the_reclaim_floor() {
         .scan(1, 0, u64::MAX, u64::MAX)
         .map(|records| records.len())
         .unwrap_or(0);
+    eprintln!("quiet buckets peak_bytes={peak_index_bytes} written={written} wal={wal_records} index={index_records}");
 
     // The denominator: phase two has to have written enough that a frozen floor is visible as
     // growth rather than lost in the noise of phase one.
@@ -9206,8 +9311,8 @@ fn a_quiet_shard_with_every_bucket_clean_can_reclaim_its_log() {
     );
 }
 
-/// `reclaim_wal` must not disappear from the stage list while the log is still reclaimable, and
-/// the log must actually shrink.
+/// Page collection must retire dumped log records on an idle shard. A memoized no-work
+/// decision may skip later rounds, but the dump stage must not be needed for truncation.
 ///
 /// The stage list is how an operator reads whether maintenance is alive, so the two cases it must
 /// never confuse are "the log is at its floor" and "the stage stopped running". They look
@@ -9268,7 +9373,10 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
         min_undumped_wal_records: 1,
         ..StorageManagerOptions::default()
     };
-    let first = runtime.run_storage_manager_once(1, options.clone());
+    let first = runtime.run_storage_manager_once(1, StorageManagerOptions {
+        enable_block_gc: false,
+        ..options.clone()
+    });
     assert!(
         first
             .executed_stages
@@ -9281,21 +9389,27 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
 
     let mut reclaimable_rounds = 0usize;
     let mut rounds_missing_the_stage = Vec::new();
+    let mut collection_rounds = 0usize;
     for round in 0..IDLE_ROUNDS {
         let engine = runtime.engine();
         let reclaimable = engine
             .storage_wal_reclaim_plan(1, Vec::new(), Vec::new())
             .safe_to_reclaim;
         drop(engine);
+        let bytes_before = runtime.engine().wal_store().stats(1).persistent_bytes;
         let report = runtime.run_storage_manager_once(1, options.clone());
+        let bytes_after = runtime.engine().wal_store().stats(1).persistent_bytes;
+        if report.executed_stages.iter().any(|stage| stage == "reclaim_page") {
+            collection_rounds += 1;
+        }
         if !reclaimable {
             continue;
         }
         reclaimable_rounds += 1;
-        if !report
+        if bytes_after < bytes_before && !report
             .executed_stages
             .iter()
-            .any(|stage| stage == "reclaim_wal")
+            .any(|stage| stage == "reclaim_page")
         {
             rounds_missing_the_stage.push((round, report.skipped_stages.clone()));
         }
@@ -9311,11 +9425,11 @@ fn the_log_reclaim_stage_keeps_running_while_the_log_is_still_reclaimable() {
     );
     assert!(
         rounds_missing_the_stage.is_empty(),
-        "`reclaim_wal` left the stage list on {} of {reclaimable_rounds} rounds whose log was \
-         still reclaimable, which an operator reads as maintenance having died: {:?}",
+        "page collection was absent from {} rounds that physically reclaimed log bytes: {:?}",
         rounds_missing_the_stage.len(),
         rounds_missing_the_stage,
     );
+    assert!(collection_rounds > 0, "the idle shard never ran page collection");
     // The stage running is the operator-visible half; the log shrinking is the point of it.
     assert!(
         bytes_at_end < bytes_after_first,
@@ -9581,240 +9695,51 @@ fn the_evict_decision_reports_the_pressure_it_gates_on_not_its_own_threshold() {
     );
 }
 
-/// WHY DEFAULTING THE NINTH STAGE ON IS NOT THE SAME CHANGE AS OPENING ITS GATE, measured.
-///
-/// RESTATED TWICE NOW, NOT RE-GOLDENED, and the history is the argument. This test was
-/// `enable_evict_stays_off_because_its_neighbouring_defaults_would_evict_at_zero_pressure`, then
-/// `enable_evict_stays_off_because_its_gate_reads_other_shards_memory`. It held THREE objections to
-/// flipping `enable_evict` on, in that order, and every one of them has now been settled -- two
-/// retired by work done since, and the third, which is the one that STILL STANDS, settled by not
-/// flipping that flag on its own.
-///
-///   1  `eviction_dump_before_evict` WAS FALSE, so "an evicted dirty bucket keeps pinning the log
-///      it was never written out of". RETIRED: the dump defaults true, on the measurement this
-///      test's own prose asked for -- a release without a dump refuses every candidate (16 of 16,
-///      0 released, in
-///      `data_node::tests::evict_live::what_the_dump_costs_and_which_half_recovers_the_index`).
-///
-///   2  THE GATE'S SIGNAL WAS MOSTLY OTHER SHARDS' MEMORY -- process-wide cache terms from
-///      `MultiLayerCache::stats()` summed with one per-shard index term, so a ten-key shard's gate
-///      read a busy shard's cache and no constant threshold was both safe and effective. RETIRED by
-///      the narrowing: `apply_storage_eviction`'s gate now reads `bucket_index_resident_bytes(shard_id)`
-///      and nothing else, which `the_evict_gate_reads_only_this_shards_own_bytes` is the gate on.
-///      The figures the old prose quoted here belonged to the wide signal and are not restated,
-///      because the signal they measured no longer exists.
-///
-///   3  THE THRESHOLD IS STILL 0, documented as "0 evicts whenever it runs". The gate is
-///      `pressure_before < threshold`, false for every shard that has ever held a record, so the
-///      gate cannot close. THIS OBJECTION IS UNCHANGED, and it is what this test measures.
-///
-/// SO THE CONCLUSION MOVED WITHOUT OBJECTION 3 MOVING. A change that flipped only `enable_evict`
-/// would ship an always-open gate: every loaded shard releasing buckets on every round of the
-/// periodic loop, at a default interval of 30 s, whatever its actual pressure. The change that did
-/// ship pairs the flag with a non-zero `index_resident_limit_bytes`, and the loop takes the HIGHER
-/// of the two bars -- so the bar in force is 64 MiB of this shard's own resident index, not 0, and
-/// the gate closes on every shard under it.
-///
-/// THE TWO ARMS ARE THEREFORE THE TWO CANDIDATE CHANGES, on one fixture under no pressure anyone
-/// would act on:
-///
-///   control    the SHIPPED pair      -> the stage runs, opens the BOUND, and releases nothing
-///   treatment  flip ONLY the flag    -> the gate cannot close, and the round takes victims
-///
-/// The treatment is the finding: it is the measured reason the flag does not ship alone. The
-/// control is what makes it a finding rather than an argument about an unshipped configuration.
 #[test]
-fn the_change_that_moves_only_this_flag_cannot_close_its_gate() {
+fn enabling_eviction_without_a_limit_does_not_open_its_gate() {
     let defaults = StorageManagerOptions::default();
-
-    // The defaults are a DECISION, pinned here so a later edit to the `Default` impl has to come
-    // past this test and its reasoning rather than sliding through as a tidy-up.
-    assert!(
-        defaults.enable_evict,
-        "enable_evict defaults off again; the pairing below is what made ON safe, so revisit both \
-         rather than deleting this assertion"
-    );
-    assert_eq!(
-        defaults.eviction_memory_pressure_threshold, 0,
-        "the eviction threshold is no longer 0, which retires objection 3 above -- the one the \
-         treatment arm below measures. Restate this test against the new threshold rather than \
-         deleting the assertion"
-    );
-    assert!(
-        defaults.index_resident_limit_bytes > defaults.eviction_memory_pressure_threshold,
-        "the bound ({}) is no longer the higher bar over the threshold ({}), so the shipped pair \
-         IS the treatment arm below: an always-open gate on every loaded shard",
-        defaults.index_resident_limit_bytes,
-        defaults.eviction_memory_pressure_threshold
-    );
-    // RESTATED. This asserted `!defaults.eviction_dump_before_evict` and told a future reader to
-    // revisit the enable_evict default if it ever turned on. It has turned on, on the evidence the
-    // doc above names, so the assertion now pins the NEW decision in the same shape: the dump
-    // default is a decision, and moving it again has to come past this test.
-    assert!(
-        defaults.eviction_dump_before_evict,
-        "dump-before-evict no longer defaults on. It was defaulted on because a release WITHOUT a \
-         dump refuses every candidate and releases nothing -- 16 of 16 refused, measured -- so \
-         turning it back off makes `enable_evict` a stage that pays a whole-store walk to recover \
-         nothing. Revisit that measurement rather than deleting this assertion"
-    );
-
-    // THE MEASUREMENT. A shard under no memory pressure anyone would act on.
-    const KEYS: usize = 64;
+    assert!(defaults.enable_evict);
+    assert_eq!(defaults.eviction_memory_pressure_threshold, 0);
+    assert_eq!(defaults.index_resident_limit_bytes, 0);
     let dir = tempdir().unwrap();
-    let engine = TemporalEngine::with_local_dirs(
-        16 * 1024 * 1024,
-        dir.path().join("cache"),
-        dir.path().join("blocks"),
-        dir.path().join("indexes"),
-    );
+    let engine = TemporalEngine::with_local_dirs(16 << 20,
+        dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"));
     engine.load_shard(1);
-    for index in 0..KEYS {
-        let response = engine.execute(ExecuteRequest {
+    for index in 0..64 {
+        assert!(engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
-                key: format!("zeropressure-{index:06}"),
-                value: vec![b'v'; 32],
+                key: format!("zeropressure-{index:06}"), value: vec![b'v'; 32],
             },
-        });
-        assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }).status.ok);
     }
-    let runtime = DataNodeRuntime::new_without_workers_with_options(
-        engine,
-        DataNodeRuntimeOptions {
-            worker_threads: 0,
-            max_queue_depth: 4,
-            max_background_queue_depth: 2,
-        },
-    );
-
-    // CONTROL, RESTATED: the shipped default REACHES the stage -- it is on -- and the stage
-    // declines, because the bound is the bar. This used to assert `evict_disabled`.
-    // The control round crosses the byte gate so that it writes these buckets out, which is what
-    // makes them clean by the time the treatment round picks victims.
-    let shipped = runtime.run_storage_manager_once(
-        1,
-        StorageManagerOptions {
-            min_undumped_wal_bytes: 1,
-            ..StorageManagerOptions::default()
-        },
-    );
-    let shipped_eviction = shipped
-        .eviction
-        .as_ref()
-        .expect("the ninth stage ships on, so the shipped round reports it");
-    assert_eq!(
-        shipped_eviction.mode, "index_resident_bound",
-        "the shipped default opened the wide gate rather than the bound: mode={} skipped={:?} \
-         executed={:?}",
-        shipped_eviction.mode, shipped.skipped_stages, shipped.executed_stages
-    );
-    assert_eq!(
-        shipped_eviction.skipped_reason, "index_resident_below_bound",
-        "the shipped default acted on a {KEYS}-record shard under no pressure: reason={:?}",
-        shipped_eviction.skipped_reason
-    );
-    assert!(
-        shipped_eviction.selected_victims.is_empty(),
-        "the shipped default took {} victims from a {KEYS}-record shard",
-        shipped_eviction.selected_victims.len()
-    );
-
-    // TREATMENT: the change that flips ONLY `enable_evict` and leaves the bound at 0, which is
-    // what "default the ninth stage on" means if it is done by itself.
-    let would_be_default = StorageManagerOptions {
-        enable_evict: true,
-        index_resident_limit_bytes: 0,
-        ..StorageManagerOptions::default()
-    };
-    let (pressure, _) = runtime.storage_manager_pressure_snapshot(1, &would_be_default);
-    let report = runtime.run_storage_manager_once(1, would_be_default);
-    let eviction = report
-        .eviction
-        .as_ref()
-        .expect("the evict stage must report when it is enabled");
-
-    // PROOF THE TREATMENT RAN, before reading anything out of it.
-    assert!(
-        report.executed_stages.iter().any(|stage| stage == "evict"),
-        "the evict stage did not run, so nothing below measures eviction: executed={:?}",
-        report.executed_stages
-    );
-    assert_eq!(
-        eviction.memory_pressure_threshold, 0,
-        "this round did not use the default threshold, so it is not the round a default-on change \
-         would produce"
-    );
-
-    // AND THE FINDING. With a threshold of 0 the gate cannot close: the comparison is
-    // `pressure_before < 0`, which is false for every shard that has ever existed.
-    assert!(
-        eviction.pressure_gate_open,
-        "the gate declined at threshold 0, which would make this objection moot -- recheck it"
-    );
-    assert_eq!(
-        eviction.skipped_reason, "",
-        "the stage skipped for {:?} rather than evicting, so it did not act at zero pressure",
-        eviction.skipped_reason
-    );
-    assert!(
-        !eviction.selected_victims.is_empty(),
-        "the round took no victims, so default-on would be harmless here and this objection needs \
-         a different fixture: pressure={} threshold={}",
-        eviction.pressure_before,
-        eviction.memory_pressure_threshold
-    );
-    // RESTATED, AND THE RESTATEMENT IS THE POINT. This used to assert `!eviction.dump_before_evict`
-    // and an EMPTY manifest list, and its comment read "a dirty bucket evicted this way keeps
-    // pinning the log it was never written out of". That was true of the round the old defaults
-    // produced. The dump default has moved, so the round a default-on change would produce now
-    // carries the dump flag -- the objection retired, asserted here rather than deleted, so that
-    // turning the dump back off fails HERE as well as on the pinned default above.
-    assert!(
-        eviction.dump_before_evict,
-        "the round a default-on change would produce does not dump first, so the dump default has \
-         moved back and the 'dirty bucket keeps pinning the log' objection is live again"
-    );
-    // AND NO MANIFEST, FOR A REASON THAT IS ASSERTED RATHER THAN ASSUMED. The first restatement of
-    // this test asserted a manifest MUST appear now that the dump defaults on, and it failed here:
-    // 64 victims, dump on, no manifest. The reason is this fixture's own shape, not a broken
-    // default. `create_bucket_dump_manifest` is called only for victims with
-    // `dirty_object_count > 0`, and the CONTROL round above is a full default round -- prepare and
-    // the dump stages included -- so it has already written these buckets out. By the time the
-    // treatment round picks victims they are clean, and a clean bucket has nothing to dump.
-    //
-    // So the honest assertion is the mechanism: every victim is clean, THEREFORE no manifest. That
-    // fails if either half stops being true, and it does not claim a manifest the fixture cannot
-    // produce. The pin on the default itself is `eviction.dump_before_evict` above.
-    let dirty_victims = eviction
-        .selected_victims
-        .iter()
-        .filter(|victim| victim.dirty_object_count > 0)
-        .count();
-    assert_eq!(
-        dirty_victims, 0,
-        "{dirty_victims} of {} victims are dirty, so this round DID have something to dump and the \
-         empty manifest list below is a defect rather than a property of the fixture",
-        eviction.selected_victims.len()
-    );
-    assert!(
-        eviction.dump_manifest_ids.is_empty(),
-        "a dump manifest appeared for {} victims none of which is dirty: {:?}",
-        eviction.selected_victims.len(),
-        eviction.dump_manifest_ids
-    );
-    eprintln!(
-        "  [evict-default] flipping only enable_evict: threshold={} pressure_before={} \
-victims={} dump_manifests={} (no victim is dirty, so there is nothing to dump) -- the gate STILL \
-opens on a shard nobody asked to relieve, because the threshold is {} (snapshot \
-eviction_memory_pressure_bytes={})",
-        eviction.memory_pressure_threshold,
-        eviction.pressure_before,
-        eviction.selected_victims.len(),
-        eviction.dump_manifest_ids.len(),
-        eviction.memory_pressure_threshold,
-        pressure.eviction_memory_pressure_bytes,
-    );
+    let runtime = DataNodeRuntime::new_without_workers_with_options(engine,
+        DataNodeRuntimeOptions { worker_threads: 0, max_queue_depth: 4, max_background_queue_depth: 2 });
+    let resident = runtime.engine().bucket_index_resident_bytes(1);
+    assert!(resident > 1);
+    for enabled in [false, true] {
+        let round = runtime.run_storage_manager_once(1, StorageManagerOptions {
+            enable_evict: enabled, ..Default::default()
+        });
+        assert!(round.status.ok, "{:?}", round.status);
+        if enabled {
+            let report = round.eviction.as_ref().unwrap();
+            assert_eq!(report.skipped_reason, "no_memory_limit");
+            assert!(!report.pressure_gate_open);
+            assert!(report.selected_victims.is_empty());
+        } else {
+            assert!(round.eviction.is_none());
+        }
+        assert_eq!(runtime.engine().bucket_index_resident_bytes(1), resident);
+    }
+    let pressured = runtime.run_storage_manager_once(1, StorageManagerOptions {
+        index_resident_limit_bytes: 1, ..Default::default()
+    });
+    assert!(pressured.status.ok, "{:?}", pressured.status);
+    let report = pressured.eviction.as_ref().unwrap();
+    assert!(report.pressure_gate_open, "{report:?}");
+    assert!(report.bucket_index_buckets_released > 0, "{report:?}");
+    assert_eq!(report.dropped_object_count, 0);
 }
 
 /// What turning it on WOULD buy, and the bar it would have to clear: the periodic loop relieves
@@ -12969,9 +12894,10 @@ fn a_reopen_after_gated_rounds_replays_only_the_gated_bytes_and_loses_nothing() 
                     key: format!("reopen-{index:05}"),
                 },
             });
-            if response.status.ok {
-                readable += 1;
-            }
+            assert!(response.status.ok, "cold read {index}: {:?}", response.status);
+            assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![b'v'; 64]) },
+                "cold read {index} returned the wrong value");
+            readable += 1;
         }
         (wal_records, readable, index_records, manifests)
     }
@@ -12989,14 +12915,11 @@ fn a_reopen_after_gated_rounds_replays_only_the_gated_bytes_and_loses_nothing() 
         gated_wal < ungated_wal,
         "a dump covered the log and it was not reclaimed ({gated_wal} against {ungated_wal})"
     );
-    // The index log and the manifests ride on the same dump: once the gate is crossed both must
-    // advance, and below it neither may.
+    // Publishing a dump does not bypass the independent 1 MiB index-GC gate.
     assert_eq!(ungated_manifests, 0, "a manifest was written below the gate");
     assert!(gated_manifests >= 1, "the gate was crossed and no manifest was written");
-    assert!(
-        gated_index < ungated_index,
-        "a dump covered the index log and it was not reclaimed ({gated_index} against {ungated_index})"
-    );
+    assert_eq!(gated_index, ungated_index,
+        "the small index log was truncated outside its owning stage's byte gate");
 }
 
 /// A shard that is still replaying its log gets no round from the periodic loop: the plan, the

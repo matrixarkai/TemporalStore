@@ -99,15 +99,15 @@ pub(super) fn run_compaction_background_draining(
     shard_id: ShardId,
     drain_block_slab_ids: BTreeSet<u64>,
 ) -> Status {
-    let result = if crate::engine::sliced_compaction_enabled() {
-        inner.engine.compact_shard_blocks_draining_sliced(
-            shard_id,
-            drain_block_slab_ids,
-            crate::engine::COMPACTION_SLICE_KEYS,
-        )
-    } else {
-        inner.engine.compact_shard_blocks_draining_background(shard_id, drain_block_slab_ids)
-    };
+    // ALWAYS THE SLICED PASS. The whole round held the shard write guard from validation to the
+    // published index, so every writer waited for the entire stage (measured 1.8 s on a quiet round
+    // at 100k keys). The sliced pass answers a drain with nothing on it from the per-slab tally
+    // without a walk, takes the guard once per slice, and walks the buckets after a cursor.
+    let result = inner.engine.compact_shard_blocks_draining_sliced(
+        shard_id,
+        drain_block_slab_ids,
+        crate::engine::COMPACTION_SLICE_KEYS,
+    );
     inner.stats.lock().expect("runtime stats lock poisoned").compaction_runs += 1;
     match result {
         Ok(()) => Status::ok(),

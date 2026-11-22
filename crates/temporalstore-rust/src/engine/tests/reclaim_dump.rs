@@ -105,6 +105,131 @@ fn wal_record_count(engine: &TemporalEngine) -> usize {
     records.len()
 }
 
+fn dump_stage_ownership_case(periodic: bool) {
+    struct RestoreWalRolling;
+    impl Drop for RestoreWalRolling {
+        fn drop(&mut self) {
+            crate::wal::set_wal_segment_bytes_for_test(None);
+        }
+    }
+    crate::wal::set_wal_segment_bytes_for_test(Some(1024));
+    let _rolling = RestoreWalRolling;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "stage-owner");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Default::default() },
+    }).ok);
+    for version in 0..2 {
+        for index in 0..64 {
+            let result = engine.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::StringSet {
+                    key: format!("owner-{index:04}"),
+                    value: vec![if version == 0 { 0 } else { index as u8 + 1 }; 64],
+                },
+            });
+            assert!(result.status.ok);
+        }
+    }
+    engine.write_ahead_log_store().flush(RECLAIM_DUMP_SHARD).unwrap();
+    let wal_root = engine.write_ahead_log_store().info(RECLAIM_DUMP_SHARD).unwrap()
+        .path.parent().unwrap().to_path_buf();
+    let pieces = || crate::wal::wal_piece_extents_for_test(&wal_root, RECLAIM_DUMP_SHARD)
+        .into_iter().map(|(path, _, _, _)| {
+            let metadata = path.metadata().unwrap();
+            (path, (metadata.len(), metadata.modified().unwrap()))
+        }).collect::<std::collections::BTreeMap<_, _>>();
+    let before_records = wal_record_count(&engine);
+    let before_pieces = pieces();
+    assert_eq!(before_records, 128);
+    assert!(before_pieces.len() > 1);
+    let runtime = crate::data_node::DataNodeRuntime::new_without_workers_with_options(
+        engine.clone(), crate::data_node::DataNodeRuntimeOptions {
+            worker_threads: 0, max_queue_depth: 8, max_background_queue_depth: 8,
+        },
+    );
+    let round = |dump, pages| {
+        if periodic {
+            let report = runtime.run_storage_manager_once(RECLAIM_DUMP_SHARD,
+                crate::data_node::StorageManagerOptions {
+                    enable_prepare: false, enable_memory_reclaim: false,
+                    enable_wal_reclaim: dump, enable_block_gc: pages,
+                    enable_expire: false, enable_evict: false,
+                    enable_block_compaction: false, enable_index_gc: false,
+                    enable_metrics_reap: false, min_undumped_wal_records: 0,
+                    min_undumped_wal_bytes: 0, max_dump_buckets_per_round: 0,
+                    ..Default::default()
+                });
+            assert!(report.status.ok, "{:?}", report.status);
+            if pages && !dump {
+                assert!(report.executed_stages.iter().any(|stage| stage == "reclaim_page"));
+            }
+        } else {
+            let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+                shard_id: RECLAIM_DUMP_SHARD, enable_prepare: false,
+                enable_wal_reclaim: dump, enable_block_reclaim: pages,
+                enable_expire: false, enable_evict: false,
+                enable_block_compaction: false, enable_index_gc: false,
+                min_undumped_wal_records: 0, min_undumped_wal_bytes: 0,
+                max_dump_buckets_per_round: 0, ..Default::default()
+            });
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+            let dump_stage = report.stages.iter().find(|stage| stage.stage == "reclaim_wal").unwrap();
+            assert_eq!(dump_stage.wal_records_removed, 0,
+                "dump publication must not destroy log records");
+            if dump && !pages {
+                if let Some(reclaim) = report.wal_reclaim_report.as_ref() {
+                    assert_eq!(reclaim.wal_records_removed + reclaim.wal_segments_dropped, 0);
+                }
+            }
+            if pages && !dump {
+                let page = report.stages.iter().find(|stage| stage.stage == "reclaim_page").unwrap();
+                let reclaim = report.wal_reclaim_report.as_ref().unwrap();
+                assert!(page.applied && !page.skipped);
+                assert!(reclaim.wal_segments_dropped > 0);
+                assert_eq!(page.wal_records_removed, reclaim.wal_records_removed);
+            }
+        }
+    };
+    round(true, false);
+    assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), 0);
+    assert!(!engine.list_bucket_dump_manifests(RECLAIM_DUMP_SHARD).is_empty());
+    assert_eq!(wal_record_count(&engine), before_records, "dump retired the log");
+    assert_eq!(pieces(), before_pieces, "dump rewrote or removed a log piece");
+    let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+        shard_id: RECLAIM_DUMP_SHARD, ..Default::default()
+    });
+    assert!(plan.reclaim_candidates.is_empty(), "the control must have only log garbage");
+    round(false, true);
+    assert!(wal_record_count(&engine) < before_records,
+        "page collection must retire the published log prefix even with dumping disabled");
+    drop(runtime);
+    drop(engine);
+    let restored = reclaim_dump_engine(dir.path(), "stage-owner");
+    restored.load_shard(RECLAIM_DUMP_SHARD);
+    restored.cache().invalidate_shard(RECLAIM_DUMP_SHARD).unwrap();
+    for index in 0..64 {
+        let result = restored.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::StringGet { key: format!("owner-{index:04}") },
+        });
+        assert!(result.status.ok);
+        assert_eq!(result.response, CommandResponse::Bytes { value: Some(vec![index as u8 + 1; 64]) });
+    }
+}
+
+#[test]
+fn dump_stage_does_not_retire_logs_in_operator_cycle() {
+    dump_stage_ownership_case(false);
+}
+
+#[test]
+fn dump_stage_does_not_retire_logs_in_periodic_loop() {
+    dump_stage_ownership_case(true);
+}
+
 #[test]
 fn older_checkpoint_publications_do_not_replace_newer_images() {
     for kind in ["flush", "catalog"] {
@@ -563,7 +688,13 @@ fn dump_registration_retirement_keeps_concurrent_writes_and_refused_publications
             }
         }, || engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []));
         assert_eq!(result.is_err(), mutation == "supersede");
-        let expected_before_retry = if mutation == "other-key" { 2 } else { 1 };
+        // A successful newer catalog has already retired the deleted value's fallback.
+        // Writes during the barrier still keep every registration until a quiet retry.
+        let expected_before_retry = match mutation {
+            "other-key" => 2,
+            "supersede" => 0,
+            _ => 1,
+        };
         assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), expected_before_retry);
         assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), expected_before_retry);
         engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
@@ -1066,7 +1197,7 @@ fn a_hash_dump_keeps_wal_blocks_needed_by_restore() {
         enable_prepare: false,
         enable_evict: false,
         enable_expire: false,
-        enable_block_reclaim: false,
+        enable_block_reclaim: true,
         enable_block_compaction: false,
         enable_index_gc: false,
         ..StorageManagerCycleRequest::default()
@@ -1193,15 +1324,11 @@ fn a_live_only_string_dump_materializes_before_capturing_the_index() {
             Some(keys.len())
         );
         assert!(engine.block_store.stats().bytes_written > block_bytes_before);
-        assert!(wal_record_count(&engine) < records_before);
+        assert_eq!(wal_record_count(&engine), records_before, "dump-only work must retain the log");
+        assert!(!report.wal_reclaim_report.as_ref().unwrap().applied);
         assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), 0);
-        assert!(report
-            .wal_reclaim_report
-            .as_ref()
-            .unwrap()
-            .plan
-            .missing_bucket_generations
-            .is_empty());
+        assert!(engine.storage_wal_reclaim_plan(RECLAIM_DUMP_SHARD, [], [])
+            .missing_bucket_generations.is_empty());
         drop(engine);
         let restored = TemporalEngine::with_local_dirs(
             1 << 20,
@@ -1337,7 +1464,8 @@ fn fresh_string_dump_case(periodic: bool, cap: usize, dry_run: bool) {
             let plan = engine.storage_wal_reclaim_plan(RECLAIM_DUMP_SHARD, Vec::new(), Vec::new());
             assert!(plan.missing_bucket_generations.is_empty(), "{plan:?}");
             assert!(plan.safe_to_reclaim, "{plan:?}");
-            assert!(wal_record_count(&engine) < before_records);
+            assert_eq!(wal_record_count(&engine), before_records,
+                "page collection is disabled in this dump-only fixture");
         }
     }
     // No explicit index flush: the maintenance dump itself must be restartable.
@@ -1428,7 +1556,7 @@ fn an_async_string_dump_reclaims_without_losing_restore() {
         enable_prepare: false,
         enable_evict: false,
         enable_expire: false,
-        enable_block_reclaim: false,
+        enable_block_reclaim: true,
         enable_block_compaction: false,
         enable_index_gc: false,
         ..StorageManagerCycleRequest::default()
@@ -1527,7 +1655,7 @@ fn container_blocks_remain_readable_after_dump_and_restart() {
         enable_prepare: false,
         enable_evict: false,
         enable_expire: false,
-        enable_block_reclaim: false,
+        enable_block_reclaim: true,
         enable_block_compaction: false,
         enable_index_gc: false,
         ..StorageManagerCycleRequest::default()
@@ -1631,7 +1759,7 @@ fn a_container_tombstone_retains_its_wal_record_after_restart() {
         enable_prepare: false,
         enable_evict: false,
         enable_expire: false,
-        enable_block_reclaim: false,
+        enable_block_reclaim: true,
         enable_block_compaction: false,
         enable_index_gc: false,
         ..StorageManagerCycleRequest::default()
