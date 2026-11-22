@@ -44,11 +44,9 @@
 //! and calls `release_bucket_blocks` inside it, so the whole-store walk is an interval every
 //! serving read and write on the shard queues behind.
 //!
-//! WHAT THE ACTUATOR RELEASES AT THE SHIPPED SETTINGS: nothing. `eviction_dump_before_evict`
-//! ships false, a bucket written and not yet dumped is dirty, and a dirty bucket is refused --
-//! correctly, because the model maps carry no per-block dirty bit for a reload to restore. So a
-//! default-configured round pays the whole-store walk and the two index walks to release zero
-//! blocks. Turn the dump on and the same round releases its victims; both arms are measured, and
+//! WHAT THE ACTUATOR RELEASES AT THE SHIPPED SETTINGS: a bucket that holds only inline string
+//! pages, dirty or not, because the page state stays resident. A plain release of a dirty bucket
+//! is still refused -- the model maps carry no per-block dirty bit for a reload to restore -- and
 //! the refusal TERM is named rather than left as a count.
 //!
 //! WHETHER IT KEEPS UP. A round gives back at most `batch_limit` buckets however large the store
@@ -327,6 +325,47 @@ fn one_round(engine: &TemporalEngine, records: usize, batch_limit: usize, dump: 
     cost
 }
 
+/// A plain release of the round's own candidates, with every counter around it, for the claims
+/// about a release that refuses. The actuator keeps the inline pages of a string bucket resident,
+/// so a dirty string bucket is released by a round at the shipped setting; the plain release is
+/// the path that still refuses a dirty bucket.
+fn plain_release_round(engine: &TemporalEngine, records: usize) -> RoundCost {
+    let cache_report = engine.storage_cache_inspection_report(1);
+    let cache_by_bucket = cache_report
+        .bucket_summaries
+        .iter()
+        .map(|summary| (summary.routing_bucket, summary.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let candidates = engine
+        .sampled_eviction_victims(1, BATCH, &cache_by_bucket)
+        .iter()
+        .map(|victim| victim.routing_bucket)
+        .collect::<Vec<_>>();
+    crate::engine::reset_model_map_addresses_visited();
+    crate::engine::reset_bucket_release_model_derivations();
+    let mut shards = engine.shards.write().expect("shards lock poisoned");
+    let shard = shards.get_mut(&1).expect("shard 1 loaded");
+    let buckets = shard.bucket_index.bucket_map.len();
+    let outcome = release_bucket_blocks(shard, &candidates);
+    RoundCost {
+        records,
+        buckets,
+        victims: candidates.len(),
+        model_visits: crate::engine::model_map_addresses_visited(),
+        model_emitted: 0,
+        resident_visits: 0,
+        live_scan: 0,
+        recency_cloned: 0,
+        released_buckets: outcome.released_buckets.len(),
+        released_blocks: outcome.released_blocks,
+        refused: outcome.refused_buckets,
+        derivations: crate::engine::bucket_release_model_derivations(),
+        index_bytes_before: 0,
+        index_bytes_after: 0,
+        round_nanos: 0,
+    }
+}
+
 /// THE CONTROL FOR EVERY "THE ROUND WALKS NOTHING" CLAIM IN THIS FILE.
 ///
 /// The verify-time comparison is the one place that still derives what a reload would rebuild, so
@@ -397,13 +436,22 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
             .unwrap_or_default()
     };
     let buckets = all_buckets.len();
+    // The slabs of every bucket BEFORE the round: the round releases its victims' blocks, so the
+    // victims' slabs can only be read from before it.
+    let slabs_before: BTreeMap<u32, BTreeSet<u64>> = all_buckets
+        .iter()
+        .map(|bucket| (*bucket, slabs_spanned_by(&engine, &BTreeSet::from([*bucket]))))
+        .collect();
     let report = engine.apply_storage_eviction(1, 0, BATCH, false, false);
     let victims = report
         .selected_victims
         .iter()
         .map(|victim| victim.routing_bucket)
         .collect::<BTreeSet<_>>();
-    let victim_slabs = slabs_spanned_by(&engine, &victims);
+    let victim_slabs: BTreeSet<u64> = victims
+        .iter()
+        .flat_map(|bucket| slabs_before[bucket].iter().copied())
+        .collect();
 
     println!(
         "  fixture: {GUARD_LARGE} records -> {buckets} buckets, live blocks by slab {by_slab:?}, \
@@ -448,7 +496,10 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
         .take(BATCH)
         .copied()
         .collect::<BTreeSet<u32>>();
-    let scan_order_slabs = slabs_spanned_by(&engine, &scan_order);
+    let scan_order_slabs: BTreeSet<u64> = scan_order
+        .iter()
+        .flat_map(|bucket| slabs_before[bucket].iter().copied())
+        .collect();
     println!(
         "  clause 3: victims {victims:?} on slabs {victim_slabs:?}; a scan-ordered selection \
          would take {scan_order:?} on slabs {scan_order_slabs:?}"
@@ -499,7 +550,7 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
 /// it releases nothing, and the reason is a single named term rather than an absence.
 ///
 /// `eviction_dump_before_evict` ships FALSE. A bucket that has been written and not dumped is
-/// dirty, `release_bucket_blocks` refuses a dirty bucket, and it is right to -- the model maps
+/// dirty, a plain `release_bucket_blocks` refuses a dirty bucket, and it is right to -- the model maps
 /// carry no per-block dirty bit, so a reload could not restore what a release of a dirty bucket
 /// dropped. Turn the dump on, the round dumps its victims and clears their dirty state first, and
 /// the same actuator releases them.
@@ -585,15 +636,15 @@ fn the_release_actuator_is_refused_at_the_shipped_setting_and_releases_with_the_
         shipped.victims,
         dumped.victims
     );
-    assert_eq!(
-        shipped.released_blocks, 0,
-        "the shipped setting released {} blocks; this test exists to record that it releases \
-         none, and a number here means the refusal it is built on has changed",
+    assert!(
+        shipped.released_blocks > 0,
+        "the shipped setting released {} blocks; dirty string buckets keep their inline pages \
+         resident and are released, so zero means the actuator stopped keeping them",
         shipped.released_blocks
     );
     assert_eq!(
-        shipped.refused, shipped.victims,
-        "at the shipped setting every victim must be refused, got {} refused of {} victims",
+        shipped.refused, 0,
+        "at the shipped setting no string victim is refused, got {} refused of {} victims",
         shipped.refused, shipped.victims
     );
     assert!(
@@ -609,9 +660,9 @@ fn the_release_actuator_is_refused_at_the_shipped_setting_and_releases_with_the_
         dumped.index_bytes_before,
         dumped.index_bytes_after
     );
-    assert_eq!(
-        shipped.index_bytes_after, shipped.index_bytes_before,
-        "the shipped setting changed the resident index ({} -> {}) while releasing nothing",
+    assert!(
+        shipped.index_bytes_after < shipped.index_bytes_before,
+        "the shipped setting released blocks but the resident index did not shrink ({} -> {})",
         shipped.index_bytes_before,
         shipped.index_bytes_after
     );
@@ -1507,7 +1558,7 @@ fn the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers() {
 ///
 /// Two corpus sizes a factor of four apart, and BOTH ARMS at each size with the control named:
 ///
-///   * REFUSING (`eviction_dump_before_evict` false, which is what ships) -- every candidate is
+///   * REFUSING (a plain release of the round's dirty candidates) -- every candidate is
 ///     refused on `bucket_dirty`, a term that reads the candidate's own state, so no candidate
 ///     reaches the model-map comparison. Visits and derivations are asserted EQUAL to zero at
 ///     both sizes.
@@ -1525,7 +1576,7 @@ fn a_round_that_refuses_every_candidate_no_longer_walks_the_model_maps() {
             let dir = tempfile::tempdir().expect("tempdir");
             let engine = evict_engine(dir.path());
             seed_with_a_slab_roll(&engine, records);
-            one_round(&engine, records, BATCH, false)
+            plain_release_round(&engine, records)
         };
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = evict_engine(dir.path());
