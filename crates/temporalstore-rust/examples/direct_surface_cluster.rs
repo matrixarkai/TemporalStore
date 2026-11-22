@@ -21,7 +21,7 @@
 //!
 //! ```text
 //! MODE=direct META=127.0.0.1:24404,127.0.0.1:24405,127.0.0.1:24406 TS_MATRIXOBJECT_META_GROUP=1 \
-//!   LEG=surface cargo run --release -p temporalstore-rust --features matrixobject \
+//!   LEG=surface cargo run --release -p temporalstore-rust \
 //!   --example direct_surface_cluster
 //! ```
 //!

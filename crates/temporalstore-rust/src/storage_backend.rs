@@ -83,10 +83,11 @@ pub const DEFAULT_OBJECT_STORE_PORT: u16 = 17200;
 /// is unset or unparseable.
 pub const DEFAULT_PROBE_TIMEOUT_MS: u64 = 750;
 
-/// `true` when the crate was compiled with the `matrixobject` feature, i.e. the
-/// matrixobject shared-storage backend is available to select at runtime.
+/// The MatrixObject shared-storage backend is always compiled in: there is no feature to switch
+/// it on, so this is `true`. Kept as the seam `from_parts` takes, so the selection table can still
+/// be exercised with the backend absent; removing the seam and its dead branches is a follow-up.
 pub const fn matrixobject_feature_compiled() -> bool {
-    cfg!(feature = "matrixobject")
+    true
 }
 
 /// The storage/replication strategy a distributed node should use.

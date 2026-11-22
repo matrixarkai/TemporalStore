@@ -126,6 +126,11 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      # Direct mode over the shared client SDK is part of the default build, so the default job
+      # builds it and runs its tests: the gateway-versus-direct fixtures and the direct door.
+      - name: Direct mode over the shared client SDK (default build)
+        run: cargo test --locked -p temporalstore-rust --lib matrixobject_direct
+
       - name: Recovery dirty bucket selection checks
         timeout-minutes: 30
         run: |
