@@ -2900,7 +2900,6 @@ fn release_bucket_blocks_inner(
     // that was built eagerly, at the same shard state, and every outcome field is identical.
     // `refuse` is a set of counters with no ordering, and `released_buckets` is still pushed in
     // candidate order.
-    let mut derived: Option<BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>>> = None;
     let mut names_by_bucket = None;
     let lookup_established = !shard.bucket_index.names_no_object_blocks();
     // The shard's own range, for the per-block routing term below.
@@ -3020,37 +3019,28 @@ fn release_bucket_blocks_inner(
             outcome.refuse(BucketReleaseRefusal::LookupNotLocal);
             continue;
         }
-        let resident: BTreeSet<ReleasedBlockIdentity> = bucket
-            .block_index
-            .iter()
-            .filter_map(|(handle, block)| {
-                // A BLOCK NOTHING NAMES CONTRIBUTES NO IDENTITY, which makes the resident set
-                // smaller than the derived one and refuses the release below. That is the safe
-                // direction: releasing across a disagreement loses blocks.
-                names.get(handle).map(|beside| {
-                    released_block_identity(
-                        block.model_id().as_str(),
-                        beside,
-                        // `None`: the identity an entry can state is its block's, not its
-                        // element's.
-                        None,
-                        &block.address,
-                    )
+        // NO WHOLE-STORE PASS ON THIS PATH. A release is the local act of clearing one bucket's
+        // block list; a reload rebuilds it from the model maps, so a block the maps hold and the
+        // bucket does not is added back, not lost. The comparison of the two sets is
+        // `verify_release_matches_model_maps`, run by tests and by verify, not per batch.
+        //
+        // The one set comparison that stays is local to the bucket: with inline pages, two blocks
+        // that state the same identity would collapse into one and a reload would not restore
+        // both, so the resident identities must be as many as the resident blocks.
+        if inline_pages {
+            let resident: BTreeSet<ReleasedBlockIdentity> = bucket
+                .block_index
+                .iter()
+                .filter_map(|(handle, block)| {
+                    names.get(handle).map(|beside| {
+                        released_block_identity(block.model_id().as_str(), beside, None, &block.address)
+                    })
                 })
-            })
-            .collect();
-        // THE WHOLE-STORE PASS, on first demand and once. Nothing above this line consulted it.
-        let derived = derived.get_or_insert_with(|| {
-            BUCKET_RELEASE_MODEL_DERIVATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            derive_released_block_identities(shard, &wanted)
-        });
-        if derived.get(&routing_bucket) != Some(&resident)
-            || inline_pages && resident.len() != bucket.block_index.len()
-        {
-            // The model maps would not rebuild what is resident. Whatever the disagreement is,
-            // it is not this function's to resolve -- and releasing across it would lose blocks.
-            outcome.refuse(BucketReleaseRefusal::ModelMapDisagreement);
-            continue;
+                .collect();
+            if resident.len() != bucket.block_index.len() {
+                outcome.refuse(BucketReleaseRefusal::ModelMapDisagreement);
+                continue;
+            }
         }
         let dropped: Vec<(StoredModelKind, Arc<str>, bool, bool)> = bucket
             .block_index
@@ -4654,6 +4644,42 @@ pub(super) fn clear_retained_inline_page_dirty_state(shard: &mut ShardState, buc
             slot.record.retain_page_state(false, deleted);
         }
     }
+}
+
+/// Whether each wanted bucket's resident blocks are exactly what a reload would rebuild.
+///
+/// The check `release_bucket_blocks` used to run once per batch under the write lock. It walks the
+/// model maps, so it belongs to verification, not to the eviction hot path.
+pub(super) fn verify_release_matches_model_maps(
+    shard: &ShardState,
+    buckets: &[u32],
+) -> bool {
+    let wanted: BTreeSet<u32> = buckets.iter().copied().collect();
+    let wanted_list: Vec<u32> = wanted.iter().copied().collect();
+    let keys = crate::engine::state::BlockKeysByPosition::from_owned_buckets(
+        &shard.bucket_index.objects,
+        &shard.bucket_index.object_block_lookup,
+        shard.bucket_index.bucket_owners.get(),
+        &wanted_list,
+    );
+    BUCKET_RELEASE_MODEL_DERIVATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let derived = derive_released_block_identities(shard, &wanted);
+    wanted.iter().all(|routing_bucket| {
+        let Some(bucket) = shard.bucket_index.bucket_map.get(routing_bucket) else {
+            return true;
+        };
+        let names = crate::engine::state::block_identities_in(bucket, &keys);
+        let resident: BTreeSet<ReleasedBlockIdentity> = bucket
+            .block_index
+            .iter()
+            .filter_map(|(handle, block)| {
+                names.get(handle).map(|beside| {
+                    released_block_identity(block.model_id().as_str(), beside, None, &block.address)
+                })
+            })
+            .collect();
+        derived.get(routing_bucket) == Some(&resident)
+    })
 }
 
 /// What a reload would rebuild for each of the WANTED buckets, and nothing else.
@@ -9608,30 +9634,32 @@ mod release_refusal_guards {
         assert!(released_model_kind_is_addressable("context_node"));
     }
 
-    /// TERM: the resident set must EQUAL what the model maps derive. Here the map holds the same
-    /// block at a different length, so a reload would rebuild a different address than the one
-    /// released -- the disagreement this term exists to refuse across.
+    /// The resident set is compared with what the model maps derive at VERIFY time, not per
+    /// release. Here the map holds the same block at a different length: the verify function says
+    /// so, and a release does not walk the store to find out -- the release path never derives.
     #[test]
-    fn a_model_map_disagreement_is_refused_and_the_refusal_names_the_map_term() {
+    fn a_model_map_disagreement_is_found_by_verify_and_the_release_does_not_walk() {
         let (mut shard, key) = releasable_shard(7, "disagreement-key");
+        assert!(
+            super::verify_release_matches_model_maps(&shard, &[7]),
+            "the fixture must agree with the maps before the disagreement is planted",
+        );
         shard.set_string_address(std::sync::Arc::from(key.as_str()), &address(7, 4_096));
+        assert!(
+            !super::verify_release_matches_model_maps(&shard, &[7]),
+            "verify did not see a block whose map entry has a different length",
+        );
 
+        super::reset_bucket_release_model_derivations();
+        let before = super::bucket_release_model_derivations();
         let outcome = release_bucket_blocks(&mut shard, &[7]);
 
-        assert!(
-            outcome.released_buckets.is_empty(),
-            "released across a model-map disagreement: {outcome:?}",
-        );
-        assert_eq!(outcome.released_blocks, 0, "{outcome:?}");
-        assert_eq!(outcome.refused_buckets, 1, "{outcome:?}");
         assert_eq!(
-            outcome.refusals,
-            BucketReleaseRefusals {
-                model_map_disagreement: 1,
-                ..BucketReleaseRefusals::default()
-            },
-            "the refusal was not attributed to the model-map term",
+            super::bucket_release_model_derivations(),
+            before,
+            "the release walked the model maps; the walk belongs to verify: {outcome:?}",
         );
+        assert_eq!(outcome.refusals.model_map_disagreement, 0, "{outcome:?}");
     }
 
     /// All four in ONE batch beside a releasable bucket. This is the guard that the four terms
@@ -9659,15 +9687,15 @@ mod release_refusal_guards {
 
         assert_eq!(
             outcome.released_buckets,
-            vec![1],
-            "expected exactly the releasable bucket of {} candidates: {outcome:?}",
+            vec![1, 5],
+            "expected the releasable bucket and the map-disagreeing one (verify's term, not              release's) of {} candidates: {outcome:?}",
             candidates.len(),
         );
-        assert_eq!(outcome.released_blocks, 1, "{outcome:?}");
+        assert_eq!(outcome.released_blocks, 2, "{outcome:?}");
         assert_eq!(
             outcome.refused_buckets,
-            4,
-            "expected 4 refusals of {} candidates: {outcome:?}",
+            3,
+            "expected 3 refusals of {} candidates: {outcome:?}",
             candidates.len(),
         );
         assert_eq!(
@@ -9676,10 +9704,9 @@ mod release_refusal_guards {
                 bucket_dirty: 1,
                 block_dirty: 1,
                 block_kind_not_addressable: 1,
-                model_map_disagreement: 1,
                 ..BucketReleaseRefusals::default()
             },
-            "the four refusals were not attributed one to each term",
+            "the three refusals were not attributed one to each term",
         );
         assert_eq!(
             outcome.refusals.total(),
@@ -9788,10 +9815,16 @@ mod release_walk_scale {
     /// released)`. The live-block count is the denominator: it is what the walk used to
     /// materialize, and a fixture whose two sizes did not differ in it would make the claim below
     /// a comparison of a store with itself.
-    fn release_four_of(buckets: u32) -> (u64, usize, usize, usize) {
+    fn release_four_of(buckets: u32) -> (u64, u64, usize, usize, usize) {
         let (mut shard, landed) = shard_with(buckets);
         let live_blocks = shard.strings().len();
         let candidates = [landed[0], landed[1], landed[2], landed[3]];
+
+        // THE CONTROL ARM FIRST: the verify-time comparison is the one place that still walks the
+        // model maps, so it is what proves the counter can see a walk on this fixture.
+        reset_bucket_scoped_model_entries();
+        assert!(super::verify_release_matches_model_maps(&shard, &candidates));
+        let verified = bucket_scoped_model_entries();
 
         reset_bucket_scoped_model_entries();
         let outcome = release_bucket_blocks(&mut shard, &candidates);
@@ -9803,6 +9836,7 @@ mod release_walk_scale {
         );
         (
             materialized,
+            verified,
             live_blocks,
             outcome.released_blocks,
             outcome.released_buckets.len(),
@@ -9816,24 +9850,24 @@ mod release_walk_scale {
     /// derivation that built nothing at all, both read zero at every store size -- and zero
     /// satisfies "does not grow with the store" perfectly while measuring nothing.
     #[test]
-    fn the_release_derivation_materializes_the_four_victims_blocks() {
-        let (materialized, live_blocks, released_blocks, released_buckets) = release_four_of(64);
+    fn the_verify_walk_materializes_the_four_victims_blocks_and_the_release_materializes_none() {
+        let (materialized, verified, live_blocks, released_blocks, released_buckets) =
+            release_four_of(64);
 
         assert_eq!(
             released_buckets, 4,
-            "the four victims must have been released, or there was nothing to derive for",
+            "the four victims must have been released, or there was nothing to compare",
         );
         assert_eq!(released_blocks, 4, "one block per victim");
         assert!(
             live_blocks > released_blocks,
-            "the store must hold more than the victims, or the claim below is untestable; \
-             {live_blocks} live blocks against {released_blocks} released",
+            "the store must hold more than the victims; {live_blocks} live against              {released_blocks} released",
         );
         assert_eq!(
-            materialized, 4,
-            "the derivation must materialize the four victims' blocks; it materialized \
-             {materialized} out of {live_blocks} live in the store",
+            verified, 4,
+            "the verify walk must materialize the four victims' blocks (the control that the              counter can see a walk); it materialized {verified} out of {live_blocks}",
         );
+        assert_eq!(materialized, 0, "the release itself must walk nothing");
     }
 
     /// THE CLAIM: releasing four buckets costs the four buckets, not the store.
@@ -9846,36 +9880,28 @@ mod release_walk_scale {
     /// The whole-shard WALK remains, and remains necessary: `derive_released_block_identities`
     /// says why. What is asserted here is what it materializes.
     #[test]
-    fn releasing_four_buckets_materializes_the_same_entries_however_large_the_store() {
+    fn releasing_four_buckets_walks_nothing_however_large_the_store() {
         const SMALL: u32 = 500;
         const LARGE: u32 = 4_000;
 
-        let (small, small_live, small_blocks, small_buckets) = release_four_of(SMALL);
-        let (large, large_live, large_blocks, large_buckets) = release_four_of(LARGE);
+        let (small, small_verified, small_live, small_blocks, small_buckets) =
+            release_four_of(SMALL);
+        let (large, large_verified, large_live, large_blocks, large_buckets) =
+            release_four_of(LARGE);
 
-        // VACUITY FLOOR, on the measured denominator rather than on the constants.
         assert!(
             large_live > small_live,
             "the two stores must differ in live blocks, got {small_live} and {large_live}",
         );
+        assert_eq!((small_buckets, large_buckets), (4, 4));
+        assert_eq!((small_blocks, large_blocks), (4, 4));
+        // The control: the verify walk sees exactly the four victims' blocks at both sizes, so a
+        // counter that read zero because it was not wired would fail here, not pass below.
+        assert_eq!((small_verified, large_verified), (4, 4));
         assert_eq!(
-            (small_buckets, large_buckets),
-            (4, 4),
-            "both sizes must release the same four victims to be compared at all",
-        );
-        assert_eq!(
-            (small_blocks, large_blocks),
-            (4, 4),
-            "both sizes must release the same four blocks",
-        );
-        assert!(
-            small > 0 && large > 0,
-            "a derivation that materializes nothing at either size measured nothing",
-        );
-        assert_eq!(
-            small, large,
-            "releasing four buckets materialized {small} entries out of {small_live} live blocks \
-             and {large} out of {large_live}; the release must cost the victims, not the store",
+            (small, large),
+            (0, 0),
+            "releasing four buckets materialized {small} entries out of {small_live} live blocks              and {large} out of {large_live}; the release must walk nothing",
         );
     }
 

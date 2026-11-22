@@ -1143,7 +1143,13 @@ jobs:
             engine::maintenance_log::tests::single_object_bucket_deletions_keep_the_key_projection_fast_path \
             engine::maintenance_log::tests::maintenance_log_failure_leaves_unlogged_records_live \
             engine::maintenance_log::tests::maintenance_log_partial_failure_applies_and_mirrors_only_complete_frames \
-            data_node::tests::part3::a_shard_that_finishes_recovery_has_its_due_keys_removed_by_its_own_next_round
+            data_node::tests::part3::a_shard_that_finishes_recovery_has_its_due_keys_removed_by_its_own_next_round \
+            engine::tests::evict_scale::a_releasing_round_walks_nothing_in_both_batch_regimes \
+            engine::tests::evict_scale::a_releasing_round_walks_nothing_whether_it_takes_one_victim_or_many \
+            engine::tests::evict_scale::the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers \
+            engine::storage_bucket_internals::release_walk_scale::releasing_four_buckets_walks_nothing_however_large_the_store \
+            engine::storage_bucket_internals::release_refusal_guards::a_model_map_disagreement_is_found_by_verify_and_the_release_does_not_walk \
+            engine::tests::expiry_scale::a_due_round_examines_its_cap_however_large_the_backlog_and_the_next_round_resumes
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-memory-stages.log
             # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
