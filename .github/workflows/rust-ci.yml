@@ -1242,6 +1242,30 @@ jobs:
           fi
           grep -q 'test result: ok. 1 passed' /tmp/pin-compaction-gate.log \
             || { echo "::error::$t did not pass"; exit 1; }
+      - name: cargo test (shard guard reporter and dispatch guards, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          # The scalar reporters hold the shard table for a number of entries that does not grow with
+          # the shard, every hold is attributed to its call site, and a maintenance step queues behind
+          # a command on the shard-table lock. Pinned by exact name: they ran only in the advisory suite.
+          for t in \
+            engine::tests::a_scalar_reporter_visits_at_most_its_cap_at_every_scale::a_scalar_reporter_visits_at_most_its_cap_at_every_scale \
+            engine::tests::shard_lock_holds_are_attributed_by_call_site::a_hold_is_recorded_under_the_line_that_took_it \
+            engine::tests::every_maintenance_step_queues_behind_a_command::every_maintenance_step_queues_behind_a_command \
+            engine::tests::every_maintenance_step_queues_behind_a_command::a_command_queues_behind_a_step_that_holds_the_lock \
+            engine::tests::every_maintenance_step_queues_behind_a_command::a_step_that_skips_the_lock_is_seen_to_skip_it
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-shard-guard.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-shard-guard.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok. 1 passed' /tmp/pin-shard-guard.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
       - name: cargo test (compaction hold and drain guards, hard gate)
         timeout-minutes: 20
         run: |

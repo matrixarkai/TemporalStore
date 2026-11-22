@@ -3271,6 +3271,7 @@ impl BlockStore {
     }
 
     pub fn stats(&self) -> BlockStoreStats {
+        crate::engine::shard_guard::note_store_read();
         let mut stats = self.inner.lock().expect("block store lock poisoned").stats;
         self.read_view.counters.merge_into(&mut stats);
         stats

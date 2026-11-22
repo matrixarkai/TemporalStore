@@ -36,35 +36,39 @@ impl TemporalEngine {
         after: Option<u32>,
         max: usize,
     ) -> BucketGaugeSweep {
-        let shards = self.shards.read().expect("shards lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return BucketGaugeSweep::default();
-        };
-        let buckets = &shard.bucket_index.bucket_map;
-        let mut sweep = BucketGaugeSweep {
-            buckets_total: buckets.len(),
-            ..BucketGaugeSweep::default()
-        };
-        let mut remaining = buckets.range_after(after);
-        for (routing_bucket, node) in remaining.by_ref().take(max) {
-            sweep.gauges.push(BucketGauge {
-                routing_bucket: *routing_bucket,
-                object_count: node.object_index.object_count() as u64,
-                block_count: node.block_index.len() as u64,
-                block_bytes: node
-                    .block_index
-                    .values()
-                    .map(|block| block.address.length())
-                    .sum::<u64>(),
-            });
-        }
-        // Resume after the last bucket read, unless that was the end.
-        sweep.next_after = if remaining.next().is_some() {
-            sweep.gauges.last().map(|gauge| gauge.routing_bucket)
-        } else {
-            None
-        };
-        sweep
+        self.shards.with_shard(shard_id, |shard, visited| {
+            let Some(shard) = shard else {
+                return BucketGaugeSweep::default();
+            };
+            let buckets = &shard.bucket_index.bucket_map;
+            let mut sweep = BucketGaugeSweep {
+                buckets_total: buckets.len(),
+                ..BucketGaugeSweep::default()
+            };
+            let mut remaining = buckets.range_after(after);
+            for (routing_bucket, node) in remaining.by_ref().take(max) {
+                // One entry per bucket read; the bucket's own blocks are summed below and charged
+                // too, because that sum is a walk of them.
+                visited.add(1 + node.block_index.len() as u64);
+                sweep.gauges.push(BucketGauge {
+                    routing_bucket: *routing_bucket,
+                    object_count: node.object_index.object_count() as u64,
+                    block_count: node.block_index.len() as u64,
+                    block_bytes: node
+                        .block_index
+                        .values()
+                        .map(|block| block.address.length())
+                        .sum::<u64>(),
+                });
+            }
+            // Resume after the last bucket read, unless that was the end.
+            sweep.next_after = if remaining.next().is_some() {
+                sweep.gauges.last().map(|gauge| gauge.routing_bucket)
+            } else {
+                None
+            };
+            sweep
+        })
     }
 
     /// WHAT THE SERVED HASH READ HAS SEEN OF ITS TWO SOURCES, read off the counters the read

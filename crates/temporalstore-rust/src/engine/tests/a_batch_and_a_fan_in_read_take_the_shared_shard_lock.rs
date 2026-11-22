@@ -53,7 +53,7 @@ fn fan_in(first: &str, second: &str) -> Command {
     Command::WindowReduceFanInRank { keys: vec![first.to_string(), second.to_string()], spec: rank_spec() }
 }
 
-fn assert_blocked_write<T>(engine: &Arc<TemporalEngine>, key: &str, guard: std::sync::RwLockReadGuard<'_, T>) {
+fn assert_blocked_write(engine: &Arc<TemporalEngine>, key: &str, guard: impl Sized) {
     let write = Command::FeatureAppend {
         key: key.to_string(),
         points: vec![FeaturePoint { timestamp_ms: 9_000, value: vec![0] }],
