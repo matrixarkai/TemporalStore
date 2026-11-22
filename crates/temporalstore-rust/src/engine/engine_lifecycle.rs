@@ -1159,6 +1159,12 @@ impl TemporalEngine {
                         .and_then(crate::engine::decode_index_bytes)
                     {
                         Ok(mut restored) => {
+                            // THE DURABLE RELOCATION RECORDS ARE FOLDED ONTO THE BASE THIS LOAD ACTUALLY
+                            // CHOSE, and before the derivations below read the addresses. A manifest
+                            // image cut after a relocation already names the new address, so the
+                            // record finds nothing at its old one and is a no-op; one cut before it
+                            // is repointed here.
+                            self.fold_relocation_records(request.shard_id, &mut restored, true);
                             // RE-DERIVE THE UNSERIALIZED MODEL MAPS BEFORE REBUILDING OWNERSHIP,
                             // for the reason `install_bucket_dump_manifest` states at its own call
                             // to the same pair. Three of the maps

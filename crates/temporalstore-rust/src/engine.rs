@@ -6507,6 +6507,190 @@ fn fold_delta_block_items(
     items: &[crate::index_log::IndexItem],
     upsert: bool,
 ) {
+    fold_delta_block_items_replacing(bucket_index, covered_keys, items, items, upsert);
+}
+
+/// Whether the base state still names the block `from` describes: a block of the same model and
+/// object, in the same bucket, at EXACTLY `from`'s old address. The identity a relocation is applied
+/// against; see `IndexDeltaRecord::relocated_from`.
+fn relocation_source_is_current(bucket_index: &CoreIndex, from: &crate::index_log::IndexItem) -> bool {
+    let Some(old) = from.entry.as_ref() else {
+        return false;
+    };
+    let Some(bucket) = bucket_index.bucket_map.get(&from.routing_bucket) else {
+        return false;
+    };
+    let names = crate::engine::state::block_identities_in(
+        bucket,
+        &crate::engine::state::BlockKeysByPosition::from_parts_for_keys(
+            &bucket_index.objects,
+            &bucket_index.object_block_lookup,
+            std::iter::once(&*from.object_key),
+        ),
+    );
+    let wanted = live_block_key(old);
+    bucket.block_index.iter().any(|(handle, block)| {
+        block.model_id().as_str() == from.model_id
+            && names.get(handle).is_some_and(|key| &**key == from.object_key.as_ref())
+            && live_block_key(&block.address) == wanted
+    })
+}
+
+/// Apply one relocation record to a state loaded from the base image alone: each `to[i]` replaces
+/// `from[i]`, but ONLY where the state still names `from[i]` (see `relocation_source_is_current`).
+/// A pair whose source is not current is skipped: the key was written after the base and the WAL
+/// tail re-executes that write, so applying the relocation as well would apply it twice.
+/// Items are applied in record order, so a chain a->b->c across records checks each step against the
+/// state the previous one left. Returns how many pairs were applied.
+fn fold_relocation_record(
+    shard: &mut ShardState,
+    from: &[crate::index_log::IndexItem],
+    to: &[crate::index_log::IndexItem],
+    elements: &[String],
+    repoint_blocks: bool,
+) -> usize {
+    // A record that does not pair its items is malformed; apply none of it rather than guess.
+    if from.len() != to.len() || from.len() != elements.len() {
+        return 0;
+    }
+    let mut applied = 0;
+    let no_covered_keys = BTreeSet::new();
+    for ((old, new), element) in from.iter().zip(to.iter()).zip(elements.iter()) {
+        // THE ELEMENT IS THE IDENTITY, and it is checked in the model map recovery reads back: the
+        // element must still be at the old address. An element rewritten after the base is not, and
+        // the WAL tail re-derives it, so the record is skipped for it.
+        if !repoint_model_element(shard, old, new, element) {
+            continue;
+        }
+        applied += 1;
+        // The bucket index names BLOCKS, and a batched container block carries many elements: the
+        // first element to move it replaces the entry, the rest find it already replaced and only
+        // repoint their own address above. A manifest-chosen base derives its bucket index from the
+        // model maps afterwards, so it asks only for the model maps (`repoint_blocks == false`).
+        if repoint_blocks && relocation_source_is_current(&shard.bucket_index, old) {
+            fold_delta_block_items_replacing(
+                &mut shard.bucket_index,
+                &no_covered_keys,
+                std::slice::from_ref(old),
+                std::slice::from_ref(new),
+                true,
+            );
+        }
+    }
+    applied
+}
+
+/// The one-object selection `try_visit_element_values_mut` takes.
+fn one_object(key: &str) -> std::collections::HashSet<state::ModelKey> {
+    std::iter::once(std::sync::Arc::<str>::from(key)).collect()
+}
+
+/// Repoint one element's address in the model map recovery reads back, but only if it is still at the
+/// item's OLD address. Returns whether it was. The container maps are the SOLE source of their
+/// elements at load (the derived view for those kinds is empty and the persisted map is filtered
+/// against the live block set), so a bucket-index repoint alone would drop every moved element.
+/// A kind this does not know answers `false`, which skips the record for it.
+fn repoint_model_element(
+    shard: &mut ShardState,
+    from: &crate::index_log::IndexItem,
+    to: &crate::index_log::IndexItem,
+    element: &str,
+) -> bool {
+    let (Some(old), Some(new)) = (from.entry.as_ref(), to.entry.as_ref()) else {
+        return false;
+    };
+    let key: &str = &from.object_key;
+    match from.model_id.as_str() {
+        "string" => match shard.strings_mut().get_mut(key) {
+            Some(slot) if slot.address() == *old => {
+                slot.set_address(new);
+                true
+            }
+            _ => false,
+        },
+        "hash" => {
+            let selected = one_object(key);
+            let mut done = false;
+            let _ = shard.bucket_index.hashes.try_visit_element_values_mut(Some(&selected), |_, mut fields| {
+                for (field, address) in fields.iter_mut() {
+                    if field.as_bytes() == element.as_bytes() && *address == *old {
+                        *address = new.clone();
+                        done = true;
+                    }
+                }
+                Ok::<_, ()>(())
+            });
+            done
+        }
+        "set" => {
+            let Some(member) = container_blocks::member_from_element_name(element) else {
+                return false;
+            };
+            let selected = one_object(key);
+            let mut done = false;
+            let _ = shard.bucket_index.sets.try_visit_element_values_mut(Some(&selected), |_, mut members| {
+                for (name, address) in members.iter_mut() {
+                    if name.as_slice() == member.as_slice() && *address == *old {
+                        *address = new.clone();
+                        done = true;
+                    }
+                }
+                Ok::<_, ()>(())
+            });
+            done
+        }
+        "zset" => {
+            let Some(member) = container_blocks::member_from_element_name(element) else {
+                return false;
+            };
+            let selected = one_object(key);
+            let mut done = false;
+            let _ = shard.bucket_index.zsets.try_visit_element_values_mut(Some(&selected), |_, mut members| {
+                for (name, entry) in members.iter_mut() {
+                    if name.as_slice() == member.as_slice() && entry.1 == *old {
+                        entry.1 = new.clone();
+                        done = true;
+                    }
+                }
+                Ok::<_, ()>(())
+            });
+            done
+        }
+        "list" => {
+            let Some(sequence) = u64::from_str_radix(element, 16)
+                .ok()
+                .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
+            else {
+                return false;
+            };
+            let selected = one_object(key);
+            let mut done = false;
+            let _ = shard.bucket_index.lists.try_visit_element_values_mut(Some(&selected), |_, mut entries| {
+                for (seq, address) in entries.iter_mut() {
+                    if *seq == sequence && *address == *old {
+                        *address = new.clone();
+                        done = true;
+                    }
+                }
+                Ok::<_, ()>(())
+            });
+            done
+        }
+        _ => false,
+    }
+}
+
+/// The fold of `items` into the index, where the blocks an upsert SUPERSEDES are named by
+/// `superseded` and the blocks it FILES are `items`. An ordinary delta is both at once (the two are
+/// the same slice); a relocation supersedes the block at its old address and files the one at its
+/// new.
+fn fold_delta_block_items_replacing(
+    bucket_index: &mut CoreIndex,
+    covered_keys: &BTreeSet<String>,
+    superseded: &[crate::index_log::IndexItem],
+    items: &[crate::index_log::IndexItem],
+    upsert: bool,
+) {
     // FILING AND UN-FILING ARE ONE OBLIGATION, AND THIS SITE OWED BOTH.
     //
     // This function writes block entries and NOT the object lookup -- the tree says so in as many
@@ -6528,7 +6712,7 @@ fn fold_delta_block_items(
         // the same replacement the write path performed in memory. The predecessor lives in the
         // same routing bucket (the bucket derives from the object key), so the removal scans one
         // bucket per item and the covered-key wipe below stays untouched for snapshot records.
-        for item in items {
+        for item in superseded {
             let Some(mut bucket) = bucket_index.bucket_map.get_mut(&item.routing_bucket) else {
                 continue;
             };
