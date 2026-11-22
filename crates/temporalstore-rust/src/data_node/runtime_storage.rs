@@ -3183,6 +3183,11 @@ impl PageGcStage<'_> {
         // whether the live fraction over noncurrent slabs is under the threshold. Both are O(slabs)
         // with no file opened. A pass already underway finishes; an unpublished tally reads as due.
         if cursor.after_slab_id.is_none() {
+            // TIMED AS ITS OWN ROW. A round the gate declines runs no collection and is charged to no
+            // other row, so without this a stage that is asked every tick and always declines leaves
+            // no trace in the per-stage timing table. The row says how often the gate was asked and
+            // what asking cost; its absence next to a `reclaim_page` row says nothing was collected.
+            let gate_started = std::time::Instant::now();
             let engine = &self.runtime.inner.engine;
             engine.publish_block_slab_live_bytes();
             let gate = engine
@@ -3191,6 +3196,7 @@ impl PageGcStage<'_> {
             if !gate.due {
                 options.enable_block_gc = false;
             }
+            super::task_execution::record_gc_phase(&self.runtime.inner, "gate", gate_started);
         }
         let report = self
             .runtime
@@ -3293,5 +3299,41 @@ mod maintenance_expiry_budget_routes {
         assert_eq!(runtime.stats().expired_records_removed, 0);
         assert_eq!(engine.write_ahead_log_store().stats(1).writes, writes);
         assert_eq!(engine.sweep_expired_records(1).unwrap().expired_records_removed, 8);
+    }
+}
+
+#[cfg(test)]
+mod page_gate_is_timed {
+    use super::*;
+
+    /// A tick page step on a store with nothing to collect must still be visible: the gate that
+    /// declined it is charged to `reclaim_page.gate`, one round per fresh pass, and no collection
+    /// row appears (the control: the gate really did decline). Planted fault: drop the
+    /// `record_gc_phase` call and the row is absent.
+    #[test]
+    fn a_declined_page_step_reports_its_gate() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions { worker_threads: 0, max_queue_depth: 4, max_background_queue_depth: 2 },
+        );
+        assert!(
+            runtime.stats().storage_manager_stage_timing.keys().all(|name| !name.starts_with("reclaim_page")),
+            "a page row existed before any step ran"
+        );
+        let options = StorageManagerOptions::default();
+        for round in 1..=3u64 {
+            let mut cursor = PageCursor::default();
+            let mut budget = StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX);
+            let context = StageContext { options: &options, plan: None };
+            let (_, report) = PageGcStage { runtime: &runtime }.run(1, &mut cursor, &mut budget, &context);
+            assert!(report.gc_report.is_none(), "the gate was expected to decline: {report:?}");
+            let timing = runtime.stats().storage_manager_stage_timing;
+            let gate = timing.get("reclaim_page.gate").expect("a declined step reports its gate");
+            assert_eq!(gate.rounds_executed, round);
+            assert!(gate.max_us <= gate.total_us, "{gate:?}");
+            assert!(timing.get("reclaim_page").is_none(), "a declined step must not claim a collection row");
+        }
     }
 }
