@@ -1471,6 +1471,41 @@ impl TemporalEngine {
             .map(|manifest| manifest.wal_sequence)
     }
 
+    /// A dirty generation absent from every dump cannot release its first or unknown log claim.
+    /// This only declines a periodic attempt; a possible reclaim still needs the full plan.
+    pub(crate) fn periodic_wal_reclaim_is_pinned(&self, shard_id: ShardId) -> bool {
+        let mut pins = {
+            let shards = self.shards.read().expect("shards lock poisoned");
+            let Some(shard) = shards.get(&shard_id) else {
+                return false;
+            };
+            let buckets = &shard.bucket_index.bucket_map;
+            buckets.dirty_buckets().iter().filter_map(|id| {
+                crate::engine::state::count_bucket_node_scan_visits(1);
+                let node = buckets.get(id)?;
+                (node.dirty() && (node.first_dirty_wal_sequence <= 1
+                    || node.first_dirty_index_log_sequence == 0)).then_some(*id)
+            }).collect::<BTreeSet<_>>()
+        };
+        if pins.is_empty() {
+            return false;
+        }
+        let Ok(manifests) = list_bucket_dump_manifests_shared_at(&self.index_dir, shard_id) else {
+            return false;
+        };
+        // Summary membership is necessary for a generation match. Treat even an invalid or
+        // mismatched summary as possible coverage here, leaving its validation to the full plan.
+        for manifest in &manifests {
+            for summary in &manifest.bucket_summaries {
+                pins.remove(&summary.routing_bucket);
+            }
+            if pins.is_empty() {
+                return false;
+            }
+        }
+        !pins.is_empty()
+    }
+
     pub fn storage_wal_reclaim_plan(
         &self,
         shard_id: ShardId,
