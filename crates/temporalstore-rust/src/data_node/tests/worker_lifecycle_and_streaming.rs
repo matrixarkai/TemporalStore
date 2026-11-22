@@ -82,6 +82,9 @@ fn compact_batch_write_keeps_shared_wal_mirroring() {
                 .expect("recording sink lock poisoned")
                 .push(command.clone());
         }
+        fn record_outcomes(&self, _: ShardId, _: &[crate::wal::WalOutcomeItem]) {
+            panic!("unexpected maintenance frame");
+        }
     }
 
     let engine = TemporalEngine::default();

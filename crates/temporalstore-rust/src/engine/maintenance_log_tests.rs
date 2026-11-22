@@ -39,6 +39,172 @@ fn value(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
     value
 }
 
+#[derive(Debug, Default)]
+struct OutcomeMirror(std::sync::Mutex<Vec<Vec<crate::wal::WalOutcomeItem>>>);
+
+impl crate::data_node::SharedWalSink for OutcomeMirror {
+    fn record_write(&self, _: ShardId, _: &Command) {
+        panic!("maintenance must mirror exact outcomes");
+    }
+    fn record_outcomes(&self, _: ShardId, outcomes: &[crate::wal::WalOutcomeItem]) {
+        self.0.lock().unwrap().push(outcomes.to_vec());
+    }
+}
+
+#[test]
+fn expiry_keeps_independently_live_records_in_memory_and_wal_recovery() {
+    for cold in [false, true] {
+        for expire_family in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let engine = engine_at(dir.path(), "indexes");
+            engine.load_shard(1);
+            assert!(engine.set_config(SetConfigRequest { shard_id: 1,
+                config: Config { version: 2, async_storage: true, ..Default::default() },
+            }).ok);
+            let base = "aaa-expiry".to_string();
+            let family = control_state_family_key(ControlStateFamily::Counter, &base);
+            for key in [&base, &family] {
+                assert!(engine.execute(ExecuteRequest { shard_id: 1,
+                    command: Command::StringSetEx { key: key.clone(), value: key.as_bytes().to_vec(), ttl_ms: 60_000 },
+                }).status.ok);
+            }
+            let (due, live) = if expire_family { (&family, &base) } else { (&base, &family) };
+            assert_eq!(value(&engine, live), Some(live.as_bytes().to_vec()));
+            assert!(engine.execute(ExecuteRequest { shard_id: 1,
+                command: Command::StringSetEx { key: due.clone(), value: due.as_bytes().to_vec(), ttl_ms: 1 },
+            }).status.ok);
+            // Restore the family deadline after the base TTL outcome, which replays family-wide.
+            if !expire_family {
+                assert!(engine.execute(ExecuteRequest { shard_id: 1,
+                    command: Command::StringSetEx { key: live.clone(), value: live.as_bytes().to_vec(), ttl_ms: 60_000 },
+                }).status.ok);
+            }
+            {
+                let shards = engine.shards.read().unwrap();
+                assert!(shards[&1].strings().contains_key(due.as_str()));
+                assert!(shards[&1].strings().contains_key(live.as_str()));
+            }
+            if cold {
+                let bucket = engine.routing_bucket_for_key(1, due);
+                assert_ne!(bucket, engine.routing_bucket_for_key(1, live));
+                let mut shards = engine.shards.write().unwrap();
+                let released = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(
+                    shards.get_mut(&1).unwrap(), &[bucket]);
+                assert_eq!(released.released_buckets, vec![bucket]);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let before = engine.wal_store.cached_last_sequence(1);
+            let mirror = Arc::new(OutcomeMirror::default());
+            engine.set_maintenance_wal_mirror(mirror.clone());
+            let report = engine.sweep_expired_records_for_maintenance(ShardExpirySweepRequest {
+                shard_id: 1, max_hot_buckets_per_round: usize::from(!cold),
+                max_cold_buckets_per_round: usize::from(cold), load_cold_buckets: true,
+                ..Default::default()
+            }).unwrap();
+            assert_eq!(report.expired_records_removed, 1);
+            {
+                let shards = engine.shards.read().unwrap();
+                assert!(!shards[&1].strings().contains_key(due.as_str()));
+                assert!(shards[&1].strings().contains_key(live.as_str()),
+                    "expiring {due} must preserve independently live {live}");
+            }
+            let (records, truncated) = engine.wal_store.scan_decoded(1, 0, u64::MAX, u64::MAX).unwrap();
+            assert!(!truncated);
+            let deleted: Vec<_> = records.iter().filter(|(_, record)| record.sequence > before)
+                .flat_map(|(_, record)| &record.outcomes).map(|item| item.object_key.clone()).collect();
+            assert_eq!(deleted, vec![due.clone()]);
+            let frames = mirror.0.lock().unwrap();
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].len(), 1);
+            assert_eq!(frames[0][0].object_key, *due);
+            let follower = TemporalEngine::with_local_dirs(16 << 20,
+                dir.path().join("follower-cache"), dir.path().join("follower-blocks"), dir.path().join("follower-indexes"));
+            follower.load_shard(1);
+            write(&follower, due, b"due");
+            write(&follower, live, live.as_bytes());
+            assert_eq!(value(&follower, due), Some(b"due".to_vec()));
+            assert_eq!(value(&follower, live), Some(live.as_bytes().to_vec()));
+            for key in [due, live] {
+                for field in ["alpha", "beta", "gamma"] {
+                    assert!(follower.execute(ExecuteRequest { shard_id: 1,
+                        command: Command::HashSet { key: key.clone(), field: field.into(), value: b"cached".to_vec() },
+                    }).status.ok);
+                    assert_eq!(follower.execute(ExecuteRequest { shard_id: 1,
+                        command: Command::HashGet { key: key.clone(), field: field.into() },
+                    }).response, CommandResponse::Bytes { value: Some(b"cached".to_vec()) });
+                    // Point reads keep only physical payloads; seed supported query-response entries explicitly.
+                    follower.cache.put_memory_only(CacheKey::hash(1, key, field),
+                        encode_cached_response(&CommandResponse::Bytes { value: Some(b"cached".to_vec()) }).unwrap());
+                }
+            }
+            for key in [due, live] {
+                for field in ["alpha", "beta", "gamma"] {
+                    assert!(follower.cache.get(&CacheKey::hash(1, key, field)).unwrap().is_some());
+                }
+            }
+            assert!(follower.install_shared_outcomes(1, &frames[0]));
+            for (key, expected) in [(due, None), (live, Some(b"cached".to_vec()))] {
+                for field in ["alpha", "beta", "gamma"] {
+                    assert_eq!(follower.cache.get(&CacheKey::hash(1, key, field)).unwrap().is_some(), key == live);
+                    assert_eq!(follower.execute(ExecuteRequest { shard_id: 1,
+                        command: Command::HashGet { key: key.clone(), field: field.into() },
+                    }).response, CommandResponse::Bytes { value: expected.clone() });
+                }
+            }
+            assert_eq!(value(&follower, due), None);
+            assert_eq!(value(&follower, live), Some(live.as_bytes().to_vec()));
+            drop(follower);
+            engine.wal_store.flush(1).unwrap();
+            drop(engine);
+            let indexed = TemporalEngine::with_local_dirs(16 << 20,
+                dir.path().join("indexed-cache"), dir.path().join("blocks"), dir.path().join("indexes"));
+            indexed.load_shard(1);
+            assert_eq!(value(&indexed, due), None);
+            assert_eq!(value(&indexed, live), Some(live.as_bytes().to_vec()));
+            drop(indexed);
+            let mut restored = TemporalEngine::with_local_dirs(16 << 20, dir.path().join("fresh-cache"),
+                dir.path().join("blocks"), dir.path().join("empty-indexes"));
+            restored.wal_store = LocalWriteAheadLogStore::new(dir.path().join("indexes/wals"));
+            restored.load_shard(1);
+            {
+                let shards = restored.shards.read().unwrap();
+                assert!(!shards[&1].strings().contains_key(due.as_str()));
+                assert!(shards[&1].strings().contains_key(live.as_str()));
+            }
+            assert_eq!(value(&restored, live), Some(live.as_bytes().to_vec()));
+        }
+    }
+}
+
+#[test]
+fn expiry_budget_counts_each_due_record_without_expanding_its_family() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path(), "indexes");
+    engine.load_shard(1);
+    let base = "aaa-budget";
+    let family = control_state_family_key(ControlStateFamily::Counter, base);
+    write(&engine, base, b"base");
+    write(&engine, &family, b"family");
+    assert!(engine.execute(ExecuteRequest { shard_id: 1,
+        command: Command::CommonExpire { key: base.into(), ttl_ms: 1 },
+    }).status.ok);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    for (first, retained) in [(true, family.as_str()), (false, "")] {
+        let report = engine.sweep_expired_records_for_maintenance(ShardExpirySweepRequest {
+            shard_id: 1, max_hot_buckets_per_round: 1, load_cold_buckets: true,
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(report.expired_records_removed, 1);
+        let shards = engine.shards.read().unwrap();
+        assert!(!shards[&1].strings().contains_key(base));
+        if first {
+            assert!(shards[&1].strings().contains_key(retained));
+        } else {
+            assert!(!shards[&1].strings().contains_key(family.as_str()));
+        }
+    }
+}
+
 #[test]
 fn single_object_bucket_deletions_keep_the_key_projection_fast_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -219,7 +385,7 @@ fn deletion_round_replays(expire: bool) {
     }
     assert_eq!(
         removed,
-        keys.iter().cloned().chain([family.clone()]).collect()
+        keys.iter().cloned().chain((!expire).then(|| family.clone())).collect()
     );
     if expire {
         let deltas = engine.index_log_store.read_delta_records(1, 0).unwrap();
@@ -242,7 +408,7 @@ fn deletion_round_replays(expire: bool) {
     for key in &keys[1..] {
         assert_eq!(value(&restored, key), None);
     }
-    assert_eq!(value(&restored, &family), None);
+    assert_eq!(value(&restored, &family), expire.then(|| b"family".to_vec()));
     if expire {
         assert_eq!(value(&restored, "survivor"), Some(b"keep".to_vec()));
     }
@@ -392,11 +558,11 @@ fn maintenance_log_partial_failure_applies_and_mirrors_only_complete_frames() {
     #[derive(Debug, Default)]
     struct Mirror(std::sync::Mutex<Vec<String>>);
     impl crate::data_node::SharedWalSink for Mirror {
-        fn record_write(&self, _: ShardId, command: &Command) {
-            let Command::CommonDelete { key } = command else {
-                panic!("expected delete");
-            };
-            self.0.lock().unwrap().push(key.clone());
+        fn record_write(&self, _: ShardId, _: &Command) {
+            panic!("expected exact outcomes");
+        }
+        fn record_outcomes(&self, _: ShardId, outcomes: &[crate::wal::WalOutcomeItem]) {
+            self.0.lock().unwrap().extend(outcomes.iter().map(|item| item.object_key.clone()));
         }
     }
     let dir = tempfile::tempdir().unwrap();
@@ -478,7 +644,7 @@ fn maintenance_log_replay_counts_overlapping_families_once() {
                     ..Default::default()
                 })
                 .unwrap();
-            assert_eq!(report.expired_records_removed, 1);
+            assert_eq!(report.expired_records_removed, 2);
         } else {
             assert_eq!(
                 engine
