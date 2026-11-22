@@ -276,3 +276,145 @@ fn inconsistent_dirty_membership_still_requires_authoritative_summaries() {
     engine.shards.write().unwrap().get_mut(&1).unwrap().bucket_index.bucket_map
         .get_mut(&changed_bucket).unwrap().set_dirty(true);
 }
+
+#[test]
+fn uncovered_dirty_log_pins_agree_with_full_reclaim_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = pressure_engine(dir.path());
+    let pin = {
+        let mut shards = engine.shards.write().unwrap();
+        let shard = shards.get_mut(&1).unwrap();
+        for node in shard.bucket_index.bucket_map.values_mut() {
+            node.first_dirty_wal_sequence = 2;
+            node.first_dirty_index_log_sequence = 2;
+        }
+        *shard.bucket_index.bucket_map.keys().next().unwrap()
+    };
+    for wal in [0, 1, 2, u64::MAX] {
+        for index in [0, 1, 2, u64::MAX] {
+            {
+                let mut shards = engine.shards.write().unwrap();
+                let mut node = shards.get_mut(&1).unwrap().bucket_index.bucket_map.get_mut(&pin).unwrap();
+                node.first_dirty_wal_sequence = wal;
+                node.first_dirty_index_log_sequence = index;
+            }
+            crate::engine::reset_live_block_scan_entries();
+            let pinned = engine.periodic_wal_reclaim_is_pinned(1);
+            assert_eq!(pinned, wal <= 1 || index == 0, "wal={wal} index={index}");
+            assert_eq!(crate::engine::live_block_scan_entries(), 0);
+            if pinned {
+                let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+                assert!(!plan.safe_to_reclaim, "wal={wal} index={index}: {plan:?}");
+                let before = engine.write_ahead_log_store().stats_without_rescan(1);
+                let report = engine.apply_storage_wal_reclaim(plan);
+                assert!(!report.applied);
+                assert_eq!(report.wal_records_removed, 0);
+                assert_eq!(engine.write_ahead_log_store().stats_without_rescan(1).persistent_bytes, before.persistent_bytes);
+            }
+        }
+    }
+}
+
+#[test]
+fn covered_clean_and_stale_dirty_membership_do_not_supply_a_log_pin() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = pressure_engine(dir.path());
+    let pin = {
+        let mut shards = engine.shards.write().unwrap();
+        let shard = shards.get_mut(&1).unwrap();
+        for node in shard.bucket_index.bucket_map.values_mut() {
+            node.first_dirty_wal_sequence = 2;
+            node.first_dirty_index_log_sequence = 2;
+        }
+        *shard.bucket_index.bucket_map.keys().next().unwrap()
+    };
+    engine.shards.write().unwrap().get_mut(&1).unwrap().bucket_index.bucket_map
+        .get_mut(&pin).unwrap().first_dirty_wal_sequence = 1;
+    assert!(engine.periodic_wal_reclaim_is_pinned(1));
+    {
+        let mut shards = engine.shards.write().unwrap();
+        let buckets = &mut shards.get_mut(&1).unwrap().bucket_index.bucket_map;
+        assert!(buckets.dirty_buckets().contains(&pin));
+        let mut node = buckets.get_mut(&pin).unwrap();
+        node.set_dirty(false);
+        // A stale cached membership must not invent a dirty generation.
+        std::mem::forget(node);
+        assert!(buckets.dirty_buckets().contains(&pin));
+    }
+    assert!(!engine.periodic_wal_reclaim_is_pinned(1));
+    engine.shards.write().unwrap().get_mut(&1).unwrap().bucket_index.bucket_map
+        .get_mut(&pin).unwrap().set_dirty(true);
+    let manifest = engine.create_bucket_dump_manifest(1, vec![pin]).unwrap();
+    assert!(manifest.bucket_summaries.iter().any(|summary| summary.routing_bucket == pin));
+    assert!(!engine.periodic_wal_reclaim_is_pinned(1));
+    engine.clear_dumped_bucket_dirty_state(1, &manifest);
+    assert!(!engine.periodic_wal_reclaim_is_pinned(1));
+    assert!(!engine.periodic_wal_reclaim_is_pinned(999));
+}
+
+#[test]
+fn periodic_page_log_declines_a_proven_pin_and_retries_after_dump() {
+    for hash in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024, dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..128 {
+            let key = format!("page-pin-{index:04}");
+            let command = if hash {
+                Command::HashSet { key, field: "f".into(), value: vec![b'v'; 64] }
+            } else {
+                Command::StringSet { key, value: vec![b'v'; 64] }
+            };
+            assert!(engine.execute(ExecuteRequest { shard_id: 1, command }).status.ok);
+        }
+        let (pin, other) = {
+            let shards = engine.shards.read().unwrap();
+            let nodes = &shards.get(&1).unwrap().bucket_index.bucket_map;
+            let pin = *nodes.iter().find(|(_, node)| node.first_dirty_wal_sequence == 1).unwrap().0;
+            let other = *nodes.keys().find(|bucket| **bucket != pin).unwrap();
+            (pin, other)
+        };
+        let manifest = engine.create_bucket_dump_manifest(1, vec![other]).unwrap();
+        engine.clear_dumped_bucket_dirty_state(1, &manifest);
+        assert!(engine.storage_dump_wal_sequence(1).unwrap() > 0);
+        assert!(engine.periodic_wal_reclaim_is_pinned(1));
+        assert!(!engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new()).safe_to_reclaim);
+        let runtime = crate::data_node::DataNodeRuntime::new_without_workers_with_options(
+            engine.clone(), crate::data_node::DataNodeRuntimeOptions {
+                worker_threads: 0, max_queue_depth: 64, max_background_queue_depth: 8,
+            },
+        );
+        let options = crate::data_node::StorageManagerOptions {
+            enable_prepare: false, enable_wal_reclaim: false, enable_memory_reclaim: false,
+            enable_expire: false, enable_evict: false, enable_block_gc: true,
+            enable_block_compaction: false, enable_index_gc: false, enable_metrics_reap: false,
+            ..Default::default()
+        };
+        let before = storage_plan_build_counts().1;
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        assert!(report.status.ok, "{report:?}");
+        assert_eq!(storage_plan_build_counts().1, before, "blocked page check built a full plan");
+        let manifest = engine.create_bucket_dump_manifest(1, vec![pin]).unwrap();
+        engine.clear_dumped_bucket_dirty_state(1, &manifest);
+        // Fully publish the rest so no other unknown claim can stand in for the first pin.
+        let buckets = engine.shards.read().unwrap().get(&1).unwrap().bucket_index.bucket_map
+            .dirty_buckets().iter().copied().collect::<Vec<_>>();
+        assert!(!buckets.is_empty());
+        let manifest = engine.create_bucket_dump_manifest(1, buckets).unwrap();
+        engine.clear_dumped_bucket_dirty_state(1, &manifest);
+        assert!(!engine.periodic_wal_reclaim_is_pinned(1));
+        let before = storage_plan_build_counts().1;
+        let report = runtime.run_storage_manager_once(1, options);
+        assert!(report.status.ok, "{report:?}");
+        assert_eq!(storage_plan_build_counts().1, before + 1, "possible reclaim never reached full validation");
+        for index in 0..128 {
+            let key = format!("page-pin-{index:04}");
+            let command = if hash { Command::HashGet { key, field: "f".into() } }
+                else { Command::StringGet { key } };
+            assert_eq!(engine.execute(ExecuteRequest { shard_id: 1, command }).response,
+                CommandResponse::Bytes { value: Some(vec![b'v'; 64]) });
+        }
+    }
+}

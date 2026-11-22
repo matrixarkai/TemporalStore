@@ -190,6 +190,9 @@ impl DataNodeRuntime {
                 return None;
             }
         }
+        if self.inner.engine.periodic_wal_reclaim_is_pinned(shard_id) {
+            return None;
+        }
         let plan = self.inner.engine.storage_wal_reclaim_plan(
             shard_id, options.follower_replay_cursors.clone(), options.raft_snapshot_refs.clone(),
         );
