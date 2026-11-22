@@ -1282,6 +1282,23 @@ jobs:
             grep -q 'test result: ok. 1 passed' /tmp/pin-shard-guard.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
+      - name: cargo test (shared WAL sink read without a lock, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # The shared WAL sink is installed once and every write reads it without a lock; a second
+          # install is refused. Pinned by exact name: they ran only in the advisory suite.
+          for t in             data_node::tests::the_shared_wal_sink_is_read_without_a_lock::the_shared_wal_sink_is_read_without_a_lock             data_node::tests::the_shared_wal_sink_is_read_without_a_lock::a_second_install_of_the_shared_wal_sink_is_refused
+          do
+            cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-wal-sink.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so assert the count as well as the result.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/pin-wal-sink.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok. 1 passed' /tmp/pin-wal-sink.log               || { echo "::error::$t did not pass"; exit 1; }
+          done
       - name: cargo test (compaction hold and drain guards, hard gate)
         timeout-minutes: 20
         run: |
