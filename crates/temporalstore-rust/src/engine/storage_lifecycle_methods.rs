@@ -227,9 +227,17 @@ fn oldest_dirty_bucket_claims(
         manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>()
     }).unwrap_or_default();
     let sequence = manifest.map_or(0, |manifest| manifest.index_log_sequence);
-    rank_dirty_buckets(claims.keys().map(|&bucket| {
-        (bucket, if covered.contains(&bucket) { sequence } else { 0 })
-    }), claims)
+    let mut ranked = Vec::with_capacity(claims.len());
+    for (&bucket, &(wal, _)) in claims {
+        #[cfg(test)]
+        DUMP_RANK_LOOKUPS.with(|count| count.set(count.get() + 1));
+        ranked.push((
+            if wal == 0 { u64::MAX } else { wal },
+            if covered.contains(&bucket) { sequence } else { 0 },
+            bucket,
+        ));
+    }
+    sorted_dirty_bucket_ids(ranked)
 }
 
 fn rank_dirty_buckets(
@@ -245,6 +253,10 @@ fn rank_dirty_buckets(
             ranked.push((oldest, last_dump_sequence, bucket));
         }
     }
+    sorted_dirty_bucket_ids(ranked)
+}
+
+fn sorted_dirty_bucket_ids(mut ranked: Vec<(u64, u64, u32)>) -> Vec<u32> {
     // Bucket ID is the final key, so equal ranks have identical output IDs. No stable sort
     // or repeated claim lookup is needed inside the comparator.
     ranked.sort_unstable();
@@ -326,12 +338,30 @@ impl TemporalEngine {
         self.storage_lifecycle_plan_with_inventory(request, detailed_report, detailed_report)
     }
 
+    pub(crate) fn storage_lifecycle_pressure_plan(
+        &self,
+        request: StorageLifecycleRequest,
+        detailed_report: bool,
+    ) -> (StorageLifecyclePlan, u64) {
+        // The pressure signal and dump decision use the same captured dirty claims.
+        self.storage_lifecycle_plan_and_pressure_with_inventory(request, detailed_report, detailed_report)
+    }
+
     fn storage_lifecycle_plan_with_inventory(
         &self,
         request: StorageLifecycleRequest,
         detailed_report: bool,
         authoritative_inventory: bool,
     ) -> StorageLifecyclePlan {
+        self.storage_lifecycle_plan_and_pressure_with_inventory(request, detailed_report, authoritative_inventory).0
+    }
+
+    fn storage_lifecycle_plan_and_pressure_with_inventory(
+        &self,
+        request: StorageLifecycleRequest,
+        detailed_report: bool,
+        authoritative_inventory: bool,
+    ) -> (StorageLifecyclePlan, u64) {
         LIFECYCLE_PLAN_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // DO NOT WALK THE SHARD TO FIND OUT THERE IS NOTHING TO DO.
         //
@@ -370,10 +400,9 @@ impl TemporalEngine {
             .expect("engine lock poisoned")
             .get(&request.shard_id)
             .map(|shard| {
-                let claims = crate::engine::storage_reporting::dirty_bucket_claims(shard);
-                let claims_are_summarized = detailed_report || claims.keys().all(|bucket| {
-                    shard.bucket_index.bucket_map.get(bucket).is_some_and(|node| node.dirty())
-                });
+                let (claims, all_marked_dirty) =
+                    crate::engine::storage_reporting::dirty_bucket_claims_with_summary_state(shard);
+                let claims_are_summarized = detailed_report || all_marked_dirty;
                 (
                     !shard.dirty_objects.is_empty(),
                     claims,
@@ -696,7 +725,7 @@ impl TemporalEngine {
         if request.invalidate_cache {
             reasons.push("cache_invalidation".to_string());
         }
-        StorageLifecyclePlan {
+        (StorageLifecyclePlan {
             full_dump_forced_by_item_amplification,
             shard_id: request.shard_id,
             dirty_buckets,
@@ -717,7 +746,7 @@ impl TemporalEngine {
                 .map(|report| report.physical_bytes)
                 .sum(),
             reasons,
-        }
+        }, undumped_wal_bytes)
     }
 
     pub fn storage_block_gc_dependency_plan(
