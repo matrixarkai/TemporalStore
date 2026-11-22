@@ -26,7 +26,7 @@ bloomfilter = { version = "3.0.2", default-features = false }
 sha2 = "0.10"
 matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "58fb9573db087635877323dfbc2bb2ddf2e65702" }
 matrixcache = { git = "https://github.com/matrixarkai/matrixcache.git", rev = "bcf26e100f1fe414076a4771468fbaec704eafc3", features = ["rocksdb-ssd"] }
-matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "bb93078f82f839941c1b86794eb81e588fafb6cf", optional = true }
+matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "0b886514a633a21173e7383814f214af2a6a3593", optional = true }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }

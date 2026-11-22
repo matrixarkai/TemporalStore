@@ -3,7 +3,7 @@
 
 //! Single, unbatched durable publication of engine-produced binary outcomes.
 //! Connects to an existing MatrixObject metadata group. Use a disposable cluster.
-//! TARGET names its comma-separated endpoints; COMPACT and RESERVE accept booleans.
+//! TARGET names its comma-separated endpoints.
 //! MILESTONES defaults to 256,1024,8192 writes, VALUE to 4096 bytes, SAMPLES to 128.
 //! Samples use the same positions near each segment's end; rotations are separate.
 //! Whole-phase non-rotation percentiles also expose tails outside those windows.
@@ -14,7 +14,7 @@
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Instant;
-use temporalstore_rust::matrixobject_direct::{DirectAppendOptions, DirectConfig};
+use temporalstore_rust::matrixobject_direct::DirectConfig;
 use temporalstore_rust::shared_store::{
     SharedStoreReplicator, SharedStoreWalAppendMode, SharedStoreWalEntry,
 };
@@ -98,11 +98,6 @@ fn outcome_template(value_bytes: usize) -> SharedStoreWalEntry {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let target = std::env::var("TARGET").expect("TARGET: metadata group endpoints");
-    let options = DirectAppendOptions::from_settings(
-        Some(&setting("COMPACT", "false")),
-        std::env::var("RESERVE").ok().as_deref(),
-    )
-    .expect("append settings");
     let samples: usize = setting("SAMPLES", "128").parse().expect("SAMPLES");
     let value_bytes: usize = setting("VALUE", "4096").parse().expect("VALUE");
     let segment: usize = setting("SEGMENT_APPENDS", "256")
@@ -128,7 +123,7 @@ async fn main() {
     let store = Arc::new(
         DirectConfig::from_env(&target)
             .expect("direct config")
-            .connect_with_append_options(options)
+            .connect()
             .expect("metadata group"),
     );
     let writer = SharedStoreReplicator::new(&cluster, Arc::clone(&store))
@@ -190,7 +185,7 @@ async fn main() {
         let read_store = Arc::new(
             DirectConfig::from_env(&target)
                 .expect("fresh direct config")
-                .connect_with_append_options(options)
+                .connect()
                 .expect("fresh direct client"),
         );
         let reader = SharedStoreReplicator::new(&cluster, read_store)
@@ -219,7 +214,7 @@ async fn main() {
         };
         println!(
             "{}",
-            serde_json::json!({"event":"single_append_growth", "compact_append":options.compact_append,"reserve_next":options.reserve_next,"records":milestone,"value_bytes":value_bytes,"samples":samples,"segment_appends":segment,"steady_p50_us":p50,"steady_p99_us":p99,"steady_max_us":steady.last(),"phase_first_index":phase_first_index,"phase_records":phase_records,"phase_non_rotation_count":phase_steady.len(),"phase_non_rotation_p50_us":phase_p50,"phase_non_rotation_p99_us":phase_p99,"phase_non_rotation_max_us":phase_steady.last(),"p50_growth_ratio":p50 as f64 / baseline as f64,"rotation_count":rotations.len(),"rotation_p99_us":rotation_p99,"sampled_object_store_requests":steady_requests,"wal_frame_bytes_this_phase":wal_frame_bytes,"fresh_reader_verified_indices":indices,"engine_execution_included":false,"ownership_fence_included":false,"batching":false,"latency_flatness_asserted":false})
+            serde_json::json!({"event":"single_append_growth", "records":milestone,"value_bytes":value_bytes,"samples":samples,"segment_appends":segment,"steady_p50_us":p50,"steady_p99_us":p99,"steady_max_us":steady.last(),"phase_first_index":phase_first_index,"phase_records":phase_records,"phase_non_rotation_count":phase_steady.len(),"phase_non_rotation_p50_us":phase_p50,"phase_non_rotation_p99_us":phase_p99,"phase_non_rotation_max_us":phase_steady.last(),"p50_growth_ratio":p50 as f64 / baseline as f64,"rotation_count":rotations.len(),"rotation_p99_us":rotation_p99,"sampled_object_store_requests":steady_requests,"wal_frame_bytes_this_phase":wal_frame_bytes,"fresh_reader_verified_indices":indices,"engine_execution_included":false,"ownership_fence_included":false,"batching":false,"latency_flatness_asserted":false})
         );
     }
 }

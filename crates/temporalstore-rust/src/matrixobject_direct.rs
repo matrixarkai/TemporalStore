@@ -33,62 +33,6 @@ use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions}
 use matrixobjectstore_rs::net::InProcessDoor;
 use temporalstore_snapshot::object_store::{NetworkedMatrixObjectStore, DEFAULT_HTTP_BUCKET};
 
-/// Publication controls for direct append traffic.
-/// Compact publication requires compatible metadata voters and journal readers.
-/// The next allocation can share the preceding append's durable decision.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DirectAppendOptions {
-    pub compact_append: bool,
-    pub reserve_next: bool,
-}
-
-impl DirectAppendOptions {
-    /// Parse explicit settings without changing process-wide configuration.
-    pub fn from_settings(compact: Option<&str>, reserve: Option<&str>) -> Result<Self, String> {
-        fn flag(name: &str, value: Option<&str>) -> Result<Option<bool>, String> {
-            match value
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_ascii_lowercase)
-                .as_deref()
-            {
-                None => Ok(None),
-                Some("1" | "true") => Ok(Some(true)),
-                Some("0" | "false") => Ok(Some(false)),
-                Some(_) => Err(format!("{name} must be 0, 1, false, or true")),
-            }
-        }
-        let compact_append = flag("TS_MATRIXOBJECT_COMPACT_APPEND", compact)?.unwrap_or(false);
-        let reserve_next = flag("TS_MATRIXOBJECT_RESERVE_NEXT", reserve)?.unwrap_or(compact_append);
-        let options = Self {
-            compact_append,
-            reserve_next,
-        };
-        options.validate()?;
-        Ok(options)
-    }
-
-    pub fn from_env() -> Result<Self, String> {
-        Self::from_settings(
-            std::env::var("TS_MATRIXOBJECT_COMPACT_APPEND")
-                .ok()
-                .as_deref(),
-            std::env::var("TS_MATRIXOBJECT_RESERVE_NEXT")
-                .ok()
-                .as_deref(),
-        )
-    }
-
-    fn validate(self) -> Result<(), String> {
-        if self.reserve_next && !self.compact_append {
-            return Err(
-                "TS_MATRIXOBJECT_RESERVE_NEXT needs TS_MATRIXOBJECT_COMPACT_APPEND=1".into(),
-            );
-        }
-        Ok(())
-    }
-}
-
 /// How a node reaches the cluster directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectConfig {
@@ -158,20 +102,9 @@ impl DirectConfig {
     /// node that starts with its metadata quorum unreachable would report ready and fail every
     /// write.
     pub fn connect(&self) -> Result<NetworkedMatrixObjectStore, String> {
-        self.connect_with_append_options(DirectAppendOptions::from_env()?)
-    }
-
-    /// Connect with an explicit append policy, useful for controlled deployments and measurements.
-    pub fn connect_with_append_options(
-        &self,
-        append: DirectAppendOptions,
-    ) -> Result<NetworkedMatrixObjectStore, String> {
-        append.validate()?;
         let tls = ApiTlsConfig::from_env("MATRIXOBJECT_CLIENT")
             .map_err(|error| format!("the cluster TLS configuration is invalid: {error}"))?;
         let options = GatewayOptions {
-            compact_append: append.compact_append,
-            reserve_next: append.reserve_next,
             write: ObjectWriteOptions::default(),
             replica: ReplicaClientOptions {
                 tls: tls.clone(),
@@ -195,16 +128,12 @@ impl DirectConfig {
             }
         };
         let open = Arc::new(open);
-        let gateway = if append.compact_append {
-            ClusterGateway::over_sdk_with_publication_fence(
-                move || (*open)(), options, self.bucket.clone(),
-            ).map_err(|error| format!("direct compact publication could not be initialized: {error}"))?
-        } else {
-            open().map_err(|error| {
-                format!("no metadata endpoint in {} answered: {error}", self.meta_endpoints.join(","))
-            })?;
-            ClusterGateway::over_sdk(move || (*open)(), options, self.bucket.clone())
-        };
+        // The cluster must answer now: a node that starts with its metadata quorum unreachable
+        // would report ready and fail every write.
+        open().map_err(|error| {
+            format!("no metadata endpoint in {} answered: {error}", self.meta_endpoints.join(","))
+        })?;
+        let gateway = ClusterGateway::over_chunk_objects(move || (*open)(), options, self.bucket.clone());
         Ok(NetworkedMatrixObjectStore::direct(
             Arc::new(InProcessDoor::new(Arc::new(gateway))),
             &self.bucket,
@@ -221,56 +150,6 @@ mod tests {
     use bytes::Bytes;
     use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
     use temporalstore_snapshot::object_store::{MatrixObjectMode, ObjectStore};
-
-    #[test]
-    fn direct_append_publication_settings_preserve_defaults_and_validate_combinations() {
-        assert_eq!(
-            DirectAppendOptions::from_settings(None, None).unwrap(),
-            DirectAppendOptions::default()
-        );
-        assert_eq!(
-            DirectAppendOptions::from_settings(Some(" true "), None).unwrap(),
-            DirectAppendOptions {
-                compact_append: true,
-                reserve_next: true
-            }
-        );
-        assert_eq!(
-            DirectAppendOptions::from_settings(Some("1"), Some("false")).unwrap(),
-            DirectAppendOptions {
-                compact_append: true,
-                reserve_next: false
-            }
-        );
-        assert_eq!(
-            DirectAppendOptions::from_settings(Some("0"), Some("0")).unwrap(),
-            DirectAppendOptions::default()
-        );
-        assert!(DirectAppendOptions::from_settings(None, Some("1")).is_err());
-        assert!(DirectAppendOptions::from_settings(Some("no"), None).is_err());
-        assert!(DirectAppendOptions::from_settings(None, Some("2")).is_err());
-        assert!(DirectAppendOptions::from_settings(Some("false"), Some("true")).is_err());
-    }
-
-    #[test]
-    fn invalid_direct_append_policy_is_refused_before_connecting() {
-        let config = DirectConfig {
-            meta_endpoints: Vec::new(),
-            group_id: None,
-            bucket: "test".into(),
-            timeout: Duration::ZERO,
-        };
-        let error = config
-            .connect_with_append_options(DirectAppendOptions {
-                compact_append: false,
-                reserve_next: true,
-            })
-            .unwrap_err();
-        assert_eq!(
-            error,
-            "TS_MATRIXOBJECT_RESERVE_NEXT needs TS_MATRIXOBJECT_COMPACT_APPEND=1"
-        );
-    }
 
     use crate::matrixobject_test_plane::{gateway_over as plane_gateway, MemoryPlane, Shared};
     use matrixobjectstore_rs::net::cluster_gateway::ObjectPlane;
