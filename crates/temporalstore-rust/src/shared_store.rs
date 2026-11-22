@@ -9740,7 +9740,7 @@ mod tests {
     // `MatrixObjectHttpStore` spoke and that NOTHING else implemented -- so these tests passed
     // against a fiction while `TS_SHARED_STORE_URI=matrixobject://host:port` could not work
     // against anything real. The client speaks S3 now, so the fixture is matrixobject's own
-    // `ObjectHttpServer`, in this process on an ephemeral port. These tests therefore exercise
+    // the cluster gateway, in this process on an ephemeral port over an in-memory plane. These tests therefore exercise
     // the server an operator actually runs.
     //
     // Feature-gated because the server comes from the optional dependency. That is a real
@@ -9748,21 +9748,18 @@ mod tests {
     // covered before was a protocol with no counterpart.
     #[cfg(feature = "matrixobject")]
     fn spawn_matrixobject_object_server() -> (matrixobjectstore_rs::net::ServerHandle, String) {
+        use crate::matrixobject_test_plane::{gateway_over, Shared};
         use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
-        use matrixobjectstore_rs::{MatrixObjectStore, StoreOptions};
 
-        let mut store = MatrixObjectStore::new(StoreOptions::default()).expect("the store starts");
-        store
-            .create_bucket(temporalstore_snapshot::object_store::DEFAULT_HTTP_BUCKET)
-            .expect("the bucket the client will address");
-        let server = ObjectHttpServer::bind(
+        let cluster = Arc::new(Mutex::new(Shared::default()));
+        let gateway = gateway_over(&cluster, temporalstore_snapshot::object_store::DEFAULT_HTTP_BUCKET);
+        let server = ObjectHttpServer::bind_handler(
             "127.0.0.1:0",
-            Arc::new(Mutex::new(store)),
+            Arc::new(gateway),
             ServerOptions {
                 worker_threads: 2,
                 read_timeout: Duration::from_secs(10),
                 write_timeout: Duration::from_secs(10),
-                accept_poll_interval: Duration::from_millis(5),
                 ..ServerOptions::default()
             },
         )
