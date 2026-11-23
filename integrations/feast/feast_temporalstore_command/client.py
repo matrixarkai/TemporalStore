@@ -40,7 +40,7 @@ __all__ = [
 ]
 
 _READ_ONLY_COMMAND_KINDS = frozenset({
-    "string_get", "hash_get", "hash_multi_get", "set_members", "set_scan",
+    "common_exists", "string_get", "hash_get", "hash_multi_get", "set_members", "set_scan",
     "feature_query", "feature_query_filtered", "feature_agg_query",
     "feature_proto_agg_query", "sequence_query", "window_reduce_rank",
 })
