@@ -270,6 +270,86 @@ class AdapterTest(unittest.TestCase):
         self.assertTrue(adapter._store_event.event.wait(2))
         self.assertTrue(adapter.pop_completed_store_tasks()[task].success)
 
+    def test_delete_batches_metadata_for_unlocked_keys_with_deleted_blobs(self):
+        adapter = self.adapter
+        first, second, locked, failing = map(Key, ("first", "second", "locked", "failing"))
+        keys = [first, second, locked, failing]
+        task = adapter.submit_store_task(keys, [Memory(b"x") for _ in keys])
+        adapter._store_pool.submit(lambda: None).result(timeout=2)
+        self.assertTrue(adapter.pop_completed_store_tasks()[task].success)
+        task = adapter.submit_lookup_and_lock_task([locked], {})
+        self.assertTrue(adapter._lookup_event.event.wait(2))
+        self.assertTrue(adapter.query_lookup_and_lock_result(task).test(0))
+
+        delete_blob = adapter._blob.delete
+        batch_execute = adapter._data.batch_execute
+        batches = []
+
+        def delete(name):
+            if name == adapter._key_names(failing)[0]:
+                raise OSError("blob is unreachable")
+            delete_blob(name)
+
+        def record(commands):
+            batches.append(commands)
+            return batch_execute(commands)
+
+        adapter._blob.delete = delete
+        adapter._data.batch_execute = record
+        adapter.delete([first, locked, second, first, failing])
+        adapter._store_pool.submit(lambda: None).result(timeout=2)
+
+        self.assertEqual(batches, [[
+            {"kind": "common_delete", "key": adapter._key_names(key)[1]}
+            for key in (first, second)
+        ]])
+        self.assertEqual(adapter.report_status()["bytes_used"], 2)
+        self.assertEqual(set(adapter._data.values), {adapter._key_names(k)[1] for k in (locked, failing)})
+        self.assertEqual(adapter._evicting, set())
+        adapter.submit_unlock([locked])
+
+    def test_delete_retries_metadata_only_after_a_partial_batch_failure(self):
+        adapter = self.adapter
+        first, second = Key("first"), Key("second")
+        task = adapter.submit_store_task([first, second], [Memory(b"x"), Memory(b"y")])
+        adapter._store_pool.submit(lambda: None).result(timeout=2)
+        self.assertTrue(adapter.pop_completed_store_tasks()[task].success)
+        delete_blob = adapter._blob.delete
+        execute = adapter._data.execute
+        batch_execute = adapter._data.batch_execute
+        blobs = []
+
+        def count_delete(name):
+            blobs.append(name)
+            delete_blob(name)
+
+        def partial(commands):
+            execute(commands[0])
+            raise TimeoutError("metadata reply is unavailable")
+
+        def fail_second(command):
+            if command["key"] == adapter._key_names(second)[1]:
+                raise TimeoutError("metadata shard is unavailable")
+            return execute(command)
+
+        adapter._blob.delete = count_delete
+        adapter._data.batch_execute = partial
+        adapter._data.execute = fail_second
+        adapter.delete([first, second])
+        adapter._store_pool.submit(lambda: None).result(timeout=2)
+
+        self.assertEqual(blobs, [adapter._key_names(k)[0] for k in (first, second)])
+        self.assertEqual(adapter.report_status()["bytes_used"], 1)
+        self.assertEqual(set(adapter._data.values), {adapter._key_names(second)[1]})
+        self.assertEqual(adapter._evicting, set())
+
+        adapter._data.batch_execute = batch_execute
+        adapter._data.execute = execute
+        adapter.delete([second])
+        adapter._store_pool.submit(lambda: None).result(timeout=2)
+        self.assertEqual(adapter.report_status()["bytes_used"], 0)
+        self.assertEqual(adapter._data.values, {})
+
     def test_partial_metadata_batch_is_rolled_back(self):
         adapter = self.adapter
         first, second = Key("first"), Key("second")

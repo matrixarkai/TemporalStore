@@ -29,6 +29,7 @@ from lmcache.v1.platform import create_event_notifier
 from .blob import BlobClient
 
 logger = logging.getLogger(__name__)
+_DELETE_BATCH_SIZE = 128
 
 
 def _names(key: ObjectKey, namespace: str = "") -> tuple[str, str]:
@@ -275,24 +276,55 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 self._store_pool.submit(self._delete_many, list(keys))
 
     def _delete_many(self, keys: list[ObjectKey]) -> None:
-        for key in keys:
-            with self._lock:
-                if self._locked.get(key, 0) or key in self._evicting:
-                    continue
-                self._evicting.add(key)
-            try:
-                self._delete_key(key)
-            except Exception:
-                logger.exception("TemporalStore L2 delete failed")
+        for offset in range(0, len(keys), _DELETE_BATCH_SIZE):
+            self._delete_batch(keys[offset:offset + _DELETE_BATCH_SIZE])
+
+    def _delete_batch(self, keys: list[ObjectKey]) -> None:
+        reserved = set()
+        commands = {}
+        try:
+            for key in keys:
                 with self._lock:
-                    self._evicting.discard(key)
-                continue
+                    if key in self._locked or key in self._evicting:
+                        continue
+                    self._evicting.add(key)
+                    reserved.add(key)
+                try:
+                    blob_name, metadata_name = self._key_names(key)
+                    self._blob.delete(blob_name)
+                except Exception:
+                    logger.exception("TemporalStore L2 blob delete failed")
+                    continue
+                commands[key] = {"kind": "common_delete", "key": metadata_name}
+            if not commands:
+                return
+
+            deleted = list(commands)
+            try:
+                self._data.batch_execute(list(commands.values()))
+            except Exception:
+                # A batch error can follow a partial commit. Deleting metadata
+                # again is idempotent while this store worker owns the keys.
+                logger.exception("TemporalStore L2 metadata delete batch failed")
+                deleted = []
+                for key, command in commands.items():
+                    try:
+                        self._data.execute(command)
+                    except Exception:
+                        logger.exception("TemporalStore L2 metadata delete failed")
+                    else:
+                        deleted.append(key)
+
             with self._lock:
-                size = self._entries.pop(key, 0)
-                self._used -= size
-                self._evicting.discard(key)
-            if size:
-                self._notify_keys_deleted([key], [size])
+                sizes = {key: self._entries.pop(key, 0) for key in deleted}
+                self._used -= sum(sizes.values())
+            accounted = [(key, size) for key, size in sizes.items() if size]
+            if accounted:
+                removed, amounts = zip(*accounted)
+                self._notify_keys_deleted(list(removed), list(amounts))
+        finally:
+            with self._lock:
+                self._evicting.difference_update(reserved)
 
     def _publish_stores(self, pending: dict[ObjectKey, tuple[int, bool]]) -> int:
         commands = []
