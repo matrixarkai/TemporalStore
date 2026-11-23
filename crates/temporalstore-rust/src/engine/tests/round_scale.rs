@@ -159,7 +159,8 @@ const WALKS_PER_ROUND: u64 = 9;
 /// the same as the steady round, so the manifest no longer makes an idle shard dearer.
 /// 12 -> 11 FOR THE SAME REASON AS `WALKS_PER_ROUND`, and it was measured: the idle round also loses one pass.
 // The idle census checks the same pair of removed passes after the dirty set drains.
-// The current idle census has eight passes; also reject partial extra walks below.
+// With an empty dirty set, the census records 16,000 entries for 2,000 records.
+// Compare raw entries below so a partial extra walk is not hidden by division.
 const WALKS_PER_IDLE_ROUND: u64 = 8;
 
 fn round_engine(dir: &std::path::Path) -> TemporalEngine {
