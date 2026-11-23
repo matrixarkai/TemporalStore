@@ -60,6 +60,8 @@ fn agree(engine: &TemporalEngine, model: &str, stage: &str) -> Vec<u64> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    assert_eq!(walked, expected,
+        "{model} at {stage}: the ownership walk must include retained removal blocks");
     let tallied = engine.live_block_slab_ids_all_shards_from_tally();
     assert_eq!(
         tallied.as_ref(),
@@ -384,6 +386,62 @@ fn scenario(model: &Model) {
 fn the_tally_names_the_slabs_the_walk_does_in_every_model() {
     for model in models() {
         scenario(&model);
+    }
+}
+
+#[test]
+fn reclaim_keeps_a_removal_block_after_compaction_and_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    for field in ["kept", "removed"] {
+        must(&engine, "write field", Command::HashSet {
+            key: "owner".into(), field: field.into(), value: field.as_bytes().to_vec(),
+        });
+    }
+    engine.block_store().roll_slab().unwrap();
+    must(&engine, "remove field", Command::HashDelete {
+        key: "owner".into(), field: "removed".into(),
+    });
+    let removal = {
+        let shards = engine.shards.read().unwrap();
+        let mut markers = collect_live_block_entries(shards.get(&1).unwrap()).into_iter()
+            .filter(|entry| entry.deleted
+                && entry.kind == crate::engine::storage_bucket_internals::StoredModelKind::Hash
+                && entry.object_key.as_ref() == "owner");
+        let marker = markers.next().expect("the removal must leave a physical marker");
+        assert!(markers.next().is_none(), "the fixture must hold exactly one removal marker");
+        marker.address
+    };
+    let payload = engine.block_store.read(&removal).unwrap();
+    assert!(!payload.is_empty(), "the marker must contain a removal payload");
+    engine.compact_shard_blocks(1).expect("compaction must finish");
+    {
+        let shards = engine.shards.read().unwrap();
+        assert!(collect_model_live_block_entries(shards.get(&1).unwrap()).iter()
+            .all(|entry| entry.address.block_slab_id() != removal.block_slab_id()),
+            "the marker must occupy a slab no serving-map entry retains");
+    }
+    let retained = engine.live_block_slab_ids_all_shards();
+    assert!(retained.contains(&removal.block_slab_id()), "GC must retain the removal-only slab");
+    assert_eq!(engine.live_block_slab_ids_all_shards_from_tally(), Some(retained.clone()));
+    let newest = *engine.block_store.slab_ids().unwrap().iter().max().unwrap();
+    engine.block_store.gc_slabs_before_with_live_refs_delayed_destroy(newest, retained.clone()).unwrap();
+    engine.block_store.purge_delayed_destroy_slabs_selected(0, retained, None).unwrap();
+    assert_eq!(engine.block_store.read(&removal).unwrap(), payload);
+    drop(engine);
+
+    let reopened = open(dir.path());
+    assert_eq!(reopened.block_store.read(&removal).unwrap(), payload,
+        "a cold reader must still find the physical removal marker after reclaim");
+    for (field, expected) in [("kept", Some(b"kept".to_vec())), ("removed", None)] {
+        let response = reopened.execute(ExecuteRequest {
+            shard_id: 1, command: Command::HashGet { key: "owner".into(), field: field.into() },
+        });
+        assert!(response.status.ok);
+        match response.response {
+            CommandResponse::Bytes { value } => assert_eq!(value, expected),
+            other => panic!("unexpected hash response: {other:?}"),
+        }
     }
 }
 

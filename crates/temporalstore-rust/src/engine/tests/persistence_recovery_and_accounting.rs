@@ -22383,13 +22383,12 @@ fn the_pressure_snapshot_reads_cache_stats_without_listing_the_cache() {
     );
 
     crate::engine::reset_storage_cache_inspection_listings();
-    let _inspection = engine.storage_cache_inspection_report(1);
-    assert_eq!(crate::engine::storage_cache_inspection_listings(), 1);
-    assert_eq!(
-        crate::engine::storage_cache_inspection_listing_entries(),
-        occupancy,
-        "explicit inspection must count every warmed cache entry"
-    );
+    let control = engine.storage_cache_inspection_report(1);
+    assert_eq!(control.entries.len() as u64, occupancy, "the control must list the warm cache");
+    assert_eq!(crate::engine::storage_cache_inspection_listings(), 1,
+        "the positive control must increment the listing counter");
+    assert_eq!(crate::engine::storage_cache_inspection_listing_entries(), occupancy,
+        "the positive control must count every listed entry");
 
     crate::engine::reset_storage_cache_inspection_listings();
     let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
