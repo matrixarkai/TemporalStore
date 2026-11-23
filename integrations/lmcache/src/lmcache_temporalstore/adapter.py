@@ -27,13 +27,14 @@ from lmcache.v1.distributed.l2_adapters.config import L2AdapterConfigBase
 from lmcache.v1.memory_management import MemoryObj
 from lmcache.v1.platform import create_event_notifier
 
-from .blob import BlobClient
+from .blob import BlobClient, BlobMutationDeferred
 
 logger = logging.getLogger(__name__)
 _DELETE_BATCH_SIZE = 128
 _STORE_UPLOAD_BATCH_SIZE = 32
 _INVENTORY_RETRY_INITIAL_SECONDS = 0.25
 _INVENTORY_RETRY_MAX_SECONDS = 2.0
+_MUTATION_COOLDOWN_SECONDS = 1.0
 
 
 def _names(key: ObjectKey, namespace: str = "") -> tuple[str, str]:
@@ -140,6 +141,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             config.blob_url, config.timeout_seconds,
             reuse_read_connection=True, reuse_mutation_connection=True,
             legacy_names=not config.recover_capacity,
+            mutation_cooldown_seconds=_MUTATION_COOLDOWN_SECONDS if config.remote_storage else 0.0,
         )
         from urllib.parse import urlsplit
         data = urlsplit(config.data_url)
@@ -318,6 +320,9 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 "adapter": "temporalstore",
                 "inventory_ready": self._inventory_ready,
                 "inventory_error": self._inventory_error,
+                "mutations_available": (
+                    not self._closed and self._inventory_ready and self._blob.mutations_available()
+                ),
                 "stores": self._stores,
                 "loads": self._loads,
                 "lookups": self._lookups,
@@ -350,8 +355,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         for offset in range(0, len(items), _DELETE_BATCH_SIZE):
             group = items[offset:offset + _DELETE_BATCH_SIZE]
             targets = [key for key, _ in group]
+            cleanup = self._blob.mutations_available()
             with self._lock:
-                self._evicting.update(targets)
+                if cleanup:
+                    self._evicting.update(targets)
                 for key, size in group:
                     if isinstance(key, bytes):
                         # A lost receipt can leave a complete file on disk.
@@ -359,12 +366,13 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                         self._used += size - self._entries.get(key, 0)
                         self._entries[key] = size
                         self._uncertain.add(key)
-            self._delete_reserved(targets)
+            if cleanup:
+                self._delete_reserved(targets)
 
     def _make_room(self, needed: int) -> bool:
         if needed > self._max_capacity_bytes:
             return False
-        while True:
+        while self._blob.mutations_available():
             with self._lock:
                 shortage = self._used + needed - self._max_capacity_bytes
                 if shortage <= 0:
@@ -380,6 +388,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 self._evicting.update(victims)
             if not victims or not self._delete_reserved(victims):
                 return False
+        return False
 
     def delete(self, keys: list[ObjectKey]) -> None:
         with self._lock:
@@ -388,6 +397,8 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
 
     def _delete_many(self, keys: list[ObjectKey]) -> None:
         for offset in range(0, len(keys), _DELETE_BATCH_SIZE):
+            if not self._blob.mutations_available():
+                break
             self._delete_batch(keys[offset:offset + _DELETE_BATCH_SIZE])
 
     def _delete_batch(self, keys: list[ObjectKey]) -> None:
@@ -404,10 +415,15 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
 
     def _delete_reserved(self, reserved: list[ObjectKey | bytes]) -> int:
         deleted = []
+        attempted = False
         try:
             names = [self._key_names(key) for key in reserved]
             try:
+                attempted = True
                 removed = self._blob.delete_many([blob for blob, _ in names])
+            except BlobMutationDeferred:
+                attempted = False
+                return 0
             except Exception:
                 logger.exception("TemporalStore L2 blob delete batch failed")
                 return 0
@@ -422,17 +438,22 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             deleted = list(commands)
             try:
                 self._data.batch_execute(list(commands.values()))
-            except Exception:
+            except Exception as error:
+                if isinstance(error, (OSError, HTTPException)):
+                    self._blob.defer_mutations()
                 # A batch error can follow a partial commit. Deleting metadata
                 # again is idempotent while this store worker owns the keys.
                 logger.exception("TemporalStore L2 metadata delete batch failed")
                 deleted = []
                 for key, command in commands.items():
+                    if not self._blob.mutations_available():
+                        break
                     try:
                         self._data.execute(command)
                     except Exception as error:
                         logger.exception("TemporalStore L2 metadata delete failed")
                         if self._config.remote_storage and isinstance(error, (OSError, HTTPException)):
+                            self._blob.defer_mutations()
                             break
                     else:
                         deleted.append(key)
@@ -455,7 +476,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             return len(deleted)
         finally:
             with self._lock:
-                if self._inventory_namespace:
+                if self._inventory_namespace and attempted:
                     confirmed = set(deleted)
                     self._uncertain.update(
                         key for key in reserved
@@ -475,8 +496,12 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 command["ttl_ms"] = self._config.ttl_seconds * 1000
             commands.append(command)
         try:
+            if not self._blob.mutations_available():
+                raise BlobMutationDeferred("metadata publication is waiting for the datanode")
             self._data.batch_execute(commands)
-        except Exception:
+        except Exception as error:
+            if isinstance(error, (OSError, HTTPException)):
+                self._blob.defer_mutations()
             # A failed batch may have committed some commands. Remove any new
             # entries from this batch so a later lookup cannot see a partial write.
             self._remove_unconfirmed_stores([
@@ -521,19 +546,20 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 logger.exception("TemporalStore L2 payload write failed")
                 written = [False] * len(uploads)
             failed = []
+            unconfirmed = []
             for (key, _, _), stored in zip(uploads, written, strict=True):
                 if stored:
                     continue
                 size, _, _ = pending.pop(key)
                 pending_bytes -= size
                 success = False
-                failed.append((key, size))
+                failed.append(key)
+                if stored is False and isinstance(key, bytes):
+                    unconfirmed.append((key, size))
             if failed:
-                self._remove_unconfirmed_stores([
-                    (key, size) for key, size in failed if isinstance(key, bytes)
-                ])
+                self._remove_unconfirmed_stores(unconfirmed)
                 with self._lock:
-                    self._publishing.difference_update(key for key, _ in failed)
+                    self._publishing.difference_update(failed)
             uploads.clear()
 
         def publish() -> None:
@@ -556,6 +582,9 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             if self._uncertain:
                 self._delete_many([key for key in keys if self._identity(key) in self._uncertain])
             for original, obj in zip(keys, objects):
+                if not self._blob.mutations_available():
+                    success = False
+                    break
                 key = self._identity(original)
                 size = obj.get_size()
                 if key in pending:
