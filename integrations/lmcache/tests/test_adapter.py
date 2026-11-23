@@ -344,6 +344,50 @@ class AdapterTest(unittest.TestCase):
         finally:
             reopened.close()
 
+    def test_unconfirmed_batch_is_charged_and_retried_as_one_cleanup(self):
+        config = adapter_module.TemporalStoreL2AdapterConfig(
+            max_capacity_gb=4 / 1024**3, namespace="persistent", recover_capacity=True,
+        )
+        adapter = adapter_module.TemporalStoreL2Adapter(config)
+        keys = [Key("first"), Key("second")]
+        names = [adapter._key_names(key)[0] for key in keys]
+        put_many, delete_many = adapter._blob.put_many, adapter._blob.delete_many
+        calls = []
+        unavailable = True
+
+        def lose_receipts(items):
+            self.assertEqual(put_many(items), [True, True])
+            raise OSError("lost upload receipts")
+
+        def cleanup(targets):
+            calls.append(targets)
+            if unavailable:
+                raise TimeoutError("cleanup datanode unavailable")
+            return delete_many(targets)
+
+        def write(success):
+            adapter._store_event.event.clear()
+            task = adapter.submit_store_task(keys, [Memory(b"ab"), Memory(b"cd")])
+            self.assertTrue(adapter._store_event.event.wait(2))
+            self.assertEqual(adapter.pop_completed_store_tasks()[task].success, success)
+
+        try:
+            adapter._blob.put_many = lose_receipts
+            adapter._blob.delete_many = cleanup
+            write(False)
+            self.assertEqual(calls, [names])
+            self.assertEqual(adapter.report_status()["bytes_used"], 4)
+            self.assertEqual(len(adapter._uncertain), 2)
+
+            unavailable = False
+            adapter._blob.put_many = put_many
+            write(True)
+            self.assertEqual(calls, [names, names])
+            self.assertEqual(adapter.report_status()["bytes_used"], 4)
+            self.assertEqual(adapter._uncertain, set())
+        finally:
+            adapter.close()
+
     def test_unconfirmed_write_remains_charged_until_cleanup(self):
         config = adapter_module.TemporalStoreL2AdapterConfig(
             max_capacity_gb=4 / 1024**3, namespace="persistent", recover_capacity=True,
