@@ -53,10 +53,19 @@ Give each LMCache server a distinct, stable `namespace` when several servers
 use the same datanode. One LMCache server owns the writes, locks, and eviction
 budget for its namespace. Workers attached to that server can reuse its
 cache. The default empty namespace preserves keys written by older versions.
-Reuse the namespace on restart to find its previous cache entries. Capacity
-accounting covers writes made since the adapter started. Each namespace
+Reuse the namespace on restart to find its previous cache entries. By default,
+capacity accounting covers writes made since the adapter started. Each namespace
 has its own cache budget. Route a namespace to the same datanode to keep
 the metadata and blob operations together.
+
+To include blobs retained across restarts in the capacity budget, set
+`"recover_capacity": true` with a named namespace and a datanode that supports
+`POST /lmcache_blob_inventory`. Keep one writer per namespace. The adapter
+loads a paginated inventory before admitting writes, counts existing payloads
+even if their metadata expired, and evicts unlocked entries when it needs
+space. Accesses in the current process update eviction order. This mode
+uses a versioned key layout. Plan for a cold cache when switching an existing
+namespace to it. Legacy payloads remain accessible with the previous setting.
 
 Save the adapter JSON above in `temporalstore-l2.json`, set its URLs and
 `namespace`, set `remote_storage` to `true` for a datanode on another

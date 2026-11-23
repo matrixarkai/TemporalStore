@@ -137,6 +137,13 @@ class FakeBlob:
                 result.append(True)
         return result
 
+    def inventory(self, namespace):
+        prefix = f"lmcache/v2/{namespace}/"
+        return (
+            (bytes.fromhex(name.rsplit("/", 1)[1]), len(payload))
+            for name, payload in self.values.items() if name.startswith(prefix)
+        )
+
     def close(self):
         pass
 
@@ -286,6 +293,82 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(adapter.report_status()["bytes_used"], 4)
         self.assertEqual(adapter._evicting, set())
         adapter.submit_unlock([locked])
+
+    def test_restart_recovers_usage_and_keeps_a_locked_entry(self):
+        blob, data = FakeBlob(), FakeData()
+        adapter_module.BlobClient = lambda *_args, **_kwargs: blob
+        adapter_module.TemporalStoreClient = lambda *_args, **_kwargs: data
+        config = adapter_module.TemporalStoreL2AdapterConfig(
+            max_capacity_gb=4 / 1024**3, namespace="persistent", recover_capacity=True,
+        )
+
+        def write(adapter, key, payload):
+            adapter._store_event.event.clear()
+            task = adapter.submit_store_task([key], [Memory(payload)])
+            self.assertTrue(adapter._store_event.event.wait(2))
+            self.assertTrue(adapter.pop_completed_store_tasks()[task].success)
+
+        first, locked, new = Key("a"), Key("b"), Key("c")
+        with_adapter = adapter_module.TemporalStoreL2Adapter(config)
+        try:
+            write(with_adapter, first, b"ab")
+            write(with_adapter, locked, b"cd")
+        finally:
+            with_adapter.close()
+
+        reopened = adapter_module.TemporalStoreL2Adapter(config)
+        try:
+            self.assertEqual(reopened.report_status()["bytes_used"], 4)
+            task = reopened.submit_lookup_and_lock_task([locked], {})
+            self.assertTrue(reopened._lookup_event.event.wait(2))
+            self.assertTrue(reopened.query_lookup_and_lock_result(task).test(0))
+            write(reopened, new, b"ef")
+            self.assertEqual(reopened.report_status()["bytes_used"], 4)
+            self.assertEqual(blob.values, {
+                reopened._key_names(locked)[0]: b"cd",
+                reopened._key_names(new)[0]: b"ef",
+            })
+            self.assertNotIn(reopened._key_names(first)[1], data.values)
+            reopened.submit_unlock([locked])
+        finally:
+            reopened.close()
+
+    def test_unconfirmed_write_remains_charged_until_cleanup(self):
+        config = adapter_module.TemporalStoreL2AdapterConfig(
+            max_capacity_gb=4 / 1024**3, namespace="persistent", recover_capacity=True,
+        )
+        adapter = adapter_module.TemporalStoreL2Adapter(config)
+        key, other = Key("first"), Key("other")
+        put, delete = adapter._blob.put, adapter._blob.delete
+
+        def lose_receipt(name, payload):
+            put(name, payload)
+            raise OSError("lost upload receipt")
+
+        def fail_delete(_name):
+            raise OSError("datanode is unavailable")
+
+        def write(target, success):
+            adapter._store_event.event.clear()
+            task = adapter.submit_store_task([target], [Memory(b"abcd")])
+            self.assertTrue(adapter._store_event.event.wait(2))
+            self.assertEqual(adapter.pop_completed_store_tasks()[task].success, success)
+
+        try:
+            adapter._blob.put = lose_receipt
+            adapter._blob.delete = fail_delete
+            write(key, False)
+            self.assertEqual(adapter.report_status()["bytes_used"], 4)
+            adapter._blob.put = put
+            write(other, False)
+            self.assertEqual(adapter._blob.values, {adapter._key_names(key)[0]: b"abcd"})
+
+            adapter._blob.delete = delete
+            write(key, True)
+            self.assertEqual(adapter.report_status()["bytes_used"], 4)
+            self.assertEqual(adapter._uncertain, set())
+        finally:
+            adapter.close()
 
     def test_lookup_reserves_key_during_metadata_read(self):
         adapter = self.adapter
