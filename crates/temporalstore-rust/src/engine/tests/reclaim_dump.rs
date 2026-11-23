@@ -911,7 +911,11 @@ fn slab_backed_dumps_do_not_pin_obsolete_wal_placements() {
         config: Config { version: 2, async_storage: true, ..Config::default() },
     }).ok);
     write_one_at_a_time(&engine, &["live".into()]);
+    let reserved_time = now_ms().checked_add(60_000).unwrap();
+    engine.checkpoint_publications.capture(RECLAIM_DUMP_SHARD)
+        .allocate_dump_time_ms(reserved_time, 0).unwrap();
     let first = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    assert!(first.created_unix_ms > reserved_time, "the writer must honor earlier timestamp reservations");
     let placement = engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
         .wal_resident_blocks.iter().map(|(key, placement)| (*key, placement.clone())).next().unwrap();
     assert_eq!(engine.materialize_synthetic_blocks(RECLAIM_DUMP_SHARD), 1);
@@ -921,6 +925,7 @@ fn slab_backed_dumps_do_not_pin_obsolete_wal_placements() {
         .wal_resident_blocks.insert(placement.0, placement.1);
     let latest = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
     assert_ne!(first.manifest_id, latest.manifest_id, "distinct dumps must not overwrite their retention evidence");
+    assert!(latest.created_unix_ms > first.created_unix_ms);
     assert_eq!(decode_index_bytes(&latest.index_bytes).unwrap().wal_resident_blocks.len(), 1);
     engine.clear_dumped_bucket_dirty_state(RECLAIM_DUMP_SHARD, &latest);
     let guarded = engine.apply_storage_wal_reclaim(engine.storage_wal_reclaim_plan(RECLAIM_DUMP_SHARD, [], []));
