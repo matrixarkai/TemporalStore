@@ -206,9 +206,11 @@ impl ObjectPlane for MemoryPlane {
 
 pub(crate) fn gateway_over(shared: &Arc<Mutex<Shared>>, bucket: &str) -> ClusterGateway {
     let handle = Arc::clone(shared);
-    ClusterGateway::new(
+    let gateway = ClusterGateway::new(
         move || Ok(Box::new(MemoryPlane(Arc::clone(&handle))) as Box<dyn ObjectPlane>),
         GatewayOptions::default(),
         bucket,
-    )
+    );
+    gateway.ensure_bucket(bucket).expect("test bucket is stored before object requests");
+    gateway
 }

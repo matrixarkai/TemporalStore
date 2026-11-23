@@ -205,6 +205,7 @@ mod tests {
             .unwrap()
             .objects
             .iter()
+            .filter(|((bucket, _), _)| bucket == BUCKET)
             .map(|((_, key), (m, bytes))| (key.clone(), (m.generation, bytes.clone())))
             .collect()
     }
@@ -305,7 +306,7 @@ mod tests {
         pair.gateway.append_blob("wal", Bytes::from_static(b"seed")).await.unwrap();
         pair.direct.append_blob("wal", Bytes::from_static(b"seed")).await.unwrap();
         let before = |cluster: &Arc<Mutex<Shared>>| {
-            cluster.lock().unwrap().objects.values().next().unwrap().0.clone()
+            cluster.lock().unwrap().objects.get(&(BUCKET.to_string(), "wal".to_string())).unwrap().0.clone()
         };
         let stale = [before(&pair.gateway_cluster), before(&pair.direct_cluster)];
         pair.gateway_cluster.lock().unwrap().lose_then_unconfirmed = true;
@@ -327,7 +328,7 @@ mod tests {
             // The attempt that was lost can never commit now: it builds on a generation the fence passed.
             let late = MemoryPlane(cluster.clone()).append(stale, b"record-one");
             assert!(late.is_err(), "a late attempt on the old generation must be refused");
-            assert_eq!(cluster.lock().unwrap().objects.values().next().unwrap().1, b"seedrecord-one");
+            assert_eq!(cluster.lock().unwrap().objects.get(&(BUCKET.to_string(), "wal".to_string())).unwrap().1, b"seedrecord-one");
         }
     }
 
