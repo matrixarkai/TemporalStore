@@ -126,7 +126,7 @@ fn main() {
     // `TS_BLOCK_STORE_DIR` is the one name. The DEFAULT is deliberately left where it was:
     // changing it would move where an operator who sets neither name keeps their blocks.
     let block_store_dir = block_store_dir_from_env();
-    // Directory for the streamed attachment/blob tier (POST/GET /blob/<key>);
+    // Directory for the streamed attachment/blob tier (PUT/GET/DELETE /blob/<key>);
     // computed here so it does not outlive the move of `block_store_dir`.
     let blob_store_dir =
         std::env::var("TS_BLOB_STORE_DIR").unwrap_or_else(|_| format!("{block_store_dir}/blobs"));
@@ -385,6 +385,10 @@ fn main() {
             !join_empty,
         )
     });
+    if networked_uri.is_some() && _matrixobject_networked_durability.is_none() {
+        error!(shard_id, "refusing startup: configured networked durability could not be initialized");
+        std::process::exit(1);
+    }
     let location = std::env::var("TS_SERVER_LOCATION").unwrap_or_default();
     let binary_version = env!("CARGO_PKG_VERSION").to_string();
     // Milliseconds since the epoch when this process started, reported on every
@@ -1480,12 +1484,32 @@ fn handle_blob_stream(
             }
             StreamAction::Handled
         }
+        "DELETE" => {
+            let _ = transfer.drain_body();
+            if key.is_empty() {
+                write_stream_json(
+                    transfer,
+                    400,
+                    &Status::error("bad_request", "missing blob key"),
+                );
+                return StreamAction::Handled;
+            }
+            match runtime.block_on(blob_store.delete(key)) {
+                Ok(()) => write_stream_json(transfer, 200, &Status::ok()),
+                Err(err) => write_stream_json(
+                    transfer,
+                    500,
+                    &Status::error("blob_delete_failed", err.to_string()),
+                ),
+            }
+            StreamAction::Handled
+        }
         _ => {
             let _ = transfer.drain_body();
             write_stream_json(
                 transfer,
                 405,
-                &Status::error("method_not_allowed", "use POST or GET on /blob/<key>"),
+                &Status::error("method_not_allowed", "use POST, PUT, GET or DELETE on /blob/<key>"),
             );
             StreamAction::Handled
         }
@@ -2090,13 +2114,11 @@ fn matrixobject_networked_target() -> Option<(MatrixObjectMode, String)> {
 }
 
 /// The networked store for `mode`. Direct mode runs the gateway's request handling in this
-/// process against the metadata group named by `TS_MATRIXOBJECT_META`, and needs a binary built
-/// with the `matrixobject` feature.
+/// process against the metadata group named by `TS_MATRIXOBJECT_META`.
 fn connect_networked_store(
     mode: MatrixObjectMode,
     target: &str,
 ) -> Result<NetworkedMatrixObjectStore, String> {
-    #[cfg(feature = "matrixobject")]
     if mode == MatrixObjectMode::Direct {
         return temporalstore_rust::matrixobject_direct::DirectConfig::from_env(target)?.connect();
     }
@@ -2211,8 +2233,8 @@ struct MatrixObjectNetworkedDurability {
 /// authoritative local state, publish its current state as a networked checkpoint
 /// (index + slabs) so future owners can lazily follow it. Finally, mirror every
 /// accepted write to the networked store from here on. Active only when a
-/// `matrixobject://` URI is configured; returns `None` on a bad URI or runtime
-/// failure so the node still serves from local durability.
+/// networked target is configured. A failed connection, restore, replay or WAL
+/// read returns `None`, which the caller rejects before accepting requests.
 fn wire_matrixobject_networked_durability(
     mode: MatrixObjectMode,
     uri: &str,
@@ -2268,8 +2290,8 @@ fn wire_matrixobject_networked_durability(
             }
             Err(SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
             Err(err) => {
-                warn!(shard_id, %err, "networked matrixobject checkpoint restore failed; replaying full shared WAL");
-                0
+                error!(shard_id, %err, "networked matrixobject checkpoint restore failed");
+                return None;
             }
         };
         // Read the just-restored on-disk index into memory so this node auto-serves the
@@ -2288,6 +2310,7 @@ fn wire_matrixobject_networked_durability(
                     message = %load_response.status.message,
                     "load of restored networked shard index failed"
                 );
+                return None;
             }
         }
         match rt.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
@@ -2327,7 +2350,7 @@ fn wire_matrixobject_networked_durability(
     let latest = match rt.block_on(replicator.latest_persisted_wal_index(shard_id)) {
         Ok(latest) => latest,
         Err(err) => {
-            error!(shard_id, %err, "failed to read networked matrixobject WAL state; durability disabled");
+            error!(shard_id, %err, "failed to read networked matrixobject WAL state");
             return None;
         }
     };

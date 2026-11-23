@@ -190,13 +190,13 @@ impl TimestampedSeriesWrite for BTreeMap<u64, ElementEntry> {
 /// key from a `&str` is NOT among the bounds any more: that is what minted a second allocation on
 /// every call, and it now lives in `set_point_for_owned_key` for the kinds that need it.
 pub(super) fn set_point_and_collect_live<K, S>(
-    map: &mut std::collections::HashMap<K, S>,
+    map: &mut std::collections::BTreeMap<K, S>,
     key: K,
     at: u64,
     address: Option<ElementEntry>,
 ) -> Vec<ElementEntry>
 where
-    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + Clone,
+    K: Ord + std::borrow::Borrow<str> + Clone,
     S: TimestampedSeriesWrite,
 {
     set_point_inner(map, key, at, address, true)
@@ -227,12 +227,12 @@ where
 /// more place for that to drift. `Vec::new()` does not allocate, so the non-collecting door moves
 /// no bytes at all.
 pub(super) fn set_point<K, S>(
-    map: &mut std::collections::HashMap<K, S>,
+    map: &mut std::collections::BTreeMap<K, S>,
     key: K,
     at: u64,
     address: Option<ElementEntry>,
 ) where
-    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + Clone,
+    K: Ord + std::borrow::Borrow<str> + Clone,
     S: TimestampedSeriesWrite,
 {
     let dropped = set_point_inner(map, key, at, address, false);
@@ -243,14 +243,14 @@ pub(super) fn set_point<K, S>(
 }
 
 fn set_point_inner<K, S>(
-    map: &mut std::collections::HashMap<K, S>,
+    map: &mut std::collections::BTreeMap<K, S>,
     key: K,
     at: u64,
     address: Option<ElementEntry>,
     collect_live: bool,
 ) -> Vec<ElementEntry>
 where
-    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + Clone,
+    K: Ord + std::borrow::Borrow<str> + Clone,
     S: TimestampedSeriesWrite,
 {
     // THE KEY ARRIVES OWNED, AND THAT IS THE WHOLE CHANGE. This took a `&str` and minted its own
@@ -296,12 +296,12 @@ where
 /// only because [`TimestampedSeries::points`] promises ascending order -- which is the invariant
 /// that makes a boundary equivalent to the enumeration in the first place.
 pub(super) fn instants_through<K, S>(
-    map: &std::collections::HashMap<K, S>,
+    map: &std::collections::BTreeMap<K, S>,
     object_key: &str,
     through: u64,
 ) -> Vec<u64>
 where
-    K: std::hash::Hash + Eq + std::borrow::Borrow<str>,
+    K: Ord + std::borrow::Borrow<str>,
     S: TimestampedSeries,
 {
     let Some(series) = map.get(object_key) else {
@@ -315,26 +315,26 @@ where
 }
 
 pub(super) fn set_point_for_owned_key<K, S>(
-    map: &mut std::collections::HashMap<K, S>,
+    map: &mut std::collections::BTreeMap<K, S>,
     object_key: &str,
     at: u64,
     address: Option<ElementEntry>,
 ) -> Vec<ElementEntry>
 where
-    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + Clone + for<'a> From<&'a str>,
+    K: Ord + std::borrow::Borrow<str> + Clone + for<'a> From<&'a str>,
     S: TimestampedSeriesWrite,
 {
     set_point_and_collect_live(map, K::from(object_key), at, address)
 }
 
 pub(super) fn insert_point_if_absent<K, S>(
-    map: &mut std::collections::HashMap<K, S>,
+    map: &mut std::collections::BTreeMap<K, S>,
     object_key: &str,
     at: u64,
     address: &ElementEntry,
 ) -> bool
 where
-    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + Clone + for<'a> From<&'a str>,
+    K: Ord + std::borrow::Borrow<str> + Clone + for<'a> From<&'a str>,
     S: TimestampedSeriesWrite,
 {
     if map

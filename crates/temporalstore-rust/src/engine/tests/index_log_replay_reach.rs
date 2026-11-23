@@ -1,27 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHICH LOAD PATH ACTUALLY FOLDS THE INDEX LOG, MEASURED RATHER THAN ARGUED.
+//! Measure index-loader work separately from the full load's catalog recovery.
 //!
-//! `fold_index_log_deltas` is the only production caller of
-//! `for_each_delta_record_above_anchor`, and it is easy to assume from its name that every
-//! restore runs it. It does not. `load_shard_with` branches on `wal_single_barrier()`, which is
-//! `!wal_legacy_recovery()` and therefore TRUE unless an operator sets `TS_WAL_LEGACY_RECOVERY`:
-//! the default arm calls `load_index_base_only`, which passes `fold_deltas = false`, and the fold
-//! is not on that path at all. The fold is reached from the OTHER arm -- the escape hatch -- and
-//! from `install_latest_manifest_if_newer_on_load`, which that arm calls first.
-//!
-//! So this module measures reachability instead of asserting it, and it measures BOTH arms over
-//! ONE store, so the two rows are about the same files and the same records. The instrument is
-//! floored: the arm that is supposed to fold must be shown to have read something, because a
-//! reachability run that reads zero everywhere reads exactly like one whose apparatus never
-//! spoke.
-//!
-//! The counter used is `fold_pieces_declined`, and it is used because only ONE entry point can
-//! move it: a piece is declined only when a non-zero base anchor is passed, and
-//! `fold_index_log_deltas` is the only caller that passes one. A zero in that column is therefore
-//! "the load-path fold did not run", not "the fold ran and found nothing" -- provided the fixture
-//! holds declinable pieces, which is floored against the other arm.
+//! Standalone index loaders can decline pieces covered by the durable base. The full load reads
+//! retained records and catalog metadata together, including metadata in covered pieces.
 #![allow(clippy::all)]
 use super::*;
 
@@ -52,19 +35,8 @@ fn write_keys(engine: &TemporalEngine, first: usize, count: usize) {
     }
 }
 
-/// THE DEFAULT LOAD PATH DOES NOT FOLD THE INDEX LOG. THE ESCAPE HATCH DOES.
-///
-/// Both arms are driven over one store, in one test, so neither row can be explained by a
-/// different fixture. What the rows say:
-///
-/// - the default `load_shard` declines no piece, because it never reaches the anchor-aware fold;
-/// - `load_index_checked`, which is what the `TS_WAL_LEGACY_RECOVERY` arm and
-///   `install_latest_manifest_if_newer_on_load` both call, declines most of them.
-///
-/// This is the whole reachability claim for the piece-level decline, and it is a NARROW one: the
-/// saving lands on the escape hatch an operator flips in the field, not on every restart. It is
-/// worth having there -- the population of that arm is the shards already in trouble -- but it
-/// must not be described as a restore-path win in general.
+/// Compare both index loaders over the same stale base and account for catalog recovery in the
+/// full load. The fixture must contain both declinable pieces and a tail that must be read.
 #[test]
 fn the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does() {
     crate::index_log::set_index_log_segment_bytes_for_test(Some(PIECE_BYTES));
@@ -173,6 +145,11 @@ fn the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does() 
     );
     restore_stale_base();
     crate::index_log::probe::reset();
+    let base_only = reader_default.load_index_base_only(SHARD, false);
+    assert!(base_only.is_some(), "the base-only loader must find the durable image");
+    let default_fold_frames = crate::index_log::probe::fold_frames_read();
+    let default_fold_declined = crate::index_log::probe::fold_pieces_declined();
+    crate::index_log::probe::reset();
     reader_default.load_shard(SHARD);
     let default_frames = crate::index_log::probe::fold_frames_read();
     let default_declined = crate::index_log::probe::fold_pieces_declined();
@@ -185,6 +162,10 @@ fn the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does() 
         &indexes,
     );
     restore_stale_base();
+    crate::index_log::probe::reset();
+    reader_checked.index_log_store.latest_slab_catalog(SHARD)
+        .expect("catalog recovery must read the intact log");
+    let catalog_frames = crate::index_log::probe::fold_frames_read();
     crate::index_log::probe::reset();
     let folded = reader_checked
         .load_index_checked(SHARD, false)
@@ -200,6 +181,7 @@ fn the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does() 
          \x20 load_index_checked (the TS_WAL_LEGACY_RECOVERY arm and the manifest install) : \
          {checked_frames:>6} frames  {checked_declined:>4} pieces declined"
     );
+    println!("  default relocation fold: {default_fold_frames} frames; catalog: {catalog_frames} frames");
 
     // THE FLOOR ON THE APPARATUS, BEFORE ANY CLAIM. Arm B must have read frames and declined
     // pieces, or arm A's zeroes are a probe that never spoke rather than a path that never folds.
@@ -214,12 +196,18 @@ fn the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does() 
     );
     assert!(folded.is_some(), "APPARATUS: the fold-aware load returned no state");
 
-    // THE FINDING: the default arm reaches none of it.
-    assert_eq!(
-        default_declined, 0,
-        "the default load path declined {default_declined} pieces -- it now reaches the \
-         anchor-aware fold, and this module's whole premise has changed"
+    // Standalone loader work and complete recovery work remain separate measurements.
+    assert!(
+        default_fold_frames <= checked_frames,
+        "the default index loader read {default_fold_frames} frames, more than the fold-aware load's \
+         {checked_frames}: it must read the tail only for relocation records"
     );
+    assert_eq!(default_fold_declined as usize, below, "the default fold must decline the covered pieces");
+    assert!(catalog_frames > 0, "the fixture must expose catalog recovery's additional scan");
+    assert_eq!(default_frames, catalog_frames,
+        "the full load must recover relocations and metadata in one retained-prefix scan");
+    assert_eq!(default_declined, 0,
+        "full recovery must not skip a covered piece that may carry catalog metadata");
     // And the decline is exactly the pieces the base covers -- not everything, and not a
     // count that happens to match. The sealed pieces above the base are still read, and so is
     // the piece being written.

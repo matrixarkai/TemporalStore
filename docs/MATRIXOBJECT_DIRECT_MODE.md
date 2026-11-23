@@ -10,14 +10,14 @@ same objects at the same generations.
 | Mode switch | `TS_MATRIXOBJECT_MODE=gateway` | `TS_MATRIXOBJECT_MODE=direct` |
 | Extra process | a gateway per cluster (or per few nodes) | none |
 | Request path | node -> S3 over a socket -> gateway -> metadata group and chunk servers | node -> metadata group and chunk servers |
-| Build | any | needs the `matrixobject` cargo feature |
+| Build | the default build | the default build |
 
 Direct is the default. With no `TS_MATRIXOBJECT_MODE`, setting `TS_MATRIXOBJECT_META` selects
 direct, even when `TS_SHARED_STORE_URI` is set too; a gateway is used by default only when it is
 the only one configured (a node cannot reach a cluster directly without knowing its metadata
 group). Set `TS_MATRIXOBJECT_MODE=gateway` to keep a gateway when both are set. A mode whose own
-setting is missing is refused at start-up. A binary built without the `matrixobject` feature
-refuses direct mode by name instead of falling back to a gateway.
+setting is missing is refused at start-up. Direct mode is part of the default build: there is no
+cargo feature to enable.
 
 ## When to use which
 
@@ -25,8 +25,7 @@ refuses direct mode by name instead of falling back to a gateway.
   hop fewer and no gateway to run, secure or keep alive. The gateway's request handling runs
   inside the node, so nothing about append, read-back, listing or ranged reads is different.
 - **Gateway** when nodes cannot reach the chunk servers (network zones), when many nodes
-  should share one set of cluster connections, or when the node binary is built without the
-  `matrixobject` feature.
+  should share one set of cluster connections.
 
 ## What a direct node needs
 
@@ -42,7 +41,6 @@ refuses direct mode by name instead of falling back to a gateway.
 
 - It does not register with the cluster node roster, answer health probes, or listen for
   other clients. There is no S3 listener.
-- It uses plain publication unless compact append is explicitly enabled.
 - `compare_and_swap` is unsupported, as on the gateway.
 - It is one in-process gateway per node; it is not tuned for many concurrent writers.
 
@@ -75,7 +73,7 @@ through a gateway and through the in-process door, then compares what each left 
 ```text
 GATEWAY=matrixobject://127.0.0.1:24410 META=127.0.0.1:24404,127.0.0.1:24405,127.0.0.1:24406 \
   TS_MATRIXOBJECT_META_GROUP=1 SEGMENTS=6 WRITERS=4 \
-  cargo run --release -p temporalstore-rust --features matrixobject --example direct_wal_index_e2e
+  cargo run --release -p temporalstore-rust --example direct_wal_index_e2e
 ```
 
 `MODES=gateway` or `MODES=direct` runs one mode, `WRITERS` sets the concurrent writers, and
@@ -130,23 +128,10 @@ and retried only when the record was not there. The `landed` answer was not prod
 killing a metadata node did not interrupt an append at all, so neither case is covered by this
 measurement.
 
-## Bounded append publication
-
-For a cluster whose metadata voters and journal readers support compact append
-outcome versions 11 and 13, set `TS_MATRIXOBJECT_COMPACT_APPEND=1` on direct clients.
-This also enables reservation for the next append. Set
-`TS_MATRIXOBJECT_RESERVE_NEXT=0` to keep compact publication without that reservation.
-Both settings accept `0`, `1`, `false`, or `true`. Reserving without compact
-publication is refused before connecting.
-
-Compact publication keeps the durable metadata decision proportional to the newly
-written extents. A busy object's next allocation can share that decision. Enabling
-it activates the cluster publication fence: all writers must use compatible staged
-publication before this is enabled. Leave it off during a mixed-writer rollout.
+## Append publication
 
 TemporalStore still appends its binary protobuf WAL frame and its offset index
-separately. These controls reduce metadata traffic; they do not remove either
-required append or change uncertain-outcome recovery. Segment limits still bound
+separately. Neither required append is removed, and uncertain-outcome recovery is unchanged. Segment limits still bound
 the manifest held by the client. Use the same segment position when comparing
 single-append latency across corpus sizes, and report segment rotations separately.
 
@@ -154,13 +139,12 @@ Measure one durable WAL publication as the retained history grows:
 
 ```sh
 TARGET=127.0.0.1:22111,127.0.0.1:22112,127.0.0.1:22113 \
-COMPACT=true MILESTONES=256,1024,8192 VALUE=4096 \
-cargo run --release -p temporalstore-rust --features matrixobject \
+MILESTONES=256,1024,8192 VALUE=4096 \
+cargo run --release -p temporalstore-rust \
   --example matrixobject_single_append_growth
 ```
 
-Run plain and compact modes against separate disposable clusters: a cluster's
-publication fence persists. The report uses engine-produced binary outcomes,
+Use a disposable cluster. The report uses engine-produced binary outcomes,
 appends each record individually, verifies indexed reads through a fresh reader,
 and reports rotation costs separately from matched segment positions. It also reports
 all non-rotation appends in each growth phase, including their maximum latency, so

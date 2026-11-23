@@ -35,7 +35,6 @@
 #![allow(clippy::all)]
 use super::*;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 
 use crate::block_store::ElementEntry;
 
@@ -43,7 +42,7 @@ use crate::block_store::ElementEntry;
 use crate::alloc_probe::Probe;
 
 type Series = BTreeMap<u64, ElementEntry>;
-type SeriesMap = HashMap<String, Series>;
+type SeriesMap = BTreeMap<String, Series>;
 
 fn address(id: u64) -> ElementEntry {
     ElementEntry::from_parts(id, 0, 64, Some(1), Some(id))
@@ -51,7 +50,7 @@ fn address(id: u64) -> ElementEntry {
 
 /// The shape the function had before this change, transcribed so both can be measured at once.
 fn reconcile_by_rebuilding(persisted: &SeriesMap, block_derived: SeriesMap) -> SeriesMap {
-    let mut result: SeriesMap = HashMap::new();
+    let mut result: SeriesMap = BTreeMap::new();
     for (key, block_series) in block_derived {
         match persisted.get(&key) {
             Some(persisted_series) => {
@@ -97,8 +96,8 @@ fn reconcile_in_place(target: &mut SeriesMap, block_derived: SeriesMap) {
 /// `keys` series of `points` points each, with the derived view holding fresh addresses for the
 /// first `covered` of those keys -- the rest standing for a block the reconcile could not read.
 fn inputs(keys: usize, points: usize, covered: usize) -> (SeriesMap, SeriesMap) {
-    let mut persisted: SeriesMap = HashMap::new();
-    let mut derived: SeriesMap = HashMap::new();
+    let mut persisted: SeriesMap = BTreeMap::new();
+    let mut derived: SeriesMap = BTreeMap::new();
     for k in 0..keys {
         let key = format!("f{k}");
         let series: Series = (0..points as u64).map(|at| (at, address(at))).collect();
@@ -212,7 +211,7 @@ fn what_a_reconcile_allocates_rebuilding_against_refreshing_in_place() {
         let points = 100usize;
         let (persisted, derived) = inputs(keys, points, 0);
         // Half the derived view's keys are ones the persisted map has never seen.
-        let mut arriving: SeriesMap = HashMap::new();
+        let mut arriving: SeriesMap = BTreeMap::new();
         for k in keys..(keys + keys / 2) {
             arriving.insert(
                 format!("f{k}"),

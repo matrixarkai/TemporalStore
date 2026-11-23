@@ -2037,6 +2037,12 @@ struct BlockStoreInner {
     /// caller. Equal to `quarantine_arrivals` means every slab now in quarantine was in it for
     /// such a round; anything less means a slab arrived since and nothing has looked at it.
     quarantine_checked_arrivals: u64,
+    /// The last purge round read the whole quarantine directory and found nothing left in it, and
+    /// nothing has been set aside since. An EMPTY quarantine has no earliest arrival to publish,
+    /// which reads as "not entitled to an opinion" and made every idle round walk the shard to
+    /// check a quarantine with nothing in it. Cleared at the one place a slab is set aside and
+    /// false in a fresh process, whose directory the manifest may not know.
+    quarantine_known_empty: bool,
     // Set only by Default: the store owns its minted scratch directory, and the last
     // clone's drop removes it. Never set for a caller-supplied root.
     scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
@@ -2080,6 +2086,23 @@ fn observe_quarantined_arrival(
 /// round with a real live set, so none is waiting to be restored. `earliest == None` is "not
 /// entitled to an opinion" and answers false, and so does `min_age == 0` because nothing is then
 /// younger than the age.
+/// [`quarantine_purge_would_do_nothing`], or a quarantine known to be empty.
+///
+/// An empty quarantine is nothing to destroy and nothing to restore, so a round over it can change
+/// nothing whatever the age. `checked == arrivals` still has to hold: a slab that arrived since is
+/// not in the empty directory the last round read.
+fn quarantine_purge_has_nothing_to_do(
+    earliest: Option<u64>,
+    now: u64,
+    min_age_ms: u64,
+    arrivals: u64,
+    checked: u64,
+    known_empty: bool,
+) -> bool {
+    (known_empty && checked == arrivals)
+        || quarantine_purge_would_do_nothing(earliest, now, min_age_ms, arrivals, checked)
+}
+
 fn quarantine_purge_would_do_nothing(
     earliest: Option<u64>,
     now: u64,
@@ -2125,6 +2148,19 @@ mod quarantine_wait_guards {
     fn a_quarantine_that_has_aged_out_is_not_waiting() {
         assert!(quarantine_purge_would_do_nothing(Some(1_000), 1_000 + HOUR - 1, HOUR, 3, 3));
         assert!(!quarantine_purge_would_do_nothing(Some(1_000), 1_000 + HOUR, HOUR, 3, 3));
+    }
+
+    /// A quarantine the last round found empty has nothing to purge at any age, until something
+    /// arrives. Planted fault: drop the `known_empty` arm, or drop `checked == arrivals` from it.
+    #[test]
+    fn a_quarantine_known_to_be_empty_waits_whatever_the_age() {
+        use super::quarantine_purge_has_nothing_to_do as nothing;
+        assert!(nothing(None, 2_000, HOUR, 3, 3, true));
+        assert!(nothing(None, 2_000, 0, 3, 3, true));
+        // Not known empty: no earliest still means the round must look (the control).
+        assert!(!nothing(None, 2_000, HOUR, 3, 3, false));
+        // A slab arrived since the empty read.
+        assert!(!nothing(None, 2_000, HOUR, 4, 3, true));
     }
 
     /// No opinion on the earliest arrival, and an age of zero, both mean the round must look.
@@ -2306,6 +2342,7 @@ impl BlockStore {
                 delayed_destroy_earliest_unix_ms: None,
                 quarantine_arrivals: 0,
                 quarantine_checked_arrivals: 0,
+                quarantine_known_empty: false,
                 scratch: None,
             })),
         }
@@ -3013,6 +3050,15 @@ impl BlockStore {
         } else {
             None
         };
+        // EVERY ENTRY THE ROUND EXAMINED LEFT THE DIRECTORY (destroyed or restored), and the round
+        // reached the end of it: nothing is in quarantine. A stopped round, a stayer of any kind and a
+        // name that is not a slab all make the counts differ, so each of them answers "not known".
+        inner.quarantine_known_empty =
+            !budget_exhausted && examined == purged.len() + restored.len();
+        if inner.quarantine_known_empty {
+            // Nothing remains to check against a live set; later arrivals invalidate this epoch.
+            inner.quarantine_checked_arrivals = inner.quarantine_arrivals;
+        }
         purged.sort_unstable();
         restored.sort_unstable();
         restore_blocked.sort_unstable();
@@ -3113,12 +3159,13 @@ impl BlockStore {
     /// out: a retention owner can name a quarantined slab without any slab arriving.
     pub fn quarantine_waits_for_age(&self, min_age_ms: u64) -> bool {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        quarantine_purge_would_do_nothing(
+        quarantine_purge_has_nothing_to_do(
             inner.delayed_destroy_earliest_unix_ms,
             now_unix_ms(),
             min_age_ms,
             inner.quarantine_arrivals,
             inner.quarantine_checked_arrivals,
+            inner.quarantine_known_empty,
         )
     }
 
@@ -4234,6 +4281,8 @@ mod open_read_scale;
 #[cfg(test)]
 #[path = "block_store/restore_only_tests.rs"]
 mod restore_only_tests;
+#[path = "block_store/an_empty_quarantine_waits_tests.rs"]
+mod an_empty_quarantine_waits_tests;
 
 #[cfg(test)]
 mod tests {

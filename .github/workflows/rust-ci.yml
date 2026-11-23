@@ -126,6 +126,22 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      # Direct mode over the shared client SDK is part of the default build, so the default job
+      # builds it and runs its tests: the gateway-versus-direct fixtures and the direct door.
+      - name: Direct mode over the shared client SDK (default build)
+        run: |
+          set -euo pipefail
+          cargo test --locked -p temporalstore-rust --lib matrixobject_direct \
+            -- --test-threads=1 2>&1 | tee /tmp/direct-sdk-default.log
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed;' /tmp/direct-sdk-default.log
+
+      - name: Direct and gateway recovery assertions
+        run: |
+          set -euo pipefail
+          bash -n scripts/direct_data_server_e2e.sh
+          python3 -I -m unittest discover -s scripts -p test_direct_data_server_e2e_assertions.py 2>&1 | tee /tmp/direct-e2e-assertions.log
+          grep -q '^Ran 9 tests in ' /tmp/direct-e2e-assertions.log
+
       - name: Recovery dirty bucket selection checks
         timeout-minutes: 30
         run: |
@@ -279,6 +295,9 @@ jobs:
 
       - name: cargo build (release service binaries)
         run: cargo build --release -p temporalstore-rust --bin matrixark_rust_metaserver --bin matrixark_rust_datanode
+
+      - name: Networked durability startup fails closed
+        run: python3 scripts/check_networked_startup_failure.py target/release/matrixark_rust_datanode
 
       - name: Active index gate record accounting checks
         run: |

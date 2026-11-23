@@ -17,7 +17,7 @@
 //! ```text
 //! GATEWAY=matrixobject://127.0.0.1:24410 META=127.0.0.1:24404,127.0.0.1:24405,127.0.0.1:24406 \
 //!   TS_MATRIXOBJECT_META_GROUP=1 SEGMENTS=6 WRITERS=4 \
-//!   cargo run --release -p temporalstore-rust --features matrixobject --example direct_wal_index_e2e
+//!   cargo run --release -p temporalstore-rust --example direct_wal_index_e2e
 //! ```
 //!
 //! Every check prints one `CHECK name ok|FAIL detail` line, and the run exits non-zero on the

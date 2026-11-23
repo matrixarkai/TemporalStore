@@ -795,7 +795,7 @@ impl NetworkedMatrixObjectStore {
             MatrixObjectMode::Gateway => Ok(Self::Gateway(MatrixObjectHttpStore::new(target)?)),
             MatrixObjectMode::Direct => Err(ObjectStoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "direct MatrixObject mode needs a binary built with the `matrixobject` feature",
+                "direct MatrixObject mode is connected by `matrixobject_direct::DirectConfig` in temporalstore-rust, not by this crate",
             ))),
         }
     }
@@ -1439,7 +1439,7 @@ mod tests {
     fn direct_mode_is_refused_loudly_until_the_client_is_built_in() {
         let error = NetworkedMatrixObjectStore::connect(MatrixObjectMode::Direct, "m1:7000")
             .expect_err("no direct client yet");
-        assert!(error.to_string().contains("`matrixobject` feature"), "{error}");
+        assert!(error.to_string().contains("matrixobject_direct::DirectConfig"), "{error}");
     }
 
     #[tokio::test]

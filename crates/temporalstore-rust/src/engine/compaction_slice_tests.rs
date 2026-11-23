@@ -518,6 +518,45 @@ fn a_pass_with_nothing_on_the_drain_slabs_does_nothing() {
     );
 }
 
+/// A PASS MAKES THE RELOCATION OF EVERY BLOCK IT MOVED DURABLE. Each slice's moves become relocation
+/// records (old item, new item, element name, one of each per block), appended after the blocks they
+/// name are synced, so recovery can repoint a block from the base image plus the records. Not
+/// appending them (dropping `flush_relocation_records`, or its call at the finish) leaves the log with
+/// none, and this turns red.
+#[test]
+fn a_pass_writes_a_durable_relocation_record_for_every_block_it_moved() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let (_, drain) = seed(&engine, 60);
+    let expected: BTreeSet<_> = {
+        let shards = engine.shards.read().unwrap();
+        collect_live_block_entries(shards.get(&1).unwrap())
+            .into_iter()
+            .filter(|entry| !entry.deleted && drain.contains(&entry.address.block_slab_id()))
+            .map(|entry| (entry.address.block_slab_id(), entry.address.offset(), entry.address.length()))
+            .collect()
+    };
+    assert!(!expected.is_empty(), "the fixture must leave live blocks on the drain slabs");
+    engine.compact_shard_blocks_draining_sliced(1, drain, 32).unwrap();
+    let mut recorded = BTreeSet::new();
+    let mut ordinary = 0usize;
+    engine.index_log_store.for_each_delta_record_above_anchor(1, 0, 0, |record| {
+        if record.relocated_from.is_empty() {
+            ordinary += 1;
+            return;
+        }
+        assert_eq!(record.relocated_from.len(), record.items.len(), "unpaired relocation items");
+        assert_eq!(record.relocated_elements.len(), record.items.len(), "unpaired element names");
+        for from in &record.relocated_from {
+            let address = from.entry.as_ref().expect("a moved block must have its old address");
+            assert!(recorded.insert((address.block_slab_id(), address.offset(), address.length())),
+                "the pass recorded one source block twice");
+        }
+    }).expect("the durable relocation log must decode completely");
+    assert!(ordinary > 0, "the guard must distinguish relocation records from ordinary deltas");
+    assert_eq!(recorded, expected, "the pass must record exactly every block it moved");
+}
+
 /// A KEYED STEP NAMES THE BLOCKS OF ITS OWN BUCKETS, NOT THE SHARD'S. Naming a block's object needs an
 /// inversion of the object tables; built with the whole-shard walk once per bucket a 200-key step
 /// visited every object of every kind about 200 times, which measured 4.1 s a step at 100k keys and

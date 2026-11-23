@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! MODE=gateway TARGET=matrixobject://127.0.0.1:22110 K=64 OPS=2000 VALUE=1024 \
-//!   cargo run --release -p temporalstore-rust --features matrixobject --example direct_vs_gateway_latency
+//!   cargo run --release -p temporalstore-rust --example direct_vs_gateway_latency
 //! MODE=direct  TARGET=127.0.0.1:22111,127.0.0.1:22112,127.0.0.1:22113 K=64 OPS=2000 ...
 //! ```
 //!

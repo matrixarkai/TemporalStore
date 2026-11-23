@@ -1812,7 +1812,7 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
     // well. The count below is still the denominator.
     // Generic over the VALUE as well, because `features` holds the owned array now while the
     // context kinds still hold B-trees, and this assertion is about the map not the series.
-    fn one_container<K, V>(_: &std::collections::HashMap<K, V>) {}
+    fn one_container<K, V>(_: &std::collections::BTreeMap<K, V>) {}
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = new_engine(dir.path());
     let shards = engine.shards.read().expect("engine lock poisoned");

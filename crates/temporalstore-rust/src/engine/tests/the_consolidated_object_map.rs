@@ -136,7 +136,7 @@ fn the_control_state_mutators_keep_the_consolidated_map_right_through_removals()
 
     // THE WHOLE-MAP REPLACEMENT, which is where a field assignment would have left the mirror
     // holding every key the replacement dropped.
-    let mut replacement = std::collections::HashMap::new();
+    let mut replacement = std::collections::BTreeMap::new();
     replacement.insert(std::sync::Arc::<str>::from("fresh"), a.clone());
     shard.set_all_control_state_blocks(replacement);
     assert_eq!(

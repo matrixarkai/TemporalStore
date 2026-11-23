@@ -643,7 +643,7 @@ pub(super) fn compaction_model_layout_reports(
 /// same reason: the consolidated map these tenants migrate into is not keyed by `String`.
 pub(super) fn compaction_timestamped_layout<K, S>(
     kind: &str,
-    timelines: &HashMap<K, S>,
+    timelines: &BTreeMap<K, S>,
     slab_block_counts: &BTreeMap<u64, u64>,
 ) -> ShardCompactionModelLayoutReport
 where

@@ -218,6 +218,17 @@ pub(super) fn slot_for_write<'m, V: Default>(
     map.get_mut(key).expect("the slot was just found or inserted")
 }
 
+/// Borrow an existing object key without allocating a replacement key on every write.
+pub(super) fn object_slot_for_write<'m>(
+    map: &'m mut super::state::ObjectTable,
+    key: &str,
+) -> &'m mut super::object_record::ObjectSlot {
+    if !map.contains_key(key) {
+        map.insert(std::sync::Arc::from(key), Default::default());
+    }
+    map.get_mut(key).expect("the object slot was just found or inserted")
+}
+
 /// Replace the value stored under `key`, minting the key's `Arc` only when the map has no entry.
 /// The overwrite twin of [`slot_for_write`], for a slot whose whole value is rebuilt by the write
 /// (a token bucket's state, a selection's winner).
