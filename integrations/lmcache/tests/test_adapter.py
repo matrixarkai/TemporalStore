@@ -131,7 +131,7 @@ class FakeBlob:
         destination[:] = payload
         return True
 
-    def get_many_into(self, items):
+    def get_many_into(self, items, *, staging=False):
         found = []
         for key, destination in items:
             try:

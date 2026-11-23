@@ -6,7 +6,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from lmcache_temporalstore.blob import BlobClient, _send_buffers
+from lmcache_temporalstore.blob import BlobClient, _RECVMSG_AVAILABLE, _receive_buffers, _send_buffers
 
 
 class BlobUploadTests(unittest.TestCase):
@@ -388,6 +388,31 @@ class BlobClientTest(unittest.TestCase):
             self.assertEqual(self.client.get_many_into(entries), [True, True])
         self.assertEqual(len(BlobHandler.batch_reads), 2)
         self.assertEqual([bytes(dst) for dst in values], [b"data", b"copy"])
+
+    @unittest.skipUnless(_RECVMSG_AVAILABLE, "requires CPython on Linux with recvmsg_into")
+    def test_staged_batch_reads_reuse_socket_only_after_complete_body(self):
+        BlobHandler.supports_batch_reads = True
+        self.client.put("key", memoryview(b"a" * 16384))
+        self.client.put("other", memoryview(b"b" * 16384))
+        values = [memoryview(bytearray(16384)) for _ in range(2)]
+        items = list(zip(("key", "other"), values))
+
+        with patch("lmcache_temporalstore.blob._receive_buffers", wraps=_receive_buffers) as receive:
+            self.assertEqual(self.client.get_many_into(items, staging=True), [True, True])
+            receive.assert_called_once()
+        self.assertEqual([bytes(value) for value in values], [b"a" * 16384, b"b" * 16384])
+        connection = self.client._read_connection
+        self.assertIsNotNone(connection)
+        self.assertEqual(self.client.get_many_into(items, staging=True), [True, True])
+        self.assertIs(self.client._read_connection, connection)
+
+        BlobHandler.truncate_batch_read = True
+        self.assertEqual(self.client.get_many_into(items, staging=True), [False, False])
+        self.assertIsNone(self.client._read_connection)
+        BlobHandler.truncate_batch_read = False
+        self.assertEqual(self.client.get_many_into(items, staging=True), [True, True])
+        self.assertIsNot(self.client._read_connection, connection)
+        self.assertEqual([bytes(value) for value in values], [b"a" * 16384, b"b" * 16384])
 
     def test_truncated_batch_fails_and_the_next_read_reconnects(self):
         BlobHandler.supports_batch_reads = True

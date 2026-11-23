@@ -732,7 +732,8 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                         positions.append(index)
                 except Exception:
                     logger.exception("TemporalStore L2 load destination failed")
-            for index, found in zip(positions, self._blob.get_many_into(items)):
+            # LMCache only publishes the reserved buffers reported in this task's bitmap.
+            for index, found in zip(positions, self._blob.get_many_into(items, staging=True)):
                 if found:
                     bitmap.set(index)
                     loaded += 1
