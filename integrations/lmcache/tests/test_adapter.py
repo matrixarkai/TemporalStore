@@ -353,6 +353,25 @@ class AdapterTest(unittest.TestCase):
         finally:
             reopened.close()
 
+    def test_empty_inventory_lookup_completes_without_worker(self):
+        blob = FakeBlob()
+        adapter_module.BlobClient = lambda *_args, **_kwargs: blob
+        adapter = adapter_module.TemporalStoreL2Adapter(
+            dict(namespace="empty", recover_capacity=True, payload_metadata=True)
+        )
+        try:
+            def unexpected_submit(*_args):
+                self.fail("empty lookup scheduled a worker")
+
+            adapter._lookup_pool.submit = unexpected_submit
+            task = adapter.submit_lookup_and_lock_task([Key("absent")], {})
+            self.assertTrue(adapter._lookup_event.event.is_set())
+            self.assertFalse(adapter.query_lookup_and_lock_result(task).test(0))
+            self.assertIsNone(adapter.query_lookup_and_lock_result(task))
+            self.assertEqual(adapter._locked, {})
+        finally:
+            adapter.close()
+
     def test_payload_metadata_recovers_without_metadata_commands(self):
         blob, data = FakeBlob(), FakeData()
         adapter_module.BlobClient = lambda *_args, **_kwargs: blob

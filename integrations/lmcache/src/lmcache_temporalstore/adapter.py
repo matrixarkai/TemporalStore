@@ -289,7 +289,13 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
     ) -> L2TaskId:
         with self._lock:
             task_id = self._allocate_task_id()
-            if self._closed or not self._inventory_ready:
+            # An empty recovered inventory cannot produce a hit.
+            if (
+                self._closed
+                or not self._inventory_ready
+                or not keys
+                or (self._inventory_scope and not self._entries)
+            ):
                 self._done_lookup[task_id] = Bitmap(len(keys))
                 if not self._closed:
                     self._lookup_event.notify()
