@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import nullcontext
 import http.client
+from itertools import chain
 import json
 import logging
 from select import select
@@ -15,9 +16,11 @@ from urllib.parse import quote, urlsplit
 
 
 logger = logging.getLogger(__name__)
-_READ_BATCH_KEYS = 32
-_READ_BATCH_BYTES = 512 * 1024 * 1024
-_BATCH_READ_RECHECK_SECONDS = 30
+_BLOB_BATCH_KEYS = 32
+_BLOB_BATCH_BYTES = 512 * 1024 * 1024
+_BATCH_RECHECK_SECONDS = 30
+_BATCH_UNAVAILABLE = (404, 405, 501)
+_MAX_BATCH_CONTROL_BYTES = 64 * 1024
 
 
 class BlobClient:
@@ -43,11 +46,14 @@ class BlobClient:
         self._reuse_mutation_connection = reuse_mutation_connection
         self._mutation_lock = Lock() if reuse_mutation_connection else nullcontext()
         self._mutation_connection: http.client.HTTPConnection | None = None
+        self._batch_write_supported = False
+        self._batch_write_retry_at = 0.0
 
     def _request(
-        self, method: str, path: str, body: bytes | memoryview | None = None, *,
+        self, method: str, path: str,
+        body: bytes | memoryview | Iterable[bytes | memoryview] | None = None, *,
         connection: http.client.HTTPConnection | None = None,
-        content_type: str = "application/octet-stream",
+        content_type: str = "application/octet-stream", body_length: int | None = None,
     ):
         if connection is None:
             connection = self._connection_type(
@@ -57,10 +63,12 @@ class BlobClient:
             connection.putrequest(method, self._prefix + path)
             if body is not None:
                 connection.putheader("Content-Type", content_type)
-                connection.putheader("Content-Length", str(len(body)))
-            connection.endheaders()
-            if body is not None:
-                connection.send(body)
+                if body_length is None:
+                    if not isinstance(body, (bytes, memoryview)):
+                        raise ValueError("streaming request requires a content length")
+                    body_length = len(body)
+                connection.putheader("Content-Length", str(body_length))
+            connection.endheaders(body)
             response = connection.getresponse()
             return connection, response
         except BaseException:
@@ -68,8 +76,10 @@ class BlobClient:
             raise
 
     def _mutate(
-        self, method: str, path: str, body: bytes | memoryview | None = None, *,
-        content_type: str = "application/octet-stream", allowed_status: tuple[int, ...] = (200,),
+        self, method: str, path: str,
+        body: bytes | memoryview | Iterable[bytes | memoryview] | None = None, *,
+        content_type: str = "application/octet-stream", body_length: int | None = None,
+        allowed_status: tuple[int, ...] = (200,),
     ) -> tuple[int, bytes]:
         with self._mutation_lock:
             connection, self._mutation_connection = self._mutation_connection, None
@@ -80,6 +90,7 @@ class BlobClient:
                 connection = None
             connection, response = self._request(
                 method, path, body, connection=connection, content_type=content_type,
+                body_length=body_length,
             )
             consumed = False
             try:
@@ -97,6 +108,66 @@ class BlobClient:
 
     def put(self, key: str, payload: memoryview) -> None:
         self._mutate("PUT", self._blob_path(key), payload)
+
+    def _put_batch(self, items: list[tuple[str, memoryview]], size: int) -> list[bool] | None:
+        if not self._batch_write_supported:
+            if monotonic() < self._batch_write_retry_at:
+                return None
+            status, _ = self._mutate("GET", "/batch_write_blobs", allowed_status=(200, *_BATCH_UNAVAILABLE))
+            self._batch_write_supported = status == 200
+            if not self._batch_write_supported:
+                self._batch_write_retry_at = monotonic() + _BATCH_RECHECK_SECONDS
+                return None
+        control = json.dumps([{"key": key, "length": len(payload)} for key, payload in items]).encode()
+        if len(control) > _MAX_BATCH_CONTROL_BYTES:
+            return None
+        prefix = len(control).to_bytes(4, "big")
+        body = chain((prefix, control), (payload for _, payload in items))
+        status, reply = self._mutate(
+            "POST", "/batch_write_blobs", body, body_length=len(prefix) + len(control) + size,
+            allowed_status=(200, *_BATCH_UNAVAILABLE),
+        )
+        if status != 200:
+            self._batch_write_supported = False
+            self._batch_write_retry_at = monotonic() + _BATCH_RECHECK_SECONDS
+            return None
+        if len(reply) != len(items) or any(value not in (0, 1) for value in reply):
+            raise OSError("invalid blob write receipt")
+        return [value == 1 for value in reply]
+
+    def put_many(self, items: list[tuple[str, memoryview]]) -> list[bool]:
+        written = []
+        offset = 0
+        while offset < len(items):
+            end = offset
+            size = 0
+            for index in range(offset, min(len(items), offset + _BLOB_BATCH_KEYS)):
+                length = len(items[index][1])
+                if index > offset and size + length > _BLOB_BATCH_BYTES:
+                    break
+                end = index + 1
+                size += length
+            group = items[offset:end]
+            offset = end
+            if len(group) > 1:
+                try:
+                    result = self._put_batch(group, size)
+                except (OSError, http.client.HTTPException):
+                    logger.exception("TemporalStore L2 blob write batch failed")
+                    written.extend([False] * len(group))
+                    continue
+                if result is not None:
+                    written.extend(result)
+                    continue
+            for key, payload in group:
+                try:
+                    self.put(key, payload)
+                except (OSError, http.client.HTTPException):
+                    logger.exception("TemporalStore L2 blob write failed")
+                    written.append(False)
+                else:
+                    written.append(True)
+        return written
 
     @staticmethod
     def _blob_path(key: str) -> str:
@@ -167,11 +238,11 @@ class BlobClient:
             consumed = False
             try:
                 with response:
-                    if response.status in (404, 405, 501):
+                    if response.status in _BATCH_UNAVAILABLE:
                         response.read()
                         consumed = True
                         # Recheck periodically so rolling upgrades can enable batching.
-                        self._batch_read_retry_at = monotonic() + _BATCH_READ_RECHECK_SECONDS
+                        self._batch_read_retry_at = monotonic() + _BATCH_RECHECK_SECONDS
                         return None
                     if response.status != 200:
                         response.read()
@@ -194,10 +265,10 @@ class BlobClient:
 
     def get_many_into(self, items: list[tuple[str, memoryview]]) -> list[bool]:
         found = []
-        for offset in range(0, len(items), _READ_BATCH_KEYS):
-            group = items[offset:offset + _READ_BATCH_KEYS]
+        for offset in range(0, len(items), _BLOB_BATCH_KEYS):
+            group = items[offset:offset + _BLOB_BATCH_KEYS]
             statuses = None
-            if len(group) > 1 and sum(len(out) for _, out in group) <= _READ_BATCH_BYTES:
+            if len(group) > 1 and sum(len(out) for _, out in group) <= _BLOB_BATCH_BYTES:
                 try:
                     statuses = self._read_batch(group)
                 except (OSError, ValueError, http.client.HTTPException):

@@ -1426,14 +1426,103 @@ fn handle_blob_batch_delete(
     json_response(200, &serde_json::json!({ "deleted": deleted }))
 }
 
-const MAX_BLOB_READ_BATCH_KEYS: usize = 32;
-const MAX_BLOB_READ_BATCH_BODY: usize = 64 * 1024;
-const MAX_BLOB_READ_BATCH_PAYLOAD: usize = 512 * 1024 * 1024;
+const MAX_BLOB_BATCH_KEYS: usize = 32;
+const MAX_BLOB_BATCH_BODY: usize = 64 * 1024;
+const MAX_BLOB_BATCH_PAYLOAD: usize = 512 * 1024 * 1024;
 
 #[derive(serde::Deserialize)]
-struct BlobBatchReadItem {
+struct BlobBatchItem {
     key: String,
     length: usize,
+}
+
+fn read_blob_body_exact(
+    transfer: &mut StreamTransfer,
+    mut buffer: &mut [u8],
+) -> std::io::Result<()> {
+    while !buffer.is_empty() {
+        let count = transfer.read_body(buffer)?;
+        if count == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        buffer = &mut buffer[count..];
+    }
+    Ok(())
+}
+
+fn stream_blob_batch_write(
+    transfer: &mut StreamTransfer,
+    store: &FileObjectStore,
+    chunk_bytes: usize,
+) -> std::io::Result<()> {
+    let mut encoded_length = [0u8; 4];
+    read_blob_body_exact(transfer, &mut encoded_length)?;
+    let control_len = u32::from_be_bytes(encoded_length) as usize;
+    let items = if control_len <= MAX_BLOB_BATCH_BODY
+        && control_len <= transfer.body_len().saturating_sub(encoded_length.len())
+    {
+        let mut control = vec![0; control_len];
+        read_blob_body_exact(transfer, &mut control)?;
+        serde_json::from_slice::<Vec<BlobBatchItem>>(&control).ok()
+    } else {
+        None
+    };
+    let paths = items.and_then(|items| {
+        if items.is_empty() || items.len() > MAX_BLOB_BATCH_KEYS {
+            return None;
+        }
+        let payload_len = items
+            .iter()
+            .try_fold(0usize, |sum, item| sum.checked_add(item.length))?;
+        if payload_len > MAX_BLOB_BATCH_PAYLOAD
+            || transfer.body_len() != encoded_length.len() + control_len + payload_len
+        {
+            return None;
+        }
+        let mut names = BTreeSet::new();
+        items
+            .iter()
+            .map(|item| {
+                if item.key.is_empty() || !names.insert(item.key.as_str()) {
+                    return None;
+                }
+                Some((store.object_path(&item.key).ok()?, item.length))
+            })
+            .collect::<Option<Vec<_>>>()
+    });
+    let Some(paths) = paths else {
+        transfer.drain_body()?;
+        write_stream_json(
+            transfer,
+            400,
+            &Status::error("bad_request", "invalid blob write batch"),
+        );
+        return Ok(());
+    };
+
+    let largest = paths.iter().map(|(_, length)| *length).max().unwrap_or(0);
+    let mut buffer = vec![0; largest.min(chunk_bytes.max(1))];
+    let mut statuses = Vec::with_capacity(paths.len());
+    for (path, length) in paths {
+        let mut remaining = length;
+        let result = replace_blob_with_buffer(&path, length, &mut buffer, |out| {
+            let count = transfer.read_body(out)?;
+            remaining -= count;
+            Ok(count)
+        });
+        // A filesystem error can occur before all bytes for this entry arrive.
+        // Consume the rest of that entry before beginning the next file.
+        while remaining > 0 {
+            let count = remaining.min(buffer.len());
+            read_blob_body_exact(transfer, &mut buffer[..count])?;
+            remaining -= count;
+        }
+        statuses.push(u8::from(result.is_ok()));
+    }
+
+    transfer.send_head(200, "application/octet-stream", statuses.len())?;
+    transfer.write_chunk(&statuses)?;
+    transfer.flush()
 }
 
 fn stream_blob_batch_read(
@@ -1441,7 +1530,7 @@ fn stream_blob_batch_read(
     store: &FileObjectStore,
     chunk_bytes: usize,
 ) -> std::io::Result<()> {
-    if transfer.body_len() > MAX_BLOB_READ_BATCH_BODY {
+    if transfer.body_len() > MAX_BLOB_BATCH_BODY {
         transfer.drain_body()?;
         write_stream_json(
             transfer,
@@ -1455,15 +1544,8 @@ fn stream_blob_batch_read(
     }
 
     let mut body = vec![0; transfer.body_len()];
-    let mut offset = 0;
-    while offset < body.len() {
-        let count = transfer.read_body(&mut body[offset..])?;
-        if count == 0 {
-            return Err(std::io::ErrorKind::UnexpectedEof.into());
-        }
-        offset += count;
-    }
-    let Ok(items) = serde_json::from_slice::<Vec<BlobBatchReadItem>>(&body) else {
+    read_blob_body_exact(transfer, &mut body)?;
+    let Ok(items) = serde_json::from_slice::<Vec<BlobBatchItem>>(&body) else {
         write_stream_json(
             transfer,
             400,
@@ -1477,8 +1559,8 @@ fn stream_blob_batch_read(
     let expected = items
         .iter()
         .try_fold(0usize, |sum, item| sum.checked_add(item.length));
-    if items.len() > MAX_BLOB_READ_BATCH_KEYS
-        || expected.is_none_or(|length| length > MAX_BLOB_READ_BATCH_PAYLOAD)
+    if items.len() > MAX_BLOB_BATCH_KEYS
+        || expected.is_none_or(|length| length > MAX_BLOB_BATCH_PAYLOAD)
     {
         write_stream_json(
             transfer,
@@ -1522,10 +1604,7 @@ fn stream_blob_batch_read(
     transfer.flush()
 }
 
-fn open_blob_for_batch(
-    store: &FileObjectStore,
-    item: &BlobBatchReadItem,
-) -> (u8, Option<fs::File>) {
+fn open_blob_for_batch(store: &FileObjectStore, item: &BlobBatchItem) -> (u8, Option<fs::File>) {
     if item.key.is_empty() {
         return (2, None);
     }
@@ -1573,6 +1652,21 @@ fn handle_blob_stream(
     peer_addrs: Option<&[String]>,
     peer_timeout_ms: u64,
 ) -> StreamAction {
+    if head.path == "/batch_write_blobs" {
+        let result = match head.method.as_str() {
+            "GET" => transfer.drain_body().and_then(|_| {
+                transfer.send_head(200, "application/octet-stream", 0)?;
+                transfer.flush()
+            }),
+            "POST" => stream_blob_batch_write(transfer, blob_store, chunk_bytes),
+            _ => return StreamAction::Declined,
+        };
+        if let Err(error) = result {
+            debug!(%error, "blob batch write ended early");
+            transfer.abort_response();
+        }
+        return StreamAction::Handled;
+    }
     if head.method == "POST" && head.path == "/batch_read_blobs" {
         if let Err(error) = stream_blob_batch_read(transfer, blob_store, chunk_bytes) {
             debug!(%error, "blob batch read ended early");
@@ -2020,6 +2114,16 @@ fn replace_blob_from_body(
     path: &std::path::Path,
     length: usize,
     chunk_bytes: usize,
+    read: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
+) -> std::io::Result<(u64, u64, u64)> {
+    let mut buffer = vec![0u8; chunk_bytes.max(1).min(length)];
+    replace_blob_with_buffer(path, length, &mut buffer, read)
+}
+
+fn replace_blob_with_buffer(
+    path: &std::path::Path,
+    length: usize,
+    buffer: &mut [u8],
     mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
 ) -> std::io::Result<(u64, u64, u64)> {
     let parent = path
@@ -2030,7 +2134,6 @@ fn replace_blob_from_body(
     let mut file = tempfile::Builder::new()
         .prefix(".blob-upload-")
         .tempfile_in(parent)?;
-    let mut buffer = vec![0u8; chunk_bytes.max(1).min(length)];
     let mut remaining = length;
     let mut chunks = 0u64;
     while remaining > 0 {
@@ -3110,7 +3213,7 @@ mod tests {
         ] {
             let (status, file) = open_blob_for_batch(
                 &store,
-                &BlobBatchReadItem {
+                &BlobBatchItem {
                     key: key.to_string(),
                     length,
                 },

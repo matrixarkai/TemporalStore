@@ -30,6 +30,7 @@ from .blob import BlobClient
 
 logger = logging.getLogger(__name__)
 _DELETE_BATCH_SIZE = 128
+_STORE_UPLOAD_BATCH_SIZE = 32
 
 
 def _names(key: ObjectKey, namespace: str = "") -> tuple[str, str]:
@@ -443,9 +444,34 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         success = len(keys) == len(objects)
         pending: dict[ObjectKey | bytes, tuple[int, bool, ObjectKey]] = {}
         pending_bytes = 0
+        uploads: list[tuple[ObjectKey | bytes, str, memoryview]] = []
+
+        def upload() -> None:
+            nonlocal success, pending_bytes
+            if not uploads:
+                return
+            try:
+                written = self._blob.put_many([(name, payload) for _, name, payload in uploads])
+                if len(written) != len(uploads):
+                    raise OSError("blob receipt count differs from the upload count")
+            except Exception:
+                logger.exception("TemporalStore L2 payload write failed")
+                written = [False] * len(uploads)
+            for (key, _, _), stored in zip(uploads, written, strict=True):
+                if stored:
+                    continue
+                size, _, _ = pending.pop(key)
+                pending_bytes -= size
+                success = False
+                if isinstance(key, bytes):
+                    self._remove_unconfirmed_store(key, size)
+                with self._lock:
+                    self._publishing.discard(key)
+            uploads.clear()
 
         def publish() -> None:
             nonlocal success, transferred, pending_bytes
+            upload()
             if not pending:
                 return
             try:
@@ -497,17 +523,18 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                     payload = memoryview(obj.byte_array).cast("B")[:size]
                     if len(payload) != size:
                         raise ValueError("memory object length changed during store")
-                    self._blob.put(self._key_names(key)[0], payload)
+                    name, _ = self._key_names(key)
                 except Exception:
                     success = False
                     logger.exception("TemporalStore L2 payload write failed")
-                    if isinstance(key, bytes):
-                        self._remove_unconfirmed_store(key, size)
                     with self._lock:
                         self._publishing.discard(key)
                     continue
                 pending[key] = (size, True, original)
                 pending_bytes += size
+                uploads.append((key, name, payload))
+                if len(uploads) == _STORE_UPLOAD_BATCH_SIZE:
+                    upload()
         except Exception:
             success = False
             logger.exception("TemporalStore L2 store task failed")

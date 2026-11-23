@@ -105,6 +105,17 @@ class FakeBlob:
             raise OSError("injected write failure")
         self.values[name] = bytes(payload)
 
+    def put_many(self, items):
+        written = []
+        for name, payload in items:
+            try:
+                self.put(name, payload)
+            except OSError:
+                written.append(False)
+            else:
+                written.append(True)
+        return written
+
     def get_into(self, name, destination):
         if self.fail_get:
             raise OSError("injected read failure")
@@ -487,6 +498,27 @@ class AdapterTest(unittest.TestCase):
         adapter._store_pool.submit(lambda: None).result(timeout=2)
         self.assertEqual(adapter.report_status()["bytes_used"], 0)
         self.assertEqual(adapter._data.values, {})
+
+    def test_only_confirmed_uploads_publish_lookup_metadata(self):
+        adapter = self.adapter
+        first, second = Key("first"), Key("second")
+
+        def one_write(items):
+            name, payload = items[0]
+            adapter._blob.put(name, payload)
+            return [True, False]
+
+        adapter._blob.put_many = one_write
+        task = adapter.submit_store_task([first, second], [Memory(b"a"), Memory(b"bc")])
+        self.assertTrue(adapter._store_event.event.wait(2))
+        result = adapter.pop_completed_store_tasks()[task]
+        self.assertFalse(result.success)
+        self.assertEqual(adapter.report_status()["bytes_used"], 1)
+        self.assertEqual(adapter.report_status()["stores"], 1)
+        lookup = adapter.submit_lookup_and_lock_task([first, second], {})
+        self.assertTrue(adapter._lookup_event.event.wait(2))
+        self.assertEqual(adapter.query_lookup_and_lock_result(lookup).bits, [True, False])
+        adapter.submit_unlock([first])
 
     def test_partial_metadata_batch_is_rolled_back(self):
         adapter = self.adapter
