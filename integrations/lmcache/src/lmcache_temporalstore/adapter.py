@@ -11,6 +11,7 @@ from http.client import HTTPException
 import logging
 from math import isfinite
 import threading
+from time import monotonic
 
 import torch  # noqa: F401 - load before lmcache_native
 from feast_temporalstore_command.client import TemporalStoreClient
@@ -35,6 +36,7 @@ _STORE_UPLOAD_BATCH_SIZE = 32
 _INVENTORY_RETRY_INITIAL_SECONDS = 0.25
 _INVENTORY_RETRY_MAX_SECONDS = 2.0
 _MUTATION_COOLDOWN_SECONDS = 1.0
+_LOOKUP_FAILURE_COOLDOWN_SECONDS = 1.0
 
 
 def _names(key: ObjectKey, namespace: str = "") -> tuple[str, str]:
@@ -203,6 +205,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         self._load_event = create_event_notifier()
         self._store_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ts-l2-store")
         self._lookup_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ts-l2-lookup")
+        self._lookup_retry_at = 0.0  # Owned by the lookup worker.
         self._load_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ts-l2-load")
         self._next_id = 0
         self._locked: dict[ObjectKey | bytes, int] = {}
@@ -678,11 +681,14 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         # between the read and the lock acquisition and leave a false hit.
         reserved = []
         with self._lock:
-            if self._closed:
+            if self._closed or (
+                self._lookup_retry_at and monotonic() < self._lookup_retry_at
+            ):
                 # Close keeps the notifier open until queued tasks finish.
                 self._done_lookup[task_id] = bitmap
                 self._lookup_event.notify()
                 return
+            self._lookup_retry_at = 0.0
             for index, original in enumerate(keys):
                 key = self._identity(original)
                 if key in self._evicting or key in self._publishing:
@@ -706,7 +712,9 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             for (index, _), present in zip(reserved, found):
                 if present:
                     bitmap.set(index)
-        except Exception:
+        except Exception as error:
+            if self._config.remote_storage and isinstance(error, (OSError, HTTPException)):
+                self._lookup_retry_at = monotonic() + _LOOKUP_FAILURE_COOLDOWN_SECONDS
             logger.exception("TemporalStore L2 lookup failed")
         finally:
             self.submit_unlock([keys[index] for index, _ in reserved if not bitmap.test(index)])

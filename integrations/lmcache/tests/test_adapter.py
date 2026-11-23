@@ -6,6 +6,7 @@ import sys
 import threading
 import types
 import unittest
+from unittest.mock import patch
 
 
 class Bitmap:
@@ -204,6 +205,53 @@ class AdapterTest(unittest.TestCase):
             self.assertEqual(adapter._data.timeout_seconds, 8)
         finally:
             adapter.close()
+
+    def test_remote_lookup_pauses_failed_replica_and_resumes(self):
+        for payload_metadata in (False, True):
+            with self.subTest(payload_metadata=payload_metadata):
+                adapter = adapter_module.TemporalStoreL2Adapter(dict(
+                    remote_storage=True, lookup_timeout_seconds=0.5,
+                    namespace="replica", recover_capacity=True, payload_metadata=payload_metadata,
+                ))
+                self.addCleanup(adapter.close)
+                key = Key("retained")
+                store = adapter.submit_store_task([key], [Memory(b"kv")])
+                self.assertTrue(adapter._store_event.event.wait(2))
+                self.assertTrue(adapter.pop_completed_store_tasks()[store].success)
+                if payload_metadata:
+                    peer, name = adapter._lookup_blob, "probe_many"
+                    peer.values = adapter._blob.values
+                else:
+                    peer, name = adapter._lookup_data, "batch_execute"
+                    peer.values = adapter._data.values
+                real_probe = getattr(peer, name)
+                attempts = []
+
+                def probe(items):
+                    attempts.append(items)
+                    if len(attempts) == 1:
+                        raise TimeoutError("unreachable replica")
+                    return real_probe(items)
+
+                now = 100.0
+
+                def lookup():
+                    adapter._lookup_event.event.clear()
+                    task = adapter.submit_lookup_and_lock_task([key], {})
+                    self.assertTrue(adapter._lookup_event.event.wait(2))
+                    return adapter.query_lookup_and_lock_result(task).test(0)
+
+                with patch.object(adapter_module, "monotonic", lambda: now):
+                    with patch.object(peer, name, probe):
+                        self.assertFalse(lookup())
+                        self.assertFalse(lookup())
+                        self.assertEqual(len(attempts), 1)
+                        self.assertFalse(adapter._locked)
+                        now += adapter_module._LOOKUP_FAILURE_COOLDOWN_SECONDS
+                        self.assertTrue(lookup())
+                        self.assertEqual(len(attempts), 2)
+                        adapter.submit_unlock([key])
+                        self.assertFalse(adapter._locked)
 
     def test_submissions_after_close_complete_as_cache_misses(self):
         adapter = self.adapter
