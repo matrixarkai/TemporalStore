@@ -6,7 +6,35 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from lmcache_temporalstore.blob import BlobClient, _RECVMSG_AVAILABLE, _receive_buffers, _send_buffers
+from lmcache_temporalstore.blob import (
+    BlobClient,
+    _CoalescingHTTPConnection,
+    _MAX_BATCH_CONTROL_BYTES,
+    _RECVMSG_AVAILABLE,
+    _receive_buffers,
+    _send_buffers,
+)
+
+
+class CoalescingHTTPConnectionTest(unittest.TestCase):
+    def test_sends_small_fixed_length_request_in_one_write(self):
+        connection = _CoalescingHTTPConnection("localhost")
+        payload = b'[{"key":"chunk","length":64}]'
+        with patch.object(connection, "send") as send:
+            connection.request("POST", "/batch_probe_blobs", payload)
+        send.assert_called_once()
+        headers, body = send.call_args.args[0].split(b"\r\n\r\n", 1)
+        self.assertTrue(headers.startswith(b"POST /batch_probe_blobs HTTP/1.1\r\n"))
+        self.assertIn(f"Content-Length: {len(payload)}".encode(), headers.split(b"\r\n"))
+        self.assertEqual(body, payload)
+
+    def test_large_body_uses_standard_streaming(self):
+        connection = _CoalescingHTTPConnection("localhost")
+        payload = b"x" * (_MAX_BATCH_CONTROL_BYTES + 1)
+        with patch.object(connection, "send") as send:
+            connection.request("POST", "/batch_probe_blobs", payload)
+        self.assertEqual(send.call_count, 2)
+        self.assertIs(send.call_args.args[0], payload)
 
 
 class BlobUploadTests(unittest.TestCase):

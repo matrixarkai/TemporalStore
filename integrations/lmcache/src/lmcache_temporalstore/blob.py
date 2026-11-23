@@ -84,6 +84,21 @@ def _receive_buffers(
     response.close()
 
 
+class _CoalescingHTTPConnection(http.client.HTTPConnection):
+    def _send_output(self, message_body=None, encode_chunked=False):
+        # Coalesce small requests to avoid a separate write for the body.
+        if (
+            encode_chunked
+            or type(message_body) is not bytes
+            or len(message_body) > _MAX_BATCH_CONTROL_BYTES
+        ):
+            return super()._send_output(message_body, encode_chunked)
+        self._buffer.extend((b"", message_body))
+        request = b"\r\n".join(self._buffer)
+        self._buffer.clear()
+        self.send(request)
+
+
 class BlobMutationDeferred(RuntimeError):
     """No mutation was transmitted to the datanode."""
 
@@ -93,6 +108,7 @@ class BlobClient:
         self, base_url: str, timeout_seconds: float = 10.0, *,
         reuse_read_connection: bool = False, reuse_mutation_connection: bool = False,
         legacy_names: bool = True, mutation_cooldown_seconds: float = 0.0,
+        coalesce_small_requests: bool = False,
     ) -> None:
         parsed = urlsplit(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -103,6 +119,12 @@ class BlobClient:
             http.client.HTTPSConnection if parsed.scheme == "https"
             else http.client.HTTPConnection
         )
+        if (
+            coalesce_small_requests
+            and self._connection_type is http.client.HTTPConnection
+            and sys.implementation.name == "cpython"
+        ):
+            self._connection_type = _CoalescingHTTPConnection
         self._prefix = parsed.path.rstrip("/")
         self._timeout = timeout_seconds
         self._legacy_names = legacy_names

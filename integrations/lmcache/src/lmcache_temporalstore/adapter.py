@@ -169,7 +169,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 shard_id=config.shard_id, timeout_seconds=lookup_timeout,
             )
         self._lookup_blob = (
-            BlobClient(config.blob_url, lookup_timeout, reuse_read_connection=True, legacy_names=False)
+            BlobClient(
+                config.blob_url, lookup_timeout, reuse_read_connection=True, legacy_names=False,
+                coalesce_small_requests=True,
+            )
             if config.payload_metadata else None
         )
         retry_inventory = None
