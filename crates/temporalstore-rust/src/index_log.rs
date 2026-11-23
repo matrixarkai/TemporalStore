@@ -3638,10 +3638,18 @@ impl LocalIndexLogStore {
         // below is what refuses a holed delta stream, and per-piece it would stop seeing a hole
         // that falls on a boundary -- which is the only new place a hole can appear.
         let mut last_sequence = 0_u64;
-        // ONE tally for the whole fold, borrowed by each piece's handle in turn and published
-        // when the fold returns. This is the reader #1936 named and did not fix.
+        let paths = index_log_segment_paths(&inner.root, shard_id);
+        // Retain the mutable piece before yielding. Sealed pieces can be opened one at a time;
+        // a missing sealed piece aborts capture instead of certifying an incomplete prefix.
         let mut tally = IndexLogReadTally::start();
-        for path in index_log_segment_paths(&inner.root, shard_id) {
+        let mut active_tally = IndexLogReadTally::start();
+        let active_path = if capture_relocations { paths.last().cloned() } else { None };
+        let mut active_capture = if let Some(path) = active_path.as_ref().filter(|path| path.exists()) {
+            let file = open_index_log_read(path, &mut active_tally)?;
+            let identity = CapturedPieceIdentity::of(&file.metadata()?)?;
+            Some((file, identity))
+        } else { None };
+        for path in paths {
             // From the NAME, before the `exists` probe and before the open, so a declined piece
             // costs neither. `sealed_index_log_span` parses the path string and touches no
             // filesystem, and the enumeration handed the path over already.
@@ -3662,14 +3670,16 @@ impl LocalIndexLogStore {
                     continue;
                 }
             }
-            if !path.exists() {
-                continue;
-            }
-            let file = open_index_log_read(&path, &mut tally)?;
-            let identity = if capture_relocations {
-                Some(CapturedPieceIdentity::of(&file.metadata()?)?)
+            let (file, identity) = if active_path.as_ref() == Some(&path) {
+                let Some((file, identity)) = active_capture.take() else { continue };
+                (file, Some(identity))
             } else {
-                None
+                if !capture_relocations && !path.exists() { continue; }
+                let file = open_index_log_read(&path, &mut tally)?;
+                let identity = if capture_relocations {
+                    Some(CapturedPieceIdentity::of(&file.metadata()?)?)
+                } else { None };
+                (file, identity)
             };
             let prefix_bytes = identity.as_ref().map_or(u64::MAX, |identity| identity.len);
             let mut reader = BufReader::new(file.take(prefix_bytes));
@@ -3706,12 +3716,9 @@ impl LocalIndexLogStore {
                 let mut record: IndexDeltaRecord = decode_index_payload(payload)?;
                 if capture_relocations {
                     if record.sequence > through_sequence {
-                        if sealed_index_log_span(&path, shard_id).is_some() {
-                            return Err(IndexLogError::Corruption(
-                                "sealed index-log record exceeds the checkpoint capture sequence".into(),
-                            ));
-                        }
-                        break;
+                        return Err(IndexLogError::Corruption(
+                            "index-log record exceeds the checkpoint capture sequence".into(),
+                        ));
                     }
                     reflection.observe(&record);
                 }
@@ -7208,8 +7215,9 @@ mod tests {
                 > 64 * 1024);
             let cutoff = if sealed_first {
                 set_index_log_segment_bytes_for_test(Some(1));
-                let sequence = store.append_delta(
-                    7, Vec::new(), Vec::new(), Some(2), None, false, true,
+                let sequence = store.append_relocation(
+                    7, vec![block_item(1, "initial-active", false)],
+                    vec![block_item(2, "initial-active", false)], vec![String::new()],
                 ).unwrap();
                 set_index_log_segment_bytes_for_test(Some(0));
                 sequence
@@ -7247,7 +7255,7 @@ mod tests {
             let late = writer.join().unwrap();
             assert!(completed_before_release.is_ok(),
                 "append waited for model folding; rotate={rotate}, sealed_first={sealed_first}");
-            assert_eq!(folded, vec![first]);
+            assert_eq!(folded, if sealed_first { vec![first, cutoff] } else { vec![first] });
             assert_eq!(capture.through_sequence(), cutoff);
             assert!(late > capture.through_sequence());
             let meta = store.append_delta(
