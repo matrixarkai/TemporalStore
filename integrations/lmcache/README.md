@@ -118,7 +118,10 @@ replica after the replica has accepted its write.
 A metadata lookup waits up to one second per request by default when
 `remote_storage` is `true` and `timeout_seconds` is one second or longer.
 Set `lookup_timeout_seconds` to tune this wait for your network and
-datanodes. Blob transfers and metadata writes still use `timeout_seconds`.
+datanodes. After a transport failure, that adapter reports metadata misses for
+one second before retrying on the next lookup. This lets reachable replicas
+serve queued requests while the link recovers. Blob transfers and metadata
+writes still use `timeout_seconds`.
 
 To measure the L2 path independent of model inference, use LMCache's adapter
 benchmark against a disposable datanode:
