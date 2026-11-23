@@ -920,6 +920,7 @@ fn slab_backed_dumps_do_not_pin_obsolete_wal_placements() {
     engine.shards.write().unwrap().get_mut(&RECLAIM_DUMP_SHARD).unwrap()
         .wal_resident_blocks.insert(placement.0, placement.1);
     let latest = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    assert_ne!(first.manifest_id, latest.manifest_id, "distinct dumps must not overwrite their retention evidence");
     assert_eq!(decode_index_bytes(&latest.index_bytes).unwrap().wal_resident_blocks.len(), 1);
     engine.clear_dumped_bucket_dirty_state(RECLAIM_DUMP_SHARD, &latest);
     let guarded = engine.apply_storage_wal_reclaim(engine.storage_wal_reclaim_plan(RECLAIM_DUMP_SHARD, [], []));
