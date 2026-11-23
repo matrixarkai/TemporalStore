@@ -19,7 +19,7 @@ use std::time::Instant;
 use bytes::Bytes;
 use temporalstore_rust::matrixobject_direct::DirectConfig;
 use temporalstore_snapshot::object_store::{
-    MatrixObjectMode, NetworkedMatrixObjectStore, ObjectStore,
+    MatrixObjectMode, NetworkedMatrixObject, ObjectStore,
 };
 
 fn env(name: &str, default: &str) -> String {
@@ -59,7 +59,7 @@ async fn main() {
 
     let store = match mode {
         MatrixObjectMode::Gateway => {
-            NetworkedMatrixObjectStore::connect(mode, &target).expect("connect to the gateway")
+            NetworkedMatrixObject::connect(mode, &target).expect("connect to the gateway")
         }
         MatrixObjectMode::Direct => DirectConfig::from_env(&target)
             .and_then(|config| config.connect())

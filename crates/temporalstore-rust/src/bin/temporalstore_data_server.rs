@@ -61,7 +61,7 @@ use temporalstore_rust::{
     StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
 };
 use temporalstore_snapshot::object_store::{
-    resolve_matrixobject_mode, MatrixObjectMode, NetworkedMatrixObjectStore, ObjectStore,
+    resolve_matrixobject_mode, MatrixObjectMode, NetworkedMatrixObject, ObjectStore,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 use bytes::Bytes;
@@ -2118,11 +2118,11 @@ fn matrixobject_networked_target() -> Option<(MatrixObjectMode, String)> {
 fn connect_networked_store(
     mode: MatrixObjectMode,
     target: &str,
-) -> Result<NetworkedMatrixObjectStore, String> {
+) -> Result<NetworkedMatrixObject, String> {
     if mode == MatrixObjectMode::Direct {
         return temporalstore_rust::matrixobject_direct::DirectConfig::from_env(target)?.connect();
     }
-    NetworkedMatrixObjectStore::connect(mode, target).map_err(|error| error.to_string())
+    NetworkedMatrixObject::connect(mode, target).map_err(|error| error.to_string())
 }
 
 /// Durable shared-storage sink backed by a NETWORKED matrixobject WAL writer.
@@ -2132,7 +2132,7 @@ fn connect_networked_store(
 /// no enterprise crate.
 struct MatrixObjectNetworkedWalSink {
     handle: tokio::runtime::Handle,
-    writer: Arc<temporalstore_rust::SharedStoreStorageWriter<NetworkedMatrixObjectStore>>,
+    writer: Arc<temporalstore_rust::SharedStoreStorageWriter<NetworkedMatrixObject>>,
 }
 
 impl std::fmt::Debug for MatrixObjectNetworkedWalSink {
@@ -2222,7 +2222,7 @@ fn append_networked_wal_hole_metrics(metrics: &mut String) {
 /// drop; keeping the runtime alive is all that is required.
 struct MatrixObjectNetworkedDurability {
     _rt: tokio::runtime::Runtime,
-    _writer: Arc<temporalstore_rust::SharedStoreStorageWriter<NetworkedMatrixObjectStore>>,
+    _writer: Arc<temporalstore_rust::SharedStoreStorageWriter<NetworkedMatrixObject>>,
 }
 
 /// Wire the NETWORKED matrixobject shared store into the running node so shard data

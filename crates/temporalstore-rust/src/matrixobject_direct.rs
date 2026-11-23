@@ -31,7 +31,7 @@ use matrixobjectstore_rs::cluster::{
 };
 use matrixobjectstore_rs::net::cluster_gateway::{ClusterGateway, GatewayOptions};
 use matrixobjectstore_rs::net::InProcessDoor;
-use temporalstore_snapshot::object_store::{NetworkedMatrixObjectStore, DEFAULT_HTTP_BUCKET};
+use temporalstore_snapshot::object_store::{NetworkedMatrixObject, DEFAULT_HTTP_BUCKET};
 
 /// How a node reaches the cluster directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,7 +101,13 @@ impl DirectConfig {
     /// Connect to the metadata group and build the direct store. The cluster must answer now: a
     /// node that starts with its metadata quorum unreachable would report ready and fail every
     /// write.
-    pub fn connect(&self) -> Result<NetworkedMatrixObjectStore, String> {
+    pub fn connect(&self) -> Result<NetworkedMatrixObject, String> {
+        Ok(NetworkedMatrixObject::direct(self.connect_door()?, &self.bucket))
+    }
+
+    /// Build the normal direct door for clients that compose a transport.
+    /// Metadata readiness, TLS and deadlines follow the regular connection path.
+    pub fn connect_door(&self) -> Result<Arc<InProcessDoor>, String> {
         let tls = ApiTlsConfig::from_env("MATRIXOBJECT_CLIENT")
             .map_err(|error| format!("the cluster TLS configuration is invalid: {error}"))?;
         let options = GatewayOptions {
@@ -134,10 +140,7 @@ impl DirectConfig {
             format!("no metadata endpoint in {} answered: {error}", self.meta_endpoints.join(","))
         })?;
         let gateway = ClusterGateway::over_chunk_objects(move || (*open)(), options, self.bucket.clone());
-        Ok(NetworkedMatrixObjectStore::direct(
-            Arc::new(InProcessDoor::new(Arc::new(gateway))),
-            &self.bucket,
-        ))
+        Ok(Arc::new(InProcessDoor::new(Arc::new(gateway))))
     }
 }
 
@@ -149,7 +152,7 @@ mod tests {
 
     use bytes::Bytes;
     use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
-    use temporalstore_snapshot::object_store::{MatrixObjectMode, ObjectStore};
+    use temporalstore_snapshot::object_store::{MatrixObjectMode, ObjectStore, ObjectStoreError};
 
     use crate::matrixobject_test_plane::{gateway_over as plane_gateway, MemoryPlane, Shared};
     use matrixobjectstore_rs::net::cluster_gateway::ObjectPlane;
@@ -163,8 +166,8 @@ mod tests {
     /// Both ways in, each over its own cluster: a gateway served on a socket and read through
     /// the S3 store, and the same gateway code run in this process.
     struct Pair {
-        gateway: NetworkedMatrixObjectStore,
-        direct: NetworkedMatrixObjectStore,
+        gateway: NetworkedMatrixObject,
+        direct: NetworkedMatrixObject,
         gateway_cluster: Arc<Mutex<Shared>>,
         direct_cluster: Arc<Mutex<Shared>>,
         _server: matrixobjectstore_rs::net::ServerHandle,
@@ -188,8 +191,8 @@ mod tests {
         .expect("the accept threads start");
         let uri = format!("matrixobject://{}/{BUCKET}", server.local_addr);
         Pair {
-            gateway: NetworkedMatrixObjectStore::connect(MatrixObjectMode::Gateway, &uri).unwrap(),
-            direct: NetworkedMatrixObjectStore::direct(
+            gateway: NetworkedMatrixObject::connect(MatrixObjectMode::Gateway, &uri).unwrap(),
+            direct: NetworkedMatrixObject::direct(
                 Arc::new(InProcessDoor::new(Arc::new(gateway_over(&direct_cluster)))),
                 BUCKET,
             ),
@@ -259,6 +262,23 @@ mod tests {
         assert!(parse_endpoints(" , ").is_empty());
         assert!(DirectConfig::from_env(" ").is_err());
         assert!(DirectConfig::from_env("1:1,2:2,3:3,4:4,5:5,6:6,7:7,8:8").is_err());
+    }
+
+    #[tokio::test]
+    async fn conditional_writes_preserve_values_in_both_modes() {
+        let pair = pair();
+        for store in [&pair.gateway, &pair.direct] {
+            store.compare_and_swap("lease", None, Bytes::from_static(b"owner-1")).await.unwrap();
+            assert!(matches!(store.compare_and_swap("lease", None, Bytes::from_static(b"bad")).await,
+                Err(ObjectStoreError::ConditionFailed { .. })));
+            assert!(matches!(store.compare_and_swap("lease", Some(Bytes::from_static(b"other")), Bytes::from_static(b"bad")).await,
+                Err(ObjectStoreError::ConditionFailed { .. })));
+            assert_eq!(store.get("lease").await.unwrap(), Bytes::from_static(b"owner-1"));
+            store.compare_and_swap("lease", Some(Bytes::from_static(b"owner-1")), Bytes::from_static(b"owner-2")).await.unwrap();
+            assert!(matches!(store.compare_and_swap("lease", Some(Bytes::from_static(b"owner-1")), Bytes::from_static(b"bad")).await,
+                Err(ObjectStoreError::ConditionFailed { .. })));
+            assert_eq!(store.get("lease").await.unwrap(), Bytes::from_static(b"owner-2"));
+        }
     }
 
     #[tokio::test]
