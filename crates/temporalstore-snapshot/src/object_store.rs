@@ -197,7 +197,11 @@ impl From<ClientError> for ObjectStoreError {
             ClientError::InvalidRange(detail)
             | ClientError::InvalidKey(detail)
             | ClientError::InvalidBucket(detail) => ObjectStoreError::InvalidKey(detail),
-            ClientError::OutcomeUnknown { key, detail } => {
+            ClientError::ConditionFailed { key, detail } => {
+                ObjectStoreError::ConditionFailed { key, detail }
+            }
+            ClientError::OutcomeUnknown { key, detail }
+            | ClientError::ConditionalWriteUnknown { key, detail } => {
                 ObjectStoreError::OutcomeUnknown { key, detail }
             }
             ClientError::Http(detail) | ClientError::Transport(detail) => {
@@ -312,6 +316,27 @@ impl MatrixObjectHttpStore {
 
 #[async_trait]
 impl ObjectStore for MatrixObjectHttpStore {
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: Option<Bytes>,
+        new: Bytes,
+    ) -> Result<(), ObjectStoreError> {
+        let lock = self.append_lock(key);
+        let _serialised = lock.lock().await;
+        let client = self.client.clone();
+        let owned_key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            client.compare_and_swap(&owned_key, expected.as_deref(), new.as_ref())
+        })
+        .await
+        .map_err(|error| ObjectStoreError::OutcomeUnknown {
+            key: key.to_string(),
+            detail: format!("the conditional write task did not finish: {error}"),
+        })??;
+        Ok(())
+    }
+
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
         Ok(self.client.put(key, bytes.as_ref())?)
     }

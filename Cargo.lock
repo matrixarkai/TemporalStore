@@ -887,7 +887,7 @@ dependencies = [
 [[package]]
 name = "matrixobject-client"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/MatrixObject.git?rev=d94cfd13c415e3e3cbfaf73d63af76f550db332e#d94cfd13c415e3e3cbfaf73d63af76f550db332e"
+source = "git+https://github.com/matrixarkai/MatrixObject.git?rev=626eb46ff8f81eea6ce73b67df20010b6cfeca9c#626eb46ff8f81eea6ce73b67df20010b6cfeca9c"
 dependencies = [
  "getrandom 0.2.17",
  "sha2",
@@ -896,7 +896,7 @@ dependencies = [
 [[package]]
 name = "matrixobjectstore-rs"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/MatrixObject.git?rev=d94cfd13c415e3e3cbfaf73d63af76f550db332e#d94cfd13c415e3e3cbfaf73d63af76f550db332e"
+source = "git+https://github.com/matrixarkai/MatrixObject.git?rev=626eb46ff8f81eea6ce73b67df20010b6cfeca9c#626eb46ff8f81eea6ce73b67df20010b6cfeca9c"
 dependencies = [
  "fs2",
  "imbl",
