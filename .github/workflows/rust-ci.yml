@@ -292,6 +292,9 @@ jobs:
       - name: cargo build (release service binaries)
         run: cargo build --release -p temporalstore-rust --bin matrixark_rust_metaserver --bin matrixark_rust_datanode
 
+      - name: Networked durability startup fails closed
+        run: python3 scripts/check_networked_startup_failure.py target/release/matrixark_rust_datanode
+
       - name: Active index gate record accounting checks
         run: |
           set -o pipefail

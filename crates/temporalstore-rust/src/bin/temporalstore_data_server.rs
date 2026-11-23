@@ -385,6 +385,10 @@ fn main() {
             !join_empty,
         )
     });
+    if networked_uri.is_some() && _matrixobject_networked_durability.is_none() {
+        error!(shard_id, "refusing startup: configured networked durability could not be initialized");
+        std::process::exit(1);
+    }
     let location = std::env::var("TS_SERVER_LOCATION").unwrap_or_default();
     let binary_version = env!("CARGO_PKG_VERSION").to_string();
     // Milliseconds since the epoch when this process started, reported on every
@@ -2229,8 +2233,8 @@ struct MatrixObjectNetworkedDurability {
 /// authoritative local state, publish its current state as a networked checkpoint
 /// (index + slabs) so future owners can lazily follow it. Finally, mirror every
 /// accepted write to the networked store from here on. Active only when a
-/// `matrixobject://` URI is configured; returns `None` on a bad URI or runtime
-/// failure so the node still serves from local durability.
+/// networked target is configured. A failed connection, restore, replay or WAL
+/// read returns `None`, which the caller rejects before accepting requests.
 fn wire_matrixobject_networked_durability(
     mode: MatrixObjectMode,
     uri: &str,
@@ -2286,8 +2290,8 @@ fn wire_matrixobject_networked_durability(
             }
             Err(SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
             Err(err) => {
-                warn!(shard_id, %err, "networked matrixobject checkpoint restore failed; replaying full shared WAL");
-                0
+                error!(shard_id, %err, "networked matrixobject checkpoint restore failed");
+                return None;
             }
         };
         // Read the just-restored on-disk index into memory so this node auto-serves the
@@ -2306,6 +2310,7 @@ fn wire_matrixobject_networked_durability(
                     message = %load_response.status.message,
                     "load of restored networked shard index failed"
                 );
+                return None;
             }
         }
         match rt.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
@@ -2345,7 +2350,7 @@ fn wire_matrixobject_networked_durability(
     let latest = match rt.block_on(replicator.latest_persisted_wal_index(shard_id)) {
         Ok(latest) => latest,
         Err(err) => {
-            error!(shard_id, %err, "failed to read networked matrixobject WAL state; durability disabled");
+            error!(shard_id, %err, "failed to read networked matrixobject WAL state");
             return None;
         }
     };

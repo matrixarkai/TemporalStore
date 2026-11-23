@@ -28,6 +28,7 @@ META=${META:?comma separated metadata endpoints}
 OPS=${OPS:-100}
 PORT=${PORT:-17102}
 WORK=${WORK:-$(mktemp -d)}
+CLUSTER_ID=${CLUSTER_ID:-e2e-$(date +%s)-$$}
 export TS_MATRIXOBJECT_META_GROUP=${TS_MATRIXOBJECT_META_GROUP:-1}
 FAMILIES="string hash set zset list"
 overall=0
@@ -72,7 +73,7 @@ start_node() {  # label, extra env...
   local dir=$WORK/$label; mkdir -p "$dir"
   env -u TS_MATRIXOBJECT_MODE -u TS_SHARED_STORE_URI -u TS_MATRIXOBJECT_META TS_SERVER_BIND_ADDR=127.0.0.1:$PORT TS_SHARD_ID=1 TS_META_ADDR="" \
       TS_CACHE_DIR=$dir/cache TS_BLOCK_STORE_DIR=$dir/blocks TS_INDEX_DIR=$dir/indexes \
-      TS_SHARED_STORE_CLUSTER_ID="$CLUSTER_ID" "$@" "$SERVER" > "$dir/server.log" 2>&1 &
+      TS_CLUSTER_ID="$CLUSTER_ID" "$@" "$SERVER" > "$dir/server.log" 2>&1 &
   pid=$!
   for _ in $(seq 1 60); do
     (exec 3<>/dev/tcp/127.0.0.1/$PORT) 2>/dev/null && return 0
