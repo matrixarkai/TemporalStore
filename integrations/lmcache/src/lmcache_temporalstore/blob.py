@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 import http.client
+from select import select
 from threading import Lock
 from urllib.parse import quote, urlsplit
 
@@ -12,7 +13,7 @@ from urllib.parse import quote, urlsplit
 class BlobClient:
     def __init__(
         self, base_url: str, timeout_seconds: float = 10.0, *,
-        reuse_read_connection: bool = False,
+        reuse_read_connection: bool = False, reuse_mutation_connection: bool = False,
     ) -> None:
         parsed = urlsplit(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -28,6 +29,9 @@ class BlobClient:
         self._reuse_read_connection = reuse_read_connection
         self._read_lock = Lock() if reuse_read_connection else nullcontext()
         self._read_connection: http.client.HTTPConnection | None = None
+        self._reuse_mutation_connection = reuse_mutation_connection
+        self._mutation_lock = Lock() if reuse_mutation_connection else nullcontext()
+        self._mutation_connection: http.client.HTTPConnection | None = None
 
     def _request(
         self, method: str, key: str, body: memoryview | None = None, *,
@@ -52,14 +56,30 @@ class BlobClient:
             connection.close()
             raise
 
+    def _mutate(self, method: str, key: str, body: memoryview | None = None) -> None:
+        with self._mutation_lock:
+            connection, self._mutation_connection = self._mutation_connection, None
+            if connection is not None and select([connection.sock], [], [], 0)[0]:
+                # No response is outstanding. Retire a socket with pending EOF
+                # before sending a mutation that cannot be safely replayed.
+                connection.close()
+                connection = None
+            connection, response = self._request(method, key, body, connection=connection)
+            consumed = False
+            try:
+                with response:
+                    response.read()
+                    if response.status != 200:
+                        raise OSError(f"blob {method} returned HTTP {response.status}")
+                    consumed = True
+            finally:
+                if consumed and self._reuse_mutation_connection and connection.sock is not None:
+                    self._mutation_connection = connection
+                else:
+                    connection.close()
+
     def put(self, key: str, payload: memoryview) -> None:
-        connection, response = self._request("PUT", key, payload)
-        try:
-            response.read()
-            if response.status != 200:
-                raise OSError(f"blob PUT returned HTTP {response.status}")
-        finally:
-            connection.close()
+        self._mutate("PUT", key, payload)
 
     def _read_request(self, key: str):
         connection, self._read_connection = self._read_connection, None
@@ -109,13 +129,11 @@ class BlobClient:
             connection, self._read_connection = self._read_connection, None
             if connection is not None:
                 connection.close()
+        with self._mutation_lock:
+            connection, self._mutation_connection = self._mutation_connection, None
+            if connection is not None:
+                connection.close()
 
     def delete(self, key: str) -> None:
         for candidate in (key, f"anonymous/{key}"):
-            connection, response = self._request("DELETE", candidate)
-            try:
-                response.read()
-                if response.status != 200:
-                    raise OSError(f"blob DELETE returned HTTP {response.status}")
-            finally:
-                connection.close()
+            self._mutate("DELETE", candidate)

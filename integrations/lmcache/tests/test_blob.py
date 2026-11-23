@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+import http.client
 import http.server
 import threading
 import unittest
@@ -10,11 +11,16 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     blobs = {}
     read_addresses = []
+    mutation_addresses = []
     drop_next_get = False
 
     def do_PUT(self):
+        BlobHandler.mutation_addresses.append(self.client_address)
         BlobHandler.last_content_length = int(self.headers["Content-Length"])
         self.blobs[self.path] = self.rfile.read(BlobHandler.last_content_length)
+        if self.path == "/blob/drop-receipt":
+            self.close_connection = True
+            return
         self.send_response(200)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -42,6 +48,7 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_DELETE(self):
+        BlobHandler.mutation_addresses.append(self.client_address)
         self.blobs.pop(self.path, None)
         self.send_response(200)
         self.send_header("Content-Length", "0")
@@ -55,12 +62,14 @@ class BlobClientTest(unittest.TestCase):
     def setUp(self):
         BlobHandler.blobs = {}
         BlobHandler.read_addresses = []
+        BlobHandler.mutation_addresses = []
         BlobHandler.drop_next_get = False
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), BlobHandler)
         self.thread = threading.Thread(target=self.server.serve_forever)
         self.thread.start()
         self.client = BlobClient(
-            f"http://127.0.0.1:{self.server.server_port}", reuse_read_connection=True,
+            f"http://127.0.0.1:{self.server.server_port}",
+            reuse_read_connection=True, reuse_mutation_connection=True,
         )
 
     def tearDown(self):
@@ -107,6 +116,32 @@ class BlobClientTest(unittest.TestCase):
         self.assertEqual(output, b"data")
         first, truncated, reconnected = BlobHandler.read_addresses
         self.assertEqual(first, truncated)
+        self.assertNotEqual(first, reconnected)
+
+    def test_reuses_a_separate_connection_for_puts_and_deletes(self):
+        payload = memoryview(b"data")
+        self.client.put("key", payload)
+        self.client.put("other", payload)
+        output = memoryview(bytearray(4))
+        self.assertTrue(self.client.get_into("key", output))
+        self.client.delete("key")
+
+        mutations = BlobHandler.mutation_addresses
+        self.assertEqual(len(mutations), 4)
+        self.assertEqual(len(set(mutations)), 1)
+        self.assertNotEqual(mutations[0], BlobHandler.read_addresses[0])
+        self.assertFalse(self.client.get_into("key", output))
+
+    def test_put_is_not_replayed_after_the_server_drops_its_receipt(self):
+        payload = memoryview(b"data")
+        self.client.put("key", payload)
+        with self.assertRaises(http.client.RemoteDisconnected):
+            self.client.put("drop-receipt", payload)
+        self.assertEqual(BlobHandler.blobs["/blob/drop-receipt"], b"data")
+        self.client.put("other", payload)
+
+        first, dropped, reconnected = BlobHandler.mutation_addresses
+        self.assertEqual(first, dropped)
         self.assertNotEqual(first, reconnected)
 
 

@@ -110,7 +110,8 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             raise ValueError("lookup_timeout_seconds must be finite and positive")
         super().__init__(capacity)
         self._blob = BlobClient(
-            config.blob_url, config.timeout_seconds, reuse_read_connection=True,
+            config.blob_url, config.timeout_seconds,
+            reuse_read_connection=True, reuse_mutation_connection=True,
         )
         from urllib.parse import urlsplit
         data = urlsplit(config.data_url)
