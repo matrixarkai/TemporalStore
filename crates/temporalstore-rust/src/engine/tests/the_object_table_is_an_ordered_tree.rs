@@ -67,6 +67,7 @@ fn key_of(i: usize) -> String {
 /// A shard holding string rows `order` names, inserted in that order.
 fn shard_with(order: impl Iterator<Item = usize>) -> ShardState {
     let mut shard = ShardState::default();
+    shard.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     for i in order {
         shard.set_string_address(Arc::from(key_of(i).as_str()), &address(i));
     }
