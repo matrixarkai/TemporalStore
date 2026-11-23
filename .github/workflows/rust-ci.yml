@@ -131,6 +131,13 @@ jobs:
       - name: Direct mode over the shared client SDK (default build)
         run: cargo test --locked -p temporalstore-rust --lib matrixobject_direct
 
+      - name: Direct and gateway recovery assertions
+        run: |
+          set -euo pipefail
+          bash -n scripts/direct_data_server_e2e.sh
+          python3 -I -m unittest discover -s scripts -p test_direct_data_server_e2e_assertions.py 2>&1 | tee /tmp/direct-e2e-assertions.log
+          grep -q '^Ran 9 tests in ' /tmp/direct-e2e-assertions.log
+
       - name: Recovery dirty bucket selection checks
         timeout-minutes: 30
         run: |
