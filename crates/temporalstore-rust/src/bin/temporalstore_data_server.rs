@@ -29,7 +29,7 @@ use temporalstore_rust::http::{
     post_json_with_options_and_headers, serve_with_stream_handler, HttpRequest,
     HttpRequestOptions, StreamAction, StreamTransfer,
 };
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 use temporalstore_rust::ingestion::{FlinkCheckpointStatus, IngestionBatchRequest};
 use temporalstore_rust::meta::{
     AckResponse, GetTableTopologyRequest, LoadFinishRequest, ShardStatLoad, RegisterServerRequest,
@@ -1575,7 +1575,6 @@ fn stream_blob_batch_write(
 fn stream_blob_batch_read(
     transfer: &mut StreamTransfer,
     store: &FileObjectStore,
-    chunk_bytes: usize,
 ) -> std::io::Result<()> {
     if transfer.body_len() > MAX_BLOB_BATCH_BODY {
         transfer.drain_body()?;
@@ -1632,21 +1631,14 @@ fn stream_blob_batch_read(
         }
     }
     let payload_len = files.iter().map(|(_, length)| *length).sum::<usize>();
-    let max_file = files.iter().map(|(_, length)| *length).max().unwrap_or(0);
     transfer.send_head(
         200,
         "application/octet-stream",
         statuses.len() + payload_len,
     )?;
     transfer.write_chunk(&statuses)?;
-    let mut buffer = vec![0u8; chunk_bytes.max(1).min(max_file)];
-    for (mut file, mut remaining) in files {
-        while remaining > 0 {
-            let n = remaining.min(buffer.len());
-            file.read_exact(&mut buffer[..n])?;
-            transfer.write_chunk(&buffer[..n])?;
-            remaining -= n;
-        }
+    for (file, length) in files {
+        transfer.write_file(file, length as u64)?;
     }
     transfer.flush()
 }
@@ -1671,12 +1663,12 @@ fn open_blob_for_batch(store: &FileObjectStore, item: &BlobBatchItem) -> (u8, Op
     }
 }
 
-/// Streamed attachment endpoint (zero-copy / no full-body buffering).
+/// Streamed attachment endpoint.
 ///
 /// `POST|PUT /blob/<key>` copies the request body into a staging file in
 /// `chunk_bytes` slices and publishes the replacement once the full body has
-/// arrived. It returns a JSON receipt. `GET /blob/<key>` `stat`s the stored object, sends the
-/// `Content-Length`, then streams the file to the socket in `chunk_bytes` slices.
+/// arrived. It returns a JSON receipt. `GET /blob/<key>` checks the stored object, sends
+/// its content length and streams exactly that many bytes to the socket.
 ///
 /// The handler owns every `/blob/<key>` request (always returns
 /// `StreamAction::Handled`); any other path is `Declined` so the buffered handler
@@ -1715,7 +1707,7 @@ fn handle_blob_stream(
         return StreamAction::Handled;
     }
     if head.method == "POST" && head.path == "/batch_read_blobs" {
-        if let Err(error) = stream_blob_batch_read(transfer, blob_store, chunk_bytes) {
+        if let Err(error) = stream_blob_batch_read(transfer, blob_store) {
             debug!(%error, "blob batch read ended early");
             transfer.abort_response();
         }
@@ -1768,7 +1760,7 @@ fn handle_blob_stream(
                 );
                 return StreamAction::Handled;
             }
-            match stream_blob_download(transfer, blob_store, chunk_bytes, key) {
+            match stream_blob_download(transfer, blob_store, key) {
                 Ok(true) => {}
                 Ok(false) => {
                     // Local miss. Try cross-peer fetch unless this request is
@@ -1804,7 +1796,7 @@ fn handle_blob_stream(
                 }
                 // A mid-stream socket error: the head is already sent, nothing to
                 // recover; drop the connection.
-                Err(_) => {}
+                Err(_) => transfer.abort_response(),
             }
             StreamAction::Handled
         }
@@ -2213,28 +2205,20 @@ fn replace_blob_with_buffer(
 fn stream_blob_download(
     transfer: &mut StreamTransfer,
     blob_store: &Arc<FileObjectStore>,
-    chunk_bytes: usize,
     key: &str,
 ) -> std::io::Result<bool> {
     let path = match blob_store.object_path(key) {
         Ok(path) => path,
         Err(_) => return Ok(false),
     };
-    let mut file = match std::fs::File::open(&path) {
+    let file = match std::fs::File::open(&path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(err),
     };
     let length = file.metadata()?.len() as usize;
     transfer.send_head(200, "application/octet-stream", length)?;
-    let mut buf = vec![0u8; chunk_bytes.min(length)];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        transfer.write_chunk(&buf[..n])?;
-    }
+    transfer.write_file(file, length as u64)?;
     transfer.flush()?;
     Ok(true)
 }
