@@ -30,8 +30,12 @@ from .blob import BlobClient
 logger = logging.getLogger(__name__)
 
 
-def _names(key: ObjectKey) -> tuple[str, str]:
-    digest = sha256(encode_storage_key(key).encode("utf-8")).hexdigest()
+def _names(key: ObjectKey, namespace: str = "") -> tuple[str, str]:
+    encoded = encode_storage_key(key).encode("utf-8")
+    if namespace:
+        scope = sha256(namespace.encode("utf-8")).digest()
+        encoded = scope + encoded
+    digest = sha256(encoded).hexdigest()
     return f"lmcache/v1/{digest}", f"lmcache:v1:{digest}"
 
 
@@ -43,9 +47,14 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     max_capacity_gb: float = 64.0
     ttl_seconds: int = 0
     timeout_seconds: float = 10.0
+    namespace: str = ""
+    remote_storage: bool = False
 
     @classmethod
     def from_dict(cls, values: dict) -> "TemporalStoreL2AdapterConfig":
+        remote_storage = values.get("remote_storage", cls.remote_storage)
+        if not isinstance(remote_storage, bool):
+            raise ValueError("remote_storage must be a boolean")
         config = cls(
             blob_url=str(values.get("blob_url", cls.blob_url)),
             data_url=str(values.get("data_url", cls.data_url)),
@@ -53,6 +62,8 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
             max_capacity_gb=float(values.get("max_capacity_gb", cls.max_capacity_gb)),
             ttl_seconds=int(values.get("ttl_seconds", cls.ttl_seconds)),
             timeout_seconds=float(values.get("timeout_seconds", cls.timeout_seconds)),
+            namespace=str(values.get("namespace", cls.namespace)),
+            remote_storage=remote_storage,
         )
         if config.max_capacity_gb <= 0 or config.ttl_seconds < 0:
             raise ValueError("capacity must be positive and TTL must be nonnegative")
@@ -63,7 +74,9 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
         return (
             "blob_url and data_url are datanode HTTP URLs; shard_id selects the "
             "command shard; max_capacity_gb bounds local adapter writes; "
-            "ttl_seconds expires metadata; timeout_seconds bounds each request"
+            "ttl_seconds expires metadata; timeout_seconds bounds each request; "
+            "namespace isolates one LMCache server's keys and eviction budget; "
+            "remote_storage marks a datanode on another host"
         )
 
 
@@ -101,6 +114,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         self._entries: OrderedDict[ObjectKey, int] = OrderedDict()
         self._locked: dict[ObjectKey, int] = {}
         self._evicting: set[ObjectKey] = set()
+        self._publishing: set[ObjectKey] = set()
         self._used = 0
         self._stores = 0
         self._loads = 0
@@ -168,20 +182,25 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             return self._done_load.pop(task_id, None)
 
     def get_memory_tags(self) -> MemoryTags:
-        return MemoryTags(MemorySegment.STORAGE, MemoryResidency.LOCAL)
+        residency = MemoryResidency.REMOTE if self._config.remote_storage else MemoryResidency.LOCAL
+        return MemoryTags(MemorySegment.STORAGE, residency)
 
     def report_status(self) -> dict:
         with self._lock:
             return {
                 "is_healthy": not self._closed,
+                "adapter": "temporalstore",
                 "stores": self._stores,
                 "loads": self._loads,
                 "lookups": self._lookups,
                 "bytes_used": self._used,
             }
 
+    def _key_names(self, key: ObjectKey) -> tuple[str, str]:
+        return _names(key, self._config.namespace)
+
     def _delete_key(self, key: ObjectKey) -> None:
-        blob_name, metadata_name = _names(key)
+        blob_name, metadata_name = self._key_names(key)
         self._blob.delete(blob_name)
         self._data.execute({"kind": "common_delete", "key": metadata_name})
 
@@ -236,102 +255,139 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             if size:
                 self._notify_keys_deleted([key], [size])
 
+    def _publish_stores(self, pending: dict[ObjectKey, tuple[int, bool]]) -> int:
+        commands = []
+        for key, (size, _) in pending.items():
+            command = {
+                "kind": "string_set_ex" if self._config.ttl_seconds else "string_set",
+                "key": self._key_names(key)[1],
+                "value": str(size).encode("ascii"),
+            }
+            if self._config.ttl_seconds:
+                command["ttl_ms"] = self._config.ttl_seconds * 1000
+            commands.append(command)
+        try:
+            self._data.batch_execute(commands)
+        except Exception:
+            # A failed batch may have committed some commands. Remove any new
+            # entries from this batch so a later lookup cannot see a partial write.
+            for key, (_, uploaded) in pending.items():
+                if uploaded:
+                    try:
+                        self._delete_key(key)
+                    except Exception:
+                        logger.exception("TemporalStore L2 failed to remove incomplete entry")
+            raise
+
+        keys = [key for key, (_, uploaded) in pending.items() if uploaded]
+        sizes = [pending[key][0] for key in keys]
+        total = sum(sizes)
+        with self._lock:
+            self._entries.update(zip(keys, sizes))
+            self._used += total
+            self._stores += len(keys)
+        if keys:
+            self._notify_keys_stored(keys, sizes)
+        return total
+
     def _store(
         self, task_id: int, keys: list[ObjectKey], objects: list[MemoryObj]
     ) -> None:
         transferred = 0
         success = len(keys) == len(objects)
+        pending: dict[ObjectKey, tuple[int, bool]] = {}
+        pending_bytes = 0
+
+        def publish() -> None:
+            nonlocal success, transferred, pending_bytes
+            if not pending:
+                return
+            try:
+                transferred += self._publish_stores(pending)
+            except Exception:
+                success = False
+                logger.exception("TemporalStore L2 metadata write failed")
+            finally:
+                with self._lock:
+                    self._publishing.difference_update(pending)
+                pending.clear()
+                pending_bytes = 0
+
         try:
             for key, obj in zip(keys, objects):
                 size = obj.get_size()
-                with self._lock:
-                    known = key in self._entries
-                if known:
-                    if self._config.ttl_seconds:
-                        try:
-                            self._data.batch_execute([{
-                                "kind": "string_set_ex",
-                                "key": _names(key)[1],
-                                "value": str(size).encode("ascii"),
-                                "ttl_ms": self._config.ttl_seconds * 1000,
-                            }])
-                        except Exception:
-                            success = False
-                            logger.exception("TemporalStore L2 metadata refresh failed")
+                if key in pending:
                     continue
-                if not self._make_room(size):
+                with self._lock:
+                    known_size = self._entries.get(key)
+                if known_size is not None:
+                    if self._config.ttl_seconds:
+                        pending[key] = (known_size, False)
+                    continue
+                if size > self._max_capacity_bytes:
                     success = False
                     continue
-                blob_name, metadata_name = _names(key)
-                uploaded = False
-                upload_started = False
+                if pending_bytes + self._used + size > self._max_capacity_bytes:
+                    publish()
+                    if not self._make_room(size):
+                        success = False
+                        continue
+                with self._lock:
+                    if key in self._locked:
+                        success = False
+                        continue
+                    self._publishing.add(key)
                 try:
                     payload = memoryview(obj.byte_array).cast("B")[:size]
                     if len(payload) != size:
                         raise ValueError("memory object length changed during store")
-                    upload_started = True
-                    self._blob.put(blob_name, payload)
-                    uploaded = True
-                    command = {
-                        "kind": "string_set_ex" if self._config.ttl_seconds else "string_set",
-                        "key": metadata_name,
-                        "value": str(size).encode("ascii"),
-                    }
-                    if self._config.ttl_seconds:
-                        command["ttl_ms"] = self._config.ttl_seconds * 1000
-                    self._data.batch_execute([command])
+                    self._blob.put(self._key_names(key)[0], payload)
                 except Exception:
                     success = False
-                    logger.exception("TemporalStore L2 store failed")
-                    if uploaded:
-                        try:
-                            self._delete_key(key)
-                        except Exception:
-                            logger.exception("TemporalStore L2 failed to remove incomplete entry")
-                    elif upload_started:
-                        try:
-                            self._data.execute({"kind": "common_delete", "key": metadata_name})
-                        except Exception:
-                            logger.exception("TemporalStore L2 failed to invalidate incomplete entry")
+                    logger.exception("TemporalStore L2 payload write failed")
+                    with self._lock:
+                        self._publishing.discard(key)
                     continue
-                with self._lock:
-                    self._entries[key] = size
-                    self._used += size
-                    self._stores += 1
-                self._notify_keys_stored([key], [size])
-                transferred += size
+                pending[key] = (size, True)
+                pending_bytes += size
         except Exception:
             success = False
             logger.exception("TemporalStore L2 store task failed")
         finally:
+            publish()
             with self._lock:
                 self._done_store[task_id] = L2StoreResult(success, transferred)
             self._store_event.notify()
 
     def _lookup(self, task_id: int, keys: list[ObjectKey]) -> None:
         bitmap = Bitmap(len(keys))
+        # Reserve before the metadata read. Otherwise an eviction can finish
+        # between the read and the lock acquisition and leave a false hit.
+        reserved = []
+        with self._lock:
+            for index, key in enumerate(keys):
+                if key not in self._evicting and key not in self._publishing:
+                    self._locked[key] = self._locked.get(key, 0) + 1
+                    reserved.append((index, key))
         try:
             commands = [
-                {"kind": "common_exists", "key": _names(key)[1]}
-                for key in keys
+                {"kind": "common_exists", "key": self._key_names(key)[1]}
+                for _, key in reserved
             ]
-            answers = self._data.batch_execute(commands)
-            for index, (key, answer) in enumerate(zip(keys, answers)):
-                if answer.get("kind") != "integer" or answer.get("value") != 1:
-                    continue
-                with self._lock:
-                    if key in self._evicting:
-                        continue
-                    self._locked[key] = self._locked.get(key, 0) + 1
-                    if key in self._entries:
-                        self._entries.move_to_end(key)
-                bitmap.set(index)
-                with self._lock:
-                    self._lookups += 1
+            answers = self._data.batch_execute(commands) if commands else []
+            for (index, _), answer in zip(reserved, answers):
+                if answer.get("kind") == "integer" and answer.get("value") == 1:
+                    bitmap.set(index)
         except Exception:
             logger.exception("TemporalStore L2 lookup failed")
         finally:
+            self.submit_unlock([key for index, key in reserved if not bitmap.test(index)])
             with self._lock:
+                for index, key in reserved:
+                    if bitmap.test(index):
+                        if key in self._entries:
+                            self._entries.move_to_end(key)
+                        self._lookups += 1
                 self._done_lookup[task_id] = bitmap
             self._lookup_event.notify()
 
@@ -345,7 +401,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                     destination = memoryview(obj.byte_array).cast("B")[:obj.get_size()]
                     if destination.readonly:
                         continue
-                    if self._blob.get_into(_names(key)[0], destination):
+                    if self._blob.get_into(self._key_names(key)[0], destination):
                         bitmap.set(index)
                         with self._lock:
                             self._loads += 1

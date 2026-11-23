@@ -15,6 +15,9 @@ class Bitmap:
     def set(self, index):
         self.bits[index] = True
 
+    def test(self, index):
+        return self.bits[index]
+
 
 class Notifier:
     next_fd = 10
@@ -77,7 +80,7 @@ module("lmcache.v1")
 module("lmcache.v1.distributed")
 module(
     "lmcache.v1.distributed.api", ObjectKey=Key,
-    MemoryLayoutDesc=object, MemoryResidency=types.SimpleNamespace(LOCAL=1),
+    MemoryLayoutDesc=object, MemoryResidency=types.SimpleNamespace(LOCAL=1, REMOTE=2),
     MemorySegment=types.SimpleNamespace(STORAGE=1), MemoryTags=lambda *args: args,
 )
 module("lmcache.v1.distributed.internal_api", L2StoreResult=StoreResult)
@@ -198,6 +201,65 @@ class AdapterTest(unittest.TestCase):
         adapter._store_pool.submit(lambda: None).result(timeout=2)
         self.assertEqual(adapter.report_status()["bytes_used"], 0)
         self.assertEqual(len(adapter._blob.values), 0)
+
+    def test_lookup_reserves_key_during_metadata_read(self):
+        adapter = self.adapter
+        first, second = Key("first"), Key("second")
+        task = adapter.submit_store_task([first], [Memory(b"abc")])
+        self.assertTrue(adapter._store_event.event.wait(2))
+        self.assertTrue(adapter.pop_completed_store_tasks()[task].success)
+        adapter._store_event.event.clear()
+
+        snapshot_taken = threading.Event()
+        release_lookup = threading.Event()
+        batch_execute = adapter._data.batch_execute
+
+        def pause_after_read(commands):
+            answers = batch_execute(commands)
+            if commands[0]["kind"] == "common_exists":
+                snapshot_taken.set()
+                if not release_lookup.wait(5):
+                    raise TimeoutError("lookup was not released")
+            return answers
+
+        adapter._data.batch_execute = pause_after_read
+        lookup = adapter.submit_lookup_and_lock_task([first], {})
+        try:
+            self.assertTrue(snapshot_taken.wait(2))
+            task = adapter.submit_store_task([second], [Memory(b"def")])
+            self.assertTrue(adapter._store_event.event.wait(2))
+            self.assertFalse(adapter.pop_completed_store_tasks()[task].success)
+        finally:
+            release_lookup.set()
+
+        self.assertTrue(adapter._lookup_event.event.wait(2))
+        self.assertEqual(adapter.query_lookup_and_lock_result(lookup).bits, [True])
+        adapter.submit_unlock([first])
+        adapter._store_event.event.clear()
+        task = adapter.submit_store_task([second], [Memory(b"def")])
+        self.assertTrue(adapter._store_event.event.wait(2))
+        self.assertTrue(adapter.pop_completed_store_tasks()[task].success)
+
+    def test_partial_metadata_batch_is_rolled_back(self):
+        adapter = self.adapter
+        first, second = Key("first"), Key("second")
+        adapter._max_capacity_bytes = 8
+        batch_execute = adapter._data.batch_execute
+
+        def apply_one_then_fail(commands):
+            self.assertEqual(len(commands), 2)
+            batch_execute(commands[:1])
+            raise OSError("injected metadata batch failure")
+
+        adapter._data.batch_execute = apply_one_then_fail
+        task = adapter.submit_store_task([first, second], [Memory(b"abc"), Memory(b"def")])
+        self.assertTrue(adapter._store_event.event.wait(2))
+        result = adapter.pop_completed_store_tasks()[task]
+        self.assertFalse(result.success)
+        self.assertEqual(result.transferred, 0)
+        self.assertEqual(adapter._data.values, {})
+        self.assertEqual(adapter._blob.values, {})
+        self.assertEqual(adapter.report_status()["bytes_used"], 0)
 
     def test_failures_complete_as_cache_misses(self):
         adapter = self.adapter
