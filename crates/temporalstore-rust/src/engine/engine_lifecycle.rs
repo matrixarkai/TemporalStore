@@ -1089,135 +1089,10 @@ impl TemporalEngine {
 
         #[cfg(test)]
         restore_phase_probe::begin();
-        let (loaded, replay_watermark) = if wal_single_barrier() {
-            // SINGLE-BARRIER RECOVERY TRUST (base-only). The data-block + delta fdatasyncs are
-            // deferred, so neither the served-index delta nor the anchor it advances can be
-            // trusted -- they may reference blocks that were never fsync'd. Recover ONLY from
-            // durable checkpoints:
-            //  * the base index snapshot, materialized durably (fsync) at the last dump/unload --
-            //    flush_shard_index fsyncs every block BEFORE advancing its watermark, so every block
-            //    at/below the base watermark is on disk; and
-            //  * the latest durable dump manifest, if newer than the base file.
-            // Then replay the WAL tail from that durable watermark, re-deriving every block written
-            // after it (a lost un-synced block is rebuilt, never left dangling) and, via the
-            // config-log, re-applying config-driven eviction at the exact frontier. The delta is
-            // deliberately NOT folded (load_index_base_only), so each tail record is applied
-            // EXACTLY ONCE -- no double-apply of non-idempotent commands (counters, appends).
-            let base_only =
-                self.load_index_base_only(request.shard_id, self.eager_cache_warm());
-            let base_watermark = base_only
-                .as_ref()
-                .and_then(|state| state.applied_wal_sequence)
-                .unwrap_or(0);
-            // THIS ARM IS ALSO WHAT MAKES WAL RECLAIM SAFE, which is not obvious from here.
-            // `storage_wal_reclaim_plan` takes its floor from the SAME bucket dump manifests
-            // (a minimum over them), so the floor can only stay at or below the point this
-            // raises the replay to. After an expiry round the base index FILE can sit far behind
-            // -- measured, anchor 1 against a delta at 9, with the log already cut to sequence 9
-            // -- and it is the manifest read here, not the base file, that covers the difference.
-            // Narrowing this arm narrows what a load can reconstruct without narrowing what
-            // reclaim is willing to drop.
-            // `wal_reclaim_never_frees_what_the_default_load_path_replays`
-            // (engine/tests/expiry_scale.rs) fails if the two ever come apart.
-            //
-            // AND IT HAS TO BE THE MAXIMUM OVER THEM, NOT THE LATEST OF THEM. This read
-            // `latest_bucket_dump_manifest_at`, which orders by `index_log_sequence`. That is a
-            // MEMBER of the set the floor minimises over but not an UPPER BOUND on it, and the
-            // two orderings genuinely come apart: a dump minted while `MATRIXARK_BULK_INGEST` is
-            // set takes its `wal_sequence` from the frozen base FILE, so it lands newest in
-            // index-log order carrying the LOWEST WAL anchor on disk. Measured on one shard in
-            // one process: the floor stood at 9 (retain_from 10) while a load off these same
-            // files replayed from 1, leaving sequences (1, 9] -- the expiry tombstones among them
-            // -- both reclaimable and required. A MAXIMUM bounds every subset by construction.
-            // See `durable_recovery_bucket_dump_manifest_at`.
-            match durable_recovery_bucket_dump_manifest_at(&self.index_dir, request.shard_id) {
-                Some(manifest) if manifest.wal_sequence > base_watermark => {
-                    // A durable dump is newer than the base file (base not materialized at that
-                    // dump). Use the manifest's embedded durable index as the recovery base. Read
-                    // it directly (not install_bucket_dump_manifest) so the stale-manifest guard --
-                    // which refuses to install a manifest older than the delta-advanced index-log
-                    // sequence -- cannot block trusting the durable checkpoint over the un-synced
-                    // delta.
-                    //
-                    // THE INDEX-LOG-SEQUENCE GUARD IS WHAT THAT BYPASSES, AND THE FORMAT STAMP IS
-                    // NOT. The two are different questions and only one of them is about how far
-                    // along the log a manifest sits. `index_log_sequence` says the delta may be
-                    // ahead of this checkpoint, which is exactly the thing this arm is right to
-                    // ignore -- the un-synced delta is what it does not trust.
-                    // The struct version in the image's header says the BYTES mean something other
-                    // than what this binary will read them as, and no amount of durability makes a
-                    // misinterpreted field correct. `decode_index_bytes` refuses such an image
-                    // before it reads the payload, so the `Err` arm below is where it lands, and
-                    // that arm falls back to the base file and the log, which is the same trade
-                    // `load_index_inner` makes.
-                    //
-                    // This path is the reason the stamp needed covering at all: it is reached by
-                    // an ORDINARY restart, not by anyone calling an install endpoint, so an old
-                    // store with an old dump manifest on disk met no gate whatsoever.
-                    match installable_image(&manifest)
-                        .map_err(|err| err.to_string())
-                        .and_then(crate::engine::decode_index_bytes)
-                    {
-                        Ok(mut restored) => {
-                            // THE DURABLE RELOCATION RECORDS ARE FOLDED ONTO THE BASE THIS LOAD ACTUALLY
-                            // CHOSE, and before the derivations below read the addresses. A manifest
-                            // image cut after a relocation already names the new address, so the
-                            // record finds nothing at its old one and is a no-op; one cut before it
-                            // is repointed here.
-                            self.fold_relocation_records(request.shard_id, &mut restored, true);
-                            // RE-DERIVE THE UNSERIALIZED MODEL MAPS BEFORE REBUILDING OWNERSHIP,
-                            // for the reason `install_bucket_dump_manifest` states at its own call
-                            // to the same pair. Three of the maps
-                            // `collect_model_live_block_entries` walks are `skip_serializing`, so a
-                            // manifest index decodes with them EMPTY while its `bucket_map` --
-                            // which does serialize -- still names every block they owned.
-                            // `rebuild_bucket_block_ownership` clears `bucket_map` and repopulates
-                            // it FROM the model maps, so on its own here it deleted exactly the
-                            // blocks only the index still knew about, and this restored state is
-                            // what becomes the shard.
-                            //
-                            // Measured before this line existed, on the DEFAULT recovery arm: a
-                            // shard dumped holding six hash fields and six strings came back
-                            // serving 0 of 6 hash fields and 6 of 6 strings. The install path has
-                            // always done this; only this arm did not.
-                            //
-                            // `hashes` is the map this re-derives. `context_events` and
-                            // `context_indexes` are keyed by timestamp and their index entries
-                            // carry `element_name: None`, so their keys are not recoverable from the
-                            // index and they stay dropped here -- the same hole the install path
-                            // carries, recorded at
-                            // `rebuild_unserialized_model_maps_from_bucket_index`.
-                            rebuild_unserialized_model_maps_from_bucket_index(&mut restored);
-                            // THE WHOLE RANGE, for the same reason `install_bucket_dump_manifest`
-                            // keeps it: `restored` is a DECODED MANIFEST INDEX, a whole-shard image
-                            // carrying explicit routing buckets from whatever range wrote it, and
-                            // `rebuild_bucket_block_ownership` FILTERS on the range it is given. A
-                            // load that narrows the range would silently drop every block the
-                            // manifest holds outside it rather than re-file it. The promote below
-                            // this match passes `request`'s range and should: it runs over this
-                            // shard's own live model maps, not over a foreign image.
-                            rebuild_bucket_block_ownership(
-                                request.shard_id,
-                                &mut restored,
-                                0,
-                                u32::MAX,
-                            );
-                            (Some(restored), manifest.wal_sequence)
-                        }
-                        // COUNTED, exactly as `load_index_inner` counts an image it refuses, and
-                        // for the reason it gives: this arm answers with the base file and the log
-                        // whether the manifest was refused or was never there, and without the
-                        // count nothing downstream can tell the two apart.
-                        Err(_) => {
-                            crate::engine::persistence::note_index_load(
-                                crate::engine::persistence::IndexLoadPath::Undecodable,
-                            );
-                            (base_only, base_watermark)
-                        }
-                    }
-                }
-                _ => (base_only, base_watermark),
-            }
+        let (loaded, replay_watermark, catalog) = if wal_single_barrier() {
+            // Only the selected durable image sets the replay frontier. Ordinary unsynced
+            // deltas cannot advance it; the same scan recovers relocations and slab metadata.
+            self.load_durable_index_with_catalog(request.shard_id, self.eager_cache_warm())
         } else {
             // If the latest durable dump manifest is newer than the served index, install
             // it as the load base first (recovers data already dumped into a manifest and
@@ -1234,7 +1109,7 @@ impl TemporalEngine {
             // Fold-aware load: a corrupt served-index delta log is fatal here. Silently
             // folding a holed delta prefix would advance the anchor past a removal/eviction
             // recorded only in the delta -> silent loss. Refuse the load instead.
-            let loaded = match self.load_index_checked(request.shard_id, self.eager_cache_warm()) {
+            let (loaded, catalog) = match self.load_index_checked_with_catalog(request.shard_id, self.eager_cache_warm()) {
                 Ok(loaded) => loaded,
                 Err(status) => return LoadShardResponse { status },
             };
@@ -1252,7 +1127,7 @@ impl TemporalEngine {
                         .unwrap_or_else(|| self.wal_store.stats(request.shard_id).last_sequence),
                 },
             };
-            (loaded, replay_watermark)
+            (loaded, replay_watermark, catalog)
         };
         // What this load decided to SKIP. A recovery that loses a write loses it by choosing a
         // watermark, and that choice is invisible from outside: the shard loads clean, no error
@@ -1271,7 +1146,7 @@ impl TemporalEngine {
         // physical bytes below the slab's real size, so it cannot lose durable state -- it is a
         // metadata refinement over the lossless disk-derived catalog, making the per-write
         // slab-manifest file unnecessary as the catalog's source of truth.
-        if let Ok(Some(meta)) = self.index_log_store.latest_slab_catalog(request.shard_id) {
+        if let Some(meta) = catalog {
             let _ = self.block_store.install_slab_catalog(&meta.slabs);
         }
         let mut state = loaded.unwrap_or_default();
