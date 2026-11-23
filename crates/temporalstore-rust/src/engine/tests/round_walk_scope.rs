@@ -1443,7 +1443,7 @@ pub(super) fn call_arguments(lines: &[&str], line_index: usize, needle: &str) ->
 /// range IS that shard's own range.
 ///
 /// TWO RUN OVER A DECODED MANIFEST INDEX, and there the whole range is load-bearing.
-/// `install_bucket_dump_manifest` and the durable-manifest recovery base in `lifecycle.rs` both
+/// `install_bucket_dump_manifest` and the durable-manifest recovery base in `engine_persistence.rs` both
 /// call `rebuild_bucket_block_ownership` on the output of `decode_index_bytes` -- a WHOLE-SHARD
 /// image carrying explicit routing buckets from whatever range the source shard ran on. That
 /// rebuild does not merely PLACE unrouted blocks by the range it is handed, it also FILTERS on it,
@@ -1488,7 +1488,7 @@ fn the_three_rebuild_call_sites_still_on_the_whole_range_are_each_right_to_be() 
     const WHOLE_RANGE_SITES: &[&str] = &[
         "engine/bucket_dump_manifest_methods.rs :: rebuild_bucket_block_ownership x1",
         "engine/engine_lifecycle.rs :: promote_model_maps_to_bucket_index_authority x1",
-        "engine/engine_lifecycle.rs :: rebuild_bucket_block_ownership x1",
+        "engine/engine_persistence.rs :: rebuild_bucket_block_ownership x1",
     ];
     const REBUILDS: [&str; 3] = [
         "rebuild_bucket_block_ownership(",
