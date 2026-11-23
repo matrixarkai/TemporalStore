@@ -30,6 +30,7 @@ PORT=${PORT:-17102}
 WORK=${WORK:-$(mktemp -d)}
 CLUSTER_ID=${CLUSTER_ID:-e2e-$(date +%s)-$$}
 export TS_MATRIXOBJECT_META_GROUP=${TS_MATRIXOBJECT_META_GROUP:-1}
+export TS_CACHE_MEMORY_BYTES=${TS_CACHE_MEMORY_BYTES:-16777216}
 FAMILIES="string hash set zset list"
 overall=0
 pid=""

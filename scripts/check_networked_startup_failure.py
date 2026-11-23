@@ -50,6 +50,7 @@ def main():
                 TS_SERVER_BIND_ADDR=f"127.0.0.1:{port}",
                 TS_META_ADDR="",
                 TS_SHARD_ID="1",
+                TS_CACHE_MEMORY_BYTES=str(16 * 1024 * 1024),
                 TS_STORAGE_BACKEND="raft-replication",
                 TS_MATRIXOBJECT_MODE="gateway",
                 TS_SHARED_STORE_URI=f"matrixobject://127.0.0.1:{store.server_port}",
