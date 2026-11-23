@@ -41,8 +41,32 @@ others; choose the API and acknowledgement policy before measuring a workload.
 | **Control state** | Set/get online state, atomic single-key counters, quotas, pacing, suppression, and risk/fraud decisions | [Control-state guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/blog_control_state_frequency_caps.md) |
 | **Frequency caps** | Per-user, campaign, or placement exposure limits using windowed counters | [Frequency-cap guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/blog_control_state_frequency_caps.md) |
 | **LLM context and agent memory** | Conversations, resources, entities, reusable memory, retrieval, and token-budgeted context assembly | [Context guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/context_management_on_temporalstore.md) |
-| **LLM KV-cache storage** | Serve LMCache/vLLM L2 KV blocks with raw blob transfer and command-backed metadata and expiry | [LMCache integration](integrations/lmcache/README.md) |
+| **vLLM KV cache** | Reuse prompt KV blocks across requests and worker processes with LMCache | [KV cache setup](#llm-kv-cache-with-lmcache-and-vllm) |
 | **Collections, blobs, and streams** | Membership/deduplication, sorted sets, lists, multipart blobs, range reads, and batch/stream ingestion | [Command surface](https://github.com/matrixarkai/TemporalStore/blob/main/docs/redis_compatibility_matrix.md) |
+
+### LLM KV cache with LMCache and vLLM
+
+TemporalStore can serve as the L2 storage tier for LMCache. vLLM uses
+`LMCacheMPConnector` to send and retrieve KV blocks through the LMCache server,
+so a worker serving the same model and KV layout can reuse a cached prefix. The adapter streams KV
+payloads through the datanode's blob API and batches metadata operations for
+lookup and expiry.
+
+1. Start a TemporalStore datanode and install the Python adapter from this
+   checkout with `python -m pip install ./integrations/feast ./integrations/lmcache`.
+2. Start LMCache with the TemporalStore adapter and point it at the datanode's
+   blob and command endpoints.
+3. Start vLLM with `LMCacheMPConnector`. To verify an L2 hit, clear LMCache L1
+   on the test deployment and repeat a prompt after its KV blocks have been
+   stored. The TemporalStore adapter's load counter should increase.
+
+The adapter supports a capacity budget, eviction, and optional metadata
+expiry. For redundancy, configure an adapter for each independent datanode.
+With LMCache's default store policy, each block is sent to all configured
+replicas and can be loaded from a reachable replica that accepted it.
+
+See the [LMCache integration guide](integrations/lmcache/README.md) for
+configuration, replica setup, a vLLM smoke test, and the L2 benchmark.
 
 ### Feast API support
 

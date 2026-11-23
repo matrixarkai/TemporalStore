@@ -22335,11 +22335,9 @@ fn the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log() {
 /// that reason. Warming first gives the listing something to return, and then the ENTRY count is
 /// the load-independent statement of what was being paid.
 ///
-/// The sampled eviction path leaves cache pages resident, so an idle round needs
-/// no full cache listing. First prove the counters see an explicit inspection of
-/// the populated cache, then reset and require zero listings and zero returned
-/// entries from the round. The positive control keeps a disconnected counter
-/// from satisfying the zero-work bound.
+/// The default idle round pays for no cache listing, including its eviction stage.
+/// A separate inspection of the warmed cache proves that the counters are active
+/// and that a listing would visit entries before the cycle counters are reset.
 #[test]
 fn the_pressure_snapshot_reads_cache_stats_without_listing_the_cache() {
     const KEYS: usize = 400;
@@ -22385,12 +22383,12 @@ fn the_pressure_snapshot_reads_cache_stats_without_listing_the_cache() {
     );
 
     crate::engine::reset_storage_cache_inspection_listings();
-    let inspection = engine.storage_cache_inspection_report(1);
-    assert_eq!(inspection.entries.len() as u64, occupancy);
+    let control = engine.storage_cache_inspection_report(1);
+    assert_eq!(control.entries.len() as u64, occupancy, "the control must list the warm cache");
     assert_eq!(crate::engine::storage_cache_inspection_listings(), 1,
-        "the listing counter must observe the explicit positive control");
+        "the positive control must increment the listing counter");
     assert_eq!(crate::engine::storage_cache_inspection_listing_entries(), occupancy,
-        "the entry counter must observe the populated positive control");
+        "the positive control must count every listed entry");
 
     crate::engine::reset_storage_cache_inspection_listings();
     let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
@@ -22406,8 +22404,8 @@ fn the_pressure_snapshot_reads_cache_stats_without_listing_the_cache() {
          {listed_entries} listed entries"
     );
 
-    assert_eq!(listings, 0, "an idle sampled-eviction round must not list cache pages");
-    assert_eq!(listed_entries, 0, "an idle round must not materialize cache entries");
+    assert_eq!(listings, 0, "the idle cycle must not list the record cache");
+    assert_eq!(listed_entries, 0, "the idle cycle must not visit cache entries");
 }
 
 /// THE SHIPPED DUMP GATE DECIDES ON BYTES, AND THE RECORD TRIGGER IS STILL THERE TO BE SET.

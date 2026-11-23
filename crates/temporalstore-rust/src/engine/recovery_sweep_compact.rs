@@ -1168,8 +1168,8 @@ impl TemporalEngine {
     /// [`Self::live_block_slab_ids_all_shards`] read off the maintained per-slab tally instead of
     /// walking every live block, or `None` when any loaded shard's tally has not been derived yet.
     ///
-    /// NOT THE SAME DEFINITION. The tally counts what the bucket index holds, the walk reads the
-    /// model maps, and this has not been shown equal on every model, so it is only for a caller that
+    /// The tally counts what the bucket index holds; the walk reads the serving maps plus retained
+    /// removal rows. These representations have not been shown equal on every model, so it is only for a caller that
     /// cannot destroy on the strength of it: a purge whose quarantine is too young to age out can only
     /// restore, and a name this set misses delays a restore rather than losing a slab.
     pub(crate) fn live_block_slab_ids_all_shards_from_tally(&self) -> Option<Vec<u64>> {

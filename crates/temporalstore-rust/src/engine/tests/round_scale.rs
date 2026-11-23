@@ -160,6 +160,7 @@ const WALKS_PER_ROUND: u64 = 9;
 /// 12 -> 11 FOR THE SAME REASON AS `WALKS_PER_ROUND`, and it was measured: the idle round also loses one pass.
 // The idle census checks the same pair of removed passes after the dirty set drains.
 // With an empty dirty set, the census records 16,000 entries for 2,000 records.
+// Compare raw entries below so a partial extra walk is not hidden by division.
 const WALKS_PER_IDLE_ROUND: u64 = 8;
 
 fn round_engine(dir: &std::path::Path) -> TemporalEngine {
@@ -371,9 +372,9 @@ fn an_idle_round_still_walks_the_live_block_set() {
          live-block entries = {walks}x the store"
     );
     assert_eq!(
-        walks, WALKS_PER_IDLE_ROUND,
-        "an idle round now costs {walks} whole-store walks per record, not the measured \
-         {WALKS_PER_IDLE_ROUND}. An idle shard pays this every cycle for as long as it is loaded"
+        entries, WALKS_PER_IDLE_ROUND * RECORDS as u64,
+        "an idle round visited {entries} entries for {RECORDS} live records; the measured \
+         budget is {WALKS_PER_IDLE_ROUND} complete walks"
     );
 }
 
