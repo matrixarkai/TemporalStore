@@ -3255,6 +3255,8 @@ mod tests {
 
     #[test]
     fn a_blob_replacement_requires_every_declared_byte_before_publishing() {
+        use std::io::Read as _;
+
         let work = tempdir().unwrap();
         let key = work.path().join("nested").join("cache");
         std::fs::create_dir_all(key.parent().unwrap()).unwrap();
