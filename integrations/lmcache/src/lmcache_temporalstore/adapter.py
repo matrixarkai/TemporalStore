@@ -7,6 +7,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from hashlib import sha256
+from http.client import HTTPException
 import logging
 from math import isfinite
 import threading
@@ -283,23 +284,20 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         digest = key.hex()
         return f"lmcache/v2/{namespace}/{digest[:2]}/{digest}", f"lmcache:v2:{namespace}:{digest}"
 
-    def _delete_key(self, key: ObjectKey | bytes) -> None:
-        blob_name, metadata_name = self._key_names(key)
-        self._blob.delete(blob_name)
-        self._data.execute({"kind": "common_delete", "key": metadata_name})
-
-    def _remove_unconfirmed_store(self, key: ObjectKey | bytes, size: int) -> None:
-        try:
-            self._delete_key(key)
-        except Exception:
-            logger.exception("TemporalStore L2 failed to remove incomplete entry")
-            if isinstance(key, bytes):
-                # A lost upload receipt can leave a complete file on disk.
-                # Charge its full size until a delete confirms reclamation.
-                with self._lock:
-                    self._entries[key] = size
-                    self._uncertain.add(key)
-                    self._used += size
+    def _remove_unconfirmed_stores(self, items: list[tuple[ObjectKey | bytes, int]]) -> None:
+        for offset in range(0, len(items), _DELETE_BATCH_SIZE):
+            group = items[offset:offset + _DELETE_BATCH_SIZE]
+            targets = [key for key, _ in group]
+            with self._lock:
+                self._evicting.update(targets)
+                for key, size in group:
+                    if isinstance(key, bytes):
+                        # A lost receipt can leave a complete file on disk.
+                        # Hold its capacity until both deletions are confirmed.
+                        self._used += size - self._entries.get(key, 0)
+                        self._entries[key] = size
+                        self._uncertain.add(key)
+            self._delete_reserved(targets)
 
     def _make_room(self, needed: int) -> bool:
         if needed > self._max_capacity_bytes:
@@ -370,8 +368,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 for key, command in commands.items():
                     try:
                         self._data.execute(command)
-                    except Exception:
+                    except Exception as error:
                         logger.exception("TemporalStore L2 metadata delete failed")
+                        if self._config.remote_storage and isinstance(error, (OSError, HTTPException)):
+                            break
                     else:
                         deleted.append(key)
 
@@ -417,9 +417,9 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         except Exception:
             # A failed batch may have committed some commands. Remove any new
             # entries from this batch so a later lookup cannot see a partial write.
-            for key, (size, uploaded, _) in pending.items():
-                if uploaded:
-                    self._remove_unconfirmed_store(key, size)
+            self._remove_unconfirmed_stores([
+                (key, size) for key, (size, uploaded, _) in pending.items() if uploaded
+            ])
             raise
 
         uploaded = [(key, size, original) for key, (size, wrote, original) in pending.items() if wrote]
@@ -458,16 +458,20 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             except Exception:
                 logger.exception("TemporalStore L2 payload write failed")
                 written = [False] * len(uploads)
+            failed = []
             for (key, _, _), stored in zip(uploads, written, strict=True):
                 if stored:
                     continue
                 size, _, _ = pending.pop(key)
                 pending_bytes -= size
                 success = False
-                if isinstance(key, bytes):
-                    self._remove_unconfirmed_store(key, size)
+                failed.append((key, size))
+            if failed:
+                self._remove_unconfirmed_stores([
+                    (key, size) for key, size in failed if isinstance(key, bytes)
+                ])
                 with self._lock:
-                    self._publishing.discard(key)
+                    self._publishing.difference_update(key for key, _ in failed)
             uploads.clear()
 
         def publish() -> None:
@@ -487,16 +491,16 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 pending_bytes = 0
 
         try:
+            if self._uncertain:
+                self._delete_many([key for key in keys if self._identity(key) in self._uncertain])
             for original, obj in zip(keys, objects):
                 key = self._identity(original)
                 size = obj.get_size()
                 if key in pending:
                     continue
                 if key in self._uncertain:
-                    self._delete_batch([original])
-                    if key in self._uncertain:
-                        success = False
-                        continue
+                    success = False
+                    continue
                 with self._lock:
                     known_size = self._entries.get(key)
                 if known_size is not None:
