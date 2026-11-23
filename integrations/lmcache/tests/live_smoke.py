@@ -156,6 +156,43 @@ def main():
                 finally:
                     reopened.close()
 
+                isolated_config = PluginL2AdapterConfig.from_dict({
+                    "module_path": "lmcache_temporalstore.adapter",
+                    "class_name": "TemporalStoreL2Adapter",
+                    "adapter_params": {
+                        "blob_url": url, "data_url": url, "namespace": "worker-b",
+                        "max_capacity_gb": 12 / 1024**3,
+                    },
+                })
+                isolated = _create_plugin_adapter(isolated_config)
+                try:
+                    task = isolated.submit_lookup_and_lock_task([second], {})
+                    found = completed(
+                        isolated, isolated.get_lookup_and_lock_event_fd(),
+                        lambda: isolated.query_lookup_and_lock_result(task),
+                    )
+                    assert not found.test(0), "lookup crossed adapter namespaces"
+                    other_payload = b"different"
+                    task = isolated.submit_store_task([second], [memory(other_payload)])
+                    result = completed(
+                        isolated, isolated.get_store_event_fd(),
+                        lambda: isolated.pop_completed_store_tasks().get(task),
+                    )
+                    assert result.is_successful()
+                    task = isolated.submit_store_task([first], [memory(other_payload)])
+                    result = completed(
+                        isolated, isolated.get_store_event_fd(),
+                        lambda: isolated.pop_completed_store_tasks().get(task),
+                    )
+                    assert result.is_successful()
+                    default_blob, _ = _names(second)
+                    isolated_blob, _ = _names(second, "worker-b")
+                    assert (Path(work) / "blobs" / default_blob).read_bytes() == payload
+                    assert not (Path(work) / "blobs" / isolated_blob).exists()
+                    print("PASS: namespace isolation across adapters")
+                finally:
+                    isolated.close()
+
                 ttl_config = PluginL2AdapterConfig.from_dict({
                     "module_path": "lmcache_temporalstore.adapter",
                     "class_name": "TemporalStoreL2Adapter",

@@ -1,21 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE MAINTAINED PER-SLAB TALLY AND THE WALK OF THE MODEL MAPS NAME THE SAME SLABS, FOR EVERY
-//! DATA MODEL.
+//! The maintained slab tally must cover the model maps and retained deletion markers.
 //!
-//! `live_block_slab_ids_all_shards` walks every model map of every loaded shard under one read
-//! guard (2.3 s at 100k keys). The tally (`block_slab_live`) is maintained at each insert/remove and
-//! answers the same question in O(slabs). It is held to the BUCKET-INDEX walk by the drift check,
-//! but nothing held it to the MODEL-MAP walk across models: the existing differentials cover string
-//! overwrites only. Until this holds for every model, nothing may skip the walk.
+//! Model maps expose visible data. The bucket index also retains tombstones, which
+//! may still need their blocks after all visible data has moved off a slab.
+//! Compare the exact union, then compare the tally's per-slab counts and bytes
+//! with the bucket index before reconciliation can hide an accounting error.
 //!
-//! One scenario per model, each through the same stages, comparing at every stage:
-//!   written -> overwritten (after a slab roll, so two slabs are live) -> element removed ->
-//!   key removed -> unload + load (index rebuilt) -> process restart with no unload (WAL replay)
-//!   -> everything removed.
-//! A comparison is: the walked set equals the tally set, and the drift check reports clean
-//! (refs and bytes, per slab). A model that writes no block proves nothing and fails loudly.
+//! Each model goes through writes, removal, compaction, dump, release, reload,
+//! restart, and final deletion. A model without live records in the fixture is
+//! called out explicitly.
 //!
 //! PLANTED FAULTS (the gate must go red): a tally that forgot a live slab, and a tally that kept
 //! a slab nothing references.
@@ -52,11 +47,27 @@ fn must(engine: &TemporalEngine, what: &str, command: Command) {
 /// the tally, so it must come last or it would hide a disagreement from the set comparison).
 fn agree(engine: &TemporalEngine, model: &str, stage: &str) -> Vec<u64> {
     let walked = engine.live_block_slab_ids_all_shards();
+    let tombstones: BTreeSet<_> = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        crate::engine::storage_bucket_internals::collect_live_block_entries(&shards[&1])
+            .into_iter()
+            .filter(|entry| entry.deleted)
+            .map(|entry| entry.address.block_slab_id())
+            .collect()
+    };
+    let expected: Vec<_> = walked.iter().copied()
+        .chain(tombstones.iter().copied())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(walked, expected,
+        "{model} at {stage}: the ownership walk must include retained removal blocks");
     let tallied = engine.live_block_slab_ids_all_shards_from_tally();
     assert_eq!(
         tallied.as_ref(),
-        Some(&walked),
-        "{model} at {stage}: the tally and the walk name different slabs (walk {walked:?})"
+        Some(&expected),
+        "{model} at {stage}: slab tally differs from visible blocks {walked:?} \
+         and retained deletion markers {tombstones:?}"
     );
     let drift = engine.block_slab_live_drift_check(1);
     assert!(drift.is_clean(), "{model} at {stage}: the tally drifted from the index walk: {drift:?}");
@@ -375,6 +386,62 @@ fn scenario(model: &Model) {
 fn the_tally_names_the_slabs_the_walk_does_in_every_model() {
     for model in models() {
         scenario(&model);
+    }
+}
+
+#[test]
+fn reclaim_keeps_a_removal_block_after_compaction_and_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    for field in ["kept", "removed"] {
+        must(&engine, "write field", Command::HashSet {
+            key: "owner".into(), field: field.into(), value: field.as_bytes().to_vec(),
+        });
+    }
+    engine.block_store().roll_slab().unwrap();
+    must(&engine, "remove field", Command::HashDelete {
+        key: "owner".into(), field: "removed".into(),
+    });
+    let removal = {
+        let shards = engine.shards.read().unwrap();
+        let mut markers = collect_live_block_entries(shards.get(&1).unwrap()).into_iter()
+            .filter(|entry| entry.deleted
+                && entry.kind == crate::engine::storage_bucket_internals::StoredModelKind::Hash
+                && entry.object_key.as_ref() == "owner");
+        let marker = markers.next().expect("the removal must leave a physical marker");
+        assert!(markers.next().is_none(), "the fixture must hold exactly one removal marker");
+        marker.address
+    };
+    let payload = engine.block_store.read(&removal).unwrap();
+    assert!(!payload.is_empty(), "the marker must contain a removal payload");
+    engine.compact_shard_blocks(1).expect("compaction must finish");
+    {
+        let shards = engine.shards.read().unwrap();
+        assert!(collect_model_live_block_entries(shards.get(&1).unwrap()).iter()
+            .all(|entry| entry.address.block_slab_id() != removal.block_slab_id()),
+            "the marker must occupy a slab no serving-map entry retains");
+    }
+    let retained = engine.live_block_slab_ids_all_shards();
+    assert!(retained.contains(&removal.block_slab_id()), "GC must retain the removal-only slab");
+    assert_eq!(engine.live_block_slab_ids_all_shards_from_tally(), Some(retained.clone()));
+    let newest = *engine.block_store.slab_ids().unwrap().iter().max().unwrap();
+    engine.block_store.gc_slabs_before_with_live_refs_delayed_destroy(newest, retained.clone()).unwrap();
+    engine.block_store.purge_delayed_destroy_slabs_selected(0, retained, None).unwrap();
+    assert_eq!(engine.block_store.read(&removal).unwrap(), payload);
+    drop(engine);
+
+    let reopened = open(dir.path());
+    assert_eq!(reopened.block_store.read(&removal).unwrap(), payload,
+        "a cold reader must still find the physical removal marker after reclaim");
+    for (field, expected) in [("kept", Some(b"kept".to_vec())), ("removed", None)] {
+        let response = reopened.execute(ExecuteRequest {
+            shard_id: 1, command: Command::HashGet { key: "owner".into(), field: field.into() },
+        });
+        assert!(response.status.ok);
+        match response.response {
+            CommandResponse::Bytes { value } => assert_eq!(value, expected),
+            other => panic!("unexpected hash response: {other:?}"),
+        }
     }
 }
 

@@ -528,19 +528,33 @@ fn a_pass_writes_a_durable_relocation_record_for_every_block_it_moved() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path());
     let (_, drain) = seed(&engine, 60);
+    let expected: BTreeSet<_> = {
+        let shards = engine.shards.read().unwrap();
+        collect_live_block_entries(shards.get(&1).unwrap())
+            .into_iter()
+            .filter(|entry| !entry.deleted && drain.contains(&entry.address.block_slab_id()))
+            .map(|entry| (entry.address.block_slab_id(), entry.address.offset(), entry.address.length()))
+            .collect()
+    };
+    assert!(!expected.is_empty(), "the fixture must leave live blocks on the drain slabs");
     engine.compact_shard_blocks_draining_sliced(1, drain, 32).unwrap();
-    let mut recorded = 0usize;
-    let mut unpaired = 0usize;
-    let _ = engine.index_log_store.for_each_delta_record_above_anchor(1, 0, 0, |record| {
-        recorded += record.relocated_from.len();
-        if record.relocated_from.len() != record.items.len()
-            || record.relocated_elements.len() != record.items.len()
-        {
-            unpaired += 1;
+    let mut recorded = BTreeSet::new();
+    let mut ordinary = 0usize;
+    engine.index_log_store.for_each_delta_record_above_anchor(1, 0, 0, |record| {
+        if record.relocated_from.is_empty() {
+            ordinary += 1;
+            return;
         }
-    });
-    assert!(recorded > 0, "the pass moved blocks and wrote no relocation record");
-    assert_eq!(unpaired, 0, "a relocation record did not pair its old items, new items and element names");
+        assert_eq!(record.relocated_from.len(), record.items.len(), "unpaired relocation items");
+        assert_eq!(record.relocated_elements.len(), record.items.len(), "unpaired element names");
+        for from in &record.relocated_from {
+            let address = from.entry.as_ref().expect("a moved block must have its old address");
+            assert!(recorded.insert((address.block_slab_id(), address.offset(), address.length())),
+                "the pass recorded one source block twice");
+        }
+    }).expect("the durable relocation log must decode completely");
+    assert!(ordinary > 0, "the guard must distinguish relocation records from ordinary deltas");
+    assert_eq!(recorded, expected, "the pass must record exactly every block it moved");
 }
 
 /// A KEYED STEP NAMES THE BLOCKS OF ITS OWN BUCKETS, NOT THE SHARD'S. Naming a block's object needs an

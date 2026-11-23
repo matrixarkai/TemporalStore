@@ -11,6 +11,7 @@ use crate::types::ShardId;
 #[derive(Debug)]
 struct PublicationState {
     revision: AtomicU64,
+    last_dump_time_ms: AtomicU64,
     active: Mutex<bool>,
 }
 
@@ -33,6 +34,19 @@ pub(super) struct CheckpointPublication {
     revision: u64,
 }
 
+impl CheckpointPublication {
+    pub(super) fn allocate_dump_time_ms(&self, now_ms: u64, persisted_ms: u64) -> io::Result<u64> {
+        let exhausted = || io::Error::new(io::ErrorKind::Other, "checkpoint timestamp exhausted");
+        let minimum = persisted_ms.checked_add(1).ok_or_else(exhausted)?.max(now_ms);
+        let previous = self.state.last_dump_time_ms.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |previous| previous.checked_add(1).map(|next| next.max(minimum)),
+        ).map_err(|_| exhausted())?;
+        Ok((previous + 1).max(minimum))
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct CheckpointPublications {
     states: Mutex<HashMap<ShardId, Arc<PublicationState>>>,
@@ -47,6 +61,7 @@ impl CheckpointPublications {
             .or_insert_with(|| {
                 Arc::new(PublicationState {
                     revision: AtomicU64::new(0),
+                    last_dump_time_ms: AtomicU64::new(0),
                     active: Mutex::new(true),
                 })
             })
@@ -147,6 +162,51 @@ impl CheckpointPublications {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dump_names_advance_when_the_wall_clock_stops_or_moves_back() {
+        let publications = CheckpointPublications::default();
+        let capture = publications.capture(1);
+        assert_eq!(capture.allocate_dump_time_ms(1000, 0).unwrap(), 1000);
+        assert_eq!(capture.allocate_dump_time_ms(1000, 0).unwrap(), 1001);
+        assert_eq!(capture.allocate_dump_time_ms(900, 0).unwrap(), 1002);
+        assert_eq!(publications.capture(2).allocate_dump_time_ms(900, 0).unwrap(), 900);
+    }
+
+    #[test]
+    fn a_reopened_dump_clock_starts_after_the_persisted_parent() {
+        let publications = CheckpointPublications::default();
+        assert_eq!(publications.capture(1).allocate_dump_time_ms(8000, 9000).unwrap(), 9001);
+        publications.forget(1);
+        assert_eq!(publications.capture(1).allocate_dump_time_ms(8000, 9001).unwrap(), 9002);
+    }
+
+    #[test]
+    fn concurrent_dump_captures_reserve_distinct_times() {
+        let publications = Arc::new(CheckpointPublications::default());
+        let workers: Vec<_> = (0..16).map(|_| {
+            let publications = Arc::clone(&publications);
+            std::thread::spawn(move || {
+                let capture = publications.capture(1);
+                (0..64).map(|_| capture.allocate_dump_time_ms(1000, 0).unwrap()).collect::<Vec<_>>()
+            })
+        }).collect();
+        let stamps: std::collections::BTreeSet<_> = workers.into_iter()
+            .flat_map(|worker| worker.join().unwrap()).collect();
+        assert_eq!(stamps.len(), 1024);
+        assert_eq!(stamps.first(), Some(&1000));
+        assert_eq!(stamps.last(), Some(&2023));
+    }
+
+    #[test]
+    fn an_exhausted_dump_clock_refuses_to_wrap() {
+        let publications = CheckpointPublications::default();
+        let capture = publications.capture(1);
+        assert!(capture.allocate_dump_time_ms(1000, u64::MAX).is_err());
+        assert_eq!(capture.allocate_dump_time_ms(1000, 0).unwrap(), 1000);
+        assert_eq!(capture.allocate_dump_time_ms(u64::MAX, 0).unwrap(), u64::MAX);
+        assert!(capture.allocate_dump_time_ms(1000, 0).is_err());
+    }
 
     #[test]
     fn a_completed_publication_is_current_only_until_replaced_or_forgotten() {

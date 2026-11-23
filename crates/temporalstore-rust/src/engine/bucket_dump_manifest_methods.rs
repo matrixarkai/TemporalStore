@@ -291,10 +291,13 @@ impl TemporalEngine {
         // embedded index's own anchor so reload replays exactly the WAL suffix it lacks.
         // An unanchored frozen image claims no records, never the live tail after capture.
         let wal_sequence = dump_index_state.applied_wal_sequence.unwrap_or(0);
-        let created_unix_ms = now_ms();
+        let parent = latest_bucket_dump_manifest_at(&self.index_dir, shard_id);
+        // Distinct captures must not replace one another within the clock's resolution.
+        let created_unix_ms = publication.allocate_dump_time_ms(
+            now_ms(), parent.as_ref().map_or(0, |manifest| manifest.created_unix_ms),
+        ).map_err(|error| Status::error("slot_dump_failed", error.to_string()))?;
         let manifest_id = format!("{shard_id}-{index_log_sequence}-{created_unix_ms}");
-        let parent_manifest_id = latest_bucket_dump_manifest_at(&self.index_dir, shard_id)
-            .map(|manifest| manifest.manifest_id);
+        let parent_manifest_id = parent.map(|manifest| manifest.manifest_id);
         // EVERY SLAB THE EMBEDDED INDEX WILL INSTALL, not only the dumped buckets'.
         //
         // `index_bytes` above is the WHOLE-SHARD index, and #1642 proved it has to stay whole:
