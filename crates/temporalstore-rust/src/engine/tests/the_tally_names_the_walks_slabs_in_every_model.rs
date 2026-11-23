@@ -405,7 +405,9 @@ fn reclaim_keeps_a_removal_block_after_compaction_and_restart() {
     let removal = {
         let shards = engine.shards.read().unwrap();
         let mut markers = collect_live_block_entries(shards.get(&1).unwrap()).into_iter()
-            .filter(|entry| entry.deleted && entry.kind == "hash" && entry.object_key.as_ref() == "owner");
+            .filter(|entry| entry.deleted
+                && entry.kind == crate::engine::storage_bucket_internals::StoredModelKind::Hash
+                && entry.object_key.as_ref() == "owner");
         let marker = markers.next().expect("the removal must leave a physical marker");
         assert!(markers.next().is_none(), "the fixture must hold exactly one removal marker");
         marker.address
