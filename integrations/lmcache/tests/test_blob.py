@@ -374,6 +374,7 @@ class BlobClientTest(unittest.TestCase):
         self.client.put("other", memoryview(b"copy"))
         values = [memoryview(bytearray(4)) for _ in range(2)]
         self.assertEqual(self.client.get_many_into(list(zip(("key", "other"), values))), [False, False])
+        self.assertEqual([bytes(value) for value in values], [bytes(4), bytes(4)])
         self.assertTrue(self.client.get_into("other", values[1]))
         self.assertEqual(values[1], b"copy")
 

@@ -18,6 +18,7 @@ from urllib.parse import quote, urlsplit
 logger = logging.getLogger(__name__)
 _BLOB_BATCH_KEYS = 32
 _BLOB_BATCH_BYTES = 512 * 1024 * 1024
+_BLOB_SMALL_READ_BYTES = 512 * 1024
 _BATCH_RECHECK_SECONDS = 30
 _BATCH_UNAVAILABLE = (404, 405, 501)
 _MAX_BATCH_CONTROL_BYTES = 64 * 1024
@@ -300,9 +301,22 @@ class BlobClient:
                     )
                     if int(response.getheader("Content-Length", "-1")) != length:
                         raise OSError("invalid blob batch read length")
-                    for status, (_, destination) in zip(statuses, items):
-                        if status == 1 and not self._read_into(response, destination):
+                    payload_length = length - len(statuses)
+                    if payload_length <= _BLOB_SMALL_READ_BYTES:
+                        # Small reads share one bounded buffer to reduce calls into the HTTP reader.
+                        payload = memoryview(response.read(payload_length))
+                        if len(payload) != payload_length:
                             raise OSError("incomplete blob batch read")
+                        offset = 0
+                        for status, (_, destination) in zip(statuses, items):
+                            if status == 1:
+                                end = offset + len(destination)
+                                destination[:] = payload[offset:end]
+                                offset = end
+                    else:
+                        for status, (_, destination) in zip(statuses, items):
+                            if status == 1 and not self._read_into(response, destination):
+                                raise OSError("incomplete blob batch read")
                     consumed = True
                     return statuses
             finally:
