@@ -7195,7 +7195,7 @@ mod tests {
         use std::sync::mpsc;
         use std::time::Duration;
 
-        for rotate in [false, true] {
+        for (rotate, sealed_first) in [(false, false), (true, false), (false, true), (true, true)] {
             let _rolling = roll_at(0);
             let dir = tempfile::tempdir().unwrap();
             let store = LocalIndexLogStore::new(dir.path());
@@ -7206,6 +7206,14 @@ mod tests {
             ).unwrap();
             assert!(index_log_path(dir.path(), 7).metadata().unwrap().len()
                 > 64 * 1024);
+            let cutoff = if sealed_first {
+                set_index_log_segment_bytes_for_test(Some(1));
+                let sequence = store.append_delta(
+                    7, Vec::new(), Vec::new(), Some(2), None, false, true,
+                ).unwrap();
+                set_index_log_segment_bytes_for_test(Some(0));
+                sequence
+            } else { first };
             let (started_tx, started_rx) = mpsc::sync_channel(1);
             let (release_tx, release_rx) = mpsc::sync_channel(1);
             let capturing = store.clone();
@@ -7237,9 +7245,10 @@ mod tests {
             release_tx.send(()).unwrap();
             let (capture, folded) = worker.join().unwrap().unwrap();
             let late = writer.join().unwrap();
-            assert!(completed_before_release.is_ok(), "append waited for model folding; rotate={rotate}");
+            assert!(completed_before_release.is_ok(),
+                "append waited for model folding; rotate={rotate}, sealed_first={sealed_first}");
             assert_eq!(folded, vec![first]);
-            assert_eq!(capture.through_sequence(), first);
+            assert_eq!(capture.through_sequence(), cutoff);
             assert!(late > capture.through_sequence());
             let meta = store.append_delta(
                 7, Vec::new(), Vec::new(), Some(2), Some(MetaItem::default()), false, true,
