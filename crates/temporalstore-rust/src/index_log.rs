@@ -3610,7 +3610,13 @@ impl LocalIndexLogStore {
         capture_relocations: bool,
         mut take: impl FnMut(IndexDeltaRecord),
     ) -> Result<CapturedRelocations, IndexLogError> {
-        let inner = self.lock_flushed();
+        let mut inner = if capture_relocations {
+            let mut inner = self.inner.lock().expect("index log lock poisoned");
+            flush_queued_locked(&mut inner)?;
+            inner
+        } else {
+            self.lock_flushed()
+        };
         let through_sequence = if capture_relocations {
             match inner.last_sequence_by_shard.get(&shard_id) {
                 Some(sequence) => *sequence,
@@ -3659,19 +3665,22 @@ impl LocalIndexLogStore {
             if !path.exists() {
                 continue;
             }
-            let mut reader = BufReader::new(open_index_log_read(&path, &mut tally)?);
+            let file = open_index_log_read(&path, &mut tally)?;
             let identity = if capture_relocations {
-                Some(CapturedPieceIdentity::of(&reader.get_ref().metadata()?)?)
+                Some(CapturedPieceIdentity::of(&file.metadata()?)?)
             } else {
                 None
             };
+            let prefix_bytes = identity.as_ref().map_or(u64::MAX, |identity| identity.len);
+            let mut reader = BufReader::new(file.take(prefix_bytes));
             let mut reflection = PieceReflection::default();
+            // The open handle owns a fixed prefix. Decode and model folding need no append lock.
+            let held_log = if capture_relocations { drop(inner); None } else { Some(inner) };
             // Read by FRAME, not by line. A record's payload may be binary, and a binary payload
             // may contain 0x0A -- a reader splitting on newlines would cut such a record in half
             // and, being `lines()`, would also demand it be valid UTF-8. `read_frame` takes the
             // length the frame declares instead, and reads text-framed and legacy unframed
-            // records unchanged, so one loop reads every shape the log has ever held. Streaming
-            // rather than reading the file whole keeps memory bounded by the largest record.
+            // records unchanged. Streaming keeps memory bounded by the largest record.
             while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader)? {
                 // Before the `continue` below, not after it: a frame this walk passes over is
                 // still a frame this walk read off the disk, and that is what the probe counts.
@@ -3697,9 +3706,12 @@ impl LocalIndexLogStore {
                 let mut record: IndexDeltaRecord = decode_index_payload(payload)?;
                 if capture_relocations {
                     if record.sequence > through_sequence {
-                        return Err(IndexLogError::Corruption(
-                            "index-log record exceeds the checkpoint capture sequence".into(),
-                        ));
+                        if sealed_index_log_span(&path, shard_id).is_some() {
+                            return Err(IndexLogError::Corruption(
+                                "sealed index-log record exceeds the checkpoint capture sequence".into(),
+                            ));
+                        }
+                        break;
                     }
                     reflection.observe(&record);
                 }
@@ -3768,12 +3780,16 @@ impl LocalIndexLogStore {
                 }
             }
             if let Some(identity) = identity {
-                if identity != CapturedPieceIdentity::of(&reader.get_ref().metadata()?)? {
+                let after = CapturedPieceIdentity::of(&reader.get_ref().get_ref().metadata()?)?;
+                let span = sealed_index_log_span(&path, shard_id);
+                let unchanged = if span.is_some() { identity == after }
+                    else { identity.permits_append(&after) };
+                if !unchanged {
                     return Err(IndexLogError::Corruption(
                         "index-log piece changed during checkpoint capture".into(),
                     ));
                 }
-                if let Some(span) = sealed_index_log_span(&path, shard_id) {
+                if let Some(span) = span {
                     captured.pieces.push(CapturedRelocationPiece {
                         path,
                         span,
@@ -3782,7 +3798,12 @@ impl LocalIndexLogStore {
                     });
                 }
             }
+            inner = match held_log {
+                Some(inner) => inner,
+                None => self.inner.lock().expect("index log lock poisoned"),
+            };
         }
+        drop(inner);
         Ok(captured)
     }
 
@@ -5414,6 +5435,17 @@ struct CapturedPieceIdentity {
 }
 
 impl CapturedPieceIdentity {
+    fn permits_append(&self, after: &Self) -> bool {
+        #[cfg(unix)]
+        {
+            self.device == after.device && self.inode == after.inode && after.len >= self.len
+        }
+        #[cfg(not(unix))]
+        {
+            after.len >= self.len
+        }
+    }
+
     fn of(metadata: &std::fs::Metadata) -> std::io::Result<Self> {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
@@ -7156,6 +7188,125 @@ mod tests {
         let other = LocalIndexLogStore::new(dir.path());
         assert!(other.gc_reflected_after_relocations(7, 2, 100, 0, &capture).is_err());
         assert!(store.gc_reflected_after_relocations(8, 2, 100, 0, &capture).is_err());
+    }
+
+    #[test]
+    fn relocation_capture_yields_to_appends_and_excludes_the_late_tail() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        for rotate in [false, true] {
+            let _rolling = roll_at(0);
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalIndexLogStore::new(dir.path());
+            let key = "captured".repeat(16 * 1024);
+            let first = store.append_relocation(
+                7, vec![block_item(1, &key, false)], vec![block_item(2, &key, false)],
+                vec![String::new()],
+            ).unwrap();
+            assert!(index_log_path(dir.path(), 7).metadata().unwrap().len()
+                > 64 * 1024);
+            let (started_tx, started_rx) = mpsc::sync_channel(1);
+            let (release_tx, release_rx) = mpsc::sync_channel(1);
+            let capturing = store.clone();
+            let worker = std::thread::spawn(move || {
+                let mut folded = Vec::new();
+                let mut started = Some(started_tx);
+                let result = capturing.capture_checkpoint_relocations(7, 2, |record| {
+                    folded.push(record.sequence);
+                    if let Some(sender) = started.take() {
+                        sender.send(()).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+                    }
+                });
+                result.map(|capture| (capture, folded))
+            });
+            started_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let (appended_tx, appended_rx) = mpsc::sync_channel(1);
+            let appending = store.clone();
+            let writer = std::thread::spawn(move || {
+                let _rolling = roll_at(if rotate { 1 } else { 0 });
+                let sequence = appending.append_relocation(
+                    7, vec![block_item(1, "late", false)],
+                    vec![block_item(2, "late", false)], vec![String::new()],
+                ).unwrap();
+                appended_tx.send(sequence).unwrap();
+                sequence
+            });
+            let completed_before_release = appended_rx.recv_timeout(Duration::from_secs(5));
+            release_tx.send(()).unwrap();
+            let (capture, folded) = worker.join().unwrap().unwrap();
+            let late = writer.join().unwrap();
+            assert!(completed_before_release.is_ok(), "append waited for model folding; rotate={rotate}");
+            assert_eq!(folded, vec![first]);
+            assert_eq!(capture.through_sequence(), first);
+            assert!(late > capture.through_sequence());
+            let meta = store.append_delta(
+                7, Vec::new(), Vec::new(), Some(2), Some(MetaItem::default()), false, true,
+            ).unwrap();
+            store.gc_reflected_after_relocations(7, 2, meta, 0, &capture).unwrap();
+            assert!(store.read_delta_records(7, 0).unwrap().iter()
+                .any(|record| record.sequence == late));
+        }
+    }
+
+    #[test]
+    fn relocation_capture_propagates_a_failed_queued_write_before_folding() {
+        let _rolling = roll_at(0);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store.append_relocation(
+            7, vec![block_item(1, "moved", false)],
+            vec![block_item(2, "moved", false)], vec![String::new()],
+        ).unwrap();
+        let record = prepare_delta_record(
+            8, 1, vec![block_item(1, "queued", false)], Vec::new(), Some(5), None, true,
+        );
+        let mut payload = Vec::new();
+        encode_index_payload_into(&record, INDEX_LOG_SHAPE_DELTA, &mut payload).unwrap();
+        let bytes = crate::log_framing::encode_record(&payload);
+        let blocker = index_log_path(dir.path(), 8);
+        std::fs::create_dir(&blocker).unwrap();
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.last_sequence_by_shard.insert(8, 1);
+            inner.stuck.push(StuckBatch {
+                shard_id: 8,
+                frames: vec![FrameMeta {
+                    sequence: 1, applied_wal_sequence: Some(5), carries_content: true,
+                    len: bytes.len() as u64,
+                }],
+                bytes,
+            });
+        }
+        let mut folded = 0;
+        assert!(store.capture_checkpoint_relocations(7, 2, |_| folded += 1).is_err());
+        assert_eq!(folded, 0, "an incomplete flush cannot establish a capture cutoff");
+        std::fs::remove_dir(blocker).unwrap();
+        let capture = store.capture_checkpoint_relocations(7, 2, |_| folded += 1).unwrap();
+        assert_eq!(folded, 1);
+        assert_eq!(capture.through_sequence(), 1);
+    }
+
+    #[test]
+    fn relocation_capture_rejects_a_sealed_piece_beyond_its_cutoff() {
+        let _rolling = roll_at(1);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        for key in ["first", "second"] {
+            store.append_relocation(
+                7, vec![block_item(1, key, false)], vec![block_item(2, key, false)],
+                vec![String::new()],
+            ).unwrap();
+        }
+        store.append_delta(
+            7, Vec::new(), Vec::new(), Some(2), Some(MetaItem::default()), false, true,
+        ).unwrap();
+        assert_eq!(index_log_segment_paths(dir.path(), 7).iter()
+            .filter_map(|path| sealed_index_log_span(path, 7)).count(), 2);
+        store.inner.lock().unwrap().last_sequence_by_shard.insert(7, 1);
+        assert!(matches!(store.capture_checkpoint_relocations(7, 2, |_| {}),
+            Err(IndexLogError::Corruption(_))));
     }
 
     /// An anchor-less delta that still carries content must SURVIVE the post-dump sweep.
