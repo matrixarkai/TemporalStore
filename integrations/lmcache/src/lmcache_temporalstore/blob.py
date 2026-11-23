@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import nullcontext
 import http.client
 import json
@@ -213,6 +214,29 @@ class BlobClient:
                 else:
                     found.append(status == 1)
         return found
+
+    def inventory(self, namespace: str) -> Iterator[tuple[bytes, int]]:
+        def page(**fields):
+            _, body = self._mutate(
+                "POST", "/lmcache_blob_inventory",
+                json.dumps({"namespace": namespace, **fields}).encode(),
+                content_type="application/json",
+            )
+            return json.loads(body)
+
+        partitions = page()["partitions"]
+        for partition in partitions:
+            after = None
+            while True:
+                reply = page(partition=partition, after=after)
+                for entry in sorted(reply["entries"], key=lambda item: (item["modified_ms"], item["id"])):
+                    yield bytes.fromhex(entry["id"]), entry["size"]
+                cursor = reply["next"]
+                if cursor is None:
+                    break
+                if after is not None and cursor <= after:
+                    raise OSError("LMCache inventory cursor did not advance")
+                after = cursor
 
     def close(self) -> None:
         with self._read_lock:

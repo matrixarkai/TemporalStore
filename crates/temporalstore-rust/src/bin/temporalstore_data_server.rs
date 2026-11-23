@@ -69,6 +69,8 @@ use tracing::{debug, error, info, warn};
 
 #[path = "server/context_explicit_route.rs"]
 mod context_explicit_route;
+#[path = "temporalstore_data_server/lmcache_blob_inventory.rs"]
+mod lmcache_blob_inventory;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ServerTopologyValidationRequest {
@@ -731,6 +733,9 @@ fn main() {
         }
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => json_response(200, &Status::ok()),
+            ("POST", "/lmcache_blob_inventory") => {
+                lmcache_blob_inventory::handle(&request.body, &blob_store)
+            }
             ("POST", "/batch_delete_blobs") => {
                 handle_blob_batch_delete(&request.body, &blob_store, &handler_block_runtime)
             }
