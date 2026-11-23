@@ -7320,11 +7320,14 @@ fn refresh_all_bucket_runtime_flags(
     // AND ONLY WHEN THE SWEEP IS GOING TO REBUILD. A sweep that is not rebuilding the object list
     // has no use for the identities and must not pay for them: this is the write path's traversal
     // as well as the maintenance one.
+    let has_expiry = !shard.expires_at_ms().is_empty();
     let index = &mut shard.bucket_index;
     // BUILT WHENEVER A CONSUMER NEEDS IT, WHICH IS NOT THE SAME QUESTION AS WHETHER THE OBJECT
-    // INDEX IS BEING REBUILT. The TTL rollup selects blocks by the object held BESIDE them, so a
-    // `Recompute` needs the inversion even on the reconstruct path, which skips the rescan.
-    let keys = if rebuild_object_index || matches!(ttl_rollup, BucketTtlRollup::Recompute) {
+    // INDEX IS BEING REBUILT. A nonempty TTL rollup needs identities even on the reconstruct
+    // path. With no expiries, that arm simply clears the minimum and needs no identities.
+    let keys = if rebuild_object_index
+        || (matches!(ttl_rollup, BucketTtlRollup::Recompute) && has_expiry)
+    {
         Some(crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup))
     } else {
         None

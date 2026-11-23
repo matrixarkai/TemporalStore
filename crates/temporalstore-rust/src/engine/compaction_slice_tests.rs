@@ -701,12 +701,79 @@ fn a_keyed_slice_does_not_rebuild_every_buckets_object_index() {
     );
     assert_every_key_reads(&engine, &expected, "after targeted refresh");
     assert_index_agrees(&engine, "after targeted refresh");
+    bucket_visit_sites::reset();
     engine.compact_shard_blocks_draining_sliced(1, drain, 16).unwrap();
+    assert_eq!(
+        bucket_visit_sites::snapshot().0,
+        0,
+        "the remaining slices and publication must keep the maintained object lists",
+    );
     assert_index_agrees(&engine, "after publication");
+    {
+        let mut shards = engine.shards_write_marked();
+        let shard = shards.get_mut(&1).unwrap();
+        let state = |shard: &ShardState| {
+            shard.bucket_index.bucket_map.iter().map(|(id, bucket)| {
+                (*id, (
+                    bucket.object_index.iter().copied().collect::<BTreeSet<_>>(),
+                    bucket.deleted_object_index.iter().copied().collect::<BTreeSet<_>>(),
+                    format!("{:?}", bucket.layout),
+                    bucket.dirty(), bucket.deleted(), bucket.in_memory(),
+                    bucket.meta_loaded(), bucket.loading(), bucket.ttl_ms.ms(),
+                ))
+            }).collect::<BTreeMap<_, _>>()
+        };
+        let maintained = state(shard);
+        assert!(!maintained.is_empty());
+        refresh_bucket_runtime_flags(shard);
+        assert_eq!(state(shard), maintained, "a full rebuild must find the same published state");
+        assert!(bucket_visit_sites::snapshot().0 >= expected.len() as u64,
+            "the control must actually rebuild the object lists");
+    }
     drop(engine);
     let reopened = open(dir.path());
     assert_every_key_reads(&reopened, &expected, "after restart");
     assert_index_agrees(&reopened, "after restart");
+}
+
+#[test]
+fn finishing_a_pass_recomputes_expiry_minima_without_rebuilding_object_lists() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let (expected, drain) = seed(&engine, 48);
+    const DEADLINE: u64 = u64::MAX / 2;
+    {
+        let mut shards = engine.shards_write_marked();
+        let shard = shards.get_mut(&1).unwrap();
+        let keys: BTreeSet<_> = collect_live_block_entries(shard).into_iter()
+            .map(|entry| entry.object_key.to_string()).collect();
+        assert!(keys.len() >= expected.len());
+        for key in keys {
+            super::super::set_expiry(shard, key, DEADLINE);
+        }
+    }
+    let started = super::super::now_ms();
+    super::super::storage_bucket_internals::bucket_visit_sites::reset();
+    engine.compact_shard_blocks_draining_sliced(1, drain, 8).unwrap();
+    let finished = super::super::now_ms();
+    assert_eq!(super::super::storage_bucket_internals::bucket_visit_sites::snapshot().0, 0);
+    {
+        let shards = engine.shards_write_marked();
+        let shard = shards.get(&1).unwrap();
+        let mut checked = 0;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            if bucket.block_index.is_empty() { continue; }
+            let ttl = bucket.ttl_ms.ms().expect("publication must compute a numeric TTL");
+            assert!((DEADLINE - finished..=DEADLINE - started).contains(&ttl));
+            checked += 1;
+        }
+        assert!(checked > 0);
+    }
+    assert_every_key_reads(&engine, &expected, "after expiring publication");
+    drop(engine);
+    let reopened = open(dir.path());
+    assert_every_key_reads(&reopened, &expected, "after expiring restart");
+    assert_index_agrees(&reopened, "after expiring restart");
 }
 
 /// SETUP AND EACH SLICE READ THE BUCKETS THEY REACH, NOT THE SHARD. The gate and the pin come from

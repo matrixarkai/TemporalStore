@@ -36,7 +36,7 @@ use temporalstore_rust::shared_store::{
 };
 use temporalstore_rust::{Command, CommandResponse, ExecuteRequest, TemporalEngine};
 use temporalstore_snapshot::object_store::{
-    MatrixObjectMode, NetworkedMatrixObjectStore, ObjectStore,
+    MatrixObjectMode, NetworkedMatrixObject, ObjectStore,
 };
 
 const SHARD: u64 = 1;
@@ -63,11 +63,11 @@ fn percentile(sorted: &[u128], p: f64) -> u128 {
     sorted[((sorted.len() - 1) as f64 * p).round() as usize]
 }
 
-fn connect(mode: MatrixObjectMode) -> NetworkedMatrixObjectStore {
+fn connect(mode: MatrixObjectMode) -> NetworkedMatrixObject {
     match mode {
         MatrixObjectMode::Gateway => {
             let uri = std::env::var("GATEWAY").expect("GATEWAY: the gateway URI");
-            NetworkedMatrixObjectStore::connect(mode, &uri).expect("connect to the gateway")
+            NetworkedMatrixObject::connect(mode, &uri).expect("connect to the gateway")
         }
         MatrixObjectMode::Direct => {
             let meta = std::env::var("META").expect("META: the metadata endpoints");
@@ -98,9 +98,9 @@ fn value_of(index: u64) -> Vec<u8> {
 }
 
 fn replicator(
-    store: &Arc<NetworkedMatrixObjectStore>,
+    store: &Arc<NetworkedMatrixObject>,
     cluster: &str,
-) -> SharedStoreReplicator<NetworkedMatrixObjectStore> {
+) -> SharedStoreReplicator<NetworkedMatrixObject> {
     SharedStoreReplicator::new(cluster.to_string(), store.clone())
         .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob)
         .with_wal_segment_appends(PER_SEGMENT)
@@ -108,7 +108,7 @@ fn replicator(
 
 /// What a run leaves behind: every object under the cluster prefix, keyed without the prefix.
 async fn snapshot(
-    store: &NetworkedMatrixObjectStore,
+    store: &NetworkedMatrixObject,
     cluster: &str,
 ) -> BTreeMap<String, Vec<u8>> {
     let prefix = format!("{cluster}/");

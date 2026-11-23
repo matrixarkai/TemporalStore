@@ -25,26 +25,26 @@
 //!   --example direct_surface_cluster
 //! ```
 //!
-//! Run the surface leg once per mode with the same `PREFIX`; its output is one `OBS` line per
-//! call, so the two outputs can be compared with `diff`.
+//! Run each surface leg with a fresh `PREFIX`. Its output has 26 `OBS` lines,
+//! checked against expected values by `scripts/check_direct_surface_cluster.py`.
 
 use std::time::Instant;
 
 use bytes::Bytes;
 use temporalstore_rust::matrixobject_direct::DirectConfig;
 use temporalstore_snapshot::object_store::{
-    MatrixObjectMode, NetworkedMatrixObjectStore, ObjectStore,
+    MatrixObjectMode, NetworkedMatrixObject, ObjectStore,
 };
 
 fn env(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
-fn connect(mode: MatrixObjectMode) -> NetworkedMatrixObjectStore {
+fn connect(mode: MatrixObjectMode) -> NetworkedMatrixObject {
     match mode {
         MatrixObjectMode::Gateway => {
             let uri = std::env::var("GATEWAY").expect("GATEWAY: the gateway URI");
-            NetworkedMatrixObjectStore::connect(mode, &uri).expect("connect to the gateway")
+            NetworkedMatrixObject::connect(mode, &uri).expect("connect to the gateway")
         }
         MatrixObjectMode::Direct => {
             let meta = std::env::var("META").expect("META: the metadata endpoints");
@@ -66,7 +66,7 @@ fn obs<T: std::fmt::Debug, E: std::fmt::Display>(label: &str, result: Result<T, 
                 "not-found"
             } else if text.contains("range") || text.contains("416") {
                 "range"
-            } else if text.contains("precondition") || text.contains("412") {
+            } else if text.contains("precondition") || text.contains("condition failed") || text.contains("412") {
                 "precondition"
             } else {
                 "other"
@@ -76,7 +76,7 @@ fn obs<T: std::fmt::Debug, E: std::fmt::Display>(label: &str, result: Result<T, 
     }
 }
 
-async fn surface(store: &NetworkedMatrixObjectStore, prefix: &str) {
+async fn surface(store: &NetworkedMatrixObject, prefix: &str) {
     let key = |name: &str| format!("{prefix}/{name}");
     let body: Vec<u8> = (0..100u8).collect();
     let (a, b, c) = (key("a"), key("b"), key("c"));
@@ -100,9 +100,17 @@ async fn surface(store: &NetworkedMatrixObjectStore, prefix: &str) {
     obs("get c after delete", store.get(&c).await.map(|v| v.len()));
     obs("list after delete", store.list(&format!("{prefix}/")).await);
     obs("delete absent", store.delete(&key("never")).await);
+    let cas = key("cas");
+    obs("CAS create", store.compare_and_swap(&cas, None, Bytes::from_static(b"first")).await);
+    obs("CAS wrong value", store.compare_and_swap(&cas, Some(Bytes::from_static(b"wrong")), Bytes::from_static(b"must-not-land")).await);
+    obs("get CAS after rejection", store.get(&cas).await.map(|v| v.to_vec()));
+    obs("CAS update", store.compare_and_swap(&cas, Some(Bytes::from_static(b"first")), Bytes::from_static(b"second")).await);
+    obs("get CAS after update", store.get(&cas).await.map(|v| v.to_vec()));
+    obs("CAS duplicate create", store.compare_and_swap(&cas, None, Bytes::from_static(b"must-not-land")).await);
+    obs("get CAS after duplicate create", store.get(&cas).await.map(|v| v.to_vec()));
 }
 
-async fn append_leg(store: &NetworkedMatrixObjectStore, prefix: &str) {
+async fn append_leg(store: &NetworkedMatrixObject, prefix: &str) {
     let appends: usize = env("APPENDS", "2000").parse().expect("APPENDS");
     let key = format!("{prefix}/kill-leg");
     let mut acknowledged: Vec<u8> = Vec::new();

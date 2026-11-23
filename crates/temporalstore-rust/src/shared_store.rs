@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use temporalstore_snapshot::object_store::{
     AppendBlobReceipt, BlockingObjectRead, FileObjectStore, MatrixObjectHttpStore,
-    NetworkedMatrixObjectStore, ObjectStore, ObjectStoreError,
+    NetworkedMatrixObject, ObjectStore, ObjectStoreError,
 };
 use thiserror::Error;
 
@@ -3869,7 +3869,7 @@ impl SharedStoreReplicator<MatrixObjectHttpStore> {
     }
 }
 
-impl SharedStoreReplicator<NetworkedMatrixObjectStore> {
+impl SharedStoreReplicator<NetworkedMatrixObject> {
     /// The same lazy restore for the networked store a node actually holds, whichever way
     /// it reaches the cluster. See the impl for [`MatrixObjectHttpStore`].
     pub async fn restore_index_and_block_addresses(
@@ -6582,7 +6582,7 @@ mod tests {
         // The networked store a node holds is a second forwarding wrapper, and the same
         // omission would make it refuse a capability its inner store has.
         let impl_at = trait_src
-            .find("impl ObjectStore for NetworkedMatrixObjectStore {")
+            .find("impl ObjectStore for NetworkedMatrixObject {")
             .expect("the networked store's ObjectStore impl");
         let rest = &trait_src[impl_at..];
         let mut depth = 0usize;
@@ -6611,7 +6611,7 @@ mod tests {
             .collect();
         assert!(
             missing.is_empty(),
-            "NetworkedMatrixObjectStore drops ObjectStore method(s): {missing:?}. A forwarding              wrapper must forward every method, or it answers with the trait default instead of              the store underneath."
+            "NetworkedMatrixObject drops ObjectStore method(s): {missing:?}. A forwarding              wrapper must forward every method, or it answers with the trait default instead of              the store underneath."
         );
     }
 

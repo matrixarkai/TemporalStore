@@ -660,9 +660,10 @@ impl TemporalEngine {
         shard: &mut ShardState,
         pass: &SlicedPass,
     ) -> Result<(), Status> {
-        // Publication owes complete flags and TTL rollups; intermediate slices do not.
+        // Slices maintain object membership, including the ownership-rebuild fallback.
+        // Publication still owes current flags and TTLs, but not another object-list rebuild.
         let flags_started = std::time::Instant::now();
-        refresh_bucket_runtime_flags(shard);
+        storage_bucket_internals::refresh_bucket_runtime_flags_after_reconstruct(shard);
         phase_timing("finish_flags", shard_id, flags_started);
         let publish_started = std::time::Instant::now();
         let mut stats = CompactionRewriteStats::for_drain_round(

@@ -67,6 +67,10 @@ fn a_bucket_holding_one_block(routing_bucket: u32, object_key: &str) -> BucketNo
 
 /// A shard with `buckets` buckets, each holding one block, and an expiry on every one of them.
 fn a_shard_with_expiring_blocks(buckets: u32) -> ShardState {
+    a_shard_with_blocks(buckets, true)
+}
+
+fn a_shard_with_blocks(buckets: u32, expiring: bool) -> ShardState {
     let mut shard = ShardState::default();
     for routing_bucket in 0..buckets {
         let object_key = format!("expiring-{routing_bucket}");
@@ -92,14 +96,35 @@ fn a_shard_with_expiring_blocks(buckets: u32) -> ShardState {
                 .bucket_index
                 .insert_object_block_lookup(routing_bucket, *handle, &key, block);
         }
-        crate::engine::set_expiry(&mut shard, object_key, FAR_FUTURE_MS);
+        if expiring {
+            crate::engine::set_expiry(&mut shard, object_key, FAR_FUTURE_MS);
+        }
     }
     assert!(
-        !shard.expires_at_ms().is_empty(),
-        "the fixture must have expiries, or the computation under test short-circuits and both \
-         halves of every pair below would agree for the wrong reason"
+        shard.expires_at_ms().is_empty() != expiring,
+        "the fixture must exercise the requested expiry arm"
     );
     shard
+}
+
+#[test]
+fn a_maintained_layout_builds_identities_only_when_expiries_need_them() {
+    use crate::engine::state::measure_block_identity_builds_for_test;
+    use crate::engine::storage_bucket_internals::refresh_bucket_runtime_flags_after_reconstruct;
+    for expiring in [false, true] {
+        let mut shard = a_shard_with_blocks(3, expiring);
+        let (_, builds) = measure_block_identity_builds_for_test(|| {
+            refresh_bucket_runtime_flags_after_reconstruct(&mut shard);
+        });
+        assert_eq!(builds, usize::from(expiring));
+        for bucket in 0..3 {
+            assert_eq!(ttl_of(&shard, bucket).is_some(), expiring);
+        }
+        let (_, control_builds) = measure_block_identity_builds_for_test(|| {
+            refresh_bucket_runtime_flags(&mut shard);
+        });
+        assert_eq!(control_builds, 1, "the full rebuild must exercise the identity builder");
+    }
 }
 
 fn ttl_of(shard: &ShardState, routing_bucket: u32) -> Option<u64> {
