@@ -220,6 +220,37 @@ class AdapterTest(unittest.TestCase):
         self.assertFalse(adapter.query_lookup_and_lock_result(lookup).test(0))
         self.assertFalse(adapter.query_load_result(load).test(0))
 
+    def test_close_finishes_queued_lookups_without_new_network_calls(self):
+        adapter = self.adapter
+        entered = threading.Event()
+        release = threading.Event()
+        probes = []
+
+        def probe(commands):
+            probes.append(commands)
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return [{"kind": "integer", "value": 0} for _ in commands]
+
+        adapter._lookup_data.batch_execute = probe
+        key = Key("unavailable")
+        tasks = [adapter.submit_lookup_and_lock_task([key], {})]
+        self.assertTrue(entered.wait(2))
+        tasks.extend(adapter.submit_lookup_and_lock_task([key], {}) for _ in range(8))
+        closer = threading.Thread(target=adapter.close)
+        closer.start()
+        try:
+            self.assertTrue(adapter._inventory_stop.wait(2))
+        finally:
+            release.set()
+            closer.join(3)
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(len(probes), 1)
+        self.assertFalse(adapter._locked)
+        for task_id in tasks:
+            self.assertFalse(adapter.query_lookup_and_lock_result(task_id).test(0))
+            self.assertIsNone(adapter.query_lookup_and_lock_result(task_id))
+
     def test_invalid_capacity_is_rejected(self):
         with self.assertRaises(ValueError):
             adapter_module.TemporalStoreL2Adapter(

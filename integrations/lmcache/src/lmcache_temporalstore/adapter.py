@@ -675,6 +675,11 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         # between the read and the lock acquisition and leave a false hit.
         reserved = []
         with self._lock:
+            if self._closed:
+                # Close keeps the notifier open until queued tasks finish.
+                self._done_lookup[task_id] = bitmap
+                self._lookup_event.notify()
+                return
             for index, original in enumerate(keys):
                 key = self._identity(original)
                 if key in self._evicting or key in self._publishing:
