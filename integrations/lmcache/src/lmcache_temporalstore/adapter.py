@@ -130,6 +130,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         self._blob = BlobClient(
             config.blob_url, config.timeout_seconds,
             reuse_read_connection=True, reuse_mutation_connection=True,
+            legacy_names=not config.recover_capacity,
         )
         from urllib.parse import urlsplit
         data = urlsplit(config.data_url)

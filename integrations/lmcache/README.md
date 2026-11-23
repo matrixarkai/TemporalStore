@@ -68,7 +68,8 @@ loads a paginated inventory before admitting writes, counts existing payloads
 even if their metadata expired, and evicts unlocked entries when it needs
 space. Accesses in the current process update eviction order. This mode
 uses a versioned key layout. Plan for a cold cache when switching an existing
-namespace to it. Legacy payloads remain accessible with the previous setting.
+namespace to it. Recovery namespaces use their canonical blob paths for reads
+and deletes. Legacy payloads remain accessible with the previous setting.
 
 Save the adapter JSON above in `temporalstore-l2.json`, set its URLs and
 `namespace`, set `remote_storage` to `true` for a datanode on another

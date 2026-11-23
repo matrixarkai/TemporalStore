@@ -27,6 +27,7 @@ class BlobClient:
     def __init__(
         self, base_url: str, timeout_seconds: float = 10.0, *,
         reuse_read_connection: bool = False, reuse_mutation_connection: bool = False,
+        legacy_names: bool = True,
     ) -> None:
         parsed = urlsplit(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -39,6 +40,7 @@ class BlobClient:
         )
         self._prefix = parsed.path.rstrip("/")
         self._timeout = timeout_seconds
+        self._legacy_names = legacy_names
         self._reuse_read_connection = reuse_read_connection
         self._read_lock = Lock() if reuse_read_connection else nullcontext()
         self._read_connection: http.client.HTTPConnection | None = None
@@ -169,6 +171,9 @@ class BlobClient:
                     written.append(True)
         return written
 
+    def _candidate_keys(self, key: str) -> tuple[str, ...]:
+        return (key, f"anonymous/{key}") if self._legacy_names else (key,)
+
     @staticmethod
     def _blob_path(key: str) -> str:
         return f"/blob/{quote(key, safe='/')}"
@@ -206,7 +211,7 @@ class BlobClient:
 
     def get_into(self, key: str, destination: memoryview) -> bool:
         with self._read_lock:
-            for candidate in (key, f"anonymous/{key}"):
+            for candidate in self._candidate_keys(key):
                 connection, response = self._read_request("GET", self._blob_path(candidate))
                 consumed = False
                 try:
@@ -321,13 +326,13 @@ class BlobClient:
                 connection.close()
 
     def delete(self, key: str) -> None:
-        for candidate in (key, f"anonymous/{key}"):
+        for candidate in self._candidate_keys(key):
             self._mutate("DELETE", self._blob_path(candidate))
 
     def delete_many(self, keys: list[str]) -> list[bool]:
         if not keys:
             return []
-        candidates = [candidate for key in keys for candidate in (key, f"anonymous/{key}")]
+        candidates = [candidate for key in keys for candidate in self._candidate_keys(key)]
         status, reply = self._mutate(
             "POST", "/batch_delete_blobs", json.dumps({"keys": candidates}).encode(),
             content_type="application/json", allowed_status=(200, 404, 405, 501),
@@ -351,4 +356,6 @@ class BlobClient:
             not isinstance(result, bool) for result in deleted
         ):
             raise OSError("invalid blob delete batch response")
+        if not self._legacy_names:
+            return deleted
         return [primary and legacy for primary, legacy in zip(deleted[::2], deleted[1::2])]
