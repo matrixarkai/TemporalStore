@@ -77,6 +77,12 @@ recovery completes. During that interval it reports cache misses and declines
 writes and deletes. It starts using the retained payloads after accounting for
 them, without restarting LMCache.
 
+After a transport failure on a remote datanode, the adapter pauses mutations
+to that datanode for one second. A batch that never reached the datanode does
+not consume the capacity budget. A batch that may have reached it remains
+charged until cleanup is confirmed. Other configured datanodes continue to
+serve requests. The adapter reports `mutations_available` in `GET /status`.
+
 Save the adapter JSON above in `temporalstore-l2.json`, set its URLs and
 `namespace`, set `remote_storage` to `true` for a datanode on another
 host, and run:

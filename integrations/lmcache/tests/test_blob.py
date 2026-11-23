@@ -303,6 +303,38 @@ class BlobClientTest(unittest.TestCase):
         self.assertEqual(len(BlobHandler.batch_writes), 1)
         self.assertEqual(BlobHandler.mutation_addresses, [])
 
+    def test_transport_failure_cools_down_without_replaying_pending_writes(self):
+        self.client.close()
+        self.client = BlobClient(
+            f"http://127.0.0.1:{self.server.server_port}",
+            reuse_mutation_connection=True, mutation_cooldown_seconds=1,
+        )
+        BlobHandler.supports_batch_writes = True
+        BlobHandler.lose_write_receipt = True
+        items = [("first", memoryview(b"abc")), ("last", memoryview(b"def"))]
+        with patch("lmcache_temporalstore.blob.monotonic", return_value=100):
+            self.assertEqual(self.client.put_many(items), [False, False])
+            self.assertFalse(self.client.mutations_available())
+            self.assertEqual(self.client.put_many(items), [None, None])
+            self.assertEqual(len(BlobHandler.batch_writes), 1)
+        BlobHandler.lose_write_receipt = False
+        with patch("lmcache_temporalstore.blob.monotonic", return_value=102):
+            self.assertEqual(self.client.put_many(items), [True, True])
+            self.assertTrue(self.client.mutations_available())
+            self.assertEqual(len(BlobHandler.batch_writes), 2)
+
+    def test_connection_refusal_never_marks_upload_as_attempted(self):
+        self.client.close()
+        self.client = BlobClient(
+            f"http://127.0.0.1:{self.server.server_port}", mutation_cooldown_seconds=1,
+        )
+        with patch.object(http.client.HTTPConnection, "connect", side_effect=ConnectionRefusedError):
+            items = [("first", memoryview(b"abc")), ("last", memoryview(b"def"))]
+            self.assertEqual(self.client.put_many(items), [None, None])
+            self.assertFalse(self.client.mutations_available())
+        self.assertEqual(BlobHandler.batch_writes, [])
+        self.assertEqual(BlobHandler.blobs, {})
+
     def test_batch_load_preserves_positions_and_uses_legacy_paths_for_local_misses(self):
         BlobHandler.supports_batch_reads = True
         self.client.put("key", memoryview(b"data"))

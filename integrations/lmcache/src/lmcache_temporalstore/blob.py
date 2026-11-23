@@ -23,11 +23,15 @@ _BATCH_UNAVAILABLE = (404, 405, 501)
 _MAX_BATCH_CONTROL_BYTES = 64 * 1024
 
 
+class BlobMutationDeferred(RuntimeError):
+    """No mutation was transmitted to the datanode."""
+
+
 class BlobClient:
     def __init__(
         self, base_url: str, timeout_seconds: float = 10.0, *,
         reuse_read_connection: bool = False, reuse_mutation_connection: bool = False,
-        legacy_names: bool = True,
+        legacy_names: bool = True, mutation_cooldown_seconds: float = 0.0,
     ) -> None:
         parsed = urlsplit(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -48,6 +52,8 @@ class BlobClient:
         self._reuse_mutation_connection = reuse_mutation_connection
         self._mutation_lock = Lock() if reuse_mutation_connection else nullcontext()
         self._mutation_connection: http.client.HTTPConnection | None = None
+        self._mutation_cooldown_seconds = mutation_cooldown_seconds
+        self._mutation_retry_at = 0.0
         self._batch_write_supported = False
         self._batch_write_retry_at = 0.0
 
@@ -77,6 +83,13 @@ class BlobClient:
             connection.close()
             raise
 
+    def mutations_available(self) -> bool:
+        return not self._mutation_retry_at or monotonic() >= self._mutation_retry_at
+
+    def defer_mutations(self) -> None:
+        if self._mutation_cooldown_seconds:
+            self._mutation_retry_at = monotonic() + self._mutation_cooldown_seconds
+
     def _mutate(
         self, method: str, path: str,
         body: bytes | memoryview | Iterable[bytes | memoryview] | None = None, *,
@@ -84,38 +97,59 @@ class BlobClient:
         allowed_status: tuple[int, ...] = (200,),
     ) -> tuple[int, bytes]:
         with self._mutation_lock:
+            if not self.mutations_available():
+                raise BlobMutationDeferred("blob mutations are waiting for the datanode")
             connection, self._mutation_connection = self._mutation_connection, None
             if connection is not None and select([connection.sock], [], [], 0)[0]:
                 # No response is outstanding. Retire a socket with pending EOF
                 # before sending a mutation that cannot be safely replayed.
                 connection.close()
                 connection = None
-            connection, response = self._request(
-                method, path, body, connection=connection, content_type=content_type,
-                body_length=body_length,
-            )
             consumed = False
             try:
+                if connection is None and self._mutation_cooldown_seconds:
+                    connection = self._connection_type(
+                        self._host, self._port, timeout=self._timeout,
+                    )
+                    try:
+                        connection.connect()
+                    except (OSError, http.client.HTTPException) as error:
+                        self.defer_mutations()
+                        raise BlobMutationDeferred("could not connect to datanode") from error
+                connection, response = self._request(
+                    method, path, body, connection=connection, content_type=content_type,
+                    body_length=body_length,
+                )
                 with response:
                     payload = response.read()
-                    if response.status not in allowed_status:
-                        raise OSError(f"blob {method} returned HTTP {response.status}")
-                    consumed = True
-                    return response.status, payload
+                    consumed = response.status in allowed_status
+            except (OSError, http.client.HTTPException):
+                self.defer_mutations()
+                raise
             finally:
-                if consumed and self._reuse_mutation_connection and connection.sock is not None:
-                    self._mutation_connection = connection
-                else:
-                    connection.close()
+                if connection is not None:
+                    if consumed and self._reuse_mutation_connection and connection.sock is not None:
+                        self._mutation_connection = connection
+                    else:
+                        connection.close()
+            self._mutation_retry_at = 0.0
+            if not consumed:
+                raise OSError(f"blob {method} returned HTTP {response.status}")
+            return response.status, payload
 
     def put(self, key: str, payload: memoryview) -> None:
         self._mutate("PUT", self._blob_path(key), payload)
 
-    def _put_batch(self, items: list[tuple[str, memoryview]], size: int) -> list[bool] | None:
+    def _put_batch(self, items: list[tuple[str, memoryview]], size: int) -> list[bool | None] | None:
         if not self._batch_write_supported:
             if monotonic() < self._batch_write_retry_at:
                 return None
-            status, _ = self._mutate("GET", "/batch_write_blobs", allowed_status=(200, *_BATCH_UNAVAILABLE))
+            try:
+                status, _ = self._mutate("GET", "/batch_write_blobs", allowed_status=(200, *_BATCH_UNAVAILABLE))
+            except (OSError, http.client.HTTPException):
+                if not self.mutations_available():
+                    return [None] * len(items)
+                raise
             self._batch_write_supported = status == 200
             if not self._batch_write_supported:
                 self._batch_write_retry_at = monotonic() + _BATCH_RECHECK_SECONDS
@@ -137,8 +171,9 @@ class BlobClient:
             raise OSError("invalid blob write receipt")
         return [value == 1 for value in reply]
 
-    def put_many(self, items: list[tuple[str, memoryview]]) -> list[bool]:
-        written = []
+    def put_many(self, items: list[tuple[str, memoryview]]) -> list[bool | None]:
+        # None means no upload was attempted. False may require reconciliation.
+        written: list[bool | None] = []
         offset = 0
         while offset < len(items):
             end = offset
@@ -154,6 +189,9 @@ class BlobClient:
             if len(group) > 1:
                 try:
                     result = self._put_batch(group, size)
+                except BlobMutationDeferred:
+                    written.extend([None] * len(group))
+                    continue
                 except (OSError, http.client.HTTPException):
                     logger.exception("TemporalStore L2 blob write batch failed")
                     written.extend([False] * len(group))
@@ -164,6 +202,8 @@ class BlobClient:
             for key, payload in group:
                 try:
                     self.put(key, payload)
+                except BlobMutationDeferred:
+                    written.append(None)
                 except (OSError, http.client.HTTPException):
                     logger.exception("TemporalStore L2 blob write failed")
                     written.append(False)

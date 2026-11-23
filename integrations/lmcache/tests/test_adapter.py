@@ -100,6 +100,12 @@ class FakeBlob:
         self.fail_put = False
         self.fail_get = False
 
+    def mutations_available(self):
+        return True
+
+    def defer_mutations(self):
+        pass
+
     def put(self, name, payload):
         if self.fail_put:
             raise OSError("injected write failure")
