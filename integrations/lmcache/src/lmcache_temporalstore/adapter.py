@@ -247,28 +247,20 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             return False
         while True:
             with self._lock:
-                if self._used + needed <= self._max_capacity_bytes:
+                shortage = self._used + needed - self._max_capacity_bytes
+                if shortage <= 0:
                     return True
-                victim = next(
-                    (key for key in self._entries
-                     if key not in self._locked and key not in self._evicting),
-                    None,
-                )
-                if victim is None:
-                    return False
-                self._evicting.add(victim)
-            try:
-                self._delete_key(victim)
-            except Exception:
-                logger.exception("TemporalStore L2 eviction failed")
-                with self._lock:
-                    self._evicting.discard(victim)
+                victims = []
+                for key, size in self._entries.items():
+                    if key in self._locked or key in self._evicting:
+                        continue
+                    victims.append(key)
+                    shortage -= size
+                    if shortage <= 0 or len(victims) == _DELETE_BATCH_SIZE:
+                        break
+                self._evicting.update(victims)
+            if not victims or not self._delete_reserved(victims):
                 return False
-            with self._lock:
-                size = self._entries.pop(victim)
-                self._used -= size
-                self._evicting.discard(victim)
-            self._notify_keys_deleted([victim], [size])
 
     def delete(self, keys: list[ObjectKey]) -> None:
         with self._lock:
@@ -281,26 +273,30 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
 
     def _delete_batch(self, keys: list[ObjectKey]) -> None:
         reserved = []
+        with self._lock:
+            for key in keys:
+                if key in self._locked or key in self._evicting:
+                    continue
+                self._evicting.add(key)
+                reserved.append(key)
+        if reserved:
+            self._delete_reserved(reserved)
+
+    def _delete_reserved(self, reserved: list[ObjectKey]) -> int:
         try:
-            with self._lock:
-                for key in keys:
-                    if key in self._locked or key in self._evicting:
-                        continue
-                    self._evicting.add(key)
-                    reserved.append(key)
             names = [self._key_names(key) for key in reserved]
             try:
                 removed = self._blob.delete_many([blob for blob, _ in names])
             except Exception:
                 logger.exception("TemporalStore L2 blob delete batch failed")
-                return
+                return 0
             commands = {
                 key: {"kind": "common_delete", "key": metadata}
                 for key, (_, metadata), deleted in zip(reserved, names, removed)
                 if deleted
             }
             if not commands:
-                return
+                return 0
 
             deleted = list(commands)
             try:
@@ -325,6 +321,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             if accounted:
                 removed, amounts = zip(*accounted)
                 self._notify_keys_deleted(list(removed), list(amounts))
+            return len(deleted)
         finally:
             with self._lock:
                 self._evicting.difference_update(reserved)
