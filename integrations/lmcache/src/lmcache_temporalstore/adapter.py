@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from hashlib import sha256
 import logging
+from math import isfinite
 import threading
 
 import torch  # noqa: F401 - load before lmcache_native
@@ -49,12 +50,14 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     timeout_seconds: float = 10.0
     namespace: str = ""
     remote_storage: bool = False
+    lookup_timeout_seconds: float | None = None
 
     @classmethod
     def from_dict(cls, values: dict) -> "TemporalStoreL2AdapterConfig":
         remote_storage = values.get("remote_storage", cls.remote_storage)
         if not isinstance(remote_storage, bool):
             raise ValueError("remote_storage must be a boolean")
+        lookup_timeout = values.get("lookup_timeout_seconds")
         config = cls(
             blob_url=str(values.get("blob_url", cls.blob_url)),
             data_url=str(values.get("data_url", cls.data_url)),
@@ -64,6 +67,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
             timeout_seconds=float(values.get("timeout_seconds", cls.timeout_seconds)),
             namespace=str(values.get("namespace", cls.namespace)),
             remote_storage=remote_storage,
+            lookup_timeout_seconds=float(lookup_timeout) if lookup_timeout is not None else None,
         )
         if config.max_capacity_gb <= 0 or config.ttl_seconds < 0:
             raise ValueError("capacity must be positive and TTL must be nonnegative")
@@ -76,7 +80,9 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
             "command shard; max_capacity_gb bounds local adapter writes; "
             "ttl_seconds expires metadata; timeout_seconds bounds each request; "
             "namespace isolates one LMCache server's keys and eviction budget; "
-            "remote_storage marks a datanode on another host"
+            "remote_storage marks a datanode on another host; "
+            "lookup_timeout_seconds bounds metadata lookup "
+            "(defaults to at most one second for remote storage)"
         )
 
 
@@ -88,10 +94,20 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             config = TemporalStoreL2AdapterConfig.from_dict(config)
         self._config = config
         capacity = int(config.max_capacity_gb * 1024**3)
-        if capacity < 1 or config.shard_id < 1 or config.timeout_seconds <= 0:
+        if capacity < 1 or config.shard_id < 1 or not (
+            isfinite(config.timeout_seconds) and config.timeout_seconds > 0
+        ):
             raise ValueError("capacity, shard_id and timeout_seconds must be positive")
         if config.ttl_seconds < 0:
             raise ValueError("ttl_seconds must be nonnegative")
+        lookup_timeout = config.lookup_timeout_seconds
+        if lookup_timeout is None:
+            lookup_timeout = (
+                min(config.timeout_seconds, 1.0) if config.remote_storage
+                else config.timeout_seconds
+            )
+        if not isfinite(lookup_timeout) or lookup_timeout <= 0:
+            raise ValueError("lookup_timeout_seconds must be finite and positive")
         super().__init__(capacity)
         self._blob = BlobClient(config.blob_url, config.timeout_seconds)
         from urllib.parse import urlsplit
@@ -102,6 +118,12 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             host=data.hostname, port=data.port or 80,
             shard_id=config.shard_id, timeout_seconds=config.timeout_seconds,
         )
+        self._lookup_data = self._data
+        if lookup_timeout != config.timeout_seconds:
+            self._lookup_data = TemporalStoreClient(
+                host=data.hostname, port=data.port or 80,
+                shard_id=config.shard_id, timeout_seconds=lookup_timeout,
+            )
         self._store_event = create_event_notifier()
         self._lookup_event = create_event_notifier()
         self._load_event = create_event_notifier()
@@ -374,7 +396,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 {"kind": "common_exists", "key": self._key_names(key)[1]}
                 for _, key in reserved
             ]
-            answers = self._data.batch_execute(commands) if commands else []
+            answers = self._lookup_data.batch_execute(commands) if commands else []
             for (index, _), answer in zip(reserved, answers):
                 if answer.get("kind") == "integer" and answer.get("value") == 1:
                     bitmap.set(index)
@@ -421,6 +443,8 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             self._closed = True
         for pool in (self._store_pool, self._lookup_pool, self._load_pool):
             pool.shutdown(wait=True)
+        if self._lookup_data is not self._data:
+            self._lookup_data.close()
         self._data.close()
         self._store_event.close()
         self._lookup_event.close()

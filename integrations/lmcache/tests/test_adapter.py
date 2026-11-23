@@ -119,8 +119,9 @@ class FakeBlob:
 
 
 class FakeData:
-    def __init__(self, **_kwargs):
+    def __init__(self, **kwargs):
         self.values = {}
+        self.timeout_seconds = kwargs.get("timeout_seconds")
 
     def execute(self, command):
         if command["kind"] == "common_delete":
@@ -143,6 +144,17 @@ class FakeData:
 
 
 class AdapterTest(unittest.TestCase):
+    def test_remote_lookup_timeout_does_not_change_write_timeout(self):
+        config = adapter_module.TemporalStoreL2AdapterConfig.from_dict({
+            "remote_storage": True, "timeout_seconds": 8,
+        })
+        adapter = adapter_module.TemporalStoreL2Adapter(config)
+        try:
+            self.assertEqual(adapter._lookup_data.timeout_seconds, 1)
+            self.assertEqual(adapter._data.timeout_seconds, 8)
+        finally:
+            adapter.close()
+
     def test_invalid_capacity_is_rejected(self):
         with self.assertRaises(ValueError):
             adapter_module.TemporalStoreL2Adapter(
