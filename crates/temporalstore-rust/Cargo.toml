@@ -11,6 +11,7 @@ keywords = ["temporalstore", "database", "storage", "raft", "memory"]
 categories = ["database-implementations", "data-structures"]
 
 [dependencies]
+tempfile = "=3.10.1"
 ahash = "0.8"
 async-trait = "0.1"
 bytes = "1"
@@ -96,7 +97,6 @@ matrixobject-client = { git = "https://github.com/matrixarkai/MatrixObject.git",
 async-trait = "0.1"
 fastcdc = { version = "5.0", default-features = false }
 syn = { version = "2", features = ["full", "visit"] }
-tempfile = "=3.10.1"
 
 [[bin]]
 name = "client"
