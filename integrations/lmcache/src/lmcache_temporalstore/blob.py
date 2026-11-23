@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import nullcontext
 import http.client
+import io
 import json
 import logging
 from select import select
@@ -24,6 +25,11 @@ _BATCH_RECHECK_SECONDS = 30
 _BATCH_UNAVAILABLE = (404, 405, 501)
 _MAX_BATCH_CONTROL_BYTES = 64 * 1024
 _SENDMSG_AVAILABLE = sys.platform == "linux" and hasattr(socket.socket, "sendmsg")
+_RECVMSG_AVAILABLE = (
+    sys.platform == "linux"
+    and sys.implementation.name == "cpython"
+    and hasattr(socket.socket, "recvmsg_into")
+)
 
 
 def _send_buffers(sock: socket.socket, body: tuple[bytes | memoryview, ...]) -> None:
@@ -39,6 +45,43 @@ def _send_buffers(sock: socket.socket, body: tuple[bytes | memoryview, ...]) -> 
             first += 1
         if sent:
             buffers[first] = buffers[first][sent:]
+
+
+def _receive_buffers(
+    sock: socket.socket, response: http.client.HTTPResponse, buffers: list[memoryview],
+    payload_length: int,
+) -> None:
+    # Parsing the status table may have buffered the start of the payload.
+    # Drain those bytes through the HTTP reader before receiving from its socket.
+    pending = len(response.fp.peek(1))
+    if not 0 < pending <= payload_length:
+        raise OSError("invalid buffered blob batch length")
+    prefix = memoryview(response.read(pending))
+    if len(prefix) != pending:
+        raise OSError("incomplete blob batch read")
+
+    first = 0
+    while prefix:
+        size = min(len(prefix), len(buffers[first]))
+        buffers[first][:size] = prefix[:size]
+        prefix = prefix[size:]
+        if size == len(buffers[first]):
+            first += 1
+        else:
+            buffers[first] = buffers[first][size:]
+
+    while first < len(buffers):
+        received, _, _, _ = sock.recvmsg_into(buffers[first:])
+        if not received:
+            raise OSError("incomplete blob batch read")
+        while first < len(buffers) and received >= len(buffers[first]):
+            received -= len(buffers[first])
+            first += 1
+        if received:
+            buffers[first] = buffers[first][received:]
+    # The declared body has been drained. Release the response file so
+    # HTTPConnection can use its socket for the next request.
+    response.close()
 
 
 class BlobMutationDeferred(RuntimeError):
@@ -302,7 +345,9 @@ class BlobClient:
                     self._finish_read(connection, consumed)
         return False
 
-    def _read_batch(self, items: list[tuple[str, memoryview]]) -> bytes | None:
+    def _read_batch(
+        self, items: list[tuple[str, memoryview]], *, staging: bool,
+    ) -> bytes | None:
         with self._read_lock:
             if monotonic() < self._batch_read_retry_at:
                 return None
@@ -331,7 +376,22 @@ class BlobClient:
                     if int(response.getheader("Content-Length", "-1")) != length:
                         raise OSError("invalid blob batch read length")
                     payload_length = length - len(statuses)
-                    if payload_length <= _BLOB_SMALL_READ_BYTES:
+                    if (
+                        staging
+                        and 0 < payload_length <= _BLOB_SMALL_READ_BYTES
+                        and _RECVMSG_AVAILABLE
+                        and type(connection.sock) is socket.socket
+                        and type(response) is http.client.HTTPResponse
+                        and isinstance(response.fp, io.BufferedReader)
+                        and not response.chunked
+                        and response.length == payload_length
+                    ):
+                        buffers = [
+                            destination for status, (_, destination) in zip(statuses, items)
+                            if status == 1 and destination
+                        ]
+                        _receive_buffers(connection.sock, response, buffers, payload_length)
+                    elif payload_length <= _BLOB_SMALL_READ_BYTES:
                         # Small reads share one bounded buffer to reduce calls into the HTTP reader.
                         payload = memoryview(response.read(payload_length))
                         if len(payload) != payload_length:
@@ -351,14 +411,17 @@ class BlobClient:
             finally:
                 self._finish_read(connection, consumed)
 
-    def get_many_into(self, items: list[tuple[str, memoryview]]) -> list[bool]:
+    def get_many_into(
+        self, items: list[tuple[str, memoryview]], *, staging: bool = False,
+    ) -> list[bool]:
+        """Read blobs in order. Failed loads may partially overwrite staging buffers."""
         found = []
         for offset in range(0, len(items), _BLOB_BATCH_KEYS):
             group = items[offset:offset + _BLOB_BATCH_KEYS]
             statuses = None
             if len(group) > 1 and sum(len(out) for _, out in group) <= _BLOB_BATCH_BYTES:
                 try:
-                    statuses = self._read_batch(group)
+                    statuses = self._read_batch(group, staging=staging)
                 except (OSError, ValueError, http.client.HTTPException):
                     logger.exception("TemporalStore L2 blob read batch failed")
                     found.extend([False] * len(group))
