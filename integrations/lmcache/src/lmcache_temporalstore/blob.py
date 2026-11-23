@@ -3,13 +3,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from contextlib import nullcontext
 import http.client
-from itertools import chain
 import json
 import logging
 from select import select
+import socket
+import sys
 from threading import Event, Lock
 from time import monotonic
 from urllib.parse import quote, urlsplit
@@ -22,6 +23,22 @@ _BLOB_SMALL_READ_BYTES = 512 * 1024
 _BATCH_RECHECK_SECONDS = 30
 _BATCH_UNAVAILABLE = (404, 405, 501)
 _MAX_BATCH_CONTROL_BYTES = 64 * 1024
+_SENDMSG_AVAILABLE = sys.platform == "linux" and hasattr(socket.socket, "sendmsg")
+
+
+def _send_buffers(sock: socket.socket, body: tuple[bytes | memoryview, ...]) -> None:
+    # A blob write batch has at most 34 buffers, below Linux's iovec limit.
+    buffers = [memoryview(part).cast("B") for part in body if part]
+    first = 0
+    while first < len(buffers):
+        sent = sock.sendmsg(buffers[first:])
+        if sent == 0:
+            raise ConnectionError("socket closed during blob batch upload")
+        while first < len(buffers) and sent >= len(buffers[first]):
+            sent -= len(buffers[first])
+            first += 1
+        if sent:
+            buffers[first] = buffers[first][sent:]
 
 
 class BlobMutationDeferred(RuntimeError):
@@ -60,7 +77,7 @@ class BlobClient:
 
     def _request(
         self, method: str, path: str,
-        body: bytes | memoryview | Iterable[bytes | memoryview] | None = None, *,
+        body: bytes | memoryview | tuple[bytes | memoryview, ...] | None = None, *,
         connection: http.client.HTTPConnection | None = None,
         content_type: str = "application/octet-stream", body_length: int | None = None,
     ):
@@ -77,7 +94,19 @@ class BlobClient:
                         raise ValueError("streaming request requires a content length")
                     body_length = len(body)
                 connection.putheader("Content-Length", str(body_length))
-            connection.endheaders(body)
+            if (
+                _SENDMSG_AVAILABLE
+                and type(connection) is http.client.HTTPConnection
+                and isinstance(body, tuple)
+            ):
+                connection.endheaders()
+                if type(connection.sock) is socket.socket:
+                    _send_buffers(connection.sock, body)
+                else:
+                    for part in body:
+                        connection.send(part)
+            else:
+                connection.endheaders(body)
             response = connection.getresponse()
             return connection, response
         except BaseException:
@@ -93,7 +122,7 @@ class BlobClient:
 
     def _mutate(
         self, method: str, path: str,
-        body: bytes | memoryview | Iterable[bytes | memoryview] | None = None, *,
+        body: bytes | memoryview | tuple[bytes | memoryview, ...] | None = None, *,
         content_type: str = "application/octet-stream", body_length: int | None = None,
         allowed_status: tuple[int, ...] = (200,),
     ) -> tuple[int, bytes]:
@@ -159,7 +188,7 @@ class BlobClient:
         if len(control) > _MAX_BATCH_CONTROL_BYTES:
             return None
         prefix = len(control).to_bytes(4, "big")
-        body = chain((prefix, control), (payload for _, payload in items))
+        body = (prefix, control, *(payload for _, payload in items))
         status, reply = self._mutate(
             "POST", "/batch_write_blobs", body, body_length=len(prefix) + len(control) + size,
             allowed_status=(200, *_BATCH_UNAVAILABLE),
