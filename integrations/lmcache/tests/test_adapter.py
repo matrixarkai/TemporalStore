@@ -95,7 +95,7 @@ adapter_module = importlib.import_module("lmcache_temporalstore.adapter")
 
 
 class FakeBlob:
-    def __init__(self, *_args):
+    def __init__(self, *_args, **_kwargs):
         self.values = {}
         self.fail_put = False
         self.fail_get = False
@@ -116,6 +116,9 @@ class FakeBlob:
 
     def delete(self, name):
         self.values.pop(name, None)
+
+    def close(self):
+        pass
 
 
 class FakeData:
