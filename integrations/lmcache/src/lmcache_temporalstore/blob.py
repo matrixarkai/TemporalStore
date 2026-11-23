@@ -331,6 +331,40 @@ class BlobClient:
                     found.append(status == 1)
         return found
 
+    def probe_many(self, items: list[tuple[str, int]]) -> list[bool]:
+        """Check named local files and their lengths. An empty batch checks support."""
+        found = []
+        for offset in range(0, max(1, len(items)), 256):
+            batch = items[offset:offset + 256]
+            body = json.dumps([{"key": key, "length": length} for key, length in batch]).encode()
+            with self._read_lock:
+                connection, response = self._read_request(
+                    "POST", "/batch_probe_blobs", body, "application/json",
+                )
+                consumed = False
+                try:
+                    with response:
+                        if response.status in _BATCH_UNAVAILABLE:
+                            raise ValueError("payload_metadata requires a datanode with blob probes")
+                        if response.status != 200:
+                            raise OSError(f"blob probe returned HTTP {response.status}")
+                        raw = response.read(4097)
+                        if len(raw) > 4096 or not response.isclosed():
+                            raise OSError("oversized blob probe response")
+                        consumed = True
+                    try:
+                        replies = json.loads(raw)
+                    except ValueError as error:
+                        raise OSError("invalid blob probe response") from error
+                    if not isinstance(replies, list) or len(replies) != len(batch) or any(
+                        not isinstance(reply, bool) for reply in replies
+                    ):
+                        raise OSError("invalid blob probe results")
+                    found.extend(replies)
+                finally:
+                    self._finish_read(connection, consumed)
+        return found
+
     def inventory(self, namespace: str, stop: Event | None = None) -> Iterator[tuple[bytes, int]]:
         def page(**fields):
             status, body = self._mutate(
