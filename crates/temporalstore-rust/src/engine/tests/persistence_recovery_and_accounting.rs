@@ -22335,11 +22335,9 @@ fn the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log() {
 /// that reason. Warming first gives the listing something to return, and then the ENTRY count is
 /// the load-independent statement of what was being paid.
 ///
-/// THE BOUND AND ITS OWN POSITIVE CONTROL ARE THE SAME NUMBER. One listing remains, inside
-/// `apply_storage_eviction`, which needs the per-bucket entries and cannot use the stats. That
-/// surviving 1 is what proves the thread-local counter is still wired to the round: a regression
-/// that stopped instrumenting the round would read 0 and fail here, rather than passing as a
-/// vacuous zero.
+/// The default idle round pays for no cache listing, including its eviction stage.
+/// A separate inspection of the warmed cache proves that the counters are active
+/// and that a listing would visit entries before the cycle counters are reset.
 #[test]
 fn the_pressure_snapshot_reads_cache_stats_without_listing_the_cache() {
     const KEYS: usize = 400;
@@ -22385,6 +22383,15 @@ fn the_pressure_snapshot_reads_cache_stats_without_listing_the_cache() {
     );
 
     crate::engine::reset_storage_cache_inspection_listings();
+    let _inspection = engine.storage_cache_inspection_report(1);
+    assert_eq!(crate::engine::storage_cache_inspection_listings(), 1);
+    assert_eq!(
+        crate::engine::storage_cache_inspection_listing_entries(),
+        occupancy,
+        "explicit inspection must count every warmed cache entry"
+    );
+
+    crate::engine::reset_storage_cache_inspection_listings();
     let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
         shard_id: 1,
         ..Default::default()
@@ -22398,18 +22405,8 @@ fn the_pressure_snapshot_reads_cache_stats_without_listing_the_cache() {
          {listed_entries} listed entries"
     );
 
-    assert_eq!(
-        listings, 1,
-        "the round made {listings} cache listings, not the single one `apply_storage_eviction` \
-         needs. A count of 3 is the pre-fix shape (pressure snapshot + post-warm re-measure both \
-         listed the cache to read `.stats`); a count of 0 means the round is no longer instrumented \
-         and this bound has gone vacuous, which is just as much a failure."
-    );
-    assert!(
-        listed_entries <= occupancy,
-        "one listing returned {listed_entries} entries against a cache holding {occupancy}, so \
-         more than one listing's worth was paid"
-    );
+    assert_eq!(listings, 0, "the idle cycle must not list the record cache");
+    assert_eq!(listed_entries, 0, "the idle cycle must not visit cache entries");
 }
 
 /// THE SHIPPED DUMP GATE DECIDES ON BYTES, AND THE RECORD TRIGGER IS STILL THERE TO BE SET.
