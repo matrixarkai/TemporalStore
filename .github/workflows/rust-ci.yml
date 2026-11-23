@@ -129,7 +129,11 @@ jobs:
       # Direct mode over the shared client SDK is part of the default build, so the default job
       # builds it and runs its tests: the gateway-versus-direct fixtures and the direct door.
       - name: Direct mode over the shared client SDK (default build)
-        run: cargo test --locked -p temporalstore-rust --lib matrixobject_direct
+        run: |
+          set -euo pipefail
+          cargo test --locked -p temporalstore-rust --lib matrixobject_direct \
+            -- --test-threads=1 2>&1 | tee /tmp/direct-sdk-default.log
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed;' /tmp/direct-sdk-default.log
 
       - name: Direct and gateway recovery assertions
         run: |
