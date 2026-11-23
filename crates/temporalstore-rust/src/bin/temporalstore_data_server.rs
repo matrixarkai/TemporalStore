@@ -739,6 +739,9 @@ fn main() {
             ("POST", "/batch_delete_blobs") => {
                 handle_blob_batch_delete(&request.body, &blob_store)
             }
+            ("POST", "/batch_probe_blobs") => {
+                handle_blob_batch_probe(&request.body, &blob_store)
+            }
 
             ("GET", "/metrics") => {
                 let mut metrics = engine.prometheus_metrics();
@@ -1422,6 +1425,44 @@ fn handle_blob_batch_delete(
         .map(|key| !key.is_empty() && delete_local_blob(blob_store, key).is_ok())
         .collect();
     json_response(200, &serde_json::json!({ "deleted": deleted }))
+}
+
+fn handle_blob_batch_probe(body: &[u8], store: &FileObjectStore) -> (u16, Vec<u8>) {
+    if body.len() > MAX_BLOB_BATCH_BODY {
+        return json_response(
+            413,
+            &Status::error("batch_too_large", "blob probe body exceeds 64 KiB"),
+        );
+    }
+    let items: Vec<BlobBatchItem> = match serde_json::from_slice::<Vec<BlobBatchItem>>(body) {
+        Ok(items) if items.len() <= MAX_BLOB_DELETE_BATCH_KEYS => items,
+        _ => {
+            return json_response(
+                400,
+                &Status::error("bad_request", "invalid blob probe batch"),
+            )
+        }
+    };
+    let mut found = Vec::with_capacity(items.len());
+    for item in items {
+        let path = match store.object_path(&item.key) {
+            Ok(path) if !item.key.is_empty() => path,
+            _ => {
+                return json_response(400, &Status::error("bad_request", "invalid blob probe key"))
+            }
+        };
+        match fs::symlink_metadata(path) {
+            Ok(meta) => found.push(meta.is_file() && meta.len() == item.length as u64),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => found.push(false),
+            Err(_) => {
+                return json_response(
+                    500,
+                    &Status::error("blob_probe_failed", "unable to inspect blob"),
+                )
+            }
+        }
+    }
+    json_response(200, &found)
 }
 
 fn delete_local_blob(blob_store: &FileObjectStore, key: &str) -> std::io::Result<()> {

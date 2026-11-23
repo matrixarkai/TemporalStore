@@ -77,6 +77,21 @@ recovery completes. During that interval it reports cache misses and declines
 writes and deletes. It starts using the retained payloads after accounting for
 them, without restarting LMCache.
 
+The plugin uses direct HTTP to the datanode. Metadata batches prefer
+MessagePack and fall back to JSON when an older datanode lacks that route.
+KV payloads use the datanode's binary blob routes. The Redis-compatible RESP
+proxy is optional and is configured separately through LMCache's RESP adapter.
+
+For caches with `ttl_seconds` set to `0`, enable `"payload_metadata": true`
+alongside `recover_capacity` and a named namespace. On a datanode that supports
+batch blob probes, the adapter checks file presence and size during lookup and
+uses the blob write or delete receipt to update capacity. Stores and deletes
+in this mode need no metadata command. Both settings for the same namespace
+name use separate on-disk prefixes. Enabling the mode starts with an empty
+cache unless that prefix was already populated by this mode. Configure one
+writer per namespace on each datanode and use the same mode across replicas.
+Older datanodes reject this mode at startup.
+
 After a transport failure on a remote datanode, the adapter pauses mutations
 to that datanode for one second. A batch that never reached the datanode does
 not consume the capacity budget. A batch that may have reached it remains

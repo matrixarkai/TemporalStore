@@ -154,6 +154,9 @@ class FakeBlob:
                 result.append(True)
         return result
 
+    def probe_many(self, items):
+        return [name in self.values and len(self.values[name]) == size for name, size in items]
+
     def inventory(self, namespace, _stop=None):
         prefix = f"lmcache/v2/{namespace}/"
         return (
@@ -349,6 +352,63 @@ class AdapterTest(unittest.TestCase):
             reopened.submit_unlock([locked])
         finally:
             reopened.close()
+
+    def test_payload_metadata_recovers_without_metadata_commands(self):
+        blob, data = FakeBlob(), FakeData()
+        adapter_module.BlobClient = lambda *_args, **_kwargs: blob
+        adapter_module.TemporalStoreClient = lambda *_args, **_kwargs: data
+        calls = []
+        data.batch_execute = lambda commands: calls.extend(commands)
+        options = dict(max_capacity_gb=8 / 1024**3, namespace="persistent", recover_capacity=True)
+        key = Key("payload")
+        original = adapter_module.TemporalStoreL2Adapter(dict(options, payload_metadata=True))
+        try:
+            task = original.submit_store_task([key], [Memory(b"value")])
+            self.assertTrue(original._store_event.event.wait(2))
+            self.assertTrue(original.pop_completed_store_tasks()[task].success)
+        finally:
+            original.close()
+
+        legacy = adapter_module.TemporalStoreL2Adapter(options)
+        try:
+            self.assertEqual(legacy.report_status()["bytes_used"], 0)
+        finally:
+            legacy.close()
+
+        reopened = adapter_module.TemporalStoreL2Adapter(dict(options, payload_metadata=True))
+        try:
+            self.assertEqual(reopened.report_status()["bytes_used"], 5)
+            task = reopened.submit_lookup_and_lock_task([key], {})
+            self.assertTrue(reopened._lookup_event.event.wait(2))
+            self.assertTrue(reopened.query_lookup_and_lock_result(task).test(0))
+            reopened.submit_unlock([key])
+            name, _ = reopened._key_names(key)
+            blob.values[name] = b"x"
+            reopened._lookup_event.event.clear()
+            task = reopened.submit_lookup_and_lock_task([key], {})
+            self.assertTrue(reopened._lookup_event.event.wait(2))
+            self.assertFalse(reopened.query_lookup_and_lock_result(task).test(0))
+            reopened.delete([key])
+            reopened._store_pool.submit(lambda: None).result(timeout=2)
+            self.assertEqual(reopened.report_status()["bytes_used"], 0)
+            self.assertNotIn(name, blob.values)
+            self.assertEqual(calls, [])
+        finally:
+            reopened.close()
+
+    def test_payload_metadata_rejects_ttl_and_older_datanodes(self):
+        options = dict(payload_metadata=True, namespace="isolated", recover_capacity=True)
+        with self.assertRaisesRegex(ValueError, "ttl_seconds=0"):
+            adapter_module.TemporalStoreL2Adapter(dict(options, ttl_seconds=1))
+        blob = FakeBlob()
+
+        def unsupported(_items):
+            raise ValueError("payload_metadata requires a datanode with blob probes")
+
+        blob.probe_many = unsupported
+        adapter_module.BlobClient = lambda *_args, **_kwargs: blob
+        with self.assertRaisesRegex(ValueError, "blob probes"):
+            adapter_module.TemporalStoreL2Adapter(options)
 
     def test_close_stops_retry_for_an_unavailable_local_inventory(self):
         blobs, inventory = FakeBlob(), FakeBlob()

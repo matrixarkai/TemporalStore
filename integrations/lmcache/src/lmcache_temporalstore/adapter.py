@@ -58,6 +58,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     remote_storage: bool = False
     lookup_timeout_seconds: float | None = None
     recover_capacity: bool = False
+    payload_metadata: bool = False
 
     @classmethod
     def from_dict(cls, values: dict) -> "TemporalStoreL2AdapterConfig":
@@ -67,6 +68,9 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
         recover_capacity = values.get("recover_capacity", cls.recover_capacity)
         if not isinstance(recover_capacity, bool):
             raise ValueError("recover_capacity must be a boolean")
+        payload_metadata = values.get("payload_metadata", cls.payload_metadata)
+        if not isinstance(payload_metadata, bool):
+            raise ValueError("payload_metadata must be a boolean")
         lookup_timeout = values.get("lookup_timeout_seconds")
         config = cls(
             blob_url=str(values.get("blob_url", cls.blob_url)),
@@ -78,6 +82,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
             namespace=str(values.get("namespace", cls.namespace)),
             remote_storage=remote_storage,
             recover_capacity=recover_capacity,
+            payload_metadata=payload_metadata,
             lookup_timeout_seconds=float(lookup_timeout) if lookup_timeout is not None else None,
         )
         if config.max_capacity_gb <= 0 or config.ttl_seconds < 0:
@@ -93,6 +98,8 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
             "namespace isolates one LMCache server's keys and eviction budget; "
             "remote_storage marks a datanode on another host; "
             "recover_capacity enables inventory-backed accounting in a named namespace; "
+            "payload_metadata probes files in a separate namespace and requires "
+            "recover_capacity and ttl_seconds=0; "
             "lookup_timeout_seconds bounds metadata lookup "
             "(defaults to at most one second for remote storage)"
         )
@@ -122,10 +129,14 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             raise ValueError("lookup_timeout_seconds must be finite and positive")
         if config.recover_capacity and not config.namespace:
             raise ValueError("recover_capacity requires a named namespace")
+        if config.payload_metadata and (not config.recover_capacity or config.ttl_seconds):
+            raise ValueError("payload_metadata requires recover_capacity and ttl_seconds=0")
         super().__init__(capacity)
-        self._inventory_scope = (
-            sha256(config.namespace.encode("utf-8")).digest() if config.recover_capacity else b""
-        )
+        namespace = config.namespace.encode("utf-8") if config.recover_capacity else b""
+        if config.payload_metadata:
+            # Legacy namespaces are valid UTF-8. The leading byte separates the disk layouts.
+            namespace = b"\xff" + namespace
+        self._inventory_scope = sha256(namespace).digest() if config.recover_capacity else b""
         self._inventory_namespace = self._inventory_scope.hex()
         self._lock = threading.Lock()
         self._closed = False
@@ -157,6 +168,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 host=data.hostname, port=data.port or 80,
                 shard_id=config.shard_id, timeout_seconds=lookup_timeout,
             )
+        self._lookup_blob = (
+            BlobClient(config.blob_url, lookup_timeout, reuse_read_connection=True, legacy_names=False)
+            if config.payload_metadata else None
+        )
         retry_inventory = None
         if self._inventory_namespace:
             inventory_blob = BlobClient(
@@ -170,6 +185,8 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 logger.warning("TemporalStore L2 inventory unavailable at startup: %s", error)
                 retry_inventory = inventory_blob
             except Exception:
+                if self._lookup_blob is not None:
+                    self._lookup_blob.close()
                 self._blob.close()
                 self._data.close()
                 if self._lookup_data is not self._data:
@@ -201,6 +218,8 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             self._inventory_thread.start()
 
     def _restore_inventory(self, blob: BlobClient) -> None:
+        if self._config.payload_metadata:
+            blob.probe_many([])
         entries = OrderedDict(blob.inventory(self._inventory_namespace, self._inventory_stop))
         used = sum(entries.values())
         with self._lock:
@@ -436,27 +455,28 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 return 0
 
             deleted = list(commands)
-            try:
-                self._data.batch_execute(list(commands.values()))
-            except Exception as error:
-                if isinstance(error, (OSError, HTTPException)):
-                    self._blob.defer_mutations()
-                # A batch error can follow a partial commit. Deleting metadata
-                # again is idempotent while this store worker owns the keys.
-                logger.exception("TemporalStore L2 metadata delete batch failed")
-                deleted = []
-                for key, command in commands.items():
-                    if not self._blob.mutations_available():
-                        break
-                    try:
-                        self._data.execute(command)
-                    except Exception as error:
-                        logger.exception("TemporalStore L2 metadata delete failed")
-                        if self._config.remote_storage and isinstance(error, (OSError, HTTPException)):
-                            self._blob.defer_mutations()
+            if not self._config.payload_metadata:
+                try:
+                    self._data.batch_execute(list(commands.values()))
+                except Exception as error:
+                    if isinstance(error, (OSError, HTTPException)):
+                        self._blob.defer_mutations()
+                    # A batch error can follow a partial commit. Deleting metadata
+                    # again is idempotent while this store worker owns the keys.
+                    logger.exception("TemporalStore L2 metadata delete batch failed")
+                    deleted = []
+                    for key, command in commands.items():
+                        if not self._blob.mutations_available():
                             break
-                    else:
-                        deleted.append(key)
+                        try:
+                            self._data.execute(command)
+                        except Exception as error:
+                            logger.exception("TemporalStore L2 metadata delete failed")
+                            if self._config.remote_storage and isinstance(error, (OSError, HTTPException)):
+                                self._blob.defer_mutations()
+                                break
+                        else:
+                            deleted.append(key)
 
             with self._lock:
                 accounted = []
@@ -484,7 +504,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                     )
                 self._evicting.difference_update(reserved)
 
-    def _publish_stores(self, pending: dict[ObjectKey | bytes, tuple[int, bool, ObjectKey]]) -> int:
+    def _publish_metadata(self, pending: dict[ObjectKey | bytes, tuple[int, bool, ObjectKey]]) -> None:
         commands = []
         for key, (size, _, _) in pending.items():
             command = {
@@ -509,6 +529,9 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             ])
             raise
 
+    def _publish_stores(self, pending: dict[ObjectKey | bytes, tuple[int, bool, ObjectKey]]) -> int:
+        if not self._config.payload_metadata:
+            self._publish_metadata(pending)
         uploaded = [(key, size, original) for key, (size, wrote, original) in pending.items() if wrote]
         total = sum(size for _, size, _ in uploaded)
         with self._lock:
@@ -655,13 +678,19 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 self._locked[key] = self._locked.get(key, 0) + 1
                 reserved.append((index, key))
         try:
-            commands = [
-                {"kind": "common_exists", "key": self._key_names(key)[1]}
-                for _, key in reserved
-            ]
-            answers = self._lookup_data.batch_execute(commands) if commands else []
-            for (index, _), answer in zip(reserved, answers):
-                if answer.get("kind") == "integer" and answer.get("value") == 1:
+            if self._lookup_blob is not None:
+                found = self._lookup_blob.probe_many([
+                    (self._key_names(key)[0], self._entries[key]) for _, key in reserved
+                ]) if reserved else []
+            else:
+                commands = [
+                    {"kind": "common_exists", "key": self._key_names(key)[1]}
+                    for _, key in reserved
+                ]
+                answers = self._lookup_data.batch_execute(commands) if commands else []
+                found = (answer.get("kind") == "integer" and answer.get("value") == 1 for answer in answers)
+            for (index, _), present in zip(reserved, found):
+                if present:
                     bitmap.set(index)
         except Exception:
             logger.exception("TemporalStore L2 lookup failed")
@@ -717,6 +746,8 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         if self._lookup_data is not self._data:
             self._lookup_data.close()
         self._data.close()
+        if self._lookup_blob is not None:
+            self._lookup_blob.close()
         self._blob.close()
         self._store_event.close()
         self._lookup_event.close()
