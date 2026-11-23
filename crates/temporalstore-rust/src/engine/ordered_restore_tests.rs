@@ -37,7 +37,9 @@ fn append_catalog(engine: &TemporalEngine) -> crate::index_log::MetaItem {
 }
 
 fn frames(engine: &TemporalEngine) -> u64 {
-    let count = engine.index_log_store.read_delta_records(1, 0).unwrap().len() as u64;
+    crate::index_log::probe::reset();
+    engine.index_log_store.read_delta_records(1, 0).unwrap();
+    let count = crate::index_log::probe::fold_frames_read();
     assert!(count > 0);
     count
 }
