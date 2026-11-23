@@ -4,6 +4,7 @@ import http.server
 import json
 import threading
 import unittest
+from unittest.mock import patch
 
 from lmcache_temporalstore.blob import BlobClient
 
@@ -16,6 +17,9 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
     drop_next_get = False
     batch_deletes = []
     supports_batch_deletes = False
+    supports_batch_reads = False
+    truncate_batch_read = False
+    batch_reads = []
 
     def do_PUT(self):
         BlobHandler.mutation_addresses.append(self.client_address)
@@ -51,7 +55,11 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_POST(self):
-        names = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["keys"]
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/batch_read_blobs":
+            self.send_batch_read(request)
+            return
+        names = request["keys"]
         BlobHandler.batch_deletes.append(names)
         if not BlobHandler.supports_batch_deletes:
             self.send_error(404)
@@ -68,6 +76,32 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def send_batch_read(self, request):
+        BlobHandler.batch_reads.append(request)
+        if not BlobHandler.supports_batch_reads:
+            self.send_error(404)
+            return
+        statuses = bytearray()
+        payloads = []
+        for item in request:
+            payload = self.blobs.get("/blob/" + item["key"])
+            if payload is None:
+                statuses.append(0)
+            elif len(payload) != item["length"]:
+                statuses.append(2)
+            else:
+                statuses.append(1)
+                payloads.append(payload)
+        data = bytes(statuses) + b"".join(payloads)
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if BlobHandler.truncate_batch_read:
+            self.wfile.write(data[:-1])
+            self.close_connection = True
+        else:
+            self.wfile.write(data)
 
     def do_DELETE(self):
         BlobHandler.mutation_addresses.append(self.client_address)
@@ -88,6 +122,9 @@ class BlobClientTest(unittest.TestCase):
         BlobHandler.drop_next_get = False
         BlobHandler.batch_deletes = []
         BlobHandler.supports_batch_deletes = False
+        BlobHandler.supports_batch_reads = False
+        BlobHandler.truncate_batch_read = False
+        BlobHandler.batch_reads = []
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), BlobHandler)
         self.thread = threading.Thread(target=self.server.serve_forever)
         self.thread.start()
@@ -186,6 +223,48 @@ class BlobClientTest(unittest.TestCase):
         self.assertEqual(BlobHandler.batch_deletes, [["key", "anonymous/key"]])
         self.assertEqual(BlobHandler.blobs, {})
         self.assertEqual(len(BlobHandler.mutation_addresses), 3)
+
+    def test_batch_load_preserves_positions_and_uses_legacy_paths_for_local_misses(self):
+        BlobHandler.supports_batch_reads = True
+        self.client.put("key", memoryview(b"data"))
+        self.client.put("anonymous/legacy", memoryview(b"copy"))
+        self.client.put("short", memoryview(b"x"))
+        destinations = [memoryview(bytearray(b"!!!!")) for _ in range(4)]
+        keys = ["key", "missing", "legacy", "short"]
+        self.assertEqual(
+            self.client.get_many_into(list(zip(keys, destinations))),
+            [True, False, True, False],
+        )
+        self.assertEqual([bytes(dst) for dst in destinations], [b"data", b"!!!!", b"copy", b"!!!!"])
+        self.assertEqual(len(BlobHandler.batch_reads), 1)
+        self.assertEqual(len(BlobHandler.read_addresses), 4)
+
+    def test_batch_load_uses_single_reads_when_route_is_missing(self):
+        self.client.put("key", memoryview(b"data"))
+        self.client.put("other", memoryview(b"copy"))
+        values = [memoryview(bytearray(4)) for _ in range(2)]
+        entries = list(zip(("key", "other"), values))
+        for _ in range(2):
+            self.assertEqual(self.client.get_many_into(entries), [True, True])
+            self.assertEqual([bytes(dst) for dst in values], [b"data", b"copy"])
+        self.assertEqual(len(BlobHandler.batch_reads), 1)
+        self.assertEqual(len(BlobHandler.read_addresses), 4)
+
+        BlobHandler.supports_batch_reads = True
+        with patch("lmcache_temporalstore.blob.monotonic", return_value=float("inf")):
+            self.assertEqual(self.client.get_many_into(entries), [True, True])
+        self.assertEqual(len(BlobHandler.batch_reads), 2)
+        self.assertEqual([bytes(dst) for dst in values], [b"data", b"copy"])
+
+    def test_truncated_batch_fails_and_the_next_read_reconnects(self):
+        BlobHandler.supports_batch_reads = True
+        BlobHandler.truncate_batch_read = True
+        self.client.put("key", memoryview(b"data"))
+        self.client.put("other", memoryview(b"copy"))
+        values = [memoryview(bytearray(4)) for _ in range(2)]
+        self.assertEqual(self.client.get_many_into(list(zip(("key", "other"), values))), [False, False])
+        self.assertTrue(self.client.get_into("other", values[1]))
+        self.assertEqual(values[1], b"copy")
 
 
 if __name__ == "__main__":

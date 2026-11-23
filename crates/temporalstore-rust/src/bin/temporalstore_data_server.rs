@@ -1421,6 +1421,125 @@ fn handle_blob_batch_delete(
     json_response(200, &serde_json::json!({ "deleted": deleted }))
 }
 
+const MAX_BLOB_READ_BATCH_KEYS: usize = 32;
+const MAX_BLOB_READ_BATCH_BODY: usize = 64 * 1024;
+const MAX_BLOB_READ_BATCH_PAYLOAD: usize = 512 * 1024 * 1024;
+
+#[derive(serde::Deserialize)]
+struct BlobBatchReadItem {
+    key: String,
+    length: usize,
+}
+
+fn stream_blob_batch_read(
+    transfer: &mut StreamTransfer,
+    store: &FileObjectStore,
+    chunk_bytes: usize,
+) -> std::io::Result<()> {
+    if transfer.body_len() > MAX_BLOB_READ_BATCH_BODY {
+        transfer.drain_body()?;
+        write_stream_json(
+            transfer,
+            413,
+            &Status::error(
+                "blob_read_batch_too_large",
+                "blob read batch body exceeds 64 KiB",
+            ),
+        );
+        return Ok(());
+    }
+
+    let mut body = vec![0; transfer.body_len()];
+    let mut offset = 0;
+    while offset < body.len() {
+        let count = transfer.read_body(&mut body[offset..])?;
+        if count == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        offset += count;
+    }
+    let Ok(items) = serde_json::from_slice::<Vec<BlobBatchReadItem>>(&body) else {
+        write_stream_json(
+            transfer,
+            400,
+            &Status::error(
+                "bad_request",
+                "blob read batch requires an array of keys and lengths",
+            ),
+        );
+        return Ok(());
+    };
+    let expected = items
+        .iter()
+        .try_fold(0usize, |sum, item| sum.checked_add(item.length));
+    if items.len() > MAX_BLOB_READ_BATCH_KEYS
+        || expected.is_none_or(|length| length > MAX_BLOB_READ_BATCH_PAYLOAD)
+    {
+        write_stream_json(
+            transfer,
+            400,
+            &Status::error(
+                "blob_read_batch_too_large",
+                "at most 32 keys and 512 MiB per read batch",
+            ),
+        );
+        return Ok(());
+    }
+
+    // Status table followed by the successful payloads in input order.
+    // A local miss allows the caller to try the existing peer and legacy-key path.
+    let mut statuses = Vec::with_capacity(items.len());
+    let mut files = Vec::with_capacity(items.len());
+    for item in items {
+        let (status, file) = open_blob_for_batch(store, &item);
+        statuses.push(status);
+        if let Some(file) = file {
+            files.push((file, item.length));
+        }
+    }
+    let payload_len = files.iter().map(|(_, length)| *length).sum::<usize>();
+    let max_file = files.iter().map(|(_, length)| *length).max().unwrap_or(0);
+    transfer.send_head(
+        200,
+        "application/octet-stream",
+        statuses.len() + payload_len,
+    )?;
+    transfer.write_chunk(&statuses)?;
+    let mut buffer = vec![0u8; chunk_bytes.max(1).min(max_file)];
+    for (mut file, mut remaining) in files {
+        while remaining > 0 {
+            let n = remaining.min(buffer.len());
+            file.read_exact(&mut buffer[..n])?;
+            transfer.write_chunk(&buffer[..n])?;
+            remaining -= n;
+        }
+    }
+    transfer.flush()
+}
+
+fn open_blob_for_batch(
+    store: &FileObjectStore,
+    item: &BlobBatchReadItem,
+) -> (u8, Option<fs::File>) {
+    if item.key.is_empty() {
+        return (2, None);
+    }
+    let Ok(path) = store.object_path(&item.key) else {
+        return (2, None);
+    };
+    match fs::File::open(path) {
+        Ok(file)
+            if file
+                .metadata()
+                .is_ok_and(|meta| meta.is_file() && meta.len() == item.length as u64) =>
+        {
+            (1, Some(file))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => (0, None),
+        _ => (2, None),
+    }
+}
+
 /// Streamed attachment endpoint (zero-copy / no full-body buffering).
 ///
 /// `POST|PUT /blob/<key>` copies the request body into a staging file in
@@ -1449,6 +1568,13 @@ fn handle_blob_stream(
     peer_addrs: Option<&[String]>,
     peer_timeout_ms: u64,
 ) -> StreamAction {
+    if head.method == "POST" && head.path == "/batch_read_blobs" {
+        if let Err(error) = stream_blob_batch_read(transfer, blob_store, chunk_bytes) {
+            debug!(%error, "blob batch read ended early");
+            transfer.abort_response();
+        }
+        return StreamAction::Handled;
+    }
     let Some(key) = head.path.strip_prefix("/blob/") else {
         return StreamAction::Declined;
     };
@@ -2962,6 +3088,31 @@ mod tests {
     use super::*;
 
     const TEST_CACHE_BYTES: usize = 1024;
+
+    #[test]
+    fn blob_batch_read_distinguishes_local_hits_misses_and_invalid_lengths() {
+        let work = tempdir().unwrap();
+        std::fs::write(work.path().join("valid"), b"data").unwrap();
+        std::fs::write(work.path().join("empty"), b"").unwrap();
+        let store = FileObjectStore::new(work.path().to_path_buf());
+        for (key, length, expected) in [
+            ("valid", 4, 1),
+            ("empty", 0, 1),
+            ("missing", 4, 0),
+            ("valid", 3, 2),
+            ("../outside", 4, 2),
+            ("", 4, 2),
+        ] {
+            let (status, file) = open_blob_for_batch(
+                &store,
+                &BlobBatchReadItem {
+                    key: key.to_string(),
+                    length,
+                },
+            );
+            assert_eq!((status, file.is_some()), (expected, expected == 1), "{key}");
+        }
+    }
 
     #[test]
     fn a_blob_replacement_requires_every_declared_byte_before_publishing() {
