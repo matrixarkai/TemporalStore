@@ -155,6 +155,21 @@ class AdapterTest(unittest.TestCase):
         finally:
             adapter.close()
 
+    def test_submissions_after_close_complete_as_cache_misses(self):
+        adapter = self.adapter
+        key = Key("closed")
+        obj = Memory(b"abc")
+        adapter.close()
+
+        store = adapter.submit_store_task([key], [obj])
+        lookup = adapter.submit_lookup_and_lock_task([key], {})
+        load = adapter.submit_load_task([key], [obj])
+        adapter.delete([key])
+
+        self.assertFalse(adapter.pop_completed_store_tasks()[store].success)
+        self.assertFalse(adapter.query_lookup_and_lock_result(lookup).test(0))
+        self.assertFalse(adapter.query_load_result(load).test(0))
+
     def test_invalid_capacity_is_rejected(self):
         with self.assertRaises(ValueError):
             adapter_module.TemporalStoreL2Adapter(

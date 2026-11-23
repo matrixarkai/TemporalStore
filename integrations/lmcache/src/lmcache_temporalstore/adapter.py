@@ -154,17 +154,21 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
     def get_load_event_fd(self) -> int:
         return self._load_event.fileno()
 
-    def _task_id(self) -> int:
-        with self._lock:
-            task_id = self._next_id
-            self._next_id += 1
-            return task_id
+    def _allocate_task_id(self) -> int:
+        """Allocate a task ID while the caller holds the adapter lock."""
+        task_id = self._next_id
+        self._next_id += 1
+        return task_id
 
     def submit_store_task(
         self, keys: list[ObjectKey], objects: list[MemoryObj]
     ) -> L2TaskId:
-        task_id = self._task_id()
-        self._store_pool.submit(self._store, task_id, list(keys), list(objects))
+        with self._lock:
+            task_id = self._allocate_task_id()
+            if self._closed:
+                self._done_store[task_id] = L2StoreResult(False, 0)
+            else:
+                self._store_pool.submit(self._store, task_id, list(keys), list(objects))
         return task_id
 
     def pop_completed_store_tasks(self) -> dict[L2TaskId, L2StoreResult]:
@@ -175,8 +179,12 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
     def submit_lookup_and_lock_task(
         self, keys: list[ObjectKey], group_layout_descs: dict[int, MemoryLayoutDesc]
     ) -> L2TaskId:
-        task_id = self._task_id()
-        self._lookup_pool.submit(self._lookup, task_id, list(keys))
+        with self._lock:
+            task_id = self._allocate_task_id()
+            if self._closed:
+                self._done_lookup[task_id] = Bitmap(len(keys))
+            else:
+                self._lookup_pool.submit(self._lookup, task_id, list(keys))
         return task_id
 
     def query_lookup_and_lock_result(self, task_id: L2TaskId) -> Bitmap | None:
@@ -195,8 +203,12 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
     def submit_load_task(
         self, keys: list[ObjectKey], objects: list[MemoryObj]
     ) -> L2TaskId:
-        task_id = self._task_id()
-        self._load_pool.submit(self._load, task_id, list(keys), list(objects))
+        with self._lock:
+            task_id = self._allocate_task_id()
+            if self._closed:
+                self._done_load[task_id] = Bitmap(len(keys))
+            else:
+                self._load_pool.submit(self._load, task_id, list(keys), list(objects))
         return task_id
 
     def query_load_result(self, task_id: L2TaskId) -> Bitmap | None:
@@ -255,7 +267,9 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             self._notify_keys_deleted([victim], [size])
 
     def delete(self, keys: list[ObjectKey]) -> None:
-        self._store_pool.submit(self._delete_many, list(keys))
+        with self._lock:
+            if not self._closed:
+                self._store_pool.submit(self._delete_many, list(keys))
 
     def _delete_many(self, keys: list[ObjectKey]) -> None:
         for key in keys:
