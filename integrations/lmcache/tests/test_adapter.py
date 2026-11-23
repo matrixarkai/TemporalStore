@@ -148,7 +148,7 @@ class FakeBlob:
                 result.append(True)
         return result
 
-    def inventory(self, namespace):
+    def inventory(self, namespace, _stop=None):
         prefix = f"lmcache/v2/{namespace}/"
         return (
             (bytes.fromhex(name.rsplit("/", 1)[1]), len(payload))
@@ -343,6 +343,95 @@ class AdapterTest(unittest.TestCase):
             reopened.submit_unlock([locked])
         finally:
             reopened.close()
+
+    def test_close_stops_retry_for_an_unavailable_local_inventory(self):
+        blobs, inventory = FakeBlob(), FakeBlob()
+        clients = iter((blobs, inventory))
+        adapter_module.BlobClient = lambda *_args, **_kwargs: next(clients)
+        inventory_closed = threading.Event()
+
+        def unavailable(_namespace, _stop):
+            raise ConnectionRefusedError("local datanode is unavailable")
+
+        inventory.inventory = unavailable
+        inventory.close = inventory_closed.set
+        config = adapter_module.TemporalStoreL2AdapterConfig(
+            max_capacity_gb=4 / 1024**3, namespace="local",
+            recover_capacity=True, remote_storage=False,
+        )
+        adapter = adapter_module.TemporalStoreL2Adapter(config)
+        try:
+            self.assertFalse(adapter.report_status()["inventory_ready"])
+            self.assertTrue(adapter._inventory_thread.is_alive())
+        finally:
+            adapter.close()
+        self.assertFalse(adapter._inventory_thread.is_alive())
+        self.assertTrue(inventory_closed.is_set())
+
+    def test_remote_inventory_retry_gates_operations_and_restores_capacity(self):
+        blobs, inventory = FakeBlob(), FakeBlob()
+        clients = iter((blobs, inventory))
+        adapter_module.BlobClient = lambda *_args, **_kwargs: next(clients)
+        available = threading.Event()
+        key, replacement = Key("retained"), Key("replacement")
+        digest = bytes.fromhex(adapter_module._names(key, "persistent")[0].rsplit("/", 1)[1])
+
+        def restore(_namespace, _stop):
+            yield digest, 4
+            if not available.is_set():
+                raise TimeoutError("replica has not returned")
+
+        inventory.inventory = restore
+        config = adapter_module.TemporalStoreL2AdapterConfig(
+            max_capacity_gb=4 / 1024**3, namespace="persistent",
+            recover_capacity=True, remote_storage=True,
+        )
+        adapter = adapter_module.TemporalStoreL2Adapter(config)
+        name, metadata = adapter._key_names(key)
+        blobs.values[name] = b"abcd"
+        adapter._data.values[metadata] = b"4"
+        adapter._lookup_data.values[metadata] = b"4"
+        try:
+            status = adapter.report_status()
+            self.assertFalse(status["is_healthy"])
+            self.assertFalse(status["inventory_ready"])
+            self.assertEqual(status["inventory_error"], "TimeoutError")
+            self.assertEqual(status["bytes_used"], 0)
+
+            write = adapter.submit_store_task([replacement], [Memory(b"data")])
+            self.assertTrue(adapter._store_event.event.wait(1))
+            self.assertFalse(adapter.pop_completed_store_tasks()[write].success)
+            lookup = adapter.submit_lookup_and_lock_task([key], {})
+            self.assertTrue(adapter._lookup_event.event.wait(1))
+            self.assertEqual(adapter.query_lookup_and_lock_result(lookup).bits, [False])
+            load = adapter.submit_load_task([key], [Memory(b"....")])
+            self.assertTrue(adapter._load_event.event.wait(1))
+            self.assertEqual(adapter.query_load_result(load).bits, [False])
+            adapter.delete([key])
+            self.assertEqual(blobs.values, {name: b"abcd"})
+
+            available.set()
+            adapter._inventory_thread.join(timeout=3)
+            self.assertFalse(adapter._inventory_thread.is_alive())
+            status = adapter.report_status()
+            self.assertTrue(status["is_healthy"])
+            self.assertTrue(status["inventory_ready"])
+            self.assertIsNone(status["inventory_error"])
+            self.assertEqual(status["bytes_used"], 4)
+
+            adapter._lookup_event.event.clear()
+            lookup = adapter.submit_lookup_and_lock_task([key], {})
+            self.assertTrue(adapter._lookup_event.event.wait(2))
+            self.assertEqual(adapter.query_lookup_and_lock_result(lookup).bits, [True])
+            adapter.submit_unlock([key])
+            adapter._store_event.event.clear()
+            write = adapter.submit_store_task([replacement], [Memory(b"data")])
+            self.assertTrue(adapter._store_event.event.wait(2))
+            self.assertTrue(adapter.pop_completed_store_tasks()[write].success)
+            self.assertEqual(blobs.values, {adapter._key_names(replacement)[0]: b"data"})
+            self.assertEqual(adapter.report_status()["bytes_used"], 4)
+        finally:
+            adapter.close()
 
     def test_unconfirmed_batch_is_charged_and_retried_as_one_cleanup(self):
         config = adapter_module.TemporalStoreL2AdapterConfig(
