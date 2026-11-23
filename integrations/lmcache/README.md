@@ -9,6 +9,9 @@ evicts entries. Explicit batch deletion uses the datanode's
 DELETE requests on older datanodes. The adapter also uses
 `POST /batch_read_blobs` to stream up to 32 local payloads into their destination
 buffers. It uses the single-blob route for local misses and older datanodes.
+For stores, the adapter probes `/batch_write_blobs` before sending batched
+payloads. Each request streams up to 32 blobs, and each confirmed blob can
+publish its lookup metadata. Older datanodes receive individual uploads.
 
 Install the Feast integration and this package from the same TemporalStore
 checkout, alongside an LMCache installation with its native module available:

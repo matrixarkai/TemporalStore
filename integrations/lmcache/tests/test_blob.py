@@ -20,6 +20,10 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
     supports_batch_reads = False
     truncate_batch_read = False
     batch_reads = []
+    supports_batch_writes = False
+    batch_writes = []
+    write_probes = 0
+    lose_write_receipt = False
 
     def do_PUT(self):
         BlobHandler.mutation_addresses.append(self.client_address)
@@ -33,6 +37,12 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if self.path == "/batch_write_blobs":
+            BlobHandler.write_probes += 1
+            self.send_response(200 if BlobHandler.supports_batch_writes else 404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         BlobHandler.read_addresses.append(self.client_address)
         if BlobHandler.drop_next_get:
             BlobHandler.drop_next_get = False
@@ -55,6 +65,9 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_POST(self):
+        if self.path == "/batch_write_blobs":
+            self.receive_batch_write()
+            return
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         if self.path == "/batch_read_blobs":
             self.send_batch_read(request)
@@ -76,6 +89,26 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def receive_batch_write(self):
+        control_length = int.from_bytes(self.rfile.read(4), "big")
+        items = json.loads(self.rfile.read(control_length))
+        BlobHandler.batch_writes.append(items)
+        statuses = bytearray()
+        for item in items:
+            payload = self.rfile.read(item["length"])
+            if item["key"] == "blocked":
+                statuses.append(0)
+                continue
+            self.blobs[f'/blob/{item["key"]}'] = payload
+            statuses.append(1)
+        if BlobHandler.lose_write_receipt:
+            self.close_connection = True
+            return
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(statuses)))
+        self.end_headers()
+        self.wfile.write(statuses)
 
     def send_batch_read(self, request):
         BlobHandler.batch_reads.append(request)
@@ -125,6 +158,10 @@ class BlobClientTest(unittest.TestCase):
         BlobHandler.supports_batch_reads = False
         BlobHandler.truncate_batch_read = False
         BlobHandler.batch_reads = []
+        BlobHandler.supports_batch_writes = False
+        BlobHandler.batch_writes = []
+        BlobHandler.write_probes = 0
+        BlobHandler.lose_write_receipt = False
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), BlobHandler)
         self.thread = threading.Thread(target=self.server.serve_forever)
         self.thread.start()
@@ -223,6 +260,34 @@ class BlobClientTest(unittest.TestCase):
         self.assertEqual(BlobHandler.batch_deletes, [["key", "anonymous/key"]])
         self.assertEqual(BlobHandler.blobs, {})
         self.assertEqual(len(BlobHandler.mutation_addresses), 3)
+
+    def test_batch_write_matches_ordered_receipts_and_binary_payloads(self):
+        BlobHandler.supports_batch_writes = True
+        items = [("first", memoryview(b"abc")), ("blocked", memoryview(b"longer")),
+                 ("empty", memoryview(b"")), ("last", memoryview(bytes((0, 255))))]
+        self.assertEqual(self.client.put_many(items), [True, False, True, True])
+        self.assertEqual(BlobHandler.blobs, {
+            "/blob/first": b"abc", "/blob/empty": b"", "/blob/last": bytes((0, 255)),
+        })
+        self.assertEqual(len(BlobHandler.batch_writes), 1)
+        self.assertEqual(BlobHandler.mutation_addresses, [])
+
+    def test_batch_write_falls_back_without_sending_payload_to_older_nodes(self):
+        items = [("first", memoryview(b"abc")), ("last", memoryview(b"def"))]
+        self.assertEqual(self.client.put_many(items), [True, True])
+        self.assertEqual(self.client.put_many(items), [True, True])
+        self.assertEqual(BlobHandler.write_probes, 1)
+        self.assertEqual(BlobHandler.batch_writes, [])
+        self.assertEqual(len(BlobHandler.mutation_addresses), 4)
+
+    def test_batch_write_does_not_replay_unconfirmed_mutations(self):
+        BlobHandler.supports_batch_writes = True
+        BlobHandler.lose_write_receipt = True
+        items = [("first", memoryview(b"abc")), ("last", memoryview(b"def"))]
+        self.assertEqual(self.client.put_many(items), [False, False])
+        self.assertEqual(BlobHandler.blobs, {"/blob/first": b"abc", "/blob/last": b"def"})
+        self.assertEqual(len(BlobHandler.batch_writes), 1)
+        self.assertEqual(BlobHandler.mutation_addresses, [])
 
     def test_batch_load_preserves_positions_and_uses_legacy_paths_for_local_misses(self):
         BlobHandler.supports_batch_reads = True
