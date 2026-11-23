@@ -3979,6 +3979,9 @@ mod tests {
     fn server_raft_control_scale_up_down_preserves_serving() {
         let dir = tempdir().unwrap();
         let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3, 4], false);
+        let replicas: Vec<_> = (2..=4)
+            .map(|node_id| test_server_raft_state(dir.path(), node_id, vec![1, 2, 3, 4], false))
+            .collect();
         for node_id in [2, 3, 4] {
             state.runtime.cluster().set_alive(node_id, true).unwrap();
             state.runtime.cluster().catch_up(node_id).unwrap();
@@ -4007,11 +4010,14 @@ mod tests {
                 value: b"after-scale-down".to_vec(),
             })
             .unwrap();
-        for node_id in [1, 2, 3] {
-            let read = state
+        for replica in std::iter::once(&state).chain(replicas.iter().take(2)) {
+            if replica.local_node_id != state.local_node_id {
+                apply_test_replica_entries(&state, replica);
+            }
+            let read = replica
                 .runtime
                 .read_local(
-                    node_id,
+                    replica.local_node_id,
                     Command::StringGet {
                         key: "server-scale-down".to_string(),
                     },
@@ -4051,11 +4057,14 @@ mod tests {
                 value: b"after-scale-up".to_vec(),
             })
             .unwrap();
-        for node_id in [1, 2, 3, 4] {
-            let read = state
+        for replica in std::iter::once(&state).chain(replicas.iter().take(3)) {
+            if replica.local_node_id != state.local_node_id {
+                apply_test_replica_entries(&state, replica);
+            }
+            let read = replica
                 .runtime
                 .read_local(
-                    node_id,
+                    replica.local_node_id,
                     Command::StringGet {
                         key: "server-scale-up".to_string(),
                     },
@@ -4108,6 +4117,7 @@ mod tests {
     fn server_raft_admin_wait_applied_reports_lag_and_success_after_catchup() {
         let dir = tempdir().unwrap();
         let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3], true);
+        let replica = test_server_raft_state(dir.path(), 3, vec![1, 2, 3], true);
         let cluster = state.runtime.cluster();
         cluster.set_alive(3, false).unwrap();
         cluster
@@ -4126,7 +4136,7 @@ mod tests {
             )
             .unwrap(),
         };
-        let (code, body) = handle_server_raft_route(&state, &wait_request).unwrap();
+        let (code, body) = handle_server_raft_route(&replica, &wait_request).unwrap();
         assert_eq!(code, 200);
         let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(response.status.code, "raft_error");
@@ -4141,6 +4151,10 @@ mod tests {
         assert_eq!(code, 200);
         let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
         assert!(response.status.ok, "{response:?}");
+        let (_, body) = handle_server_raft_route(&state, &wait_request).unwrap();
+        let shadow: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(shadow.status.code, "raft_error");
+        apply_test_replica_entries(&state, &replica);
 
         let wait_request = HttpRequest {
             method: "POST".to_string(),
@@ -4150,7 +4164,7 @@ mod tests {
             )
             .unwrap(),
         };
-        let (code, body) = handle_server_raft_route(&state, &wait_request).unwrap();
+        let (code, body) = handle_server_raft_route(&replica, &wait_request).unwrap();
         assert_eq!(code, 200);
         let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
         assert!(response.status.ok, "{response:?}");
@@ -4231,6 +4245,24 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    fn apply_test_replica_entries(leader: &ServerRaftState, replica: &ServerRaftState) {
+        // Deliver AppendEntries to the runtime that owns the target's state machine.
+        let leader = leader.runtime.cluster();
+        let follower = replica.runtime.cluster();
+        let node_id = replica.local_node_id;
+        for _ in 0..4 {
+            let request = leader.build_append_entries_request(node_id).unwrap();
+            let committed = request.leader_commit;
+            let response = follower.receive_append_entries(request).unwrap();
+            leader.record_append_entries_response(node_id, &response).unwrap();
+            if response.success && response.match_index >= committed {
+                replica.runtime.wait_for_applied_index(node_id, committed, 0).unwrap();
+                return;
+            }
+        }
+        panic!("replica {node_id} did not receive its committed entries");
     }
 
     fn test_server_raft_state(
