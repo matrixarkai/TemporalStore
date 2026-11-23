@@ -8,6 +8,10 @@ use super::*;
 #[path = "catalog_checkpoint_retirement_tests.rs"]
 mod catalog_checkpoint_retirement_tests;
 
+#[cfg(test)]
+#[path = "ordered_restore_tests.rs"]
+mod ordered_restore_tests;
+
 /// WHICH WAY A LOAD OF THE PERSISTED INDEX WENT.
 ///
 /// # WHY THIS IS NOT TEST SCAFFOLDING
@@ -341,12 +345,24 @@ impl TemporalEngine {
         warm_cache: bool,
         fold_deltas: bool,
     ) -> Result<Option<ShardState>, Status> {
+        let Some((mut shard, base_present)) = self.read_index_base(shard_id) else {
+            return Ok(None);
+        };
+        if fold_deltas {
+            self.fold_index_log_deltas(shard_id, &mut shard, false)?;
+        } else {
+            self.fold_relocation_records(shard_id, &mut shard, true);
+        }
+        Ok(self.finish_index_load(shard_id, shard, base_present, warm_cache))
+    }
+
+    fn read_index_base(&self, shard_id: ShardId) -> Option<(ShardState, bool)> {
         let read = fs::read(self.index_path(shard_id));
         let base_present = read.is_ok();
         // The base snapshot is materialized only at compaction/unload, so a crash before the
         // first compaction leaves no base -- start empty and rebuild from the index-log
         // deltas below.
-        let mut shard = match read {
+        let shard = match read {
             Ok(bytes) => match crate::engine::decode_index_bytes(&bytes) {
                 Ok(shard) => {
                     note_index_load(IndexLoadPath::Accepted);
@@ -367,7 +383,7 @@ impl TemporalEngine {
                 // a caller cannot tell a refusal from an absence. See `index_load_path_counts`.
                 Err(_) => {
                     note_index_load(IndexLoadPath::Undecodable);
-                    return Ok(None);
+                    return None;
                 }
             },
             Err(_) => {
@@ -375,23 +391,16 @@ impl TemporalEngine {
                 ShardState::default()
             }
         };
-        // Fold the index-log deltas beyond the base snapshot's anchor into the bucket index
-        // (reconstructing the exact on-disk block layout at the ORIGINAL addresses) and apply
-        // the captured per-key non-block state, BEFORE reconcile. This is what lets a crash
-        // reload reconstruct the served index WITHOUT re-executing the WAL -- re-execution
-        // would write fresh blocks and relocate them to the active slab, doubling physical
-        // block counts and losing the recorded slab layout.
-        if fold_deltas {
-            self.fold_index_log_deltas(shard_id, &mut shard)?;
-        } else {
-            // THE BASE-ONLY LOAD FOLDS ONE KIND OF RECORD: the durable relocation records. Ordinary
-            // deltas stay unfolded here, for the reason `load_index_base_only` gives; a relocation is
-            // fsynced after the blocks it names and is applied only to a block the base still names
-            // at the old address, so it can neither name unsynced bytes nor apply a write twice.
-            // Compaction writes these records per slice, so the load reads the index-log tail above
-            // the base's anchor for them (and for nothing else).
-            self.fold_relocation_records(shard_id, &mut shard, true);
-        }
+        Some((shard, base_present))
+    }
+
+    fn finish_index_load(
+        &self,
+        shard_id: ShardId,
+        mut shard: ShardState,
+        base_present: bool,
+        warm_cache: bool,
+    ) -> Option<ShardState> {
         // object_*_lookup is a derived serving accelerator and is no longer persisted -- and it
         // is MAINTAINED now rather than rebuilt here. The decoder files each block as it decodes,
         // and the delta fold above files what it places and un-files what it drops, so by this
@@ -409,7 +418,7 @@ impl TemporalEngine {
             && shard.bucket_index.bucket_map.is_empty()
             && shard.applied_wal_sequence.is_none()
         {
-            return Ok(None);
+            return None;
         }
         // Fold disk->memory cache promotion into reconcile's block reads on a warming
         // load (normal restart): the blocks reconcile reads to rebuild the secondary
@@ -435,7 +444,81 @@ impl TemporalEngine {
             }
         }
         refresh_bucket_runtime_flags(&mut shard);
-        Ok(Some(shard))
+        Some(shard)
+    }
+
+    pub(super) fn load_durable_index_with_catalog(
+        &self,
+        shard_id: ShardId,
+        warm_cache: bool,
+    ) -> (Option<ShardState>, u64, Option<crate::index_log::MetaItem>) {
+        let base = self.read_index_base(shard_id);
+        let mut watermark = base.as_ref().and_then(|(state, _)| state.applied_wal_sequence).unwrap_or(0);
+        let mut selected = base.map(|(state, present)| (state, present, false));
+        // Use the highest durable WAL frontier, not the last manifest in index-log order:
+        // WAL reclamation can already have removed records covered by an earlier manifest.
+        if let Some(manifest) = durable_recovery_bucket_dump_manifest_at(&self.index_dir, shard_id)
+            .filter(|manifest| manifest.wal_sequence > watermark)
+        {
+            match installable_image(&manifest).map_err(|error| error.to_string())
+                .and_then(crate::engine::decode_index_bytes)
+            {
+                Ok(state) => {
+                    watermark = manifest.wal_sequence;
+                    selected = Some((state, true, true));
+                }
+                Err(_) => note_index_load(IndexLoadPath::Undecodable),
+            }
+        }
+        let Some((mut state, present, from_manifest)) = selected else {
+            let catalog = self.index_log_store.recover_delta_records(shard_id, |_| {}).ok().flatten();
+            return (None, watermark, catalog);
+        };
+        let catalog = self.fold_relocations_and_catalog(shard_id, &mut state);
+        let loaded = if from_manifest {
+            rebuild_unserialized_model_maps_from_bucket_index(&mut state);
+            rebuild_bucket_block_ownership(shard_id, &mut state, 0, u32::MAX);
+            Some(state)
+        } else {
+            self.finish_index_load(shard_id, state, present, warm_cache)
+        };
+        (loaded, watermark, catalog)
+    }
+
+    pub(super) fn load_index_checked_with_catalog(
+        &self,
+        shard_id: ShardId,
+        warm_cache: bool,
+    ) -> Result<(Option<ShardState>, Option<crate::index_log::MetaItem>), Status> {
+        let Some((mut state, present)) = self.read_index_base(shard_id) else {
+            let catalog = self.index_log_store.recover_delta_records(shard_id, |_| {}).ok().flatten();
+            return Ok((None, catalog));
+        };
+        let catalog = self.fold_index_log_deltas(shard_id, &mut state, true)?;
+        Ok((self.finish_index_load(shard_id, state, present, warm_cache), catalog))
+    }
+
+    fn fold_relocations_and_catalog(
+        &self,
+        shard_id: ShardId,
+        shard: &mut ShardState,
+    ) -> Option<crate::index_log::MetaItem> {
+        let base_anchor = shard.applied_wal_sequence.unwrap_or(0);
+        let mut applied = 0;
+        let result = self.index_log_store.recover_delta_records(shard_id, |record| {
+            if !record.relocated_from.is_empty()
+                && !crate::index_log::delta_record_is_reflected_by(record, base_anchor)
+            {
+                applied += fold_relocation_record(shard, &record.relocated_from,
+                    &record.items, &record.relocated_elements, true);
+            }
+        });
+        if applied > 0 {
+            self.refresh_relocated_layouts(shard_id, shard);
+        }
+        // A valid base remains usable after a failed optional relocation scan. Never install
+        // a catalog recovered from only a prefix of a corrupt stream.
+        result.ok().flatten()
     }
 
     /// Apply the durable relocation records above the base to a state loaded from the base image
@@ -497,7 +580,8 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
         shard: &mut ShardState,
-    ) -> Result<(), Status> {
+        recover_catalog: bool,
+    ) -> Result<Option<crate::index_log::MetaItem>, Status> {
         // Propagate a corrupt/holed delta stream instead of silently folding a prefix. A
         // silently-skipped delta advances the reconstructed anchor past a removal/eviction that
         // lives ONLY in the delta (not the WAL), so it is recovered from neither source -- a
@@ -534,9 +618,7 @@ impl TemporalEngine {
         // local of `load_shard_with`, the `?` at that call site returns before it is published,
         // and the load then falls back to replay exactly as a refusal always did. A caller that
         // folded into something it did not own would not have this property.
-        if let Err(err) = self
-            .index_log_store
-            .for_each_delta_record_above_anchor(shard_id, 0, base_anchor, |record| {
+        let mut fold_record = |record: &crate::index_log::IndexDeltaRecord| {
                 // A present base already reflects everything at/below its anchor; fold only
                 // the suffix. An absent base (anchor 0) folds the whole log. This read
                 // `applied_wal_sequence.unwrap_or(0) <= base_anchor` inline, which made a
@@ -599,15 +681,25 @@ impl TemporalEngine {
                 #[cfg(test)]
                 crate::index_log::probe::note_fold_applied(shard_id, record.sequence);
                 applied = true;
-            })
-        {
-            return Err(Status::error(
-                "index_log_delta_corruption",
-                format!(
-                    "served-index delta log for shard {shard_id} is corrupt; refusing load: {err}"
-                ),
-            ));
-        }
+            };
+        let read = if recover_catalog {
+            self.index_log_store.recover_delta_records(shard_id, &mut fold_record)
+        } else {
+            self.index_log_store.for_each_delta_record_above_anchor(shard_id, 0, base_anchor,
+                |record| fold_record(&record)).map(|_| None)
+        };
+        drop(fold_record);
+        let catalog = match read {
+            Ok(catalog) => catalog,
+            Err(err) => {
+                return Err(Status::error(
+                    "index_log_delta_corruption",
+                    format!(
+                        "served-index delta log for shard {shard_id} is corrupt; refusing load: {err}"
+                    ),
+                ));
+            }
+        };
         if applied {
             // THE LOOKUP IS REBUILT BEFORE THE LAYOUT PASS NOW, NOT AFTER IT.
             //
@@ -636,7 +728,7 @@ impl TemporalEngine {
             fold_carried_container_elements(shard, &carried_container_elements);
             shard.applied_wal_sequence = Some(max_anchor);
         }
-        Ok(())
+        Ok(catalog)
     }
 
     /// Persist the in-memory shard index to disk once (used by bulk backfill

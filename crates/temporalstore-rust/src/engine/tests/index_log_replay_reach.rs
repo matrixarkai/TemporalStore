@@ -3,9 +3,8 @@
 
 //! Measure index-loader work separately from the full load's catalog recovery.
 //!
-//! Both index loaders read the tail above the durable base. The default loader applies only
-//! relocations; the checked loader also folds ordinary deltas. Catalog recovery currently reads
-//! the whole log, including pieces either index loader can decline. Keep both costs visible.
+//! Standalone index loaders can decline pieces covered by the durable base. The full load reads
+//! retained records and catalog metadata together, including metadata in covered pieces.
 #![allow(clippy::all)]
 use super::*;
 
@@ -197,8 +196,7 @@ fn the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does() 
     );
     assert!(folded.is_some(), "APPARATUS: the fold-aware load returned no state");
 
-    // Compare the two index loaders, not catalog recovery plus one loader against the other.
-    // Keep the full-load total pinned as well so catalog work cannot disappear from the report.
+    // Standalone loader work and complete recovery work remain separate measurements.
     assert!(
         default_fold_frames <= checked_frames,
         "the default index loader read {default_fold_frames} frames, more than the fold-aware load's \
@@ -206,10 +204,10 @@ fn the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does() 
     );
     assert_eq!(default_fold_declined as usize, below, "the default fold must decline the covered pieces");
     assert!(catalog_frames > 0, "the fixture must expose catalog recovery's additional scan");
-    assert_eq!(default_frames, default_fold_frames + catalog_frames,
-        "the full load must account for both relocation and catalog scans");
-    assert_eq!(default_declined, default_fold_declined,
-        "catalog recovery must not inflate the relocation decline count");
+    assert_eq!(default_frames, catalog_frames,
+        "the full load must recover relocations and metadata in one retained-prefix scan");
+    assert_eq!(default_declined, 0,
+        "full recovery must not skip a covered piece that may carry catalog metadata");
     // And the decline is exactly the pieces the base covers -- not everything, and not a
     // count that happens to match. The sealed pieces above the base are still read, and so is
     // the piece being written.

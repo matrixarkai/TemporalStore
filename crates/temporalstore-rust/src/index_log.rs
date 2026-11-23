@@ -3585,7 +3585,7 @@ impl LocalIndexLogStore {
         base_anchor: u64,
         take: impl FnMut(IndexDeltaRecord),
     ) -> Result<(), IndexLogError> {
-        self.walk_delta_records(shard_id, retain_after_sequence, base_anchor, false, take)
+        self.walk_delta_records(shard_id, retain_after_sequence, base_anchor, IndexReadMode::Locked, take)
             .map(|_| ())
     }
 
@@ -3595,11 +3595,29 @@ impl LocalIndexLogStore {
         base_anchor: u64,
         mut take: impl FnMut(IndexDeltaRecord),
     ) -> Result<CapturedRelocations, IndexLogError> {
-        self.walk_delta_records(shard_id, 0, base_anchor, true, |record| {
+        self.walk_delta_records(shard_id, 0, base_anchor, IndexReadMode::CheckpointCapture, |record| {
             if is_relocation_record(&record) {
                 take(record);
             }
         })
+    }
+
+    pub(crate) fn recover_delta_records(
+        &self,
+        shard_id: ShardId,
+        mut take: impl FnMut(&IndexDeltaRecord),
+    ) -> Result<Option<MetaItem>, IndexLogError> {
+        let mut latest = None;
+        // Catalog metadata can precede the base anchor, so read the retained prefix once.
+        self.walk_delta_records(shard_id, 0, 0, IndexReadMode::CapturedPrefix, |record| {
+            take(&record);
+            if let Some(meta) = record.meta {
+                if !meta.slabs.is_empty() {
+                    latest = Some(meta);
+                }
+            }
+        })?;
+        Ok(latest)
     }
 
     fn walk_delta_records(
@@ -3607,9 +3625,10 @@ impl LocalIndexLogStore {
         shard_id: ShardId,
         retain_after_sequence: u64,
         base_anchor: u64,
-        capture_relocations: bool,
+        mode: IndexReadMode,
         mut take: impl FnMut(IndexDeltaRecord),
     ) -> Result<CapturedRelocations, IndexLogError> {
+        let capture_relocations = mode != IndexReadMode::Locked;
         let mut inner = if capture_relocations {
             let mut inner = self.inner.lock().expect("index log lock poisoned");
             flush_queued_locked(&mut inner)?;
@@ -3617,11 +3636,15 @@ impl LocalIndexLogStore {
         } else {
             self.lock_flushed()
         };
-        let through_sequence = if capture_relocations {
+        let through_sequence = if mode == IndexReadMode::CheckpointCapture {
             match inner.last_sequence_by_shard.get(&shard_id) {
                 Some(sequence) => *sequence,
                 None => last_sequence_at(&inner.root, shard_id)?,
             }
+        } else if mode == IndexReadMode::CapturedPrefix {
+            // Restore owns the byte prefix, not a GC certificate. Discovering the last
+            // sequence here would read a cold active piece twice before replay can begin.
+            u64::MAX
         } else {
             0
         };
@@ -3720,7 +3743,9 @@ impl LocalIndexLogStore {
                             "index-log record exceeds the checkpoint capture sequence".into(),
                         ));
                     }
-                    reflection.observe(&record);
+                    if mode == IndexReadMode::CheckpointCapture {
+                        reflection.observe(&record);
+                    }
                 }
                 // Put back what the writer left out because the item already stated it. A record
                 // written before that stripping carries both already, and this leaves those
@@ -3796,7 +3821,7 @@ impl LocalIndexLogStore {
                         "index-log piece changed during checkpoint capture".into(),
                     ));
                 }
-                if let Some(span) = span {
+                if let Some(span) = span.filter(|_| mode == IndexReadMode::CheckpointCapture) {
                     captured.pieces.push(CapturedRelocationPiece {
                         path,
                         span,
@@ -5394,6 +5419,13 @@ struct IndexSegmentSpan {
     /// apply: no dump reflects such a record, so no anchor makes the piece droppable and the
     /// piece must say so in the one number the sweep reads.
     max_applied_wal: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IndexReadMode {
+    Locked,
+    CapturedPrefix,
+    CheckpointCapture,
 }
 
 /// Only the checkpoint that consumed this capture may use it after durable publication.
@@ -8291,6 +8323,109 @@ mod tests {
             .append_delta(6, Vec::new(), Vec::new(), Some(9), Some(newer.clone()), false, true)
             .unwrap();
         assert_eq!(store.latest_slab_catalog(6).unwrap().unwrap(), newer);
+    }
+
+    fn restore_catalog(version: u64) -> MetaItem {
+        MetaItem {
+            version, start_wal_sequence: version, timestamp_ms: version, slab_version: version,
+            slabs: vec![SlabCatalogEntry {
+                block_slab_id: 0, state: SlabCatalogState::Active,
+                physical_bytes: version, logical_bytes: version,
+                created_unix_ms: None, updated_unix_ms: None,
+                first_block_id: None, last_block_id: None, version,
+            }],
+        }
+    }
+
+    #[test]
+    fn restore_prefix_folds_records_and_catalog_once() {
+        let _rolling = roll_at(1);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        let catalog = restore_catalog(1);
+        store.append_delta(7, vec![], vec![], Some(1), Some(catalog.clone()), false, true).unwrap();
+        store.append_delta(7, vec![block_item(1, "data", false)], vec![], Some(9), None, true, true).unwrap();
+        store.append_delta(7, vec![], vec![], Some(10), Some(MetaItem::default()), false, true).unwrap();
+        drop(store);
+        let store = LocalIndexLogStore::new(dir.path());
+        let bytes: u64 = index_log_segment_paths(dir.path(), 7).iter()
+            .map(|path| path.metadata().unwrap().len()).sum();
+        let (before, reads_before) = index_log_piece_read_counts_on_this_thread();
+        let mut sequences = Vec::new();
+        let recovered = store.recover_delta_records(7, |record| sequences.push(record.sequence)).unwrap();
+        let (after, reads_after) = index_log_piece_read_counts_on_this_thread();
+        assert_eq!(sequences, vec![1, 2, 3]);
+        assert_eq!(recovered, Some(catalog), "empty metadata must not hide the sealed catalog");
+        assert_eq!(after - before, bytes, "each retained byte must be read only once");
+        assert_eq!(reads_after - reads_before, 3);
+    }
+
+    #[test]
+    fn restore_prefix_rejects_corruption_after_a_valid_catalog() {
+        let _rolling = roll_at(0);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store.append_delta(7, vec![], vec![], Some(1), Some(restore_catalog(1)), false, true).unwrap();
+        let mut file = std::fs::OpenOptions::new().append(true).open(index_log_path(dir.path(), 7)).unwrap();
+        use std::io::Write;
+        file.write_all(&crate::log_framing::encode_record(b"not an index record")).unwrap();
+        file.sync_all().unwrap();
+        let mut seen = 0;
+        assert!(store.recover_delta_records(7, |_| seen += 1).is_err());
+        assert_eq!(seen, 1, "the valid prefix must be encountered before corruption");
+    }
+
+    #[test]
+    fn restore_prefix_recovers_the_protobuf_catalog() {
+        struct WriterReset(bool);
+        impl Drop for WriterReset {
+            fn drop(&mut self) { PROTOBUF_WRITER_ON_THIS_THREAD.with(|flag| flag.set(self.0)); }
+        }
+        let previous = PROTOBUF_WRITER_ON_THIS_THREAD.with(|flag| flag.replace(true));
+        let _reset = WriterReset(previous);
+        restore_prefix_folds_records_and_catalog_once();
+    }
+
+    #[test]
+    fn restore_prefix_yields_to_append_and_excludes_rotated_tail() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        for rotate in [false, true] {
+            let _rolling = roll_at(0);
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalIndexLogStore::new(dir.path());
+            store.append_delta(7, vec![], vec![], Some(1), Some(restore_catalog(1)), false, true).unwrap();
+            let (started_tx, started_rx) = mpsc::sync_channel(1);
+            let (release_tx, release_rx) = mpsc::sync_channel(1);
+            let reader = store.clone();
+            let reading = std::thread::spawn(move || {
+                let mut seen = Vec::new();
+                let mut started = Some(started_tx);
+                let catalog = reader.recover_delta_records(7, |record| {
+                    seen.push(record.sequence);
+                    if let Some(sender) = started.take() {
+                        sender.send(()).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+                    }
+                }).unwrap();
+                (seen, catalog)
+            });
+            started_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let writer = store.clone();
+            let (done_tx, done_rx) = mpsc::sync_channel(1);
+            let writing = std::thread::spawn(move || {
+                let _rolling = roll_at(if rotate { 1 } else { 0 });
+                writer.append_delta(7, vec![], vec![], Some(2), Some(restore_catalog(2)), false, true).unwrap();
+                done_tx.send(()).unwrap();
+            });
+            let completed = done_rx.recv_timeout(Duration::from_secs(5));
+            release_tx.send(()).unwrap();
+            let (seen, catalog) = reading.join().unwrap();
+            writing.join().unwrap();
+            assert!(completed.is_ok(), "restore decoding held the append mutex");
+            assert_eq!(seen, vec![1]);
+            assert_eq!(catalog, Some(restore_catalog(1)), "late metadata escaped the captured prefix");
+        }
     }
 
     /// The interval holds a second dump off, and a shard that has never dumped is not held.
