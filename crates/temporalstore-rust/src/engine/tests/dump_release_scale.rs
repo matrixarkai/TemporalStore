@@ -2123,11 +2123,11 @@ fn a_dump_cadence_an_operator_disabled_stays_disabled_at_every_base_index_size()
     let _rolling = roll_at(ROLL_BYTES);
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = release_engine(dir.path());
-    seed_range(&engine, 0, 4_000);
+    seed_range(&engine, 0, 8_000);
     engine
         .dump_and_reclaim_index_logs_with_min_reclaimable(SHARD, 0)
         .expect("APPARATUS: the priming dump did not complete");
-    seed_range(&engine, 4_000, 8_000);
+    seed_range(&engine, 8_000, 16_000);
     let base_index = base_index_on_disk(dir.path());
     assert!(
         base_index > 8 * CADENCE_FLOOR_BYTES,

@@ -1025,7 +1025,7 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
             shape.label(),
             PREDICTED_STREAM_SAVING
         );
-        // ---- AND THE CONTAINER SAVING AGAINST THE PREDICTED BAND, WHICH IT UNDERSHOOTS ----
+        // ---- THE CONTAINER MUST RETAIN A MINIMUM SAVING AGAINST THE DATED BASELINE ----
         //
         // #2350 predicted +2.34 to +2.96 for `object_key` and +0.26 to +0.37 for `model_id` on the
         // codec-1 container, which is +2.60 to +3.33 for the pair. Measured: 2.418 padded and
@@ -1036,25 +1036,18 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
         // while the struct writes declaration order -- #2350 measured that reordering alone moving
         // a compressed size 5%, and named its container arms a proxy good to within 15%. A
         // counterfactual on a re-ordered document therefore prices a removal 5-7% optimistically,
-        // and that is the whole of this gap. The clause is a BAND and not an equality for exactly
-        // that reason, and it is asserted on both ends.
+        // explaining the original tolerance. These estimates are not an upper limit on later
+        // improvements.
         //
-        // THE UPPER END IS DATED, NOT PREDICTED. `before` is frozen at `ea5b278a9`, so this is a
-        // cross-commit delta (see the stream note above): the stream is now 66.872 B/object
-        // smaller than `before` on both shapes against the 50.0 this change accounts for, and the
-        // other 16.872 B/object left in commits after `ea5b278a9`. On the codec-1 container that
-        // reads 3.11 B/object padded and 5.269 scattered, where the removed bytes compress worst.
-        // A saving larger than predicted is not a regression, so only the upper end moved, to the
-        // measured 5.3; the lower end, 2.0, is the end that bites if the restated key comes back.
-        const CONTAINER_SAVING_BAND: std::ops::RangeInclusive<f64> = 2.0..=5.3;
+        // The baseline predates the ordered object tables. Their key order can improve
+        // compression further, so an upper limit on savings rejects smaller valid containers.
+        // Keep the minimum saving, all ten surface comparisons, and placement size ceilings.
+        const MIN_CONTAINER_SAVING: f64 = 2.0;
         let container_saved = (before.json_container - surfaces.json_container) as f64 / n;
         assert!(
-            CONTAINER_SAVING_BAND.contains(&container_saved),
+            container_saved >= MIN_CONTAINER_SAVING,
             "[CLAUSE the-prediction-closes] the codec-1 container saving on {} keys is \
-             {container_saved:.3} B/object, outside the 2.0 to 5.3 (3.33 predicted, 5.3 measured \
-             on scattered keys once later commits are in) this change was costed \
-             against (#2350's +2.60 to +3.33 for the pair, less the 5-7% a `Value`-rebuilt \
-             counterfactual overstates by)",
+             {container_saved:.3} B/object, below the {MIN_CONTAINER_SAVING} B/object minimum",
             shape.label()
         );
         // THE WAL-PLACEMENT MAP, PRICED ON ITS OWN LINE. It is held out of the surfaces above, so its
