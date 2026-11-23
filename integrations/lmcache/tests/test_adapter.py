@@ -6,6 +6,7 @@ import sys
 import threading
 import types
 import unittest
+from unittest.mock import Mock, patch
 
 
 class Bitmap:
@@ -157,6 +158,39 @@ class AdapterTest(unittest.TestCase):
             self.assertEqual(adapter._data.timeout_seconds, 8)
         finally:
             adapter.close()
+
+    def test_remote_lookup_skips_queued_work_after_transport_failure_then_recovers(self):
+        adapter = adapter_module.TemporalStoreL2Adapter({"remote_storage": True})
+        self.addCleanup(adapter.close)
+        key = Key("remote")
+        batch = Mock(side_effect=[
+            TimeoutError("replica unavailable"),
+            [{"kind": "integer", "value": 1}],
+            [{"kind": "integer", "value": 0}],
+            [{"kind": "integer", "value": 1}],
+        ])
+        adapter._lookup_data.batch_execute = batch
+
+        with patch.object(adapter_module, "monotonic", return_value=10.0) as clock:
+            tasks = [adapter.submit_lookup_and_lock_task([key], {}) for _ in range(8)]
+            adapter._lookup_pool.submit(lambda: None).result(timeout=2)
+
+            self.assertTrue(adapter._lookup_event.event.is_set())
+            for task in tasks:
+                self.assertEqual(adapter.query_lookup_and_lock_result(task).bits, [False])
+            self.assertEqual(batch.call_count, 1)
+            self.assertEqual(adapter._locked, {})
+
+            clock.return_value = 11.0
+            for expected in (True, False, True):
+                adapter._lookup_event.event.clear()
+                task = adapter.submit_lookup_and_lock_task([key], {})
+                self.assertTrue(adapter._lookup_event.event.wait(2))
+                self.assertEqual(adapter.query_lookup_and_lock_result(task).bits, [expected])
+                if expected:
+                    adapter.submit_unlock([key])
+            self.assertEqual(batch.call_count, 4)
+            self.assertEqual(adapter._locked, {})
 
     def test_submissions_after_close_complete_as_cache_misses(self):
         adapter = self.adapter

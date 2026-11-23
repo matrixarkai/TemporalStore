@@ -46,24 +46,31 @@ others; choose the API and acknowledgement policy before measuring a workload.
 
 ### LLM KV cache with LMCache and vLLM
 
-TemporalStore can serve as the L2 storage tier for LMCache. vLLM uses
-`LMCacheMPConnector` to send and retrieve KV blocks through the LMCache server,
-so a worker serving the same model and KV layout can reuse a cached prefix. The adapter streams KV
-payloads through the datanode's blob API and batches metadata operations for
-lookup and expiry.
+TemporalStore provides an L2 storage tier for LMCache. vLLM's
+`LMCacheMPConnector` exchanges KV blocks with a local LMCache server.
+TemporalStore streams the block payloads through its blob API and batches
+metadata commands for lookup and expiry. Workers attached to the same LMCache
+server can reuse a prompt prefix when the model and KV layout match.
 
-1. Start a TemporalStore datanode and install the Python adapter from this
-   checkout with `python -m pip install ./integrations/feast ./integrations/lmcache`.
-2. Start LMCache with the TemporalStore adapter and point it at the datanode's
-   blob and command endpoints.
-3. Start vLLM with `LMCacheMPConnector`. To verify an L2 hit, clear LMCache L1
-   on the test deployment and repeat a prompt after its KV blocks have been
-   stored. The TemporalStore adapter's load counter should increase.
+1. Start a TemporalStore datanode. Install the adapter and its command client
+   from this checkout with `python -m pip install ./integrations/feast ./integrations/lmcache`.
+2. Start LMCache with the TemporalStore adapter. Point the blob and command URLs
+   at the same datanode. Use a separate adapter for each independent datanode
+   when configuring replicas.
+3. Start vLLM with `LMCacheMPConnector`. On a test deployment, disable vLLM's
+   prefix cache, send a prompt, and wait for the adapter's store counter to
+   increase. Clear LMCache L1 with `POST /cache/clear` and repeat the prompt.
+   The adapter's load counter in `GET /status` confirms TemporalStore served it.
 
-The adapter supports a capacity budget, eviction, and optional metadata
-expiry. For redundancy, configure an adapter for each independent datanode.
-With LMCache's default store policy, each block is sent to all configured
-replicas and can be loaded from a reachable replica that accepted it.
+The adapter enforces a capacity budget per process and evicts unlocked entries.
+Use one writer per namespace to enforce that budget. Metadata expiry controls
+lookup visibility. Eviction or explicit deletion reclaims the payload.
+LMCache's default store policy sends each block to all configured replicas,
+and a reachable replica can serve blocks it accepted.
+
+In a local WSL test with two CPU vLLM workers, eight concurrent clients, and
+three datanodes, all 64 cross-worker replays loaded their KV blocks from L2.
+All 32 replays also succeeded with one datanode disconnected.
 
 See the [LMCache integration guide](integrations/lmcache/README.md) for
 configuration, replica setup, a vLLM smoke test, and the L2 benchmark.
