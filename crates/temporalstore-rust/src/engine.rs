@@ -8876,6 +8876,15 @@ fn absorb_live_block_slab_ids(
 fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     let mut ids = BTreeSet::new();
     let mut visited = 0u64;
+    // Serving maps omit removals, but block-derived listings still read their physical markers.
+    // The reconciled tombstone rows retain those addresses until their entries are retired.
+    absorb_live_block_slab_ids(
+        &mut ids,
+        &mut visited,
+        shard.bucket_index.bucket_map.values()
+            .flat_map(|bucket| bucket.tombstone_elements.iter())
+            .map(|row| row.block.0),
+    );
     absorb_live_block_slab_ids(
         &mut ids,
         &mut visited,

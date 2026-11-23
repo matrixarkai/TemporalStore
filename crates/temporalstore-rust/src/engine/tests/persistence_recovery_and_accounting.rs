@@ -22335,9 +22335,9 @@ fn the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log() {
 /// that reason. Warming first gives the listing something to return, and then the ENTRY count is
 /// the load-independent statement of what was being paid.
 ///
-/// Sampled index eviction leaves the independently budgeted page cache alone, so the idle cycle
-/// needs no listing. An explicit inspection of the warm cache is the positive control: it must
-/// increment both counters before they are reset for the cycle, or zero would prove nothing.
+/// The default idle round pays for no cache listing, including its eviction stage.
+/// A separate inspection of the warmed cache proves that the counters are active
+/// and that a listing would visit entries before the cycle counters are reset.
 #[test]
 fn the_pressure_snapshot_reads_cache_stats_without_listing_the_cache() {
     const KEYS: usize = 400;
@@ -22404,15 +22404,8 @@ fn the_pressure_snapshot_reads_cache_stats_without_listing_the_cache() {
          {listed_entries} listed entries"
     );
 
-    assert_eq!(
-        listings, 0,
-        "the idle round made {listings} cache listings; pressure snapshots and sampled index \
-         eviction must leave the page cache unlisted"
-    );
-    assert_eq!(
-        listed_entries, 0,
-        "the idle round listed {listed_entries} entries from a warm cache holding {occupancy}"
-    );
+    assert_eq!(listings, 0, "the idle cycle must not list the record cache");
+    assert_eq!(listed_entries, 0, "the idle cycle must not visit cache entries");
 }
 
 /// THE SHIPPED DUMP GATE DECIDES ON BYTES, AND THE RECORD TRIGGER IS STILL THERE TO BE SET.
