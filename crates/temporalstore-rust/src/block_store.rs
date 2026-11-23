@@ -3055,6 +3055,10 @@ impl BlockStore {
         // name that is not a slab all make the counts differ, so each of them answers "not known".
         inner.quarantine_known_empty =
             !budget_exhausted && examined == purged.len() + restored.len();
+        if inner.quarantine_known_empty {
+            // Nothing remains to check against a live set; later arrivals invalidate this epoch.
+            inner.quarantine_checked_arrivals = inner.quarantine_arrivals;
+        }
         purged.sort_unstable();
         restored.sort_unstable();
         restore_blocked.sort_unstable();
