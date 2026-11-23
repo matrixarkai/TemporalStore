@@ -737,7 +737,7 @@ fn main() {
                 lmcache_blob_inventory::handle(&request.body, &blob_store)
             }
             ("POST", "/batch_delete_blobs") => {
-                handle_blob_batch_delete(&request.body, &blob_store, &handler_block_runtime)
+                handle_blob_batch_delete(&request.body, &blob_store)
             }
 
             ("GET", "/metrics") => {
@@ -1393,7 +1393,6 @@ struct BlobDeleteBatchRequest {
 fn handle_blob_batch_delete(
     body: &[u8],
     blob_store: &FileObjectStore,
-    runtime: &tokio::runtime::Runtime,
 ) -> (u16, Vec<u8>) {
     if body.len() > MAX_BLOB_DELETE_BATCH_BODY {
         return json_response(
@@ -1416,14 +1415,21 @@ fn handle_blob_batch_delete(
             &Status::error("blob_delete_batch_too_large", "at most 256 blob keys per batch"),
         );
     }
-    let deleted = runtime.block_on(async {
-        let mut deleted = Vec::with_capacity(request.keys.len());
-        for key in request.keys {
-            deleted.push(!key.is_empty() && blob_store.delete(&key).await.is_ok());
-        }
-        deleted
-    });
+    // The HTTP listener already runs this request on its own thread.
+    let deleted: Vec<_> = request
+        .keys
+        .iter()
+        .map(|key| !key.is_empty() && delete_local_blob(blob_store, key).is_ok())
+        .collect();
     json_response(200, &serde_json::json!({ "deleted": deleted }))
+}
+
+fn delete_local_blob(blob_store: &FileObjectStore, key: &str) -> std::io::Result<()> {
+    let path = blob_store.object_path(key).map_err(std::io::Error::other)?;
+    match fs::remove_file(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
 }
 
 const MAX_BLOB_BATCH_KEYS: usize = 32;
@@ -1771,7 +1777,7 @@ fn handle_blob_stream(
                 );
                 return StreamAction::Handled;
             }
-            match runtime.block_on(blob_store.delete(key)) {
+            match delete_local_blob(blob_store, key) {
                 Ok(()) => write_stream_json(transfer, 200, &Status::ok()),
                 Err(err) => write_stream_json(
                     transfer,
@@ -3255,24 +3261,25 @@ mod tests {
         std::fs::write(root.join("valid"), b"blob").unwrap();
         std::fs::write(work.path().join("outside"), b"keep").unwrap();
         let store = FileObjectStore::new(root.clone());
-        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        fs::create_dir(root.join("directory")).unwrap();
 
         let oversized = serde_json::to_vec(
             &serde_json::json!({"keys": vec!["valid"; MAX_BLOB_DELETE_BATCH_KEYS + 1]}),
         )
         .unwrap();
-        assert_eq!(400, handle_blob_batch_delete(&oversized, &store, &runtime).0);
+        assert_eq!(400, handle_blob_batch_delete(&oversized, &store).0);
         assert!(root.join("valid").is_file());
 
-        let request = br#"{"keys":["valid","missing","../outside","","valid"]}"#;
-        let (status, reply) = handle_blob_batch_delete(request, &store, &runtime);
+        let request = br#"{"keys":["valid","missing","directory","../outside","","valid"]}"#;
+        let (status, reply) = handle_blob_batch_delete(request, &store);
         assert_eq!(200, status);
         let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
         assert_eq!(
             reply["deleted"],
-            serde_json::json!([true, true, false, false, true])
+            serde_json::json!([true, true, false, false, false, true])
         );
         assert!(!root.join("valid").exists());
+        assert!(root.join("directory").is_dir());
         assert!(work.path().join("outside").is_file());
     }
 

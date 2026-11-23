@@ -261,6 +261,20 @@ class BlobClientTest(unittest.TestCase):
         self.assertEqual(BlobHandler.blobs, {})
         self.assertEqual(len(BlobHandler.mutation_addresses), 3)
 
+    def test_canonical_namespace_uses_only_one_path_for_reads_and_deletes(self):
+        self.client.close()
+        self.client = BlobClient(f"http://127.0.0.1:{self.server.server_port}", legacy_names=False)
+        BlobHandler.supports_batch_deletes = True
+        self.client.put("anonymous/owned", memoryview(b"legacy"))
+        out = memoryview(bytearray(6))
+        self.assertFalse(self.client.get_into("owned", out))
+        self.assertEqual(len(BlobHandler.read_addresses), 1)
+
+        self.client.put("owned", memoryview(b"new"))
+        self.assertEqual(self.client.delete_many(["owned", "missing"]), [True, True])
+        self.assertEqual(BlobHandler.batch_deletes, [["owned", "missing"]])
+        self.assertEqual(BlobHandler.blobs, {"/blob/anonymous/owned": b"legacy"})
+
     def test_batch_write_matches_ordered_receipts_and_binary_payloads(self):
         BlobHandler.supports_batch_writes = True
         items = [("first", memoryview(b"abc")), ("blocked", memoryview(b"longer")),
