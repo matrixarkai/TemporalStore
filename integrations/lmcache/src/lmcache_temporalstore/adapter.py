@@ -280,22 +280,25 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             self._delete_batch(keys[offset:offset + _DELETE_BATCH_SIZE])
 
     def _delete_batch(self, keys: list[ObjectKey]) -> None:
-        reserved = set()
-        commands = {}
+        reserved = []
         try:
-            for key in keys:
-                with self._lock:
+            with self._lock:
+                for key in keys:
                     if key in self._locked or key in self._evicting:
                         continue
                     self._evicting.add(key)
-                    reserved.add(key)
-                try:
-                    blob_name, metadata_name = self._key_names(key)
-                    self._blob.delete(blob_name)
-                except Exception:
-                    logger.exception("TemporalStore L2 blob delete failed")
-                    continue
-                commands[key] = {"kind": "common_delete", "key": metadata_name}
+                    reserved.append(key)
+            names = [self._key_names(key) for key in reserved]
+            try:
+                removed = self._blob.delete_many([blob for blob, _ in names])
+            except Exception:
+                logger.exception("TemporalStore L2 blob delete batch failed")
+                return
+            commands = {
+                key: {"kind": "common_delete", "key": metadata}
+                for key, (_, metadata), deleted in zip(reserved, names, removed)
+                if deleted
+            }
             if not commands:
                 return
 

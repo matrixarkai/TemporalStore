@@ -117,6 +117,17 @@ class FakeBlob:
     def delete(self, name):
         self.values.pop(name, None)
 
+    def delete_many(self, names):
+        result = []
+        for name in names:
+            try:
+                self.delete(name)
+            except OSError:
+                result.append(False)
+            else:
+                result.append(True)
+        return result
+
     def close(self):
         pass
 
