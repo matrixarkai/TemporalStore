@@ -4,7 +4,9 @@ This package provides an LMCache multiprocess L2 adapter. KV payloads use the
 datanode's raw `PUT` and `GET /blob/<key>` route. Existence, expiry, and deletion
 use the datanode command protocol through the existing Feast TemporalStore
 client. The adapter also uses `DELETE /blob/<key>` to reclaim payloads when it
-evicts entries.
+evicts entries. Explicit batch deletion uses the datanode's
+`POST /batch_delete_blobs` route when available and falls back to individual
+DELETE requests on older datanodes.
 
 Install the Feast integration and this package from the same TemporalStore
 checkout, alongside an LMCache installation with its native module available:

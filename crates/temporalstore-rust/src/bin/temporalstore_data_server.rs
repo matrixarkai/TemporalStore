@@ -731,6 +731,10 @@ fn main() {
         }
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => json_response(200, &Status::ok()),
+            ("POST", "/batch_delete_blobs") => {
+                handle_blob_batch_delete(&request.body, &blob_store, &handler_block_runtime)
+            }
+
             ("GET", "/metrics") => {
                 let mut metrics = engine.prometheus_metrics();
                 append_ingestion_metrics(&mut metrics, &engine);
@@ -1371,6 +1375,50 @@ fn handle_readiness_route(request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
         }
         _ => None,
     }
+}
+
+const MAX_BLOB_DELETE_BATCH_KEYS: usize = 256;
+const MAX_BLOB_DELETE_BATCH_BODY: usize = 512 * 1024;
+
+#[derive(serde::Deserialize)]
+struct BlobDeleteBatchRequest {
+    keys: Vec<String>,
+}
+
+fn handle_blob_batch_delete(
+    body: &[u8],
+    blob_store: &FileObjectStore,
+    runtime: &tokio::runtime::Runtime,
+) -> (u16, Vec<u8>) {
+    if body.len() > MAX_BLOB_DELETE_BATCH_BODY {
+        return json_response(
+            413,
+            &Status::error("blob_delete_batch_too_large", "blob delete batch body exceeds 512 KiB"),
+        );
+    }
+    let request: BlobDeleteBatchRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(_) => {
+            return json_response(
+                400,
+                &Status::error("bad_request", "blob delete batch requires a keys array"),
+            );
+        }
+    };
+    if request.keys.len() > MAX_BLOB_DELETE_BATCH_KEYS {
+        return json_response(
+            400,
+            &Status::error("blob_delete_batch_too_large", "at most 256 blob keys per batch"),
+        );
+    }
+    let deleted = runtime.block_on(async {
+        let mut deleted = Vec::with_capacity(request.keys.len());
+        for key in request.keys {
+            deleted.push(!key.is_empty() && blob_store.delete(&key).await.is_ok());
+        }
+        deleted
+    });
+    json_response(200, &serde_json::json!({ "deleted": deleted }))
 }
 
 /// Streamed attachment endpoint (zero-copy / no full-body buffering).
@@ -2910,6 +2958,35 @@ mod tests {
     use super::*;
 
     const TEST_CACHE_BYTES: usize = 1024;
+
+    #[test]
+    fn blob_batch_delete_returns_status_in_key_order_and_preserves_invalid_paths() {
+        let work = tempdir().unwrap();
+        let root = work.path().join("blobs");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("valid"), b"blob").unwrap();
+        std::fs::write(work.path().join("outside"), b"keep").unwrap();
+        let store = FileObjectStore::new(root.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+
+        let oversized = serde_json::to_vec(
+            &serde_json::json!({"keys": vec!["valid"; MAX_BLOB_DELETE_BATCH_KEYS + 1]}),
+        )
+        .unwrap();
+        assert_eq!(400, handle_blob_batch_delete(&oversized, &store, &runtime).0);
+        assert!(root.join("valid").is_file());
+
+        let request = br#"{"keys":["valid","missing","../outside","","valid"]}"#;
+        let (status, reply) = handle_blob_batch_delete(request, &store, &runtime);
+        assert_eq!(200, status);
+        let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+        assert_eq!(
+            reply["deleted"],
+            serde_json::json!([true, true, false, false, true])
+        );
+        assert!(!root.join("valid").exists());
+        assert!(work.path().join("outside").is_file());
+    }
 
     #[test]
     fn control_state_set_and_get_is_a_replicated_write_not_a_local_read() {

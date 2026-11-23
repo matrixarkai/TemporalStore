@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import http.client
 import http.server
+import json
 import threading
 import unittest
 
@@ -13,6 +14,8 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
     read_addresses = []
     mutation_addresses = []
     drop_next_get = False
+    batch_deletes = []
+    supports_batch_deletes = False
 
     def do_PUT(self):
         BlobHandler.mutation_addresses.append(self.client_address)
@@ -47,6 +50,25 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def do_POST(self):
+        names = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["keys"]
+        BlobHandler.batch_deletes.append(names)
+        if not BlobHandler.supports_batch_deletes:
+            self.send_error(404)
+            return
+        deleted = []
+        for key in names:
+            if key == "blocked":
+                deleted.append(False)
+                continue
+            self.blobs.pop(f"/blob/{key}", None)
+            deleted.append(True)
+        data = json.dumps({"deleted": deleted}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_DELETE(self):
         BlobHandler.mutation_addresses.append(self.client_address)
         self.blobs.pop(self.path, None)
@@ -64,6 +86,8 @@ class BlobClientTest(unittest.TestCase):
         BlobHandler.read_addresses = []
         BlobHandler.mutation_addresses = []
         BlobHandler.drop_next_get = False
+        BlobHandler.batch_deletes = []
+        BlobHandler.supports_batch_deletes = False
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), BlobHandler)
         self.thread = threading.Thread(target=self.server.serve_forever)
         self.thread.start()
@@ -143,6 +167,25 @@ class BlobClientTest(unittest.TestCase):
         first, dropped, reconnected = BlobHandler.mutation_addresses
         self.assertEqual(first, dropped)
         self.assertNotEqual(first, reconnected)
+
+    def test_batch_deletes_both_key_names_and_preserves_partial_results(self):
+        BlobHandler.supports_batch_deletes = True
+        self.client.put("key", memoryview(b"data"))
+        self.client.put("anonymous/key", memoryview(b"data"))
+        self.client.put("blocked", memoryview(b"data"))
+        self.assertEqual(self.client.delete_many(["key", "blocked"]), [True, False])
+        self.assertEqual(BlobHandler.batch_deletes, [
+            ["key", "anonymous/key", "blocked", "anonymous/blocked"],
+        ])
+        self.assertEqual(BlobHandler.blobs, {"/blob/blocked": b"data"})
+        self.assertEqual(len(BlobHandler.mutation_addresses), 3)
+
+    def test_missing_batch_endpoint_uses_individual_deletes(self):
+        self.client.put("key", memoryview(b"data"))
+        self.assertEqual(self.client.delete_many(["key"]), [True])
+        self.assertEqual(BlobHandler.batch_deletes, [["key", "anonymous/key"]])
+        self.assertEqual(BlobHandler.blobs, {})
+        self.assertEqual(len(BlobHandler.mutation_addresses), 3)
 
 
 if __name__ == "__main__":
