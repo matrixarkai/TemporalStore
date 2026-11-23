@@ -112,7 +112,9 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         if not isfinite(lookup_timeout) or lookup_timeout <= 0:
             raise ValueError("lookup_timeout_seconds must be finite and positive")
         super().__init__(capacity)
-        self._blob = BlobClient(config.blob_url, config.timeout_seconds)
+        self._blob = BlobClient(
+            config.blob_url, config.timeout_seconds, reuse_read_connection=True,
+        )
         from urllib.parse import urlsplit
         data = urlsplit(config.data_url)
         if data.scheme != "http" or not data.hostname:
@@ -469,6 +471,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         if self._lookup_data is not self._data:
             self._lookup_data.close()
         self._data.close()
+        self._blob.close()
         self._store_event.close()
         self._lookup_event.close()
         self._load_event.close()
