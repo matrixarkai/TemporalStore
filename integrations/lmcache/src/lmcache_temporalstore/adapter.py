@@ -32,6 +32,8 @@ from .blob import BlobClient
 logger = logging.getLogger(__name__)
 _DELETE_BATCH_SIZE = 128
 _STORE_UPLOAD_BATCH_SIZE = 32
+_INVENTORY_RETRY_INITIAL_SECONDS = 0.25
+_INVENTORY_RETRY_MAX_SECONDS = 2.0
 
 
 def _names(key: ObjectKey, namespace: str = "") -> tuple[str, str]:
@@ -124,6 +126,12 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             sha256(config.namespace.encode("utf-8")).digest() if config.recover_capacity else b""
         )
         self._inventory_namespace = self._inventory_scope.hex()
+        self._lock = threading.Lock()
+        self._closed = False
+        self._inventory_ready = not config.recover_capacity
+        self._inventory_error: str | None = None
+        self._inventory_stop = threading.Event()
+        self._inventory_thread: threading.Thread | None = None
         self._entries: OrderedDict[ObjectKey | bytes, int] = OrderedDict()
         self._object_keys: dict[bytes, ObjectKey] = {}
         self._uncertain: set[bytes] = set()
@@ -147,25 +155,34 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 host=data.hostname, port=data.port or 80,
                 shard_id=config.shard_id, timeout_seconds=lookup_timeout,
             )
+        retry_inventory = None
         if self._inventory_namespace:
+            inventory_blob = BlobClient(
+                config.blob_url, min(config.timeout_seconds, lookup_timeout),
+                reuse_mutation_connection=True,
+            )
             try:
-                self._entries.update(self._blob.inventory(self._inventory_namespace))
-                self._used = sum(self._entries.values())
+                self._restore_inventory(inventory_blob)
+            except (OSError, HTTPException) as error:
+                self._inventory_error = type(error).__name__
+                logger.warning("TemporalStore L2 inventory unavailable at startup: %s", error)
+                retry_inventory = inventory_blob
             except Exception:
                 self._blob.close()
                 self._data.close()
                 if self._lookup_data is not self._data:
                     self._lookup_data.close()
                 raise
+            finally:
+                if retry_inventory is None:
+                    inventory_blob.close()
         self._store_event = create_event_notifier()
         self._lookup_event = create_event_notifier()
         self._load_event = create_event_notifier()
         self._store_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ts-l2-store")
         self._lookup_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ts-l2-lookup")
         self._load_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ts-l2-load")
-        self._lock = threading.Lock()
         self._next_id = 0
-        self._closed = False
         self._locked: dict[ObjectKey | bytes, int] = {}
         self._evicting: set[ObjectKey | bytes] = set()
         self._publishing: set[ObjectKey | bytes] = set()
@@ -175,6 +192,43 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         self._done_store: dict[L2TaskId, L2StoreResult] = {}
         self._done_lookup: dict[L2TaskId, Bitmap] = {}
         self._done_load: dict[L2TaskId, Bitmap] = {}
+        if retry_inventory is not None:
+            self._inventory_thread = threading.Thread(
+                target=self._retry_inventory, args=(retry_inventory,), name="ts-l2-inventory", daemon=True,
+            )
+            self._inventory_thread.start()
+
+    def _restore_inventory(self, blob: BlobClient) -> None:
+        entries = OrderedDict(blob.inventory(self._inventory_namespace, self._inventory_stop))
+        used = sum(entries.values())
+        with self._lock:
+            if self._closed:
+                return
+            self._entries = entries
+            self._used = used
+            self._inventory_error = None
+            self._inventory_ready = True
+
+    def _retry_inventory(self, blob: BlobClient) -> None:
+        delay = _INVENTORY_RETRY_INITIAL_SECONDS
+        try:
+            while not self._inventory_stop.wait(delay):
+                try:
+                    self._restore_inventory(blob)
+                except (OSError, HTTPException) as error:
+                    with self._lock:
+                        self._inventory_error = type(error).__name__
+                    delay = min(delay * 2, _INVENTORY_RETRY_MAX_SECONDS)
+                except Exception as error:
+                    with self._lock:
+                        self._inventory_error = type(error).__name__
+                    logger.exception("TemporalStore L2 inventory could not be loaded")
+                    return
+                else:
+                    return
+        finally:
+            blob.close()
+
 
     def get_store_event_fd(self) -> int:
         return self._store_event.fileno()
@@ -196,8 +250,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
     ) -> L2TaskId:
         with self._lock:
             task_id = self._allocate_task_id()
-            if self._closed:
+            if self._closed or not self._inventory_ready:
                 self._done_store[task_id] = L2StoreResult(False, 0)
+                if not self._closed:
+                    self._store_event.notify()
             else:
                 self._store_pool.submit(self._store, task_id, list(keys), list(objects))
         return task_id
@@ -212,8 +268,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
     ) -> L2TaskId:
         with self._lock:
             task_id = self._allocate_task_id()
-            if self._closed:
+            if self._closed or not self._inventory_ready:
                 self._done_lookup[task_id] = Bitmap(len(keys))
+                if not self._closed:
+                    self._lookup_event.notify()
             else:
                 self._lookup_pool.submit(self._lookup, task_id, list(keys))
         return task_id
@@ -237,8 +295,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
     ) -> L2TaskId:
         with self._lock:
             task_id = self._allocate_task_id()
-            if self._closed:
+            if self._closed or not self._inventory_ready:
                 self._done_load[task_id] = Bitmap(len(keys))
+                if not self._closed:
+                    self._load_event.notify()
             else:
                 self._load_pool.submit(self._load, task_id, list(keys), list(objects))
         return task_id
@@ -254,8 +314,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
     def report_status(self) -> dict:
         with self._lock:
             return {
-                "is_healthy": not self._closed,
+                "is_healthy": not self._closed and self._inventory_ready,
                 "adapter": "temporalstore",
+                "inventory_ready": self._inventory_ready,
+                "inventory_error": self._inventory_error,
                 "stores": self._stores,
                 "loads": self._loads,
                 "lookups": self._lookups,
@@ -321,7 +383,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
 
     def delete(self, keys: list[ObjectKey]) -> None:
         with self._lock:
-            if not self._closed:
+            if not self._closed and self._inventory_ready:
                 self._store_pool.submit(self._delete_many, list(keys))
 
     def _delete_many(self, keys: list[ObjectKey]) -> None:
@@ -618,6 +680,9 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             if self._closed:
                 return
             self._closed = True
+            self._inventory_stop.set()
+        if self._inventory_thread is not None:
+            self._inventory_thread.join()
         for pool in (self._store_pool, self._lookup_pool, self._load_pool):
             pool.shutdown(wait=True)
         if self._lookup_data is not self._data:

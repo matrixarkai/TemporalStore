@@ -70,6 +70,12 @@ space. Accesses in the current process update eviction order. This mode
 uses a versioned key layout. Plan for a cold cache when switching an existing
 namespace to it. Recovery namespaces use their canonical blob paths for reads
 and deletes. Legacy payloads remain accessible with the previous setting.
+If a datanode is temporarily unreachable during startup, LMCache can
+start with the healthy datanodes. The affected adapter retries its inventory
+in the background and reports `inventory_ready: false` in `GET /status` until
+recovery completes. During that interval it reports cache misses and declines
+writes and deletes. It starts using the retained payloads after accounting for
+them, without restarting LMCache.
 
 Save the adapter JSON above in `temporalstore-l2.json`, set its URLs and
 `namespace`, set `remote_storage` to `true` for a datanode on another
