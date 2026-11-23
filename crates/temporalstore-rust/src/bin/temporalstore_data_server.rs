@@ -29,7 +29,7 @@ use temporalstore_rust::http::{
     post_json_with_options_and_headers, serve_with_stream_handler, HttpRequest,
     HttpRequestOptions, StreamAction, StreamTransfer,
 };
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use temporalstore_rust::ingestion::{FlinkCheckpointStatus, IngestionBatchRequest};
 use temporalstore_rust::meta::{
     AckResponse, GetTableTopologyRequest, LoadFinishRequest, ShardStatLoad, RegisterServerRequest,
@@ -1423,10 +1423,9 @@ fn handle_blob_batch_delete(
 
 /// Streamed attachment endpoint (zero-copy / no full-body buffering).
 ///
-/// `POST|PUT /blob/<key>` reads the request body off the socket in `chunk_bytes`
-/// slices and appends each slice straight into `ObjectStore::append_blob`, so
-/// neither the request body nor the object is ever materialized whole in memory;
-/// returns a JSON receipt. `GET /blob/<key>` `stat`s the stored object, sends the
+/// `POST|PUT /blob/<key>` copies the request body into a staging file in
+/// `chunk_bytes` slices and publishes the replacement once the full body has
+/// arrived. It returns a JSON receipt. `GET /blob/<key>` `stat`s the stored object, sends the
 /// `Content-Length`, then streams the file to the socket in `chunk_bytes` slices.
 ///
 /// The handler owns every `/blob/<key>` request (always returns
@@ -1465,7 +1464,7 @@ fn handle_blob_stream(
                 return StreamAction::Handled;
             }
             let key = key.to_string();
-            match stream_blob_upload(transfer, blob_store, runtime, chunk_bytes, &key) {
+            match stream_blob_upload(transfer, blob_store, chunk_bytes, &key) {
                 Ok((bytes_written, object_length, chunks)) => write_stream_json(
                     transfer,
                     200,
@@ -1478,7 +1477,12 @@ fn handle_blob_stream(
                     },
                 ),
                 Err(err) => {
-                    write_stream_json(transfer, 500, &Status::error("blob_write_failed", err))
+                    let _ = transfer.drain_body();
+                    write_stream_json(
+                        transfer,
+                        500,
+                        &Status::error("blob_write_failed", err.to_string()),
+                    );
                 }
             }
             StreamAction::Handled
@@ -1871,54 +1875,54 @@ fn publish_shard_checkpoint(
 
 fn stream_blob_upload(
     transfer: &mut StreamTransfer,
-    blob_store: &Arc<FileObjectStore>,
-    runtime: &Arc<tokio::runtime::Runtime>,
+    blob_store: &FileObjectStore,
     chunk_bytes: usize,
     key: &str,
-) -> Result<(u64, u64, u64), String> {
-    // Replace any prior object so an upload is idempotent.
-    runtime.block_on(async {
-        let _ = blob_store.delete(key).await;
-    });
-    let mut buf = vec![0u8; chunk_bytes];
-    let mut filled = 0usize;
-    let mut bytes_written = 0u64;
-    let mut object_length = 0u64;
+) -> std::io::Result<(u64, u64, u64)> {
+    let path = blob_store.object_path(key).map_err(std::io::Error::other)?;
+    replace_blob_from_body(&path, transfer.body_len(), chunk_bytes, |buffer| {
+        transfer.read_body(buffer)
+    })
+}
+
+fn replace_blob_from_body(
+    path: &std::path::Path,
+    length: usize,
+    chunk_bytes: usize,
+    mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
+) -> std::io::Result<(u64, u64, u64)> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("blob path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    // Keep the previous blob readable until its replacement has arrived in full.
+    let mut file = tempfile::Builder::new()
+        .prefix(".blob-upload-")
+        .tempfile_in(parent)?;
+    let mut buffer = vec![0u8; chunk_bytes.max(1).min(length)];
+    let mut remaining = length;
     let mut chunks = 0u64;
-    loop {
-        if filled == buf.len() {
-            let receipt = runtime
-                .block_on(blob_store.append_blob(key, Bytes::copy_from_slice(&buf[..filled])))
-                .map_err(|err| err.to_string())?;
-            bytes_written += receipt.bytes_written;
-            object_length = receipt.object_length;
-            chunks += 1;
-            filled = 0;
+    while remaining > 0 {
+        let size = remaining.min(buffer.len());
+        let mut filled = 0;
+        while filled < size {
+            let count = read(&mut buffer[filled..size])?;
+            if count == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "blob body ended before its declared length",
+                ));
+            }
+            filled += count;
         }
-        let n = transfer
-            .read_body(&mut buf[filled..])
-            .map_err(|err| err.to_string())?;
-        if n == 0 {
-            break;
-        }
-        filled += n;
-    }
-    if filled > 0 {
-        let receipt = runtime
-            .block_on(blob_store.append_blob(key, Bytes::copy_from_slice(&buf[..filled])))
-            .map_err(|err| err.to_string())?;
-        bytes_written += receipt.bytes_written;
-        object_length = receipt.object_length;
+        file.write_all(&buffer[..size])?;
+        remaining -= size;
         chunks += 1;
     }
-    // An empty body still creates a zero-length object so a later GET succeeds.
-    if chunks == 0 {
-        let receipt = runtime
-            .block_on(blob_store.append_blob(key, Bytes::new()))
-            .map_err(|err| err.to_string())?;
-        object_length = receipt.object_length;
-    }
-    Ok((bytes_written, object_length, chunks))
+    file.flush()?;
+    file.persist(path).map_err(|error| error.error)?;
+    let length = length as u64;
+    Ok((length, length, chunks.max(1)))
 }
 
 /// Stream a `GET /blob/<key>` response: `stat` the object, send `Content-Length`,
@@ -1942,7 +1946,7 @@ fn stream_blob_download(
     };
     let length = file.metadata()?.len() as usize;
     transfer.send_head(200, "application/octet-stream", length)?;
-    let mut buf = vec![0u8; chunk_bytes];
+    let mut buf = vec![0u8; chunk_bytes.min(length)];
     loop {
         let n = file.read(&mut buf)?;
         if n == 0 {
@@ -2958,6 +2962,31 @@ mod tests {
     use super::*;
 
     const TEST_CACHE_BYTES: usize = 1024;
+
+    #[test]
+    fn a_blob_replacement_requires_every_declared_byte_before_publishing() {
+        let work = tempdir().unwrap();
+        let key = work.path().join("nested").join("cache");
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::write(&key, b"old").unwrap();
+        let mut short = &b"part"[..];
+        let error = replace_blob_from_body(&key, 5, 3, |buffer| short.read(buffer)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(std::fs::read(&key).unwrap(), b"old");
+        assert_eq!(std::fs::read_dir(key.parent().unwrap()).unwrap().count(), 1);
+
+        let mut complete = &b"complete"[..];
+        assert_eq!(
+            replace_blob_from_body(&key, 8, 3, |buffer| complete.read(buffer)).unwrap(),
+            (8, 8, 3)
+        );
+        assert_eq!(std::fs::read(&key).unwrap(), b"complete");
+        assert_eq!(
+            replace_blob_from_body(&key, 0, 3, |_| panic!("an empty body needs no read")).unwrap(),
+            (0, 0, 1)
+        );
+        assert!(std::fs::read(&key).unwrap().is_empty());
+    }
 
     #[test]
     fn blob_batch_delete_returns_status_in_key_order_and_preserves_invalid_paths() {
