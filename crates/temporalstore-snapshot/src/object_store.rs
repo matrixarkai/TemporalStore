@@ -807,13 +807,13 @@ impl BlockingObjectRead for MatrixObjectHttpStore {
 /// `append_blob` or `compare_and_swap` compiles and then refuses at run time. The guard test
 /// in `shared_store` reads the trait and checks this impl for each method.
 #[derive(Debug, Clone)]
-pub enum NetworkedMatrixObjectStore {
+pub enum NetworkedMatrixObject {
     Gateway(MatrixObjectHttpStore),
     /// The same store, its requests answered in process by the cluster client.
     Direct(MatrixObjectHttpStore),
 }
 
-impl NetworkedMatrixObjectStore {
+impl NetworkedMatrixObject {
     /// Connect in the given mode. `target` is the gateway URI for `Gateway`.
     pub fn connect(mode: MatrixObjectMode, target: &str) -> Result<Self, ObjectStoreError> {
         match mode {
@@ -880,7 +880,7 @@ impl NetworkedMatrixObjectStore {
     }
 }
 
-impl BlockingObjectRead for NetworkedMatrixObjectStore {
+impl BlockingObjectRead for NetworkedMatrixObject {
     fn get_blocking(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
         match self {
             Self::Gateway(store) => BlockingObjectRead::get_blocking(store, key),
@@ -890,7 +890,7 @@ impl BlockingObjectRead for NetworkedMatrixObjectStore {
 }
 
 #[async_trait]
-impl ObjectStore for NetworkedMatrixObjectStore {
+impl ObjectStore for NetworkedMatrixObject {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
         match self {
             Self::Gateway(store) => store.put(key, bytes).await,
@@ -1420,7 +1420,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_door_that_cannot_answer_is_a_transport_failure_with_its_own_words_and_not_a_503() {
-        let store = NetworkedMatrixObjectStore::direct(Arc::new(DeadDoor), "temporalstore");
+        let store = NetworkedMatrixObject::direct(Arc::new(DeadDoor), "temporalstore");
         let error = store.get("wal").await.expect_err("the door did not answer");
         let text = error.to_string();
         assert!(text.contains("the door fell over"), "the door's own failure is reported: {text}");
@@ -1462,7 +1462,7 @@ mod tests {
 
     #[test]
     fn direct_mode_is_refused_loudly_until_the_client_is_built_in() {
-        let error = NetworkedMatrixObjectStore::connect(MatrixObjectMode::Direct, "m1:7000")
+        let error = NetworkedMatrixObject::connect(MatrixObjectMode::Direct, "m1:7000")
             .expect_err("no direct client yet");
         assert!(error.to_string().contains("matrixobject_direct::DirectConfig"), "{error}");
     }
@@ -1470,7 +1470,7 @@ mod tests {
     #[tokio::test]
     async fn the_networked_store_forwards_every_method_to_the_gateway_store() {
         let (uri, state) = scripted_server(Fault::None, false);
-        let store = NetworkedMatrixObjectStore::connect(MatrixObjectMode::Gateway, &uri).unwrap();
+        let store = NetworkedMatrixObject::connect(MatrixObjectMode::Gateway, &uri).unwrap();
         assert_eq!(store.mode(), MatrixObjectMode::Gateway);
         // The defaulted methods: an append and a ranged tail read reach the server and answer
         // as the inner store would, rather than falling back to the trait's refusing default.
@@ -1529,7 +1529,7 @@ mod tests {
     fn scripted_direct(
         fault_on_first_put: Fault,
         reads_fail: bool,
-    ) -> (NetworkedMatrixObjectStore, Arc<Mutex<ScriptedState>>) {
+    ) -> (NetworkedMatrixObject, Arc<Mutex<ScriptedState>>) {
         let state = Arc::new(Mutex::new(ScriptedState {
             data: Vec::new(),
             existing: false,
@@ -1539,16 +1539,16 @@ mod tests {
             committed_attempts: Vec::new(),
             put_attempts: Vec::new(),
         }));
-        let store = NetworkedMatrixObjectStore::direct(Arc::new(ScriptedDoor(state.clone())), "temporalstore");
+        let store = NetworkedMatrixObject::direct(Arc::new(ScriptedDoor(state.clone())), "temporalstore");
         (store, state)
     }
 
     fn scripted_gateway(
         fault_on_first_put: Fault,
         reads_fail: bool,
-    ) -> (NetworkedMatrixObjectStore, Arc<Mutex<ScriptedState>>) {
+    ) -> (NetworkedMatrixObject, Arc<Mutex<ScriptedState>>) {
         let (uri, state) = scripted_server(fault_on_first_put, reads_fail);
-        (NetworkedMatrixObjectStore::connect(MatrixObjectMode::Gateway, &uri).unwrap(), state)
+        (NetworkedMatrixObject::connect(MatrixObjectMode::Gateway, &uri).unwrap(), state)
     }
 
     /// One sequence of writes, run through any store, reporting everything a caller can see.

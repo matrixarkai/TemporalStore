@@ -1758,6 +1758,7 @@ dependencies = [
  "fastcdc",
  "hex",
  "matrixcache",
+ "matrixobject-client",
  "matrixobjectstore-rs",
  "matrixraft",
  "parking_lot",

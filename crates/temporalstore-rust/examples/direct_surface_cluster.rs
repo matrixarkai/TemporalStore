@@ -33,18 +33,18 @@ use std::time::Instant;
 use bytes::Bytes;
 use temporalstore_rust::matrixobject_direct::DirectConfig;
 use temporalstore_snapshot::object_store::{
-    MatrixObjectMode, NetworkedMatrixObjectStore, ObjectStore,
+    MatrixObjectMode, NetworkedMatrixObject, ObjectStore,
 };
 
 fn env(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
-fn connect(mode: MatrixObjectMode) -> NetworkedMatrixObjectStore {
+fn connect(mode: MatrixObjectMode) -> NetworkedMatrixObject {
     match mode {
         MatrixObjectMode::Gateway => {
             let uri = std::env::var("GATEWAY").expect("GATEWAY: the gateway URI");
-            NetworkedMatrixObjectStore::connect(mode, &uri).expect("connect to the gateway")
+            NetworkedMatrixObject::connect(mode, &uri).expect("connect to the gateway")
         }
         MatrixObjectMode::Direct => {
             let meta = std::env::var("META").expect("META: the metadata endpoints");
@@ -76,7 +76,7 @@ fn obs<T: std::fmt::Debug, E: std::fmt::Display>(label: &str, result: Result<T, 
     }
 }
 
-async fn surface(store: &NetworkedMatrixObjectStore, prefix: &str) {
+async fn surface(store: &NetworkedMatrixObject, prefix: &str) {
     let key = |name: &str| format!("{prefix}/{name}");
     let body: Vec<u8> = (0..100u8).collect();
     let (a, b, c) = (key("a"), key("b"), key("c"));
@@ -110,7 +110,7 @@ async fn surface(store: &NetworkedMatrixObjectStore, prefix: &str) {
     obs("get CAS after duplicate create", store.get(&cas).await.map(|v| v.to_vec()));
 }
 
-async fn append_leg(store: &NetworkedMatrixObjectStore, prefix: &str) {
+async fn append_leg(store: &NetworkedMatrixObject, prefix: &str) {
     let appends: usize = env("APPENDS", "2000").parse().expect("APPENDS");
     let key = format!("{prefix}/kill-leg");
     let mut acknowledged: Vec<u8> = Vec::new();
