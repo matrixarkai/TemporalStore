@@ -1256,6 +1256,29 @@ fn install_snapshot_clears_stale_vote_on_term_raise() {
 }
 
 #[test]
+fn rejected_higher_term_append_still_steps_down_the_old_leader() {
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    cluster.set_local_node_id(1);
+    assert!(cluster.is_local_leader(1));
+    let reply = cluster.receive_append_entries(AppendEntriesRequest {
+        rpc: None,
+        shard_id: 1,
+        term: 5,
+        leader_id: 2,
+        target_id: 1,
+        prev_log_index: 1,
+        prev_log_term: 4,
+        entries: Vec::new(),
+        leader_commit: 0,
+    }).unwrap();
+    assert!(!reply.success);
+    assert_eq!(reply.term, 5);
+    assert_eq!(reply.reject_reason.as_deref(), Some("log_mismatch"));
+    assert_eq!(cluster.local_status(1).unwrap().role, RaftRole::Follower);
+    assert!(!cluster.is_local_leader(1));
+}
+
+#[test]
 fn append_entries_commit_clamps_to_last_new_entry_not_whole_log_tail() {
     // Raft Figure 2: a follower advances commitIndex only to min(leaderCommit, index of
     // the last NEW entry in THIS AppendEntries) -- never to its whole-log tail. A divergent

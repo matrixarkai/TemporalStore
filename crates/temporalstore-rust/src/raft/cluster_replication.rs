@@ -488,6 +488,13 @@ impl RaftCluster {
                     reject_reason: Some("stale_term".to_string()),
                 });
             }
+            let adopted_new_term = term > node.current_term;
+            if adopted_new_term {
+                // Term and vote are hard state, even when this append cannot be applied yet.
+                node.current_term = term;
+                node.voted_for = None;
+                node.role = RaftRole::Follower;
+            }
             if request.prev_log_index > 0 {
                 let prev_term = node_term_at_log_or_snapshot_index(node, request.prev_log_index);
                 if prev_term != Some(request.prev_log_term) {
@@ -526,12 +533,16 @@ impl RaftCluster {
                         inner.persist_configured_wal()?;
                         return Ok(response);
                     }
-                    return Ok(AppendEntriesResponse {
+                    let reply = AppendEntriesResponse {
                         term: node.current_term,
                         success: false,
                         match_index: node_last_log_or_snapshot_index(node),
                         reject_reason: Some("log_mismatch".to_string()),
-                    });
+                    };
+                    if adopted_new_term {
+                        inner.persist_configured_wal()?;
+                    }
+                    return Ok(reply);
                 }
             }
             if received_bytes > max_apply_batch_bytes {
@@ -599,14 +610,6 @@ impl RaftCluster {
                 inner.persist_configured_wal()?;
                 return Ok(response);
             }
-            // votedFor is scoped to a single term (Raft Fig-2): observing a higher term in
-            // any RPC -- including AppendEntries -- must clear it, else a stale vote from the
-            // old term wrongly suppresses this node's vote in the new term (split-vote
-            // liveness bug). The vote and snapshot-install paths already do this.
-            if term > node.current_term {
-                node.voted_for = None;
-            }
-            node.current_term = term;
             node.role = RaftRole::Follower;
             let before_reorder_depth = node.pipeline_state.reorder_queue_depth;
             for entry in entries.iter().cloned() {
