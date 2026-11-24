@@ -256,6 +256,11 @@ fn cold_string_lengths_use_only_address_or_header_bytes() {
         };
         assert_eq!(slab_bytes, expected, "storage mode {async_storage}");
 
+        let before = engine.block_store().stats().bytes_read;
+        assert_eq!(engine.cache_live_payload_bytes(1), Some(VALUE_BYTES as u64));
+        assert_eq!(wal.stats(1).bytes_read, wal_before);
+        assert_eq!(engine.block_store().stats().bytes_read - before, expected);
+
         assert_eq!(
             run(&engine, Command::StringGet { key: "chunk".to_string() }),
             CommandResponse::Bytes { value: Some(payload.clone()) }
@@ -277,6 +282,7 @@ fn a_lapsed_string_has_no_length_and_no_range() {
         },
     );
     std::thread::sleep(std::time::Duration::from_millis(30));
+    assert_eq!(engine.cache_live_payload_bytes(1), Some(5));
     assert_eq!(0, length(&engine, "lapsed"));
     assert_eq!(None, range(&engine, "lapsed", 0, -1));
     assert_eq!(5, length(&engine, "kept"));

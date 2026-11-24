@@ -368,7 +368,10 @@ impl SingleNodeMeta {
             forbid_auto_register: false,
             topology_version: state.topology_version,
             server_state,
-            cache_budgets: super::meta_partitioning::cache_budgets_for_server(&state, &request.server_addr),
+            cache_budgets: super::partitioning::cache_budgets_for_server(
+                &state,
+                &request.server_addr,
+            ),
         }
     }
 

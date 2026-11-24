@@ -2612,6 +2612,40 @@ impl TemporalEngine {
             .unwrap_or_default()
     }
 
+    /// Count logical bytes of live strings in a cache shard at one observed
+    /// time. Header reads are performed after releasing the shard lock.
+    pub(crate) fn cache_live_payload_bytes(&self, shard_id: ShardId) -> Option<u64> {
+        let observed_at = now_ms();
+        let (start, end, records) = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&shard_id)?;
+            let (start, end) = shard.routing_range();
+            let expiry = shard.expires_at_ms();
+            let records: Vec<_> = shard
+                .strings()
+                .iter()
+                .filter(|(key, _)| {
+                    expiry.get(key.as_ref()).is_none_or(|deadline| *deadline > observed_at)
+                })
+                .map(|(key, slot)| (key.clone(), slot.address()))
+                .collect();
+            (start, end, records)
+        };
+        records.into_iter().try_fold(0_u64, |total, (key, address)| {
+            let length = if address.block_slab_id() == super::HOT_BLOCK_SLAB_ID {
+                address.length()
+            } else if let Some(length) = self.block_store.local_block_payload_length(&address) {
+                length
+            } else {
+                let bucket = super::block_routing_bucket(&key, start, end);
+                super::read_string_length(
+                    &self.cache, &self.block_store, shard_id, &address, &key, bucket,
+                )? as u64
+            };
+            total.checked_add(length)
+        })
+    }
+
     pub fn apply_storage_eviction(
         &self,
         shard_id: ShardId,

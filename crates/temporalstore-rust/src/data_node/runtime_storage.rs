@@ -997,8 +997,34 @@ impl DataNodeRuntime {
         let index_bound_is_the_gate = options.index_resident_limit_bytes > 0
             && (options.eviction_memory_pressure_threshold == 0
                 || options.index_resident_limit_bytes < options.eviction_memory_pressure_threshold);
+        let mut cache_budget_signal = None;
         let eviction = options.enable_evict.then(|| {
             let engine = self.inner.storage_engine(shard_id);
+            let budget = self
+                .inner
+                .meta_heartbeat
+                .lock()
+                .expect("meta heartbeat lock poisoned")
+                .cache_budgets
+                .iter()
+                .find(|budget| budget.shard_id == shard_id)
+                .copied();
+            if let Some(budget) =
+                budget.filter(|_| self.shard_leadership(shard_id) == ShardLeadership::Leading)
+            {
+                cache_budget_signal = self
+                    .with_load_version(shard_id, budget.load_version, || {
+                        engine.cache_live_payload_bytes(shard_id)
+                    })
+                    .ok()
+                    .flatten()
+                    .map(|bytes| StorageManagerPressureSignal {
+                        name: "cache_live_payload_bytes".to_string(),
+                        observed: bytes,
+                        threshold: budget.bytes,
+                        over_threshold: bytes > budget.bytes,
+                    });
+            }
             let Some(stage_threshold) = configured_limit else {
                 let resident = engine.bucket_index_resident_bytes(shard_id);
                 return crate::engine::reports::StorageEvictionReport {
@@ -1115,7 +1141,7 @@ impl DataNodeRuntime {
                     "index_resident_limit_bytes",
                     report.bucket_index_bytes_before, limit,
                 ),
-            ]).unwrap_or_default(),
+            ]).unwrap_or_default().into_iter().chain(cache_budget_signal).collect(),
             vec![if index_bound_is_the_gate {
                 "index_resident_bound_set".to_string()
             } else {
