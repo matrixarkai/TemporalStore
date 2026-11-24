@@ -106,6 +106,13 @@ pub(crate) fn protobuf_command_key(mut input: &[u8]) -> Result<(&str, bool), pro
     Ok((key, read))
 }
 
+fn before_protobuf_dispatch(error: ClientError, read_only: bool) -> ClientError {
+    if read_only || matches!(error, ClientError::InvalidRequest(_)) {
+        return error;
+    }
+    ClientError::WriteNotStarted(error.to_string())
+}
+
 impl TemporalStoreClient {
     fn grpc_channel(&self, address: &str) -> Result<Channel, ClientError> {
         if let Some(channel) = self
@@ -167,15 +174,17 @@ impl TemporalStoreTable {
         trace_id: u64,
     ) -> Result<ProtobufExecuteReply, ClientError> {
         let route = match self.cached_grpc_primary(key, true) {
-            Some(cached) => cached?,
+            Some(cached) => cached,
             None => {
                 let table = self.clone();
                 let key = key.to_owned();
                 tokio::task::spawn_blocking(move || table.resolve_grpc_primary(&key))
                     .await
-                    .map_err(|error| ClientError::Status(error.to_string()))??
+                    .map_err(|error| ClientError::Status(error.to_string()))
+                    .and_then(|result| result)
             }
-        };
+        }
+        .map_err(|error| before_protobuf_dispatch(error, read))?;
         let checked = route.load_version != 0;
         let path = if checked {
             "/temporalstore.v1.TemporalStoreService/ExecuteChecked"
@@ -202,9 +211,18 @@ impl TemporalStoreTable {
         &self,
         keys: &[(&str, bool)],
     ) -> Result<Vec<ProtobufShardBatch>, ClientError> {
-        if let Some(cached) = self.cached_protobuf_batches(keys, true) {
-            return cached;
-        }
+        let read_only = keys.iter().all(|(_, read)| *read);
+        let groups = match self.cached_protobuf_batches(keys, true) {
+            Some(cached) => cached,
+            None => self.refresh_protobuf_batches(keys).await,
+        };
+        groups.map_err(|error| before_protobuf_dispatch(error, read_only))
+    }
+
+    async fn refresh_protobuf_batches(
+        &self,
+        keys: &[(&str, bool)],
+    ) -> Result<Vec<ProtobufShardBatch>, ClientError> {
         let table = self.clone();
         tokio::task::spawn_blocking(move || {
             table
@@ -316,7 +334,10 @@ impl TemporalStoreTable {
             .max_encoding_message_size(MESSAGE_LIMIT);
         if let Err(error) = client.ready().await {
             self.invalidate_grpc_route(route);
-            return Err(ClientError::Status(error.to_string()));
+            return Err(before_protobuf_dispatch(
+                ClientError::Status(error.to_string()),
+                read_only,
+            ));
         }
         let response = client
             .unary(

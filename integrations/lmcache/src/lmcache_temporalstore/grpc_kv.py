@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
 
 TABLE_DESCRIPTOR_KEY = "__lmcache_layout_v1"
+# Both codes identify rejection before any work for the affected command.
+_STORE_NOT_STARTED = {"raft_write_not_started", "load_version_mismatch"}
 
 
 def _table_for_key(key: ObjectKey) -> str:
@@ -158,7 +160,7 @@ class TableValueBackend(ValueBackend):
             try:
                 for position, response in client.iter_batch_responses(list(pending.values())):
                     index = positions[position]
-                    if response.status.code == "raft_write_not_started":
+                    if response.status.code in _STORE_NOT_STARTED:
                         rejected = MetadataError(response.status.code, response.status.message)
                     else:
                         del pending[index]
@@ -167,7 +169,7 @@ class TableValueBackend(ValueBackend):
                 # TableClient validates every route before dispatching a batch.
                 rejected = error
             except MetadataError as error:
-                if error.code != "raft_write_not_started":
+                if error.code not in _STORE_NOT_STARTED:
                     raise
                 rejected = error
             if not pending:

@@ -1948,6 +1948,7 @@ fn client_error_code(err: &ClientError) -> &'static str {
         // apply from one that may have. Retrying the first is free; retrying the second is how
         // a write gets applied twice.
         ClientError::WriteOutcomeUnknown(_) => "write_outcome_unknown",
+        ClientError::WriteNotStarted(_) => "raft_write_not_started",
     }
 }
 

@@ -383,18 +383,19 @@ class AdapterTest(unittest.TestCase):
         client = Mock()
         success = pb.CommandResponse(status=pb.Status(ok=True), count=1)
         rejected = pb.CommandResponse(status=pb.Status(code="raft_write_not_started"))
-        ambiguous = pb.CommandResponse(status=pb.Status(code="raft_error"))
+        fenced = pb.CommandResponse(status=pb.Status(code="load_version_mismatch"))
+        ambiguous = pb.CommandResponse(status=pb.Status(code="write_outcome_unknown"))
         client.iter_batch_responses.side_effect = [
-            iter([(1, rejected), (2, ambiguous), (0, success)]),
-            iter([(0, success)]),
+            iter([(1, rejected), (2, ambiguous), (0, success), (3, fenced)]),
+            iter([(0, success), (1, success)]),
         ]
         commands = [pb.Command(string_set=pb.StringSet(key=str(i), value=b"value"))
-                    for i in range(3)]
+                    for i in range(4)]
         with patch("lmcache_temporalstore.grpc_kv.sleep") as wait:
             self.assertEqual(list(backend._store_responses(client, commands)), [
-                (2, ambiguous), (0, success), (1, success),
+                (2, ambiguous), (0, success), (1, success), (3, success),
             ])
-        self.assertEqual(client.iter_batch_responses.call_args.args[0], [commands[1]])
+        self.assertEqual(client.iter_batch_responses.call_args.args[0], [commands[1], commands[3]])
         wait.assert_called_once_with(0.25)
 
     def test_kv_backend_keeps_one_binary_value_and_rejects_wrong_destination_size(self):

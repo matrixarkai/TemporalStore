@@ -638,6 +638,8 @@ mod tests {
 
     #[tokio::test]
     async fn typed_proxy_stream_routes_binary_payloads_with_account_admission() {
+        let primary_available = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let meta_primary_available = primary_available.clone();
         let batch_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let datanode = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let datanode_addr = datanode.local_addr().unwrap().to_string();
@@ -688,7 +690,9 @@ mod tests {
                             end_bucket: 1,
                             primary: None,
                             replicas: Vec::new(),
-                            primary_endpoint: Some(endpoint.clone()),
+                            primary_endpoint: meta_primary_available
+                                .load(Ordering::Relaxed)
+                                .then(|| endpoint.clone()),
                             replica_endpoints: Vec::new(),
                             load_version: 17,
                             raft_route: None,
@@ -751,8 +755,11 @@ mod tests {
                 },
             )),
         };
-        let frames =
-            tonic::codegen::tokio_stream::iter([single("denied"), single("kvcache"), batch]);
+        let frames = tonic::codegen::tokio_stream::iter([
+            single("denied"),
+            single("kvcache"),
+            batch.clone(),
+        ]);
         let mut stream = client
             .proxy_execute_stream(frames)
             .await
@@ -777,7 +784,7 @@ mod tests {
             topology_version: 2,
             ..Default::default()
         };
-        let replies = tonic::codegen::tokio_stream::iter([callback]);
+        let replies = tonic::codegen::tokio_stream::iter([callback.clone()]);
         let mut callbacks = client.route_callbacks(replies).await.unwrap().into_inner();
         let response = callbacks.message().await.unwrap().unwrap();
         assert!(response.status.unwrap().ok);
@@ -788,6 +795,36 @@ mod tests {
             .unwrap()
             .into_inner();
         assert!(preflight.message().await.unwrap().unwrap().status.is_some());
+        primary_available.store(false, Ordering::Relaxed);
+        let replies = tonic::codegen::tokio_stream::iter([callback]);
+        let mut callbacks = client.route_callbacks(replies).await.unwrap().into_inner();
+        assert!(
+            callbacks
+                .message()
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+                .unwrap()
+                .ok
+        );
+        let frames = tonic::codegen::tokio_stream::iter([single("kvcache"), batch]);
+        let mut unavailable = client
+            .proxy_execute_stream(frames)
+            .await
+            .unwrap()
+            .into_inner();
+        for _ in 0..2 {
+            let status = unavailable
+                .message()
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+                .unwrap();
+            assert_eq!(status.code, "raft_write_not_started");
+        }
+        assert_eq!(batch_calls.load(Ordering::Relaxed), 1);
         listener.abort();
         datanode.abort();
     }

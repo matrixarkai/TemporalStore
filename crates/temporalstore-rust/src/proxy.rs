@@ -2220,6 +2220,7 @@ fn proxy_client_error_code(err: &crate::client::ClientError) -> &'static str {
         // free to retry, one that may have applied is not. `a_caller_can_tell_an_unknown_write_
         // from_a_failed_one` covers this.
         crate::client::ClientError::WriteOutcomeUnknown(_) => "write_outcome_unknown",
+        crate::client::ClientError::WriteNotStarted(_) => "raft_write_not_started",
         // The caller's own request is wrong; nothing on this side will make it work, so it is not
         // reported as a server-side failure.
         crate::client::ClientError::InvalidRequest(_) => "invalid_request",

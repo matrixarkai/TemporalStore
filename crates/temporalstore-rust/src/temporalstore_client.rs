@@ -72,6 +72,9 @@ pub enum ClientError {
     Status(String),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+    /// Routing or transport readiness failed before dispatching the request.
+    #[error("write not started: {0}")]
+    WriteNotStarted(String),
     /// A write failed in a way that does not say whether it was applied.
     ///
     /// The datanode stopped answering; it may have processed the write, or not. The write was
