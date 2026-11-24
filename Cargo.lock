@@ -1765,6 +1765,7 @@ dependencies = [
  "prost 0.13.5",
  "protoc-bin-vendored",
  "rmp-serde",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

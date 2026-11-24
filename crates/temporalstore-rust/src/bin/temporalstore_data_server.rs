@@ -98,6 +98,9 @@ struct BlobReceipt {
     chunks: u64,
 }
 
+#[path = "temporalstore_data_server/blob_staging.rs"]
+mod blob_staging;
+
 fn main() {
     // Before telemetry and before any thread that allocates: the cap only governs arenas created
     // after it, and the server's resident memory otherwise drifts up with every write.
@@ -1896,9 +1899,8 @@ fn replace_blob_from_body(
         .ok_or_else(|| std::io::Error::other("blob path has no parent"))?;
     std::fs::create_dir_all(parent)?;
     // Keep the previous blob readable until its replacement has arrived in full.
-    let mut file = tempfile::Builder::new()
-        .prefix(".blob-upload-")
-        .tempfile_in(parent)?;
+    let mut staging = blob_staging::StagedBlob::new(parent)?;
+    let file = staging.file_mut();
     let mut buffer = vec![0u8; chunk_bytes.max(1).min(length)];
     let mut remaining = length;
     let mut chunks = 0u64;
@@ -1920,7 +1922,7 @@ fn replace_blob_from_body(
         chunks += 1;
     }
     file.flush()?;
-    file.persist(path).map_err(|error| error.error)?;
+    staging.publish(path, parent)?;
     let length = length as u64;
     Ok((length, length, chunks.max(1)))
 }
