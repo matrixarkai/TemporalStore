@@ -118,3 +118,30 @@ class TableClientTest(unittest.TestCase):
                         call(request)
                         self.assertEqual(metadata.table_topology.call_count, 2)
                         self.assertEqual(getattr(second, rpc).call_args.kwargs["load_version"], 8)
+
+    def test_missing_elected_leader_refreshes_before_normal_topology_ttl(self):
+        metadata = Mock()
+        metadata.table_topology.side_effect = [
+            TableTopology("kvcache", "model", 1, 73, 1,
+                          (Shard(73, None, (), 7, uses_raft_route=True),)),
+            TableTopology("kvcache", "model", 2, 73, 1,
+                          (Shard(73, "leader-http", (), 7, "leader-grpc", uses_raft_route=True),)),
+        ]
+        with patch("temporalstore_sdk.table.monotonic") as clock, patch(
+            "temporalstore_sdk.table.CommandClient"
+        ) as client:
+            client.return_value.execute.return_value = commands.ExecuteResponse(
+                status=commands.Status(ok=True),
+            )
+            with TableClient(metadata, "kvcache", "model", topology_ttl_seconds=5) as table:
+                for now in (0, 0.1):
+                    clock.return_value = now
+                    with self.assertRaisesRegex(MetadataError, "no_grpc_primary"):
+                        table.execute(get("cached-key"))
+                self.assertEqual(metadata.table_topology.call_count, 1)
+                clock.return_value = 0.3
+                self.assertTrue(table.execute(get("cached-key")).status.ok)
+                clock.return_value = 0.6
+                self.assertTrue(table.execute(get("cached-key")).status.ok)
+                self.assertEqual(metadata.table_topology.call_count, 2)
+            client.assert_called_once_with("leader-grpc", timeout_seconds=10)

@@ -43,6 +43,7 @@ class Shard:
     load_version: int
     primary_grpc: Optional[str] = None
     replica_grpc: tuple[str, ...] = ()
+    uses_raft_route: bool = False
 
 
 @dataclass(frozen=True)
@@ -145,4 +146,5 @@ class MetadataClient:
             row["shard_id"], primary, tuple(row["replicas"]), version, endpoint.get("grpc_addr"),
             tuple(endpoint["grpc_addr"] for endpoint in row.get("replica_endpoints", ())
                   if endpoint.get("grpc_addr")),
+            uses_raft_route=raft_route is not None,
         )

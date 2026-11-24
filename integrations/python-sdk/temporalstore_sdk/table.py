@@ -13,6 +13,9 @@ from .client import CommandClient
 from .metadata import MetadataClient, MetadataError, Shard, TableTopology
 
 
+_ELECTION_TOPOLOGY_TTL_SECONDS = 0.25
+
+
 class TableClient:
     """Route keyed protobuf commands to a table's advertised primary."""
 
@@ -46,7 +49,10 @@ class TableClient:
                 raise RuntimeError("table client is closed")
             if self._topology is None or monotonic() >= self._expires_at:
                 self._topology = self._metadata.table_topology(self._namespace, self._table)
-                self._expires_at = monotonic() + self._topology_ttl
+                ttl = self._topology_ttl
+                if any(shard.uses_raft_route and not shard.primary_grpc for shard in self._topology.shards):
+                    ttl = min(ttl, _ELECTION_TOPOLOGY_TTL_SECONDS)
+                self._expires_at = monotonic() + ttl
             return self._topology
 
     @staticmethod
