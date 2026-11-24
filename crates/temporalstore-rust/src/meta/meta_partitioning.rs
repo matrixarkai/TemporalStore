@@ -434,6 +434,9 @@ mod raft_route_tests {
         assert_eq!(route.endpoint.as_ref().unwrap().grpc_addr.as_deref(), Some("b:2000"));
         assert_eq!(route.load_version, 7);
         let current_version = current.table.as_ref().unwrap().topology_version;
+        report("b", 1, false);
+        assert!(topology(&meta, current_version).unchanged);
+        assert_eq!(topology(&meta, 0).shards, current.shards);
         report("b", 2, true);
         assert!(topology(&meta, current_version).unchanged);
 

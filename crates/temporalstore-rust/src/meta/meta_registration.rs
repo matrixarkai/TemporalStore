@@ -229,7 +229,7 @@ impl SingleNodeMeta {
         }
     }
 
-    pub fn server_heartbeat(&self, request: ServerHeartbeatRequest) -> ServerHeartbeatResponse {
+    pub fn server_heartbeat(&self, mut request: ServerHeartbeatRequest) -> ServerHeartbeatResponse {
         // Folded before the lock is taken. These are summaries of the lists the
         // request carries, and they used to be computed inside the critical
         // section -- so every topology read waited behind a walk of one
@@ -311,6 +311,24 @@ impl SingleNodeMeta {
         // an old build that never sends them.
         server.reports_shard_states =
             server.reports_shard_states || !request.shard_states.is_empty();
+        if !server.reboot_detected {
+            for incoming in &mut request.shard_states {
+                let Some(role) = incoming.raft_role else { continue };
+                let newer = server.shard_states.iter().find(|previous| {
+                    previous.shard_id == incoming.shard_id
+                        && previous.table_name == incoming.table_name
+                        && previous.raft_role.is_some_and(|old| {
+                            (previous.load_version, old.term) > (incoming.load_version, role.term)
+                        })
+                });
+                if let Some(previous) = newer {
+                    incoming.raft_role = previous.raft_role;
+                    incoming.load_version = previous.load_version;
+                    incoming.loaded = previous.loaded;
+                    incoming.readonly = previous.readonly;
+                }
+            }
+        }
         let changed_raft_reports = if !raft_reports(&server.shard_states).eq(raft_reports(&request.shard_states)) {
             Some((
                 raft_reports(&server.shard_states).map(|report| report.0).collect::<Vec<_>>(),
