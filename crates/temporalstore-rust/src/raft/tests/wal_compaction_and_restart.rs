@@ -71,6 +71,8 @@ fn oversized_wal_base_leaves_room_for_deltas_and_recovers() {
     let dir = tempfile::tempdir().unwrap();
     let config = RaftConfig {
         max_segment_bytes: 16 * 1024,
+        max_memory_replicate_log_bytes: 256 * 1024,
+        max_apply_batch_bytes: 256 * 1024,
         min_keep_segment_num: 64,
         ..RaftConfig::default()
     };
