@@ -56,8 +56,12 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     namespace: str = ""
     remote_storage: bool = False
     lookup_timeout_seconds: float | None = None
-    storage_backend: str = "blob"
+    storage_backend: str | None = None
     meta_url: str = ""
+
+    def __post_init__(self) -> None:
+        if self.storage_backend is None:
+            self.storage_backend = "kv" if self.meta_url else "blob"
 
     @classmethod
     def from_dict(cls, values: dict) -> "TemporalStoreL2AdapterConfig":
@@ -66,7 +70,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
             raise ValueError("remote_storage must be a boolean")
         lookup_timeout = values.get("lookup_timeout_seconds")
         config = cls(
-            storage_backend=str(values.get("storage_backend", cls.storage_backend)),
+            storage_backend=str(values["storage_backend"]) if "storage_backend" in values else None,
             meta_url=str(values.get("meta_url", cls.meta_url)),
             blob_url=str(values.get("blob_url", cls.blob_url)),
             data_url=str(values.get("data_url", cls.data_url)),
@@ -85,7 +89,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     @classmethod
     def help(cls) -> str:
         return (
-            "storage_backend selects blob or kv; meta_url enables gRPC table routing for kv; "
+            "meta_url defaults to KV storage with gRPC table routing; storage_backend can select blob or kv; "
             "blob_url and data_url are datanode HTTP URLs; shard_id selects the "
             "command shard; max_capacity_gb bounds local adapter writes; "
             "ttl_seconds expires metadata; timeout_seconds bounds each request; "

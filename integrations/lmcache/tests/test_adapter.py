@@ -299,6 +299,16 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(client.batch_execute.call_args.kwargs, {"timeout_seconds": 1})
         self.assertEqual(client.iter_batch_responses.call_args.kwargs, {})
 
+    def test_metaserver_selects_distributed_kv_by_default(self):
+        config = adapter_module.TemporalStoreL2AdapterConfig
+        self.assertEqual(config.from_dict({"meta_url": "http://example.test"}).storage_backend, "kv")
+        self.assertEqual(config(meta_url="http://example.test").storage_backend, "kv")
+        self.assertEqual(config.from_dict({}).storage_backend, "blob")
+        with self.assertRaisesRegex(ValueError, "requires the kv backend"):
+            adapter_module.TemporalStoreL2Adapter({
+                "meta_url": "http://example.test", "storage_backend": "blob",
+            })
+
     def test_table_layouts_share_one_descriptor_key_and_follow_table_versions(self):
         import json
         from types import SimpleNamespace

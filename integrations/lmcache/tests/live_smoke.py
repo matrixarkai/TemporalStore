@@ -44,7 +44,7 @@ def table_smoke(meta_url: str, namespace: str, model: str) -> None:
     config = PluginL2AdapterConfig.from_dict({
         "module_path": "lmcache_temporalstore.adapter",
         "class_name": "TemporalStoreL2Adapter",
-        "adapter_params": {"storage_backend": "kv", "meta_url": meta_url, "namespace": namespace},
+        "adapter_params": {"meta_url": meta_url, "namespace": namespace},
     })
     # A fresh key lets repeated runs share a model table.
     key = ObjectKey(chunk_hash=os.urandom(32), model_name=model, kv_rank=(1 << 24) | (1 << 8))

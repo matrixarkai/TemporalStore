@@ -54,10 +54,10 @@ world_size, local_world_size)` from `lmcache_temporalstore.layout`. The model
 name must match LMCache's model identity. Workers with the same layout use
 the same table across ranks.
 
-Set `storage_backend` to `"kv"` and `meta_url` to the metaserver's base URL. The
-namespace defaults to `"kvcache"`. The Python SDK resolves the table's shards
-and their gRPC addresses. It includes load versions when the metaserver
-reports them. When the metaserver requires authentication, set
+Set `meta_url` to the metaserver's base URL to select the distributed KV backend
+by default. The namespace defaults to `"kvcache"`. The Python SDK resolves the
+table's shards and their gRPC addresses. It includes load versions when the
+metaserver reports them. When the metaserver requires authentication, set
 `TS_META_ADMIN_TOKEN` in the LMCache server environment.
 
 Registry metadata and placement are managed by TemporalStore. Each LMCache
