@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 mod commands;
 #[path = "proxy/proxy_context.rs"]
 mod context;
+#[path = "proxy/grpc.rs"]
+mod grpc;
 mod meta_sync;
 #[path = "proxy/proxy_prometheus.rs"]
 mod prometheus;

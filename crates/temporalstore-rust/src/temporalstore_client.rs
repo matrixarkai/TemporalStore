@@ -25,6 +25,7 @@ mod client_routing;
 mod response_json;
 #[path = "client/protobuf_transport.rs"]
 mod protobuf_transport;
+pub(crate) use protobuf_transport::protobuf_command_key;
 pub use protobuf_transport::ProtobufExecuteReply;
 #[path = "client/client_meta_sync.rs"]
 mod client_meta_sync;

@@ -16,6 +16,8 @@ const MESSAGE_LIMIT: usize = 40 * 1024 * 1024;
 struct EncodedExecuteRequest {
     #[prost(uint64, tag = "1")]
     shard_id: u64,
+    #[prost(uint64, tag = "2")]
+    trace_id: u64,
     #[prost(bytes = "bytes", tag = "3")]
     command: Bytes,
     #[prost(uint64, optional, tag = "4")]
@@ -43,7 +45,7 @@ fn length_delimited<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], prost::DecodeE
     Ok(value)
 }
 
-fn protobuf_command_key(mut input: &[u8]) -> Result<(&str, bool), prost::DecodeError> {
+pub(crate) fn protobuf_command_key(mut input: &[u8]) -> Result<(&str, bool), prost::DecodeError> {
     let (kind, wire) = decode_key(&mut input)?;
     // Keyed string, hash, common, list, set, sorted-set and feature
     // commands carry the key at field 1 of the selected message.
@@ -125,8 +127,17 @@ impl TemporalStoreTable {
         &self,
         command: Bytes,
     ) -> Result<ProtobufExecuteReply, ClientError> {
-        let (key, read) = protobuf_command_key(&command)
+        let routing = protobuf_command_key(&command)
             .map_err(|error| ClientError::InvalidRequest(error.to_string()))?;
+        self.execute_routed_protobuf(&command, routing, 0).await
+    }
+
+    pub(crate) async fn execute_routed_protobuf(
+        &self,
+        command: &Bytes,
+        (key, read): (&str, bool),
+        trace_id: u64,
+    ) -> Result<ProtobufExecuteReply, ClientError> {
         let route = match self.cached_grpc_primary(key, true) {
             Some(cached) => cached?,
             None => {
@@ -153,7 +164,8 @@ impl TemporalStoreTable {
         };
         let request = EncodedExecuteRequest {
             shard_id: route.shard_id,
-            command,
+            trace_id,
+            command: command.clone(),
             load_version: checked.then_some(route.load_version),
         };
         let response = client

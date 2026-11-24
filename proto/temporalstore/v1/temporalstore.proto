@@ -109,6 +109,9 @@ message ProxyStreamRequest {
     BatchExecuteRequest batch_execute = 2;
     SyncTopologyRequest sync_topology = 3;
   }
+  // The proxy derives shard ownership from the table and command key.
+  string namespace_name = 4;
+  string table_name = 5;
 }
 
 message ProxyStreamEvent {

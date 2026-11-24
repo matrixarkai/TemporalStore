@@ -72,6 +72,10 @@ fn main() {
         context_io_timeout_ms: env_u64("TS_PROXY_CONTEXT_IO_TIMEOUT_MS", defaults.context_io_timeout_ms),
     };
     let proxy = ProxyService::new(options);
+    if let Some(grpc_addr) = temporalstore_rust::env_flag::env_value("TS_PROXY_GRPC_BIND_ADDR") {
+        let grpc_addr = proxy.start_grpc(&grpc_addr).expect("proxy gRPC bind failed");
+        info!(%grpc_addr, "temporalstore proxy gRPC listening");
+    }
     let _heartbeat_loop = proxy.start_heartbeat_loop();
     info!(%addr, "temporalstore proxy listening");
     serve(&addr, move |request| proxy.handle(request)).expect("proxy failed");
