@@ -499,7 +499,10 @@ impl TemporalStoreTable {
             status(reply.get_ref()).is_some_and(|status| {
                 matches!(
                     status.code.as_str(),
-                    "load_version_mismatch" | "raft_write_not_started" | "raft_error"
+                    "load_version_mismatch"
+                        | "raft_write_not_started"
+                        | "raft_not_leader"
+                        | "raft_error"
                 )
             })
         });

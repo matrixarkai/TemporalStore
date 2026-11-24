@@ -144,12 +144,34 @@ class TableValueBackend(ValueBackend):
                     commands.append(_command(document))
                     bytes_used += size
                     end += 1
-                responses = (self._store_responses(client, commands) if partial
-                             else enumerate(client.batch_execute(commands, **options)))
+                if partial:
+                    responses = self._store_responses(client, commands)
+                elif all(command.WhichOneof("kind") in {"string_get", "string_len"} for command in commands):
+                    responses = enumerate(self._read_batch(client, commands, options))
+                else:
+                    responses = enumerate(client.batch_execute(commands, **options))
                 for position, response in responses:
                     index, document = group[start + position]
                     yield index, document, response
                 start = end
+
+    def _read_batch(self, client, commands, options):
+        deadline = monotonic() + options.get("timeout_seconds", self._timeout)
+        try:
+            responses = client.batch_execute(commands, **options)
+        except MetadataError as error:
+            if error.code != "raft_not_leader":
+                raise
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise
+        else:
+            if not any(response.status.code == "raft_not_leader" for response in responses):
+                return responses
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return responses
+        return client.batch_execute(commands, timeout_seconds=remaining)
 
     def _store_responses(self, client, commands):
         deadline = None

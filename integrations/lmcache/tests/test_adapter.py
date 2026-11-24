@@ -249,6 +249,26 @@ class AdapterTest(unittest.TestCase):
         adapter_module.BlobClient = self.old_blob
         adapter_module.TemporalStoreClient = self.old_data
 
+    def test_table_lookup_retries_a_stale_primary_within_its_original_deadline(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
+        self.addCleanup(backend.close)
+        client = Mock()
+        client.batch_execute.side_effect = [
+            [pb.CommandResponse(status=pb.Status(code="raft_not_leader"))],
+            [pb.CommandResponse(status=pb.Status(ok=True), count=4)],
+        ]
+        key = Key("after-election")
+        key.model_name, key.kv_rank = "fixture/model", 0
+        with patch.object(backend, "_table", return_value=client), patch(
+            "lmcache_temporalstore.grpc_kv.monotonic", side_effect=[10.0, 10.25]
+        ):
+            self.assertEqual(backend.lengths([key]), [4])
+        self.assertEqual([call.kwargs for call in client.batch_execute.call_args_list], [
+            {"timeout_seconds": 1}, {"timeout_seconds": 0.75},
+        ])
+
     def test_table_store_accounts_for_confirmed_chunks_when_a_shard_fails(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
         from temporalstore_sdk import MetadataError

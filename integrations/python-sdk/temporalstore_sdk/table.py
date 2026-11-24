@@ -16,7 +16,7 @@ from .metadata import MetadataClient, MetadataError, RaftPrimaryUnavailable, Sha
 
 
 _ELECTION_TOPOLOGY_TTL_SECONDS = 0.25
-_ROUTE_ERROR_CODES = {"load_version_mismatch", "raft_error", "raft_write_not_started"}
+_ROUTE_ERROR_CODES = {"load_version_mismatch", "raft_error", "raft_write_not_started", "raft_not_leader"}
 
 # The KV and Feast read paths can overlap independent shards. Writes and other
 # commands retain their existing dispatch order.

@@ -3922,6 +3922,24 @@ mod tests {
     }
 
     #[test]
+    fn grpc_primary_reads_reject_a_follower_without_waiting_on_the_leader_shadow() {
+        let dir = tempdir().unwrap();
+        let mut state = test_server_raft_state(dir.path(), 2, vec![1, 2, 3], false);
+        for mode in [DataRaftReadMode::Leader, DataRaftReadMode::Linearizable] {
+            state.read_policy.mode = mode;
+            let response = crate::grpc::execute_raft_sdk_command(
+                &state,
+                ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringLen { key: "chunk".to_owned() },
+                },
+            );
+            assert_eq!(response.status.code, "raft_not_leader");
+            assert_eq!(response.response, CommandResponse::Empty);
+        }
+    }
+
+    #[test]
     fn server_raft_bounded_stale_read_policy_reads_local_replica() {
         let dir = tempdir().unwrap();
         let mut state = test_server_raft_state(dir.path(), 2, vec![1, 2], false);
