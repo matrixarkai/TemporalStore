@@ -1625,6 +1625,8 @@ pub struct BlockStoreSlabDescriptor {
     /// key on every open, and `a_slab_descriptor_carries_the_same_number_twice` fails if they
     /// ever do.
     pub stored_slab_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_shard_id: Option<u64>,
     #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub state: BlockStoreSlabState,
@@ -1658,10 +1660,8 @@ pub struct BlockStoreSlabDescriptor {
     pub first_error: Option<String>,
 }
 
-/// One per slab. Six `Option`s of eight bytes each is 96 of its 168 bytes, which is the shape
-/// `BlockAddress` replaced with a presence byte -- worth it there at one per stored block, not
-/// worth a wire change here at one per gigabyte.
-const _: () = assert!(std::mem::size_of::<BlockStoreSlabDescriptor>() == 168);
+/// One per slab. The optional owner adds 16 bytes and supports the full shard ID range.
+const _: () = assert!(std::mem::size_of::<BlockStoreSlabDescriptor>() == 184);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabSummary {
@@ -1799,6 +1799,8 @@ pub struct StreamBackedSlabRuntimeReport {
 pub struct BlockStoreSlabReport {
     #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_shard_id: Option<u64>,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
     pub block_count: u64,
@@ -2417,6 +2419,7 @@ impl BlockStore {
             BlockStoreSlabDescriptor {
                 stored_slab_id: new_slab_id,
                 block_slab_id: new_slab_id,
+                owner_shard_id: None,
                 state: BlockStoreSlabState::Active,
                 physical_bytes: 0,
                 logical_bytes: 0,
@@ -2470,6 +2473,7 @@ impl BlockStore {
             let descriptor = BlockStoreSlabDescriptor {
                 stored_slab_id: slab.block_slab_id,
                 block_slab_id: slab.block_slab_id,
+                owner_shard_id: None,
                 state: BlockStoreSlabState::Sealed,
                 physical_bytes: slab.physical_bytes,
                 logical_bytes: slab.logical_bytes,
@@ -3489,6 +3493,7 @@ fn roll_slab_inner(
     let new_slab = BlockStoreSlabDescriptor {
         stored_slab_id: inner.block_slab_id,
         block_slab_id: inner.block_slab_id,
+        owner_shard_id: None,
         state: BlockStoreSlabState::Active,
         physical_bytes: 0,
         logical_bytes: 0,

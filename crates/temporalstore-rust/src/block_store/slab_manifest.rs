@@ -91,6 +91,7 @@ pub(super) fn rebuild_slab_manifest_at(
             BlockStoreSlabDescriptor {
                 stored_slab_id: block_slab_id,
                 block_slab_id,
+                owner_shard_id: report.owner_shard_id,
                 state: if block_slab_id == latest {
                     BlockStoreSlabState::Active
                 } else {
@@ -126,6 +127,7 @@ pub(super) fn rebuild_slab_manifest_at(
             .or_insert(BlockStoreSlabDescriptor {
                 stored_slab_id: delayed.block_slab_id,
                 block_slab_id: delayed.block_slab_id,
+                owner_shard_id: None,
                 state: BlockStoreSlabState::DelayedDestroy,
                 physical_bytes: delayed.physical_bytes,
                 logical_bytes: 0,
@@ -307,6 +309,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                 let old = slab.clone();
                 let content_changed = slab.stored_slab_id != *block_slab_id
                     || slab.block_slab_id != *block_slab_id
+                    || slab.owner_shard_id != report.owner_shard_id
                     || slab.state != desired_state
                     || slab.physical_bytes != physical_bytes
                     || slab.logical_bytes != report.logical_bytes
@@ -319,6 +322,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                     || slab.first_error != report.first_error;
                 slab.stored_slab_id = *block_slab_id;
                 slab.block_slab_id = *block_slab_id;
+                slab.owner_shard_id = report.owner_shard_id;
                 slab.state = desired_state;
                 slab.physical_bytes = physical_bytes;
                 slab.logical_bytes = report.logical_bytes;
@@ -343,6 +347,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                     BlockStoreSlabDescriptor {
                         stored_slab_id: *block_slab_id,
                         block_slab_id: *block_slab_id,
+                        owner_shard_id: report.owner_shard_id,
                         state: desired_state,
                         physical_bytes,
                         logical_bytes: report.logical_bytes,
@@ -372,6 +377,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
             BlockStoreSlabDescriptor {
                 stored_slab_id: *block_slab_id,
                 block_slab_id: *block_slab_id,
+                owner_shard_id: old.as_ref().and_then(|slab| slab.owner_shard_id),
                 state: BlockStoreSlabState::DelayedDestroy,
                 physical_bytes: report.physical_bytes,
                 logical_bytes: old.as_ref().map(|slab| slab.logical_bytes).unwrap_or(0),
@@ -596,6 +602,7 @@ pub(super) fn ensure_slab_descriptor(
         BlockStoreSlabDescriptor {
             stored_slab_id: block_slab_id,
             block_slab_id,
+            owner_shard_id: None,
             state,
             physical_bytes,
             logical_bytes: physical_bytes,
@@ -635,6 +642,7 @@ pub(super) fn upsert_slab_after_append(
         .or_insert(BlockStoreSlabDescriptor {
             stored_slab_id: block_slab_id,
             block_slab_id,
+            owner_shard_id: None,
             state: BlockStoreSlabState::Active,
             physical_bytes: 0,
             logical_bytes: 0,
@@ -686,6 +694,7 @@ pub(super) fn set_slab_state(
         .or_insert(BlockStoreSlabDescriptor {
             stored_slab_id: block_slab_id,
             block_slab_id,
+            owner_shard_id: None,
             state,
             physical_bytes: 0,
             logical_bytes: 0,

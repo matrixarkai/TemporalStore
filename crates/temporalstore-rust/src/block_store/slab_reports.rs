@@ -144,6 +144,7 @@ impl BlockStore {
                         BlockStoreSlabDescriptor {
                             stored_slab_id: entry.block_slab_id,
                             block_slab_id: entry.block_slab_id,
+                            owner_shard_id: None,
                             state,
                             physical_bytes: entry.physical_bytes,
                             logical_bytes: entry.logical_bytes,

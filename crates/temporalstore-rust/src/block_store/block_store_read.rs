@@ -142,6 +142,7 @@ impl BlockStore {
             temp.flush()?;
             temp.sync_all()?;
         }
+        let slab_summary = summarize_slab(bytes, block_slab_id)?;
         if block_slab_id >= inner.block_slab_id {
             inner.active_append_file = None;
         }
@@ -151,7 +152,6 @@ impl BlockStore {
             inner.block_slab_id = block_slab_id;
             inner.write_offset = bytes.len() as u64;
         }
-        let slab_summary = summarize_slab(bytes, block_slab_id)?;
         if let Some(max_block_id) = slab_summary.last_block_id {
             inner.next_block_id = inner.next_block_id.max(max_block_id.saturating_add(1));
         }
@@ -162,6 +162,7 @@ impl BlockStore {
             BlockStoreSlabDescriptor {
                 stored_slab_id: block_slab_id,
                 block_slab_id,
+                owner_shard_id: slab_summary.owner_shard_id,
                 state: if is_current_slab {
                     BlockStoreSlabState::Active
                 } else {
