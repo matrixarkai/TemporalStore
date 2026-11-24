@@ -144,6 +144,14 @@ The datanode uses `TS_CACHE_DIR` for the SSD tier and its `pmem` subdirectory
 for explicitly provisioned PMEM. Keep the cache directory across restarts
 and set `TS_CACHE_RECOVER_ON_START=1` to restore its indexes at startup.
 
+SSD admission counts the stored frame. Set `TS_CACHE_MAX_SSD_BLOCK_BYTES`
+to cover the largest tensor plus its frame. For example, a 40 MiB limit
+accommodates a 36 MiB value in the tested storage layout. The memory and
+PMEM admission limits are `TS_CACHE_MAX_MEMORY_BLOCK_BYTES` and
+`TS_CACHE_MAX_PMEM_BLOCK_BYTES`. These limits apply with the disk cache
+enabled and should fit the corresponding tier budgets.
+
+
 For tensor payloads, measure compression before setting
 `TS_CACHE_COMPRESSION_ENABLED=0`, `TS_WAL_COMPRESS_RECORDS=0`, and
 `TS_BLOCK_STORE_COMPRESSION_ENABLED=false` on dedicated nodes. These flags

@@ -13,34 +13,43 @@ pub(super) fn open_configured_cache(
 ) -> Result<Option<MultiLayerCache>, String> {
     let pmem_bytes = env_value("TS_CACHE_PMEM_BYTES");
     let ssd_bytes = env_value("TS_CACHE_SSD_BYTES");
+    let memory_limit = env_value("TS_CACHE_MAX_MEMORY_BLOCK_BYTES");
+    let pmem_limit = env_value("TS_CACHE_MAX_PMEM_BLOCK_BYTES");
+    let ssd_limit = env_value("TS_CACHE_MAX_SSD_BLOCK_BYTES");
     let recover = env_value("TS_CACHE_RECOVER_ON_START");
     let compression = env_value("TS_CACHE_COMPRESSION_ENABLED");
-    let configure_disk =
-        disk_cache_tier && (pmem_bytes.is_some() || ssd_bytes.is_some() || recover.is_some());
+    let configure_disk = disk_cache_tier
+        && [
+            &pmem_bytes,
+            &ssd_bytes,
+            &memory_limit,
+            &pmem_limit,
+            &ssd_limit,
+            &recover,
+        ]
+        .iter()
+        .any(|setting| setting.is_some());
     if !configure_disk && compression.is_none() {
         return Ok(None);
     }
 
     let mut options = CacheOptions::default();
     options.dram_capacity = memory_bytes;
-    options.pmem_capacity = if disk_cache_tier {
-        capacity(
-            pmem_bytes.as_deref(),
-            "TS_CACHE_PMEM_BYTES",
-            options.pmem_capacity,
-        )?
+    if disk_cache_tier {
+        options.pmem_capacity = byte_count(pmem_bytes.as_deref(), "TS_CACHE_PMEM_BYTES")?
+            .unwrap_or(options.pmem_capacity);
+        options.ssd_capacity =
+            byte_count(ssd_bytes.as_deref(), "TS_CACHE_SSD_BYTES")?.unwrap_or(options.ssd_capacity);
+        options.max_memory_block_bytes =
+            byte_count(memory_limit.as_deref(), "TS_CACHE_MAX_MEMORY_BLOCK_BYTES")?;
+        options.max_pmem_block_bytes =
+            byte_count(pmem_limit.as_deref(), "TS_CACHE_MAX_PMEM_BLOCK_BYTES")?;
+        options.max_ssd_block_bytes =
+            byte_count(ssd_limit.as_deref(), "TS_CACHE_MAX_SSD_BLOCK_BYTES")?;
     } else {
-        0
-    };
-    options.ssd_capacity = if disk_cache_tier {
-        capacity(
-            ssd_bytes.as_deref(),
-            "TS_CACHE_SSD_BYTES",
-            options.ssd_capacity,
-        )?
-    } else {
-        0
-    };
+        options.pmem_capacity = 0;
+        options.ssd_capacity = 0;
+    }
     options.ssd_paths.push(cache_dir.to_owned());
     if options.pmem_capacity > 0 && pmem_bytes.is_some() {
         options.pmem_paths.push(cache_dir.join("pmem"));
@@ -55,11 +64,12 @@ pub(super) fn open_configured_cache(
         .map_err(|error| error.to_string())
 }
 
-fn capacity(value: Option<&str>, name: &str, default: usize) -> Result<usize, String> {
-    match value {
-        Some(value) => value
-            .parse()
-            .map_err(|_| format!("{name} must be a nonnegative byte count")),
-        None => Ok(default),
-    }
+fn byte_count(value: Option<&str>, name: &str) -> Result<Option<usize>, String> {
+    value
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| format!("{name} must be a nonnegative byte count"))
+        })
+        .transpose()
 }
