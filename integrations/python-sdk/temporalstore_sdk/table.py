@@ -16,6 +16,7 @@ from .metadata import MetadataClient, MetadataError, RaftPrimaryUnavailable, Sha
 
 
 _ELECTION_TOPOLOGY_TTL_SECONDS = 0.25
+_ROUTE_ERROR_CODES = {"load_version_mismatch", "raft_error", "raft_write_not_started"}
 
 # The KV and Feast read paths can overlap independent shards. Writes and other
 # commands retain their existing dispatch order.
@@ -70,9 +71,12 @@ class TableClient:
                 self._expires_at = monotonic() + ttl
             return self._topology
 
-    def topology_version(self) -> int:
-        """Return the version of the table topology used for routing."""
-        return self._current_topology().version
+    def table_identity(self) -> tuple[int | None, int | None]:
+        """Identify this table across route changes and distinguish a recreated table."""
+        topology = self._current_topology()
+        if topology.table_id is None:
+            return None, topology.version
+        return topology.table_id, None
 
     @staticmethod
     def _shard_for_command(topology: TableTopology, command: pb.Command) -> Shard:
@@ -112,7 +116,7 @@ class TableClient:
             if error.code() == grpc.StatusCode.UNAVAILABLE:
                 self._invalidate_route(topology)
             raise
-        if response.status.code in {"load_version_mismatch", "raft_error"}:
+        if response.status.code in _ROUTE_ERROR_CODES:
             self._invalidate_route(topology)
         return response
 
@@ -146,13 +150,15 @@ class TableClient:
             responses = self._batch_responses(groups, channels, parallel, timeout_seconds)
             with closing(responses) as batches:
                 for group, response in batches:
-                    if response.status.code in {"load_version_mismatch", "raft_error"}:
+                    if response.status.code in _ROUTE_ERROR_CODES:
                         self._invalidate_route(topology)
                     if len(response.responses) != len(group):
                         if not response.status.ok:
                             raise MetadataError(response.status.code, response.status.message)
                         raise MetadataError("invalid_batch", "datanode returned the wrong response count")
                     for (position, _), result in zip(group, response.responses):
+                        if result.status.code in _ROUTE_ERROR_CODES:
+                            self._invalidate_route(topology)
                         yield position, result
         except grpc.RpcError as error:
             if error.code() == grpc.StatusCode.UNAVAILABLE:

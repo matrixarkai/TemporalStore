@@ -61,6 +61,7 @@ class TableTopology:
     first_shard_id: int
     shard_count: int
     shards: tuple[Shard, ...]
+    table_id: Optional[int] = None
 
     def shard_for_key(self, key: str) -> Shard:
         if self.shard_count <= 0:
@@ -136,6 +137,7 @@ class MetadataClient:
                 self._decode_shard(row)
                 for row in sorted(body["shards"], key=lambda item: item["shard_id"])
             ),
+            table_id=info.get("table_id"),
         )
 
     @staticmethod

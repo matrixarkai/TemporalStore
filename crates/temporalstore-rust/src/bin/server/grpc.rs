@@ -42,6 +42,23 @@ impl DataNodeExecutor {
     }
 }
 
+pub(super) fn execute_raft_sdk_command(
+    raft: &ServerRaftState,
+    request: ExecuteRequest,
+) -> ExecuteResponse {
+    if !is_raft_read_command(&request.command)
+        && !raft.runtime.cluster().is_local_leader(raft.local_node_id)
+    {
+        // No proposal was attempted. Errors after this check can leave an
+        // ambiguous outcome and retain their ordinary Raft status.
+        return ExecuteResponse {
+            status: Status::error("raft_write_not_started", "the target is not the shard leader"),
+            response: CommandResponse::Empty,
+        };
+    }
+    execute_via_server_raft(raft, request)
+}
+
 impl TemporalStoreSdkExecutor for DataNodeExecutor {
     fn execute_checked_sdk(&self, request: ExecuteRequest, load_version: u64) -> ExecuteResponse {
         self.runtime
@@ -76,7 +93,7 @@ impl TemporalStoreSdkExecutor for DataNodeExecutor {
             request.shard_id,
             std::slice::from_ref(&request.command),
         ) {
-            Ok(()) => execute_via_server_raft(raft, request),
+            Ok(()) => execute_raft_sdk_command(raft, request),
             Err(status) => ExecuteResponse {
                 status,
                 response: CommandResponse::Empty,
@@ -123,7 +140,7 @@ impl TemporalStoreSdkExecutor for DataNodeExecutor {
             .commands
             .into_iter()
             .map(|command| {
-                execute_via_server_raft(
+                execute_raft_sdk_command(
                     raft,
                     ExecuteRequest {
                         shard_id: request.shard_id,

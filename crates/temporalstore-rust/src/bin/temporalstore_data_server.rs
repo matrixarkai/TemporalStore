@@ -3895,6 +3895,19 @@ mod tests {
         );
         assert_eq!(response.status.code, "raft_error");
         assert!(response.status.message.contains("not leader"));
+
+        let response = crate::grpc::execute_raft_sdk_command(
+            &state,
+            ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "retryable-follower-write".to_string(),
+                    value: b"blocked".to_vec(),
+                },
+            },
+        );
+        assert_eq!(response.status.code, "raft_write_not_started");
+        assert_eq!(state.runtime.status().commit_index, 0);
     }
 
     #[test]

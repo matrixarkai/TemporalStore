@@ -47,6 +47,20 @@ class TableClientTest(unittest.TestCase):
         for client in channels.values():
             client.close.assert_called_once_with()
 
+    def test_table_identity_is_stable_across_routes_and_changes_on_recreate(self):
+        metadata = Mock()
+        shard = Shard(73, None, (), 7, "primary")
+        metadata.table_topology.side_effect = [
+            TableTopology("kvcache", "model", version, 73, 1, (shard,), table_id=table_id)
+            for version, table_id in ((10, 12), (11, 12), (12, 13), (13, None))
+        ]
+        with patch("temporalstore_sdk.table.monotonic") as clock:
+            with TableClient(metadata, "kvcache", "model", topology_ttl_seconds=1) as table:
+                for now, identity in [(0, (12, None)), (2, (12, None)),
+                                      (4, (13, None)), (6, (None, 13))]:
+                    clock.return_value = now
+                    self.assertEqual(table.table_identity(), identity)
+
     def test_checked_batches_use_the_topology_load_version(self):
         metadata = Mock()
         metadata.table_topology.return_value = TableTopology(

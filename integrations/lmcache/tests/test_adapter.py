@@ -309,7 +309,7 @@ class AdapterTest(unittest.TestCase):
                 "meta_url": "http://example.test", "storage_backend": "blob",
             })
 
-    def test_table_layouts_share_one_descriptor_key_and_follow_table_versions(self):
+    def test_table_layouts_share_one_descriptor_key_and_follow_table_identity(self):
         import json
         from types import SimpleNamespace
 
@@ -327,7 +327,7 @@ class AdapterTest(unittest.TestCase):
             fmt=SimpleNamespace(value=2),
         )
         client = Mock()
-        client.topology_version.return_value = 7
+        client.table_identity.return_value = (7, None)
         result = pb.CommandResponse(status=pb.Status(ok=True))
         client.iter_batch_responses.side_effect = lambda _: iter([(0, result)])
 
@@ -350,7 +350,7 @@ class AdapterTest(unittest.TestCase):
             self.assertEqual(second_command.key, TABLE_DESCRIPTOR_KEY)
             self.assertNotEqual(command.entries[0].field, second_command.entries[0].field)
 
-            client.topology_version.return_value = 8
+            client.table_identity.return_value = (8, None)
             backend.register_layouts({first: metadata})
             self.assertEqual(client.iter_batch_responses.call_count, 3)
             self.assertEqual(client.iter_batch_responses.call_args.args[0][0].hash_multi_set, command)
@@ -373,6 +373,28 @@ class AdapterTest(unittest.TestCase):
             result = list(backend.iter_store_results([(key, memoryview(b"payload"))]))
         self.assertEqual(result, [(0, True)])
         self.assertEqual(client.iter_batch_responses.call_count, 2)
+        wait.assert_called_once_with(0.25)
+
+    def test_table_store_retries_only_writes_rejected_before_proposal(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
+        self.addCleanup(backend.close)
+        client = Mock()
+        success = pb.CommandResponse(status=pb.Status(ok=True), count=1)
+        rejected = pb.CommandResponse(status=pb.Status(code="raft_write_not_started"))
+        ambiguous = pb.CommandResponse(status=pb.Status(code="raft_error"))
+        client.iter_batch_responses.side_effect = [
+            iter([(1, rejected), (2, ambiguous), (0, success)]),
+            iter([(0, success)]),
+        ]
+        commands = [pb.Command(string_set=pb.StringSet(key=str(i), value=b"value"))
+                    for i in range(3)]
+        with patch("lmcache_temporalstore.grpc_kv.sleep") as wait:
+            self.assertEqual(list(backend._store_responses(client, commands)), [
+                (2, ambiguous), (0, success), (1, success),
+            ])
+        self.assertEqual(client.iter_batch_responses.call_args.args[0], [commands[1]])
         wait.assert_called_once_with(0.25)
 
     def test_kv_backend_keeps_one_binary_value_and_rejects_wrong_destination_size(self):

@@ -63,7 +63,7 @@ class TableValueBackend(ValueBackend):
         self._ttl_ms = ttl_seconds * 1000 or None
         self._tables: dict[str, TableClient] = {}
         self._lock = Lock()
-        self._registered_layouts: dict[str, tuple[int, set[tuple]]] = {}
+        self._registered_layouts: dict[str, tuple[tuple[int | None, int | None], set[tuple]]] = {}
 
     def _table(self, name: str) -> TableClient:
         with self._lock:
@@ -84,9 +84,9 @@ class TableValueBackend(ValueBackend):
 
         for name, layouts in pending_by_table.items():
             client = self._table(name)
-            version = client.topology_version()
-            previous_version, registered = self._registered_layouts.get(name, (version, set()))
-            if previous_version != version:
+            identity = client.table_identity()
+            previous_identity, registered = self._registered_layouts.get(name, (identity, set()))
+            if previous_identity != identity:
                 registered = set()
             pending = layouts.keys() - registered
             if not pending:
@@ -113,7 +113,7 @@ class TableValueBackend(ValueBackend):
                 if not response.status.ok:
                     raise MetadataError(response.status.code, response.status.message)
             registered.update(pending)
-            self._registered_layouts[name] = version, registered
+            self._registered_layouts[name] = identity, registered
 
     def _iter_responses(self, entries, *, lookup, partial=False):
         groups = {}
@@ -141,17 +141,37 @@ class TableValueBackend(ValueBackend):
                 start = end
 
     def _store_responses(self, client, commands):
-        deadline = monotonic() + min(self._timeout, 5.0)
-        while True:
+        deadline = None
+        pending = dict(enumerate(commands))
+        while pending:
+            positions = list(pending)
+            rejected = None
             try:
-                yield from client.iter_batch_responses(commands)
-                return
-            except RaftPrimaryUnavailable:
-                # TableClient validates every route before dispatching this batch.
-                remaining = deadline - monotonic()
-                if remaining <= 0:
+                for position, response in client.iter_batch_responses(list(pending.values())):
+                    index = positions[position]
+                    if response.status.code == "raft_write_not_started":
+                        rejected = MetadataError(response.status.code, response.status.message)
+                    else:
+                        del pending[index]
+                        yield index, response
+            except RaftPrimaryUnavailable as error:
+                # TableClient validates every route before dispatching a batch.
+                rejected = error
+            except MetadataError as error:
+                if error.code != "raft_write_not_started":
                     raise
-                sleep(min(0.25, remaining))
+                rejected = error
+            if not pending:
+                return
+            if rejected is None:
+                raise MetadataError("invalid_batch", "datanode returned incomplete store responses")
+            now = monotonic()
+            if deadline is None:
+                deadline = now + min(self._timeout, 5.0)
+            remaining = deadline - now
+            if remaining <= 0:
+                raise rejected
+            sleep(min(0.25, remaining))
 
     def _execute(self, entries: list[tuple[ObjectKey, dict]], *, lookup: bool = False) -> list[dict]:
         ordered = [None] * len(entries)
