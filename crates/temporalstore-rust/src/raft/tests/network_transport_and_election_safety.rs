@@ -1298,6 +1298,42 @@ fn production_raft_mode_uses_temporal_raft_ready_path_when_adapter_is_enabled() 
 }
 
 #[test]
+fn timer_delivers_commit_after_foreground_append_quorum() {
+    let leader = RaftCluster::new_single_shard(7, [1, 2]);
+    leader.set_local_node_id(1);
+    let follower = RaftCluster::new_single_shard(7, [1, 2]);
+    follower.set_local_node_id(2);
+    let transport = FlakyTransport {
+        cluster: follower.clone(),
+        failures_left: Arc::new(Mutex::new(0)),
+    };
+    let timer = leader.register_data_commit_timer();
+    let write = |key: &str| Command::StringSet {
+        key: key.to_string(),
+        value: vec![0, 255],
+    };
+
+    assert_eq!(leader.propose_distributed(write("first"), &transport).unwrap(), CommandResponse::Empty);
+    assert_eq!(leader.commit_index(1).unwrap(), 1);
+    assert_eq!(follower.local_status(2).unwrap().last_log_index, 1);
+    assert_eq!(follower.commit_index(2).unwrap(), 0);
+
+    let heartbeat = leader.build_capped_append_entries_request(2, 0).unwrap();
+    assert!(heartbeat.entries.is_empty());
+    assert_eq!(heartbeat.leader_commit, 1);
+    assert!(transport.append_entries(heartbeat).unwrap().success);
+    assert_eq!(follower.commit_index(2).unwrap(), 1);
+    assert_eq!(
+        follower.read_from_replica(2, Command::StringGet { key: "first".to_string() }).unwrap(),
+        CommandResponse::Bytes { value: Some(vec![0, 255]) },
+    );
+
+    drop(timer);
+    leader.propose_distributed(write("second"), &transport).unwrap();
+    assert_eq!(follower.commit_index(2).unwrap(), 2);
+}
+
+#[test]
 fn deployed_proposals_keep_confirmed_peer_progress_without_copying_peer_logs() {
     let config = RaftConfig {
         max_memory_replicate_log_bytes: 1 << 20,

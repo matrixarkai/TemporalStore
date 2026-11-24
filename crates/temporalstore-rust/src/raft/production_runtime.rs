@@ -461,7 +461,9 @@ impl ProductionRaftRuntime {
         // re-drawn after every attempt so two survivors do not stay locked in step.
         // Voters that must acknowledge for this node to keep leading (this node included).
         let majority_size = self.options.nodes.len() / 2 + 1;
+        let commit_timer = cluster.register_data_commit_timer();
         let handle = thread::spawn(move || {
+            let _commit_timer = commit_timer;
             let mut last_heartbeat = InstantCompat::now();
             let mut first_heartbeat_peer = 0;
             let mut last_tick = InstantCompat::now();

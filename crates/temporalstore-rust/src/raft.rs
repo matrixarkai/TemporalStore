@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{
     Condvar,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc, Mutex, RwLock,
 };
 use std::thread;
@@ -4142,6 +4142,15 @@ pub struct RaftCluster {
     /// Bumped whenever the quorum commit advances; proposers wait on it instead of counting
     /// acknowledgements themselves.
     commit_signal: Arc<(Mutex<u64>, Condvar)>,
+    commit_timers: Arc<AtomicUsize>,
+}
+
+struct DataCommitTimer(Arc<AtomicUsize>);
+
+impl Drop for DataCommitTimer {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl std::fmt::Debug for RaftCluster {
@@ -4298,6 +4307,7 @@ impl RaftCluster {
         Ok(Self {
             follower_pipeline: Arc::new(Mutex::new(None)),
             commit_signal: Arc::new((Mutex::new(0), Condvar::new())),
+            commit_timers: Arc::new(AtomicUsize::new(0)),
             inner: Arc::new(RwLock::new(RaftClusterInner {
                 response_waiters: BTreeSet::new(),
                 pending_responses: BTreeMap::new(),
@@ -4329,6 +4339,11 @@ impl RaftCluster {
                 local_shadow_election: true,
             })),
         })
+    }
+
+    fn register_data_commit_timer(&self) -> DataCommitTimer {
+        self.commit_timers.fetch_add(1, Ordering::AcqRel);
+        DataCommitTimer(Arc::clone(&self.commit_timers))
     }
 
     /// WAL-backed local Raft fixture for durability tests and harnesses only.
@@ -4517,6 +4532,7 @@ impl RaftCluster {
         Ok(Self {
             follower_pipeline: Arc::new(Mutex::new(None)),
             commit_signal: Arc::new((Mutex::new(0), Condvar::new())),
+            commit_timers: Arc::new(AtomicUsize::new(0)),
             inner: Arc::new(RwLock::new(RaftClusterInner {
                 response_waiters: BTreeSet::new(),
                 pending_responses: BTreeMap::new(),
@@ -5491,6 +5507,14 @@ impl RaftCluster {
             inner.persist_configured_wal()?;
             response
         };
+
+        // The quorum has persisted the entry and the local leader has applied it.
+        // The caller still flushes the leader's staged WAL before acknowledging.
+        // With the production timer active, its AppendEntries (or the next write)
+        // delivers the commit index without making the caller wait on every peer.
+        if deployed && self.commit_timers.load(Ordering::Acquire) > 0 {
+            return Ok(leader_response);
+        }
 
         for target_id in &live_target_ids {
             let request = AppendEntriesRequest {
