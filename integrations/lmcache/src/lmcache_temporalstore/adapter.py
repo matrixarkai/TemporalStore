@@ -384,12 +384,16 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                     success = False
                     continue
                 entries.setdefault(key, payload)
-            stored = self._values.store_batch(list(entries.items()))
-            written = {
-                key: len(payload)
-                for (key, payload), created in zip(entries.items(), stored, strict=True)
-                if created
-            }
+            batch = list(entries.items())
+            written = {}
+            try:
+                for index, created in self._values.iter_store_results(batch):
+                    if created:
+                        key, payload = batch[index]
+                        written[key] = len(payload)
+            except Exception:
+                success = False
+                logger.exception("TemporalStore L2 value write failed after %d confirmations", len(written))
             transferred = sum(written.values())
             with self._lock:
                 previous = {key: self._entries[key] for key in written if key in self._entries}

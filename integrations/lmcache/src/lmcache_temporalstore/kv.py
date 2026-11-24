@@ -28,16 +28,23 @@ class ValueBackend:
             self._lookup.close()
         self._client.close()
 
-    def store_batch(self, chunks: list[tuple[ObjectKey, memoryview]]) -> list[bool]:
-        responses = self._execute([
+    def _store_entries(self, chunks: list[tuple[ObjectKey, memoryview]]) -> list[tuple[ObjectKey, dict]]:
+        return [
             (key, {
                 "kind": "string_set_conditional", "key": encode_storage_key(key), "value": payload,
                 "ttl_ms": self._ttl_ms, "condition": "if_not_exists",
                 "return_old": False, "keep_ttl": False,
             })
             for key, payload in chunks
-        ])
-        return [answer["value"] == 1 for answer in responses]
+        ]
+
+    def store_batch(self, chunks: list[tuple[ObjectKey, memoryview]]) -> list[bool]:
+        return [answer["value"] == 1 for answer in self._execute(self._store_entries(chunks))]
+
+    def iter_store_results(
+        self, chunks: list[tuple[ObjectKey, memoryview]],
+    ) -> Iterator[tuple[int, bool]]:
+        yield from zip(range(len(chunks)), self.store_batch(chunks), strict=True)
 
     def lengths(self, keys: list[ObjectKey]) -> list[int]:
         return [

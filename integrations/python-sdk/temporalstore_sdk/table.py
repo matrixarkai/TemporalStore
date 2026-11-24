@@ -4,7 +4,7 @@
 from math import isfinite
 from threading import Lock
 from time import monotonic
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import grpc
 from temporalstore.v1 import temporalstore_pb2 as pb
@@ -90,9 +90,16 @@ class TableClient:
         return response
 
     def batch_execute(self, commands: Iterable[pb.Command]) -> list[pb.CommandResponse]:
+        indexed = sorted(self.iter_batch_responses(commands), key=lambda item: item[0])
+        return [result for _, result in indexed]
+
+    def iter_batch_responses(
+        self, commands: Iterable[pb.Command],
+    ) -> Iterator[tuple[int, pb.CommandResponse]]:
+        """Yield confirmed results with their request positions as shards respond."""
         commands = list(commands)
         if not commands:
-            return []
+            return
         topology = self._current_topology()
         groups: dict[Shard, list[tuple[int, pb.Command]]] = {}
         for position, command in enumerate(commands):
@@ -100,7 +107,6 @@ class TableClient:
             groups.setdefault(shard, []).append((position, command))
         # Validate all routes before issuing any writes.
         channels = {shard: self._channel_for(shard) for shard in groups}
-        indexed = []
         for shard, group in groups.items():
             try:
                 response = channels[shard].batch_execute(
@@ -117,10 +123,8 @@ class TableClient:
                 if not response.status.ok:
                     raise MetadataError(response.status.code, response.status.message)
                 raise MetadataError("invalid_batch", "datanode returned the wrong response count")
-            indexed.extend((position, result)
-                           for (position, _), result in zip(group, response.responses))
-        indexed.sort(key=lambda item: item[0])
-        return [result for _, result in indexed]
+            for (position, _), result in zip(group, response.responses):
+                yield position, result
 
     def close(self) -> None:
         with self._lock:

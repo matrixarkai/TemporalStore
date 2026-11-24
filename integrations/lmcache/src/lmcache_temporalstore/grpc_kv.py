@@ -2,6 +2,7 @@
 """LMCache's model-layout tables over the shared TemporalStore SDK."""
 
 import os
+from collections.abc import Iterator
 from threading import Lock
 
 from lmcache.v1.distributed.api import ObjectKey
@@ -60,11 +61,10 @@ class TableValueBackend(ValueBackend):
                 self._tables[identity] = client
             return client
 
-    def _execute(self, entries: list[tuple[ObjectKey, dict]], *, lookup: bool = False) -> list[dict]:
+    def _iter_responses(self, entries, *, lookup, partial=False):
         groups = {}
         for index, (key, document) in enumerate(entries):
             groups.setdefault(_table_for_key(key), []).append((index, document))
-        ordered = [None] * len(entries)
         timeout = self._lookup_timeout if lookup else self._timeout
         for name, group in groups.items():
             client = self._table(name, timeout)
@@ -79,14 +79,33 @@ class TableValueBackend(ValueBackend):
                     commands.append(_command(document))
                     bytes_used += size
                     end += 1
-                responses = client.batch_execute(commands)
-                for (index, document), response in zip(group[start:end], responses, strict=True):
-                    if not response.status.ok:
-                        raise MetadataError(response.status.code, response.status.message)
-                    value = (response.value or None) if document["kind"] == "string_get" else response.count
-                    ordered[index] = {"value": value}
+                responses = (client.iter_batch_responses(commands) if partial
+                             else enumerate(client.batch_execute(commands)))
+                for position, response in responses:
+                    index, document = group[start + position]
+                    yield index, document, response
                 start = end
+
+    def _execute(self, entries: list[tuple[ObjectKey, dict]], *, lookup: bool = False) -> list[dict]:
+        ordered = [None] * len(entries)
+        for index, document, response in self._iter_responses(entries, lookup=lookup):
+            if not response.status.ok:
+                raise MetadataError(response.status.code, response.status.message)
+            value = (response.value or None) if document["kind"] == "string_get" else response.count
+            ordered[index] = {"value": value}
         return ordered
+
+    def iter_store_results(
+        self, chunks: list[tuple[ObjectKey, memoryview]],
+    ) -> Iterator[tuple[int, bool]]:
+        failure = None
+        for index, _, response in self._iter_responses(self._store_entries(chunks), lookup=False, partial=True):
+            if response.status.ok:
+                yield index, response.count == 1
+            elif failure is None:
+                failure = MetadataError(response.status.code, response.status.message)
+        if failure is not None:
+            raise failure
 
     def close(self) -> None:
         for client in self._tables.values():

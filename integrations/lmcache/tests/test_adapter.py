@@ -249,6 +249,36 @@ class AdapterTest(unittest.TestCase):
         adapter_module.BlobClient = self.old_blob
         adapter_module.TemporalStoreClient = self.old_data
 
+    def test_table_store_accounts_for_confirmed_chunks_when_a_shard_fails(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from temporalstore_sdk import MetadataError
+
+        adapter = adapter_module.TemporalStoreL2Adapter({"storage_backend": "kv"})
+        self.addCleanup(adapter.close)
+        adapter._values.close()
+        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
+        adapter._values = backend
+        keys = [Key("created"), Key("unconfirmed")]
+        for key in keys:
+            key.model_name, key.kv_rank = "fixture/model", 0
+
+        def replies(_):
+            yield 0, pb.CommandResponse(status=pb.Status(ok=True), count=1)
+            raise MetadataError("raft_error", "leader changed during the batch")
+
+        client = Mock()
+        client.iter_batch_responses.side_effect = replies
+        with patch.object(backend, "_table", return_value=client), self.assertLogs(level="ERROR"):
+            task = adapter.submit_store_task(keys, [Memory(b"abc"), Memory(b"defg")])
+            adapter._store_pool.submit(lambda: None).result(timeout=2)
+            result = adapter.pop_completed_store_tasks()[task]
+
+        self.assertFalse(result.success)
+        self.assertEqual(adapter.report_status()["stores"], 1)
+        self.assertEqual(adapter.report_status()["bytes_used"], 3)
+        self.assertEqual(adapter._entries, {keys[0]: 3})
+        client.iter_batch_responses.assert_called_once()
+
     def test_kv_backend_keeps_one_binary_value_and_rejects_wrong_destination_size(self):
         adapter = adapter_module.TemporalStoreL2Adapter({"storage_backend": "kv"})
         self.addCleanup(adapter.close)
