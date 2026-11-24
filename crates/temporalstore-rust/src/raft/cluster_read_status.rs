@@ -43,39 +43,7 @@ impl RaftCluster {
         command: Command,
     ) -> Result<CommandResponse, RaftError> {
         let inner = self.inner.read().expect("raft cluster lock poisoned");
-        let leader_commit_index = inner
-            .nodes
-            .get(&inner.leader_id)
-            .ok_or(RaftError::LeaderUnavailable)?
-            .commit_index;
-        let node = inner
-            .nodes
-            .get(&node_id)
-            .ok_or(RaftError::NodeNotFound(node_id))?;
-        if !node.alive {
-            return Err(RaftError::NodeNotFound(node_id));
-        }
-        if !node.replica_role.can_serve_data() {
-            return Err(RaftError::NodeNotFound(node_id));
-        }
-        if node.commit_index < leader_commit_index {
-            return Err(RaftError::ReplicaLagging {
-                replica_id: node_id,
-                replica_commit_index: node.commit_index,
-                leader_commit_index,
-            });
-        }
-        // R3: committed is not the right freshness bar — a replica can hold
-        // commit_index == leader_commit while its state machine has only applied a prefix of
-        // that (applied_index < commit_index), which would serve HALF-APPLIED state as fresh.
-        // Gate the read on applied_index reaching the leader's committed frontier.
-        if node.applied_index < leader_commit_index {
-            return Err(RaftError::ReplicaApplyLagging {
-                replica_id: node_id,
-                replica_applied_index: node.applied_index,
-                required_index: leader_commit_index,
-            });
-        }
+        let node = readable_replica(&inner, node_id)?;
         Ok(node
             .engine
             .execute(ExecuteRequest {
@@ -83,6 +51,26 @@ impl RaftCluster {
                 command,
             })
             .response)
+    }
+
+    /// Read an ordered batch from a replica that has applied the leader's commit frontier.
+    /// The engine handle keeps a retired snapshot alive until all reads finish.
+    pub fn read_batch_from_replica(
+        &self,
+        node_id: RaftNodeId,
+        commands: Vec<Command>,
+    ) -> Result<Vec<CommandResponse>, RaftError> {
+        if commands.iter().any(crate::engine::is_write_command) {
+            return Err(RaftError::WriteInReplicaReadBatch);
+        }
+        let (shard_id, engine) = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            (inner.shard_id, readable_replica(&inner, node_id)?.engine.clone())
+        };
+        Ok(commands
+            .into_iter()
+            .map(|command| engine.execute(ExecuteRequest { shard_id, command }).response)
+            .collect())
     }
 
     pub fn leader_id(&self) -> RaftNodeId {
@@ -307,19 +295,19 @@ impl RaftCluster {
         if !options.enable_read_from_follower && node_id != inner.leader_id {
             return Err(RaftError::NotLeader { node_id });
         }
+        if options.strategy == RaftReadStrategy::RelaxRead {
+            return Ok(ReadIndexResponse {
+                leader_id: inner.leader_id,
+                node_id,
+                term: inner.nodes.get(&inner.leader_id).map_or(0, |leader| leader.current_term),
+                read_index: node.commit_index,
+            });
+        }
         drop(inner);
-        match options.strategy {
-            RaftReadStrategy::RelaxRead => {
-                let status = self.status();
-                Ok(ReadIndexResponse {
-                    leader_id: status.leader_id,
-                    node_id,
-                    term: status.current_term,
-                    read_index: self.commit_index(node_id)?,
-                })
-            }
-            RaftReadStrategy::LeaseRead => self.read_index_accounted(node_id, true),
-            RaftReadStrategy::ReadIndex => self.read_index(node_id),
+        if options.strategy == RaftReadStrategy::LeaseRead {
+            self.read_index_accounted(node_id, true)
+        } else {
+            self.read_index(node_id)
         }
     }
 
@@ -720,4 +708,41 @@ impl RaftCluster {
             .ok_or(RaftError::NodeNotFound(node_id))?;
         Ok(node.log.iter().map(|e| (e.index, e.term)).collect())
     }
+}
+
+fn readable_replica(inner: &RaftClusterInner, node_id: RaftNodeId) -> Result<&RaftNode, RaftError> {
+    let leader_commit_index = inner
+        .nodes
+        .get(&inner.leader_id)
+        .ok_or(RaftError::LeaderUnavailable)?
+        .commit_index;
+    let node = inner
+        .nodes
+        .get(&node_id)
+        .ok_or(RaftError::NodeNotFound(node_id))?;
+    if !node.alive {
+        return Err(RaftError::NodeNotFound(node_id));
+    }
+    if !node.replica_role.can_serve_data() {
+        return Err(RaftError::NodeNotFound(node_id));
+    }
+    if node.commit_index < leader_commit_index {
+        return Err(RaftError::ReplicaLagging {
+            replica_id: node_id,
+            replica_commit_index: node.commit_index,
+            leader_commit_index,
+        });
+    }
+    // R3: committed is not the right freshness bar — a replica can hold
+    // commit_index == leader_commit while its state machine has only applied a prefix of
+    // that (applied_index < commit_index), which would serve HALF-APPLIED state as fresh.
+    // Gate the read on applied_index reaching the leader's committed frontier.
+    if node.applied_index < leader_commit_index {
+        return Err(RaftError::ReplicaApplyLagging {
+            replica_id: node_id,
+            replica_applied_index: node.applied_index,
+            required_index: leader_commit_index,
+        });
+    }
+    Ok(node)
 }

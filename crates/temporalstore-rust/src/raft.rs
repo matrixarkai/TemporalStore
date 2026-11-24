@@ -3696,6 +3696,8 @@ pub enum RaftError {
     InvalidConfig(String),
     #[error("leader is not available")]
     LeaderUnavailable,
+    #[error("replica read batches cannot contain write commands")]
+    WriteInReplicaReadBatch,
     #[error("not enough live replicas for majority: live={live}, required={required}")]
     NoMajority { live: usize, required: usize },
     #[error("node not found: {0}")]

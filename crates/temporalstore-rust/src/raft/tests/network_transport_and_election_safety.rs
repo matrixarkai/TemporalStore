@@ -1640,7 +1640,31 @@ fn raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup() {
         }
     );
 
+    let reads = || vec![
+        Command::StringGet { key: "k".to_string() },
+        Command::StringLen { key: "k".to_string() },
+        Command::StringGet { key: "missing".to_string() },
+    ];
+    assert!(matches!(
+        cluster.read_batch_from_replica(3, reads()),
+        Err(RaftError::ReplicaLagging { replica_id: 3, .. })
+    ));
+    assert_eq!(
+        cluster.read_batch_from_replica(1, vec![
+            Command::StringSet { key: "k".to_string(), value: b"bad".to_vec() },
+        ]),
+        Err(RaftError::WriteInReplicaReadBatch)
+    );
+
     cluster.catch_up(3).unwrap();
+    assert_eq!(
+        cluster.read_batch_from_replica(3, reads()).unwrap(),
+        vec![
+            CommandResponse::Bytes { value: Some(b"v".to_vec()) },
+            CommandResponse::Integer { value: 1 },
+            CommandResponse::Bytes { value: None },
+        ]
+    );
     assert_eq!(
         cluster
             .read_from_replica(

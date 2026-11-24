@@ -12,8 +12,9 @@ use temporalstore_rust::types::BatchExecuteResponse;
 use tonic::transport::{server::TcpIncoming, Server};
 
 use super::{
-    execute_via_server_raft, BatchExecuteRequest, Command, CommandResponse, DataNodeRuntime,
-    ExecuteRequest, ExecuteResponse, ServerRaftState, ShardId, Status,
+    execute_via_server_raft, is_raft_read_command, read_target_for_server_raft, BatchExecuteRequest,
+    Command, CommandResponse, DataNodeRuntime, ExecuteRequest, ExecuteResponse, ServerRaftState,
+    ShardId, Status,
 };
 
 const MAX_MESSAGE_BYTES: usize = 40 * 1024 * 1024;
@@ -93,6 +94,31 @@ impl TemporalStoreSdkExecutor for DataNodeExecutor {
                 responses: Vec::new(),
             };
         }
+        if request.commands.len() > 1 && request.commands.iter().all(is_raft_read_command) {
+            let count = request.commands.len();
+            let result = read_target_for_server_raft(raft)
+                .and_then(|(cluster, node_id)| cluster.read_batch_from_replica(node_id, request.commands));
+            return match result {
+                Ok(responses) => BatchExecuteResponse {
+                    status: Status::ok(),
+                    responses: responses
+                        .into_iter()
+                        .map(|response| ExecuteResponse { status: Status::ok(), response })
+                        .collect(),
+                },
+                Err(error) => {
+                    let status = Status::error("raft_error", error.to_string());
+                    BatchExecuteResponse {
+                        responses: vec![ExecuteResponse {
+                            status: status.clone(),
+                            response: CommandResponse::Empty,
+                        }; count],
+                        status,
+                    }
+                }
+            };
+        }
+
         let responses: Vec<_> = request
             .commands
             .into_iter()
