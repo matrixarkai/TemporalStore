@@ -262,6 +262,19 @@ Exit criteria:
 - leader failover tested
 - replica read lag measured
 
+## Election marker rollout
+
+Upgrade every data Raft replica to a build that reads the election marker before
+setting `TS_RAFT_ELECTION_MARKER=1` on the replicas. With this setting, a newly
+elected leader can commit an entry in its own term while the application is idle.
+A cluster with the setting off advances the commit point on the next application
+write.
+
+Once a replica has recorded the marker, keep it on a build that can read the new
+record. Turning the setting off stops new markers. Older builds may treat an
+existing marker as a damaged WAL tail, so rolling back the binary requires a
+compatible snapshot and recovery plan.
+
 ## Safety Rules
 
 1. Do not ack a strong write before Raft quorum commit.

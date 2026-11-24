@@ -699,6 +699,11 @@ pub(crate) fn command_encoding(command: &Command) -> io::Result<CommandEncoding<
             ttl_ms: *ttl_ms,
         },
         Command::HashSet { key, field, value } => CommandEncoding::HashSet { key, field, value },
+        // An explicitly present, empty SDK field is reserved for the Raft
+        // marker. No public SDK command can decode from an empty payload.
+        Command::LeaderEstablish => CommandEncoding::Owned(v1::WalCommand {
+            kind: Some(v1::wal_command::Kind::SdkCommand(Vec::new())),
+        }),
         other => CommandEncoding::Owned(v1::WalCommand {
             kind: Some(v1::wal_command::Kind::SdkCommand(
                 crate::shared_store::command_protobuf_bytes(other)?,
@@ -919,6 +924,7 @@ pub(crate) fn command_from_proto(kind: v1::wal_command::Kind) -> io::Result<Comm
             field: command.field,
             value: command.value,
         },
+        v1::wal_command::Kind::SdkCommand(bytes) if bytes.is_empty() => Command::LeaderEstablish,
         v1::wal_command::Kind::SdkCommand(bytes) => {
             crate::shared_store::command_from_protobuf_bytes(&bytes)?
         }
@@ -1204,14 +1210,13 @@ mod tests {
 
 /// THE RAFT WAL CARRIES EVERY COMMAND AS PROTOBUF.
 ///
-/// Three commands are modelled field by field. Every other one rides the `sdk_command` arm as its
-/// SDK protobuf encoding, through the same mapping the shared WAL publishes with, and a command that
-/// has no mapping is refused rather than written as JSON. No arm writes or reads JSON.
+/// The listed commands have native Raft representations. Other commands use the public
+/// protobuf mapping. Unmapped commands are refused.
 ///
-/// `command_encoding` is the only place that decides. The roster below states the three, and the
+/// `command_encoding` chooses the representation. The roster lists the native forms, and the
 /// test checks it from both ends: the source text that defines the arms, and the real encoder driven
 /// with real commands.
-const COMMANDS_THE_RAFT_WAL_MODELS: &[&str] = &["HashSet", "StringSet", "StringSetEx"];
+const COMMANDS_THE_RAFT_WAL_MODELS: &[&str] = &["HashSet", "LeaderEstablish", "StringSet", "StringSetEx"];
 
 #[test]
 fn every_command_the_raft_wal_carries_is_protobuf() {
@@ -1413,6 +1418,32 @@ fn every_command_the_raft_wal_carries_is_protobuf() {
             value: b"hello".to_vec(),
             ttl_ms: 5_000,
         });
+    }
+
+    #[test]
+    fn election_marker_survives_the_local_wal_and_peer_replication() {
+        let envelope = envelope_with(Command::LeaderEstablish);
+        let framed = encode_record_line(&envelope).unwrap();
+        let (consumed, decoded) = next_envelope(&framed).unwrap();
+        assert_eq!(consumed, framed.len());
+        assert_eq!(decoded, envelope);
+
+        let request = AppendEntriesRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 3,
+            leader_id: 1,
+            target_id: 2,
+            prev_log_index: 41,
+            prev_log_term: 3,
+            entries: envelope.record.entries,
+            leader_commit: 42,
+        };
+        let encoded = encode_append_entries(&request).unwrap();
+        assert_eq!(decode_append_entries(&encoded).unwrap(), request);
+
+        // The marker has no public command representation.
+        assert!(crate::shared_store::command_protobuf_bytes(&Command::LeaderEstablish).is_err());
     }
 
     /// A zero-TTL `StringSetEx` means "expires now", and nothing the log can carry says so: the
