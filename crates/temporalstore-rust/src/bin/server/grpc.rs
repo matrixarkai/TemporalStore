@@ -16,7 +16,7 @@ use super::{
     ExecuteRequest, ExecuteResponse, ServerRaftState, ShardId, Status,
 };
 
-const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_MESSAGE_BYTES: usize = 40 * 1024 * 1024;
 
 struct DataNodeExecutor {
     runtime: DataNodeRuntime,

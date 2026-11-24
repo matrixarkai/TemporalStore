@@ -18,7 +18,7 @@ class CommandClient:
         timeout_seconds: float = 10.0,
         credentials: Optional[grpc.ChannelCredentials] = None,
     ):
-        message_limit = 32 * 1024 * 1024
+        message_limit = 40 * 1024 * 1024
         options = (
             ("grpc.max_send_message_length", message_limit),
             ("grpc.max_receive_message_length", message_limit),
