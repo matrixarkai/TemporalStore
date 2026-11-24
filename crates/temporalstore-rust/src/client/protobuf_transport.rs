@@ -2,8 +2,10 @@
 // Copyright 2026 MatrixArkAI
 
 use super::*;
+use crate::sdk::v1;
 use bytes::Bytes;
 use prost::encoding::{decode_key, decode_varint, skip_field, DecodeContext, WireType};
+use prost::Message;
 use tonic::client::Grpc;
 use tonic::codegen::http::uri::PathAndQuery;
 use tonic::transport::{Channel, Endpoint};
@@ -57,10 +59,10 @@ pub(crate) struct ProtobufBatchExecuteReply {
     pub topology_version: u64,
 }
 
-pub(crate) struct ProtobufShardBatch {
+struct ProtobufShardBatch {
     route: GrpcPrimaryRoute,
-    pub positions: Vec<usize>,
-    pub read_only: bool,
+    positions: Vec<usize>,
+    read_only: bool,
 }
 
 fn length_delimited<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], prost::DecodeError> {
@@ -104,6 +106,23 @@ pub(crate) fn protobuf_command_key(mut input: &[u8]) -> Result<(&str, bool), pro
     }
     let read = matches!(kind, 2 | 5 | 7 | 9 | 11 | 13 | 21 | 64 | 68 | 82..=87);
     Ok((key, read))
+}
+
+fn protobuf_status(code: &str, message: impl Into<String>) -> v1::Status {
+    v1::Status {
+        ok: code == "ok",
+        code: code.to_owned(),
+        message: message.into(),
+    }
+}
+
+fn incomplete_batch(read_only: bool) -> v1::Status {
+    let code = if read_only {
+        "invalid_batch"
+    } else {
+        "write_outcome_unknown"
+    };
+    protobuf_status(code, "datanode returned an incomplete batch")
 }
 
 fn before_protobuf_dispatch(error: ClientError, read_only: bool) -> ClientError {
@@ -167,6 +186,58 @@ impl TemporalStoreTable {
         self.execute_routed_protobuf(&command, routing, 0).await
     }
 
+    /// Execute a typed command against the table's elected gRPC primary.
+    pub async fn execute_grpc(
+        &self,
+        command: v1::Command,
+    ) -> Result<v1::ExecuteResponse, ClientError> {
+        let reply = self
+            .execute_protobuf(Bytes::from(command.encode_to_vec()))
+            .await?;
+        Ok(v1::ExecuteResponse {
+            status: reply.status,
+            response: reply
+                .response
+                .map(v1::CommandResponse::decode)
+                .transpose()
+                .map_err(|error| ClientError::Status(error.to_string()))?,
+            topology_version: reply.topology_version,
+        })
+    }
+
+    /// Batch typed commands by primary and return the results in input order.
+    /// Each shard batch is dispatched once, with a generation fence when available.
+    pub async fn batch_execute_grpc(
+        &self,
+        commands: impl IntoIterator<Item = v1::Command>,
+    ) -> Result<v1::BatchExecuteResponse, ClientError> {
+        let commands: Vec<_> = commands
+            .into_iter()
+            .map(|command| Bytes::from(command.encode_to_vec()))
+            .collect();
+        let routing = commands
+            .iter()
+            .map(|command| {
+                protobuf_command_key(command)
+                    .map_err(|error| ClientError::InvalidRequest(error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let reply = self
+            .execute_routed_protobuf_batch(&commands, &routing, 0, usize::MAX)
+            .await?;
+        let responses = reply
+            .responses
+            .into_iter()
+            .map(v1::CommandResponse::decode)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| ClientError::Status(error.to_string()))?;
+        Ok(v1::BatchExecuteResponse {
+            status: reply.status,
+            responses,
+            topology_version: reply.topology_version,
+        })
+    }
+
     pub(crate) async fn execute_routed_protobuf(
         &self,
         command: &Bytes,
@@ -207,7 +278,83 @@ impl TemporalStoreTable {
         .await
     }
 
-    pub(crate) async fn route_protobuf_batch(
+    pub(crate) async fn execute_routed_protobuf_batch(
+        &self,
+        commands: &[Bytes],
+        routing: &[(&str, bool)],
+        trace_id: u64,
+        response_limit: usize,
+    ) -> Result<ProtobufBatchExecuteReply, ClientError> {
+        if commands.is_empty() {
+            return Ok(ProtobufBatchExecuteReply {
+                status: Some(protobuf_status("ok", "")),
+                ..Default::default()
+            });
+        }
+        let groups = self.route_protobuf_batch(routing).await?;
+        let mut reply = ProtobufBatchExecuteReply {
+            status: Some(protobuf_status("ok", "")),
+            responses: vec![Bytes::new(); commands.len()],
+            ..Default::default()
+        };
+        let mut response_bytes = 0usize;
+        for group in groups {
+            let result = self
+                .execute_protobuf_shard_batch(&group, commands, trace_id)
+                .await;
+            let (status, responses) = match result {
+                Ok(result) => {
+                    reply.topology_version = reply.topology_version.max(result.topology_version);
+                    let status = result
+                        .status
+                        .unwrap_or_else(|| incomplete_batch(group.read_only));
+                    let status = if result.responses.len() == group.positions.len()
+                        || (result.responses.is_empty() && !status.ok)
+                    {
+                        status
+                    } else {
+                        incomplete_batch(group.read_only)
+                    };
+                    (status, result.responses)
+                }
+                Err(error) => (
+                    protobuf_status(crate::sdk::client_error_code(&error), error.to_string()),
+                    Vec::new(),
+                ),
+            };
+            if !status.ok
+                && (status.code == "write_outcome_unknown"
+                    || reply.status.as_ref().is_some_and(|status| status.ok))
+            {
+                reply.status = Some(status.clone());
+            }
+            let mut responses = responses.into_iter();
+            for index in group.positions {
+                let response = responses.next().unwrap_or_else(|| {
+                    Bytes::from(
+                        v1::CommandResponse {
+                            status: Some(status.clone()),
+                            ..Default::default()
+                        }
+                        .encode_to_vec(),
+                    )
+                });
+                response_bytes += response.len() + 8;
+                if response_bytes > response_limit.saturating_sub(1024) {
+                    reply.status = Some(protobuf_status(
+                        "resource_exhausted",
+                        "batch reply exceeds message limit after executing commands",
+                    ));
+                    reply.responses.clear();
+                    return Ok(reply);
+                }
+                reply.responses[index] = response;
+            }
+        }
+        Ok(reply)
+    }
+
+    async fn route_protobuf_batch(
         &self,
         keys: &[(&str, bool)],
     ) -> Result<Vec<ProtobufShardBatch>, ClientError> {
@@ -283,7 +430,7 @@ impl TemporalStoreTable {
         Some(Ok(groups.into_values().collect()))
     }
 
-    pub(crate) async fn execute_protobuf_shard_batch(
+    async fn execute_protobuf_shard_batch(
         &self,
         group: &ProtobufShardBatch,
         commands: &[Bytes],
@@ -398,6 +545,29 @@ mod tests {
                 response: CommandResponse::Bytes { value: Some(value) },
             }
         }
+        fn batch_execute_checked_sdk(
+            &self,
+            request: BatchExecuteRequest,
+            load_version: u64,
+        ) -> BatchExecuteResponse {
+            let responses = request
+                .commands
+                .into_iter()
+                .map(|command| {
+                    self.execute_checked_sdk(
+                        ExecuteRequest {
+                            shard_id: request.shard_id,
+                            command,
+                        },
+                        load_version,
+                    )
+                })
+                .collect();
+            BatchExecuteResponse {
+                status: Status::ok(),
+                responses,
+            }
+        }
     }
 
     #[tokio::test]
@@ -468,6 +638,19 @@ mod tests {
             let response = v1::CommandResponse::decode(response.response.unwrap()).unwrap();
             assert_eq!(response.value, payload);
         }
+        let command = v1::Command::decode(encoded).unwrap();
+        let single = table.execute_grpc(command.clone()).await.unwrap();
+        assert_eq!(single.response.unwrap().value, payload);
+        let batch = table
+            .batch_execute_grpc([command.clone(), command])
+            .await
+            .unwrap();
+        assert!(batch.status.unwrap().ok);
+        assert_eq!(batch.responses.len(), 2);
+        assert!(batch
+            .responses
+            .iter()
+            .all(|response| response.value == payload));
         assert_eq!(client.inner.grpc_channels.read().unwrap().len(), 1);
         worker.abort();
     }

@@ -1938,7 +1938,7 @@ fn client_error_status(err: ClientError) -> types::Status {
     types::Status::error(code, err.to_string())
 }
 
-fn client_error_code(err: &ClientError) -> &'static str {
+pub(crate) fn client_error_code(err: &ClientError) -> &'static str {
     match err {
         ClientError::Http(_) => "http_error",
         ClientError::Status(_) => "status_error",

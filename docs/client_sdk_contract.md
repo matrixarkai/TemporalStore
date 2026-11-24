@@ -23,6 +23,13 @@ operations. Custom transports can use `resolve_route_with_policy` and
 `batch_read_policy` to select an endpoint and report outcomes through the client's
 backend failure methods.
 
+For direct protobuf data calls, open the table with \`open_table_from_meta\`
+and use \`execute_grpc\` or \`batch_execute_grpc\` with commands from
+\`temporalstore_rust::sdk::v1\`. The table client resolves the primary,
+reuses its gRPC channel, and supplies the shard's load version when
+available. Batch results follow input order across shards. Serialized
+relays can forward command bytes through the same routing path.
+
 The SDK and proxy authenticate metaserver requests through the SDK's environment
 credential provider. A direct client using `TS_META_ADMIN_TOKEN` runs inside the
 cluster trust boundary. The token grants administrative access to the

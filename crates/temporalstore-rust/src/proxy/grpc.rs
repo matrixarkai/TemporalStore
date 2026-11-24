@@ -8,7 +8,6 @@ use crate::client::{
 };
 use crate::sdk::v1;
 use bytes::Bytes;
-use prost::Message;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::Ordering;
@@ -299,64 +298,15 @@ impl ProxyService {
             .collect::<Result<Vec<_>, _>>()?;
         let _admitted = self.admit_relay(&namespace, &routing)?;
         let table = self.relay_table(namespace, table_name).await?;
-        let groups = table
-            .route_protobuf_batch(&routing)
+        let reply = table
+            .execute_routed_protobuf_batch(
+                &request.commands,
+                &routing,
+                request.trace_id,
+                MESSAGE_LIMIT,
+            )
             .await
             .map_err(client_status)?;
-        let mut reply = ProtobufBatchExecuteReply {
-            status: Some(wire_status(Status::ok())),
-            responses: vec![Bytes::new(); request.commands.len()],
-            ..Default::default()
-        };
-        let mut response_bytes = 0usize;
-        for group in groups {
-            let result = table
-                .execute_protobuf_shard_batch(&group, &request.commands, request.trace_id)
-                .await;
-            let (status, responses) = match result {
-                Ok(result) => {
-                    reply.topology_version = reply.topology_version.max(result.topology_version);
-                    let status = result
-                        .status
-                        .unwrap_or_else(|| incomplete_batch(group.read_only));
-                    let status = if result.responses.len() == group.positions.len()
-                        || (result.responses.is_empty() && !status.ok)
-                    {
-                        status
-                    } else {
-                        incomplete_batch(group.read_only)
-                    };
-                    (status, result.responses)
-                }
-                Err(error) => (wire_status(client_status(error)), Vec::new()),
-            };
-            if !status.ok
-                && (status.code == "write_outcome_unknown"
-                    || reply.status.as_ref().is_some_and(|status| status.ok))
-            {
-                reply.status = Some(status.clone());
-            }
-            let mut responses = responses.into_iter();
-            for index in group.positions {
-                let response = responses.next().unwrap_or_else(|| {
-                    Bytes::from(
-                        v1::CommandResponse {
-                            status: Some(status.clone()),
-                            ..Default::default()
-                        }
-                        .encode_to_vec(),
-                    )
-                });
-                response_bytes += response.len() + 8;
-                if response_bytes > MESSAGE_LIMIT - 1024 {
-                    return Err(Status::error(
-                        "resource_exhausted",
-                        "batch reply exceeds message limit after executing commands",
-                    ));
-                }
-                reply.responses[index] = response;
-            }
-        }
         Ok(RelayEvent {
             status: reply.status.clone(),
             topology_version: reply.topology_version,
@@ -439,15 +389,6 @@ impl ProxyService {
             topology_version,
         }
     }
-}
-
-fn incomplete_batch(read_only: bool) -> v1::Status {
-    let code = if read_only {
-        "invalid_batch"
-    } else {
-        "write_outcome_unknown"
-    };
-    wire_status(Status::error(code, "datanode returned an incomplete batch"))
 }
 
 fn relay_routing(command: &Bytes) -> Result<(&str, bool), Status> {
