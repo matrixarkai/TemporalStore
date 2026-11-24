@@ -72,8 +72,13 @@ fn main() {
         context_shard_count: env_u64("TS_PROXY_CONTEXT_SHARD_COUNT", defaults.context_shard_count),
         context_io_timeout_ms: env_u64("TS_PROXY_CONTEXT_IO_TIMEOUT_MS", defaults.context_io_timeout_ms),
     };
+    let grpc_bind_addr = temporalstore_rust::env_flag::env_value("TS_PROXY_GRPC_BIND_ADDR");
+    if grpc_bind_addr.is_some() && options.meta_grpc_target.is_none() {
+        eprintln!("TS_META_GRPC_TARGET is required with TS_PROXY_GRPC_BIND_ADDR");
+        std::process::exit(2);
+    }
     let proxy = ProxyService::new(options);
-    if let Some(grpc_addr) = temporalstore_rust::env_flag::env_value("TS_PROXY_GRPC_BIND_ADDR") {
+    if let Some(grpc_addr) = grpc_bind_addr {
         let grpc_addr = proxy.start_grpc(&grpc_addr).expect("proxy gRPC bind failed");
         info!(%grpc_addr, "temporalstore proxy gRPC listening");
     }

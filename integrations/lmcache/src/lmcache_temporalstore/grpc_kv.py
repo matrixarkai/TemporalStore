@@ -60,6 +60,7 @@ class TableValueBackend(ValueBackend):
     ) -> None:
         self._metadata = MetadataClient(
             meta_url, credential_provider=lambda: os.environ.get("TS_META_ADMIN_TOKEN"),
+            require_grpc=True,
             timeout_seconds=min(timeout_seconds, lookup_timeout_seconds),
         )
         self._proxy = ProxyCommandClient(proxy_grpc_target) if proxy_grpc_target else None

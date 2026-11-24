@@ -88,8 +88,11 @@ class MetadataClient:
         *,
         credential_provider: Optional[Callable[[], Optional[str]]] = None,
         timeout_seconds: float = 5.0,
+        require_grpc: bool = False,
     ):
         endpoint = urlsplit(url)
+        if require_grpc and endpoint.scheme not in ("grpc", "grpcs"):
+            raise ValueError("expected a grpc:// or grpcs:// metaserver URL")
         if (endpoint.scheme not in ("grpc", "grpcs", "http", "https") or not endpoint.hostname
                 or endpoint.path not in ("", "/") or endpoint.username is not None
                 or endpoint.query or endpoint.fragment):

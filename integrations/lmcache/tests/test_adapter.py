@@ -252,7 +252,7 @@ class AdapterTest(unittest.TestCase):
     def test_table_lookup_retries_a_stale_primary_within_its_original_deadline(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
 
-        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
         self.addCleanup(backend.close)
         client = Mock()
         client.batch_execute.side_effect = [
@@ -276,7 +276,7 @@ class AdapterTest(unittest.TestCase):
         adapter = adapter_module.TemporalStoreL2Adapter({"storage_backend": "kv"})
         self.addCleanup(adapter.close)
         adapter._values.close()
-        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
         adapter._values = backend
         keys = [Key("created"), Key("unconfirmed")]
         for key in keys:
@@ -302,7 +302,7 @@ class AdapterTest(unittest.TestCase):
     def test_lookup_and_store_share_a_table_client_with_distinct_deadlines(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
 
-        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
         self.addCleanup(backend.close)
         key = Key("shared-channel")
         key.model_name, key.kv_rank = "fixture/model", 0
@@ -321,12 +321,14 @@ class AdapterTest(unittest.TestCase):
 
     def test_metaserver_selects_distributed_kv_by_default(self):
         config = adapter_module.TemporalStoreL2AdapterConfig
-        self.assertEqual(config.from_dict({"meta_url": "http://example.test"}).storage_backend, "kv")
-        self.assertEqual(config(meta_url="http://example.test").storage_backend, "kv")
+        self.assertEqual(config.from_dict({"meta_url": "grpc://example.test"}).storage_backend, "kv")
+        self.assertEqual(config(meta_url="grpc://example.test").storage_backend, "kv")
         self.assertEqual(config.from_dict({}).storage_backend, "blob")
+        with self.assertRaisesRegex(ValueError, "grpc:// or grpcs://"):
+            adapter_module.TemporalStoreL2Adapter({"meta_url": "http://example.test"})
         with self.assertRaisesRegex(ValueError, "requires the kv backend"):
             adapter_module.TemporalStoreL2Adapter({
-                "meta_url": "http://example.test", "storage_backend": "blob",
+                "meta_url": "grpc://example.test", "storage_backend": "blob",
             })
 
     def test_table_layouts_share_one_descriptor_key_and_follow_table_identity(self):
@@ -335,7 +337,7 @@ class AdapterTest(unittest.TestCase):
 
         from lmcache_temporalstore.grpc_kv import TABLE_DESCRIPTOR_KEY, TableValueBackend, pb
 
-        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
         self.addCleanup(backend.close)
         first, second = Key("first"), Key("second")
         for key in (first, second):
@@ -379,7 +381,7 @@ class AdapterTest(unittest.TestCase):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
         from temporalstore_sdk import RaftPrimaryUnavailable
 
-        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
         client = Mock()
         client.iter_batch_responses.side_effect = [
             RaftPrimaryUnavailable(73),
@@ -398,7 +400,7 @@ class AdapterTest(unittest.TestCase):
     def test_table_store_retries_only_writes_rejected_before_proposal(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
 
-        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
         self.addCleanup(backend.close)
         client = Mock()
         success = pb.CommandResponse(status=pb.Status(ok=True), count=1)

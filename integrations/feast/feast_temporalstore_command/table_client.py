@@ -54,6 +54,7 @@ class TableFeastClient(TemporalStoreClient):
         super().__init__(*limits)
         self._metadata = MetadataClient(
             meta_url, credential_provider=lambda: os.environ.get("TS_META_ADMIN_TOKEN"),
+            require_grpc=True,
             timeout_seconds=self.timeout_seconds,
         )
         self._table = TableClient(

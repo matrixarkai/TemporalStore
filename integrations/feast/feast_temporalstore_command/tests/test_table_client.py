@@ -19,12 +19,21 @@ class TableFeastClientTest(unittest.TestCase):
         self.addCleanup(self.patch.stop)
         self.table = constructor.return_value
         self.client = TableFeastClient(
-            "http://example.test", "feast", "online", "legacy", 9999, 40, 10, 1,
+            "grpc://example.test", "feast", "online", "legacy", 9999, 40, 10, 1,
             4 * 1024 * 1024, 16, 2,
         )
         self.addCleanup(self.client.close)
         constructor.assert_called_once()
         self.assertEqual(constructor.call_args.args[1:3], ("feast", "online"))
+
+    def test_distributed_table_requires_grpc_metadata(self):
+        from feast_temporalstore_command.table_client import TableFeastClient
+
+        with self.assertRaisesRegex(ValueError, "grpc:// or grpcs://"):
+            TableFeastClient(
+                "http://example.test", "feast", "online", "legacy", 9999, 40, 10, 1,
+                4 * 1024 * 1024, 16, 2,
+            )
 
     def test_sync_and_async_reads_preserve_missing_and_empty_binary_fields(self):
         pb = temporalstore_sdk.commands

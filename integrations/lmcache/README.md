@@ -1,47 +1,11 @@
 # LMCache L2 storage on TemporalStore
 
-This package provides an LMCache multiprocess L2 adapter. KV payloads use the
-datanode's raw `PUT` and `GET /blob/<key>` route. Existence, expiry, and deletion
-use the datanode command protocol through the existing Feast TemporalStore
-client. The adapter also uses `DELETE /blob/<key>` to reclaim payloads when it
-evicts entries. Explicit batch deletion uses the datanode's
-`POST /batch_delete_blobs` route when available and falls back to individual
-DELETE requests on older datanodes. The adapter also uses
-`POST /batch_read_blobs` to stream up to 32 local payloads into their destination
-buffers. It uses the single-blob route for local misses and older datanodes.
+TemporalStore provides distributed L2 storage for LMCache multiprocess
+servers used by vLLM. It stores each KV-cache chunk as one binary value.
+The Python SDK discovers table placement over gRPC and sends protobuf
+commands either directly to the selected datanode or through a gRPC proxy.
 
-Install the Feast integration and this package from the same TemporalStore
-checkout, alongside an LMCache installation with its native module available:
-
-```bash
-python -m pip install ./integrations/feast ./integrations/lmcache
-```
-
-Point both URLs at a datanode that serves the selected shard. The blob and
-command routes must address the same node:
-
-```json
-{
-  "type": "plugin",
-  "module_path": "lmcache_temporalstore.adapter",
-  "class_name": "TemporalStoreL2Adapter",
-  "adapter_params": {
-    "blob_url": "http://127.0.0.1:17002",
-    "data_url": "http://127.0.0.1:17002",
-    "shard_id": 1,
-    "max_capacity_gb": 64,
-    "ttl_seconds": 0
-  }
-}
-```
-
-The capacity budget is maintained by each adapter process. Configure one
-adapter writer per blob namespace when relying on this budget. Metadata expiry
-does not itself remove blob files; use adapter deletion or eviction to reclaim
-their payloads. `ttl_seconds=0` keeps metadata until it is explicitly removed.
-
-
-## KV tables over the Python SDK (experimental)
+## Distributed KV tables
 
 Install the SDK and both integration packages from the same checkout.
 
@@ -54,17 +18,19 @@ world_size, local_world_size)` from `lmcache_temporalstore.layout`. The model
 name must match LMCache's model identity. Workers with the same layout use
 the same table across ranks.
 
-Set `meta_url` to the metaserver's endpoint to select the distributed KV backend
-by default. Use `grpc://host:port` for protobuf discovery with a metaserver
-started with `TS_META_GRPC_BIND_ADDR`. The namespace defaults to `"kvcache"`. The Python SDK resolves the
-table's shards and their gRPC addresses. It includes load versions when the
-metaserver reports them. When the metaserver requires authentication, set
+Set `meta_url` to the metaserver's `grpc://host:port` endpoint to select the
+distributed KV backend. Use `grpcs://host:port` for TLS. Enable the metaserver
+listener with `TS_META_GRPC_BIND_ADDR`. The namespace defaults to `"kvcache"`.
+The Python SDK resolves shard addresses and includes any load versions
+reported by the metaserver. If the metaserver requires authentication, set
 `TS_META_ADMIN_TOKEN` in the LMCache server environment.
 
 Set `proxy_grpc_target` to a TemporalStore service proxy address such as
 `127.0.0.1:17004` to send table commands through its gRPC listener. Start
 `matrixark_rust_service_proxy` with `TS_PROXY_GRPC_BIND_ADDR` to enable the
-listener. Keep `meta_url` for model table identity and layout registration.
+listener and set `TS_META_GRPC_TARGET` to its metaserver endpoint for
+registration, routing, and heartbeats. Keep `meta_url` for model table
+identity and layout registration.
 Without `proxy_grpc_target`, the SDK sends commands directly to the datanodes.
 
 Registry metadata and placement are managed by TemporalStore. Each LMCache
@@ -88,29 +54,34 @@ itself, and an existing value keeps its original expiry.
 This path requires the datanode's MessagePack batch route. Its capacity
 setting limits individual chunks, and its usage counters reflect entries
 written and tracked by that adapter. Configure a dedicated test shard and
-a TTL for bounded test runs. Metaserver table discovery, replica failover,
-and cluster-wide eviction are still in development.
+a TTL for bounded test runs. For managed placement, replica failover, and
+shared eviction, use the distributed table configuration above.
 
 ## Distributed vLLM deployment
 
 Run an LMCache multiprocess server beside each vLLM worker host. The vLLM
 connector exchanges KV tensors with its local LMCache server through shared
-memory. The LMCache server can access a TemporalStore datanode over the
-network. Keep both adapter URLs pointed at the datanode serving the
-configured shard.
+memory. The LMCache server uses the same model table and shard placement as other
+LMCache servers in the deployment. Set `remote_storage` for datanodes on
+another host.
 
-Give each LMCache server a distinct, stable `namespace` when several servers
-use the same datanode. One LMCache server owns the writes, locks, and eviction
-budget for its namespace. Workers attached to that server can reuse its
-cache. The default empty namespace preserves keys written by older versions.
-Reuse the namespace on restart to find its previous cache entries. Capacity
-accounting covers writes made since the adapter started. Each namespace
-has its own cache budget. Route a namespace to the same datanode to keep
-the metadata and blob operations together.
+Save an adapter configuration in `temporalstore-l2.json`.
 
-Save the adapter JSON above in `temporalstore-l2.json`, set its URLs and
-`namespace`, set `remote_storage` to `true` for a datanode on another
-host, and run:
+```json
+{
+  "type": "plugin",
+  "module_path": "lmcache_temporalstore.adapter",
+  "class_name": "TemporalStoreL2Adapter",
+  "adapter_params": {
+    "meta_url": "grpc://127.0.0.1:17101",
+    "namespace": "kvcache",
+    "max_capacity_gb": 64,
+    "ttl_seconds": 0
+  }
+}
+```
+
+Start the LMCache server.
 
 ```bash
 lmcache server --port 5555 --l1-size-gb 2 --eviction-policy LRU \
@@ -175,9 +146,13 @@ cache with the same configuration. The Raft log and snapshots recover
 the replicated data on restart. The replacement replica repopulates its
 cache on demand.
 
-### Replicas across datanodes
+### Legacy blob adapters
 
-For L2 redundancy, configure one TemporalStore adapter per independent
+The `blob` backend uses the configured `blob_url` and `data_url` on a single
+HTTP datanode. Use dedicated namespaces and one writer per namespace when
+relying on the process-local capacity limit.
+
+For L2 redundancy with this backend, configure one TemporalStore adapter per independent
 datanode. Each adapter's blob and command URLs must point to that same
 datanode. Use separate backing storage for the datanodes. LMCache's
 `default` store policy sends each chunk to every configured adapter and
