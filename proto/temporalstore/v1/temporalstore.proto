@@ -2648,6 +2648,8 @@ message MfTableServingOptions {
   uint64 io_timeout_ms = 9;
   uint64 connect_timeout_ms = 10;
   repeated string set_fields = 11;
+  bool cache_class = 12;
+  uint64 cache_budget_bytes = 13;
 }
 
 message MfSchedulerTaskKindUpdateMembership {

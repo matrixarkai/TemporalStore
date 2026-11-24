@@ -903,7 +903,7 @@ fn client_applies_metaserver_table_serving_options() {
                                 continuous_failed_time_ms: 19,
                                 io_timeout_ms: 321,
                                 connect_timeout_ms: 123,
-                                set_fields: Default::default(),
+                                ..Default::default()
                             },
                         }),
                         shards: Vec::new(),
@@ -1538,7 +1538,7 @@ fn client_deployment_placement_routes_reads_to_local_secondary_and_writes_to_pri
                                     continuous_failed_time_ms: 100,
                                     io_timeout_ms: 1_000,
                                     connect_timeout_ms: 1_000,
-                                    set_fields: Default::default(),
+                                    ..Default::default()
                                 },
                             }),
                             shards: vec![TableShard {

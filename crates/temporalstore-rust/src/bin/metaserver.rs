@@ -2208,6 +2208,10 @@ struct MasterTableOptionsRequest {
     io_timeout_ms: Option<u64>,
     #[serde(default)]
     connect_timeout_ms: Option<u64>,
+    #[serde(default)]
+    cache_class: Option<bool>,
+    #[serde(default)]
+    cache_budget_bytes: Option<u64>,
 }
 
 impl MasterTableOptionsRequest {
@@ -2233,6 +2237,8 @@ impl MasterTableOptionsRequest {
             continuous_failed_time_ms: self.continuous_failed_time_ms,
             io_timeout_ms: self.io_timeout_ms,
             connect_timeout_ms: self.connect_timeout_ms,
+            cache_class: self.cache_class,
+            cache_budget_bytes: self.cache_budget_bytes,
         }
     }
 }
