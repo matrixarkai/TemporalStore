@@ -262,6 +262,26 @@ Exit criteria:
 - leader failover tested
 - replica read lag measured
 
+## Datanode gRPC command listener
+
+Set `TS_SERVER_GRPC_BIND_ADDR` on each datanode to serve the protobuf command
+service on a separate address. The listener accepts plaintext connections and
+is intended for a trusted network. Configure gRPC clients with matching message
+limits, up to 32 MiB for each request and response.
+
+With `TS_SERVER_RAFT` enabled, the listener serves the configured Raft group's shard.
+Writes go through Raft and reads use the configured Raft read policy. Each batch
+item returns its own command status. Batch execution can commit a prefix before a
+failure, so callers should use idempotent commands when retrying a batch.
+
+For values larger than the default 32 KiB Raft replication limit, configure
+`TS_RAFT_MAX_MEMORY_REPLICATE_LOG_BYTES` and `TS_RAFT_MAX_APPLY_BATCH_BYTES` on
+every member. Size both limits for the command envelope and payload rather than
+the value alone. For example, 16 MiB for replication and 32 MiB for apply
+accommodate a 9 MiB binary value. Large values can also need higher
+TS_RAFT_RPC_DEADLINE_MS and TS_RAFT_REPLICATION_DEADLINE_MS settings.
+Measure these deadlines with the intended replica placement and storage.
+
 ## Election marker rollout
 
 Upgrade every data Raft replica to a build that reads the election marker before

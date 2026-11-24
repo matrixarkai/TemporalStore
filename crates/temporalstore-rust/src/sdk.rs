@@ -216,7 +216,10 @@ impl v1::temporal_store_service_server::TemporalStoreService for TemporalStoreTo
         request: Request<v1::ExecuteRequest>,
     ) -> Result<Response<v1::ExecuteResponse>, TonicStatus> {
         let request = sdk_execute_request_to_types(request.into_inner())?;
-        let response = self.executor.execute_sdk(request);
+        let executor = Arc::clone(&self.executor);
+        let response = tokio::task::spawn_blocking(move || executor.execute_sdk(request))
+            .await
+            .map_err(|_| TonicStatus::internal("command execution failed"))?;
         Ok(Response::new(types_execute_response_to_sdk(response)))
     }
 
@@ -225,7 +228,10 @@ impl v1::temporal_store_service_server::TemporalStoreService for TemporalStoreTo
         request: Request<v1::BatchExecuteRequest>,
     ) -> Result<Response<v1::BatchExecuteResponse>, TonicStatus> {
         let request = sdk_batch_request_to_types(request.into_inner())?;
-        let response = self.executor.batch_execute_sdk(request);
+        let executor = Arc::clone(&self.executor);
+        let response = tokio::task::spawn_blocking(move || executor.batch_execute_sdk(request))
+            .await
+            .map_err(|_| TonicStatus::internal("batch execution failed"))?;
         Ok(Response::new(types_batch_response_to_sdk(response)))
     }
 
@@ -302,6 +308,9 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                     value: command.value,
                 }
             }
+        }
+        v1::command::Kind::StringLen(command) => {
+            types::Command::StringLen { key: command.key }
         }
         v1::command::Kind::StringGet(command) => types::Command::StringGet { key: command.key },
         v1::command::Kind::HashDelete(command) => types::Command::HashDelete {
@@ -1612,8 +1621,13 @@ pub fn types_batch_response_to_sdk(
         responses: response
             .responses
             .into_iter()
-            .map(types_execute_response_to_sdk)
-            .filter_map(|response| response.response)
+            .map(|response| {
+                let mut payload = types_command_response_to_sdk(response.response);
+                if !response.status.ok {
+                    payload.status = Some(types_status_to_sdk(response.status));
+                }
+                payload
+            })
             .collect(),
         topology_version: 0,
     }

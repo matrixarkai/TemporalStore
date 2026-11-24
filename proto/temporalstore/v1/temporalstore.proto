@@ -301,6 +301,7 @@ message Command {
     ZSetRemoveMany zset_remove_many = 79;
     ListPushMany list_push_many = 80;
     ListPopMany list_pop_many = 81;
+    StringLen string_len = 82;
   }
 }
 
@@ -337,6 +338,10 @@ message StringSet {
   string key = 1;
   bytes value = 2;
   uint64 ttl_ms = 3;
+}
+
+message StringLen {
+  string key = 1;
 }
 
 message StringGet {
