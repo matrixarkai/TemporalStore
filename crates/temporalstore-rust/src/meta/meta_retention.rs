@@ -373,7 +373,7 @@ impl SingleNodeMeta {
                 let reported = server.shard_states.iter().filter(|shard| shard.raft_role.is_some())
                     .map(|shard| shard.shard_id).collect::<Vec<_>>();
                 if !reported.is_empty() {
-                    super::meta_registration::update_data_raft_reporters(&mut state, addr, &reported, &[]);
+                    super::registration::update_data_raft_reporters(&mut state, addr, &reported, &[]);
                 }
             }
             state.dropped_since_ms.remove(&dropped_key("server", addr));
