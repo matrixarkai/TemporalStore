@@ -5297,14 +5297,12 @@ impl RaftCluster {
             if remaining.is_zero() {
                 break;
             }
-            let Ok((target_id, result)) =
-                rx.recv_timeout(remaining.min(Duration::from_millis(250)))
-            else {
-                if Instant::now() >= replication_deadline {
-                    break;
-                }
-                continue;
-            };
+            let (target_id, result) =
+                match rx.recv_timeout(remaining.min(Duration::from_millis(250))) {
+                    Ok(reply) => reply,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
             match result {
                 Ok(response) if response.success && response.match_index >= entry.index => {
                     let _ = self.record_append_entries_response(target_id, &response);

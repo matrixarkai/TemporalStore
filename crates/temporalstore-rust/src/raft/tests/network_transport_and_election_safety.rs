@@ -2192,7 +2192,14 @@ fn snapshot_retry_advertises_only_the_committed_prefix() {
         }
     }
 
-    let cluster = RaftCluster::new_single_shard(11, [1, 2]);
+    let cluster = RaftCluster::new_single_shard_with_config(
+        11,
+        [1, 2],
+        RaftConfig {
+            replication_deadline_ms: 30_000,
+            ..RaftConfig::default()
+        },
+    );
     cluster
         .propose(Command::StringSet { key: "existing".to_string(), value: vec![1] })
         .unwrap();
@@ -2202,12 +2209,17 @@ fn snapshot_retry_advertises_only_the_committed_prefix() {
         retry_frontier: Arc::new(Mutex::new(None)),
     };
 
+    let started = Instant::now();
     cluster
         .propose_distributed(
             Command::StringSet { key: "new".to_string(), value: vec![2] },
             &transport,
         )
         .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "snapshot recovery waited for a deadline after all append replies arrived",
+    );
     assert_eq!(*transport.retry_frontier.lock().unwrap(), Some((committed, committed + 1)));
     assert_eq!(cluster.status().commit_index, committed + 1);
 }
