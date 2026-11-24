@@ -4,10 +4,12 @@
 from collections.abc import Iterator
 
 from feast_temporalstore_command.client import TemporalStoreClient, decode_bytes
+from lmcache.v1.distributed.api import ObjectKey
+from lmcache.v1.distributed.key_codec import encode_storage_key
 
 
 class ValueBackend:
-    """Phase A transport over an explicitly provisioned data shard."""
+    """Ordinary KV storage over an explicitly provisioned data shard."""
 
     def __init__(
         self, client: TemporalStoreClient, lookup_client: TemporalStoreClient,
@@ -17,26 +19,35 @@ class ValueBackend:
         self._lookup = lookup_client
         self._ttl_ms = ttl_seconds * 1000 or None
 
-    def store_batch(self, chunks: list[tuple[str, memoryview]]) -> list[bool]:
-        responses = self._client.batch_execute([
-            {
-                "kind": "string_set_conditional", "key": key, "value": payload,
+    def _execute(self, entries: list[tuple[ObjectKey, dict]], *, lookup: bool = False) -> list[dict]:
+        client = self._lookup if lookup else self._client
+        return client.batch_execute([command for _, command in entries])
+
+    def close(self) -> None:
+        if self._lookup is not self._client:
+            self._lookup.close()
+        self._client.close()
+
+    def store_batch(self, chunks: list[tuple[ObjectKey, memoryview]]) -> list[bool]:
+        responses = self._execute([
+            (key, {
+                "kind": "string_set_conditional", "key": encode_storage_key(key), "value": payload,
                 "ttl_ms": self._ttl_ms, "condition": "if_not_exists",
                 "return_old": False, "keep_ttl": False,
-            }
+            })
             for key, payload in chunks
         ])
         return [answer["value"] == 1 for answer in responses]
 
-    def lengths(self, keys: list[str]) -> list[int]:
+    def lengths(self, keys: list[ObjectKey]) -> list[int]:
         return [
             answer["value"]
-            for answer in self._lookup.batch_execute([
-                {"kind": "string_len", "key": key} for key in keys
-            ])
+            for answer in self._execute([
+                (key, {"kind": "string_len", "key": encode_storage_key(key)}) for key in keys
+            ], lookup=True)
         ]
 
-    def load_into(self, items: list[tuple[str, memoryview]]) -> Iterator[bool]:
+    def load_into(self, items: list[tuple[ObjectKey, memoryview]]) -> Iterator[bool]:
         offset = 0
         while offset < len(items):
             end, size = offset, 0
@@ -49,8 +60,8 @@ class ValueBackend:
                 size += length
                 end += 1
             batch = items[offset:end]
-            responses = self._client.batch_execute([
-                {"kind": "string_get", "key": key} for key, _ in batch
+            responses = self._execute([
+                (key, {"kind": "string_get", "key": encode_storage_key(key)}) for key, _ in batch
             ])
             for (_, destination), answer in zip(batch, responses, strict=True):
                 payload = decode_bytes(answer.get("value"))
@@ -60,7 +71,7 @@ class ValueBackend:
                 yield found
             offset = end
 
-    def delete_batch(self, keys: list[str]) -> None:
-        self._client.batch_execute([
-            {"kind": "common_delete", "key": key} for key in keys
+    def delete_batch(self, keys: list[ObjectKey]) -> None:
+        self._execute([
+            (key, {"kind": "common_delete", "key": encode_storage_key(key)}) for key in keys
         ])

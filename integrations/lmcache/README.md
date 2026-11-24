@@ -41,6 +41,30 @@ does not itself remove blob files; use adapter deletion or eviction to reclaim
 their payloads. `ttl_seconds=0` keeps metadata until it is explicitly removed.
 
 
+## KV tables over the Python SDK (experimental)
+
+Install the SDK and both integration packages from the same checkout.
+
+    uv pip install ./integrations/python-sdk ./integrations/feast ./integrations/lmcache
+
+Create a TemporalStore namespace and a table per model and parallel layout.
+Use a distinct shard range per table and configure the desired replica count.
+The operator can compute the table name with `layout_table_name(model_name,
+world_size, local_world_size)` from `lmcache_temporalstore.layout`. The model
+name must match LMCache's model identity. Workers with the same layout use
+the same table across ranks.
+
+Set `storage_backend` to `"kv"` and `meta_url` to the metaserver's base URL. The
+namespace defaults to `"kvcache"`. The Python SDK resolves the table's shards
+and their gRPC addresses. It includes load versions when the metaserver
+reports them. When the metaserver requires authentication, set
+`TS_META_ADMIN_TOKEN` in the LMCache server environment.
+
+Registry metadata and placement are managed by TemporalStore. Each LMCache
+chunk is one binary value under its existing encoded key. The value carries
+no header or companion record. Conditional writes keep the first payload
+and its expiry, and the adapter rejects loads with a mismatched buffer size.
+
 ## Ordinary KV values (experimental)
 
 Set `storage_backend` to `"kv"` and set `data_url` and `shard_id` to a

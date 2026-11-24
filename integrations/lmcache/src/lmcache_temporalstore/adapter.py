@@ -57,6 +57,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     remote_storage: bool = False
     lookup_timeout_seconds: float | None = None
     storage_backend: str = "blob"
+    meta_url: str = ""
 
     @classmethod
     def from_dict(cls, values: dict) -> "TemporalStoreL2AdapterConfig":
@@ -66,6 +67,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
         lookup_timeout = values.get("lookup_timeout_seconds")
         config = cls(
             storage_backend=str(values.get("storage_backend", cls.storage_backend)),
+            meta_url=str(values.get("meta_url", cls.meta_url)),
             blob_url=str(values.get("blob_url", cls.blob_url)),
             data_url=str(values.get("data_url", cls.data_url)),
             shard_id=int(values.get("shard_id", cls.shard_id)),
@@ -83,7 +85,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     @classmethod
     def help(cls) -> str:
         return (
-            "storage_backend selects blob or kv; kv uses a dedicated command shard; "
+            "storage_backend selects blob or kv; meta_url enables gRPC table routing for kv; "
             "blob_url and data_url are datanode HTTP URLs; shard_id selects the "
             "command shard; max_capacity_gb bounds local adapter writes; "
             "ttl_seconds expires metadata; timeout_seconds bounds each request; "
@@ -103,8 +105,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         self._config = config
         if config.storage_backend not in {"blob", "kv"}:
             raise ValueError("storage_backend must be blob or kv")
-        if config.storage_backend == "kv" and config.namespace:
-            raise ValueError("the kv backend requires a dedicated shard; omit the blob namespace")
+        if config.meta_url and config.storage_backend != "kv":
+            raise ValueError("meta_url requires the kv backend")
+        if config.storage_backend == "kv" and config.namespace and not config.meta_url:
+            raise ValueError("a KV namespace requires meta_url")
         capacity = int(config.max_capacity_gb * 1024**3)
         if capacity < 1 or config.shard_id < 1 or not (
             isfinite(config.timeout_seconds) and config.timeout_seconds > 0
@@ -125,27 +129,35 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             config.blob_url, config.timeout_seconds,
             reuse_read_connection=True, reuse_mutation_connection=True,
         ) if config.storage_backend == "blob" else None
-        from urllib.parse import urlsplit
-        data = urlsplit(config.data_url)
-        if data.scheme != "http" or not data.hostname:
-            raise ValueError("data_url must be a datanode HTTP URL")
-        self._data = TemporalStoreClient(
-            host=data.hostname, port=data.port or 80,
-            shard_id=config.shard_id, timeout_seconds=config.timeout_seconds,
-            require_binary_batch=config.storage_backend == "kv",
-        )
-        self._lookup_data = self._data
         self._lookup_retry_at = 0.0  # Owned by the single lookup worker.
-        if lookup_timeout != config.timeout_seconds:
-            self._lookup_data = TemporalStoreClient(
+        self._data = self._lookup_data = self._values = None
+        if config.meta_url:
+            from .grpc_kv import TableValueBackend
+
+            self._values = TableValueBackend(
+                config.meta_url, config.namespace or "kvcache", config.timeout_seconds,
+                lookup_timeout, config.ttl_seconds,
+            )
+        else:
+            from urllib.parse import urlsplit
+
+            data = urlsplit(config.data_url)
+            if data.scheme != "http" or not data.hostname:
+                raise ValueError("data_url must be a datanode HTTP URL")
+            self._data = TemporalStoreClient(
                 host=data.hostname, port=data.port or 80,
-                shard_id=config.shard_id, timeout_seconds=lookup_timeout,
+                shard_id=config.shard_id, timeout_seconds=config.timeout_seconds,
                 require_binary_batch=config.storage_backend == "kv",
             )
-        self._values = (
-            ValueBackend(self._data, self._lookup_data, config.ttl_seconds)
-            if config.storage_backend == "kv" else None
-        )
+            self._lookup_data = self._data
+            if lookup_timeout != config.timeout_seconds:
+                self._lookup_data = TemporalStoreClient(
+                    host=data.hostname, port=data.port or 80,
+                    shard_id=config.shard_id, timeout_seconds=lookup_timeout,
+                    require_binary_batch=config.storage_backend == "kv",
+                )
+            if config.storage_backend == "kv":
+                self._values = ValueBackend(self._data, self._lookup_data, config.ttl_seconds)
         self._store_event = create_event_notifier()
         self._lookup_event = create_event_notifier()
         self._load_event = create_event_notifier()
@@ -309,7 +321,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                     self._evicting.add(key)
                     reserved.append(key)
             if self._values is not None:
-                self._values.delete_batch([encode_storage_key(key) for key in reserved])
+                self._values.delete_batch(reserved)
                 self._account_deleted(reserved)
                 return
             names = [self._key_names(key) for key in reserved]
@@ -372,9 +384,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                     success = False
                     continue
                 entries.setdefault(key, payload)
-            stored = self._values.store_batch([
-                (encode_storage_key(key), payload) for key, payload in entries.items()
-            ])
+            stored = self._values.store_batch(list(entries.items()))
             written = {
                 key: len(payload)
                 for (key, payload), created in zip(entries.items(), stored, strict=True)
@@ -518,7 +528,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                         reserved.append((index, key))
             if self._values is not None:
                 hits = [size > 0 for size in self._values.lengths([
-                    encode_storage_key(key) for _, key in reserved
+                    key for _, key in reserved
                 ])]
             else:
                 commands = [
@@ -562,7 +572,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                     destination = memoryview(obj.byte_array).cast("B")[:size]
                     if not destination.readonly and len(destination) == size:
                         name = (
-                            encode_storage_key(key) if self._values is not None
+                            key if self._values is not None
                             else self._key_names(key)[0]
                         )
                         items.append((name, destination))
@@ -592,9 +602,12 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             self._closed = True
         for pool in (self._store_pool, self._lookup_pool, self._load_pool):
             pool.shutdown(wait=True)
-        if self._lookup_data is not self._data:
-            self._lookup_data.close()
-        self._data.close()
+        if self._values is not None:
+            self._values.close()
+        elif self._data is not None:
+            if self._lookup_data is not self._data:
+                self._lookup_data.close()
+            self._data.close()
         if self._blob is not None:
             self._blob.close()
         self._store_event.close()
