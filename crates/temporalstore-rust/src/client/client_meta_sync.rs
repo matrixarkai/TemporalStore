@@ -44,23 +44,22 @@ impl TemporalStoreClient {
             .lock()
             .expect("client stats lock poisoned")
             .meta_sync_total += 1;
-        let meta_addr = self
-            .inner
-            .options
-            .meta_addr
-            .as_ref()
-            .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
-        let topology: TableTopologyResponse = match post_meta_json(
-            meta_addr,
-            "/tables/topology",
-            &GetTableTopologyRequest {
-                client_location: String::new(),
-                namespace: namespace.clone(),
-                table_name: table_name.clone(),
-                old_topology_version: self.last_synced_topology_version(&namespace, &table_name),
-            },
-            self.inner.options.meta_sync_http_options(),
-        ) {
+        let request = GetTableTopologyRequest {
+            client_location: self.inner.options.local_location.clone(),
+            namespace: namespace.clone(),
+            table_name: table_name.clone(),
+            old_topology_version: self.last_synced_topology_version(&namespace, &table_name),
+        };
+        let response = match self.inner.options.meta_grpc_target.as_deref() {
+            Some(target) => self.get_table_topology_grpc(target, request),
+            None => {
+                let meta_addr = self.inner.options.meta_addr.as_ref()
+                    .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
+                post_meta_json(meta_addr, "/tables/topology", &request, self.inner.options.meta_sync_http_options())
+                    .map_err(ClientError::from)
+            }
+        };
+        let topology: TableTopologyResponse = match response {
             Ok(topology) => topology,
             Err(err) => {
                 self.inner
@@ -69,7 +68,7 @@ impl TemporalStoreClient {
                     .expect("client stats lock poisoned")
                     .meta_sync_errors += 1;
                 self.record_meta_sync_error(&namespace, &table_name, &err.to_string());
-                return Err(err.into());
+                return Err(err);
             }
         };
         if !topology.status.ok {
@@ -318,40 +317,29 @@ impl TemporalStoreClient {
     }
 
     pub(super) fn current_meta_topology_version(&self) -> Option<u64> {
-        let meta_addr = self.inner.options.meta_addr.as_ref()?;
-        let topology = post_meta_json::<_, TopologyVersionReport>(
-            meta_addr,
-            "/meta/topology_version",
-            &TopologyVersionRequest {
-                old_topology_version: 0,
-            },
-            self.inner.options.meta_sync_http_options(),
-        )
-        .ok()?;
-        topology
-            .status
-            .ok
-            .then_some(topology.current_topology_version)
+        let topology = self.fetch_meta_topology_version(0).ok()?;
+        topology.status.ok.then_some(topology.current_topology_version)
+    }
+
+    pub(crate) fn fetch_meta_topology_version(
+        &self,
+        old_topology_version: u64,
+    ) -> Result<TopologyVersionReport, ClientError> {
+        if let Some(target) = self.inner.options.meta_grpc_target.as_deref() {
+            return self.get_topology_version_grpc(target, old_topology_version);
+        }
+        let meta_addr = self.inner.options.meta_addr.as_ref()
+            .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
+        Ok(post_meta_json(meta_addr, "/meta/topology_version",
+            &TopologyVersionRequest { old_topology_version },
+            self.inner.options.meta_sync_http_options())?)
     }
 
     pub fn refresh_stale_routes_from_meta(
         &self,
     ) -> Result<ClientTopologyRefreshReport, ClientError> {
         let old_topology_version = self.topology_cache_report().max_topology_version;
-        let meta_addr = self
-            .inner
-            .options
-            .meta_addr
-            .as_ref()
-            .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
-        let topology: TopologyVersionReport = post_meta_json(
-            meta_addr,
-            "/meta/topology_version",
-            &TopologyVersionRequest {
-                old_topology_version,
-            },
-            self.inner.options.meta_sync_http_options(),
-        )?;
+        let topology = self.fetch_meta_topology_version(old_topology_version)?;
         if !topology.status.ok {
             self.inner
                 .stats
@@ -440,20 +428,7 @@ impl TemporalStoreClient {
             });
         }
         let old_topology_version = before.max_topology_version;
-        let meta_addr = self
-            .inner
-            .options
-            .meta_addr
-            .as_ref()
-            .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
-        let topology: TopologyVersionReport = post_meta_json(
-            meta_addr,
-            "/meta/topology_version",
-            &TopologyVersionRequest {
-                old_topology_version,
-            },
-            self.inner.options.meta_sync_http_options(),
-        )?;
+        let topology = self.fetch_meta_topology_version(old_topology_version)?;
         if !topology.status.ok {
             return Err(ClientError::Status(topology.status.message));
         }

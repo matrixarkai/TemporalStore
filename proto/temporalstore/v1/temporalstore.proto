@@ -18,6 +18,7 @@ service TemporalStoreService {
 // Read-only topology lookup for table-scoped SDK clients.
 service MetadataService {
   rpc GetTableTopology(MetadataTableTopologyRequest) returns (MetadataTableTopologyResponse);
+  rpc GetTopologyVersion(MetadataVersionRequest) returns (MetadataVersionResponse);
 }
 
 message MetadataTableTopologyRequest {
@@ -35,6 +36,34 @@ message MetadataTableTopologyResponse {
   uint64 shard_count = 5;
   bool unchanged = 6;
   repeated MetadataShardRoute shards = 7;
+  MfTableMetaInfo table = 8;
+}
+
+message MetadataVersionRequest {
+  uint64 old_topology_version = 1;
+}
+
+message MetadataVersionResponse {
+  Status status = 1;
+  uint64 current_topology_version = 2;
+  uint64 old_topology_version = 3;
+  bool unchanged = 4;
+  uint64 server_count = 5;
+  uint64 proxy_count = 6;
+  uint64 table_count = 7;
+  uint64 shard_route_count = 8;
+  uint64 normal_servers = 9;
+  uint64 frozen_servers = 10;
+  uint64 dropped_servers = 11;
+  uint64 normal_proxies = 12;
+  uint64 frozen_proxies = 13;
+  uint64 dropped_proxies = 14;
+  uint64 normal_tables = 15;
+  uint64 frozen_tables = 16;
+  uint64 dropped_tables = 17;
+  repeated MfTableMetaInfo changed_tables = 18;
+  repeated MfTopologyChangeEvent events = 19;
+  bool event_history_truncated = 20;
 }
 
 message MetadataShardRoute {
@@ -45,6 +74,19 @@ message MetadataShardRoute {
   repeated string replica_grpc = 5;
   uint64 load_version = 6;
   bool uses_raft_route = 7;
+  uint64 start_bucket = 8;
+  uint64 end_bucket = 9;
+  optional string placement_primary = 10;
+  MetadataServerEndpoint placement_endpoint = 11;
+  repeated MetadataServerEndpoint replica_endpoints = 12;
+  uint64 placement_load_version = 13;
+  MetadataServerEndpoint elected_endpoint = 14;
+}
+
+message MetadataServerEndpoint {
+  string server_addr = 1;
+  optional string grpc_addr = 2;
+  string location = 3;
 }
 
 // ProxyService is the Rust-native proxy RPC contract. It intentionally does

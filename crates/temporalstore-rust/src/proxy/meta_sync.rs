@@ -45,6 +45,11 @@ impl ProxyService {
         &self,
         old_topology_version: u64,
     ) -> Result<TopologyVersionReport, Status> {
+        let client = self.client();
+        if client.client_options().meta_grpc_target.is_some() {
+            return client.fetch_meta_topology_version(old_topology_version)
+                .map_err(|err| Status::error("topology_check_failed", err.to_string()));
+        }
         let options = self.options();
         post_meta_json::<_, TopologyVersionReport>(
             &options.meta_addr,

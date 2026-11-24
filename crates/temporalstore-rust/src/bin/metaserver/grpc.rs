@@ -5,7 +5,12 @@ use super::MetaBackend;
 use prost::Message;
 use std::io;
 use std::net::TcpListener;
-use temporalstore_rust::meta::{GetTableTopologyRequest, TableTopologyResponse};
+use temporalstore_rust::meta::{
+    GetTableTopologyRequest, ServerEndpoint, TableTopologyResponse, TopologyVersionRequest,
+};
+use temporalstore_rust::metaserver_files_proto::{
+    table_meta_info_to_proto, topology_change_event_to_proto,
+};
 use temporalstore_rust::sdk::v1;
 use tonic::transport::{server::TcpIncoming, Server};
 use tonic::{Request, Response, Status};
@@ -15,12 +20,8 @@ struct MetadataRpc {
     token: Option<String>,
 }
 
-#[tonic::async_trait]
-impl v1::metadata_service_server::MetadataService for MetadataRpc {
-    async fn get_table_topology(
-        &self,
-        request: Request<v1::MetadataTableTopologyRequest>,
-    ) -> Result<Response<v1::MetadataTableTopologyResponse>, Status> {
+impl MetadataRpc {
+    fn authorize<T>(&self, request: &Request<T>) -> Result<(), Status> {
         if let Some(required) = self.token.as_deref() {
             let provided = request
                 .metadata()
@@ -33,6 +34,17 @@ impl v1::metadata_service_server::MetadataService for MetadataRpc {
                 ));
             }
         }
+        Ok(())
+    }
+}
+
+#[tonic::async_trait]
+impl v1::metadata_service_server::MetadataService for MetadataRpc {
+    async fn get_table_topology(
+        &self,
+        request: Request<v1::MetadataTableTopologyRequest>,
+    ) -> Result<Response<v1::MetadataTableTopologyResponse>, Status> {
+        self.authorize(&request)?;
         let request = request.into_inner();
         if request.namespace_name.is_empty() || request.table_name.is_empty() {
             return Err(Status::invalid_argument("namespace and table are required"));
@@ -57,15 +69,74 @@ impl v1::metadata_service_server::MetadataService for MetadataRpc {
         .map_err(|_| Status::internal("topology lookup failed"))?;
         Ok(Response::new(response))
     }
+
+    async fn get_topology_version(
+        &self,
+        request: Request<v1::MetadataVersionRequest>,
+    ) -> Result<Response<v1::MetadataVersionResponse>, Status> {
+        self.authorize(&request)?;
+        let query = TopologyVersionRequest {
+            old_topology_version: request.into_inner().old_topology_version,
+        };
+        let backend = self.backend.clone();
+        let report = tokio::task::spawn_blocking(move || match &backend {
+            MetaBackend::Single(meta) => meta.topology_version_report(query),
+            MetaBackend::Raft(runtime) => runtime.cluster().topology_version_report(query),
+        })
+        .await
+        .map_err(|_| Status::internal("topology version lookup failed"))?;
+        Ok(Response::new(v1::MetadataVersionResponse {
+            status: Some(wire_status(report.status)),
+            current_topology_version: report.current_topology_version,
+            old_topology_version: report.old_topology_version,
+            unchanged: report.unchanged,
+            server_count: report.server_count as u64,
+            proxy_count: report.proxy_count as u64,
+            table_count: report.table_count as u64,
+            shard_route_count: report.shard_route_count as u64,
+            normal_servers: report.normal_servers as u64,
+            frozen_servers: report.frozen_servers as u64,
+            dropped_servers: report.dropped_servers as u64,
+            normal_proxies: report.normal_proxies as u64,
+            frozen_proxies: report.frozen_proxies as u64,
+            dropped_proxies: report.dropped_proxies as u64,
+            normal_tables: report.normal_tables as u64,
+            frozen_tables: report.frozen_tables as u64,
+            dropped_tables: report.dropped_tables as u64,
+            changed_tables: report
+                .changed_tables
+                .iter()
+                .map(table_meta_info_to_proto)
+                .collect(),
+            events: report
+                .events
+                .iter()
+                .map(topology_change_event_to_proto)
+                .collect(),
+            event_history_truncated: report.event_history_truncated,
+        }))
+    }
+}
+
+fn wire_status(status: temporalstore_rust::types::Status) -> v1::Status {
+    v1::Status {
+        ok: status.ok,
+        code: status.code,
+        message: status.message,
+    }
+}
+
+fn wire_endpoint(endpoint: ServerEndpoint) -> v1::MetadataServerEndpoint {
+    v1::MetadataServerEndpoint {
+        server_addr: endpoint.server_addr,
+        grpc_addr: endpoint.grpc_addr,
+        location: endpoint.location,
+    }
 }
 
 fn topology_response(topology: TableTopologyResponse) -> v1::MetadataTableTopologyResponse {
     let mut response = v1::MetadataTableTopologyResponse {
-        status: Some(v1::Status {
-            ok: topology.status.ok,
-            code: topology.status.code,
-            message: topology.status.message,
-        }),
+        status: Some(wire_status(topology.status)),
         unchanged: topology.unchanged,
         ..Default::default()
     };
@@ -74,25 +145,28 @@ fn topology_response(topology: TableTopologyResponse) -> v1::MetadataTableTopolo
         response.topology_version = table.topology_version;
         response.first_shard_id = table.first_shard_id;
         response.shard_count = table.shard_count;
+        response.table = Some(table_meta_info_to_proto(&table));
     }
     response.shards = topology
         .shards
         .into_iter()
         .map(|route| {
-            let uses_raft_route = route.raft_route.is_some();
-            let (primary_addr, primary_grpc, load_version) = match route.raft_route {
-                Some(elected) => {
-                    let (address, grpc) = elected
+            let elected = route.raft_route.as_ref();
+            let (primary_addr, primary_grpc, load_version) = match elected {
+                Some(elected) => (
+                    elected.endpoint.as_ref().map(|ep| ep.server_addr.clone()),
+                    elected
                         .endpoint
-                        .map(|ep| (Some(ep.server_addr), ep.grpc_addr))
-                        .unwrap_or_default();
-                    (address, grpc, elected.load_version)
-                }
+                        .as_ref()
+                        .and_then(|ep| ep.grpc_addr.clone()),
+                    elected.load_version,
+                ),
                 None => (
-                    route.primary,
+                    route.primary.clone(),
                     route
                         .primary_endpoint
-                        .and_then(|endpoint| endpoint.grpc_addr),
+                        .as_ref()
+                        .and_then(|ep| ep.grpc_addr.clone()),
                     route.load_version,
                 ),
             };
@@ -103,11 +177,25 @@ fn topology_response(topology: TableTopologyResponse) -> v1::MetadataTableTopolo
                 replica_addrs: route.replicas,
                 replica_grpc: route
                     .replica_endpoints
-                    .into_iter()
-                    .filter_map(|endpoint| endpoint.grpc_addr)
+                    .iter()
+                    .filter_map(|ep| ep.grpc_addr.clone())
                     .collect(),
                 load_version,
-                uses_raft_route,
+                uses_raft_route: elected.is_some(),
+                start_bucket: route.start_bucket,
+                end_bucket: route.end_bucket,
+                placement_primary: route.primary,
+                placement_endpoint: route.primary_endpoint.map(wire_endpoint),
+                replica_endpoints: route
+                    .replica_endpoints
+                    .into_iter()
+                    .map(wire_endpoint)
+                    .collect(),
+                placement_load_version: route.load_version,
+                elected_endpoint: route
+                    .raft_route
+                    .and_then(|elected| elected.endpoint)
+                    .map(wire_endpoint),
             }
         })
         .collect();

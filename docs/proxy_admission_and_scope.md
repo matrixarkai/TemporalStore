@@ -43,6 +43,9 @@ listener. Use the `temporalstore.v1.ProxyService` client and include
 the shard and load version from its SDK's topology. It forwards the original
 serialized commands and pins reads to the primary on this listener.
 
+Set `TS_META_GRPC_TARGET` to the metaserver's gRPC address to use
+protobuf for the proxy's table lookup and topology version checks.
+
 The listener is plaintext. Bind it on a trusted network or terminate TLS at
 your ingress. Account scope matches the request namespace to the proxy's
 configured account. The proxy uses its own metadata credential to discover

@@ -21,6 +21,7 @@ fn main() {
     let defaults = ProxyOptions::default();
     let options = ProxyOptions {
         meta_addr,
+        meta_grpc_target: temporalstore_rust::env_flag::env_value("TS_META_GRPC_TARGET"),
         proxy_addr: std::env::var("TS_PROXY_ADVERTISED_ADDR").unwrap_or_else(|_| addr.clone()),
         listen_addr: addr.clone(),
         config_version: env_u64("TS_PROXY_CONFIG_VERSION", defaults.config_version),

@@ -29,6 +29,8 @@ pub(crate) use protobuf_transport::{protobuf_command_key, ProtobufBatchExecuteRe
 pub use protobuf_transport::ProtobufExecuteReply;
 #[path = "client/client_meta_sync.rs"]
 mod client_meta_sync;
+#[path = "client/metadata_grpc.rs"]
+mod metadata_grpc;
 #[path = "client/client_commands.rs"]
 mod commands;
 // The proxy's drop decision hashes the same routing key this builds; it is re-exported
@@ -95,6 +97,8 @@ pub enum ClientError {
 pub struct ClientOptions {
     pub proxy_addr: String,
     pub meta_addr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_grpc_target: Option<String>,
     pub default_shard_id: ShardId,
     pub connect_timeout_ms: u64,
     pub io_timeout_ms: u64,
@@ -148,6 +152,7 @@ impl Default for ClientOptions {
         Self {
             proxy_addr: "127.0.0.1:17000".to_string(),
             meta_addr: None,
+            meta_grpc_target: None,
             default_shard_id: 1,
             connect_timeout_ms: 200,
             io_timeout_ms: 200,
@@ -664,6 +669,7 @@ struct ClientInner {
     routes: RwLock<HashMap<ShardId, CachedRoute>>,
     grpc_routes: RwLock<HashMap<String, CachedGrpcTableRoutes>>,
     grpc_channels: RwLock<HashMap<String, tonic::transport::Channel>>,
+    meta_grpc_channel: Mutex<Option<tonic::transport::Channel>>,
     /// Executes and batch executes, counted outside `stats`.
     ///
     /// Both are bumped once per call on the path that succeeds, and taking the stats mutex for
@@ -875,6 +881,7 @@ impl TemporalStoreClient {
                 routes: RwLock::default(),
                 grpc_routes: RwLock::default(),
                 grpc_channels: RwLock::default(),
+                meta_grpc_channel: Mutex::default(),
                 execute_requests: AtomicU64::new(0),
                 batch_execute_requests: AtomicU64::new(0),
                 route_cache_hits: AtomicU64::new(0),

@@ -68,6 +68,8 @@ use crate::types::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyOptions {
     pub meta_addr: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_grpc_target: Option<String>,
     #[serde(default = "default_proxy_addr")]
     pub proxy_addr: String,
     #[serde(default)]
@@ -278,6 +280,7 @@ impl Default for ProxyOptions {
     fn default() -> Self {
         Self {
             meta_addr: "127.0.0.1:17001".to_string(),
+            meta_grpc_target: None,
             proxy_addr: "127.0.0.1:17000".to_string(),
             config_version: 0,
             namespace: String::new(),

@@ -30,6 +30,10 @@ reuses its gRPC channel, and supplies the shard's load version when
 available. Batch results follow input order across shards. Serialized
 relays can forward command bytes through the same routing path.
 
+Set `ClientOptions::meta_grpc_target` to the metaserver's gRPC address
+to use protobuf for table lookup and topology version checks. Start the
+metaserver with `TS_META_GRPC_BIND_ADDR` to expose that service.
+
 The SDK and proxy authenticate metaserver requests through the SDK's environment
 credential provider. A direct client using `TS_META_ADMIN_TOKEN` runs inside the
 cluster trust boundary. The token grants administrative access to the

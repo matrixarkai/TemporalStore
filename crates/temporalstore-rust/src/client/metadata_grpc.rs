@@ -1,0 +1,329 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+use super::*;
+use crate::meta::{
+    DataRaftRoute, GetTableTopologyRequest, TableShard, TableTopologyResponse,
+    TopologyVersionReport,
+};
+use crate::metaserver_files_proto::{table_meta_info_from_proto, topology_change_event_from_proto};
+use crate::sdk::v1;
+use std::future::Future;
+use std::sync::{mpsc, OnceLock};
+use tokio::runtime::{Builder, Runtime};
+use tonic::transport::{Channel, Endpoint};
+
+type MetadataClient = v1::metadata_service_client::MetadataServiceClient<Channel>;
+
+fn runtime() -> Result<&'static Runtime, ClientError> {
+    static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .thread_name("ts-sdk-meta-grpc")
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| ClientError::Status(error.clone()))
+}
+
+fn decode_status(status: Option<v1::Status>) -> Result<Status, ClientError> {
+    let status =
+        status.ok_or_else(|| ClientError::Status("missing metaserver status".to_owned()))?;
+    Ok(Status {
+        ok: status.ok,
+        code: status.code,
+        message: status.message,
+    })
+}
+
+fn decode_endpoint(endpoint: v1::MetadataServerEndpoint) -> ServerEndpoint {
+    ServerEndpoint {
+        server_addr: endpoint.server_addr,
+        grpc_addr: endpoint.grpc_addr,
+        location: endpoint.location,
+    }
+}
+
+fn decode_topology(
+    response: v1::MetadataTableTopologyResponse,
+) -> Result<TableTopologyResponse, ClientError> {
+    let status = decode_status(response.status)?;
+    let table = response
+        .table
+        .map(table_meta_info_from_proto)
+        .transpose()
+        .map_err(ClientError::Status)?;
+    let shards = response
+        .shards
+        .into_iter()
+        .map(|shard| TableShard {
+            shard_id: shard.shard_id,
+            start_bucket: shard.start_bucket,
+            end_bucket: shard.end_bucket,
+            primary: shard.placement_primary,
+            replicas: shard.replica_addrs,
+            primary_endpoint: shard.placement_endpoint.map(decode_endpoint),
+            replica_endpoints: shard
+                .replica_endpoints
+                .into_iter()
+                .map(decode_endpoint)
+                .collect(),
+            load_version: shard.placement_load_version,
+            raft_route: shard.uses_raft_route.then(|| DataRaftRoute {
+                endpoint: shard.elected_endpoint.map(decode_endpoint),
+                load_version: shard.load_version,
+            }),
+        })
+        .collect();
+    Ok(TableTopologyResponse {
+        status,
+        table,
+        shards,
+        unchanged: response.unchanged,
+    })
+}
+
+impl TemporalStoreClient {
+    fn metadata_rpc<T, F>(
+        &self,
+        target: &str,
+        call: impl FnOnce(MetadataClient, Option<String>) -> F + Send + 'static,
+    ) -> Result<T, ClientError>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<tonic::Response<T>, tonic::Status>> + Send + 'static,
+    {
+        let runtime = runtime()?;
+        let options = self.inner.options.meta_sync_http_options();
+        let channel = {
+            let mut cached = self
+                .inner
+                .meta_grpc_channel
+                .lock()
+                .expect("metadata channel lock poisoned");
+            match cached.as_ref() {
+                Some(channel) => channel.clone(),
+                None => {
+                    let address = target.strip_prefix("grpc://").unwrap_or(target);
+                    let endpoint = Endpoint::from_shared(format!("http://{address}"))
+                        .map_err(|error| ClientError::InvalidRequest(error.to_string()))?
+                        .connect_timeout(Duration::from_millis(options.connect_timeout_ms))
+                        .timeout(Duration::from_millis(options.io_timeout_ms));
+                    let _guard = runtime.enter();
+                    let channel = endpoint.connect_lazy();
+                    *cached = Some(channel.clone());
+                    channel
+                }
+            }
+        };
+        let token = crate::meta::admin_auth_token();
+        let (send, receive) = mpsc::sync_channel(1);
+        runtime.spawn(async move {
+            let client = MetadataClient::new(channel).max_decoding_message_size(40 * 1024 * 1024);
+            let _ = send.send(call(client, token).await);
+        });
+        receive
+            .recv()
+            .map_err(|error| ClientError::Status(error.to_string()))?
+            .map(tonic::Response::into_inner)
+            .map_err(|error| ClientError::Status(error.to_string()))
+    }
+
+    pub(super) fn get_table_topology_grpc(
+        &self,
+        target: &str,
+        req: GetTableTopologyRequest,
+    ) -> Result<TableTopologyResponse, ClientError> {
+        let response = self.metadata_rpc(target, move |mut client, token| async move {
+            let request = authenticated(
+                v1::MetadataTableTopologyRequest {
+                    namespace_name: req.namespace,
+                    table_name: req.table_name,
+                    client_location: req.client_location,
+                    old_topology_version: req.old_topology_version,
+                },
+                token,
+            )?;
+            client.get_table_topology(request).await
+        })?;
+        decode_topology(response)
+    }
+
+    pub(super) fn get_topology_version_grpc(
+        &self,
+        target: &str,
+        old_topology_version: u64,
+    ) -> Result<TopologyVersionReport, ClientError> {
+        let response = self.metadata_rpc(target, move |mut client, token| async move {
+            let request = authenticated(
+                v1::MetadataVersionRequest {
+                    old_topology_version,
+                },
+                token,
+            )?;
+            client.get_topology_version(request).await
+        })?;
+        Ok(TopologyVersionReport {
+            status: decode_status(response.status)?,
+            current_topology_version: response.current_topology_version,
+            old_topology_version: response.old_topology_version,
+            unchanged: response.unchanged,
+            server_count: response.server_count as usize,
+            proxy_count: response.proxy_count as usize,
+            table_count: response.table_count as usize,
+            shard_route_count: response.shard_route_count as usize,
+            normal_servers: response.normal_servers as usize,
+            frozen_servers: response.frozen_servers as usize,
+            dropped_servers: response.dropped_servers as usize,
+            normal_proxies: response.normal_proxies as usize,
+            frozen_proxies: response.frozen_proxies as usize,
+            dropped_proxies: response.dropped_proxies as usize,
+            normal_tables: response.normal_tables as usize,
+            frozen_tables: response.frozen_tables as usize,
+            dropped_tables: response.dropped_tables as usize,
+            changed_tables: response
+                .changed_tables
+                .into_iter()
+                .map(table_meta_info_from_proto)
+                .collect::<Result<_, _>>()
+                .map_err(ClientError::Status)?,
+            events: response
+                .events
+                .into_iter()
+                .map(topology_change_event_from_proto)
+                .collect::<Result<_, _>>()
+                .map_err(ClientError::Status)?,
+            event_history_truncated: response.event_history_truncated,
+        })
+    }
+}
+
+fn authenticated<T>(message: T, token: Option<String>) -> Result<tonic::Request<T>, tonic::Status> {
+    let mut request = tonic::Request::new(message);
+    if let Some(token) = token {
+        let mut header: tonic::metadata::MetadataValue<_> = format!("Bearer {token}")
+            .parse()
+            .map_err(|_| tonic::Status::invalid_argument("invalid metaserver credential"))?;
+        header.set_sensitive(true);
+        request.metadata_mut().insert("authorization", header);
+    }
+    Ok(request)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meta::{MetaEntityState, TableMetaInfo};
+    use crate::metaserver_files_proto::table_meta_info_to_proto;
+    use tonic::transport::{server::TcpIncoming, Server};
+
+    struct Topology;
+
+    #[tonic::async_trait]
+    impl v1::metadata_service_server::MetadataService for Topology {
+        async fn get_table_topology(
+            &self,
+            request: tonic::Request<v1::MetadataTableTopologyRequest>,
+        ) -> Result<tonic::Response<v1::MetadataTableTopologyResponse>, tonic::Status> {
+            let req = request.into_inner();
+            assert_eq!(
+                (req.namespace_name.as_str(), req.table_name.as_str()),
+                ("kvcache", "model")
+            );
+            let table = TableMetaInfo {
+                table_id: 13,
+                namespace: req.namespace_name,
+                table_name: req.table_name,
+                state: MetaEntityState::Normal,
+                topology_version: 42,
+                first_shard_id: 75,
+                shard_count: 1,
+                replica_count: 3,
+                partition_version: 0,
+                serving_options: Default::default(),
+            };
+            Ok(tonic::Response::new(v1::MetadataTableTopologyResponse {
+                status: Some(v1::Status {
+                    ok: true,
+                    ..Default::default()
+                }),
+                table: Some(table_meta_info_to_proto(&table)),
+                shards: vec![v1::MetadataShardRoute {
+                    shard_id: 75,
+                    placement_primary: Some("127.0.0.1:17002".to_string()),
+                    placement_load_version: 4,
+                    elected_endpoint: Some(v1::MetadataServerEndpoint {
+                        server_addr: "127.0.0.1:17003".to_string(),
+                        grpc_addr: Some("127.0.0.1:17203".to_string()),
+                        ..Default::default()
+                    }),
+                    load_version: 8,
+                    uses_raft_route: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }))
+        }
+
+        async fn get_topology_version(
+            &self,
+            request: tonic::Request<v1::MetadataVersionRequest>,
+        ) -> Result<tonic::Response<v1::MetadataVersionResponse>, tonic::Status> {
+            Ok(tonic::Response::new(v1::MetadataVersionResponse {
+                status: Some(v1::Status {
+                    ok: true,
+                    ..Default::default()
+                }),
+                current_topology_version: 43,
+                old_topology_version: request.into_inner().old_topology_version,
+                ..Default::default()
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn rust_sdk_discovers_elected_grpc_route_and_topology_version_over_grpc() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = listener.local_addr().unwrap().to_string();
+        let worker = tokio::spawn(
+            Server::builder()
+                .add_service(v1::metadata_service_server::MetadataServiceServer::new(
+                    Topology,
+                ))
+                .serve_with_incoming(TcpIncoming::from_listener(listener, true, None).unwrap()),
+        );
+        tokio::task::spawn_blocking(move || {
+            let client = TemporalStoreClient::with_options(ClientOptions {
+                meta_addr: None,
+                meta_grpc_target: Some(target),
+                connect_timeout_ms: 3_000,
+                io_timeout_ms: 3_000,
+                meta_sync_deadline_ms: 3_000,
+                ..Default::default()
+            });
+            let table = client.open_table_from_meta("kvcache", "model").unwrap();
+            assert_eq!(table.options().table_id, 13);
+            let route = table.resolve_grpc_primary("chunk").unwrap();
+            assert_eq!(
+                (route.shard_id, route.address.as_str(), route.load_version),
+                (75, "127.0.0.1:17203", 8)
+            );
+            let version = client.fetch_meta_topology_version(42).unwrap();
+            assert_eq!(
+                (
+                    version.old_topology_version,
+                    version.current_topology_version
+                ),
+                (42, 43)
+            );
+            assert!(client.inner.meta_grpc_channel.lock().unwrap().is_some());
+        })
+        .await
+        .unwrap();
+        worker.abort();
+    }
+}
