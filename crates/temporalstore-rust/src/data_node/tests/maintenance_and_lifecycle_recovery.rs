@@ -1373,6 +1373,7 @@ fn runtime_builds_style_server_load_report() {
         forbid_auto_register: true,
         topology_version: 99,
         server_state: "frozen".to_string(),
+        cache_budgets: Vec::new(),
     });
     let preflight = runtime.preflight_report();
     assert_eq!(preflight.metaserver.last_topology_version, 99);
@@ -1393,10 +1394,26 @@ fn runtime_builds_style_server_load_report() {
         forbid_auto_register: false,
         topology_version: 100,
         server_state: "normal".to_string(),
+        cache_budgets: vec![ShardCacheBudget {
+            shard_id: 7,
+            table_id: 4,
+            load_version: 2,
+            raft_term: 3,
+            bytes: 1_024,
+        }],
     });
     let recovered = runtime.preflight_report();
     assert_eq!(recovered.metaserver.consecutive_failures, 0);
     assert_eq!(recovered.metaserver.last_topology_version, 100);
+    assert_eq!(recovered.metaserver.cache_budgets[0].bytes, 1_024);
+    runtime.record_metaserver_heartbeat(&ServerHeartbeatResponse {
+        status: Status::error("heartbeat_failed", "lost metaserver"),
+        forbid_auto_register: false,
+        topology_version: 0,
+        server_state: String::new(),
+        cache_budgets: Vec::new(),
+    });
+    assert!(runtime.metaserver_heartbeat_report().cache_budgets.is_empty());
     assert_eq!(
         recovered.topology_validation.last_meta_topology_version,
         100

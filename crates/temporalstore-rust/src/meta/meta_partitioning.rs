@@ -43,7 +43,11 @@ fn owner_is_serving(state: &MetaState, server_addr: &str) -> bool {
         .unwrap_or(true)
 }
 
-fn data_raft_route(state: &MetaState, table: &TableMetaInfo, shard_id: ShardId) -> Option<DataRaftRoute> {
+fn data_raft_route(
+    state: &MetaState,
+    table: &TableMetaInfo,
+    shard_id: ShardId,
+) -> Option<(DataRaftRoute, u64)> {
     let reporters = state.data_raft_reporters.get(&shard_id)?;
     let owning_table = table_for_shard(state, shard_id)?;
     if owning_table.info.table_id != table.table_id {
@@ -73,9 +77,70 @@ fn data_raft_route(state: &MetaState, table: &TableMetaInfo, shard_id: ShardId) 
             leader = Some(addr);
         }
     }
-    let load_version = newest.map_or(0, |(version, _)| version);
+    let (load_version, term) = newest.unwrap_or_default();
     let endpoint = leader.filter(|_| !conflict).map(|addr| server_endpoint(state, addr));
-    Some(DataRaftRoute { endpoint, load_version })
+    Some((DataRaftRoute { endpoint, load_version }, term))
+}
+
+/// Split a table's budget across its shard range. Only the currently routed
+/// Raft leader receives a budget for the load and term it reported.
+pub(super) fn cache_budgets_for_server(
+    state: &MetaState,
+    server_addr: &str,
+) -> Vec<ShardCacheBudget> {
+    let Some(server) = state.servers.get(server_addr) else {
+        return Vec::new();
+    };
+    server
+        .shard_states
+        .iter()
+        .filter_map(|shard| {
+            let role = shard.raft_role.filter(|role| role.is_leader)?;
+            if !shard.loaded || shard.readonly {
+                return None;
+            }
+            let table = &table_for_shard(state, shard.shard_id)?.info;
+            let options = &table.serving_options;
+            if !options.cache_class
+                || options.cache_budget_bytes == 0
+                || table.shard_count == 0
+                || table.state != MetaEntityState::Normal
+                || state
+                    .namespaces
+                    .get(&table.namespace)
+                    .is_some_and(|status| *status != MetaEntityState::Normal)
+                || (!shard.table_name.is_empty() && shard.table_name != table.table_name)
+            {
+                return None;
+            }
+            if state.table_ranges_overlap
+                && state.tables.values().any(|other| {
+                    let other = &other.info;
+                    let end = other.first_shard_id.saturating_add(other.shard_count);
+                    other.table_id != table.table_id
+                        && (other.first_shard_id..end).contains(&shard.shard_id)
+                })
+            {
+                return None;
+            }
+            let (route, term) = data_raft_route(state, table, shard.shard_id)?;
+            if term != role.term
+                || route.load_version != shard.load_version
+                || route.endpoint?.server_addr != server_addr
+            {
+                return None;
+            }
+            let offset = shard.shard_id - table.first_shard_id;
+            Some(ShardCacheBudget {
+                shard_id: shard.shard_id,
+                table_id: table.table_id,
+                load_version: shard.load_version,
+                raft_term: role.term,
+                bytes: options.cache_budget_bytes / table.shard_count
+                    + u64::from(offset < options.cache_budget_bytes % table.shard_count),
+            })
+        })
+        .collect()
 }
 
 pub(super) fn build_shards(
@@ -359,7 +424,7 @@ pub(super) fn build_shards(
             .map(|server_addr| reported_load_version(state, server_addr, shard_id))
             .unwrap_or(0);
         shards.push(TableShard {
-            raft_route: data_raft_route(state, table, shard_id),
+            raft_route: data_raft_route(state, table, shard_id).map(|(route, _)| route),
             shard_id,
             start_bucket,
             end_bucket,
@@ -382,8 +447,13 @@ mod raft_route_tests {
         let meta = SingleNodeMeta::default();
         assert!(meta.add_table(AddTableRequest {
             namespace: "kvcache".into(), table_name: "model".into(),
-            first_shard_id: 100, shard_count: 1, replica_count: 3,
-            partition_version: 0, serving_options: Default::default(),
+            first_shard_id: 100, shard_count: 3, replica_count: 3,
+            partition_version: 0,
+            serving_options: TableServingOptions {
+                cache_class: true,
+                cache_budget_bytes: 10,
+                ..Default::default()
+            },
         }).status.ok);
         for (node_id, host) in [(1, "a"), (2, "b"), (3, "c")] {
             assert!(meta.register_server(RegisterServerRequest {
@@ -396,7 +466,7 @@ mod raft_route_tests {
             shard_id: 100, server_addr: "a:1000".into(), registered_at_ms: 0,
         }).status.ok);
         let report = |host: &str, term, is_leader| {
-            assert!(meta.server_heartbeat(ServerHeartbeatRequest {
+            let response = meta.server_heartbeat(ServerHeartbeatRequest {
                 server_addr: format!("{host}:1000"),
                 boot_time_ms: 1, binary_version: String::new(),
                 shard_loads: Vec::new(), shard_stat_loads: Vec::new(),
@@ -406,7 +476,9 @@ mod raft_route_tests {
                     raft_role: Some(DataRaftShardRole { term, is_leader }),
                     ..Default::default()
                 }],
-            }).status.ok);
+            });
+            assert!(response.status.ok);
+            response.cache_budgets
         };
         let topology = |meta: &SingleNodeMeta, old_topology_version| {
             meta.get_table_topology(GetTableTopologyRequest {
@@ -415,19 +487,25 @@ mod raft_route_tests {
             })
         };
 
-        report("a", 1, true);
+        let budgets = report("a", 1, true);
+        assert_eq!(budgets.len(), 1);
+        assert_eq!((budgets[0].bytes, budgets[0].load_version, budgets[0].raft_term), (4, 7, 1));
         let first = topology(&meta, 0);
-        let version = first.table.unwrap().topology_version;
+        let table = first.table.unwrap();
+        assert_eq!(budgets[0].table_id, table.table_id);
+        let version = table.topology_version;
         let route = first.shards[0].raft_route.as_ref().unwrap();
         assert_eq!(route.endpoint.as_ref().unwrap().grpc_addr.as_deref(), Some("a:2000"));
 
-        report("b", 2, false);
+        assert!(report("b", 2, false).is_empty());
         let interim = topology(&meta, version);
         assert!(!interim.unchanged);
         assert!(interim.shards[0].raft_route.as_ref().unwrap().endpoint.is_none());
 
-        report("b", 2, true);
-        report("a", 1, true);
+        let budgets = report("b", 2, true);
+        assert_eq!(budgets.len(), 1);
+        assert_eq!(budgets[0].raft_term, 2);
+        assert!(report("a", 1, true).is_empty());
         let current = topology(&meta, 0);
         assert_eq!(current.shards[0].primary.as_deref(), Some("a:1000"));
         let route = current.shards[0].raft_route.as_ref().unwrap();
@@ -443,5 +521,19 @@ mod raft_route_tests {
         let restored = SingleNodeMeta::default();
         assert!(restored.install_snapshot(meta.export_snapshot()).status.ok);
         assert_eq!(topology(&restored, 0).shards, current.shards);
+
+        assert!(meta.update_table(UpdateTableRequest {
+            namespace: "kvcache".into(),
+            table_name: "model".into(),
+            shard_count: None,
+            replica_count: None,
+            first_shard_id: None,
+            partition_version: None,
+            serving_options: Some(TableServingOptionsPatch {
+                cache_class: Some(false),
+                ..Default::default()
+            }),
+        }).status.ok);
+        assert!(report("b", 2, true).is_empty());
     }
 }

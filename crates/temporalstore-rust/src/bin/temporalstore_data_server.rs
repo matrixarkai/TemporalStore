@@ -3111,6 +3111,7 @@ fn send_heartbeat(
                 forbid_auto_register: false,
                 topology_version: 0,
                 server_state: String::new(),
+                cache_budgets: Vec::new(),
             });
     runtime.record_metaserver_heartbeat(&response);
     response
@@ -3565,6 +3566,7 @@ mod tests {
                                 forbid_auto_register: false,
                                 topology_version: 0,
                                 server_state: String::new(),
+                                cache_budgets: Vec::new(),
                             },
                         )
                     }

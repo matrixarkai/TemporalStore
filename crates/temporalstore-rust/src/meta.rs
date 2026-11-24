@@ -332,6 +332,17 @@ pub struct ServerHeartbeatResponse {
     pub topology_version: u64,
     #[serde(default)]
     pub server_state: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_budgets: Vec<ShardCacheBudget>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardCacheBudget {
+    pub shard_id: ShardId,
+    pub table_id: u64,
+    pub load_version: u64,
+    pub raft_term: u64,
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

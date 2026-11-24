@@ -45,7 +45,8 @@ use crate::engine::reports::{
 };
 use crate::engine::TemporalEngine;
 use crate::meta::{
-    ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState, TableTopologyResponse,
+    ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState, ShardCacheBudget,
+    TableTopologyResponse,
 };
 use crate::rebalance::SchedulerLifecycleToken;
 use crate::types::{
@@ -861,6 +862,8 @@ pub struct DataNodeMetaHeartbeatReport {
     pub last_server_state: String,
     pub forbid_auto_register: bool,
     pub consecutive_failures: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_budgets: Vec<ShardCacheBudget>,
 }
 
 impl Default for DataNodeMetaHeartbeatReport {
@@ -872,6 +875,7 @@ impl Default for DataNodeMetaHeartbeatReport {
             last_server_state: String::new(),
             forbid_auto_register: false,
             consecutive_failures: 0,
+            cache_budgets: Vec::new(),
         }
     }
 }

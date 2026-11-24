@@ -267,6 +267,7 @@ impl SingleNodeMeta {
                 forbid_auto_register: false,
                 topology_version,
                 server_state: "unknown".to_string(),
+                cache_budgets: Vec::new(),
             };
         };
         if server.state == MetaEntityState::Frozen {
@@ -275,6 +276,7 @@ impl SingleNodeMeta {
                 forbid_auto_register: true,
                 topology_version,
                 server_state: MetaEntityState::Frozen.as_str().to_string(),
+                cache_budgets: Vec::new(),
             };
         }
         server.last_heartbeat_ms = now_ms();
@@ -366,6 +368,7 @@ impl SingleNodeMeta {
             forbid_auto_register: false,
             topology_version: state.topology_version,
             server_state,
+            cache_budgets: super::meta_partitioning::cache_budgets_for_server(&state, &request.server_addr),
         }
     }
 

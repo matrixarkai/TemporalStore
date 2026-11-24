@@ -426,8 +426,10 @@ impl DataNodeRuntime {
         report.last_server_state = response.server_state.clone();
         report.forbid_auto_register = response.forbid_auto_register;
         report.consecutive_failures = if response.status.ok {
+            report.cache_budgets.clone_from(&response.cache_budgets);
             0
         } else {
+            report.cache_budgets.clear();
             report.consecutive_failures.saturating_add(1)
         };
     }
