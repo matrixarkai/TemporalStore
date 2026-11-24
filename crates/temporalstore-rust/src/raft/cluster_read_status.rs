@@ -5,6 +5,16 @@
 use super::*;
 
 impl RaftCluster {
+    /// Clone the published local engine so maintenance can release the Raft lock before I/O.
+    pub fn local_replica_engine(&self, shard_id: ShardId) -> Option<TemporalEngine> {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        if inner.shard_id != shard_id {
+            return None;
+        }
+        let local = inner.nodes.get(&inner.local_node_id?)?;
+        local.replica_role.can_serve_data().then(|| local.engine.clone())
+    }
+
     pub fn read_local(
         &self,
         node_id: RaftNodeId,

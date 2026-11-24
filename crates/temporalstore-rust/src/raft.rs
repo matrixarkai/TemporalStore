@@ -3635,6 +3635,22 @@ pub enum RaftConfigError {
     InvalidValue(&'static str),
 }
 
+#[derive(Clone)]
+struct ReplicaEngineFactory(Arc<dyn Fn() -> Result<TemporalEngine, RaftError> + Send + Sync>);
+
+impl std::fmt::Debug for ReplicaEngineFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReplicaEngineFactory")
+    }
+}
+
+fn open_replica_engine(factory: Option<&ReplicaEngineFactory>) -> Result<TemporalEngine, RaftError> {
+    match factory {
+        Some(factory) => (factory.0)(),
+        None => Ok(TemporalEngine::default()),
+    }
+}
+
 #[derive(Debug)]
 struct RaftNode {
     id: RaftNodeId,
@@ -3653,6 +3669,7 @@ struct RaftNode {
     // if `applied`/`applied_index` were rewound.
     max_applied_index: u64,
     engine: TemporalEngine,
+    engine_factory: Option<ReplicaEngineFactory>,
     pipeline_state: RaftPeerPipelineRuntimeState,
 }
 
@@ -4395,6 +4412,16 @@ impl RaftCluster {
         node_ids: impl IntoIterator<Item = RaftNodeId>,
         config: RaftConfig,
     ) -> Result<Self, RaftError> {
+        Self::restore_single_shard_with_factory(root, shard_id, node_ids, config, None)
+    }
+
+    fn restore_single_shard_with_factory(
+        root: impl AsRef<Path>,
+        shard_id: ShardId,
+        node_ids: impl IntoIterator<Item = RaftNodeId>,
+        config: RaftConfig,
+        local_factory: Option<(RaftNodeId, ReplicaEngineFactory)>,
+    ) -> Result<Self, RaftError> {
         config
             .validate()
             .map_err(|err| RaftError::InvalidConfig(err.to_string()))?;
@@ -4406,13 +4433,17 @@ impl RaftCluster {
         let mut read_safety_state = RaftReadSafetyRuntimeState::default();
         let mut membership_evidence = RaftMembershipRuntimeEvidence::default();
         for node_id in node_ids {
+            let factory = local_factory
+                .as_ref()
+                .filter(|(local_id, _)| *local_id == node_id)
+                .map(|(_, factory)| factory.clone());
             let record = wal
                 .load_node(shard_id, node_id)
                 .map_err(|err| RaftError::Wal(err.to_string()))?;
             let mut node = if let Some(record) = record {
                 validate_raft_apply_snapshot_fence(&record)?;
                 validate_raft_storage_apply_fence(&record)?;
-                let mut node = new_node(
+                let mut node = new_node_with_factory(
                     node_id,
                     if record.membership.leader_id == node_id {
                         RaftRole::Leader
@@ -4420,7 +4451,8 @@ impl RaftCluster {
                         RaftRole::Follower
                     },
                     shard_id,
-                );
+                    factory,
+                )?;
                 node.replica_role = record.replica_role;
                 node.current_term = record.hard_state.current_term;
                 node.voted_for = record.hard_state.voted_for;
@@ -4428,7 +4460,7 @@ impl RaftCluster {
                 node.pipeline_state = record.pipeline_state;
                 if let Some(snapshot) = record.installed_snapshot.clone() {
                     if node.replica_role.can_serve_data() {
-                        install_snapshot_state(&mut node, snapshot);
+                        install_snapshot_state(&mut node, snapshot)?;
                     } else {
                         node.current_term = node.current_term.max(snapshot.last_included_term);
                         node.commit_index = node.commit_index.max(snapshot.last_included_index);
@@ -4452,7 +4484,7 @@ impl RaftCluster {
                 merge_membership_evidence(&mut membership_evidence, &record.membership_evidence);
                 node
             } else {
-                new_node(node_id, RaftRole::Follower, shard_id)
+                new_node_with_factory(node_id, RaftRole::Follower, shard_id, factory)?
             };
             if leader_id == Some(node_id) {
                 node.role = RaftRole::Leader;
@@ -5718,9 +5750,18 @@ fn raft_observer_apply_health_from_status(
 }
 
 fn new_node(id: RaftNodeId, role: RaftRole, shard_id: ShardId) -> RaftNode {
-    let engine = TemporalEngine::default();
+    new_node_with_factory(id, role, shard_id, None).expect("default replica engine")
+}
+
+fn new_node_with_factory(
+    id: RaftNodeId,
+    role: RaftRole,
+    shard_id: ShardId,
+    engine_factory: Option<ReplicaEngineFactory>,
+) -> Result<RaftNode, RaftError> {
+    let engine = open_replica_engine(engine_factory.as_ref())?;
     engine.load_shard(shard_id);
-    RaftNode {
+    Ok(RaftNode {
         id,
         role,
         replica_role: RaftReplicaRole::Voter,
@@ -5734,11 +5775,12 @@ fn new_node(id: RaftNodeId, role: RaftRole, shard_id: ShardId) -> RaftNode {
         applied: BTreeSet::new(),
         max_applied_index: 0,
         engine,
+        engine_factory,
         pipeline_state: RaftPeerPipelineRuntimeState {
             next_index: 1,
             ..RaftPeerPipelineRuntimeState::default()
         },
-    }
+    })
 }
 
 fn merge_membership_evidence(
@@ -6271,8 +6313,12 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
 /// Splitting it out is what lets `maybe_trigger_snapshot` build one engine per install target
 /// while holding NOTHING. The publish that follows is the cheap half, and it is the only half
 /// that has to be atomic with the eligibility check -- see `node_accepts_snapshot`.
+#[cfg(test)]
 fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> TemporalEngine {
-    let engine = TemporalEngine::default();
+    rebuild_snapshot_engine_in(snapshot, TemporalEngine::default())
+}
+
+fn rebuild_snapshot_engine_in(snapshot: &RaftSnapshot, engine: TemporalEngine) -> TemporalEngine {
     if let Some(image) = &snapshot.state_image {
         #[cfg(test)]
         crate::snapshot_probe::note_engine_rebuild();
@@ -6359,14 +6405,19 @@ fn publish_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot, engine: T
 }
 
 /// Rebuild and publish in one step, for the callers that hold a guard across both anyway.
-fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
-    let engine = rebuild_snapshot_engine(&snapshot);
+fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) -> Result<(), RaftError> {
+    let engine = open_replica_engine(node.engine_factory.as_ref())?;
+    let engine = rebuild_snapshot_engine_in(&snapshot, engine);
     publish_snapshot_state(node, snapshot, engine);
+    Ok(())
 }
 
-fn install_snapshot_state_for_role(node: &mut RaftNode, snapshot: RaftSnapshot) {
+fn install_snapshot_state_for_role(
+    node: &mut RaftNode,
+    snapshot: RaftSnapshot,
+) -> Result<(), RaftError> {
     if node.replica_role.can_serve_data() {
-        install_snapshot_state(node, snapshot);
+        install_snapshot_state(node, snapshot)?;
     } else {
         node.current_term = node.current_term.max(snapshot.last_included_term);
         node.commit_index = node.commit_index.max(snapshot.last_included_index);
@@ -6377,6 +6428,7 @@ fn install_snapshot_state_for_role(node: &mut RaftNode, snapshot: RaftSnapshot) 
         node.max_applied_index = node.max_applied_index.max(snapshot.last_included_index);
         node.installed_snapshot = Some(snapshot);
     }
+    Ok(())
 }
 
 fn install_leader_snapshot_tail(
@@ -6384,10 +6436,10 @@ fn install_leader_snapshot_tail(
     leader_snapshot: Option<RaftSnapshot>,
     leader_log: Vec<RaftLogEntry>,
     leader_commit_index: u64,
-) {
+) -> Result<(), RaftError> {
     if let Some(snapshot) = leader_snapshot {
         if node_last_log_or_snapshot_index(node) < snapshot.last_included_index {
-            install_snapshot_state_for_role(node, snapshot);
+            install_snapshot_state_for_role(node, snapshot)?;
         }
     }
     // A catch-up may not pull a node BACKWARDS.
@@ -6404,7 +6456,7 @@ fn install_leader_snapshot_tail(
     // replacing its log at all: its applied state does not belong to this log. That is what a
     // snapshot install is for, and unlike this path it moves the apply state along with the log.
     if leader_commit_index < node.max_applied_index {
-        return;
+        return Ok(());
     }
     node.log = leader_log;
     // Monotonic, like every other advance of this field: a commit point that can fall is a commit
@@ -6413,6 +6465,7 @@ fn install_leader_snapshot_tail(
     if node.replica_role.can_serve_data() {
         apply_committed(node);
     }
+    Ok(())
 }
 
 fn raft_apply_snapshot_fence(node: &RaftNode) -> RaftApplySnapshotFence {

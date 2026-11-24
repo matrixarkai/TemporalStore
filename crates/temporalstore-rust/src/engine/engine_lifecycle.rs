@@ -521,6 +521,22 @@ impl TemporalEngine {
         Self::with_cache_and_block_store(cache, BlockStore::default())
     }
 
+    /// Open an isolated engine for state restored by a consensus log or snapshot.
+    pub fn with_scratch_replica_storage(
+        block_store_options: BlockStoreOptions,
+        open_cache: impl FnOnce(&std::path::Path) -> Result<MultiLayerCache, String>,
+    ) -> Result<Self, String> {
+        let scratch = crate::scratch::owned_scratch_dir("raft-replica");
+        let cache = open_cache(&scratch.path().join("cache"))?;
+        let mut engine = Self::with_cache_block_store_and_index_dir(
+            cache,
+            BlockStore::with_options(scratch.path().join("blocks"), block_store_options),
+            scratch.path().join("indexes"),
+        );
+        engine.index_scratch = Some(scratch);
+        Ok(engine)
+    }
+
     pub fn with_cache_and_block_store(cache: MultiLayerCache, block_store: BlockStore) -> Self {
         let scratch = crate::scratch::owned_scratch_dir("indexes");
         let mut engine =

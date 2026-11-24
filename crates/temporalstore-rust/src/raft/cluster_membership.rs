@@ -49,7 +49,7 @@ impl RaftCluster {
             leader.installed_snapshot.clone(),
             leader.log.clone(),
             leader.commit_index,
-        );
+        )?;
         inner.nodes.insert(node_id, node);
         match replica_role {
             RaftReplicaRole::Learner => {

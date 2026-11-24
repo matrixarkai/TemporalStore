@@ -157,6 +157,14 @@ For tensor payloads, measure compression before setting
 `TS_BLOCK_STORE_COMPRESSION_ENABLED=false` on dedicated nodes. These flags
 apply to the cache, WAL, and block store respectively.
 
+
+Raft replicas open their serving cache in an isolated storage directory
+under the process temporary directory. Set `TMPDIR` to the intended local
+device before starting the datanode. A snapshot replacement opens a new
+cache with the same configuration. The Raft log and snapshots recover
+the replicated data on restart. The replacement replica repopulates its
+cache on demand.
+
 ### Replicas across datanodes
 
 For L2 redundancy, configure one TemporalStore adapter per independent

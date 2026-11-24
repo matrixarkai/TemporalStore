@@ -286,7 +286,21 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
                     "data node storage manager canceled before prepare",
                 );
             }
-            let report = inner.engine.run_storage_manager_cycle(request.clone());
+            // Eviction changes local residency without changing replicated keys. Leave
+            // cycles that include other maintenance stages on their existing engine.
+            let evict_only = request.enable_evict
+                && !request.enable_prepare
+                && !request.enable_wal_reclaim
+                && !request.enable_expire
+                && !request.enable_block_reclaim
+                && !request.enable_block_compaction
+                && !request.enable_index_gc;
+            let engine = if evict_only {
+                inner.storage_engine(request.shard_id)
+            } else {
+                inner.engine.clone()
+            };
+            let report = engine.run_storage_manager_cycle(request.clone());
             let status = if report.completed && report.errors.is_empty() {
                 Status::ok()
             } else {

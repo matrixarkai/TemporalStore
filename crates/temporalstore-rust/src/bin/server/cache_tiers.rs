@@ -6,6 +6,25 @@ use std::path::Path;
 use matrixcache::{CacheCompression, CacheOptions, MultiLayerCache};
 use temporalstore_rust::env_flag::{env_bool, env_value};
 
+pub(super) fn open_replica_cache(
+    cache_dir: &Path,
+    memory_bytes: usize,
+    disk_cache_tier: bool,
+) -> Result<MultiLayerCache, String> {
+    if let Some(cache) = open_configured_cache(cache_dir, memory_bytes, disk_cache_tier)? {
+        return Ok(cache);
+    }
+
+    let mut options = CacheOptions::default();
+    options.dram_capacity = memory_bytes;
+    if !disk_cache_tier {
+        options.pmem_capacity = 0;
+        options.ssd_capacity = 0;
+    }
+    options.ssd_paths.push(cache_dir.to_owned());
+    MultiLayerCache::try_with_options(options).map_err(|error| error.to_string())
+}
+
 pub(super) fn open_configured_cache(
     cache_dir: &Path,
     memory_bytes: usize,

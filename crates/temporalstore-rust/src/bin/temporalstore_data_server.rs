@@ -156,6 +156,7 @@ fn main() {
     let local_state_present =
         local_shard_state_present(&[&cache_dir, &block_store_dir, &index_dir]);
     let block_store_options = block_store_options_from_env();
+    let replica_block_store_options = block_store_options.clone();
     // Resolved BEFORE the engine is built, because the cache's shape depends on it: the disk
     // cache tier exists to span the distance to shared storage, and there is no such distance
     // when the durable copy is this node's own disk. Resolving after construction (where this
@@ -431,7 +432,14 @@ fn main() {
         .ok()
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(3_000);
-    let raft_state = start_server_raft_from_env(shard_id, node_id, &advertised_addr);
+    let raft_state = start_server_raft_from_env(
+        shard_id,
+        node_id,
+        &advertised_addr,
+        cache_memory_bytes,
+        disk_cache_tier,
+        replica_block_store_options,
+    );
 
     // The maintenance scheduler was started ~80 lines above this, BEFORE consensus existed, and
     // it re-reads this slot every round -- so the rounds before this point see `Unknown` and
@@ -871,7 +879,7 @@ fn main() {
                     .trim_start_matches("/server/storage/cache/")
                     .parse()
                     .unwrap_or_default();
-                json_response(200, &engine.storage_cache_inspection_report(shard_id))
+                json_response(200, &runtime.storage_cache_inspection_report(shard_id))
             }
             ("POST", "/server/storage/cache/invalidate_slot") => {
                 match parse_json::<StorageCacheInvalidateBucketRequest>(&request.body) {
@@ -2863,6 +2871,10 @@ impl std::fmt::Debug for RaftShardLeadership {
 }
 
 impl ShardLeadershipSource for RaftShardLeadership {
+    fn shard_storage_engine(&self, shard_id: ShardId) -> Option<TemporalEngine> {
+        self.cluster.local_replica_engine(shard_id)
+    }
+
     fn shard_leadership(&self, shard_id: ShardId) -> ShardLeadership {
         // A shard this node's raft does not cover. Consensus has no opinion about it, so
         // neither do we.
@@ -2890,6 +2902,9 @@ fn start_server_raft_from_env(
     shard_id: u64,
     node_id: u64,
     advertised_addr: &str,
+    cache_memory_bytes: usize,
+    disk_cache_tier: bool,
+    block_store_options: BlockStoreOptions,
 ) -> Option<ServerRaftState> {
     if !env_bool("TS_SERVER_RAFT", false) {
         return None;
@@ -2909,7 +2924,7 @@ fn start_server_raft_from_env(
     // max_inflights_replicate stays 128. (This entrypoint is env-only; there is no config-file
     // loader in scope here, so the `[raft]` file equivalents are not read at this layer.)
     let raft_config = raft_config_from_env();
-    let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
+    let options = ProductionRaftRuntimeOptions {
         // The cadence the metaserver already uses; 0 disables the check.
         snapshot_check_interval_ms: env_u64("TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS", 30_000),
         engine: ProductionRaftEngineKind::TemporalRaft,
@@ -2931,7 +2946,21 @@ fn start_server_raft_from_env(
             256,
         ),
         allow_plaintext_for_local_chaos: security.allow_plaintext_for_local_chaos,
-    })
+    };
+    let configure_replica = disk_cache_tier
+        || ["TS_CACHE_DISK_TIER", "TS_CACHE_MEMORY_BYTES", "TS_CACHE_COMPRESSION_ENABLED"]
+            .iter()
+            .any(|key| temporalstore_rust::env_flag::env_value(key).is_some());
+    let runtime = if configure_replica {
+        ProductionRaftRuntime::start_with_local_engine_factory(options, move || {
+            TemporalEngine::with_scratch_replica_storage(block_store_options.clone(), |root| {
+                cache_tiers::open_replica_cache(root, cache_memory_bytes, disk_cache_tier)
+            })
+            .map_err(temporalstore_rust::RaftError::InvalidConfig)
+        })
+    } else {
+        ProductionRaftRuntime::start(options)
+    }
     .expect("failed to start server raft runtime");
     let _timer = runtime.start_timer_loop();
     Some(ServerRaftState {

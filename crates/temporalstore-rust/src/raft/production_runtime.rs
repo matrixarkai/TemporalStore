@@ -98,12 +98,29 @@ pub struct ProductionRaftRuntime {
 
 impl ProductionRaftRuntime {
     pub fn start(options: ProductionRaftRuntimeOptions) -> Result<Self, RaftError> {
+        Self::start_with_factory(options, None)
+    }
+
+    /// Build the local replica's empty serving engine at startup and at snapshot replacement.
+    /// Each call must open an isolated, empty engine. Raft restores its state before publication.
+    pub fn start_with_local_engine_factory(
+        options: ProductionRaftRuntimeOptions,
+        factory: impl Fn() -> Result<TemporalEngine, RaftError> + Send + Sync + 'static,
+    ) -> Result<Self, RaftError> {
+        Self::start_with_factory(options, Some(ReplicaEngineFactory(Arc::new(factory))))
+    }
+
+    fn start_with_factory(
+        options: ProductionRaftRuntimeOptions,
+        factory: Option<ReplicaEngineFactory>,
+    ) -> Result<Self, RaftError> {
         options.validate()?;
-        let cluster = RaftCluster::restore_single_shard_from_wal(
+        let cluster = RaftCluster::restore_single_shard_with_factory(
             &options.wal_dir,
             options.shard_id,
             options.voter_ids(),
             options.config.clone(),
+            factory.map(|factory| (options.local_node_id, factory)),
         )?;
         // One node per process here, so the WAL persist and the committed-entry apply can both be
         // scoped to our own node instead of covering every peer's shadow copy.

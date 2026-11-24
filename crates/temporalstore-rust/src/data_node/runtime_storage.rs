@@ -998,21 +998,22 @@ impl DataNodeRuntime {
             && (options.eviction_memory_pressure_threshold == 0
                 || options.index_resident_limit_bytes < options.eviction_memory_pressure_threshold);
         let eviction = options.enable_evict.then(|| {
+            let engine = self.inner.storage_engine(shard_id);
             let Some(stage_threshold) = configured_limit else {
+                let resident = engine.bucket_index_resident_bytes(shard_id);
                 return crate::engine::reports::StorageEvictionReport {
                     shard_id,
                     mode: "evict_cache".to_string(),
-                    pressure_before: pressure.eviction_memory_pressure_bytes,
-                    pressure_after: pressure.eviction_memory_pressure_bytes,
-                    bucket_index_bytes_before: pressure.eviction_memory_pressure_bytes,
-                    bucket_index_bytes_after: pressure.eviction_memory_pressure_bytes,
+                    pressure_before: resident,
+                    pressure_after: resident,
+                    bucket_index_bytes_before: resident,
+                    bucket_index_bytes_after: resident,
                     batch_limit: options.eviction_batch_limit,
                     dump_before_evict: options.eviction_dump_before_evict,
                     skipped_reason: "no_memory_limit".to_string(),
                     ..Default::default()
                 };
             };
-            let engine = &self.inner.engine;
             if options.eviction_count_limit == 0 || options.eviction_batch_limit == 0 {
                 let resident = engine.bucket_index_resident_bytes(shard_id);
                 let gate_open = resident > stage_threshold;
@@ -1101,18 +1102,18 @@ impl DataNodeRuntime {
             eviction.is_some(),
             eviction.as_ref().is_some_and(|report| report.pressure_gate_open),
             eviction.is_some(),
-            configured_limit.map(|limit| vec![
+            configured_limit.zip(eviction.as_ref()).map(|(limit, report)| vec![
                 storage_manager_pressure_signal(
                     "eviction_memory_pressure_bytes",
-                    pressure.eviction_memory_pressure_bytes, limit,
+                    report.pressure_before, limit,
                 ),
                 storage_manager_pressure_signal(
                     "bucket_index_resident_bytes",
-                    pressure.bucket_index_resident_bytes, limit,
+                    report.bucket_index_bytes_before, limit,
                 ),
                 storage_manager_pressure_signal(
                     "index_resident_limit_bytes",
-                    pressure.bucket_index_resident_bytes, limit,
+                    report.bucket_index_bytes_before, limit,
                 ),
             ]).unwrap_or_default(),
             vec![if index_bound_is_the_gate {

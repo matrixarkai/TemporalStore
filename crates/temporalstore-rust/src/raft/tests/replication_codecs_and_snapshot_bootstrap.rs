@@ -2113,3 +2113,71 @@ async fn external_snapshot_bootstrap_rejects_stale_local_replica_before_download
     );
 }
 
+
+
+#[test]
+fn local_replica_cache_policy_survives_snapshot_install_and_recovery() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let root = tempfile::tempdir().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let factory = ReplicaEngineFactory(Arc::new({
+        let calls = calls.clone();
+        move || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            TemporalEngine::with_scratch_replica_storage(Default::default(), |path| {
+                let mut options = matrixcache::CacheOptions::new(1 << 20, 0, 32 << 20)
+                    .with_ssd_paths([path.to_owned()]);
+                options.block_options.compression = matrixcache::CacheCompression::None;
+                matrixcache::MultiLayerCache::try_with_options(options)
+                    .map_err(|error| error.to_string())
+            })
+            .map_err(RaftError::InvalidConfig)
+        }
+    }));
+    let open = || {
+        let target = RaftCluster::restore_single_shard_with_factory(
+            root.path(),
+            7,
+            [1],
+            RaftConfig::default(),
+            Some((1, factory.clone())),
+        )
+        .unwrap();
+        target.set_local_node_id(1);
+        target
+    };
+    let source = RaftCluster::new_single_shard(7, [1]);
+    let payload: Vec<u8> = (0..(2 << 20)).map(|index| index as u8).collect();
+    source
+        .propose(Command::StringSet {
+            key: "chunk".to_string(),
+            value: payload.clone(),
+        })
+        .unwrap();
+
+    let target = open();
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert!(target.local_replica_engine(8).is_none());
+    target.install_snapshot(1, source.create_snapshot().unwrap()).unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+
+    let check = |target: &RaftCluster| {
+        let engine = target.local_replica_engine(7).unwrap();
+        let read = || engine.execute(ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringGet { key: "chunk".to_string() },
+        });
+        let expected = CommandResponse::Bytes { value: Some(payload.clone()) };
+        assert_eq!(read().response, expected);
+        let warm = engine.cache().stats().disk_hits;
+        assert_eq!(read().response, expected);
+        assert!(engine.cache().stats().disk_hits > warm);
+    };
+    check(&target);
+    drop(target);
+
+    let restored = open();
+    assert_eq!(calls.load(Ordering::Relaxed), 4);
+    check(&restored);
+}

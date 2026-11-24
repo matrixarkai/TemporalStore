@@ -2206,6 +2206,10 @@ impl ShardLeadership {
 /// the next round, and every round before that sees `Unknown`.
 pub trait ShardLeadershipSource: std::fmt::Debug + Send + Sync {
     fn shard_leadership(&self, shard_id: ShardId) -> ShardLeadership;
+
+    fn shard_storage_engine(&self, _shard_id: ShardId) -> Option<TemporalEngine> {
+        None
+    }
 }
 
 const SHARD_GENERATION_LOCKS: usize = 64;
@@ -2248,6 +2252,19 @@ struct DataNodeRuntimeInner {
     /// Who answers "do I lead this shard". `None` means nobody has been told to answer, which
     /// reads as [`ShardLeadership::Unknown`] and NOT as "not the leader".
     shard_leadership: Mutex<Option<Arc<dyn ShardLeadershipSource>>>,
+}
+
+impl DataNodeRuntimeInner {
+    fn storage_engine(&self, shard_id: ShardId) -> TemporalEngine {
+        let source = self
+            .shard_leadership
+            .lock()
+            .expect("shard leadership lock poisoned")
+            .clone();
+        source
+            .and_then(|source| source.shard_storage_engine(shard_id))
+            .unwrap_or_else(|| self.engine.clone())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2668,6 +2685,13 @@ impl DataNodeRuntime {
                 sink.record_write(shard_id, command);
             }
         }
+    }
+
+    pub fn storage_cache_inspection_report(
+        &self,
+        shard_id: ShardId,
+    ) -> crate::engine::reports::StorageCacheInspectionReport {
+        self.inner.storage_engine(shard_id).storage_cache_inspection_report(shard_id)
     }
 
     pub fn last_storage_manager_cycle_report(&self) -> Option<StorageManagerCycleReport> {

@@ -210,7 +210,7 @@ impl RaftClusterInner {
                     leader_snapshot.clone(),
                     leader_log.clone(),
                     leader_commit_index,
-                );
+                )?;
             }
             if node.commit_index >= leader_commit_index {
                 caught_up.push(node.id);
