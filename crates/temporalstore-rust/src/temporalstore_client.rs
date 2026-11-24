@@ -669,7 +669,7 @@ struct ClientInner {
     routes: RwLock<HashMap<ShardId, CachedRoute>>,
     grpc_routes: RwLock<HashMap<String, CachedGrpcTableRoutes>>,
     grpc_channels: RwLock<HashMap<String, tonic::transport::Channel>>,
-    meta_grpc_channel: Mutex<Option<tonic::transport::Channel>>,
+    meta_grpc_channel: Mutex<Option<(String, tonic::transport::Channel)>>,
     /// Executes and batch executes, counted outside `stats`.
     ///
     /// Both are bumped once per call on the path that succeeds, and taking the stats mutex for

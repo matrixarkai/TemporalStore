@@ -2026,18 +2026,29 @@ impl ProxyService {
         if options.context_shard_count != 0 {
             return;
         }
-        let Ok(listed) = get_meta_json::<crate::meta::ListShardsResponse>(
-            &options.meta_addr,
-            "/shards",
-            options.control_http_options(),
-        ) else {
-            return;
+        let deadline = options.control_http_options();
+        let (mut ids, complete) = if let Some(target) = options.meta_grpc_target.as_deref() {
+            let Ok(result) = self.client().metadata_shard_ids_grpc(target, deadline.io_timeout_ms) else {
+                return;
+            };
+            result
+        } else {
+            let Ok(listed) = get_meta_json::<crate::meta::ListShardsResponse>(
+                &options.meta_addr, "/shards", deadline,
+            ) else {
+                return;
+            };
+            if !listed.status.ok {
+                return;
+            }
+            (
+                listed.shards.into_iter().map(|shard| shard.shard_id).collect(),
+                listed.next_after_shard_id.is_none(),
+            )
         };
-        if !listed.status.ok || listed.shards.is_empty() {
+        if ids.is_empty() {
             return;
         }
-        let mut ids: Vec<crate::types::ShardId> =
-            listed.shards.iter().map(|shard| shard.shard_id).collect();
         ids.sort_unstable();
         ids.dedup();
         let contiguous_from_first = ids
@@ -2046,7 +2057,6 @@ impl ProxyService {
             .all(|(offset, id)| *id == options.context_first_shard_id + offset as u64);
         // A short block means there are more shards than were listed; a partial view could look
         // contiguous when the whole set is not, so do not conclude anything from it.
-        let complete = listed.next_after_shard_id.is_none();
         let usable = complete && contiguous_from_first;
         self.inner.cluster_shard_count.store(
             if usable { ids.len() as u64 } else { 0 },

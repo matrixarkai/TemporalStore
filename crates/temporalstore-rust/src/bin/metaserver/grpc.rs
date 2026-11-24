@@ -6,7 +6,8 @@ use prost::Message;
 use std::io;
 use std::net::TcpListener;
 use temporalstore_rust::meta::{
-    GetTableTopologyRequest, ServerEndpoint, TableTopologyResponse, TopologyVersionRequest,
+    GetTableTopologyRequest, ListShardsRequest, ProxyHeartbeatRequest, RegisterProxyRequest,
+    ServerEndpoint, TableTopologyResponse, TopologyVersionRequest,
 };
 use temporalstore_rust::metaserver_files_proto::{
     table_meta_info_to_proto, topology_change_event_to_proto,
@@ -15,6 +16,7 @@ use temporalstore_rust::sdk::v1;
 use tonic::transport::{server::TcpIncoming, Server};
 use tonic::{Request, Response, Status};
 
+#[derive(Clone)]
 struct MetadataRpc {
     backend: MetaBackend,
     token: Option<String>,
@@ -118,6 +120,105 @@ impl v1::metadata_service_server::MetadataService for MetadataRpc {
     }
 }
 
+#[tonic::async_trait]
+impl v1::proxy_metadata_service_server::ProxyMetadataService for MetadataRpc {
+    async fn register_proxy(
+        &self,
+        request: Request<v1::MetadataRegisterProxyRequest>,
+    ) -> Result<Response<v1::Status>, Status> {
+        self.authorize(&request)?;
+        let request = request.into_inner();
+        let query = RegisterProxyRequest {
+            proxy_addr: request.proxy_addr,
+            namespace: request.namespace_name,
+            location: request.location,
+            config_version: request.config_version,
+            binary_version: request.binary_version,
+            registered_at_ms: 0,
+        };
+        let backend = self.backend.clone();
+        let reply = tokio::task::spawn_blocking(move || match &backend {
+            MetaBackend::Single(meta) => meta.register_proxy(query),
+            MetaBackend::Raft(runtime) => runtime.cluster().register_proxy(query),
+        })
+        .await
+        .map_err(|_| Status::internal("proxy registration failed"))?;
+        Ok(Response::new(wire_status(reply.status)))
+    }
+
+    async fn heartbeat(
+        &self,
+        request: Request<v1::MetadataProxyHeartbeatRequest>,
+    ) -> Result<Response<v1::MetadataProxyHeartbeatResponse>, Status> {
+        self.authorize(&request)?;
+        let request = request.into_inner();
+        let query = ProxyHeartbeatRequest {
+            proxy_addr: request.proxy_addr,
+            boot_time_ms: request.boot_time_ms,
+            namespace: request.namespace_name,
+            config_version: request.config_version,
+            binary_version: request.binary_version,
+        };
+        let backend = self.backend.clone();
+        let reply = tokio::task::spawn_blocking(move || match &backend {
+            MetaBackend::Single(meta) => meta.proxy_heartbeat(query),
+            MetaBackend::Raft(runtime) => runtime.cluster().proxy_heartbeat(query),
+        })
+        .await
+        .map_err(|_| Status::internal("proxy heartbeat failed"))?;
+        Ok(Response::new(v1::MetadataProxyHeartbeatResponse {
+            status: Some(wire_status(reply.status)),
+            config_changed: reply.config_changed,
+            namespace_name: reply.namespace,
+            config_version: reply.config_version,
+            serving_mode: reply.serving_mode,
+            drop_percent: reply.drop_percent.map(u32::from),
+        }))
+    }
+
+    async fn get_leader(
+        &self,
+        request: Request<v1::MetadataLeaderRequest>,
+    ) -> Result<Response<v1::MetadataLeaderResponse>, Status> {
+        self.authorize(&request)?;
+        let backend = self.backend.clone();
+        let reply = tokio::task::spawn_blocking(move || backend.raft_leader())
+            .await
+            .map_err(|_| Status::internal("metaserver leader lookup failed"))?;
+        Ok(Response::new(v1::MetadataLeaderResponse {
+            status: Some(wire_status(reply.status)),
+            leader_id: reply.leader_id,
+            addr: reply.addr,
+            is_local: reply.is_local,
+        }))
+    }
+
+    async fn list_shard_ids(
+        &self,
+        request: Request<v1::MetadataListShardIdsRequest>,
+    ) -> Result<Response<v1::MetadataListShardIdsResponse>, Status> {
+        self.authorize(&request)?;
+        let backend = self.backend.clone();
+        let reply = tokio::task::spawn_blocking(move || match &backend {
+            MetaBackend::Single(meta) => meta.list_shards(ListShardsRequest::default()),
+            MetaBackend::Raft(runtime) => {
+                runtime.cluster().list_shards(ListShardsRequest::default())
+            }
+        })
+        .await
+        .map_err(|_| Status::internal("metaserver shard listing failed"))?;
+        Ok(Response::new(v1::MetadataListShardIdsResponse {
+            status: Some(wire_status(reply.status)),
+            shard_ids: reply
+                .shards
+                .into_iter()
+                .map(|shard| shard.shard_id)
+                .collect(),
+            next_after_shard_id: reply.next_after_shard_id,
+        }))
+    }
+}
+
 fn wire_status(status: temporalstore_rust::types::Status) -> v1::Status {
     v1::Status {
         ok: status.ok,
@@ -215,15 +316,16 @@ pub(super) fn start(addr: &str, backend: MetaBackend, token: Option<String>) -> 
             if let Err(error) = runtime.block_on(async move {
                 let listener = tokio::net::TcpListener::from_std(listener)?;
                 let incoming = TcpIncoming::from_listener(listener, true, None)?;
-                let service =
-                    v1::metadata_service_server::MetadataServiceServer::new(MetadataRpc {
-                        backend,
-                        token,
-                    })
+                let rpc = MetadataRpc { backend, token };
+                let topology = v1::metadata_service_server::MetadataServiceServer::new(rpc.clone())
                     .max_encoding_message_size(40 * 1024 * 1024);
+                let proxy_control =
+                    v1::proxy_metadata_service_server::ProxyMetadataServiceServer::new(rpc)
+                        .max_encoding_message_size(40 * 1024 * 1024);
                 tracing::info!(%address, "temporalstore metaserver gRPC listening");
                 Server::builder()
-                    .add_service(service)
+                    .add_service(topology)
+                    .add_service(proxy_control)
                     .serve_with_incoming(incoming)
                     .await?;
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())

@@ -3,8 +3,9 @@
 
 use super::*;
 use crate::meta::{
-    DataRaftRoute, GetTableTopologyRequest, TableShard, TableTopologyResponse,
-    TopologyVersionReport,
+    AckResponse, DataRaftRoute, GetTableTopologyRequest, MetaRaftLeaderResponse,
+    ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest, TableShard,
+    TableTopologyResponse, TopologyVersionReport,
 };
 use crate::metaserver_files_proto::{table_meta_info_from_proto, topology_change_event_from_proto};
 use crate::sdk::v1;
@@ -14,6 +15,7 @@ use tokio::runtime::{Builder, Runtime};
 use tonic::transport::{Channel, Endpoint};
 
 type MetadataClient = v1::metadata_service_client::MetadataServiceClient<Channel>;
+type ProxyMetadataClient = v1::proxy_metadata_service_client::ProxyMetadataServiceClient<Channel>;
 
 fn runtime() -> Result<&'static Runtime, ClientError> {
     static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
@@ -91,14 +93,14 @@ impl TemporalStoreClient {
     fn metadata_rpc<T, F>(
         &self,
         target: &str,
-        call: impl FnOnce(MetadataClient, Option<String>) -> F + Send + 'static,
+        timeout_ms: u64,
+        call: impl FnOnce(Channel, Option<String>) -> F + Send + 'static,
     ) -> Result<T, ClientError>
     where
         T: Send + 'static,
         F: Future<Output = Result<tonic::Response<T>, tonic::Status>> + Send + 'static,
     {
         let runtime = runtime()?;
-        let options = self.inner.options.meta_sync_http_options();
         let channel = {
             let mut cached = self
                 .inner
@@ -106,16 +108,17 @@ impl TemporalStoreClient {
                 .lock()
                 .expect("metadata channel lock poisoned");
             match cached.as_ref() {
-                Some(channel) => channel.clone(),
-                None => {
+                Some((cached_target, channel)) if cached_target == target => channel.clone(),
+                _ => {
                     let address = target.strip_prefix("grpc://").unwrap_or(target);
                     let endpoint = Endpoint::from_shared(format!("http://{address}"))
                         .map_err(|error| ClientError::InvalidRequest(error.to_string()))?
-                        .connect_timeout(Duration::from_millis(options.connect_timeout_ms))
-                        .timeout(Duration::from_millis(options.io_timeout_ms));
+                        .connect_timeout(Duration::from_millis(
+                            self.inner.options.connect_timeout_ms,
+                        ));
                     let _guard = runtime.enter();
                     let channel = endpoint.connect_lazy();
-                    *cached = Some(channel.clone());
+                    *cached = Some((target.to_owned(), channel.clone()));
                     channel
                 }
             }
@@ -123,8 +126,15 @@ impl TemporalStoreClient {
         let token = crate::meta::admin_auth_token();
         let (send, receive) = mpsc::sync_channel(1);
         runtime.spawn(async move {
-            let client = MetadataClient::new(channel).max_decoding_message_size(40 * 1024 * 1024);
-            let _ = send.send(call(client, token).await);
+            let result =
+                tokio::time::timeout(Duration::from_millis(timeout_ms), call(channel, token))
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(tonic::Status::deadline_exceeded(
+                            "metaserver request timed out",
+                        ))
+                    });
+            let _ = send.send(result);
         });
         receive
             .recv()
@@ -138,7 +148,10 @@ impl TemporalStoreClient {
         target: &str,
         req: GetTableTopologyRequest,
     ) -> Result<TableTopologyResponse, ClientError> {
-        let response = self.metadata_rpc(target, move |mut client, token| async move {
+        let timeout_ms = self.inner.options.meta_sync_http_options().io_timeout_ms;
+        let response = self.metadata_rpc(target, timeout_ms, move |channel, token| async move {
+            let mut client =
+                MetadataClient::new(channel).max_decoding_message_size(40 * 1024 * 1024);
             let request = authenticated(
                 v1::MetadataTableTopologyRequest {
                     namespace_name: req.namespace,
@@ -158,7 +171,10 @@ impl TemporalStoreClient {
         target: &str,
         old_topology_version: u64,
     ) -> Result<TopologyVersionReport, ClientError> {
-        let response = self.metadata_rpc(target, move |mut client, token| async move {
+        let timeout_ms = self.inner.options.meta_sync_http_options().io_timeout_ms;
+        let response = self.metadata_rpc(target, timeout_ms, move |channel, token| async move {
+            let mut client =
+                MetadataClient::new(channel).max_decoding_message_size(40 * 1024 * 1024);
             let request = authenticated(
                 v1::MetadataVersionRequest {
                     old_topology_version,
@@ -199,6 +215,102 @@ impl TemporalStoreClient {
                 .map_err(ClientError::Status)?,
             event_history_truncated: response.event_history_truncated,
         })
+    }
+
+    pub(crate) fn register_proxy_grpc(
+        &self,
+        target: &str,
+        timeout_ms: u64,
+        query: RegisterProxyRequest,
+    ) -> Result<AckResponse, ClientError> {
+        let status = self.metadata_rpc(target, timeout_ms, move |channel, token| async move {
+            ProxyMetadataClient::new(channel)
+                .register_proxy(authenticated(
+                    v1::MetadataRegisterProxyRequest {
+                        proxy_addr: query.proxy_addr,
+                        namespace_name: query.namespace,
+                        location: query.location,
+                        config_version: query.config_version,
+                        binary_version: query.binary_version,
+                    },
+                    token,
+                )?)
+                .await
+        })?;
+        Ok(AckResponse {
+            status: decode_status(Some(status))?,
+        })
+    }
+
+    pub(crate) fn proxy_heartbeat_grpc(
+        &self,
+        target: &str,
+        timeout_ms: u64,
+        query: ProxyHeartbeatRequest,
+    ) -> Result<ProxyHeartbeatResponse, ClientError> {
+        let reply = self.metadata_rpc(target, timeout_ms, move |channel, token| async move {
+            ProxyMetadataClient::new(channel)
+                .heartbeat(authenticated(
+                    v1::MetadataProxyHeartbeatRequest {
+                        proxy_addr: query.proxy_addr,
+                        boot_time_ms: query.boot_time_ms,
+                        namespace_name: query.namespace,
+                        config_version: query.config_version,
+                        binary_version: query.binary_version,
+                    },
+                    token,
+                )?)
+                .await
+        })?;
+        let drop_percent = reply
+            .drop_percent
+            .map(u8::try_from)
+            .transpose()
+            .map_err(|_| ClientError::Status("invalid metaserver drop percent".to_string()))?;
+        Ok(ProxyHeartbeatResponse {
+            status: decode_status(reply.status)?,
+            config_changed: reply.config_changed,
+            namespace: reply.namespace_name,
+            config_version: reply.config_version,
+            serving_mode: reply.serving_mode,
+            drop_percent,
+        })
+    }
+
+    pub(crate) fn metadata_leader_grpc(
+        &self,
+        target: &str,
+        timeout_ms: u64,
+    ) -> Result<MetaRaftLeaderResponse, ClientError> {
+        let reply = self.metadata_rpc(target, timeout_ms, move |channel, token| async move {
+            ProxyMetadataClient::new(channel)
+                .get_leader(authenticated(v1::MetadataLeaderRequest {}, token)?)
+                .await
+        })?;
+        Ok(MetaRaftLeaderResponse {
+            status: decode_status(reply.status)?,
+            leader_id: reply.leader_id,
+            addr: reply.addr,
+            is_local: reply.is_local,
+        })
+    }
+
+    pub(crate) fn metadata_shard_ids_grpc(
+        &self,
+        target: &str,
+        timeout_ms: u64,
+    ) -> Result<(Vec<u64>, bool), ClientError> {
+        let reply = self.metadata_rpc(target, timeout_ms, move |channel, token| async move {
+            ProxyMetadataClient::new(channel)
+                .max_decoding_message_size(40 * 1024 * 1024)
+                .list_shard_ids(authenticated(v1::MetadataListShardIdsRequest {}, token)?)
+                .await
+        })?;
+        let status = decode_status(reply.status)?;
+        if !status.ok {
+            return Err(ClientError::Status(status.message));
+        }
+        Ok((reply.shard_ids, reply.next_after_shard_id.is_none()))
     }
 }
 

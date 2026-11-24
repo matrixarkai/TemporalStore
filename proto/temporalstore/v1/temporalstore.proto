@@ -21,6 +21,56 @@ service MetadataService {
   rpc GetTopologyVersion(MetadataVersionRequest) returns (MetadataVersionResponse);
 }
 
+// Metaserver control calls used by a running service proxy.
+service ProxyMetadataService {
+  rpc RegisterProxy(MetadataRegisterProxyRequest) returns (Status);
+  rpc Heartbeat(MetadataProxyHeartbeatRequest) returns (MetadataProxyHeartbeatResponse);
+  rpc GetLeader(MetadataLeaderRequest) returns (MetadataLeaderResponse);
+  rpc ListShardIds(MetadataListShardIdsRequest) returns (MetadataListShardIdsResponse);
+}
+
+message MetadataRegisterProxyRequest {
+  string proxy_addr = 1;
+  string namespace_name = 2;
+  string location = 3;
+  uint64 config_version = 4;
+  string binary_version = 5;
+}
+
+message MetadataProxyHeartbeatRequest {
+  string proxy_addr = 1;
+  uint64 boot_time_ms = 2;
+  string namespace_name = 3;
+  uint64 config_version = 4;
+  string binary_version = 5;
+}
+
+message MetadataProxyHeartbeatResponse {
+  Status status = 1;
+  bool config_changed = 2;
+  string namespace_name = 3;
+  uint64 config_version = 4;
+  string serving_mode = 5;
+  optional uint32 drop_percent = 6;
+}
+
+message MetadataLeaderRequest {}
+
+message MetadataLeaderResponse {
+  Status status = 1;
+  uint64 leader_id = 2;
+  string addr = 3;
+  bool is_local = 4;
+}
+
+message MetadataListShardIdsRequest {}
+
+message MetadataListShardIdsResponse {
+  Status status = 1;
+  repeated uint64 shard_ids = 2;
+  optional uint64 next_after_shard_id = 3;
+}
+
 message MetadataTableTopologyRequest {
   string namespace_name = 1;
   string table_name = 2;
