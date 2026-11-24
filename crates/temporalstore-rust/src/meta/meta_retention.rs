@@ -675,6 +675,7 @@ mod tests {
         use crate::meta::*;
         let meta = SingleNodeMeta::with_mutation_log(log_path).unwrap();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -987,6 +988,7 @@ mod tests {
         // stay in the meta state -- and in every exported snapshot -- forever.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -1045,6 +1047,7 @@ mod tests {
         // tell them aging is keeping up.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -1109,6 +1112,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         let register = || {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -1408,6 +1412,7 @@ mod tests {
     fn purging_removes_the_resources_from_meta_state_and_from_snapshots() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -1472,6 +1477,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         let register = || {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -1513,6 +1519,7 @@ mod tests {
         // inherits rather than restarting every one of their clocks.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),

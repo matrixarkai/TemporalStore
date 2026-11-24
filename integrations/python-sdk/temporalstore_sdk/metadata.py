@@ -18,11 +18,15 @@ def _crc_entry(byte: int) -> int:
 _CRC_TABLE = tuple(_crc_entry(byte) for byte in range(256))
 
 
-def _bucket_for_key(key: str) -> int:
+def _crc64(key: str) -> int:
     crc = 0
     for byte in key.encode("utf-8"):
         crc = _CRC_TABLE[(crc ^ byte) & 255] ^ (crc >> 8)
-    return crc >> 34
+    return crc
+
+
+def _bucket_for_key(key: str) -> int:
+    return _crc64(key) >> 34
 
 
 class MetadataError(RuntimeError):
@@ -37,6 +41,8 @@ class Shard:
     primary: Optional[str]
     replicas: tuple[str, ...]
     load_version: int
+    primary_grpc: Optional[str] = None
+    replica_grpc: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -119,7 +125,13 @@ class MetadataClient:
         return TableTopology(
             namespace, table, info["topology_version"], info["first_shard_id"], info["shard_count"],
             tuple(
-                Shard(row["shard_id"], row["primary"], tuple(row["replicas"]), row.get("load_version", 0))
+                Shard(
+                    row["shard_id"], row["primary"], tuple(row["replicas"]),
+                    row.get("load_version", 0),
+                    (row.get("primary_endpoint") or {}).get("grpc_addr"),
+                    tuple(endpoint["grpc_addr"] for endpoint in row.get("replica_endpoints", ())
+                          if endpoint.get("grpc_addr")),
+                )
                 for row in sorted(body["shards"], key=lambda item: item["shard_id"])
             ),
         )

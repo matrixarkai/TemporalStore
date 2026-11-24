@@ -2405,6 +2405,7 @@ message MfServerMetaInfo {
   repeated MfShardStatLoad shard_stat_loads = 22;
   MfServerRuntimeLoad runtime_load = 23;
   repeated MfServerShardServingState shard_states = 24;
+  optional string grpc_addr = 25;
 }
 
 message MfProxyMetaInfo {

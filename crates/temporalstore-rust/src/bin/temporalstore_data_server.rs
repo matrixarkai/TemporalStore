@@ -446,6 +446,17 @@ fn main() {
     // ("local", "none", "standalone", "off", or empty) always mean standalone.
     // Decided once, up where the deployment profile is named, so the profile the
     // node logs and the topology it actually runs cannot drift apart.
+    let grpc_advertised_addr = temporalstore_rust::env_flag::env_value("TS_SERVER_GRPC_BIND_ADDR")
+        .map(|grpc_addr| {
+            let bound = grpc::start(&grpc_addr, runtime.clone(), raft_state.clone())
+                .expect("failed to start datanode gRPC listener");
+            temporalstore_rust::env_flag::env_value("TS_SERVER_GRPC_ADVERTISE_ADDR")
+                .unwrap_or_else(|| {
+                    assert!(is_single_node || !bound.ip().is_unspecified(),
+                        "TS_SERVER_GRPC_ADVERTISE_ADDR is required for a wildcard gRPC bind");
+                    bound.to_string()
+                })
+        });
     let standalone = is_single_node;
     if standalone {
         info!(
@@ -455,6 +466,7 @@ fn main() {
         );
     } else {
         let server_registration = RegisterServerRequest {
+            grpc_addr: grpc_advertised_addr,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: advertised_addr.clone(),
@@ -691,10 +703,6 @@ fn main() {
         _ => None,
     };
 
-    if let Some(grpc_addr) = temporalstore_rust::env_flag::env_value("TS_SERVER_GRPC_BIND_ADDR") {
-        grpc::start(&grpc_addr, runtime.clone(), raft_state.clone())
-            .expect("failed to start datanode gRPC listener");
-    }
     info!(%addr, "temporalstore server listening");
     // Streaming pre-handler: owns `/blob/<key>` and moves bytes straight between
     // the socket and the object store (no full-body buffering). Everything else

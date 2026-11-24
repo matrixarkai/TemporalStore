@@ -2579,6 +2579,7 @@ mod tests {
 
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -2774,6 +2775,7 @@ mod tests {
         let scheduler = MetaTaskScheduler::default();
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -3030,6 +3032,7 @@ mod tests {
 
     fn joined(meta: &SingleNodeMeta, addr: &str) {
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: addr.to_string(),
             node_id: 1,
@@ -3103,6 +3106,7 @@ mod tests {
         // had no way to say so.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3126,6 +3130,7 @@ mod tests {
         // trap as the placement figures beside it.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3147,6 +3152,7 @@ mod tests {
     fn a_node_that_has_said_nothing_reports_nothing() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3307,6 +3313,7 @@ mod tests {
     fn metaserver_metrics_expose_inventory_state_and_scheduler() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "metrics-server-a".to_string(),
@@ -3501,6 +3508,7 @@ mod tests {
         let snapshot_path = dir.path().join("meta-route-snapshot.json");
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-route-a".to_string(),
@@ -3638,6 +3646,7 @@ mod tests {
     fn metaserver_safe_mode_route_reports_frozen_cooldown_resources() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "safe-server".to_string(),
@@ -3735,6 +3744,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/register".to_string(),
                 body: serde_json::to_vec(&RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: "raft-server-a".to_string(),
@@ -4236,6 +4246,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/register".to_string(),
                 body: serde_json::to_vec(&RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: node_addr.clone(),

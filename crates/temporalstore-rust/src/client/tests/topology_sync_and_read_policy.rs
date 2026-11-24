@@ -1364,10 +1364,12 @@ fn client_router_prefers_same_location_replica_when_available() {
         replica_addrs: vec!["replica-remote".to_string(), "replica-local".to_string()],
         replica_endpoints: vec![
             ServerEndpoint {
+                grpc_addr: None,
                 server_addr: "replica-remote".to_string(),
                 location: "zone-b".to_string(),
             },
             ServerEndpoint {
+                grpc_addr: None,
                 server_addr: "replica-local".to_string(),
                 location: "zone-a".to_string(),
             },
@@ -1541,15 +1543,18 @@ fn client_deployment_placement_routes_reads_to_local_secondary_and_writes_to_pri
                                 primary: Some(primary_addr.clone()),
                                 replicas: vec![primary_addr.clone(), replica_addr.clone()],
                                 primary_endpoint: Some(ServerEndpoint {
+                                    grpc_addr: None,
                                     server_addr: primary_addr.clone(),
                                     location: "zone-primary".to_string(),
                                 }),
                                 replica_endpoints: vec![
                                     ServerEndpoint {
+                                        grpc_addr: None,
                                         server_addr: primary_addr.clone(),
                                         location: "zone-primary".to_string(),
                                     },
                                     ServerEndpoint {
+                                        grpc_addr: None,
                                         server_addr: replica_addr.clone(),
                                         location: "zone-local".to_string(),
                                     },

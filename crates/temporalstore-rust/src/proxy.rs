@@ -4749,6 +4749,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_328),
@@ -4789,6 +4790,7 @@ mod tests {
         assert_eq!(proxy.info().route_cache_size, 1);
 
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_329),
@@ -4867,6 +4869,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_340),
@@ -4919,6 +4922,7 @@ mod tests {
         }
 
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_341),
@@ -9007,6 +9011,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_384),
@@ -9115,6 +9120,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_380),
@@ -9385,6 +9391,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_374),
@@ -9430,6 +9437,7 @@ mod tests {
 
         // The shard moves to the second datanode.
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_375),

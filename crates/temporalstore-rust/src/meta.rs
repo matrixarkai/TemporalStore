@@ -287,6 +287,8 @@ pub struct NumaNode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterServerRequest {
     pub server_addr: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc_addr: Option<String>,
     #[serde(default)]
     pub node_id: u64,
     #[serde(default)]
@@ -399,6 +401,8 @@ pub struct ServerShardServingState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerMetaInfo {
     pub server_addr: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc_addr: Option<String>,
     pub node_id: u64,
     pub location: String,
     /// The hardware shape this server declared when it registered.
@@ -1014,6 +1018,8 @@ pub struct TableShard {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerEndpoint {
     pub server_addr: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grpc_addr: Option<String>,
     #[serde(default)]
     pub location: String,
 }
@@ -2751,6 +2757,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -2851,6 +2858,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "127.0.0.1:18001".to_string(),
@@ -3027,6 +3035,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "server-a".to_string(),
@@ -3100,6 +3109,7 @@ mod tests {
     fn metaserver_freezes_stale_servers_from_heartbeat_age() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "stale".to_string(),
@@ -3121,6 +3131,7 @@ mod tests {
     fn metaserver_failure_detector_loop_freezes_stale_servers_and_proxies() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "stale-server".to_string(),
@@ -3158,6 +3169,7 @@ mod tests {
         // still believes it serves, and reads routed there will all miss.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -3202,6 +3214,7 @@ mod tests {
         // Re-registering is how a datanode says it is ready to be trusted again.
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -3224,6 +3237,7 @@ mod tests {
         // convict the entire fleet on upgrade.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -3256,6 +3270,7 @@ mod tests {
 
     fn register(meta: &SingleNodeMeta, addr: &str) -> AckResponse {
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: addr.to_string(),
@@ -3612,6 +3627,7 @@ mod tests {
         for (index, addr) in servers.iter().enumerate() {
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: addr.to_string(),
@@ -3700,6 +3716,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -3790,6 +3807,7 @@ mod tests {
         ] {
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: addr.to_string(),
@@ -3851,6 +3869,7 @@ mod tests {
         for (addr, location) in servers {
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: addr.to_string(),
@@ -4040,6 +4059,7 @@ mod tests {
         {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -4062,6 +4082,7 @@ mod tests {
     fn stop_meta() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -4123,6 +4144,7 @@ mod tests {
 
         let meta = SingleNodeMeta::default().with_conviction_lock(true);
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -4135,6 +4157,7 @@ mod tests {
         // It restarts and registers again; the lock does not stand in its way.
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -4205,6 +4228,7 @@ mod tests {
         assert!(stopped_server(&meta).freeze_cooldown_until_ms <= now_ms());
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -4223,6 +4247,7 @@ mod tests {
         {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -4246,6 +4271,7 @@ mod tests {
     fn muted_meta_with_a_server() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -4291,6 +4317,7 @@ mod tests {
             (
                 "register_server",
                 meta.register_server(RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: "node-b".to_string(),
@@ -4348,6 +4375,7 @@ mod tests {
         // restarts cannot rejoin until an operator resumes.
         let meta = muted_meta_with_a_server();
         let rejoin = meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -4389,6 +4417,7 @@ mod tests {
         {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -4515,6 +4544,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for (addr, node_id, location) in [("node-a", 1, "rack-1"), ("node-b", 2, "rack-2")] {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: addr.to_string(),
@@ -4617,6 +4647,7 @@ mod tests {
         // against must still be told where its shards should go.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -4667,6 +4698,7 @@ mod tests {
         .enumerate()
         {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: addr.to_string(),
@@ -4800,6 +4832,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for (index, addr) in ["node-a", "node-b"].into_iter().enumerate() {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 server_addr: addr.to_string(),
                 node_id: index as u64 + 1,
@@ -5020,6 +5053,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for index in 0..12u64 {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 server_addr: format!("node-{index:02}"),
                 node_id: index + 1,
@@ -5075,6 +5109,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for (index, location) in ["east/a", "east/b", "west/c", "east/d"].into_iter().enumerate() {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 server_addr: format!("node-{index}"),
                 node_id: index as u64 + 1,
@@ -5128,6 +5163,7 @@ mod tests {
     fn bus_meta() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -5525,6 +5561,7 @@ mod tests {
     fn counted_meta() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -5677,6 +5714,7 @@ mod tests {
 
     fn register_with(meta: &SingleNodeMeta, addr: &str, numa_nodes: Vec<NumaNode>) {
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: addr.to_string(),
             node_id: 1,
@@ -6139,6 +6177,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         register_with(&meta, "node-a", domains(8));
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-b".to_string(),
             node_id: 2,
@@ -6191,6 +6230,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         let register = || {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -6239,6 +6279,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         let register = || {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -6272,6 +6313,7 @@ mod tests {
         // dropping an already dropped server cannot hold off collection.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -6290,6 +6332,7 @@ mod tests {
     fn namespaced_meta() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -6520,6 +6563,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         for node in 0..2u64 {
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: format!("node-{node}"),
@@ -6791,6 +6835,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     fn live_two_shard_table() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -6955,6 +7000,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     fn shard_meta() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -7049,6 +7095,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         let meta = shard_meta();
         meta.freeze_shard(shard(1));
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-b".to_string(),
             node_id: 2,
@@ -7319,6 +7366,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         let meta = SingleNodeMeta::default();
         for (addr, location) in [("node-a", "rack-1"), ("node-b", "rack-2")] {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 server_addr: addr.to_string(),
                 node_id: 1,
@@ -7423,6 +7471,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         .enumerate()
         {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 server_addr: addr.to_string(),
                 node_id: index as u64 + 1,
@@ -7477,6 +7526,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
 
     fn join_server(meta: &SingleNodeMeta, addr: &str) -> Status {
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: addr.to_string(),
             node_id: 1,
@@ -7590,6 +7640,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             .enumerate()
         {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 server_addr: addr.to_string(),
                 node_id: index as u64 + 1,
@@ -7737,6 +7788,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     fn drainable() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -8234,6 +8286,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
                 .ok);
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: "node-a".to_string(),
@@ -8408,6 +8461,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             .ok);
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -8563,6 +8617,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -8717,6 +8772,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             let addr = format!("node-{i}");
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: addr.clone(),
@@ -9084,6 +9140,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -9190,6 +9247,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         for n in 0..2u64 {
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    grpc_addr: None,
                     numa_nodes: Vec::new(),
                     server_addr: format!("node-{n}"),
                     node_id: n + 1,
@@ -9275,6 +9333,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             for n in 0..2u64 {
                 assert!(meta
                     .register_server(RegisterServerRequest {
+                        grpc_addr: None,
                         numa_nodes: Vec::new(),
                         server_addr: format!("node-{n}"),
                         node_id: n + 1,
@@ -9378,6 +9437,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             let meta = SingleNodeMeta::default();
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    grpc_addr: None,
                     numa_nodes: Vec::new(),
                     server_addr: "node-a".to_string(),
                     node_id: 1,
@@ -9470,6 +9530,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         let plain = SingleNodeMeta::default();
         assert!(plain
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -9595,6 +9656,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         let log_path = dir.path().join("safe-mode-mutations.jsonl");
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "cooldown-server".to_string(),
@@ -9635,6 +9697,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         );
         assert_eq!(
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "cooldown-server".to_string(),
@@ -9711,6 +9774,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     fn metaserver_serves_table_topology_and_version_not_modified() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
@@ -9719,6 +9783,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             binary_version: String::new(),
         });
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s2".to_string(),
@@ -9855,6 +9920,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     fn metaserver_freeze_table_blocks_topology_update_and_finish_load_until_unfrozen() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
@@ -10205,6 +10271,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             ("warm", 100, 100),
         ] {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
@@ -10257,6 +10324,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             ("degraded", 0, 0, true),
         ] {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
@@ -10312,6 +10380,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     fn asking_only_for_status_gives_the_same_answer_without_the_shards() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -10423,6 +10492,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             ("serving", "serving"),
         ] {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
@@ -10480,6 +10550,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             ("zone-b-hot", "zone-b", 10_000, 10_000),
         ] {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
@@ -10533,6 +10604,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             ("10.0.0.2:18001", "zone-c", 10_000, 10_000),
         ] {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
@@ -10584,6 +10656,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             ("10.0.0.1:18002", "zone-b", 20, 20),
         ] {
             meta.register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
@@ -10724,6 +10797,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     fn metaserver_finish_load_updates_shard_route() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
@@ -10752,6 +10826,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         let snapshot_path = dir.path().join("scheduler-finish-load-snapshot.json");
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
@@ -10894,6 +10969,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         let log_path = dir.path().join("control-plane-parity.jsonl");
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
@@ -10988,6 +11064,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         assert_eq!(missing.status.code, "server_not_found");
 
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
@@ -11045,6 +11122,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: "node-a".to_string(),
@@ -11224,6 +11302,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         assert!(meta.info().durable_mutation_log);
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-a".to_string(),
@@ -11424,6 +11503,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         let snapshot_path = dir.path().join("meta-snapshot.json");
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-a".to_string(),
@@ -11432,6 +11512,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             binary_version: "v1".to_string(),
         });
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-b".to_string(),
@@ -11560,6 +11641,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "only-node".to_string(),

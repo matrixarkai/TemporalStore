@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::io;
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener};
 
 use temporalstore_rust::sdk::{
     v1::temporal_store_service_server::TemporalStoreServiceServer, TemporalStoreSdkExecutor,
@@ -94,7 +94,7 @@ pub(super) fn start(
     addr: &str,
     runtime: DataNodeRuntime,
     raft: Option<ServerRaftState>,
-) -> io::Result<()> {
+) -> io::Result<SocketAddr> {
     let listener = TcpListener::bind(addr)?;
     listener.set_nonblocking(true)?;
     let address = listener.local_addr()?;
@@ -122,5 +122,5 @@ pub(super) fn start(
                 tracing::error!(%address, %error, "temporalstore gRPC listener failed");
             }
         })?;
-    Ok(())
+    Ok(address)
 }

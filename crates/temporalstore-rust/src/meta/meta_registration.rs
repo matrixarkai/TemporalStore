@@ -55,6 +55,8 @@ impl SingleNodeMeta {
             .map(|server| server.registered_at_ms)
             .filter(|first| *first != 0)
             .unwrap_or(request.registered_at_ms);
+        let grpc_changed = state.servers.get(&request.server_addr)
+            .and_then(|server| server.grpc_addr.as_ref()) != request.grpc_addr.as_ref();
         let server_addr = request.server_addr.clone();
         state.servers.insert(
             server_addr.clone(),
@@ -66,6 +68,7 @@ impl SingleNodeMeta {
                 worst_shard_state_penalty: 0,
                 freeze_reason: FreezeReason::Unspecified,
                 server_addr: request.server_addr,
+                grpc_addr: request.grpc_addr,
                 node_id: request.node_id,
                 location: request.location,
                 // Re-declared on every registration rather than merged: a
@@ -103,12 +106,17 @@ impl SingleNodeMeta {
             MetaEntityState::Normal,
             now,
         );
-        record_topology_event(
+        let topology_version = record_topology_event(
             &mut state,
             "register_server",
             format!("server:{server_addr}"),
             "state=normal",
         );
+        if grpc_changed {
+            for table in state.tables.values_mut() {
+                table.info.topology_version = topology_version;
+            }
+        }
         AckResponse {
             status: Status::ok(),
         }

@@ -474,6 +474,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "quiet".to_string(),
@@ -550,6 +551,7 @@ mod tests {
 
     fn server_record(addr: &str, serving: &[(ShardId, &str)]) -> ServerMetaInfo {
         ServerMetaInfo {
+            grpc_addr: None,
             registered_at_ms: 0,
             reported_record_count: 0,
             reported_storage_bytes: 0,

@@ -1906,6 +1906,7 @@ fn verify_proxy_route_quarantine_recovery() {
     let meta = SingleNodeMeta::default();
     let bad_server = "127.0.0.1:1".to_string();
     meta.register_server(RegisterServerRequest {
+        grpc_addr: None,
         registered_at_ms: 0,
         numa_nodes: Vec::new(),
         server_addr: bad_server.clone(),
@@ -1947,6 +1948,7 @@ fn verify_proxy_route_quarantine_recovery() {
     std::thread::sleep(Duration::from_millis(10));
 
     meta.register_server(RegisterServerRequest {
+        grpc_addr: None,
         registered_at_ms: 0,
         numa_nodes: Vec::new(),
         server_addr: server_addr.clone(),
@@ -2070,6 +2072,7 @@ fn verify_proxy_topology_churn_convergence() {
 
     let meta = SingleNodeMeta::default();
     meta.register_server(RegisterServerRequest {
+        grpc_addr: None,
         registered_at_ms: 0,
         numa_nodes: Vec::new(),
         server_addr: server_a.clone(),
@@ -2124,6 +2127,7 @@ fn verify_proxy_topology_churn_convergence() {
     }
 
     meta.register_server(RegisterServerRequest {
+        grpc_addr: None,
         registered_at_ms: 0,
         numa_nodes: Vec::new(),
         server_addr: server_b.clone(),
@@ -2252,10 +2256,12 @@ fn verify_client_partition_set_route_cache() {
                                 primary: Some(primary_for_meta.clone()),
                                 replicas: vec![primary_for_meta.clone(), replica_for_meta.clone()],
                                 primary_endpoint: Some(ServerEndpoint {
+                                    grpc_addr: None,
                                     server_addr: primary_for_meta.clone(),
                                     location: "zone-a".to_string(),
                                 }),
                                 replica_endpoints: vec![ServerEndpoint {
+                                    grpc_addr: None,
                                     server_addr: replica_for_meta.clone(),
                                     location: "zone-b".to_string(),
                                 }],
@@ -2268,6 +2274,7 @@ fn verify_client_partition_set_route_cache() {
                                 primary: Some(replica_for_meta.clone()),
                                 replicas: vec![replica_for_meta.clone()],
                                 primary_endpoint: Some(ServerEndpoint {
+                                    grpc_addr: None,
                                     server_addr: replica_for_meta.clone(),
                                     location: "zone-b".to_string(),
                                 }),
@@ -2743,15 +2750,18 @@ fn verify_client_deployment_placement_routing() {
                             primary: Some(primary_for_meta.clone()),
                             replicas: vec![primary_for_meta.clone(), replica_for_meta.clone()],
                             primary_endpoint: Some(ServerEndpoint {
+                                grpc_addr: None,
                                 server_addr: primary_for_meta.clone(),
                                 location: "zone-primary".to_string(),
                             }),
                             replica_endpoints: vec![
                                 ServerEndpoint {
+                                    grpc_addr: None,
                                     server_addr: primary_for_meta.clone(),
                                     location: "zone-primary".to_string(),
                                 },
                                 ServerEndpoint {
+                                    grpc_addr: None,
                                     server_addr: replica_for_meta.clone(),
                                     location: "zone-local".to_string(),
                                 },
@@ -2809,6 +2819,7 @@ fn verify_metaserver_scheduler_control_plane() {
         (3, "127.0.0.1:27113", "zone-c"),
     ] {
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: addr.to_string(),
