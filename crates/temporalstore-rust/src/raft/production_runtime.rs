@@ -463,6 +463,7 @@ impl ProductionRaftRuntime {
         let majority_size = self.options.nodes.len() / 2 + 1;
         let handle = thread::spawn(move || {
             let mut last_heartbeat = InstantCompat::now();
+            let mut first_heartbeat_peer = 0;
             let mut last_tick = InstantCompat::now();
             let mut last_contact_epoch = cluster.leader_contact_epoch();
             let mut silent_ticks = 0u64;
@@ -569,14 +570,20 @@ impl ProductionRaftRuntime {
                             rpc_options,
                             Some(auth_token.clone()),
                         );
-                        let mut sent = 0;
+                        let mut remaining_entries = max_catchup_entries_per_heartbeat;
                         let mut reached = 1usize; // self
-                        for target_id in &peer_ids {
-                            if sent >= max_catchup_entries_per_heartbeat {
-                                break;
-                            }
-                            let request = match cluster.build_append_entries_request(*target_id)
-                            {
+                        // Rotate who spends the catch-up allowance first. Every peer still
+                        // receives a consistency probe when the allowance is exhausted.
+                        let peers = peer_ids
+                            .iter()
+                            .cycle()
+                            .skip(first_heartbeat_peer)
+                            .take(peer_ids.len());
+                        first_heartbeat_peer = (first_heartbeat_peer + 1) % peer_ids.len().max(1);
+                        for target_id in peers {
+                            let request = match cluster.build_capped_append_entries_request(
+                                *target_id, remaining_entries,
+                            ) {
                                 Ok(request) => request,
                                 Err(err) => {
                                     // Skipping here is how a peer silently stops being replicated
@@ -590,7 +597,7 @@ impl ProductionRaftRuntime {
                                     continue;
                                 }
                             };
-                            let entry_count = request.entries.len() as u64;
+                            remaining_entries -= request.entries.len() as u64;
                             match transport.append_entries(request) {
                                 Ok(response) => {
                                     let success = response.success;
@@ -600,9 +607,7 @@ impl ProductionRaftRuntime {
                                     peer_failures.insert(*target_id, 0);
                                     reached += 1;
                                     let _ = cluster.set_alive(*target_id, true);
-                                    if success {
-                                        sent += entry_count.max(1);
-                                    } else if peer_term > 0 {
+                                    if !success && peer_term > 0 {
                                         // A peer that has moved to a newer term has seen a
                                         // different leader; stand down rather than keep
                                         // appending as a superseded leader.
@@ -611,6 +616,7 @@ impl ProductionRaftRuntime {
                                     }
                                 }
                                 Err(_) => {
+                                    let _ = cluster.record_append_entries_send_failure(*target_id);
                                     let failures =
                                         peer_failures.entry(*target_id).or_insert(0);
                                     *failures = failures.saturating_add(1);

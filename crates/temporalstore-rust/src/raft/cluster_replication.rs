@@ -107,6 +107,14 @@ impl RaftCluster {
         &self,
         target_id: RaftNodeId,
     ) -> Result<AppendEntriesRequest, RaftError> {
+        self.build_capped_append_entries_request(target_id, u64::MAX)
+    }
+
+    pub(super) fn build_capped_append_entries_request(
+        &self,
+        target_id: RaftNodeId,
+        max_entries: u64,
+    ) -> Result<AppendEntriesRequest, RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         let entry_limit = inner.config.max_inflights_replicate.max(1);
         let byte_limit = inner.config.max_memory_replicate_log_bytes.max(1);
@@ -140,7 +148,7 @@ impl RaftCluster {
             // do not apply to it. This is the heartbeat -- and the probe a newly promoted
             // leader sends to find out where a follower really is. Blocking it leaves the
             // new leader unable to contact anyone, which reads as a leaderless shard.
-            let carries_entries = target.pipeline_state.next_index <= leader_last_index;
+            let carries_entries = max_entries != 0 && target.pipeline_state.next_index <= leader_last_index;
             if carries_entries
                 && (target.pipeline_state.inflight_entries >= entry_limit
                     || target.pipeline_state.inflight_bytes >= byte_limit)
@@ -224,7 +232,7 @@ impl RaftCluster {
             (leader.log.len() - first_unsent) as u64,
         );
         for entry in leader.log[first_unsent..].iter() {
-            if entries.len() as u64 >= available_entries {
+            if entries.len() as u64 >= available_entries.min(max_entries) {
                 break;
             }
             let entry_bytes = command_size_bytes(&entry.command);
@@ -257,10 +265,6 @@ impl RaftCluster {
             inflight_bytes = inflight_bytes.saturating_add(entry_bytes);
             entries.push(entry.clone());
         }
-        let inflight_bytes = entries
-            .iter()
-            .map(|entry| command_size_bytes(&entry.command))
-            .sum();
         if let Some(target) = inner.nodes.get_mut(&target_id) {
             target.pipeline_state.append_accepted =
                 target.pipeline_state.append_accepted.saturating_add(1);
@@ -622,9 +626,7 @@ impl RaftCluster {
             node.commit_index = node
                 .commit_index
                 .max(leader_commit.min(last_new_entry_index));
-            // Reported match_index reflects the follower's WHOLE log tail (how far its log
-            // now matches the leader after this append), independent of the commit clamp.
-            let last_index = node_last_log_or_snapshot_index(node);
+            // Only the prefix named by this request was checked against the leader.
             if node.replica_role.can_serve_data() {
                 node.pipeline_state.apply_inflight_tasks =
                     node.pipeline_state.apply_inflight_tasks.saturating_add(1);
@@ -665,7 +667,7 @@ impl RaftCluster {
                 .pipeline_state
                 .pre_vote_rejections
                 .saturating_add(u64::from(received_entries == 0 && received_bytes == 0));
-            (node.current_term, last_index)
+            (node.current_term, last_new_entry_index)
         };
         inner.leader_id = leader_id;
         // Proof of life from the leader. A follower's timer loop diffs this to decide

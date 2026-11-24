@@ -1313,7 +1313,14 @@ fn append_entries_commit_clamps_to_last_new_entry_not_whole_log_tail() {
     // The real leader now re-sends a matching-term entry 4 with a HIGH leader_commit (6).
     // Entry 4 matches by term so append is a no-op; the divergent entry 5 survives in the
     // log. commitIndex must clamp to 4 (this batch's last new entry), NOT 5 (whole-log tail).
-    seed(5, 3, 1, vec![entry(3, 4, "k4-stale")], 6);
+    let reply = seed(5, 3, 1, vec![entry(3, 4, "k4-stale")], 6);
+    assert!(reply.success);
+    assert_eq!(reply.match_index, 4);
+
+    let heartbeat = seed(5, 4, 3, Vec::new(), 6);
+    assert!(heartbeat.success);
+    assert_eq!(heartbeat.match_index, 4);
+    assert_eq!(cluster.local_status(3).unwrap().last_log_index, 5);
 
     assert_eq!(
         cluster.commit_index(3).unwrap(),
