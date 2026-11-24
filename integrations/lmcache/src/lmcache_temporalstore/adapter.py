@@ -478,22 +478,27 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         self, task_id: int, keys: list[ObjectKey], objects: list[MemoryObj]
     ) -> None:
         bitmap = Bitmap(len(keys))
+        loaded = 0
         try:
+            positions = []
+            items = []
             for index, (key, obj) in enumerate(zip(keys, objects)):
                 try:
                     destination = memoryview(obj.byte_array).cast("B")[:obj.get_size()]
-                    if destination.readonly:
-                        continue
-                    if self._blob.get_into(self._key_names(key)[0], destination):
-                        bitmap.set(index)
-                        with self._lock:
-                            self._loads += 1
+                    if not destination.readonly:
+                        items.append((self._key_names(key)[0], destination))
+                        positions.append(index)
                 except Exception:
-                    logger.exception("TemporalStore L2 load failed")
+                    logger.exception("TemporalStore L2 load destination failed")
+            for index, found in zip(positions, self._blob.get_many_into(items)):
+                if found:
+                    bitmap.set(index)
+                    loaded += 1
         except Exception:
             logger.exception("TemporalStore L2 load task failed")
         finally:
             with self._lock:
+                self._loads += loaded
                 self._done_load[task_id] = bitmap
             self._load_event.notify()
 

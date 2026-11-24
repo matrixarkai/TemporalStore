@@ -9,10 +9,14 @@ import json
 import logging
 from select import select
 from threading import Lock
+from time import monotonic
 from urllib.parse import quote, urlsplit
 
 
 logger = logging.getLogger(__name__)
+_READ_BATCH_KEYS = 32
+_READ_BATCH_BYTES = 512 * 1024 * 1024
+_BATCH_READ_RECHECK_SECONDS = 30
 
 
 class BlobClient:
@@ -34,6 +38,7 @@ class BlobClient:
         self._reuse_read_connection = reuse_read_connection
         self._read_lock = Lock() if reuse_read_connection else nullcontext()
         self._read_connection: http.client.HTTPConnection | None = None
+        self._batch_read_retry_at = 0.0
         self._reuse_mutation_connection = reuse_mutation_connection
         self._mutation_lock = Lock() if reuse_mutation_connection else nullcontext()
         self._mutation_connection: http.client.HTTPConnection | None = None
@@ -96,22 +101,41 @@ class BlobClient:
     def _blob_path(key: str) -> str:
         return f"/blob/{quote(key, safe='/')}"
 
-    def _read_request(self, key: str):
-        path = self._blob_path(key)
+    def _read_request(
+        self, method: str, path: str, body: bytes | None = None,
+        content_type: str = "application/octet-stream",
+    ):
         connection, self._read_connection = self._read_connection, None
         if connection is not None:
             try:
-                return self._request("GET", path, connection=connection)
+                return self._request(
+                    method, path, body, connection=connection, content_type=content_type,
+                )
             except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-                # The server can close an idle socket before the next GET.
-                # A read may retry once before receiving a response.
+                # Reads can reconnect once when a reused socket is closed.
                 pass
-        return self._request("GET", path)
+        return self._request(method, path, body, content_type=content_type)
+
+    def _finish_read(self, connection: http.client.HTTPConnection, consumed: bool) -> None:
+        if consumed and self._reuse_read_connection and connection.sock is not None:
+            self._read_connection = connection
+        else:
+            connection.close()
+
+    @staticmethod
+    def _read_into(response: http.client.HTTPResponse, destination: memoryview) -> bool:
+        offset = 0
+        while offset < len(destination):
+            count = response.readinto(destination[offset:])
+            if not count:
+                return False
+            offset += count
+        return True
 
     def get_into(self, key: str, destination: memoryview) -> bool:
         with self._read_lock:
             for candidate in (key, f"anonymous/{key}"):
-                connection, response = self._read_request(candidate)
+                connection, response = self._read_request("GET", self._blob_path(candidate))
                 consumed = False
                 try:
                     with response:
@@ -125,24 +149,75 @@ class BlobClient:
                         length = response.getheader("Content-Length")
                         if length is None or int(length) != len(destination):
                             return False
-                        offset = 0
-                        while offset < len(destination):
-                            count = response.readinto(destination[offset:])
-                            if not count:
-                                return False
-                            offset += count
-                        consumed = True
-                        return True
+                        consumed = self._read_into(response, destination)
+                        return consumed
                 finally:
-                    if consumed and self._reuse_read_connection and connection.sock is not None:
-                        self._read_connection = connection
-                    else:
-                        connection.close()
+                    self._finish_read(connection, consumed)
         return False
+
+    def _read_batch(self, items: list[tuple[str, memoryview]]) -> bytes | None:
+        with self._read_lock:
+            if monotonic() < self._batch_read_retry_at:
+                return None
+            body = json.dumps([{"key": key, "length": len(out)} for key, out in items]).encode()
+            connection, response = self._read_request(
+                "POST", "/batch_read_blobs", body, "application/json",
+            )
+            consumed = False
+            try:
+                with response:
+                    if response.status in (404, 405, 501):
+                        response.read()
+                        consumed = True
+                        # Recheck periodically so rolling upgrades can enable batching.
+                        self._batch_read_retry_at = monotonic() + _BATCH_READ_RECHECK_SECONDS
+                        return None
+                    if response.status != 200:
+                        response.read()
+                        raise OSError(f"blob batch read returned HTTP {response.status}")
+                    statuses = response.read(len(items))
+                    if len(statuses) != len(items) or any(status not in (0, 1, 2) for status in statuses):
+                        raise OSError("invalid blob batch read status table")
+                    length = len(statuses) + sum(
+                        len(out) for status, (_, out) in zip(statuses, items) if status == 1
+                    )
+                    if int(response.getheader("Content-Length", "-1")) != length:
+                        raise OSError("invalid blob batch read length")
+                    for status, (_, destination) in zip(statuses, items):
+                        if status == 1 and not self._read_into(response, destination):
+                            raise OSError("incomplete blob batch read")
+                    consumed = True
+                    return statuses
+            finally:
+                self._finish_read(connection, consumed)
+
+    def get_many_into(self, items: list[tuple[str, memoryview]]) -> list[bool]:
+        found = []
+        for offset in range(0, len(items), _READ_BATCH_KEYS):
+            group = items[offset:offset + _READ_BATCH_KEYS]
+            statuses = None
+            if len(group) > 1 and sum(len(out) for _, out in group) <= _READ_BATCH_BYTES:
+                try:
+                    statuses = self._read_batch(group)
+                except (OSError, ValueError, http.client.HTTPException):
+                    logger.exception("TemporalStore L2 blob read batch failed")
+                    found.extend([False] * len(group))
+                    continue
+            for status, (key, destination) in zip(statuses or bytes(len(group)), group):
+                if status == 0:
+                    try:
+                        found.append(self.get_into(key, destination))
+                    except (OSError, ValueError, http.client.HTTPException):
+                        logger.exception("TemporalStore L2 blob read failed")
+                        found.append(False)
+                else:
+                    found.append(status == 1)
+        return found
 
     def close(self) -> None:
         with self._read_lock:
             connection, self._read_connection = self._read_connection, None
+            self._batch_read_retry_at = 0.0
             if connection is not None:
                 connection.close()
         with self._mutation_lock:

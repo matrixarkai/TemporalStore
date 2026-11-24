@@ -6,7 +6,9 @@ use the datanode command protocol through the existing Feast TemporalStore
 client. The adapter also uses `DELETE /blob/<key>` to reclaim payloads when it
 evicts entries. Explicit batch deletion uses the datanode's
 `POST /batch_delete_blobs` route when available and falls back to individual
-DELETE requests on older datanodes.
+DELETE requests on older datanodes. The adapter also uses
+`POST /batch_read_blobs` to stream up to 32 local payloads into their destination
+buffers. It uses the single-blob route for local misses and older datanodes.
 
 Install the Feast integration and this package from the same TemporalStore
 checkout, alongside an LMCache installation with its native module available:

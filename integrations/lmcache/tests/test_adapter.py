@@ -115,6 +115,15 @@ class FakeBlob:
         destination[:] = payload
         return True
 
+    def get_many_into(self, items):
+        found = []
+        for key, destination in items:
+            try:
+                found.append(self.get_into(key, destination))
+            except OSError:
+                found.append(False)
+        return found
+
     def delete(self, name):
         self.values.pop(name, None)
 
