@@ -5329,6 +5329,7 @@ impl RaftCluster {
         };
         let mut successful_targets = Vec::new();
         let mut failed_targets = Vec::new();
+        let mut rejected_targets = Vec::new();
         let mut fallback_targets = Vec::new();
         let mut live_requests = Vec::new();
         let mut live_target_ids = Vec::new();
@@ -5392,6 +5393,7 @@ impl RaftCluster {
                 }
                 Ok(response) => {
                     let _ = self.record_append_entries_response(target_id, &response);
+                    rejected_targets.push(target_id);
                     failed_targets.push(target_id);
                 }
                 Err(_) => {
@@ -5411,6 +5413,7 @@ impl RaftCluster {
                 Ok(response) => {
                     let _ = self.record_append_entries_response(target_id, &response);
                     if !failed_targets.contains(&target_id) {
+                        rejected_targets.push(target_id);
                         failed_targets.push(target_id);
                     }
                 }
@@ -5423,7 +5426,23 @@ impl RaftCluster {
             }
         }
         failed_targets.extend(fallback_targets);
-        if replicated < required {
+        let timer_active = deployed && self.commit_timers.load(Ordering::Acquire) > 0;
+        if replicated < required
+            && timer_active
+            && self.proposal_log_is_uncompacted(leader_id, entry.term)?
+        {
+            // Every entry is still available. A reachable follower with a mismatched
+            // prefix gets an AppendEntries retry from its updated next index. The
+            // timer handles unreachable peers and any remaining replication lag.
+            for target_id in rejected_targets {
+                if replicated >= required || Instant::now() >= replication_deadline {
+                    break;
+                }
+                if self.retry_retained_proposal(target_id, leader_id, &entry, transport)? {
+                    replicated += 1;
+                }
+            }
+        } else if replicated < required {
             for target_id in failed_targets {
                 if transport
                     .install_snapshot(self.build_install_snapshot_request(target_id)?)
@@ -5546,6 +5565,58 @@ impl RaftCluster {
         Ok(leader_response)
     }
 
+
+    fn proposal_log_is_uncompacted(
+        &self,
+        leader_id: RaftNodeId,
+        term: u64,
+    ) -> Result<bool, RaftError> {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let leader = inner
+            .nodes
+            .get(&leader_id)
+            .filter(|node| {
+                inner.leader_id == leader_id
+                    && node.role == RaftRole::Leader
+                    && node.current_term == term
+            })
+            .ok_or(RaftError::NotLeader { node_id: leader_id })?;
+        Ok(leader.installed_snapshot.is_none()
+            && leader.log.first().is_some_and(|entry| entry.index == 1))
+    }
+
+    fn retry_retained_proposal<T: RaftTransport>(
+        &self,
+        target_id: RaftNodeId,
+        leader_id: RaftNodeId,
+        entry: &RaftLogEntry,
+        transport: &T,
+    ) -> Result<bool, RaftError> {
+        let request = self.build_append_entries_request(target_id)?;
+        if request.leader_id != leader_id || request.term != entry.term {
+            return Err(RaftError::NotLeader { node_id: leader_id });
+        }
+        let commit = (request.term, request.leader_commit);
+        let response = match transport.append_entries(request) {
+            Ok(response) => response,
+            Err(_) => {
+                let _ = self.record_append_entries_send_failure(target_id);
+                return Ok(false);
+            }
+        };
+        let _ = self.record_append_response_with_commit(target_id, &response, Some(commit));
+        let counts_for_quorum = self
+            .inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .nodes
+            .get(&target_id)
+            .is_some_and(|node| node.replica_role.participates_in_quorum());
+        Ok(response.success
+            && response.term == entry.term
+            && response.match_index >= entry.index
+            && counts_for_quorum)
+    }
 
 
 

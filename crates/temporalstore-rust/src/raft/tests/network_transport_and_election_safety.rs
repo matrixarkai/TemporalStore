@@ -1298,6 +1298,63 @@ fn production_raft_mode_uses_temporal_raft_ready_path_when_adapter_is_enabled() 
 }
 
 #[test]
+fn deployed_quorum_recovery_retries_a_retained_prefix_without_installing_a_snapshot() {
+    let leader = RaftCluster::new_single_shard(7, [1, 2]);
+    leader.set_local_node_id(1);
+    let follower = RaftCluster::new_single_shard(7, [1, 2]);
+    follower.set_local_node_id(2);
+    let transport = FlakyTransport {
+        cluster: follower,
+        failures_left: Arc::new(Mutex::new(0)),
+    };
+    let write = |key: &str| Command::StringSet {
+        key: key.to_string(),
+        value: vec![0, 255],
+    };
+    leader.propose_distributed(write("first"), &transport).unwrap();
+
+    // Restore an empty follower with the same identity. The first append
+    // will be rejected at its missing predecessor and drive next_index back.
+    let restored = RaftCluster::new_single_shard(7, [1, 2]);
+    restored.set_local_node_id(2);
+    let transport = FlakyTransport {
+        cluster: restored.clone(),
+        failures_left: Arc::new(Mutex::new(0)),
+    };
+    let _timer = leader.register_data_commit_timer();
+    leader.propose_distributed(write("second"), &transport).unwrap();
+    let follower = restored.local_status(2).unwrap();
+    assert_eq!(follower.last_log_index, 2);
+    assert_eq!(follower.commit_index, 1);
+    assert!(restored.inner.read().unwrap().nodes[&2].installed_snapshot.is_none());
+}
+
+#[test]
+fn deployed_quorum_recovery_defers_an_unreachable_uncompacted_peer() {
+    let leader = RaftCluster::new_single_shard(7, [1, 2]);
+    leader.set_local_node_id(1);
+    let follower = RaftCluster::new_single_shard(7, [1, 2]);
+    follower.set_local_node_id(2);
+    let transport = FlakyTransport {
+        cluster: follower.clone(),
+        failures_left: Arc::new(Mutex::new(1)),
+    };
+    let _timer = leader.register_data_commit_timer();
+    let result = leader.propose_distributed(
+        Command::StringSet { key: "during-loss".to_owned(), value: vec![0, 255] },
+        &transport,
+    );
+    assert!(matches!(result, Err(RaftError::NoMajority { live: 1, required: 2 })));
+    assert_eq!(leader.commit_index(1).unwrap(), 0);
+    assert_eq!(follower.local_status(2).unwrap().last_log_index, 0);
+
+    let request = leader.build_capped_append_entries_request(2, 1).unwrap();
+    assert_eq!(request.entries.len(), 1);
+    assert!(transport.append_entries(request).unwrap().success);
+    assert_eq!(follower.local_status(2).unwrap().last_log_index, 1);
+}
+
+#[test]
 fn timer_delivers_commit_after_foreground_append_quorum() {
     let leader = RaftCluster::new_single_shard(7, [1, 2]);
     leader.set_local_node_id(1);
