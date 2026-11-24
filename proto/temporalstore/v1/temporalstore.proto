@@ -15,6 +15,38 @@ service TemporalStoreService {
   rpc GetClientPreflight(ClientPreflightRequest) returns (ClientPreflightResponse);
 }
 
+// Read-only topology lookup for table-scoped SDK clients.
+service MetadataService {
+  rpc GetTableTopology(MetadataTableTopologyRequest) returns (MetadataTableTopologyResponse);
+}
+
+message MetadataTableTopologyRequest {
+  string namespace_name = 1;
+  string table_name = 2;
+  string client_location = 3;
+  uint64 old_topology_version = 4;
+}
+
+message MetadataTableTopologyResponse {
+  Status status = 1;
+  uint64 table_id = 2;
+  uint64 topology_version = 3;
+  uint64 first_shard_id = 4;
+  uint64 shard_count = 5;
+  bool unchanged = 6;
+  repeated MetadataShardRoute shards = 7;
+}
+
+message MetadataShardRoute {
+  uint64 shard_id = 1;
+  optional string primary_addr = 2;
+  optional string primary_grpc = 3;
+  repeated string replica_addrs = 4;
+  repeated string replica_grpc = 5;
+  uint64 load_version = 6;
+  bool uses_raft_route = 7;
+}
+
 // ProxyService is the Rust-native proxy RPC contract. It intentionally does
 // not claim legacy wire compatibility; existing legacy callers must migrate
 // through the Rust-native HTTP/RESP/tonic surfaces.

@@ -210,3 +210,4 @@ class TableValueBackend(ValueBackend):
             client.close()
         if self._proxy is not None:
             self._proxy.close()
+        self._metadata.close()

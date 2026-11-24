@@ -52,12 +52,12 @@ class TableFeastClient(TemporalStoreClient):
 
     def __init__(self, meta_url, namespace, table_name, *limits):
         super().__init__(*limits)
-        metadata = MetadataClient(
+        self._metadata = MetadataClient(
             meta_url, credential_provider=lambda: os.environ.get("TS_META_ADMIN_TOKEN"),
             timeout_seconds=self.timeout_seconds,
         )
         self._table = TableClient(
-            metadata, namespace, table_name, timeout_seconds=self.timeout_seconds,
+            self._metadata, namespace, table_name, timeout_seconds=self.timeout_seconds,
         )
         self._interleaved_conditional_write_supported = False
 
@@ -149,4 +149,5 @@ class TableFeastClient(TemporalStoreClient):
 
     def close(self):
         self._table.close()
+        self._metadata.close()
         super().close()
