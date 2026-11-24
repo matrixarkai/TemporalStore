@@ -42,6 +42,30 @@ impl DataNodeExecutor {
 }
 
 impl TemporalStoreSdkExecutor for DataNodeExecutor {
+    fn execute_checked_sdk(&self, request: ExecuteRequest, load_version: u64) -> ExecuteResponse {
+        self.runtime
+            .with_load_version(request.shard_id, load_version, || self.execute_sdk(request))
+            .unwrap_or_else(|status| ExecuteResponse {
+                status,
+                response: CommandResponse::Empty,
+            })
+    }
+
+    fn batch_execute_checked_sdk(
+        &self,
+        request: BatchExecuteRequest,
+        load_version: u64,
+    ) -> BatchExecuteResponse {
+        self.runtime
+            .with_load_version(request.shard_id, load_version, || {
+                self.batch_execute_sdk(request)
+            })
+            .unwrap_or_else(|status| BatchExecuteResponse {
+                status,
+                responses: Vec::new(),
+            })
+    }
+
     fn execute_sdk(&self, request: ExecuteRequest) -> ExecuteResponse {
         let Some(raft) = &self.raft else {
             return self.runtime.execute(request);

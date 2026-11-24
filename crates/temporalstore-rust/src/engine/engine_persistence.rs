@@ -1230,7 +1230,7 @@ impl TemporalEngine {
         })
     }
 
-    pub(super) fn validate_load_version(
+    pub(crate) fn validate_load_version(
         &self,
         shard_id: ShardId,
         load_version: u64,

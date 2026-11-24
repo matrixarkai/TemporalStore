@@ -58,8 +58,6 @@ class TableClient:
         return topology.shard_for_key(key)
 
     def _channel_for(self, shard: Shard) -> CommandClient:
-        if shard.load_version:
-            raise MetadataError("fencing_required", f"shard {shard.shard_id} requires checked execution")
         if not shard.primary_grpc:
             raise MetadataError("no_grpc_primary", f"shard {shard.shard_id} has no gRPC primary")
         with self._lock:
@@ -71,9 +69,18 @@ class TableClient:
                 self._channels[shard.primary_grpc] = channel
             return channel
 
+    def _invalidate_stale_route(self, status: pb.Status) -> None:
+        if status.code == "load_version_mismatch":
+            with self._lock:
+                self._expires_at = 0.0
+
     def execute(self, command: pb.Command) -> pb.ExecuteResponse:
         shard = self._shard_for_command(self._current_topology(), command)
-        return self._channel_for(shard).execute(shard.shard_id, command)
+        response = self._channel_for(shard).execute(
+            shard.shard_id, command, load_version=shard.load_version or None,
+        )
+        self._invalidate_stale_route(response.status)
+        return response
 
     def batch_execute(self, commands: Iterable[pb.Command]) -> list[pb.CommandResponse]:
         commands = list(commands)
@@ -89,8 +96,9 @@ class TableClient:
         indexed = []
         for shard, group in groups.items():
             response = channels[shard].batch_execute(
-                shard.shard_id, (command for _, command in group),
+                shard.shard_id, (command for _, command in group), load_version=shard.load_version or None,
             )
+            self._invalidate_stale_route(response.status)
             if len(response.responses) != len(group):
                 if not response.status.ok:
                     raise MetadataError(response.status.code, response.status.message)

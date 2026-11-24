@@ -31,14 +31,22 @@ class CommandClient:
         self._service = TemporalStoreServiceStub(self._channel)
         self._timeout = timeout_seconds
 
-    def execute(self, shard_id: int, command: pb.Command) -> pb.ExecuteResponse:
+    def execute(
+        self, shard_id: int, command: pb.Command, *, load_version: Optional[int] = None,
+    ) -> pb.ExecuteResponse:
         request = pb.ExecuteRequest(shard_id=shard_id, command=command)
+        if load_version is not None:
+            request.load_version = load_version
+            return self._service.ExecuteChecked(request, timeout=self._timeout)
         return self._service.Execute(request, timeout=self._timeout)
 
     def batch_execute(
-        self, shard_id: int, commands: Iterable[pb.Command],
+        self, shard_id: int, commands: Iterable[pb.Command], *, load_version: Optional[int] = None,
     ) -> pb.BatchExecuteResponse:
         request = pb.BatchExecuteRequest(shard_id=shard_id, commands=commands)
+        if load_version is not None:
+            request.load_version = load_version
+            return self._service.BatchExecuteChecked(request, timeout=self._timeout)
         return self._service.BatchExecute(request, timeout=self._timeout)
 
     def open_table(self, namespace: str, table: str, location: str = "") -> pb.OpenTableResponse:

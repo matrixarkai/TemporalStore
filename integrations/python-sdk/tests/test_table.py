@@ -20,7 +20,7 @@ class TableClientTest(unittest.TestCase):
 
         def channel(target, **_):
             client = channels.setdefault(target, Mock())
-            client.batch_execute.side_effect = lambda shard, batch: commands.BatchExecuteResponse(
+            client.batch_execute.side_effect = lambda shard, batch, **_: commands.BatchExecuteResponse(
                 responses=[commands.CommandResponse(
                     value=f"{shard}/{request.string_get.key}".encode(),
                 ) for request in batch],
@@ -39,15 +39,44 @@ class TableClientTest(unittest.TestCase):
         for client in channels.values():
             client.close.assert_called_once_with()
 
-    def test_fenced_shard_is_rejected_before_any_commands_are_sent(self):
+    def test_checked_batches_use_the_topology_load_version(self):
         metadata = Mock()
         metadata.table_topology.return_value = TableTopology(
             "kvcache", "model", 1, 73, 2,
             (Shard(73, None, (), 0, "primary-a"), Shard(74, None, (), 19, "primary-b")),
         )
         with patch("temporalstore_sdk.table.CommandClient") as channel:
+            channel.return_value.batch_execute.return_value = commands.BatchExecuteResponse(
+                responses=[commands.CommandResponse()],
+            )
             with TableClient(metadata, "kvcache", "model") as table:
-                with self.assertRaises(MetadataError) as raised:
-                    table.batch_execute([get(""), get("123456789")])
-                self.assertEqual(raised.exception.code, "fencing_required")
-                channel.return_value.batch_execute.assert_not_called()
+                table.batch_execute([get("123456789")])
+                channel.assert_called_once_with("primary-b", timeout_seconds=10.0)
+                self.assertEqual(channel.return_value.batch_execute.call_args.args[0], 74)
+                self.assertEqual(channel.return_value.batch_execute.call_args.kwargs,
+                                 {"load_version": 19})
+
+    def test_stale_fence_expires_route_without_retrying_the_failed_write(self):
+        metadata = Mock()
+        metadata.table_topology.side_effect = [
+            TableTopology("kvcache", "model", 1, 73, 1, (Shard(73, None, (), 7, "primary-a"),)),
+            TableTopology("kvcache", "model", 2, 73, 1, (Shard(73, None, (), 8, "primary-a"),)),
+        ]
+        with patch("temporalstore_sdk.table.CommandClient") as channel:
+            channel.return_value.batch_execute.side_effect = [
+                commands.BatchExecuteResponse(
+                    status=commands.Status(code="load_version_mismatch"),
+                ),
+                commands.BatchExecuteResponse(
+                    responses=[commands.CommandResponse(count=1)],
+                ),
+            ]
+            with TableClient(metadata, "kvcache", "model") as table:
+                with self.assertRaises(MetadataError) as stale:
+                    table.batch_execute([get("a")])
+                self.assertEqual(stale.exception.code, "load_version_mismatch")
+                self.assertEqual(channel.return_value.batch_execute.call_count, 1)
+                self.assertEqual(table.batch_execute([get("a")])[0].count, 1)
+                self.assertEqual(metadata.table_topology.call_count, 2)
+                calls = channel.return_value.batch_execute.call_args_list
+                self.assertEqual([call.kwargs["load_version"] for call in calls], [7, 8])

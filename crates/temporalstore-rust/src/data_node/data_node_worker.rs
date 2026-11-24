@@ -163,6 +163,9 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
             DataNodeTaskOutput::Execute(response)
         }
         TaskRequest::CheckedExecute(request) => {
+            let _generation = inner.shard_generation_lock(request.shard_id)
+                .read()
+                .expect("shard generation lock poisoned");
             if let Err(status) = validate_foreground_write_allowed_inner(
                 inner,
                 request.shard_id,

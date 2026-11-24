@@ -8,6 +8,8 @@ package temporalstore.v1;
 service TemporalStoreService {
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
   rpc BatchExecute(BatchExecuteRequest) returns (BatchExecuteResponse);
+  rpc ExecuteChecked(ExecuteRequest) returns (ExecuteResponse);
+  rpc BatchExecuteChecked(BatchExecuteRequest) returns (BatchExecuteResponse);
   rpc OpenTable(OpenTableRequest) returns (OpenTableResponse);
   rpc SyncTopology(SyncTopologyRequest) returns (SyncTopologyResponse);
   rpc GetClientPreflight(ClientPreflightRequest) returns (ClientPreflightResponse);
@@ -41,6 +43,7 @@ message ExecuteRequest {
   uint64 shard_id = 1;
   uint64 trace_id = 2;
   Command command = 3;
+  optional uint64 load_version = 4;
 }
 
 message ExecuteResponse {
@@ -53,6 +56,7 @@ message BatchExecuteRequest {
   uint64 shard_id = 1;
   uint64 trace_id = 2;
   repeated Command commands = 3;
+  optional uint64 load_version = 4;
 }
 
 message BatchExecuteResponse {

@@ -17,6 +17,5 @@ preserves response order for batches that span several shards.
 
 Set TS_SERVER_GRPC_BIND_ADDR on the datanodes. Set
 TS_SERVER_GRPC_ADVERTISE_ADDR when binding a wildcard address or when clients
-must use a different hostname. TableClient requires the current gRPC command
-service and a table without a nonzero load version. Checked gRPC execution is
-required before serving fenced tables.
+must use a different hostname. TableClient sends nonzero load versions to
+the checked gRPC methods, which require a datanode that supports fencing.

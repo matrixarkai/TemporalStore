@@ -17,6 +17,28 @@ use crate::{ClientError, TableOptions, TemporalStoreClient};
 pub trait TemporalStoreSdkExecutor: Send + Sync + 'static {
     fn execute_sdk(&self, request: types::ExecuteRequest) -> types::ExecuteResponse;
 
+    fn execute_checked_sdk(
+        &self,
+        _request: types::ExecuteRequest,
+        _load_version: u64,
+    ) -> types::ExecuteResponse {
+        types::ExecuteResponse {
+            status: types::Status::error("fencing_unsupported", "executor cannot check load version"),
+            response: types::CommandResponse::Empty,
+        }
+    }
+
+    fn batch_execute_checked_sdk(
+        &self,
+        _request: types::BatchExecuteRequest,
+        _load_version: u64,
+    ) -> types::BatchExecuteResponse {
+        types::BatchExecuteResponse {
+            status: types::Status::error("fencing_unsupported", "executor cannot check load version"),
+            responses: Vec::new(),
+        }
+    }
+
     fn batch_execute_sdk(
         &self,
         request: types::BatchExecuteRequest,
@@ -207,6 +229,38 @@ impl TemporalStoreTonicAdapter {
     pub fn from_arc(executor: Arc<dyn TemporalStoreSdkExecutor>) -> Self {
         Self { executor }
     }
+
+    async fn execute_command(
+        &self,
+        request: v1::ExecuteRequest,
+        load_version: Option<u64>,
+    ) -> Result<Response<v1::ExecuteResponse>, TonicStatus> {
+        let request = sdk_execute_request_to_types(request)?;
+        let executor = Arc::clone(&self.executor);
+        let response = tokio::task::spawn_blocking(move || match load_version {
+            Some(version) => executor.execute_checked_sdk(request, version),
+            None => executor.execute_sdk(request),
+        })
+        .await
+        .map_err(|_| TonicStatus::internal("command execution failed"))?;
+        Ok(Response::new(types_execute_response_to_sdk(response)))
+    }
+
+    async fn execute_batch(
+        &self,
+        request: v1::BatchExecuteRequest,
+        load_version: Option<u64>,
+    ) -> Result<Response<v1::BatchExecuteResponse>, TonicStatus> {
+        let request = sdk_batch_request_to_types(request)?;
+        let executor = Arc::clone(&self.executor);
+        let response = tokio::task::spawn_blocking(move || match load_version {
+            Some(version) => executor.batch_execute_checked_sdk(request, version),
+            None => executor.batch_execute_sdk(request),
+        })
+        .await
+        .map_err(|_| TonicStatus::internal("batch execution failed"))?;
+        Ok(Response::new(types_batch_response_to_sdk(response)))
+    }
 }
 
 #[tonic::async_trait]
@@ -215,24 +269,42 @@ impl v1::temporal_store_service_server::TemporalStoreService for TemporalStoreTo
         &self,
         request: Request<v1::ExecuteRequest>,
     ) -> Result<Response<v1::ExecuteResponse>, TonicStatus> {
-        let request = sdk_execute_request_to_types(request.into_inner())?;
-        let executor = Arc::clone(&self.executor);
-        let response = tokio::task::spawn_blocking(move || executor.execute_sdk(request))
-            .await
-            .map_err(|_| TonicStatus::internal("command execution failed"))?;
-        Ok(Response::new(types_execute_response_to_sdk(response)))
+        let request = request.into_inner();
+        if request.load_version.is_some() {
+            return Err(TonicStatus::invalid_argument("use ExecuteChecked with load_version"));
+        }
+        self.execute_command(request, None).await
     }
 
     async fn batch_execute(
         &self,
         request: Request<v1::BatchExecuteRequest>,
     ) -> Result<Response<v1::BatchExecuteResponse>, TonicStatus> {
-        let request = sdk_batch_request_to_types(request.into_inner())?;
-        let executor = Arc::clone(&self.executor);
-        let response = tokio::task::spawn_blocking(move || executor.batch_execute_sdk(request))
-            .await
-            .map_err(|_| TonicStatus::internal("batch execution failed"))?;
-        Ok(Response::new(types_batch_response_to_sdk(response)))
+        let request = request.into_inner();
+        if request.load_version.is_some() {
+            return Err(TonicStatus::invalid_argument("use BatchExecuteChecked with load_version"));
+        }
+        self.execute_batch(request, None).await
+    }
+
+    async fn execute_checked(
+        &self,
+        request: Request<v1::ExecuteRequest>,
+    ) -> Result<Response<v1::ExecuteResponse>, TonicStatus> {
+        let request = request.into_inner();
+        let version = request.load_version
+            .ok_or_else(|| TonicStatus::invalid_argument("load_version is required"))?;
+        self.execute_command(request, Some(version)).await
+    }
+
+    async fn batch_execute_checked(
+        &self,
+        request: Request<v1::BatchExecuteRequest>,
+    ) -> Result<Response<v1::BatchExecuteResponse>, TonicStatus> {
+        let request = request.into_inner();
+        let version = request.load_version
+            .ok_or_else(|| TonicStatus::invalid_argument("load_version is required"))?;
+        self.execute_batch(request, Some(version)).await
     }
 
     async fn open_table(
@@ -1858,6 +1930,7 @@ mod tests {
         let execute = ExecuteRequest {
             shard_id: 7,
             trace_id: 42,
+            load_version: None,
             command: Some(Command {
                 kind: Some(super::v1::command::Kind::StringGet(super::v1::StringGet {
                     key: "sdk-key".to_string(),
@@ -1870,6 +1943,7 @@ mod tests {
         let batch = BatchExecuteRequest {
             shard_id: 7,
             trace_id: 43,
+            load_version: None,
             commands: vec![execute.command.expect("command")],
         };
         assert_eq!(batch.commands.len(), 1);
@@ -1907,6 +1981,7 @@ mod tests {
         let set = ExecuteRequest {
             shard_id: 1,
             trace_id: 10,
+            load_version: None,
             command: Some(Command {
                 kind: Some(v1::command::Kind::StringSet(v1::StringSet {
                     key: "sdk-adapter-key".to_string(),
@@ -1925,6 +2000,7 @@ mod tests {
         let get = ExecuteRequest {
             shard_id: 1,
             trace_id: 11,
+            load_version: None,
             command: Some(Command {
                 kind: Some(v1::command::Kind::StringGet(v1::StringGet {
                     key: "sdk-adapter-key".to_string(),
@@ -1948,6 +2024,7 @@ mod tests {
             .batch_execute(Request::new(BatchExecuteRequest {
                 shard_id: 1,
                 trace_id: 12,
+                load_version: None,
                 commands: vec![
                     Command {
                         kind: Some(v1::command::Kind::StringSet(v1::StringSet {
