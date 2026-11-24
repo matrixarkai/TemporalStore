@@ -389,6 +389,21 @@ pub(super) fn read_bucket_index_value_shared(
     })
 }
 
+pub(super) fn read_bucket_index_string_length(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+) -> i64 {
+    let (start, end) = shard.routing_range();
+    let Some(address) = bucket_index_block_address(shard, "string", key, None) else {
+        return 0;
+    };
+    let bucket = super::block_routing_bucket(key, start, end);
+    super::read_string_length(cache, block_store, shard_id, &address, key, bucket).unwrap_or(0)
+}
+
 pub(super) fn read_bucket_index_value(
     cache: &MultiLayerCache,
     block_store: &BlockStore,

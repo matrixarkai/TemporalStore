@@ -306,6 +306,18 @@ fn encode_block_record_payload_inner<'a>(
     }
 }
 
+/// Read the logical size of a framed record without loading its body.
+pub(super) fn block_record_payload_length(prefix: &[u8], address: &ElementEntry) -> Option<u64> {
+    let header = parse_block_record_header(prefix, address).ok()?;
+    if address.length() != (header.header_len + header.stored_len) as u64
+        || address.block_id().is_some_and(|id| header.block_id != Some(id))
+        || (header.compression == BlockRecordCompression::Zstd && header.stored_len < 4)
+    {
+        return None;
+    }
+    Some(header.payload_len as u64)
+}
+
 pub(super) fn decode_block_record(
     record: &[u8],
     address: &ElementEntry,

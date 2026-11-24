@@ -2753,28 +2753,38 @@ impl TemporalEngine {
                 range,
             } => {
                 self.note_fast_read_recency(request.shard_id, routing_bucket);
-                // The shard has already said whether the key is there; an absent key reads nothing.
-                let bytes = match address {
-                    Some(address) => Some(read_block_shared(
-                        &self.cache,
-                        &self.block_store,
-                        request.shard_id,
-                        &address,
-                        BlockIdentity::of(request.shard_id, "string", key, None),
-                        Some(routing_bucket),
-                    )?),
-                    None => None,
-                };
                 let response = match range {
                     None => CommandResponse::Integer {
-                        value: bytes.map_or(0, |bytes| bytes.len() as i64),
+                        value: match address {
+                            Some(address) => read_string_length(
+                                &self.cache,
+                                &self.block_store,
+                                request.shard_id,
+                                &address,
+                                key,
+                                routing_bucket,
+                            )?,
+                            None => 0,
+                        },
                     },
-                    Some((start, end)) => CommandResponse::Bytes {
-                        value: bytes.map(|bytes| {
-                            let (from, to) = crate::redis::normalize_range(start, end, bytes.len());
-                            bytes[from..to].to_vec()
-                        }),
-                    },
+                    Some((start, end)) => {
+                        let value = match address {
+                            Some(address) => {
+                                let bytes = read_block_shared(
+                                    &self.cache,
+                                    &self.block_store,
+                                    request.shard_id,
+                                    &address,
+                                    BlockIdentity::of(request.shard_id, "string", key, None),
+                                    Some(routing_bucket),
+                                )?;
+                                let (from, to) = crate::redis::normalize_range(start, end, bytes.len());
+                                Some(bytes[from..to].to_vec())
+                            }
+                            None => None,
+                        };
+                        CommandResponse::Bytes { value }
+                    }
                 };
                 Some(ExecuteResponse {
                     status: Status::ok(),
@@ -10444,6 +10454,44 @@ pub fn reset_corrupt_container_block_count() {
 /// blocks and picks one out of itself by identity; handed only the object id it answers with the
 /// FIRST block of that object, which is another element's bytes rather than a miss.
 #[allow(clippy::too_many_arguments)]
+fn read_string_length(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    key: &str,
+    routing_bucket: u32,
+) -> Option<i64> {
+    // The live write path assigns this sentinel only to logical bytes carried
+    // in the WAL. Its length excludes all WAL framing and compression.
+    if address.block_slab_id() == HOT_BLOCK_SLAB_ID {
+        return Some(address.length() as i64);
+    }
+
+    let cache_key = read_block_key(shard_id, address, Some(routing_bucket));
+    if let Some(bytes) = cache.get_memory_shared(&cache_key) {
+        return Some(bytes.len() as i64);
+    }
+    if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
+        shard_write_guard::note_block_read();
+        if let Some(length) = block_store.local_block_payload_length(address) {
+            return Some(length as i64);
+        }
+    }
+
+    // Older unframed records, remote slabs and alternate WAL locators use
+    // the existing read path.
+    read_block_shared_keyed(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        BlockIdentity::of(shard_id, "string", key, None),
+        cache_key,
+    )
+    .map(|bytes| bytes.len() as i64)
+}
+
 fn read_block_shared(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
