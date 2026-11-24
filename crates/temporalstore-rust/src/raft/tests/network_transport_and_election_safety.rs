@@ -2199,7 +2199,7 @@ fn snapshot_retry_advertises_only_the_committed_prefix() {
             replication_deadline_ms: 30_000,
             ..RaftConfig::default()
         },
-    );
+    ).unwrap();
     cluster
         .propose(Command::StringSet { key: "existing".to_string(), value: vec![1] })
         .unwrap();
