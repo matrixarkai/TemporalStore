@@ -279,6 +279,26 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(adapter._entries, {keys[0]: 3})
         client.iter_batch_responses.assert_called_once()
 
+    def test_table_store_waits_for_an_elected_primary_before_sending(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from temporalstore_sdk import RaftPrimaryUnavailable
+
+        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
+        client = Mock()
+        client.iter_batch_responses.side_effect = [
+            RaftPrimaryUnavailable(73),
+            iter([(0, pb.CommandResponse(status=pb.Status(ok=True), count=1))]),
+        ]
+        key = Key("ready-after-election")
+        key.model_name, key.kv_rank = "fixture/model", 0
+        with patch.object(backend, "_table", return_value=client), patch(
+            "lmcache_temporalstore.grpc_kv.sleep"
+        ) as wait:
+            result = list(backend.iter_store_results([(key, memoryview(b"payload"))]))
+        self.assertEqual(result, [(0, True)])
+        self.assertEqual(client.iter_batch_responses.call_count, 2)
+        wait.assert_called_once_with(0.25)
+
     def test_kv_backend_keeps_one_binary_value_and_rejects_wrong_destination_size(self):
         adapter = adapter_module.TemporalStoreL2Adapter({"storage_backend": "kv"})
         self.addCleanup(adapter.close)

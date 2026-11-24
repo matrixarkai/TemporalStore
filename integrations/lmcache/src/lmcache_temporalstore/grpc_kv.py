@@ -4,9 +4,10 @@
 import os
 from collections.abc import Iterator
 from threading import Lock
+from time import monotonic, sleep
 
 from lmcache.v1.distributed.api import ObjectKey
-from temporalstore_sdk import MetadataClient, MetadataError, TableClient, commands as pb
+from temporalstore_sdk import MetadataClient, MetadataError, RaftPrimaryUnavailable, TableClient, commands as pb
 
 from .kv import ValueBackend
 from .layout import layout_table_name
@@ -79,12 +80,25 @@ class TableValueBackend(ValueBackend):
                     commands.append(_command(document))
                     bytes_used += size
                     end += 1
-                responses = (client.iter_batch_responses(commands) if partial
+                responses = (self._store_responses(client, commands) if partial
                              else enumerate(client.batch_execute(commands)))
                 for position, response in responses:
                     index, document = group[start + position]
                     yield index, document, response
                 start = end
+
+    def _store_responses(self, client, commands):
+        deadline = monotonic() + min(self._timeout, 5.0)
+        while True:
+            try:
+                yield from client.iter_batch_responses(commands)
+                return
+            except RaftPrimaryUnavailable:
+                # TableClient validates every route before dispatching this batch.
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise
+                sleep(min(0.25, remaining))
 
     def _execute(self, entries: list[tuple[ObjectKey, dict]], *, lookup: bool = False) -> list[dict]:
         ordered = [None] * len(entries)

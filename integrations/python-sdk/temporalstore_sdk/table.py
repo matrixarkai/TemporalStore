@@ -10,7 +10,7 @@ import grpc
 from temporalstore.v1 import temporalstore_pb2 as pb
 
 from .client import CommandClient
-from .metadata import MetadataClient, MetadataError, Shard, TableTopology
+from .metadata import MetadataClient, MetadataError, RaftPrimaryUnavailable, Shard, TableTopology
 
 
 _ELECTION_TOPOLOGY_TTL_SECONDS = 0.25
@@ -66,6 +66,8 @@ class TableClient:
 
     def _channel_for(self, shard: Shard) -> CommandClient:
         if not shard.primary_grpc:
+            if shard.uses_raft_route and shard.primary is None:
+                raise RaftPrimaryUnavailable(shard.shard_id)
             raise MetadataError("no_grpc_primary", f"shard {shard.shard_id} has no gRPC primary")
         with self._lock:
             if self._closed:

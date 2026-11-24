@@ -35,6 +35,13 @@ class MetadataError(RuntimeError):
         self.code = code
 
 
+class RaftPrimaryUnavailable(MetadataError):
+    """A table has elected no primary yet, and no command was sent."""
+
+    def __init__(self, shard_id: int):
+        super().__init__("no_grpc_primary", f"shard {shard_id} has no elected gRPC primary")
+
+
 @dataclass(frozen=True)
 class Shard:
     shard_id: int
