@@ -209,6 +209,7 @@ impl TemporalStoreClient {
                 })
             })
             .collect::<Vec<_>>();
+        self.update_grpc_routes(&table_key, &table, &topology.shards, topology.unchanged);
         self.with_tables_mut(|tables| tables.insert(table_key.clone(), options.clone()));
 
         // "unchanged" means the metaserver did not rebuild the shard list because we already
@@ -257,6 +258,63 @@ impl TemporalStoreClient {
             unroutable.len() as u64,
         );
         Ok(options)
+    }
+
+    pub(super) fn update_grpc_routes(
+        &self,
+        table_key: &str,
+        table: &crate::meta::TableMetaInfo,
+        shards: &[crate::meta::TableShard],
+        unchanged: bool,
+    ) {
+        let now = Instant::now();
+        let mut cached = self
+            .inner
+            .grpc_routes
+            .write()
+            .expect("gRPC route cache lock poisoned");
+        if let Some(previous) = cached.get_mut(table_key) {
+            if table.topology_version < previous.topology_version {
+                return;
+            }
+            if unchanged {
+                if table.topology_version == previous.topology_version {
+                    previous.refreshed_at = Some(now);
+                }
+                return;
+            }
+        } else if unchanged {
+            return;
+        }
+
+        let routes = shards
+            .iter()
+            .filter_map(|shard| {
+                let (endpoint, load_version) = match &shard.raft_route {
+                    Some(raft) => (raft.endpoint.as_ref(), raft.load_version),
+                    None => (shard.primary_endpoint.as_ref(), shard.load_version),
+                };
+                let address = endpoint?.grpc_addr.as_ref()?.clone();
+                Some((
+                    shard.shard_id,
+                    GrpcPrimaryRoute {
+                        shard_id: shard.shard_id,
+                        address,
+                        load_version,
+                    },
+                ))
+            })
+            .collect();
+        cached.insert(
+            table_key.to_string(),
+            CachedGrpcTableRoutes {
+                first_shard_id: table.first_shard_id,
+                shard_count: table.shard_count,
+                topology_version: table.topology_version,
+                refreshed_at: Some(now),
+                shards: routes,
+            },
+        );
     }
 
     pub(super) fn current_meta_topology_version(&self) -> Option<u64> {
@@ -566,6 +624,11 @@ impl TemporalStoreClient {
             .expect("client stats lock poisoned")
             .close_table_calls += 1;
         if removed {
+            self.inner
+                .grpc_routes
+                .write()
+                .expect("gRPC route cache lock poisoned")
+                .remove(&table.combined_name);
             self.inner
                 .routes
                 .write()

@@ -23,6 +23,9 @@ use crate::meta::{
 mod client_routing;
 #[path = "client/response_json.rs"]
 mod response_json;
+#[path = "client/protobuf_transport.rs"]
+mod protobuf_transport;
+pub use protobuf_transport::ProtobufExecuteReply;
 #[path = "client/client_meta_sync.rs"]
 mod client_meta_sync;
 #[path = "client/client_commands.rs"]
@@ -655,6 +658,8 @@ struct ClientInner {
     /// is atomic. It writes only when a route is fetched, replaced by a topology sync, or
     /// cleared.
     routes: RwLock<HashMap<ShardId, CachedRoute>>,
+    grpc_routes: RwLock<HashMap<String, CachedGrpcTableRoutes>>,
+    grpc_channels: RwLock<HashMap<String, tonic::transport::Channel>>,
     /// Executes and batch executes, counted outside `stats`.
     ///
     /// Both are bumped once per call on the path that succeeds, and taking the stats mutex for
@@ -706,6 +711,23 @@ struct ClientInner {
     /// next request resolved again -- a cache that could never converge. Recording what the
     /// topology was when the route was resolved is what lets "unchanged" mean anything.
     known_topology_version: AtomicU64,
+}
+
+/// A primary gRPC endpoint and the load generation it serves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrpcPrimaryRoute {
+    pub shard_id: ShardId,
+    pub address: String,
+    pub load_version: u64,
+}
+
+#[derive(Debug)]
+struct CachedGrpcTableRoutes {
+    first_shard_id: ShardId,
+    shard_count: u64,
+    topology_version: u64,
+    refreshed_at: Option<Instant>,
+    shards: HashMap<ShardId, GrpcPrimaryRoute>,
 }
 
 #[derive(Debug, Clone)]
@@ -847,6 +869,8 @@ impl TemporalStoreClient {
             inner: Arc::new(ClientInner {
                 options,
                 routes: RwLock::default(),
+                grpc_routes: RwLock::default(),
+                grpc_channels: RwLock::default(),
                 execute_requests: AtomicU64::new(0),
                 batch_execute_requests: AtomicU64::new(0),
                 route_cache_hits: AtomicU64::new(0),
@@ -1165,6 +1189,46 @@ impl TemporalStoreTable {
             options.shard_count,
             self.shard_id,
         )
+    }
+
+    /// Resolve a table key to its advertised gRPC primary. For a replicated
+    /// shard, use the elected leader and its load version from the same topology.
+    pub fn resolve_grpc_primary(&self, key: &str) -> Result<GrpcPrimaryRoute, ClientError> {
+        if let Some(cached) = self.cached_grpc_primary(key, true) {
+            return cached;
+        }
+        self.client.sync_table_topology(&self.namespace, &self.table_name)?;
+        self.cached_grpc_primary(key, false).unwrap_or_else(|| {
+            Err(ClientError::Status("table has no gRPC topology".to_string()))
+        })
+    }
+
+    fn cached_grpc_primary(
+        &self,
+        key: &str,
+        require_fresh: bool,
+    ) -> Option<Result<GrpcPrimaryRoute, ClientError>> {
+        let tables = self
+            .client
+            .inner
+            .grpc_routes
+            .read()
+            .expect("gRPC route cache lock poisoned");
+        let table = tables.get(&self.combined_name)?;
+        let shard_id = shard_id_for_key(key, table.first_shard_id, table.shard_count, self.shard_id);
+        let route = table.shards.get(&shard_id);
+        let route_ttl = self.client.inner.options.route_cache_ttl_ms;
+        let ttl = Duration::from_millis(if route.is_some() {
+            route_ttl
+        } else {
+            route_ttl.min(250)
+        });
+        if require_fresh && table.refreshed_at.is_none_or(|at| at.elapsed() > ttl) {
+            return None;
+        }
+        Some(route.cloned().ok_or_else(|| {
+            ClientError::Status(format!("shard {shard_id} has no gRPC primary"))
+        }))
     }
 
     pub fn options(&self) -> TableOptions {
