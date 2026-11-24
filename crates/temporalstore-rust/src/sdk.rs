@@ -1727,31 +1727,29 @@ pub fn types_batch_response_to_sdk(
 }
 
 pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::CommandResponse {
+    use v1::CommandResultKind as Kind;
     match response {
         types::CommandResponse::Empty => v1::CommandResponse {
+            result_kind: Kind::Empty as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             ..Default::default()
         },
         types::CommandResponse::Bytes { value } => v1::CommandResponse {
+            result_kind: Kind::Bytes as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             value_present: Some(value.is_some()),
             value: value.unwrap_or_default(),
             ..Default::default()
         },
-        types::CommandResponse::Integer { value } | types::CommandResponse::Aggregate { value } => {
-            v1::CommandResponse {
-                status: Some(types_status_to_sdk(types::Status::ok())),
-                count: value.max(0) as u64,
-                integer: Some(value),
-                ..Default::default()
-            }
-        }
+        types::CommandResponse::Integer { value } => sdk_integer_response(value, Kind::Integer),
+        types::CommandResponse::Aggregate { value } => sdk_integer_response(value, Kind::Aggregate),
         types::CommandResponse::CellMergeReceipt {
             samples_written,
             cells_created,
             cells_merged,
             replayed,
         } => v1::CommandResponse {
+            result_kind: Kind::CellMergeReceipt as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             count: samples_written,
             cells_created,
@@ -1768,6 +1766,7 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             buckets_folded,
             buckets_remaining,
         } => v1::CommandResponse {
+            result_kind: Kind::WindowReduceRollupReceipt as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             count: samples_after,
             samples_before,
@@ -1784,6 +1783,7 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             cells_before,
             cells_removed,
         } => v1::CommandResponse {
+            result_kind: Kind::WindowReduceRemoveReceipt as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             count: samples_after,
             samples_before,
@@ -1792,6 +1792,7 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             ..Default::default()
         },
         types::CommandResponse::Members { members } => v1::CommandResponse {
+            result_kind: Kind::Members as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             values: members,
             ..Default::default()
@@ -1809,6 +1810,7 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
                 })
                 .collect();
             v1::CommandResponse {
+                result_kind: Kind::Values as i32,
                 status: Some(types_status_to_sdk(types::Status::ok())),
                 values,
                 values_present: Some(present),
@@ -1818,6 +1820,7 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
         types::CommandResponse::HashEntries { entries } => {
             let (entry_names, values) = entries.into_iter().unzip();
             v1::CommandResponse {
+                result_kind: Kind::HashEntries as i32,
                 status: Some(types_status_to_sdk(types::Status::ok())),
                 values,
                 entry_names,
@@ -1825,11 +1828,13 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             }
         }
         types::CommandResponse::FeaturePoints { points } => v1::CommandResponse {
+            result_kind: Kind::FeaturePoints as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             feature_points: points.into_iter().map(types_feature_point_to_sdk).collect(),
             ..Default::default()
         },
         types::CommandResponse::SequenceRows { rows } => v1::CommandResponse {
+            result_kind: Kind::SequenceRows as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             sequence_rows: rows
                 .into_iter()
@@ -1855,6 +1860,16 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             ))),
             ..Default::default()
         },
+    }
+}
+
+fn sdk_integer_response(value: i64, kind: v1::CommandResultKind) -> v1::CommandResponse {
+    v1::CommandResponse {
+        status: Some(types_status_to_sdk(types::Status::ok())),
+        count: value.max(0) as u64,
+        integer: Some(value),
+        result_kind: kind as i32,
+        ..Default::default()
     }
 }
 

@@ -148,6 +148,8 @@ impl TemporalStoreClient {
             .map_err(|error| ClientError::InvalidRequest(error.to_string()))?
             .connect_timeout(Duration::from_millis(self.inner.options.connect_timeout_ms))
             .timeout(Duration::from_millis(self.inner.options.io_timeout_ms));
+        let runtime = super::metadata_grpc::runtime()?;
+        let _guard = runtime.enter();
         let mut channels = self
             .inner
             .grpc_channels
@@ -584,6 +586,7 @@ mod tests {
                 .serve_with_incoming(TcpIncoming::from_listener(listener, true, None).unwrap()),
         );
         let client = TemporalStoreClient::with_options(ClientOptions {
+            meta_grpc_target: Some("127.0.0.1:1".to_owned()),
             io_timeout_ms: 3_000,
             connect_timeout_ms: 3_000,
             ..ClientOptions::proxy("127.0.0.1:17003")
@@ -652,6 +655,25 @@ mod tests {
             .iter()
             .all(|response| response.value == payload));
         assert_eq!(client.inner.grpc_channels.read().unwrap().len(), 1);
+        tokio::task::spawn_blocking(move || {
+            let command = Command::StringSet {
+                key: "chunk".to_string(),
+                value: payload.to_vec(),
+            };
+            let expected = CommandResponse::Bytes {
+                value: Some(payload.to_vec()),
+            };
+            assert_eq!(table.execute(command.clone()).unwrap().response, expected);
+            let batch = table.batch_execute(vec![command.clone(), command]).unwrap();
+            assert!(batch.status.ok);
+            assert_eq!(batch.responses.len(), 2);
+            assert!(batch
+                .responses
+                .iter()
+                .all(|reply| reply.response == expected));
+        })
+        .await
+        .unwrap();
         worker.abort();
     }
 

@@ -17,14 +17,14 @@ use tonic::transport::{Channel, Endpoint};
 type MetadataClient = v1::metadata_service_client::MetadataServiceClient<Channel>;
 type ProxyMetadataClient = v1::proxy_metadata_service_client::ProxyMetadataServiceClient<Channel>;
 
-fn runtime() -> Result<&'static Runtime, ClientError> {
+pub(super) fn runtime() -> Result<&'static Runtime, ClientError> {
     static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
     RUNTIME
         .get_or_init(|| {
             Builder::new_multi_thread()
-                .worker_threads(1)
+                .worker_threads(2)
                 .enable_all()
-                .thread_name("ts-sdk-meta-grpc")
+                .thread_name("ts-sdk-grpc")
                 .build()
                 .map_err(|error| error.to_string())
         })

@@ -34,6 +34,11 @@ Set `ClientOptions::meta_grpc_target` to the metaserver's gRPC address
 to use protobuf for table lookup and topology version checks. Start the
 metaserver with `TS_META_GRPC_BIND_ADDR` to expose that service.
 
+With a configured gRPC metaserver, the synchronous `TemporalStoreTable`
+command and batch methods also use the protobuf data connection. The client
+uses the elected primary and preserves response kinds, including empty
+binary values and missing entries in a positional projection.
+
 The SDK and proxy authenticate metaserver requests through the SDK's environment
 credential provider. A direct client using `TS_META_ADMIN_TOKEN` runs inside the
 cluster trust boundary. The token grants administrative access to the

@@ -441,6 +441,22 @@ message Command {
   }
 }
 
+enum CommandResultKind {
+  COMMAND_RESULT_KIND_UNSPECIFIED = 0;
+  COMMAND_RESULT_KIND_EMPTY = 1;
+  COMMAND_RESULT_KIND_BYTES = 2;
+  COMMAND_RESULT_KIND_INTEGER = 3;
+  COMMAND_RESULT_KIND_MEMBERS = 4;
+  COMMAND_RESULT_KIND_VALUES = 5;
+  COMMAND_RESULT_KIND_HASH_ENTRIES = 6;
+  COMMAND_RESULT_KIND_FEATURE_POINTS = 7;
+  COMMAND_RESULT_KIND_AGGREGATE = 8;
+  COMMAND_RESULT_KIND_CELL_MERGE_RECEIPT = 9;
+  COMMAND_RESULT_KIND_SEQUENCE_ROWS = 10;
+  COMMAND_RESULT_KIND_WINDOW_REDUCE_ROLLUP_RECEIPT = 11;
+  COMMAND_RESULT_KIND_WINDOW_REDUCE_REMOVE_RECEIPT = 12;
+}
+
 message CommandResponse {
   Status status = 1;
   bytes value = 2;
@@ -476,6 +492,7 @@ message CommandResponse {
   repeated string entry_names = 21;
   // Signed integer for numeric commands, including TTL's negative sentinel values.
   optional sint64 integer = 22;
+  CommandResultKind result_kind = 23;
 }
 
 message StringSet {
