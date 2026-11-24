@@ -8,6 +8,17 @@ from temporalstore.v1 import temporalstore_pb2 as pb
 from temporalstore.v1.temporalstore_pb2_grpc import TemporalStoreServiceStub
 
 
+def command_channel(target: str, credentials: Optional[grpc.ChannelCredentials]) -> grpc.Channel:
+    limit = 40 * 1024 * 1024
+    options = (
+        ("grpc.max_send_message_length", limit),
+        ("grpc.max_receive_message_length", limit),
+    )
+    if credentials is None:
+        return grpc.insecure_channel(target, options=options)
+    return grpc.secure_channel(target, credentials, options=options)
+
+
 class CommandClient:
     """Send typed commands over one reusable, thread-safe gRPC channel."""
 
@@ -18,16 +29,7 @@ class CommandClient:
         timeout_seconds: float = 10.0,
         credentials: Optional[grpc.ChannelCredentials] = None,
     ):
-        message_limit = 40 * 1024 * 1024
-        options = (
-            ("grpc.max_send_message_length", message_limit),
-            ("grpc.max_receive_message_length", message_limit),
-        )
-        self._channel = (
-            grpc.insecure_channel(target, options=options)
-            if credentials is None
-            else grpc.secure_channel(target, credentials, options=options)
-        )
+        self._channel = command_channel(target, credentials)
         self._service = TemporalStoreServiceStub(self._channel)
         self._timeout = timeout_seconds
 

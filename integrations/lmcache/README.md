@@ -60,6 +60,12 @@ table's shards and their gRPC addresses. It includes load versions when the
 metaserver reports them. When the metaserver requires authentication, set
 `TS_META_ADMIN_TOKEN` in the LMCache server environment.
 
+Set \`proxy_grpc_target\` to a TemporalStore service proxy address such as
+\`127.0.0.1:17004\` to send table commands through its gRPC listener. Start
+\`matrixark_rust_service_proxy\` with \`TS_PROXY_GRPC_BIND_ADDR\` to enable the
+listener. Keep \`meta_url\` for model table identity and layout registration.
+Without \`proxy_grpc_target\`, the SDK sends commands directly to the datanodes.
+
 Registry metadata and placement are managed by TemporalStore. Each LMCache
 chunk is one binary value under its existing encoded key. The value carries
 no header or companion record. Conditional writes keep the first payload

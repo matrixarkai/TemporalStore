@@ -12,7 +12,10 @@ from time import monotonic, sleep
 from typing import TYPE_CHECKING
 
 from lmcache.v1.distributed.api import ObjectKey
-from temporalstore_sdk import MetadataClient, MetadataError, RaftPrimaryUnavailable, TableClient, commands as pb
+from temporalstore_sdk import (
+    MetadataClient, MetadataError, ProxyCommandClient, ProxyTableClient,
+    RaftPrimaryUnavailable, TableClient, commands as pb,
+)
 
 from .kv import ValueBackend
 from .layout import layout_table_name
@@ -51,12 +54,13 @@ def _command(document: dict) -> pb.Command:
 class TableValueBackend(ValueBackend):
     def __init__(
         self, meta_url: str, namespace: str, timeout_seconds: float,
-        lookup_timeout_seconds: float, ttl_seconds: int,
+        lookup_timeout_seconds: float, ttl_seconds: int, *, proxy_grpc_target: str = "",
     ) -> None:
         self._metadata = MetadataClient(
             meta_url, credential_provider=lambda: os.environ.get("TS_META_ADMIN_TOKEN"),
             timeout_seconds=min(timeout_seconds, lookup_timeout_seconds),
         )
+        self._proxy = ProxyCommandClient(proxy_grpc_target) if proxy_grpc_target else None
         self._namespace = namespace
         self._timeout = timeout_seconds
         self._lookup_timeout = lookup_timeout_seconds
@@ -69,7 +73,12 @@ class TableValueBackend(ValueBackend):
         with self._lock:
             client = self._tables.get(name)
             if client is None:
-                client = TableClient(self._metadata, self._namespace, name, timeout_seconds=self._timeout)
+                if self._proxy is None:
+                    client = TableClient(self._metadata, self._namespace, name, timeout_seconds=self._timeout)
+                else:
+                    client = ProxyTableClient(
+                        self._metadata, self._proxy, self._namespace, name, timeout_seconds=self._timeout,
+                    )
                 self._tables[name] = client
             return client
 
@@ -197,3 +206,5 @@ class TableValueBackend(ValueBackend):
     def close(self) -> None:
         for client in self._tables.values():
             client.close()
+        if self._proxy is not None:
+            self._proxy.close()

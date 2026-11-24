@@ -58,6 +58,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     lookup_timeout_seconds: float | None = None
     storage_backend: str | None = None
     meta_url: str = ""
+    proxy_grpc_target: str = ""
 
     def __post_init__(self) -> None:
         if self.storage_backend is None:
@@ -72,6 +73,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
         config = cls(
             storage_backend=str(values["storage_backend"]) if "storage_backend" in values else None,
             meta_url=str(values.get("meta_url", cls.meta_url)),
+            proxy_grpc_target=str(values.get("proxy_grpc_target", cls.proxy_grpc_target)),
             blob_url=str(values.get("blob_url", cls.blob_url)),
             data_url=str(values.get("data_url", cls.data_url)),
             shard_id=int(values.get("shard_id", cls.shard_id)),
@@ -90,6 +92,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     def help(cls) -> str:
         return (
             "meta_url defaults to KV storage with gRPC table routing; storage_backend can select blob or kv; "
+            "proxy_grpc_target routes table commands through a gRPC proxy; "
             "blob_url and data_url are datanode HTTP URLs; shard_id selects the "
             "command shard; max_capacity_gb bounds local adapter writes; "
             "ttl_seconds expires metadata; timeout_seconds bounds each request; "
@@ -109,6 +112,8 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         self._config = config
         if config.storage_backend not in {"blob", "kv"}:
             raise ValueError("storage_backend must be blob or kv")
+        if config.proxy_grpc_target and not config.meta_url:
+            raise ValueError("proxy_grpc_target requires meta_url")
         if config.meta_url and config.storage_backend != "kv":
             raise ValueError("meta_url requires the kv backend")
         if config.storage_backend == "kv" and config.namespace and not config.meta_url:
@@ -140,7 +145,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
 
             self._values = TableValueBackend(
                 config.meta_url, config.namespace or "kvcache", config.timeout_seconds,
-                lookup_timeout, config.ttl_seconds,
+                lookup_timeout, config.ttl_seconds, proxy_grpc_target=config.proxy_grpc_target,
             )
         else:
             from urllib.parse import urlsplit
