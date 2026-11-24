@@ -40,14 +40,22 @@ class CommandClient:
             return self._service.ExecuteChecked(request, timeout=self._timeout)
         return self._service.Execute(request, timeout=self._timeout)
 
-    def batch_execute(
-        self, shard_id: int, commands: Iterable[pb.Command], *, load_version: Optional[int] = None,
-    ) -> pb.BatchExecuteResponse:
+    def _batch_call(self, shard_id, commands, load_version):
         request = pb.BatchExecuteRequest(shard_id=shard_id, commands=commands)
         if load_version is not None:
             request.load_version = load_version
-            return self._service.BatchExecuteChecked(request, timeout=self._timeout)
-        return self._service.BatchExecute(request, timeout=self._timeout)
+            return self._service.BatchExecuteChecked, request
+        return self._service.BatchExecute, request
+
+    def batch_execute(
+        self, shard_id: int, commands: Iterable[pb.Command], *, load_version: Optional[int] = None,
+    ) -> pb.BatchExecuteResponse:
+        call, request = self._batch_call(shard_id, commands, load_version)
+        return call(request, timeout=self._timeout)
+
+    def _start_batch(self, shard_id, commands, *, load_version):
+        call, request = self._batch_call(shard_id, commands, load_version)
+        return call.future(request, timeout=self._timeout)
 
     def open_table(self, namespace: str, table: str, location: str = "") -> pb.OpenTableResponse:
         request = pb.OpenTableRequest(

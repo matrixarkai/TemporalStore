@@ -1,8 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
+from threading import Event
 import unittest
 from unittest.mock import Mock, patch
 
 import grpc
+from temporalstore.v1.temporalstore_pb2_grpc import (
+    TemporalStoreServiceServicer, add_TemporalStoreServiceServicer_to_server,
+)
 
 from temporalstore_sdk import MetadataError, Shard, TableClient, TableTopology, commands
 
@@ -145,3 +151,81 @@ class TableClientTest(unittest.TestCase):
                 self.assertTrue(table.execute(get("cached-key")).status.ok)
                 self.assertEqual(metadata.table_topology.call_count, 2)
             client.assert_called_once_with("leader-grpc", timeout_seconds=10)
+
+    def test_reads_reach_independent_shards_before_either_replies(self):
+        ready = [Event(), Event()]
+
+        class Datashard(TemporalStoreServiceServicer):
+            def __init__(self, index):
+                self.index = index
+
+            def BatchExecuteChecked(self, request, context):
+                ready[self.index].set()
+                if not ready[1 - self.index].wait(2):
+                    context.abort(grpc.StatusCode.DEADLINE_EXCEEDED, "peer shard received no read")
+                if request.load_version != 7 + self.index:
+                    context.abort(grpc.StatusCode.FAILED_PRECONDITION, "wrong placement generation")
+                return commands.BatchExecuteResponse(
+                    status=commands.Status(ok=True),
+                    responses=[
+                        commands.CommandResponse(value=command.string_get.key.encode())
+                        for command in request.commands
+                    ],
+                )
+
+        with ExitStack() as stack:
+            workers = stack.enter_context(ThreadPoolExecutor(max_workers=2))
+            endpoints = []
+            for index in range(2):
+                server = grpc.server(workers)
+                add_TemporalStoreServiceServicer_to_server(Datashard(index), server)
+                port = server.add_insecure_port("127.0.0.1:0")
+                server.start()
+                stack.callback(lambda node=server: node.stop(0).wait(timeout=3))
+                endpoints.append(f"127.0.0.1:{port}")
+            meta = Mock()
+            meta.table_topology.return_value = TableTopology("kvcache", "model", 1, 73, 2, (
+                Shard(73, None, (), 7, endpoints[0]), Shard(74, None, (), 8, endpoints[1]),
+            ))
+            table = stack.enter_context(TableClient(meta, "kvcache", "model", timeout_seconds=3, parallel_reads=True))
+            keys = ["alpha", "123456789", ""]
+            self.assertEqual([response.value for response in table.batch_execute(map(get, keys))],
+                             [key.encode() for key in keys])
+
+    def test_batch_with_write_retains_sequential_dispatch(self):
+        metadata = Mock()
+        metadata.table_topology.return_value = TableTopology("kvcache", "model", 1, 73, 2, (
+            Shard(73, None, (), 7, "one"), Shard(74, None, (), 8, "two"),
+        ))
+        first, second = Mock(), Mock()
+        first.batch_execute.return_value = commands.BatchExecuteResponse(
+            status=commands.Status(code="load_version_mismatch"),
+        )
+        write = commands.Command(string_set=commands.StringSet(key="alpha", value=b"data"))
+        with patch("temporalstore_sdk.table.CommandClient", side_effect=[first, second]):
+            with TableClient(metadata, "kvcache", "model", parallel_reads=True) as table:
+                with self.assertRaises(MetadataError) as stale:
+                    table.batch_execute([write, get("123456789")])
+        self.assertEqual(stale.exception.code, "load_version_mismatch")
+        first.batch_execute.assert_called_once()
+        second.batch_execute.assert_not_called()
+        first._start_batch.assert_not_called()
+        second._start_batch.assert_not_called()
+
+    def test_rejected_read_cancels_outstanding_shard_requests(self):
+        metadata = Mock()
+        metadata.table_topology.return_value = TableTopology("kvcache", "model", 1, 73, 2, (
+            Shard(73, None, (), 7, "primary-a"), Shard(74, None, (), 8, "primary-b"),
+        ))
+        first, second = Mock(), Mock()
+        first._start_batch.return_value.result.return_value = commands.BatchExecuteResponse(
+            status=commands.Status(code="raft_error", message="leader changed"),
+        )
+        with patch("temporalstore_sdk.table.CommandClient", side_effect=[first, second]):
+            with TableClient(metadata, "kvcache", "model", parallel_reads=True) as table:
+                with self.assertRaisesRegex(MetadataError, "leader changed"):
+                    table.batch_execute([get("alpha"), get("123456789")])
+                self.assertEqual(table._expires_at, 0.0)
+        second._start_batch.assert_called_once()
+        second._start_batch.return_value.result.assert_not_called()
+        second._start_batch.return_value.cancel.assert_called_once()

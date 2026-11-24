@@ -15,6 +15,11 @@ token when authentication is enabled. TableClient uses the topology to
 resolve a command's shard and the shard's advertised gRPC primary. It
 preserves response order for batches that span several shards.
 
+Set `parallel_reads=True` on `TableClient` to overlap read-only requests
+across up to eight shards. The default is serial dispatch. Writes and
+mixed batches keep their dispatch order when read overlap is enabled.
+
+
 Set TS_SERVER_GRPC_BIND_ADDR on the datanodes. Set
 TS_SERVER_GRPC_ADVERTISE_ADDR when binding a wildcard address or when clients
 must use a different hostname. TableClient sends nonzero load versions to

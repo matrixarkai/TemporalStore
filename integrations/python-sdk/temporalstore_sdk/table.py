@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Table-scoped data routing through the metaserver."""
 
+from contextlib import closing, ExitStack
+from itertools import islice
 from math import isfinite
 from threading import Lock
 from time import monotonic
@@ -15,6 +17,17 @@ from .metadata import MetadataClient, MetadataError, RaftPrimaryUnavailable, Sha
 
 _ELECTION_TOPOLOGY_TTL_SECONDS = 0.25
 
+# The KV and Feast read paths can overlap independent shards. Writes and other
+# commands retain their existing dispatch order.
+_PARALLEL_READ_KINDS = frozenset({
+    "common_exists", "common_ttl", "feature_agg_query", "feature_proto_agg_query",
+    "hash_get", "hash_get_all", "hash_multi_get", "string_get", "string_get_range",
+    "string_len",
+})
+_MAX_INFLIGHT_READ_SHARDS = 8
+
+
+
 
 class TableClient:
     """Route keyed protobuf commands to a table's advertised primary."""
@@ -27,6 +40,7 @@ class TableClient:
         *,
         topology_ttl_seconds: float = 5.0,
         timeout_seconds: float = 10.0,
+        parallel_reads: bool = False,
     ):
         if not namespace or not table:
             raise ValueError("namespace and table are required")
@@ -37,6 +51,7 @@ class TableClient:
         self._table = table
         self._topology_ttl = topology_ttl_seconds
         self._timeout = timeout_seconds
+        self._parallel_reads = parallel_reads
         self._topology = None
         self._expires_at = 0.0
         self._channels: dict[str, CommandClient] = {}
@@ -104,7 +119,7 @@ class TableClient:
     def iter_batch_responses(
         self, commands: Iterable[pb.Command],
     ) -> Iterator[tuple[int, pb.CommandResponse]]:
-        """Yield confirmed results with their request positions as shards respond."""
+        """Yield confirmed shard results with their original request positions."""
         commands = list(commands)
         if not commands:
             return
@@ -115,24 +130,49 @@ class TableClient:
             groups.setdefault(shard, []).append((position, command))
         # Validate all routes before issuing any writes.
         channels = {shard: self._channel_for(shard) for shard in groups}
-        for shard, group in groups.items():
-            try:
+        parallel = self._parallel_reads and len(groups) > 1 and all(
+            command.WhichOneof("kind") in _PARALLEL_READ_KINDS for command in commands
+        )
+        try:
+            with closing(self._batch_responses(groups, channels, parallel)) as batches:
+                for group, response in batches:
+                    if response.status.code in {"load_version_mismatch", "raft_error"}:
+                        self._invalidate_route(topology)
+                    if len(response.responses) != len(group):
+                        if not response.status.ok:
+                            raise MetadataError(response.status.code, response.status.message)
+                        raise MetadataError("invalid_batch", "datanode returned the wrong response count")
+                    for (position, _), result in zip(group, response.responses):
+                        yield position, result
+        except grpc.RpcError as error:
+            if error.code() == grpc.StatusCode.UNAVAILABLE:
+                self._invalidate_route(topology)
+            raise
+
+    @staticmethod
+    def _batch_responses(groups, channels, parallel):
+        if not parallel:
+            for shard, group in groups.items():
                 response = channels[shard].batch_execute(
                     shard.shard_id, (command for _, command in group),
                     load_version=shard.load_version or None,
                 )
-            except grpc.RpcError as error:
-                if error.code() == grpc.StatusCode.UNAVAILABLE:
-                    self._invalidate_route(topology)
-                raise
-            if response.status.code in {"load_version_mismatch", "raft_error"}:
-                self._invalidate_route(topology)
-            if len(response.responses) != len(group):
-                if not response.status.ok:
-                    raise MetadataError(response.status.code, response.status.message)
-                raise MetadataError("invalid_batch", "datanode returned the wrong response count")
-            for (position, _), result in zip(group, response.responses):
-                yield position, result
+                yield group, response
+            return
+
+        pending = iter(groups.items())
+        while window := list(islice(pending, _MAX_INFLIGHT_READ_SHARDS)):
+            with ExitStack() as inflight:
+                futures = []
+                for shard, group in window:
+                    future = channels[shard]._start_batch(
+                        shard.shard_id, (command for _, command in group),
+                        load_version=shard.load_version or None,
+                    )
+                    inflight.callback(future.cancel)
+                    futures.append((group, future))
+                for group, future in futures:
+                    yield group, future.result()
 
     def close(self) -> None:
         with self._lock:
