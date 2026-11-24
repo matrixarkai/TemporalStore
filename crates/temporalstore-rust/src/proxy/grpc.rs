@@ -2,9 +2,13 @@
 // Copyright 2026 MatrixArkAI
 
 use super::*;
-use crate::client::{protobuf_command_key, ClientError, ProtobufExecuteReply, TemporalStoreTable};
+use crate::client::{
+    protobuf_command_key, ClientError, ProtobufBatchExecuteReply, ProtobufExecuteReply,
+    TemporalStoreTable,
+};
 use crate::sdk::v1;
 use bytes::Bytes;
+use prost::Message;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::Ordering;
@@ -67,19 +71,9 @@ pub struct RelayEvent {
     #[prost(message, optional, tag = "3")]
     execute: Option<ProtobufExecuteReply>,
     #[prost(message, optional, tag = "4")]
-    batch: Option<RelayBatchReply>,
+    batch: Option<ProtobufBatchExecuteReply>,
     #[prost(string, repeated, tag = "5")]
     route_refreshes: Vec<String>,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct RelayBatchReply {
-    #[prost(message, optional, tag = "1")]
-    status: Option<v1::Status>,
-    #[prost(bytes = "bytes", repeated, tag = "2")]
-    responses: Vec<Bytes>,
-    #[prost(uint64, tag = "3")]
-    topology_version: u64,
 }
 
 type ReplyStream<T> = ReceiverStream<Result<T, RpcStatus>>;
@@ -305,41 +299,62 @@ impl ProxyService {
             .collect::<Result<Vec<_>, _>>()?;
         let _admitted = self.admit_relay(&namespace, &routing)?;
         let table = self.relay_table(namespace, table_name).await?;
-        let mut reply = RelayBatchReply {
+        let groups = table
+            .route_protobuf_batch(&routing)
+            .await
+            .map_err(client_status)?;
+        let mut reply = ProtobufBatchExecuteReply {
             status: Some(wire_status(Status::ok())),
-            responses: Vec::with_capacity(request.commands.len()),
+            responses: vec![Bytes::new(); request.commands.len()],
             ..Default::default()
         };
         let mut response_bytes = 0usize;
-        for (command, routing) in request.commands.iter().zip(routing) {
-            // Await each operation so commands affecting the same key keep request order.
+        for group in groups {
             let result = table
-                .execute_routed_protobuf(command, routing, request.trace_id)
+                .execute_protobuf_shard_batch(&group, &request.commands, request.trace_id)
                 .await;
-            match result {
+            let (status, responses) = match result {
                 Ok(result) => {
                     reply.topology_version = reply.topology_version.max(result.topology_version);
-                    if let Some(status) = result.status.filter(|status| !status.ok) {
-                        if reply.status.as_ref().is_some_and(|current| current.ok) {
-                            reply.status = Some(status);
+                    let status = result
+                        .status
+                        .unwrap_or_else(|| incomplete_batch(group.read_only));
+                    let status = if result.responses.len() == group.positions.len()
+                        || (result.responses.is_empty() && !status.ok)
+                    {
+                        status
+                    } else {
+                        incomplete_batch(group.read_only)
+                    };
+                    (status, result.responses)
+                }
+                Err(error) => (wire_status(client_status(error)), Vec::new()),
+            };
+            if !status.ok
+                && (status.code == "write_outcome_unknown"
+                    || reply.status.as_ref().is_some_and(|status| status.ok))
+            {
+                reply.status = Some(status.clone());
+            }
+            let mut responses = responses.into_iter();
+            for index in group.positions {
+                let response = responses.next().unwrap_or_else(|| {
+                    Bytes::from(
+                        v1::CommandResponse {
+                            status: Some(status.clone()),
+                            ..Default::default()
                         }
-                    }
-                    let response = result.response.unwrap_or_default();
-                    response_bytes += response.len() + 8;
-                    if response_bytes > MESSAGE_LIMIT - 1024 {
-                        return Err(Status::error(
-                            "resource_exhausted",
-                            "batch reply exceeds message limit after executing commands",
-                        ));
-                    }
-                    reply.responses.push(response);
+                        .encode_to_vec(),
+                    )
+                });
+                response_bytes += response.len() + 8;
+                if response_bytes > MESSAGE_LIMIT - 1024 {
+                    return Err(Status::error(
+                        "resource_exhausted",
+                        "batch reply exceeds message limit after executing commands",
+                    ));
                 }
-                Err(error) => {
-                    if reply.status.as_ref().is_some_and(|status| status.ok) {
-                        reply.status = Some(wire_status(client_status(error)));
-                    }
-                    reply.responses.push(Bytes::new());
-                }
+                reply.responses[index] = response;
             }
         }
         Ok(RelayEvent {
@@ -424,6 +439,15 @@ impl ProxyService {
             topology_version,
         }
     }
+}
+
+fn incomplete_batch(read_only: bool) -> v1::Status {
+    let code = if read_only {
+        "invalid_batch"
+    } else {
+        "write_outcome_unknown"
+    };
+    wire_status(Status::error(code, "datanode returned an incomplete batch"))
 }
 
 fn relay_routing(command: &Bytes) -> Result<(&str, bool), Status> {
@@ -564,7 +588,7 @@ mod tests {
     };
     use crate::sdk::{TemporalStoreSdkExecutor, TemporalStoreTonicAdapter};
 
-    struct Echo;
+    struct Echo(Arc<std::sync::atomic::AtomicUsize>);
 
     impl TemporalStoreSdkExecutor for Echo {
         fn execute_sdk(&self, _request: ExecuteRequest) -> ExecuteResponse {
@@ -586,17 +610,42 @@ mod tests {
                 response: crate::types::CommandResponse::Bytes { value: Some(value) },
             }
         }
+        fn batch_execute_checked_sdk(
+            &self,
+            request: BatchExecuteRequest,
+            load_version: u64,
+        ) -> BatchExecuteResponse {
+            assert_eq!(request.commands.len(), 2);
+            self.0.fetch_add(1, Ordering::Relaxed);
+            BatchExecuteResponse {
+                status: Status::ok(),
+                responses: request
+                    .commands
+                    .into_iter()
+                    .map(|command| {
+                        self.execute_checked_sdk(
+                            ExecuteRequest {
+                                shard_id: request.shard_id,
+                                command,
+                            },
+                            load_version,
+                        )
+                    })
+                    .collect(),
+            }
+        }
     }
 
     #[tokio::test]
     async fn typed_proxy_stream_routes_binary_payloads_with_account_admission() {
+        let batch_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let datanode = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let datanode_addr = datanode.local_addr().unwrap().to_string();
         let datanode = tokio::spawn(
             Server::builder()
                 .add_service(
                     v1::temporal_store_service_server::TemporalStoreServiceServer::new(
-                        TemporalStoreTonicAdapter::new(Echo),
+                        TemporalStoreTonicAdapter::new(Echo(batch_calls.clone())),
                     ),
                 )
                 .serve_with_incoming(TcpIncoming::from_listener(datanode, true, None).unwrap()),
@@ -719,6 +768,7 @@ mod tests {
         let responses = event.batch_execute.unwrap().responses;
         assert_eq!(responses[0].value, first);
         assert_eq!(responses[1].value, second);
+        assert_eq!(batch_calls.load(Ordering::Relaxed), 1);
         assert!(stream.message().await.unwrap().is_none());
 
         let callback = v1::ProxyRouteCallback {

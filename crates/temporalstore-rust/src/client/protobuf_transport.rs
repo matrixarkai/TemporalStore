@@ -35,6 +35,34 @@ pub struct ProtobufExecuteReply {
     pub topology_version: u64,
 }
 
+#[derive(Clone, PartialEq, prost::Message)]
+struct EncodedBatchExecuteRequest {
+    #[prost(uint64, tag = "1")]
+    shard_id: u64,
+    #[prost(uint64, tag = "2")]
+    trace_id: u64,
+    #[prost(bytes = "bytes", repeated, tag = "3")]
+    commands: Vec<Bytes>,
+    #[prost(uint64, optional, tag = "4")]
+    load_version: Option<u64>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub(crate) struct ProtobufBatchExecuteReply {
+    #[prost(message, optional, tag = "1")]
+    pub status: Option<crate::sdk::v1::Status>,
+    #[prost(bytes = "bytes", repeated, tag = "2")]
+    pub responses: Vec<Bytes>,
+    #[prost(uint64, tag = "3")]
+    pub topology_version: u64,
+}
+
+pub(crate) struct ProtobufShardBatch {
+    route: GrpcPrimaryRoute,
+    pub positions: Vec<usize>,
+    pub read_only: bool,
+}
+
 fn length_delimited<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], prost::DecodeError> {
     let size = usize::try_from(decode_varint(input)?)
         .map_err(|_| prost::DecodeError::new("field length overflows usize"))?;
@@ -148,14 +176,6 @@ impl TemporalStoreTable {
                     .map_err(|error| ClientError::Status(error.to_string()))??
             }
         };
-        let channel = self.client.grpc_channel(&route.address)?;
-        let mut client = Grpc::new(channel)
-            .max_decoding_message_size(MESSAGE_LIMIT)
-            .max_encoding_message_size(MESSAGE_LIMIT);
-        if let Err(error) = client.ready().await {
-            self.invalidate_grpc_route(&route);
-            return Err(ClientError::Status(error.to_string()));
-        }
         let checked = route.load_version != 0;
         let path = if checked {
             "/temporalstore.v1.TemporalStoreService/ExecuteChecked"
@@ -168,15 +188,145 @@ impl TemporalStoreTable {
             command: command.clone(),
             load_version: checked.then_some(route.load_version),
         };
+        self.send_protobuf(
+            &route,
+            request,
+            path,
+            read,
+            |reply: &ProtobufExecuteReply| reply.status.as_ref(),
+        )
+        .await
+    }
+
+    pub(crate) async fn route_protobuf_batch(
+        &self,
+        keys: &[(&str, bool)],
+    ) -> Result<Vec<ProtobufShardBatch>, ClientError> {
+        if let Some(cached) = self.cached_protobuf_batches(keys, true) {
+            return cached;
+        }
+        let table = self.clone();
+        tokio::task::spawn_blocking(move || {
+            table
+                .client
+                .sync_table_topology(&table.namespace, &table.table_name)
+        })
+        .await
+        .map_err(|error| ClientError::Status(error.to_string()))??;
+        self.cached_protobuf_batches(keys, false)
+            .unwrap_or_else(|| {
+                Err(ClientError::Status(
+                    "table has no gRPC topology".to_string(),
+                ))
+            })
+    }
+
+    fn cached_protobuf_batches(
+        &self,
+        keys: &[(&str, bool)],
+        require_fresh: bool,
+    ) -> Option<Result<Vec<ProtobufShardBatch>, ClientError>> {
+        let tables = self
+            .client
+            .inner
+            .grpc_routes
+            .read()
+            .expect("gRPC route cache lock poisoned");
+        let table = tables.get(&self.combined_name)?;
+        let route_ttl = self.client.inner.options.route_cache_ttl_ms;
+        let age = table.refreshed_at.map(|at| at.elapsed());
+        if require_fresh && age.is_none_or(|age| age > Duration::from_millis(route_ttl)) {
+            return None;
+        }
+        let mut groups = std::collections::BTreeMap::new();
+        for (position, (key, read)) in keys.iter().enumerate() {
+            let shard_id =
+                shard_id_for_key(key, table.first_shard_id, table.shard_count, self.shard_id);
+            let Some(route) = table.shards.get(&shard_id) else {
+                if require_fresh
+                    && age.is_none_or(|age| age > Duration::from_millis(route_ttl.min(250)))
+                {
+                    return None;
+                }
+                return Some(Err(ClientError::Status(format!(
+                    "shard {shard_id} has no gRPC primary"
+                ))));
+            };
+            let batch = groups
+                .entry(shard_id)
+                .or_insert_with(|| ProtobufShardBatch {
+                    route: route.clone(),
+                    positions: Vec::new(),
+                    read_only: true,
+                });
+            batch.positions.push(position);
+            batch.read_only &= *read;
+        }
+        Some(Ok(groups.into_values().collect()))
+    }
+
+    pub(crate) async fn execute_protobuf_shard_batch(
+        &self,
+        group: &ProtobufShardBatch,
+        commands: &[Bytes],
+        trace_id: u64,
+    ) -> Result<ProtobufBatchExecuteReply, ClientError> {
+        let route = &group.route;
+        let checked = route.load_version != 0;
+        let path = if checked {
+            "/temporalstore.v1.TemporalStoreService/BatchExecuteChecked"
+        } else {
+            "/temporalstore.v1.TemporalStoreService/BatchExecute"
+        };
+        let request = EncodedBatchExecuteRequest {
+            shard_id: route.shard_id,
+            trace_id,
+            commands: group
+                .positions
+                .iter()
+                .map(|&index| commands[index].clone())
+                .collect(),
+            load_version: checked.then_some(route.load_version),
+        };
+        self.send_protobuf(
+            route,
+            request,
+            path,
+            group.read_only,
+            |reply: &ProtobufBatchExecuteReply| reply.status.as_ref(),
+        )
+        .await
+    }
+
+    async fn send_protobuf<E, D>(
+        &self,
+        route: &GrpcPrimaryRoute,
+        request: E,
+        path: &'static str,
+        read_only: bool,
+        status: impl Fn(&D) -> Option<&crate::sdk::v1::Status>,
+    ) -> Result<D, ClientError>
+    where
+        E: prost::Message + Send + 'static,
+        D: prost::Message + Default + Send + 'static,
+    {
+        let channel = self.client.grpc_channel(&route.address)?;
+        let mut client = Grpc::new(channel)
+            .max_decoding_message_size(MESSAGE_LIMIT)
+            .max_encoding_message_size(MESSAGE_LIMIT);
+        if let Err(error) = client.ready().await {
+            self.invalidate_grpc_route(route);
+            return Err(ClientError::Status(error.to_string()));
+        }
         let response = client
             .unary(
                 tonic::Request::new(request),
                 PathAndQuery::from_static(path),
-                tonic::codec::ProstCodec::<EncodedExecuteRequest, ProtobufExecuteReply>::default(),
+                tonic::codec::ProstCodec::<E, D>::default(),
             )
             .await;
         let invalidate = response.as_ref().map_or(true, |reply| {
-            reply.get_ref().status.as_ref().is_some_and(|status| {
+            status(reply.get_ref()).is_some_and(|status| {
                 matches!(
                     status.code.as_str(),
                     "load_version_mismatch" | "raft_write_not_started" | "raft_error"
@@ -184,10 +334,10 @@ impl TemporalStoreTable {
             })
         });
         if invalidate {
-            self.invalidate_grpc_route(&route);
+            self.invalidate_grpc_route(route);
         }
         response.map(tonic::Response::into_inner).map_err(|error| {
-            if read {
+            if read_only {
                 ClientError::Status(error.to_string())
             } else {
                 ClientError::WriteOutcomeUnknown(error.to_string())

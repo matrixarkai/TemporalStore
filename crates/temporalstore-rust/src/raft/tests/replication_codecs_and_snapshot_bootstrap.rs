@@ -1273,7 +1273,7 @@ fn rejected_higher_term_append_still_steps_down_the_old_leader() {
     }).unwrap();
     assert!(!reply.success);
     assert_eq!(reply.term, 5);
-    assert_eq!(reply.reject_reason.as_deref(), Some("log_mismatch"));
+    assert_eq!(reply.reject_reason.as_deref(), Some("out_of_order_append_queued"));
     assert_eq!(cluster.local_status(1).unwrap().role, RaftRole::Follower);
     assert!(!cluster.is_local_leader(1));
 }
