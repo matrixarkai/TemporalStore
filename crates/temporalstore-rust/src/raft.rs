@@ -5338,7 +5338,12 @@ impl RaftCluster {
                 fallback_targets.push(target_id);
                 continue;
             }
-            let request = self.build_append_entries_request(target_id)?;
+            let request = match self.build_append_entries_request(target_id) {
+                Ok(request) => request,
+                // The timer can drain this peer while available voters form the quorum.
+                Err(RaftError::AppendBackpressure { .. }) => continue,
+                Err(error) => return Err(error),
+            };
             live_target_ids.push(target_id);
             live_requests.push((target_id, request));
         }
@@ -5592,7 +5597,11 @@ impl RaftCluster {
         entry: &RaftLogEntry,
         transport: &T,
     ) -> Result<bool, RaftError> {
-        let request = self.build_append_entries_request(target_id)?;
+        let request = match self.build_append_entries_request(target_id) {
+            Ok(request) => request,
+            Err(RaftError::AppendBackpressure { .. }) => return Ok(false),
+            Err(error) => return Err(error),
+        };
         if request.leader_id != leader_id || request.term != entry.term {
             return Err(RaftError::NotLeader { node_id: leader_id });
         }

@@ -1298,6 +1298,48 @@ fn production_raft_mode_uses_temporal_raft_ready_path_when_adapter_is_enabled() 
 }
 
 #[test]
+fn foreground_quorum_continues_when_one_follower_append_window_is_full() {
+    let limit = 1 << 20;
+    let config = RaftConfig {
+        max_memory_replicate_log_bytes: limit,
+        max_apply_batch_bytes: limit,
+        ..RaftConfig::default()
+    };
+    let leader = RaftCluster::new_single_shard_with_config(7, [1, 2, 3], config.clone()).unwrap();
+    leader.set_local_node_id(1);
+    let follower = RaftCluster::new_single_shard_with_config(7, [1, 2, 3], config).unwrap();
+    follower.set_local_node_id(2);
+    let transport = OneFailedFollowerTransport {
+        cluster: follower.clone(),
+        failed_target: 3,
+        snapshot_attempts: Arc::new(Mutex::new(0)),
+    };
+    let put = |key: &str| Command::StringSet {
+        key: key.to_owned(),
+        value: vec![255; 256 * 1024],
+    };
+    leader.propose_distributed(put("first"), &transport).unwrap();
+    let _timer = leader.register_data_commit_timer();
+    {
+        let mut inner = leader.inner.write().unwrap();
+        let peer = inner.nodes.get_mut(&3).unwrap();
+        peer.pipeline_state.next_index = 1;
+        peer.pipeline_state.inflight_entries = 4;
+        peer.pipeline_state.inflight_bytes = limit - 128;
+    }
+    assert!(matches!(
+        leader.build_append_entries_request(3),
+        Err(RaftError::AppendBackpressure { node_id: 3, .. })
+    ));
+
+    leader.propose_distributed(put("second"), &transport).unwrap();
+
+    assert_eq!(leader.commit_index(1).unwrap(), 2);
+    assert_eq!(follower.local_status(2).unwrap().last_log_index, 2);
+    assert_eq!(*transport.snapshot_attempts.lock().unwrap(), 0);
+}
+
+#[test]
 fn deployed_quorum_recovery_retries_a_retained_prefix_without_installing_a_snapshot() {
     let leader = RaftCluster::new_single_shard(7, [1, 2]);
     leader.set_local_node_id(1);
