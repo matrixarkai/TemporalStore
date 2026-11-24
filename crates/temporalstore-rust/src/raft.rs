@@ -5208,7 +5208,7 @@ impl RaftCluster {
     where
         T: RaftTransport + Clone + Send + 'static,
     {
-        let (entry, leader_id, target_ids, required) = {
+        let (entry, leader_id, target_ids, required, deployed) = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             inner.ensure_proposal_leader()?;
             if reclaim_fence.is_some_and(|fence| !inner.cache_reclaim_fence_is_current(fence)) {
@@ -5271,7 +5271,7 @@ impl RaftCluster {
                 .partition(|(_, alive)| *alive);
             let mut target_ids = live_target_ids;
             target_ids.extend(fallback_target_ids);
-            (entry, leader_id, target_ids, required)
+            (entry, leader_id, target_ids, required, inner.local_node_id.is_some())
         };
 
         // The entry is in the log. Write it and start its barrier NOW, so the leader's disk wait
@@ -5436,9 +5436,12 @@ impl RaftCluster {
                             leader_commit: leader.commit_index,
                         }
                     };
+                    let sent_commit = (retry_request.term, retry_request.leader_commit);
                     if let Ok(response) = transport.append_entries(retry_request) {
                         let success = response.success && response.match_index >= entry.index;
-                        let _ = self.record_append_entries_response(target_id, &response);
+                        let _ = self.record_append_response_with_commit(
+                            target_id, &response, Some(sent_commit),
+                        );
                         if success {
                             let counts_for_quorum = self
                                 .inner
@@ -5451,7 +5454,9 @@ impl RaftCluster {
                             if counts_for_quorum {
                                 replicated += 1;
                             }
-                            let _ = self.catch_up(target_id);
+                            if !deployed {
+                                let _ = self.catch_up(target_id);
+                            }
                             successful_targets.push(target_id);
                         }
                     }
@@ -5502,12 +5507,14 @@ impl RaftCluster {
             let committed = match transport.append_entries(request) {
                 Ok(response) => {
                     let success = response.success;
-                    let _ = self.record_append_entries_response(*target_id, &response);
+                    let _ = self.record_append_response_with_commit(
+                        *target_id, &response, Some((entry.term, entry.index)),
+                    );
                     success
                 }
                 Err(_) => false,
             };
-            if committed {
+            if committed && !deployed {
                 let _ = self.catch_up(*target_id);
             }
         }
@@ -5873,7 +5880,8 @@ fn refresh_all_pipeline_states(
         return;
     };
     let leader_commit_index = leader.commit_index;
-    let leader_next_index = node_next_log_index(leader);
+    let leader_next_index = node_next_log_index(leader)
+        .max(leader_commit_index.saturating_add(1));
     let progress = nodes
         .iter()
         .map(|(node_id, node)| {

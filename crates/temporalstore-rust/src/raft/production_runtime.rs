@@ -598,12 +598,14 @@ impl ProductionRaftRuntime {
                                 }
                             };
                             remaining_entries -= request.entries.len() as u64;
+                            let sent_commit = (request.term, request.leader_commit);
                             match transport.append_entries(request) {
                                 Ok(response) => {
                                     let success = response.success;
                                     let peer_term = response.term;
-                                    let _ = cluster
-                                        .record_append_entries_response(*target_id, &response);
+                                    let _ = cluster.record_append_response_with_commit(
+                                        *target_id, &response, Some(sent_commit),
+                                    );
                                     peer_failures.insert(*target_id, 0);
                                     reached += 1;
                                     let _ = cluster.set_alive(*target_id, true);

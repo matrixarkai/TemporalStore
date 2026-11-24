@@ -1298,6 +1298,41 @@ fn production_raft_mode_uses_temporal_raft_ready_path_when_adapter_is_enabled() 
 }
 
 #[test]
+fn deployed_proposals_keep_confirmed_peer_progress_without_copying_peer_logs() {
+    let config = RaftConfig {
+        max_memory_replicate_log_bytes: 1 << 20,
+        max_apply_batch_bytes: 1 << 20,
+        ..RaftConfig::default()
+    };
+    let leader = RaftCluster::new_single_shard_with_config(7, [1, 2], config.clone()).unwrap();
+    leader.set_local_node_id(1);
+    let follower = RaftCluster::new_single_shard_with_config(7, [1, 2], config).unwrap();
+    follower.set_local_node_id(2);
+    let transport = FlakyTransport {
+        cluster: follower.clone(),
+        failures_left: Arc::new(Mutex::new(0)),
+    };
+    let payload = vec![0xFF; 256 << 10];
+    for key in ["one", "two"] {
+        leader.propose_distributed(
+            Command::StringSet { key: key.to_string(), value: payload.clone() },
+            &transport,
+        ).unwrap();
+    }
+    let shadow = leader.local_status(2).unwrap();
+    assert_eq!(shadow.commit_index, 2);
+    assert_eq!(shadow.last_log_index, 0);
+    assert_eq!(follower.commit_index(2).unwrap(), 2);
+    let leader_shadow = follower.local_status(1).unwrap();
+    assert_eq!(leader_shadow.commit_index, 2);
+    assert_eq!(leader_shadow.last_log_index, 0);
+    assert_eq!(
+        follower.read_from_replica(2, Command::StringGet { key: "two".to_string() }).unwrap(),
+        CommandResponse::Bytes { value: Some(payload) },
+    );
+}
+
+#[test]
 fn cache_reclamation_preserves_new_writes_and_respects_the_table_budget() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
