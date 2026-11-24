@@ -7,9 +7,11 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from hashlib import sha256
+from http.client import HTTPException
 import logging
 from math import isfinite
 import threading
+from time import monotonic
 
 import torch  # noqa: F401 - load before lmcache_native
 from feast_temporalstore_command.client import TemporalStoreClient
@@ -30,6 +32,7 @@ from .blob import BlobClient
 
 logger = logging.getLogger(__name__)
 _DELETE_BATCH_SIZE = 128
+_LOOKUP_FAILURE_COOLDOWN_SECONDS = 1.0
 
 
 def _names(key: ObjectKey, namespace: str = "") -> tuple[str, str]:
@@ -123,6 +126,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             shard_id=config.shard_id, timeout_seconds=config.timeout_seconds,
         )
         self._lookup_data = self._data
+        self._lookup_retry_at = 0.0  # Owned by the single lookup worker.
         if lookup_timeout != config.timeout_seconds:
             self._lookup_data = TemporalStoreClient(
                 host=data.hostname, port=data.port or 80,
@@ -432,15 +436,18 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
 
     def _lookup(self, task_id: int, keys: list[ObjectKey]) -> None:
         bitmap = Bitmap(len(keys))
-        # Reserve before the metadata read. Otherwise an eviction can finish
-        # between the read and the lock acquisition and leave a false hit.
         reserved = []
-        with self._lock:
-            for index, key in enumerate(keys):
-                if key not in self._evicting and key not in self._publishing:
-                    self._locked[key] = self._locked.get(key, 0) + 1
-                    reserved.append((index, key))
         try:
+            if self._lookup_retry_at:
+                if monotonic() < self._lookup_retry_at:
+                    return
+                self._lookup_retry_at = 0.0
+            # Reserve before the metadata read so eviction cannot invalidate a hit.
+            with self._lock:
+                for index, key in enumerate(keys):
+                    if key not in self._evicting and key not in self._publishing:
+                        self._locked[key] = self._locked.get(key, 0) + 1
+                        reserved.append((index, key))
             commands = [
                 {"kind": "common_exists", "key": self._key_names(key)[1]}
                 for _, key in reserved
@@ -449,7 +456,9 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             for (index, _), answer in zip(reserved, answers):
                 if answer.get("kind") == "integer" and answer.get("value") == 1:
                     bitmap.set(index)
-        except Exception:
+        except Exception as error:
+            if self._config.remote_storage and isinstance(error, (OSError, HTTPException)):
+                self._lookup_retry_at = monotonic() + _LOOKUP_FAILURE_COOLDOWN_SECONDS
             logger.exception("TemporalStore L2 lookup failed")
         finally:
             self.submit_unlock([key for index, key in reserved if not bitmap.test(index)])
