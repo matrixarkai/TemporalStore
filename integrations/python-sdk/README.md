@@ -15,13 +15,17 @@ token when authentication is enabled. TableClient uses the topology to
 resolve a command's shard and the shard's advertised gRPC primary. It
 preserves response order for batches that span several shards.
 
+Run direct SDK clients on the cluster's trusted network. A worker configured
+with the metaserver admin token holds the same credential used for table
+management. The SDK passes it to the metaserver for topology requests.
+The datanode gRPC channel is plaintext and does not validate this token.
+
 Set `parallel_reads=True` on `TableClient` to overlap read-only requests
 across up to eight shards. The default is serial dispatch. Writes and
 mixed batches keep their dispatch order when read overlap is enabled.
 
 A batch can override its RPC deadline with `timeout_seconds` while reusing
 the table's channels and cached topology.
-
 
 Set TS_SERVER_GRPC_BIND_ADDR on the datanodes. Set
 TS_SERVER_GRPC_ADVERTISE_ADDR when binding a wildcard address or when clients
