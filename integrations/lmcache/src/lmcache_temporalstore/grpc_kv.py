@@ -50,25 +50,24 @@ class TableValueBackend(ValueBackend):
         self._timeout = timeout_seconds
         self._lookup_timeout = lookup_timeout_seconds
         self._ttl_ms = ttl_seconds * 1000 or None
-        self._tables: dict[tuple[str, float], TableClient] = {}
+        self._tables: dict[str, TableClient] = {}
         self._lock = Lock()
 
-    def _table(self, name: str, timeout: float) -> TableClient:
-        identity = (name, timeout)
+    def _table(self, name: str) -> TableClient:
         with self._lock:
-            client = self._tables.get(identity)
+            client = self._tables.get(name)
             if client is None:
-                client = TableClient(self._metadata, self._namespace, name, timeout_seconds=timeout)
-                self._tables[identity] = client
+                client = TableClient(self._metadata, self._namespace, name, timeout_seconds=self._timeout)
+                self._tables[name] = client
             return client
 
     def _iter_responses(self, entries, *, lookup, partial=False):
         groups = {}
         for index, (key, document) in enumerate(entries):
             groups.setdefault(_table_for_key(key), []).append((index, document))
-        timeout = self._lookup_timeout if lookup else self._timeout
+        options = {"timeout_seconds": self._lookup_timeout} if lookup else {}
         for name, group in groups.items():
-            client = self._table(name, timeout)
+            client = self._table(name)
             start = 0
             while start < len(group):
                 end, bytes_used = start, 0
@@ -81,7 +80,7 @@ class TableValueBackend(ValueBackend):
                     bytes_used += size
                     end += 1
                 responses = (self._store_responses(client, commands) if partial
-                             else enumerate(client.batch_execute(commands)))
+                             else enumerate(client.batch_execute(commands, **options)))
                 for position, response in responses:
                     index, document = group[start + position]
                     yield index, document, response

@@ -19,6 +19,9 @@ Set `parallel_reads=True` on `TableClient` to overlap read-only requests
 across up to eight shards. The default is serial dispatch. Writes and
 mixed batches keep their dispatch order when read overlap is enabled.
 
+A batch can override its RPC deadline with `timeout_seconds` while reusing
+the table's channels and cached topology.
+
 
 Set TS_SERVER_GRPC_BIND_ADDR on the datanodes. Set
 TS_SERVER_GRPC_ADVERTISE_ADDR when binding a wildcard address or when clients

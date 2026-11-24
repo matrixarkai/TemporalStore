@@ -112,12 +112,17 @@ class TableClient:
             self._invalidate_route(topology)
         return response
 
-    def batch_execute(self, commands: Iterable[pb.Command]) -> list[pb.CommandResponse]:
-        indexed = sorted(self.iter_batch_responses(commands), key=lambda item: item[0])
+    def batch_execute(
+        self, commands: Iterable[pb.Command], *, timeout_seconds: float | None = None,
+    ) -> list[pb.CommandResponse]:
+        indexed = sorted(
+            self.iter_batch_responses(commands, timeout_seconds=timeout_seconds),
+            key=lambda item: item[0],
+        )
         return [result for _, result in indexed]
 
     def iter_batch_responses(
-        self, commands: Iterable[pb.Command],
+        self, commands: Iterable[pb.Command], *, timeout_seconds: float | None = None,
     ) -> Iterator[tuple[int, pb.CommandResponse]]:
         """Yield confirmed shard results with their original request positions."""
         commands = list(commands)
@@ -134,7 +139,8 @@ class TableClient:
             command.WhichOneof("kind") in _PARALLEL_READ_KINDS for command in commands
         )
         try:
-            with closing(self._batch_responses(groups, channels, parallel)) as batches:
+            responses = self._batch_responses(groups, channels, parallel, timeout_seconds)
+            with closing(responses) as batches:
                 for group, response in batches:
                     if response.status.code in {"load_version_mismatch", "raft_error"}:
                         self._invalidate_route(topology)
@@ -150,12 +156,14 @@ class TableClient:
             raise
 
     @staticmethod
-    def _batch_responses(groups, channels, parallel):
+    def _batch_responses(groups, channels, parallel, timeout_seconds):
+        options = {} if timeout_seconds is None else {"timeout_seconds": timeout_seconds}
         if not parallel:
             for shard, group in groups.items():
                 response = channels[shard].batch_execute(
                     shard.shard_id, (command for _, command in group),
                     load_version=shard.load_version or None,
+                    **options,
                 )
                 yield group, response
             return
@@ -168,6 +176,7 @@ class TableClient:
                     future = channels[shard]._start_batch(
                         shard.shard_id, (command for _, command in group),
                         load_version=shard.load_version or None,
+                        **options,
                     )
                     inflight.callback(future.cancel)
                     futures.append((group, future))

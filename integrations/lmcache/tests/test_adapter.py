@@ -279,6 +279,26 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(adapter._entries, {keys[0]: 3})
         client.iter_batch_responses.assert_called_once()
 
+    def test_lookup_and_store_share_a_table_client_with_distinct_deadlines(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
+        self.addCleanup(backend.close)
+        key = Key("shared-channel")
+        key.model_name, key.kv_rank = "fixture/model", 0
+        result = pb.CommandResponse(status=pb.Status(ok=True), count=1)
+        with patch("lmcache_temporalstore.grpc_kv.TableClient") as create:
+            client = create.return_value
+            client.batch_execute.return_value = [result]
+            client.iter_batch_responses.return_value = iter([(0, result)])
+            self.assertEqual(backend.lengths([key]), [1])
+            self.assertEqual(list(backend.iter_store_results([(key, memoryview(b"v"))])), [(0, True)])
+
+        create.assert_called_once()
+        self.assertEqual(create.call_args.kwargs["timeout_seconds"], 5)
+        self.assertEqual(client.batch_execute.call_args.kwargs, {"timeout_seconds": 1})
+        self.assertEqual(client.iter_batch_responses.call_args.kwargs, {})
+
     def test_table_store_waits_for_an_elected_primary_before_sending(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
         from temporalstore_sdk import RaftPrimaryUnavailable

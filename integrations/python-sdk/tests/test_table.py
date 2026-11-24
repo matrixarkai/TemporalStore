@@ -64,6 +64,25 @@ class TableClientTest(unittest.TestCase):
                 self.assertEqual(channel.return_value.batch_execute.call_args.kwargs,
                                  {"load_version": 19})
 
+    def test_per_call_deadline_reuses_the_same_channel(self):
+        metadata = Mock()
+        metadata.table_topology.return_value = TableTopology(
+            "kvcache", "model", 1, 73, 1, (Shard(73, None, (), 7, "primary"),),
+        )
+        with patch("temporalstore_sdk.table.CommandClient") as channel:
+            channel.return_value.batch_execute.return_value = commands.BatchExecuteResponse(
+                responses=[commands.CommandResponse()],
+            )
+            with TableClient(metadata, "kvcache", "model", timeout_seconds=5) as table:
+                table.batch_execute([get("key")], timeout_seconds=1)
+                table.batch_execute([get("key")])
+            channel.assert_called_once_with("primary", timeout_seconds=5)
+            self.assertEqual(
+                [call.kwargs for call in channel.return_value.batch_execute.call_args_list],
+                [{"load_version": 7, "timeout_seconds": 1}, {"load_version": 7}],
+            )
+            metadata.table_topology.assert_called_once()
+
     def test_stale_fence_expires_route_without_retrying_the_failed_write(self):
         metadata = Mock()
         metadata.table_topology.side_effect = [
