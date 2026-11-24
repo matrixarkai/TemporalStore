@@ -4,6 +4,7 @@
 import os
 from threading import Lock
 
+import grpc
 from lmcache.v1.distributed.api import ObjectKey
 from temporalstore_sdk import MetadataClient, MetadataError, TableClient, commands as pb
 
@@ -35,7 +36,24 @@ def _command(document: dict) -> pb.Command:
     raise ValueError(f"unsupported KV command {kind}")
 
 
+def _execute_batch(client: TableClient, commands: list[pb.Command]) -> list[pb.CommandResponse]:
+    try:
+        return client.batch_execute(commands)
+    except grpc.RpcError as error:
+        if (error.code() != grpc.StatusCode.RESOURCE_EXHAUSTED
+                or len(commands) < 2
+                or not all(command.HasField("string_get") for command in commands)):
+            raise
+        # Actual stored bytes can exceed the destination size used for batching.
+        # Retry only the reads and leave the load path to check each value's size.
+        midpoint = len(commands) // 2
+        return _execute_batch(client, commands[:midpoint]) + _execute_batch(client, commands[midpoint:])
+
+
 class TableValueBackend(ValueBackend):
+    # Leave space for the protobuf envelope below the transport's 32 MiB limit.
+    _max_load_payload_bytes = 24 * 1024 * 1024
+
     def __init__(
         self, meta_url: str, namespace: str, timeout_seconds: float,
         lookup_timeout_seconds: float, ttl_seconds: int,
@@ -79,7 +97,7 @@ class TableValueBackend(ValueBackend):
                     commands.append(_command(document))
                     bytes_used += size
                     end += 1
-                responses = client.batch_execute(commands)
+                responses = _execute_batch(client, commands)
                 for (index, document), response in zip(group[start:end], responses, strict=True):
                     if not response.status.ok:
                         raise MetadataError(response.status.code, response.status.message)
