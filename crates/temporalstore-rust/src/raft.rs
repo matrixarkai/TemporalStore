@@ -4900,7 +4900,7 @@ impl RaftCluster {
         self.ensure_follower_pipeline(transport);
         let (entry_index, staged) = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
-            inner.ensure_live_leader()?;
+            inner.ensure_proposal_leader()?;
             let entry_bytes = command_size_bytes(&command);
             if entry_bytes > inner.config.max_memory_replicate_log_bytes {
                 let leader_id = inner.leader_id;
@@ -5031,7 +5031,7 @@ impl RaftCluster {
         self.ensure_follower_pipeline(transport);
         let entry_index = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
-            inner.ensure_live_leader()?;
+            inner.ensure_proposal_leader()?;
             let entry_bytes = command_size_bytes(&command);
             if entry_bytes > inner.config.max_memory_replicate_log_bytes {
                 let leader_id = inner.leader_id;
@@ -5158,7 +5158,7 @@ impl RaftCluster {
     {
         let (entry, leader_id, target_ids, required) = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
-            inner.ensure_live_leader()?;
+            inner.ensure_proposal_leader()?;
             let entry_bytes = command_size_bytes(&command);
             if entry_bytes > inner.config.max_memory_replicate_log_bytes {
                 let leader_id = inner.leader_id;
@@ -5380,7 +5380,7 @@ impl RaftCluster {
                             prev_log_index,
                             prev_log_term,
                             entries: vec![entry.clone()],
-                            leader_commit: entry.index,
+                            leader_commit: leader.commit_index,
                         }
                     };
                     if let Ok(response) = transport.append_entries(retry_request) {
@@ -5415,11 +5415,15 @@ impl RaftCluster {
 
         let leader_response = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            if inner.leader_id != leader_id {
+                return Err(RaftError::NotLeader { node_id: leader_id });
+            }
             let leader = inner
                 .nodes
                 .get_mut(&leader_id)
-                .ok_or(RaftError::LeaderUnavailable)?;
-            leader.commit_index = entry.index;
+                .filter(|node| node.role == RaftRole::Leader && node.current_term == entry.term)
+                .ok_or(RaftError::NotLeader { node_id: leader_id })?;
+            leader.commit_index = leader.commit_index.max(entry.index);
             let response = if leader.replica_role.can_serve_data() {
                 apply_committed(leader).unwrap_or(CommandResponse::Empty)
             } else {

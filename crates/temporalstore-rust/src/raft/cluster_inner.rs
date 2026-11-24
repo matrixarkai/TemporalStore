@@ -128,6 +128,20 @@ impl RaftClusterInner {
         self.promote_best_live_follower()
     }
 
+    pub(super) fn ensure_proposal_leader(&mut self) -> Result<(), RaftError> {
+        let Some(local_node_id) = self.local_node_id else {
+            return self.ensure_live_leader();
+        };
+        let is_local_leader = self.leader_id == local_node_id
+            && self.nodes.get(&local_node_id).is_some_and(|node| {
+                node.alive && node.role == RaftRole::Leader
+            });
+        if !is_local_leader {
+            return Err(RaftError::NotLeader { node_id: local_node_id });
+        }
+        Ok(())
+    }
+
     pub(super) fn promote_best_live_follower(&mut self) -> Result<(), RaftError> {
         let candidate = self.best_live_candidate()?;
         self.elect_leader(candidate)

@@ -2125,3 +2125,89 @@ fn matrixraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() 
         .contains("healed_catchup=true"));
 }
 
+
+#[test]
+fn a_local_follower_cannot_propose_through_the_remote_leaders_shadow() {
+    let cluster = RaftCluster::new_single_shard(11, [1, 2, 3]);
+    let before = cluster.status();
+    assert_eq!(before.leader_id, 1);
+    cluster.set_local_node_id(2);
+
+    let result = cluster.propose_distributed(
+        Command::StringSet {
+            key: "queued-write".to_string(),
+            value: b"value".to_vec(),
+        },
+        &cluster,
+    );
+    assert!(matches!(result, Err(RaftError::NotLeader { node_id: 2 })));
+    assert_eq!(cluster.status(), before);
+}
+
+#[test]
+fn snapshot_retry_advertises_only_the_committed_prefix() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Clone)]
+    struct SnapshotRetry {
+        installed: Arc<AtomicBool>,
+        retry_frontier: Arc<Mutex<Option<(u64, u64)>>>,
+    }
+
+    impl RaftTransport for SnapshotRetry {
+        fn append_entries(
+            &self,
+            request: AppendEntriesRequest,
+        ) -> Result<AppendEntriesResponse, RaftError> {
+            if !self.installed.load(Ordering::Acquire) {
+                return Err(RaftError::Transport("initial append failed".to_string()));
+            }
+            let index = request.entries.last().map_or(request.prev_log_index, |entry| entry.index);
+            if !request.entries.is_empty() {
+                *self.retry_frontier.lock().unwrap() = Some((request.leader_commit, index));
+            }
+            Ok(AppendEntriesResponse {
+                term: request.term,
+                success: true,
+                match_index: index,
+                reject_reason: None,
+            })
+        }
+
+        fn request_vote(&self, _: VoteRequest) -> Result<VoteResponse, RaftError> {
+            unreachable!("snapshot recovery does not send votes")
+        }
+
+        fn install_snapshot(
+            &self,
+            request: InstallSnapshotRequest,
+        ) -> Result<InstallSnapshotResponse, RaftError> {
+            self.installed.store(true, Ordering::Release);
+            Ok(InstallSnapshotResponse {
+                term: request.term,
+                success: true,
+                last_included_index: request.snapshot.last_included_index,
+                reject_reason: None,
+            })
+        }
+    }
+
+    let cluster = RaftCluster::new_single_shard(11, [1, 2]);
+    cluster
+        .propose(Command::StringSet { key: "existing".to_string(), value: vec![1] })
+        .unwrap();
+    let committed = cluster.status().commit_index;
+    let transport = SnapshotRetry {
+        installed: Arc::new(AtomicBool::new(false)),
+        retry_frontier: Arc::new(Mutex::new(None)),
+    };
+
+    cluster
+        .propose_distributed(
+            Command::StringSet { key: "new".to_string(), value: vec![2] },
+            &transport,
+        )
+        .unwrap();
+    assert_eq!(*transport.retry_frontier.lock().unwrap(), Some((committed, committed + 1)));
+    assert_eq!(cluster.status().commit_index, committed + 1);
+}
