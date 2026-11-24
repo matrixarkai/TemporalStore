@@ -46,34 +46,26 @@ others; choose the API and acknowledgement policy before measuring a workload.
 
 ### LLM KV cache with LMCache and vLLM
 
-TemporalStore provides an L2 storage tier for LMCache. vLLM's
-`LMCacheMPConnector` exchanges KV blocks with a local LMCache server.
-TemporalStore streams the block payloads through its blob API and batches
-metadata commands for lookup and expiry. Workers attached to the same LMCache
-server can reuse a prompt prefix when the model and KV layout match.
+TemporalStore provides a shared L2 cache for LMCache and vLLM. vLLM's
+\`LMCacheMPConnector\` exchanges KV blocks with its local LMCache server.
+LMCache uses the same TemporalStore Python SDK as the Feast integration.
+TemporalStore places each model and parallel layout in a table and stores
+each KV chunk as one binary value. The table owns placement, expiry, and
+replication. Workers using the same model and layout reuse a shared table.
 
-1. Start a TemporalStore datanode. Install the adapter and its command client
-   from this checkout with `python -m pip install ./integrations/feast ./integrations/lmcache`.
-2. Start LMCache with the TemporalStore adapter. Point the blob and command URLs
-   at the same datanode. Use a separate adapter for each independent datanode
-   when configuring replicas.
-3. Start vLLM with `LMCacheMPConnector`. On a test deployment, disable vLLM's
-   prefix cache, send a prompt, and wait for the adapter's store counter to
-   increase. Clear LMCache L1 with `POST /cache/clear` and repeat the prompt.
-   The adapter's load counter in `GET /status` confirms TemporalStore served it.
-
-The adapter enforces a capacity budget per process and evicts unlocked entries.
-Use one writer per namespace to enforce that budget. Metadata expiry controls
-lookup visibility. Eviction or explicit deletion reclaims the payload.
-LMCache's default store policy sends each block to all configured replicas,
-and a reachable replica can serve blocks it accepted.
-
-In a local WSL test with two CPU vLLM workers, eight concurrent clients, and
-three datanodes, all 64 cross-worker replays loaded their KV blocks from L2.
-All 32 replays also succeeded with one datanode disconnected.
+1. Install the SDK and adapter from this checkout with
+   \`python -m pip install ./integrations/python-sdk ./integrations/feast ./integrations/lmcache\`.
+2. Create a namespace and a replicated table for the model layout. Configure
+   each worker's LMCache adapter with the metaserver's \`meta_url\` and the
+   shared \`namespace\`. The SDK discovers the owning shard and sends native
+   gRPC requests to its datanode.
+3. Start vLLM with \`LMCacheMPConnector\`. For a cross-worker smoke test, disable
+   vLLM prefix caching, send a prompt, and wait for the L2 store counter to
+   increase. Clear LMCache L1 with \`POST /cache/clear\`, repeat the prompt on
+   the second worker, and check that the L2 load counter increased.
 
 See the [LMCache integration guide](integrations/lmcache/README.md) for
-configuration, replica setup, a vLLM smoke test, and the L2 benchmark.
+model-layout naming, adapter configuration, and benchmarking commands.
 
 ### Feast API support
 
