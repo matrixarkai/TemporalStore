@@ -511,11 +511,14 @@ impl LocalRaftWal {
             .last()
             .map(|segment| segment.bytes)
             .unwrap_or_default();
-        // Every segment opens with a full base record, so pruning whole segments can
-        // never orphan a delta. Rotation still honours `max_segment_bytes`; it is only
-        // clamped up to one base record so a segment can always hold the record that
-        // opens it.
-        let rotate_threshold = max_segment_bytes.max(cursor.base_bytes);
+        // Every segment opens with a full base record so pruning can keep deltas recoverable.
+        // Give an oversized base one segment's worth of append space. Rotating at the base's
+        // own size would rewrite the entire retained log on every subsequent delta.
+        let rotate_threshold = if cursor.base_bytes >= max_segment_bytes {
+            cursor.base_bytes.saturating_add(max_segment_bytes)
+        } else {
+            max_segment_bytes
+        };
         // Size-based rotation as before -- plus: a COMPACTING base opens a segment. When the
         // snapshot boundary advanced, the base supersedes the history in the current segment,
         // and only at a segment boundary can pruning reclaim it. Ordinary re-bases (an empty

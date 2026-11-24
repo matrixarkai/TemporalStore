@@ -66,6 +66,41 @@ fn wal_append_cost_stays_flat_as_the_log_grows() {
     );
 }
 
+#[test]
+fn oversized_wal_base_leaves_room_for_deltas_and_recovers() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = RaftConfig {
+        max_segment_bytes: 16 * 1024,
+        min_keep_segment_num: 64,
+        ..RaftConfig::default()
+    };
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 92, [1], config.clone()).unwrap();
+    let value = vec![127; 96 * 1024];
+    cluster
+        .propose(Command::StringSet {
+            key: "oversized-base".to_string(),
+            value: value.clone(),
+        })
+        .unwrap();
+    let base_bytes = wal_dir_bytes(dir.path());
+    assert!(base_bytes > config.max_segment_bytes);
+
+    propose_range(&cluster, 0, 8);
+    assert!(wal_dir_bytes(dir.path()) - base_bytes < config.max_segment_bytes);
+    drop(cluster);
+
+    let restored =
+        RaftCluster::restore_single_shard_from_wal(dir.path(), 92, [1], config).unwrap();
+    assert_eq!(restored.status().commit_index, 9);
+    for (key, value) in [("oversized-base", value), ("wal-cost-7", vec![7; 32])] {
+        let response = restored
+            .read_local(1, Command::StringGet { key: key.to_string() })
+            .unwrap();
+        assert_eq!(response, CommandResponse::Bytes { value: Some(value) });
+    }
+}
+
 /// Folding incremental records back together has to reproduce the log exactly, including
 /// across the segment rotations that write a fresh base record.
 #[test]
