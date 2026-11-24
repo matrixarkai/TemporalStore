@@ -2135,19 +2135,24 @@ fn local_replica_cache_policy_survives_snapshot_install_and_recovery() {
             .map_err(RaftError::InvalidConfig)
         }
     }));
+    let config = RaftConfig {
+        max_memory_replicate_log_bytes: 8 << 20,
+        max_apply_batch_bytes: 8 << 20,
+        ..RaftConfig::default()
+    };
     let open = || {
         let target = RaftCluster::restore_single_shard_with_factory(
             root.path(),
             7,
             [1],
-            RaftConfig::default(),
+            config.clone(),
             Some((1, factory.clone())),
         )
         .unwrap();
         target.set_local_node_id(1);
         target
     };
-    let source = RaftCluster::new_single_shard(7, [1]);
+    let source = RaftCluster::new_single_shard_with_config(7, [1], config.clone()).unwrap();
     let payload: Vec<u8> = (0..(2 << 20)).map(|index| index as u8).collect();
     source
         .propose(Command::StringSet {

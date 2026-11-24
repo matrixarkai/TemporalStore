@@ -251,7 +251,7 @@ impl RaftClusterInner {
                 .max(snapshot_floor.min(leader_commit_index));
             if let Some(snapshot) = leader_snapshot.clone() {
                 if node_last_log_or_snapshot_index(node) < snapshot.last_included_index {
-                    install_snapshot_state_for_role(node, snapshot);
+                    install_snapshot_state_for_role(node, snapshot)?;
                 }
             }
             node.log = leader_log
