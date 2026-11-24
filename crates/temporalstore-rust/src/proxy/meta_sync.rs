@@ -33,10 +33,9 @@ impl ProxyService {
     /// configured, the address that leads, and whether they are the same.
     pub(super) fn fetch_meta_leader(&self) -> Result<crate::meta::MetaRaftLeaderResponse, Status> {
         let options = self.options();
-        crate::http::get_json_with_options_and_headers::<crate::meta::MetaRaftLeaderResponse>(
+        get_meta_json::<crate::meta::MetaRaftLeaderResponse>(
             &options.meta_addr,
             "/meta/raft/leader",
-            &crate::meta::admin_auth_header(),
             options.control_http_options(),
         )
         .map_err(|err| Status::error("meta_leader_unavailable", err.to_string()))
@@ -47,13 +46,12 @@ impl ProxyService {
         old_topology_version: u64,
     ) -> Result<TopologyVersionReport, Status> {
         let options = self.options();
-        post_json_with_options_and_headers::<_, TopologyVersionReport>(
+        post_meta_json::<_, TopologyVersionReport>(
             &options.meta_addr,
             "/meta/topology_version",
             &TopologyVersionRequest {
                 old_topology_version,
             },
-            &crate::meta::admin_auth_header(),
             options.control_http_options(),
         )
         .map_err(|err| Status::error("topology_check_failed", err.to_string()))
@@ -73,11 +71,10 @@ impl ProxyService {
             config_version: proxy_config_version(&options),
             binary_version: options.binary_version.clone(),
         };
-        match post_json_with_options_and_headers::<_, ProxyHeartbeatResponse>(
+        match post_meta_json::<_, ProxyHeartbeatResponse>(
             &options.meta_addr,
             "/proxies/heartbeat",
             &request,
-            &crate::meta::admin_auth_header(),
             options.control_http_options(),
         ) {
             Ok(response) if response.status.ok || response.status.code == "resource_frozen" => {
@@ -103,11 +100,10 @@ impl ProxyService {
                     return response;
                 }
                 if self.auto_register_proxy(&options).status.ok {
-                    let response = post_json_with_options_and_headers::<_, ProxyHeartbeatResponse>(
+                    let response = post_meta_json::<_, ProxyHeartbeatResponse>(
                         &options.meta_addr,
                         "/proxies/heartbeat",
                         &request,
-                        &crate::meta::admin_auth_header(),
                         options.control_http_options(),
                     )
                     .unwrap_or_else(|err| ProxyHeartbeatResponse {
@@ -201,7 +197,7 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .auto_register_total += 1;
-        let response = post_json_with_options_and_headers::<_, AckResponse>(
+        let response = post_meta_json::<_, AckResponse>(
             &options.meta_addr,
             "/proxies/register",
             &RegisterProxyRequest {
@@ -212,7 +208,6 @@ impl ProxyService {
                 config_version: proxy_config_version(options),
                 binary_version: options.binary_version.clone(),
             },
-            &crate::meta::admin_auth_header(),
             options.control_http_options(),
         )
         .unwrap_or_else(|err| AckResponse {

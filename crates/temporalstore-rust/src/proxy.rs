@@ -47,13 +47,11 @@ use policy::{
 use response::execute_error;
 
 use crate::client::{
-    ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport, ReplicaReadPolicy,
+    get_meta_json, post_meta_json, ClientStats, ClientTopologyCacheReport,
+    ClientTopologyRefreshReport, ReplicaReadPolicy,
     RequestOptions, TableOptions, TemporalStoreClient,
 };
-use crate::http::{
-    get_json_with_options_and_headers, post_json_with_options_and_headers, HttpRequest,
-    HttpRequestOptions,
-};
+use crate::http::{HttpRequest, HttpRequestOptions};
 use crate::meta::GetShardResponse;
 use crate::meta::{
     AckResponse, ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest,
@@ -1475,10 +1473,9 @@ impl ProxyService {
 
     fn get_shard(&self, shard_id: ShardId, count_error: bool) -> Result<GetShardResponse, Status> {
         let options = self.options();
-        get_json_with_options_and_headers::<GetShardResponse>(
+        get_meta_json::<GetShardResponse>(
             &options.meta_addr,
             &format!("/shards/{shard_id}"),
-            &crate::meta::admin_auth_header(),
             options.http_options(),
         )
         .map_err(|err| {
@@ -2024,10 +2021,9 @@ impl ProxyService {
         if options.context_shard_count != 0 {
             return;
         }
-        let Ok(listed) = get_json_with_options_and_headers::<crate::meta::ListShardsResponse>(
+        let Ok(listed) = get_meta_json::<crate::meta::ListShardsResponse>(
             &options.meta_addr,
             "/shards",
-            &crate::meta::admin_auth_header(),
             options.control_http_options(),
         ) else {
             return;

@@ -18,6 +18,16 @@ combine name, partition-id mode, partition version, member partition ids, slot r
 primary/replica endpoints, topology version, refresh reason, and missing-route counts are exposed
 through client preflight and route-cache reports.
 
+Open a table with `TemporalStoreClient` and use `TemporalStoreTable` for normal data
+operations. Custom transports can use `resolve_route_with_policy` and
+`batch_read_policy` to select an endpoint and report outcomes through the client's
+backend failure methods.
+
+The SDK and proxy authenticate metaserver requests through the SDK's environment
+credential provider. A direct client using `TS_META_ADMIN_TOKEN` runs inside the
+cluster trust boundary. The token grants administrative access to the
+metaserver.
+
 The versioned schema lives at:
 
 ```text

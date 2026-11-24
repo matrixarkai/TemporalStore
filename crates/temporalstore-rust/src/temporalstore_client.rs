@@ -12,8 +12,7 @@ use thiserror::Error;
 
 use crate::http::{
     get_json, get_json_with_options, post_json, post_json_with_options,
-    post_json_with_options_and_headers, HttpError,
-    HttpRequestOptions,
+    HttpError, HttpRequestOptions,
 };
 use crate::meta::GetShardResponse;
 use crate::meta::{
@@ -42,7 +41,8 @@ mod retry;
 #[path = "client/client_routing_operations.rs"]
 mod routing;
 
-use client_routing::batch_read_policy;
+pub(crate) use client_meta_sync::{get_meta_json, post_meta_json};
+pub use client_routing::batch_read_policy;
 use commands::{command_is_dropped, command_key, is_write};
 use retry::{
     classify_retry_decision, replica_read_policy_from_meta, retry_attempts_for,
