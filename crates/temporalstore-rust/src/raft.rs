@@ -6634,8 +6634,9 @@ fn validate_raft_storage_apply_fence(record: &RaftWalRecord) -> Result<(), RaftE
 }
 
 fn raft_wal_checksum(record: &RaftWalRecord) -> io::Result<String> {
-    let bytes = serde_json::to_vec(record).map_err(io::Error::other)?;
-    let digest = Sha256::digest(bytes);
+    let mut hasher = Sha256::new();
+    serde_json::to_writer(&mut hasher, record).map_err(io::Error::other)?;
+    let digest = hasher.finalize();
     let mut checksum = String::with_capacity(digest.len() * 2);
     for byte in digest {
         checksum.push_str(&format!("{byte:02x}"));

@@ -78,6 +78,7 @@ fn oversized_wal_base_leaves_room_for_deltas_and_recovers() {
     };
     let cluster =
         RaftCluster::new_single_shard_with_wal(dir.path(), 92, [1], config.clone()).unwrap();
+    cluster.set_local_node_id(1);
     let value = vec![127; 96 * 1024];
     cluster
         .propose(Command::StringSet {
@@ -95,6 +96,11 @@ fn oversized_wal_base_leaves_room_for_deltas_and_recovers() {
     let restored =
         RaftCluster::restore_single_shard_from_wal(dir.path(), 92, [1], config).unwrap();
     assert_eq!(restored.status().commit_index, 9);
+
+    let wal = LocalRaftWal::new(dir.path());
+    let record = wal.load_node(92, 1).unwrap().unwrap();
+    let materialized = Sha256::digest(serde_json::to_vec(&record).unwrap());
+    assert_eq!(raft_wal_checksum(&record).unwrap(), format!("{materialized:x}"));
     for (key, value) in [("oversized-base", value), ("wal-cost-7", vec![7; 32])] {
         let response = restored
             .read_local(1, Command::StringGet { key: key.to_string() })
