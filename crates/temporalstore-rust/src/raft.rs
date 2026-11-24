@@ -5988,7 +5988,48 @@ fn json_size_bytes<T: serde::Serialize + ?Sized>(value: &T) -> u64 {
 }
 
 fn command_size_bytes(command: &Command) -> u64 {
-    json_size_bytes(command)
+    let Command::StringSetConditional {
+        key,
+        value,
+        ttl_ms,
+        condition,
+        return_old,
+        keep_ttl,
+    } = command else {
+        return json_size_bytes(command);
+    };
+    // Preserve the existing byte budget. The command serializes its value as padded
+    // base64 inside a JSON string, so only the small envelope needs serialization.
+    let header = json_size_bytes(&Command::StringSetConditional {
+        key: key.clone(),
+        value: Vec::new(),
+        ttl_ms: *ttl_ms,
+        condition: *condition,
+        return_old: *return_old,
+        keep_ttl: *keep_ttl,
+    });
+    let bytes = base64::encoded_len(value.len(), true).unwrap_or(usize::MAX);
+    header.saturating_add(bytes as u64)
+}
+
+#[cfg(test)]
+#[test]
+fn conditional_write_size_matches_the_serialized_command() {
+    use crate::types::StringSetCondition;
+
+    for size in [0, 1, 2, 3, 25, 4096, 9 * 1024 * 1024] {
+        for ttl_ms in [None, Some(0), Some(42)] {
+            let command = Command::StringSetConditional {
+                key: "quoted\"/é\u{0}".to_string(),
+                value: vec![0xff; size],
+                ttl_ms,
+                condition: StringSetCondition::IfNotExists,
+                return_old: false,
+                keep_ttl: ttl_ms.is_none(),
+            };
+            assert_eq!(command_size_bytes(&command), json_size_bytes(&command));
+        }
+    }
 }
 
 fn raft_log_bytes_after(log: &[RaftLogEntry], index: u64) -> u64 {
