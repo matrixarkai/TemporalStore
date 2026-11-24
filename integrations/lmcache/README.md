@@ -54,17 +54,18 @@ world_size, local_world_size)` from `lmcache_temporalstore.layout`. The model
 name must match LMCache's model identity. Workers with the same layout use
 the same table across ranks.
 
-Set `meta_url` to the metaserver's base URL to select the distributed KV backend
-by default. The namespace defaults to `"kvcache"`. The Python SDK resolves the
+Set `meta_url` to the metaserver's endpoint to select the distributed KV backend
+by default. Use `grpc://host:port` for protobuf discovery with a metaserver
+started with `TS_META_GRPC_BIND_ADDR`. The namespace defaults to `"kvcache"`. The Python SDK resolves the
 table's shards and their gRPC addresses. It includes load versions when the
 metaserver reports them. When the metaserver requires authentication, set
 `TS_META_ADMIN_TOKEN` in the LMCache server environment.
 
-Set \`proxy_grpc_target\` to a TemporalStore service proxy address such as
-\`127.0.0.1:17004\` to send table commands through its gRPC listener. Start
-\`matrixark_rust_service_proxy\` with \`TS_PROXY_GRPC_BIND_ADDR\` to enable the
-listener. Keep \`meta_url\` for model table identity and layout registration.
-Without \`proxy_grpc_target\`, the SDK sends commands directly to the datanodes.
+Set `proxy_grpc_target` to a TemporalStore service proxy address such as
+`127.0.0.1:17004` to send table commands through its gRPC listener. Start
+`matrixark_rust_service_proxy` with `TS_PROXY_GRPC_BIND_ADDR` to enable the
+listener. Keep `meta_url` for model table identity and layout registration.
+Without `proxy_grpc_target`, the SDK sends commands directly to the datanodes.
 
 Registry metadata and placement are managed by TemporalStore. Each LMCache
 chunk is one binary value under its existing encoded key. The value carries

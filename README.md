@@ -47,21 +47,21 @@ others; choose the API and acknowledgement policy before measuring a workload.
 ### LLM KV cache with LMCache and vLLM
 
 TemporalStore provides a shared L2 cache for LMCache and vLLM. vLLM's
-\`LMCacheMPConnector\` exchanges KV blocks with its local LMCache server.
+`LMCacheMPConnector` exchanges KV blocks with its local LMCache server.
 LMCache uses the same TemporalStore Python SDK as the Feast integration.
 TemporalStore places each model and parallel layout in a table and stores
 each KV chunk as one binary value. The table owns placement, expiry, and
 replication. Workers using the same model and layout reuse a shared table.
 
 1. Install the SDK and adapter from this checkout with
-   \`python -m pip install ./integrations/python-sdk ./integrations/feast ./integrations/lmcache\`.
+   `python -m pip install ./integrations/python-sdk ./integrations/feast ./integrations/lmcache`.
 2. Create a namespace and a replicated table for the model layout. Configure
-   each worker's LMCache adapter with the metaserver's \`meta_url\` and the
-   shared \`namespace\`. The SDK discovers the owning shard and sends native
+   each worker's LMCache adapter with the metaserver's `meta_url` and the
+   shared `namespace`. The SDK discovers the owning shard and sends native
    gRPC requests to its datanode.
-3. Start vLLM with \`LMCacheMPConnector\`. For a cross-worker smoke test, disable
+3. Start vLLM with `LMCacheMPConnector`. For a cross-worker smoke test, disable
    vLLM prefix caching, send a prompt, and wait for the L2 store counter to
-   increase. Clear LMCache L1 with \`POST /cache/clear\`, repeat the prompt on
+   increase. Clear LMCache L1 with `POST /cache/clear`, repeat the prompt on
    the second worker, and check that the L2 load counter increased.
 
 See the [LMCache integration guide](integrations/lmcache/README.md) for

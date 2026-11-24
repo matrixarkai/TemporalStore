@@ -37,9 +37,9 @@ The proxy binary reads each of them from the environment at startup:
 
 ## Protobuf listener
 
-Set \`TS_PROXY_GRPC_BIND_ADDR\` to bind a gRPC listener alongside the HTTP
-listener. Use the \`temporalstore.v1.ProxyService\` client and include
-\`namespace_name\` and \`table_name\` in each execution frame. The proxy derives
+Set `TS_PROXY_GRPC_BIND_ADDR` to bind a gRPC listener alongside the HTTP
+listener. Use the `temporalstore.v1.ProxyService` client and include
+`namespace_name` and `table_name` in each execution frame. The proxy derives
 the shard and load version from its SDK's topology. It forwards the original
 serialized commands and pins reads to the primary on this listener.
 
