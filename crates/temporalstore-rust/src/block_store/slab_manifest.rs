@@ -81,18 +81,20 @@ pub(super) fn rebuild_slab_manifest_at(
 ) -> Result<BTreeMap<u64, BlockStoreSlabDescriptor>, BlockStoreError> {
     let mut slabs = BTreeMap::new();
     let latest = latest_slab_id_at(root)?;
+    let owned_formats = owned_writer::owned_format_ids(root)?;
     for block_slab_id in slab_ids_at(root)? {
         let path = slab_path(root, block_slab_id);
         let bytes = read_block_store_file(&path, tally)?
             .into_bytes_charged_to_the_process_only();
-        let report = inspect_slab(&bytes, block_slab_id);
+        let owned_format = owned_formats.contains(&block_slab_id);
+        let report = inspect_slab(&bytes, block_slab_id, owned_format);
         slabs.insert(
             block_slab_id,
             BlockStoreSlabDescriptor {
                 stored_slab_id: block_slab_id,
                 block_slab_id,
                 owner_shard_id: report.owner_shard_id,
-                state: if block_slab_id == latest {
+                state: if block_slab_id == latest && !owned_format {
                     BlockStoreSlabState::Active
                 } else {
                     BlockStoreSlabState::Sealed
@@ -184,6 +186,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
     let mut file_bytes_read = 0_u64;
     let mut file_reads = 0_u64;
     let live_slab_ids = slab_ids_at(root)?.into_iter().collect::<BTreeSet<_>>();
+    let owned_formats = owned_writer::owned_format_ids(root)?;
     let delayed_slabs = delayed_destroy_slab_reports_at(root)?
         .into_iter()
         .map(|report| (report.block_slab_id, report))
@@ -219,6 +222,9 @@ pub(super) fn reconcile_slab_manifest_with_disk(
             let Some(slab) = slabs.get(block_slab_id) else {
                 return true;
             };
+            if slab.owner_shard_id.is_some() != owned_formats.contains(block_slab_id) {
+                return true;
+            }
             if slab.has_corruption || slab.state != BlockStoreSlabState::Sealed {
                 return true;
             }
@@ -251,6 +257,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
             (0..batch.len()).map(|_| None).collect();
         std::thread::scope(|scope| {
             for (slot, block_slab_id) in inspected.iter_mut().zip(batch.iter()) {
+                let owned_format = owned_formats.contains(block_slab_id);
                 scope.spawn(move || {
                     let path = slab_path(root, *block_slab_id);
                     // A TALLY PER WORKER, because this read happens on a thread this scope
@@ -268,7 +275,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                         .map(|read| read.into_bytes_charged_to_the_process_only());
                     let (taken_bytes, taken_reads) = tally.taken();
                     *slot = Some(read.map(|bytes| {
-                        let report = inspect_slab(&bytes, *block_slab_id);
+                        let report = inspect_slab(&bytes, *block_slab_id, owned_format);
                         let created =
                             file_created_unix_ms(&path).or_else(|| file_modified_unix_ms(&path));
                         let updated =
@@ -299,7 +306,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                 .expect("every slab in the batch is inspected exactly once")?;
             file_bytes_read = file_bytes_read.saturating_add(taken_bytes);
             file_reads = file_reads.saturating_add(taken_reads);
-            let desired_state = if *block_slab_id == latest {
+            let desired_state = if *block_slab_id == latest && !owned_formats.contains(block_slab_id) {
             BlockStoreSlabState::Active
         } else {
             BlockStoreSlabState::Sealed
@@ -623,7 +630,7 @@ pub(super) fn ensure_slab_descriptor(
         if slab.block_slab_id == block_slab_id {
             slab.state = state;
             slab.updated_unix_ms = Some(transition_unix_ms);
-        } else if slab.state == BlockStoreSlabState::Active {
+        } else if slab.state == BlockStoreSlabState::Active && slab.owner_shard_id.is_none() {
             slab.state = BlockStoreSlabState::Sealed;
             slab.updated_unix_ms = Some(transition_unix_ms);
         }

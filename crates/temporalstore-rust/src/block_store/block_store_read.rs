@@ -77,7 +77,8 @@ impl BlockStore {
         let read =
             LocalSlabBackend::new(&self.read_view.root).read_all(block_slab_id, &mut tally)?;
         let slab = read.charge(&self.read_view.counters);
-        let range = logical_range_from_slab(&slab, block_slab_id, offset, size)?;
+        let owned_format = owned_writer::has_owned_format(&self.read_view.root, block_slab_id)?;
+        let range = logical_range_from_slab(&slab, block_slab_id, offset, size, owned_format)?;
         let bytes = range.bytes;
         self.read_view
             .counters
@@ -124,11 +125,85 @@ impl BlockStore {
         block_slab_id: u64,
         bytes: &[u8],
     ) -> Result<(), BlockStoreError> {
+        self.install_slab_with_format(block_slab_id, bytes, None)
+    }
+
+    pub(crate) fn install_transferred_slab(
+        &self,
+        block_slab_id: u64,
+        bytes: &[u8],
+        owner: Option<u64>,
+    ) -> Result<(), BlockStoreError> {
+        self.install_slab_with_format(block_slab_id, bytes, Some(owner))
+    }
+
+    pub(crate) fn exported_slab_owner(&self, block_slab_id: u64) -> Result<Option<u64>, BlockStoreError> {
+        owned_writer::stored_slab_owner(&self.read_view.root, block_slab_id)
+    }
+
+    pub(crate) fn read_slab_for_transfer(
+        &self,
+        block_slab_id: u64,
+    ) -> Result<(Vec<u8>, Option<u64>), BlockStoreError> {
+        let mut retained = BlockStoreReadSnapshot::new(self);
+        retained.pin(block_slab_id);
+        let bytes = self.read_slab(block_slab_id)?;
+        let owner = self.exported_slab_owner(block_slab_id)?;
+        if owner.is_some() && record::slab_owner(&bytes, block_slab_id)? != owner {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "slab bytes do not match their durable ownership",
+            ).into());
+        }
+        Ok((bytes, owner))
+    }
+
+    fn install_slab_with_format(
+        &self,
+        block_slab_id: u64,
+        bytes: &[u8],
+        transferred_owner: Option<Option<u64>>,
+    ) -> Result<(), BlockStoreError> {
         #[cfg(test)]
         crate::snapshot_probe::note_slab_install(bytes.len() as u64);
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        std::fs::create_dir_all(&inner.root)?;
+        inner.check_owned_recovery()?;
+        let registered = owned_writer::stored_slab_owner(&inner.root, block_slab_id)?;
+        let expected_owner = transferred_owner.unwrap_or(registered);
         let path = slab_path(&inner.root, block_slab_id);
+        if inner.read_pins.contains_key(&block_slab_id) && path.try_exists()? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "a reader holds the installed slab",
+            ).into());
+        }
+        let slab_summary = summarize_slab(bytes, block_slab_id, expected_owner.is_some())?;
+        if slab_summary.owner_shard_id != expected_owner
+            || (registered.is_some() && registered != expected_owner)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "transferred slab ownership does not match its declared owner",
+            ).into());
+        }
+        if inner.owned_active.contains(&block_slab_id)
+            || (slab_summary.owner_shard_id.is_some() && block_slab_id == inner.block_slab_id)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "import overlaps an active slab writer",
+            )
+            .into());
+        }
+        let advances_legacy_cursor =
+            slab_summary.owner_shard_id.is_none() && block_slab_id >= inner.block_slab_id;
+        std::fs::create_dir_all(&inner.root)?;
+        owned_writer::check_imported_slab_owner(
+            &inner.root, block_slab_id, slab_summary.owner_shard_id,
+        )?;
+        if slab_summary.owner_shard_id.is_some() {
+            inner.owned_highest_id = inner.owned_highest_id.max(block_slab_id);
+        }
         let temp_path = path.with_extension(format!(
             "seg.tmp.{}",
             std::time::SystemTime::now()
@@ -142,13 +217,12 @@ impl BlockStore {
             temp.flush()?;
             temp.sync_all()?;
         }
-        let slab_summary = summarize_slab(bytes, block_slab_id)?;
-        if block_slab_id >= inner.block_slab_id {
+        if advances_legacy_cursor {
             inner.active_append_file = None;
         }
         std::fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
-        if block_slab_id >= inner.block_slab_id {
+        if advances_legacy_cursor {
             inner.block_slab_id = block_slab_id;
             inner.write_offset = bytes.len() as u64;
         }
@@ -189,6 +263,7 @@ impl BlockStore {
             for slab in inner.slabs.values_mut() {
                 if slab.block_slab_id != block_slab_id
                     && slab.state == BlockStoreSlabState::Active
+                    && slab.owner_shard_id.is_none()
                 {
                     slab.state = BlockStoreSlabState::Sealed;
                 }

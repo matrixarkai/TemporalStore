@@ -41,13 +41,13 @@ impl BlockStore {
         let logical: u64 = inner
             .slabs
             .iter()
-            .filter(|(id, _)| **id != inner.block_slab_id)
+            .filter(|(id, _)| !inner.protects_writer_slab(**id))
             .fold(0_u64, |sum, (_, slab)| sum.saturating_add(slab.logical_bytes));
         match inner.live_block_bytes.as_ref() {
             Some(published) => {
                 let live: u64 = published
                     .iter()
-                    .filter(|(id, _)| **id != inner.block_slab_id)
+                    .filter(|(id, _)| !inner.protects_writer_slab(**id))
                     .fold(0_u64, |sum, (_, slab)| sum.saturating_add(slab.live_bytes));
                 evaluate_reclaim_gate(live, logical, true, threshold_basis_points)
             }
@@ -365,7 +365,7 @@ impl BlockStore {
         max_scan_slabs: usize,
     ) -> Result<BlockStoreCandidateWindow, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        let current_block_slab_id = inner.block_slab_id;
+        inner.check_owned_recovery()?;
         let published_live = inner.live_block_bytes.clone();
         let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let slab_ids = slab_ids_at(&inner.root)?;
@@ -389,7 +389,7 @@ impl BlockStore {
                 .unwrap_or_default()
                 .saturating_add(bytes);
             let below_retention_floor = *block_slab_id < retain_from_block_slab_id;
-            let is_current = *block_slab_id == current_block_slab_id;
+            let is_current = inner.protects_writer_slab(*block_slab_id);
             let is_live = live_block_slab_ids.contains(block_slab_id)
                 || inner.read_pins.contains_key(block_slab_id);
             if !below_retention_floor || is_current || is_live {
@@ -410,7 +410,7 @@ impl BlockStore {
                 continue;
             }
             let below_retention_floor = block_slab_id < retain_from_block_slab_id;
-            let is_current = block_slab_id == current_block_slab_id;
+            let is_current = inner.protects_writer_slab(block_slab_id);
             let is_live = live_block_slab_ids.contains(&block_slab_id)
                 || inner.read_pins.contains_key(&block_slab_id);
             if below_retention_floor && !is_current && !is_live {
@@ -544,7 +544,7 @@ impl BlockStore {
         if delayed_destroy {
             std::fs::create_dir_all(delayed_destroy_dir(&inner.root))?;
         }
-        let current_block_slab_id = inner.block_slab_id;
+        inner.check_owned_recovery()?;
         let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let mut removed = Vec::new();
         let mut retained = Vec::new();
@@ -564,7 +564,7 @@ impl BlockStore {
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
             let below_retention_floor = block_slab_id < retain_from_block_slab_id;
-            let is_current = block_slab_id == current_block_slab_id;
+            let is_current = inner.protects_writer_slab(block_slab_id);
             let is_live = live_block_slab_ids.contains(&block_slab_id)
                 || inner.read_pins.contains_key(&block_slab_id);
             let is_selected = selected_block_slab_ids
@@ -709,6 +709,9 @@ impl BlockStore {
         }
         if !removed.is_empty() {
             inner.persist_slab_manifest_counted()?;
+            if !delayed_destroy {
+                inner.cleanup_purged_reservations(&removed, &inner.root)?;
+            }
         }
         Ok(BlockStoreGcReport {
             retain_from_block_slab_id,

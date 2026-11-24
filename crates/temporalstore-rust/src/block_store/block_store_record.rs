@@ -38,9 +38,19 @@ pub(super) const BLOCK_RECORD_MAGIC: &[u8; 2] = b"TB";
 // A slab header is independent of the record format. Record offsets remain
 // physical offsets from the start of the file.
 const OWNED_SLAB_MAGIC: &[u8; 8] = b"TSOWN\x01\r\n";
-const OWNED_SLAB_HEADER_LEN: usize = 28;
+pub(super) const OWNED_SLAB_HEADER_LEN: usize = 28;
 
-fn slab_owner(slab: &[u8], slab_id: u64) -> Result<Option<u64>, BlockStoreError> {
+pub(super) fn encode_slab_owner(slab_id: u64, owner: u64) -> [u8; OWNED_SLAB_HEADER_LEN] {
+    let mut header = [0; OWNED_SLAB_HEADER_LEN];
+    header[..8].copy_from_slice(OWNED_SLAB_MAGIC);
+    header[8..16].copy_from_slice(&slab_id.to_le_bytes());
+    header[16..24].copy_from_slice(&owner.to_le_bytes());
+    let checksum = crate::checksum::crc32c(&header[..24]).to_le_bytes();
+    header[24..].copy_from_slice(&checksum);
+    header
+}
+
+pub(super) fn slab_owner(slab: &[u8], slab_id: u64) -> Result<Option<u64>, BlockStoreError> {
     if !slab.starts_with(OWNED_SLAB_MAGIC) {
         return Ok(None);
     }
@@ -55,6 +65,21 @@ fn slab_owner(slab: &[u8], slab_id: u64) -> Result<Option<u64>, BlockStoreError>
         return Err(corrupt_block_envelope(&address, "invalid slab ownership header"));
     }
     Ok(Some(owner))
+}
+
+fn owner_in_format(
+    slab: &[u8],
+    slab_id: u64,
+    owned_format: bool,
+) -> Result<Option<u64>, BlockStoreError> {
+    if !owned_format {
+        return Ok(None);
+    }
+    if let Some(owner) = slab_owner(slab, slab_id)? {
+        return Ok(Some(owner));
+    }
+    let address = ElementEntry::from_parts(slab_id, 0, 0, None, None);
+    Err(corrupt_block_envelope(&address, "missing slab ownership header"))
 }
 
 pub(super) const BLOCK_RECORD_CHECKSUM_OFFSET: usize = BLOCK_RECORD_MAGIC.len();
@@ -419,6 +444,7 @@ pub(super) fn logical_range_from_slab(
     block_slab_id: u64,
     offset: u64,
     size: u64,
+    owned_format: bool,
 ) -> Result<LogicalRangeRead, BlockStoreError> {
     if size == 0 {
         return Ok(LogicalRangeRead {
@@ -426,7 +452,7 @@ pub(super) fn logical_range_from_slab(
             compressed_records_read: 0,
         });
     }
-    let owner = slab_owner(slab, block_slab_id)?;
+    let owner = owner_in_format(slab, block_slab_id, owned_format)?;
     if owner.is_none()
         && (slab.len() < BLOCK_RECORD_HEADER_LEN || !slab.starts_with(BLOCK_RECORD_MAGIC))
     {
@@ -570,6 +596,25 @@ fn parse_block_record_header(
         object_id: None,
         routing_bucket: None,
         compression,
+    })
+}
+
+pub(super) fn incomplete_block_record_tail(
+    prefix: &[u8],
+    remaining: u64,
+    slab_id: u64,
+    offset: u64,
+) -> bool {
+    let magic_len = prefix.len().min(BLOCK_RECORD_MAGIC.len());
+    if prefix[..magic_len] != BLOCK_RECORD_MAGIC[..magic_len] {
+        return false;
+    }
+    if remaining < BLOCK_RECORD_HEADER_LEN as u64 {
+        return !prefix.is_empty();
+    }
+    let address = ElementEntry::from_parts(slab_id, offset, 0, None, None);
+    parse_block_record_header(prefix, &address).is_ok_and(|header| {
+        header.header_len as u64 + header.stored_len as u64 > remaining
     })
 }
 
@@ -721,8 +766,9 @@ pub(super) struct SlabSummary {
 pub(super) fn summarize_slab(
     slab: &[u8],
     block_slab_id: u64,
+    owned_format: bool,
 ) -> Result<SlabSummary, BlockStoreError> {
-    let owner = slab_owner(slab, block_slab_id)?;
+    let owner = owner_in_format(slab, block_slab_id, owned_format)?;
     if owner.is_none()
         && (slab.len() < BLOCK_RECORD_HEADER_LEN || !slab.starts_with(BLOCK_RECORD_MAGIC))
     {
@@ -832,12 +878,12 @@ pub(crate) fn block_index_checksums_enabled() -> bool {
 /// candidate, and reclaim still removes a slab only when nothing references it, so the effect is
 /// bounded to ordering. Anything that needs corruption DETECTED (the recovery report, the boundary
 /// report) must keep calling `inspect_slab`, which is why this did not replace it.
-pub(super) fn count_slab_blocks(slab: &[u8], block_slab_id: u64) -> (u64, u64) {
+pub(super) fn count_slab_blocks(slab: &[u8], block_slab_id: u64, owned_format: bool) -> (u64, u64) {
     let physical_bytes = slab.len() as u64;
     if slab.is_empty() {
         return (0, 0);
     }
-    let Ok(owner) = slab_owner(slab, block_slab_id) else {
+    let Ok(owner) = owner_in_format(slab, block_slab_id, owned_format) else {
         return (0, physical_bytes);
     };
     if owner.is_none()
@@ -870,17 +916,18 @@ pub(super) fn count_slab_blocks(slab: &[u8], block_slab_id: u64) -> (u64, u64) {
     (block_count, physical_bytes)
 }
 
-pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabReport {
-    inspect_slab_with_details(slab, block_slab_id, true)
+pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64, owned_format: bool) -> BlockStoreSlabReport {
+    inspect_slab_with_details(slab, block_slab_id, owned_format, true)
 }
 
-pub(super) fn inspect_slab_corruption(slab: &[u8], block_slab_id: u64) -> bool {
-    inspect_slab_with_details(slab, block_slab_id, false).has_corruption
+pub(super) fn inspect_slab_corruption(slab: &[u8], block_slab_id: u64, owned_format: bool) -> bool {
+    inspect_slab_with_details(slab, block_slab_id, owned_format, false).has_corruption
 }
 
 fn inspect_slab_with_details(
     slab: &[u8],
     block_slab_id: u64,
+    owned_format: bool,
     details: bool,
 ) -> BlockStoreSlabReport {
     let mut report = BlockStoreSlabReport {
@@ -890,10 +937,10 @@ fn inspect_slab_with_details(
     };
     let mut object_ids = BTreeSet::new();
     let mut routing_buckets = BTreeSet::new();
-    if slab.is_empty() {
+    if slab.is_empty() && !owned_format {
         return report;
     }
-    report.owner_shard_id = match slab_owner(slab, block_slab_id) {
+    report.owner_shard_id = match owner_in_format(slab, block_slab_id, owned_format) {
         Ok(owner) => owner,
         Err(error) => {
             record_slab_inspection_error(&mut report, 0, error.to_string());
@@ -1037,11 +1084,7 @@ mod owned_slab_tests {
     use super::super::{BlockStore, slab_path};
 
     fn owned_slab(slab_id: u64, owner: u64) -> Vec<u8> {
-        let mut slab = OWNED_SLAB_MAGIC.to_vec();
-        slab.extend_from_slice(&slab_id.to_le_bytes());
-        slab.extend_from_slice(&owner.to_le_bytes());
-        slab.extend_from_slice(&crate::checksum::crc32c(&slab).to_le_bytes());
-        slab
+        encode_slab_owner(slab_id, owner).to_vec()
     }
 
     #[test]
@@ -1052,7 +1095,7 @@ mod owned_slab_tests {
         let record = encode_block_record(payload, 3, None, None, BlockStoreOptions::default())
             .unwrap();
         let mut slab = owned_slab(slab_id, owner);
-        let empty = inspect_slab(&slab, slab_id);
+        let empty = inspect_slab(&slab, slab_id, true);
         assert_eq!(empty.owner_shard_id, Some(owner));
         assert_eq!(empty.block_count, 0);
         assert_eq!(
@@ -1061,44 +1104,46 @@ mod owned_slab_tests {
         );
         slab.extend_from_slice(&record.bytes);
 
-        let report = inspect_slab(&slab, slab_id);
+        let report = inspect_slab(&slab, slab_id, true);
         assert!(!report.has_corruption);
         assert_eq!(report.owner_shard_id, Some(owner));
         assert_eq!(
             report.block_index_entries[0].offset,
             OWNED_SLAB_HEADER_LEN as u64
         );
-        assert_eq!(count_slab_blocks(&slab, slab_id), (1, slab.len() as u64));
+        assert_eq!(count_slab_blocks(&slab, slab_id, true), (1, slab.len() as u64));
         assert_eq!(
-            summarize_slab(&slab, slab_id).unwrap().logical_bytes,
+            summarize_slab(&slab, slab_id, true).unwrap().logical_bytes,
             payload.len() as u64
         );
         assert_eq!(
-            logical_range_from_slab(&slab, slab_id, 0, payload.len() as u64)
+            logical_range_from_slab(&slab, slab_id, 0, payload.len() as u64, true)
                 .unwrap()
                 .bytes,
             payload.as_slice()
         );
-        assert_eq!(inspect_slab(&record.bytes, slab_id).owner_shard_id, None);
+        assert_eq!(inspect_slab(&record.bytes, slab_id, false).owner_shard_id, None);
     }
 
     #[test]
     fn invalid_slab_owner_is_never_recovered() {
         let mut slab = owned_slab(17, 42);
-        assert!(inspect_slab(&slab, 18).has_corruption);
-        assert!(inspect_slab(&slab[..OWNED_SLAB_HEADER_LEN - 1], 17).has_corruption);
+        assert!(inspect_slab(&slab, 18, true).has_corruption);
+        assert!(inspect_slab(&slab[..OWNED_SLAB_HEADER_LEN - 1], 17, true).has_corruption);
         slab[16] ^= 1;
-        let report = inspect_slab(&slab, 17);
+        let report = inspect_slab(&slab, 17, true);
         assert!(report.has_corruption);
         assert_eq!(report.owner_shard_id, None);
-        assert!(summarize_slab(&slab, 17).is_err());
-        assert!(logical_range_from_slab(&slab, 17, 0, 1).is_err());
+        assert!(summarize_slab(&slab, 17, true).is_err());
+        assert!(logical_range_from_slab(&slab, 17, 0, 1, true).is_err());
     }
 
     #[test]
     fn manifest_rebuild_recovers_owners_from_multiple_slab_files() {
         let root = tempfile::tempdir().unwrap();
         for (id, owner) in [(17, 0), (18, 42)] {
+            super::super::owned_writer::check_imported_slab_owner(root.path(), id, Some(owner))
+                .unwrap();
             std::fs::write(slab_path(root.path(), id), owned_slab(id, owner)).unwrap();
         }
         let store = BlockStore::new(root.path());
@@ -1109,6 +1154,78 @@ mod owned_slab_tests {
                     .iter()
                     .any(|slab| slab.block_slab_id == id && slab.owner_shard_id == Some(owner))
             );
+        }
+    }
+
+    #[test]
+    fn imported_owned_slab_never_becomes_the_legacy_cursor() {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        let legacy = store.append(b"legacy value").unwrap();
+        let imported_id = legacy.block_slab_id() + 1;
+        let owned = owned_slab(imported_id, 0);
+        store.install_transferred_slab(imported_id, &owned, Some(0)).unwrap();
+        assert_eq!(store.current_block_slab_id(), legacy.block_slab_id());
+        drop(store);
+
+        let reopened = BlockStore::new(root.path());
+        assert_eq!(reopened.current_block_slab_id(), legacy.block_slab_id());
+        let next = reopened.append(b"next legacy value").unwrap();
+        assert_eq!(next.block_slab_id(), legacy.block_slab_id());
+        assert_eq!(reopened.read_slab(imported_id).unwrap(), owned);
+    }
+
+    #[test]
+    fn malformed_owner_import_preserves_bytes_cursor_and_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        let address = store
+            .append_block_of_object_for_shard(42, b"existing value", None, None, 0)
+            .unwrap();
+        let slab_id = address.block_slab_id();
+        let active = store.active_block_slab_ids();
+        let offset = store.active_slab_write_offset();
+        let path = slab_path(root.path(), slab_id);
+        let bytes = std::fs::read(path).unwrap();
+        let files = || {
+            std::fs::read_dir(root.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<BTreeSet<_>>()
+        };
+        let before = files();
+        let mut malformed = owned_slab(slab_id, 42);
+        malformed[16] ^= 1;
+
+        assert!(store.install_slab(slab_id, &malformed).is_err());
+        assert_eq!(files(), before);
+        assert_eq!(store.active_block_slab_ids(), active);
+        assert_eq!(store.active_slab_write_offset(), offset);
+        assert_eq!(store.read_slab(slab_id).unwrap(), bytes);
+        assert_eq!(store.read(&address).unwrap(), b"existing value");
+    }
+
+    #[test]
+    fn legacy_raw_prefix_survives_reopen_and_manifest_rebuild_verbatim() {
+        for bytes in [b"TSOWN\x01\r\nlegacy raw block".to_vec(), owned_slab(17, 42)] {
+            for keep_manifest in [true, false] {
+                let root = tempfile::tempdir().unwrap();
+                let store = BlockStore::new(root.path());
+                store.install_slab(17, &bytes).unwrap();
+                store.inner.lock().unwrap().persist_slab_manifest_counted().unwrap();
+                drop(store);
+                if !keep_manifest {
+                    std::fs::remove_file(super::super::slab_manifest_path(root.path())).unwrap();
+                }
+                let reopened = BlockStore::new(root.path());
+                let descriptor = reopened.slab_descriptors().into_iter()
+                    .find(|slab| slab.block_slab_id == 17).unwrap();
+                assert_eq!(descriptor.owner_shard_id, None);
+                assert_eq!(descriptor.physical_bytes, bytes.len() as u64);
+                assert!(!descriptor.has_corruption);
+                assert_eq!(std::fs::read(slab_path(root.path(), 17)).unwrap(), bytes);
+                assert_eq!(reopened.read_logical_range(17, 0, bytes.len() as u64).unwrap(), bytes);
+            }
         }
     }
 }

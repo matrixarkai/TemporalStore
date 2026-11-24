@@ -17,6 +17,7 @@ mod paths;
 mod slab_manifest;
 mod slab_manifest_wire;
 mod slab_reports;
+mod owned_writer;
 #[path = "block_store/block_store_append.rs"]
 mod append;
 #[path = "block_store/block_store_read.rs"]
@@ -1119,6 +1120,10 @@ pub struct BlockStoreStats {
 /// when the slab is not part of the recovered checkpoint.
 pub trait SharedSlabSource: Send + Sync + std::fmt::Debug {
     fn fetch_slab(&self, block_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError>;
+
+    fn slab_owner_shard_id(&self, _block_slab_id: u64) -> Result<Option<u64>, BlockStoreError> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1969,6 +1974,10 @@ struct BlockStoreInner {
     // cleared by sync_durable(). See bulk_relaxed_durability().
     relaxed_dirty: bool,
     block_slab_id: u64,
+    owned_writers: BTreeMap<u64, Arc<Mutex<owned_writer::OwnedWriter>>>,
+    owned_active: BTreeSet<u64>,
+    owned_highest_id: u64,
+    owned_recovery_error: Option<String>,
     write_offset: u64,
     next_block_id: u64,
     options: BlockStoreOptions,
@@ -2223,11 +2232,7 @@ impl BlockStore {
     pub fn with_options(root: impl Into<PathBuf>, options: BlockStoreOptions) -> Self {
         let root = root.into();
         let root_created = std::fs::create_dir_all(&root).is_ok();
-        let block_slab_id = latest_slab_id_at(&root).unwrap_or_default();
-        let mut write_offset = slab_path(&root, block_slab_id)
-            .metadata()
-            .map(|metadata| metadata.len())
-            .unwrap_or_default();
+        let latest_slab_id = latest_slab_id_at(&root).unwrap_or_default();
         let manifest_exists = slab_manifest_path(&root).exists();
         // WHAT THE OPEN READS, TAKEN ON THE OPEN'S OWN TALLY. Every byte below also lands on the
         // process counter when these tallies drop; this is the per-store figure beside it, and
@@ -2258,6 +2263,28 @@ impl BlockStore {
         // integer -- on a live-store copy, the bulk of a steady-state open.
         let next_block_id = 0;
         let reconciled = reconcile_slab_manifest_with_disk(&root, &mut slabs).unwrap_or_default();
+        let (owned_writers, owned_active, owned_highest_id, owned_recovery_error) =
+            match owned_writer::recover_owned_writers(&root, &mut slabs) {
+                Ok((writers, active, highest)) => (writers, active, highest, None),
+                Err(error) => (BTreeMap::new(), BTreeSet::new(), 0, Some(error.to_string())),
+            };
+        let block_slab_id = if owned_writer::has_owned_format(&root, latest_slab_id).unwrap_or(true) {
+            slabs
+                .values()
+                .rev()
+                .find(|slab| {
+                    slab.owner_shard_id.is_none()
+                        && slab.state == BlockStoreSlabState::Sealed
+                        && slab_path(&root, slab.block_slab_id).is_file()
+                })
+                .map_or_else(|| latest_slab_id.saturating_add(1), |slab| slab.block_slab_id)
+        } else {
+            latest_slab_id
+        };
+        let mut write_offset = slab_path(&root, block_slab_id)
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
         let slab_manifest_reconciled_on_open = reconciled.changed;
         let slabs_skipped_reinspection_on_open = reconciled.slabs_skipped_reinspection;
         // The manifest this open read, plus every slab the inspection read on its workers.
@@ -2265,6 +2292,7 @@ impl BlockStore {
         let open_file_bytes_read = loaded_bytes.saturating_add(reconciled.file_bytes_read);
         let open_file_reads = loaded_reads.saturating_add(reconciled.file_reads);
         manifest_rebuilt |= slab_manifest_reconciled_on_open;
+        manifest_rebuilt |= !owned_active.is_empty();
         ensure_slab_descriptor(
             &mut slabs,
             &root,
@@ -2280,7 +2308,9 @@ impl BlockStore {
         let active_readable_prefix = slabs
             .get(&block_slab_id)
             .map(|slab| slab.readable_prefix_physical_bytes);
-        if let Some(readable_prefix) = active_readable_prefix {
+        if let Some(readable_prefix) =
+            active_readable_prefix.filter(|_| owned_recovery_error.is_none())
+        {
             if readable_prefix < write_offset {
                 if let Ok(file) = OpenOptions::new()
                     .write(true)
@@ -2307,7 +2337,7 @@ impl BlockStore {
         // is about to install. A rebuild-on-open IS a whole manifest write and belongs in the
         // number the caller reads afterwards.
         let mut stats = BlockStoreStats::default();
-        if manifest_rebuilt {
+        if manifest_rebuilt && owned_recovery_error.is_none() {
             let _ = persist_slab_manifest(&root, &slabs, &mut stats);
         }
         let identity = BlockStoreIdentity::new();
@@ -2327,6 +2357,10 @@ impl BlockStore {
                 active_append_file: None,
                 relaxed_dirty: false,
                 block_slab_id,
+                owned_writers,
+                owned_active,
+                owned_highest_id,
+                owned_recovery_error,
                 write_offset,
                 next_block_id,
                 options,
@@ -2390,12 +2424,14 @@ impl BlockStore {
         next_block_id_floor: u64,
     ) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.check_owned_recovery()?;
         std::fs::create_dir_all(&inner.root)?;
         inner.root_created = true;
         inner.active_append_file = None;
         let existing_max = slab_ids_at(&inner.root)?.into_iter().max();
         let new_slab_id = through_slab_id
             .max(inner.block_slab_id)
+            .max(inner.owned_highest_id)
             .max(existing_max.unwrap_or_default())
             .saturating_add(1);
         let path = slab_path(&inner.root, new_slab_id);
@@ -2409,7 +2445,7 @@ impl BlockStore {
         let now = now_unix_ms();
         // Any previously-active local slab is now sealed; the reserved slab is active.
         for slab in inner.slabs.values_mut() {
-            if slab.state == BlockStoreSlabState::Active {
+            if slab.state == BlockStoreSlabState::Active && slab.owner_shard_id.is_none() {
                 slab.state = BlockStoreSlabState::Sealed;
                 slab.updated_unix_ms = Some(now);
             }
@@ -2518,7 +2554,9 @@ impl BlockStore {
             return Ok(());
         }
         if let Some(bytes) = source.fetch_slab(block_slab_id)? {
-            self.install_slab(block_slab_id, &bytes)?;
+            self.install_transferred_slab(
+                block_slab_id, &bytes, source.slab_owner_shard_id(block_slab_id)?,
+            )?;
             self.inner
                 .lock()
                 .expect("block store lock poisoned")
@@ -2855,6 +2893,8 @@ impl BlockStore {
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
         let mut live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.check_owned_recovery()?;
+        live_block_slab_ids.extend(inner.owned_active.iter().copied());
         live_block_slab_ids.extend(inner.read_pins.keys().copied());
         let trash_dir = delayed_destroy_dir(&inner.root);
         let mut purged = Vec::new();
@@ -3101,6 +3141,7 @@ impl BlockStore {
         if !purged.is_empty() || !restored.is_empty() {
             sync_delayed_destroy_dirs(&root)?;
             inner.persist_slab_manifest_counted()?;
+            inner.cleanup_purged_reservations(&purged, &trash_dir)?;
         }
         retained_too_young.sort_unstable();
         Ok(BlockStorePurgeDelayedDestroyReport {
@@ -3291,8 +3332,9 @@ impl BlockStore {
                 .into_bytes_charged_to_the_process_only();
             #[cfg(test)]
             SLAB_COUNT_FULL_READS.with(|cell| cell.set(cell.get() + 1));
+            let owned_format = owned_writer::has_owned_format(&root, block_slab_id)?;
             let (block_count, physical_bytes) =
-                crate::block_store::record::count_slab_blocks(&bytes, block_slab_id);
+                crate::block_store::record::count_slab_blocks(&bytes, block_slab_id, owned_format);
             if let Some(signature) = signature {
                 slab_count_memo_put(&root, block_slab_id, signature, physical_bytes, block_count);
                 seen.insert(block_slab_id);
@@ -3316,7 +3358,8 @@ impl BlockStore {
             let bytes = LocalSlabBackend::new(&root)
                 .read_all(block_slab_id, &mut tally)?
                 .into_bytes_charged_to_the_process_only();
-            reports.push(inspect_slab(&bytes, block_slab_id));
+            let owned_format = owned_writer::has_owned_format(&root, block_slab_id)?;
+            reports.push(inspect_slab(&bytes, block_slab_id, owned_format));
         }
         Ok(reports)
     }
@@ -3337,7 +3380,8 @@ impl BlockStore {
             let bytes = LocalSlabBackend::new(&root)
                 .read_all(block_slab_id, &mut tally)?
                 .into_bytes_charged_to_the_process_only();
-            if record::inspect_slab_corruption(&bytes, block_slab_id) {
+            let owned_format = owned_writer::has_owned_format(&root, block_slab_id)?;
+            if record::inspect_slab_corruption(&bytes, block_slab_id, owned_format) {
                 corrupt.push(block_slab_id);
             }
         }
@@ -3459,6 +3503,7 @@ impl BlockStoreInner {
 fn roll_slab_inner(
     inner: &mut BlockStoreInner,
 ) -> Result<BlockStoreRollReport, BlockStoreError> {
+    inner.check_owned_recovery()?;
     std::fs::create_dir_all(&inner.root)?;
     inner.root_created = true;
     inner.active_append_file = None;
@@ -3478,7 +3523,9 @@ fn roll_slab_inner(
         .max()
         .map(|id| id.saturating_add(1))
         .unwrap_or_default();
-    inner.block_slab_id = next_from_current.max(next_from_disk);
+    inner.block_slab_id = next_from_current
+        .max(next_from_disk)
+        .max(inner.owned_highest_id.saturating_add(1));
     inner.write_offset = 0;
     let path = slab_path(&inner.root, inner.block_slab_id);
     let file = std::fs::File::create(&path)?;

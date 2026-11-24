@@ -37,6 +37,22 @@ impl BlockStore {
     /// active slab's data and persist the extent manifest once. No-op when
     /// nothing was deferred (e.g. the live per-append-fsync path).
     pub fn sync_durable(&self) -> Result<(), BlockStoreError> {
+        let owned_writers = {
+            let inner = self.inner.lock().expect("block store lock poisoned");
+            inner.check_owned_recovery()?;
+            inner.owned_writers.values().cloned().collect::<Vec<_>>()
+        };
+        for writer in &owned_writers {
+            let mut writer = writer.lock().expect("owned slab writer lock poisoned");
+            writer.sync(&self.read_view.root)?;
+            if let Some(retired) = writer.take_retired() {
+                self.inner
+                    .lock()
+                    .expect("block store lock poisoned")
+                    .owned_active
+                    .remove(&retired);
+            }
+        }
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         if inner.relaxed_dirty {
             let path = slab_path(&inner.root, inner.block_slab_id);
@@ -97,6 +113,7 @@ impl BlockStore {
         block_ordinal: u32,
     ) -> Result<ElementEntry, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.check_owned_recovery()?;
         if !inner.root_created {
             std::fs::create_dir_all(&inner.root)?;
             inner.root_created = true;
@@ -184,6 +201,7 @@ impl BlockStore {
                 .map(|address| vec![address]);
         }
         let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.check_owned_recovery()?;
         if records.is_empty() {
             return Ok(Vec::new());
         }

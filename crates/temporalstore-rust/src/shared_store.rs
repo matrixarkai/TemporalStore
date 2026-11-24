@@ -1866,10 +1866,18 @@ where
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
         let mut published = Vec::new();
         for block_slab_id in block_store.slab_ids()? {
+            let (bytes, owner) = block_store.read_slab_for_transfer(block_slab_id)?;
+            let key = match owner {
+                Some(owner) => format!(
+                    "{}{}", self.block_slab_prefix(shard_id),
+                    owned_block_slab_object_name(block_slab_id, owner),
+                ),
+                None => self.block_slab_key(shard_id, block_slab_id),
+            };
             self.object_store
                 .put(
-                    &self.block_slab_key(shard_id, block_slab_id),
-                    Bytes::from(block_store.read_slab(block_slab_id)?),
+                    &key,
+                    Bytes::from(bytes),
                 )
                 .await?;
             published.push(block_slab_id);
@@ -1924,10 +1932,14 @@ where
         let mut block_slabs = Vec::new();
         let mut uploaded_slab_ids = std::collections::BTreeSet::new();
         for block_slab_id in block_store.slab_ids()? {
-            let bytes = block_store.read_slab(block_slab_id)?;
+            let (bytes, owner) = block_store.read_slab_for_transfer(block_slab_id)?;
+            let name = match owner {
+                Some(owner) => owned_block_slab_object_name(block_slab_id, owner),
+                None => block_slab_object_name(block_slab_id),
+            };
             let key = format!(
                 "{prefix}block_segments/{}",
-                block_slab_object_name(block_slab_id)
+                name
             );
             self.object_store
                 .put(&key, Bytes::from(bytes.clone()))
@@ -2011,10 +2023,15 @@ where
         let mut restored = Vec::new();
         for key in self.object_store.list(&prefix).await? {
             let Some(block_slab_id) = parse_block_slab_id(&key) else {
+                if key.contains(".owned_") {
+                    return Err(invalid_slab_transfer_key().into());
+                }
                 continue;
             };
             let bytes = self.object_store.get(&key).await?;
-            block_store.install_slab(block_slab_id, &bytes)?;
+            block_store.install_transferred_slab(
+                block_slab_id, &bytes, slab_owner_from_transfer_key(block_slab_id, &key)?,
+            )?;
             restored.push(block_slab_id);
         }
         restored.sort_unstable();
@@ -2148,7 +2165,10 @@ where
         for slab in &manifest.block_slabs {
             let bytes = self.object_store.get(&slab.key).await?;
             verify_checksum(&slab.key, &bytes, slab.byte_size, &slab.sha256)?;
-            block_store.install_slab(slab.block_slab_id, &bytes)?;
+            block_store.install_transferred_slab(
+                slab.block_slab_id, &bytes,
+                slab_owner_from_transfer_key(slab.block_slab_id, &slab.key)?,
+            )?;
         }
         Ok(())
     }
@@ -3326,6 +3346,13 @@ impl SharedPathSlabSource {
 }
 
 impl SharedSlabSource for SharedPathSlabSource {
+    fn slab_owner_shard_id(&self, block_slab_id: u64) -> Result<Option<u64>, BlockStoreError> {
+        match self.slabs.get(&block_slab_id) {
+            Some(slab) => slab_owner_from_transfer_key(block_slab_id, &slab.key),
+            None => Ok(None),
+        }
+    }
+
     fn fetch_slab(&self, block_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
         let Some(address) = self.slabs.get(&block_slab_id) else {
             return Ok(None);
@@ -3389,6 +3416,13 @@ impl MatrixObjectSlabSource {
 }
 
 impl SharedSlabSource for MatrixObjectSlabSource {
+    fn slab_owner_shard_id(&self, block_slab_id: u64) -> Result<Option<u64>, BlockStoreError> {
+        match self.slabs.get(&block_slab_id) {
+            Some(slab) => slab_owner_from_transfer_key(block_slab_id, &slab.key),
+            None => Ok(None),
+        }
+    }
+
     fn fetch_slab(&self, block_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
         let Some(address) = self.slabs.get(&block_slab_id) else {
             return Ok(None);
@@ -4279,12 +4313,35 @@ where
 }
 
 fn parse_block_slab_id(key: &str) -> Option<u64> {
-    key.rsplit('/')
+    let stem = key.rsplit('/')
         .next()?
         .strip_prefix("block_segment_")?
-        .strip_suffix(".seg")?
-        .parse()
-        .ok()
+        .strip_suffix(".seg")?;
+    match stem.split_once(".owned_") {
+        Some((id, owner)) => {
+            owner.parse::<u64>().ok()?;
+            id.parse().ok()
+        }
+        None => stem.parse().ok(),
+    }
+}
+
+fn invalid_slab_transfer_key() -> BlockStoreError {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid owned slab object key").into()
+}
+
+fn slab_owner_from_transfer_key(id: u64, key: &str) -> Result<Option<u64>, BlockStoreError> {
+    let name = key.rsplit('/').next().unwrap_or_default();
+    let Some((_, owner)) = name.split_once(".owned_") else {
+        return Ok(None);
+    };
+    if parse_block_slab_id(key) != Some(id) {
+        return Err(invalid_slab_transfer_key());
+    }
+    owner.strip_suffix(".seg")
+        .and_then(|owner| owner.parse().ok())
+        .map(Some)
+        .ok_or_else(invalid_slab_transfer_key)
 }
 
 /// THE SUFFIX A BINARY SHARED-STORE OBJECT CARRIES.
@@ -6422,6 +6479,10 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
 /// same slab on local disk from inside a module this one cannot see.
 fn block_slab_object_name(block_slab_id: u64) -> String {
     format!("block_segment_{block_slab_id:020}.seg")
+}
+
+fn owned_block_slab_object_name(block_slab_id: u64, owner: u64) -> String {
+    format!("block_segment_{block_slab_id:020}.owned_{owner:020}.seg")
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -14268,6 +14329,44 @@ mod tests {
     /// side alone makes that parse return `None` for every object, and the loop `continue`s
     /// past all of them -- so the restore reports success having installed nothing at all.
     /// Nothing raises an error on that path.
+    #[tokio::test]
+    async fn slab_transfer_uses_declared_ownership_not_payload_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (objects, replicator) = test_shared_store(dir.path());
+        let shape_store = BlockStore::new(dir.path().join("shape"));
+        let raw_id = shape_store.roll_slab_for_shard(0).unwrap().new_block_slab_id;
+        let raw = shape_store.read_slab(raw_id).unwrap();
+
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let source = engine.block_store();
+        source.install_slab(raw_id, &raw).unwrap();
+        let written = source.append_block_of_object_for_shard(0, b"owned", None, None, 0).unwrap();
+        source.sync_durable().unwrap();
+        let owned_id = written.block_slab_id();
+        replicator.publish_index(1, &engine).await.unwrap();
+        replicator.publish_block_slabs(1, &source).await.unwrap();
+
+        let target = TemporalEngine::default();
+        let target_store = target.block_store();
+        replicator.restore_index_and_blocks(1, &target, &target_store).await.unwrap();
+        assert_eq!(target_store.exported_slab_owner(raw_id).unwrap(), None);
+        assert_eq!(target_store.read_logical_range(raw_id, 0, raw.len() as u64).unwrap(), raw);
+        assert_eq!(target_store.exported_slab_owner(owned_id).unwrap(), Some(0));
+        assert_eq!(target_store.read(&written).unwrap(), b"owned");
+
+        let mut damaged = source.read_slab(owned_id).unwrap();
+        damaged[0] ^= 1;
+        let key = format!("{}{}", replicator.block_slab_prefix(1),
+            owned_block_slab_object_name(owned_id, 0));
+        objects.put(&key, Bytes::from(damaged)).await.unwrap();
+        let rejected = TemporalEngine::default();
+        let rejected_store = rejected.block_store();
+        assert!(replicator.restore_index_and_blocks(1, &rejected, &rejected_store).await.is_err());
+        assert!(!rejected_store.slab_ids().unwrap().contains(&owned_id));
+        assert_eq!(rejected_store.exported_slab_owner(owned_id).unwrap(), None);
+    }
+
     #[test]
     fn the_block_slab_key_writer_and_reader_agree() {
         let dir = tempfile::tempdir().unwrap();

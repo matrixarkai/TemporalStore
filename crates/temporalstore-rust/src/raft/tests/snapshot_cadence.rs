@@ -706,7 +706,7 @@ fn a_receiving_peer_cannot_apply_an_increment() {
     // A peer built from the WHOLE image serves every record. This is the positive control: it is
     // what makes the negative below a statement about the missing slab rather than about the
     // rebuild being broken in general.
-    let whole_peer = crate::raft::rebuild_snapshot_engine(&whole);
+    let whole_peer = crate::raft::rebuild_snapshot_engine(&whole).unwrap();
     let mut served_by_whole = 0usize;
     for index in 0..records {
         if read_back(&whole_peer, &format!("key-{index:08}")).is_some() {
@@ -734,7 +734,7 @@ fn a_receiving_peer_cannot_apply_an_increment() {
         dropped.block_slab_id,
         dropped.bytes.len()
     );
-    let partial_peer = crate::raft::rebuild_snapshot_engine(&partial);
+    let partial_peer = crate::raft::rebuild_snapshot_engine(&partial).unwrap();
     let mut served_by_partial = 0usize;
     for index in 0..records {
         if read_back(&partial_peer, &format!("key-{index:08}")).is_some() {
@@ -756,6 +756,62 @@ fn a_receiving_peer_cannot_apply_an_increment() {
 }
 
 /// Read one key back off an engine, element by element rather than by count.
+#[test]
+fn snapshot_slab_transfer_keeps_legacy_bytes_and_rejects_damaged_owned_data() {
+    let root = tempfile::tempdir().unwrap();
+    let shape = crate::block_store::BlockStore::new(root.path());
+    let raw_id = shape.roll_slab_for_shard(0).unwrap().new_block_slab_id;
+    let raw = shape.read_slab(raw_id).unwrap();
+    let leader = TemporalEngine::default();
+    let shard_id = 1;
+    leader.load_shard(shard_id);
+    let blocks = leader.block_store();
+    blocks.install_slab(raw_id, &raw).unwrap();
+    let written = blocks
+        .append_block_of_object_for_shard(0, b"owned", None, None, 0)
+        .unwrap();
+    blocks.sync_durable().unwrap();
+    let owned_id = written.block_slab_id();
+    let (start_routing_bucket, end_routing_bucket) = leader.shard_routing_range(shard_id);
+    let mut snapshot = RaftSnapshot {
+        shard_id,
+        last_included_term: 0,
+        last_included_index: 0,
+        external_snapshot_ref: None,
+        entries: Vec::new(),
+        state_image_externalized: false,
+        state_image: Some(RaftSnapshotStateImage {
+            index_bytes: leader.export_index_bytes(shard_id).unwrap(),
+            next_block_id: blocks.next_block_id(),
+            routing_range: Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
+                start_routing_bucket, end_routing_bucket,
+            }),
+            slabs: vec![
+                RaftSnapshotStateImageSlab {
+                    block_slab_id: raw_id,
+                    bytes: raw.clone(),
+                    owner_shard_id: None,
+                },
+                RaftSnapshotStateImageSlab {
+                    block_slab_id: owned_id,
+                    bytes: blocks.read_slab(owned_id).unwrap(),
+                    owner_shard_id: Some(0),
+                },
+            ],
+        }),
+    };
+    let peer = crate::raft::rebuild_snapshot_engine(&snapshot).unwrap().block_store();
+    assert_eq!(peer.exported_slab_owner(raw_id).unwrap(), None);
+    assert_eq!(peer.read_logical_range(raw_id, 0, raw.len() as u64).unwrap(), raw);
+    assert_eq!(peer.exported_slab_owner(owned_id).unwrap(), Some(0));
+    assert_eq!(peer.read(&written).unwrap(), b"owned");
+    snapshot.state_image.as_mut().unwrap().slabs[1].bytes[0] ^= 1;
+    assert!(matches!(
+        crate::raft::rebuild_snapshot_engine(&snapshot),
+        Err(RaftError::SnapshotEncoding(_))
+    ));
+}
+
 fn read_back(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
     match engine
         .execute(ExecuteRequest {
@@ -822,7 +878,7 @@ fn a_peer_built_from_a_paced_snapshot_serves_the_leaders_elements_exactly() {
                     .installed_snapshot
                     .as_ref()
                     .expect("the peer holds the snapshot it installed"),
-            );
+            ).unwrap();
         compare_element_by_element(&leader, &restored, written, &format!("round {round} restart"));
         checkpoints += 1;
     }

@@ -9153,7 +9153,8 @@ fn append_owned_value_of_object(
         });
     }
     let address = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
-        block_store.append_block_of_object(
+        block_store.append_block_of_object_for_shard(
+            shard_id,
             &bytes,
             Some(object_id),
             Some(routing_bucket),
@@ -9226,7 +9227,8 @@ fn append_value_inner(
         if let Some(object_id) = object_id {
             block_in_wal::stage(object_id, element_name, bytes);
         }
-        return block_store.append_block_of_object(
+        return block_store.append_block_of_object_for_shard(
+            shard_id,
             bytes,
             object_id,
             routing_bucket,

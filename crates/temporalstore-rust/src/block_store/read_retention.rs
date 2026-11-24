@@ -131,4 +131,19 @@ mod tests {
             [first.block_slab_id()]
         );
     }
+
+    #[test]
+    fn import_cannot_replace_an_open_slab_under_a_read_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        let id = 9;
+        store.install_slab(id, b"legacy bytes").unwrap();
+        let mut reader = BlockStoreReadSnapshot::new(&store);
+        reader.pin(id);
+        assert!(store.install_slab(id, b"replacement").is_err());
+        assert_eq!(store.read_slab(id).unwrap(), b"legacy bytes");
+        drop(reader);
+        store.install_slab(id, b"replacement").unwrap();
+        assert_eq!(store.read_slab(id).unwrap(), b"replacement");
+    }
 }
