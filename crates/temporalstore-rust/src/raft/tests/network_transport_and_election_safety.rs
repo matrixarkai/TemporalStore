@@ -1298,6 +1298,66 @@ fn production_raft_mode_uses_temporal_raft_ready_path_when_adapter_is_enabled() 
 }
 
 #[test]
+fn cache_reclamation_preserves_new_writes_and_respects_the_table_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
+        snapshot_check_interval_ms: 0,
+        engine: ProductionRaftEngineKind::TemporalRaft,
+        shard_id: 91,
+        local_node_id: 1,
+        nodes: vec![ProductionRaftNode {
+            node_id: 1,
+            addr: "127.0.0.1:19101".to_string(),
+        }],
+        wal_dir: dir.path().display().to_string(),
+        config: RaftConfig::default(),
+        rpc: RaftRpcRuntimeOptions::default(),
+        security: ProductionRaftSecurity::plaintext_for_local_chaos("token"),
+        heartbeat_interval_ms: 5,
+        election_tick_ms: 1,
+        max_catchup_entries_per_heartbeat: 1,
+        allow_plaintext_for_local_chaos: true,
+    })
+    .unwrap();
+    let set = |key: &str| {
+        runtime
+            .propose(Command::StringSet { key: key.to_string(), value: vec![0xFF; 4096] })
+            .unwrap();
+    };
+    set("first");
+    set("second");
+    let status = runtime.status();
+    let budget = crate::meta::ShardCacheBudget {
+        table_id: 1,
+        shard_id: 91,
+        load_version: 7,
+        raft_term: status.nodes[0].current_term,
+        bytes: 4096,
+    };
+    let stale = CacheReclaimFence {
+        node_id: 1,
+        term: budget.raft_term,
+        index: status.commit_index,
+        authorized: &|| true,
+    };
+    set("first");
+    assert_eq!(
+        runtime
+            .cluster()
+            .propose_distributed_one(
+                Command::CommonDelete { key: "first".to_string() },
+                &runtime.transport(),
+                Some(stale),
+            )
+            .unwrap(),
+        CommandResponse::Integer { value: 0 },
+    );
+    assert_eq!(runtime.reclaim_cache_budget(budget, 2, &|| false), None);
+    assert_eq!(runtime.reclaim_cache_budget(budget, 2, &|| true), Some((8192, 1)));
+    assert_eq!(runtime.reclaim_cache_budget(budget, 2, &|| true), Some((4096, 0)));
+}
+
+#[test]
 fn production_raft_runtime_validates_security_timer_and_chaos_contracts() {
     let dir = tempfile::tempdir().unwrap();
     let options = ProductionRaftRuntimeOptions {

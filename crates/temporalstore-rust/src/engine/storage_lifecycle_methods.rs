@@ -2612,38 +2612,65 @@ impl TemporalEngine {
             .unwrap_or_default()
     }
 
-    /// Count logical bytes of live strings in a cache shard at one observed
-    /// time. Header reads are performed after releasing the shard lock.
-    pub(crate) fn cache_live_payload_bytes(&self, shard_id: ShardId) -> Option<u64> {
+    /// Capture live string addresses under the shard lock, then resolve sizes
+    /// and keep a bounded set of the least recently used keys.
+    pub(crate) fn plan_cache_reclamation(
+        &self,
+        shard_id: ShardId,
+        limit: usize,
+    ) -> Option<(u64, Vec<(String, u64)>)> {
         let observed_at = now_ms();
-        let (start, end, records) = {
+        if limit != 0 {
+            self.fold_fast_read_recency();
+        }
+        let records: Vec<_> = {
             let shards = self.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&shard_id)?;
             let (start, end) = shard.routing_range();
             let expiry = shard.expires_at_ms();
-            let records: Vec<_> = shard
+            shard
                 .strings()
                 .iter()
                 .filter(|(key, _)| {
                     expiry.get(key.as_ref()).is_none_or(|deadline| *deadline > observed_at)
                 })
-                .map(|(key, slot)| (key.clone(), slot.address()))
-                .collect();
-            (start, end, records)
+                .map(|(key, slot)| {
+                    let bucket = super::block_routing_bucket(key, start, end);
+                    let recency = shard.bucket_recency.get(&bucket).copied().unwrap_or_default();
+                    (key.clone(), slot.address(), bucket, recency)
+                })
+                .collect()
         };
-        records.into_iter().try_fold(0_u64, |total, (key, address)| {
+        let mut bytes = 0_u64;
+        let mut coldest = std::collections::BinaryHeap::new();
+        for (key, address, bucket, recency) in records {
             let length = if address.block_slab_id() == super::HOT_BLOCK_SLAB_ID {
                 address.length()
             } else if let Some(length) = self.block_store.local_block_payload_length(&address) {
                 length
             } else {
-                let bucket = super::block_routing_bucket(&key, start, end);
                 super::read_string_length(
                     &self.cache, &self.block_store, shard_id, &address, &key, bucket,
                 )? as u64
             };
-            total.checked_add(length)
-        })
+            bytes = bytes.checked_add(length)?;
+            if limit != 0 && length != 0 {
+                let candidate = (recency, key, length);
+                if coldest.len() < limit {
+                    coldest.push(candidate);
+                } else if let Some(mut newest) = coldest.peek_mut() {
+                    if candidate < *newest {
+                        *newest = candidate;
+                    }
+                }
+            }
+        }
+        let victims = coldest
+            .into_sorted_vec()
+            .into_iter()
+            .map(|(_, key, length)| (key.to_string(), length))
+            .collect();
+        Some((bytes, victims))
     }
 
     pub fn apply_storage_eviction(

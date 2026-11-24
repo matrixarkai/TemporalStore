@@ -4150,6 +4150,14 @@ impl std::fmt::Debug for RaftCluster {
     }
 }
 
+#[derive(Clone, Copy)]
+struct CacheReclaimFence<'a> {
+    node_id: RaftNodeId,
+    term: u64,
+    index: u64,
+    authorized: &'a dyn Fn() -> bool,
+}
+
 #[derive(Debug)]
 struct RaftClusterInner {
     /// Indices some proposer is waiting on; apply records their responses so each
@@ -4785,7 +4793,7 @@ impl RaftCluster {
         };
         let mut last_response = CommandResponse::Empty;
         for chunk in chunks {
-            last_response = self.propose_distributed_one(chunk, transport)?;
+            last_response = self.propose_distributed_one(chunk, transport, None)?;
         }
         Ok(last_response)
     }
@@ -4810,6 +4818,7 @@ impl RaftCluster {
         &self,
         command: Command,
         transport: &T,
+        reclaim_fence: Option<CacheReclaimFence<'_>>,
     ) -> Result<CommandResponse, RaftError>
     where
         T: RaftTransport + Clone + Send + 'static,
@@ -4825,7 +4834,7 @@ impl RaftCluster {
             (inner.follower_pipeline, inner.pipeline_concurrent_propose)
         };
         if pipeline && concurrent {
-            return self.propose_pipelined_concurrent(command, transport);
+            return self.propose_pipelined_concurrent(command, transport, reclaim_fence);
         }
         // P2: serialize proposes into the log in order. Concurrent proposers otherwise append
         // under the write lock (sequential indices) but release it before the async network phase,
@@ -4854,9 +4863,9 @@ impl RaftCluster {
         // and barrier-join below are what propose_pipelined leaves for its caller, exactly as
         // the fan-out body does.
         let outcome = if pipeline {
-            self.propose_pipelined(command, transport, &mut entry_barrier)
+            self.propose_pipelined(command, transport, reclaim_fence, &mut entry_barrier)
         } else {
-            self.propose_distributed_one_locked(command, transport, &mut entry_barrier)
+            self.propose_distributed_one_locked(command, transport, reclaim_fence, &mut entry_barrier)
         };
         // Write what the deferral owes while the propose lock still orders it. Records carry the
         // log, so an older record landing after a newer one would regress the log on recovery --
@@ -4927,6 +4936,7 @@ impl RaftCluster {
         &self,
         command: Command,
         transport: &T,
+        reclaim_fence: Option<CacheReclaimFence<'_>>,
     ) -> Result<CommandResponse, RaftError>
     where
         T: RaftTransport + Clone + Send + 'static,
@@ -4935,6 +4945,9 @@ impl RaftCluster {
         let (entry_index, staged) = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             inner.ensure_proposal_leader()?;
+            if reclaim_fence.is_some_and(|fence| !inner.cache_reclaim_fence_is_current(fence)) {
+                return Ok(CommandResponse::Integer { value: 0 });
+            }
             let entry_bytes = command_size_bytes(&command);
             if entry_bytes > inner.config.max_memory_replicate_log_bytes {
                 let leader_id = inner.leader_id;
@@ -5057,6 +5070,7 @@ impl RaftCluster {
         &self,
         command: Command,
         transport: &T,
+        reclaim_fence: Option<CacheReclaimFence<'_>>,
         entry_barrier: &mut Option<thread::JoinHandle<Result<(), RaftError>>>,
     ) -> Result<CommandResponse, RaftError>
     where
@@ -5066,6 +5080,9 @@ impl RaftCluster {
         let entry_index = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             inner.ensure_proposal_leader()?;
+            if reclaim_fence.is_some_and(|fence| !inner.cache_reclaim_fence_is_current(fence)) {
+                return Ok(CommandResponse::Integer { value: 0 });
+            }
             let entry_bytes = command_size_bytes(&command);
             if entry_bytes > inner.config.max_memory_replicate_log_bytes {
                 let leader_id = inner.leader_id;
@@ -5185,6 +5202,7 @@ impl RaftCluster {
         &self,
         command: Command,
         transport: &T,
+        reclaim_fence: Option<CacheReclaimFence<'_>>,
         entry_barrier: &mut Option<thread::JoinHandle<Result<(), RaftError>>>,
     ) -> Result<CommandResponse, RaftError>
     where
@@ -5193,6 +5211,9 @@ impl RaftCluster {
         let (entry, leader_id, target_ids, required) = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             inner.ensure_proposal_leader()?;
+            if reclaim_fence.is_some_and(|fence| !inner.cache_reclaim_fence_is_current(fence)) {
+                return Ok(CommandResponse::Integer { value: 0 });
+            }
             let entry_bytes = command_size_bytes(&command);
             if entry_bytes > inner.config.max_memory_replicate_log_bytes {
                 let leader_id = inner.leader_id;
@@ -5574,6 +5595,21 @@ fn node_status(node: &RaftNode, leader_commit_index: u64) -> RaftNodeStatus {
         applied_index: node.applied_index,
         alive: node.alive,
         lag: leader_commit_index.saturating_sub(node.commit_index),
+    }
+}
+
+impl RaftClusterInner {
+    fn cache_reclaim_fence_is_current(&self, fence: CacheReclaimFence<'_>) -> bool {
+        (fence.authorized)()
+            && self.leader_id == fence.node_id
+            && self.nodes.get(&fence.node_id).is_some_and(|leader| {
+                leader.alive
+                    && leader.role == RaftRole::Leader
+                    && leader.current_term == fence.term
+                    && leader.applied_index == fence.index
+                    && leader.commit_index == fence.index
+                    && node_last_log_or_snapshot_index(leader) == fence.index
+            })
     }
 }
 

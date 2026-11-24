@@ -266,6 +266,62 @@ impl ProductionRaftRuntime {
         self.cluster.propose_distributed(command, &transport)
     }
 
+    /// Delete cache strings through the normal replication path. A proposal
+    /// can proceed only while the inspected log tip is still the current tip.
+    pub fn reclaim_cache_budget(
+        &self,
+        budget: crate::meta::ShardCacheBudget,
+        limit: usize,
+        authorized: &dyn Fn() -> bool,
+    ) -> Option<(u64, usize)> {
+        if budget.shard_id != self.options.shard_id || !authorized() {
+            return None;
+        }
+        let (engine, mut fence) = {
+            let state = self.cluster.inner.read().expect("raft cluster lock poisoned");
+            let leader = state.nodes.get(&self.options.local_node_id)?;
+            let fence = CacheReclaimFence {
+                node_id: self.options.local_node_id,
+                term: budget.raft_term,
+                index: leader.commit_index,
+                authorized,
+            };
+            if !leader.replica_role.can_serve_data() || !state.cache_reclaim_fence_is_current(fence) {
+                return None;
+            }
+            (leader.engine.clone(), fence)
+        };
+        let (before, victims) = engine.plan_cache_reclamation(budget.shard_id, limit)?;
+        let mut remaining = before;
+        let mut deleted = 0;
+        if remaining <= budget.bytes {
+            return Some((before, deleted));
+        }
+        let transport = self.transport();
+        for (key, bytes) in victims {
+            if remaining <= budget.bytes || !authorized() {
+                break;
+            }
+            match self.cluster.propose_distributed_one(
+                Command::CommonDelete { key },
+                &transport,
+                Some(fence),
+            ) {
+                Ok(CommandResponse::Empty) => {
+                    fence.index = fence.index.saturating_add(1);
+                    remaining = remaining.saturating_sub(bytes);
+                    deleted += 1;
+                }
+                Ok(_) => break,
+                Err(error) => {
+                    tracing::warn!(shard_id = budget.shard_id, %error, "cache reclamation paused");
+                    break;
+                }
+            }
+        }
+        Some((before, deleted))
+    }
+
     pub fn apply_membership_change_safely(
         &self,
         new_voters: impl IntoIterator<Item = RaftNodeId>,

@@ -2214,6 +2214,15 @@ pub trait ShardLeadershipSource: std::fmt::Debug + Send + Sync {
     fn shard_storage_engine(&self, _shard_id: ShardId) -> Option<TemporalEngine> {
         None
     }
+
+    fn reclaim_cache_budget(
+        &self,
+        _budget: ShardCacheBudget,
+        _limit: usize,
+        _authorized: &dyn Fn() -> bool,
+    ) -> Option<(u64, usize)> {
+        None
+    }
 }
 
 const SHARD_GENERATION_LOCKS: usize = 64;
@@ -2259,6 +2268,39 @@ struct DataNodeRuntimeInner {
 }
 
 impl DataNodeRuntimeInner {
+    fn reclaim_cache_budget(
+        &self,
+        shard_id: ShardId,
+        limit: usize,
+    ) -> Option<(ShardCacheBudget, u64, usize)> {
+        let budget = self
+            .meta_heartbeat
+            .lock()
+            .expect("meta heartbeat lock poisoned")
+            .cache_budgets
+            .iter()
+            .find(|budget| budget.shard_id == shard_id)
+            .copied()?;
+        let leadership = self
+            .shard_leadership
+            .lock()
+            .expect("shard leadership lock poisoned")
+            .clone()?;
+        let _generation = self
+            .shard_generation_lock(shard_id)
+            .read()
+            .expect("shard generation lock poisoned");
+        self.engine.validate_load_version(shard_id, budget.load_version).ok()?;
+        let authorized = || {
+            let heartbeat = self.meta_heartbeat.lock().expect("meta heartbeat lock poisoned");
+            heartbeat.last_status.ok
+                && now_ms().saturating_sub(heartbeat.last_heartbeat_at_ms) <= 10_000
+                && heartbeat.cache_budgets.contains(&budget)
+        };
+        let (bytes, reclaimed) = leadership.reclaim_cache_budget(budget, limit, &authorized)?;
+        Some((budget, bytes, reclaimed))
+    }
+
     fn storage_engine(&self, shard_id: ShardId) -> TemporalEngine {
         let source = self
             .shard_leadership

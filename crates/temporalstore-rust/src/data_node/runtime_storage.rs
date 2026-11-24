@@ -997,34 +997,14 @@ impl DataNodeRuntime {
         let index_bound_is_the_gate = options.index_resident_limit_bytes > 0
             && (options.eviction_memory_pressure_threshold == 0
                 || options.index_resident_limit_bytes < options.eviction_memory_pressure_threshold);
-        let mut cache_budget_signal = None;
-        let eviction = options.enable_evict.then(|| {
+        let cache_reclaim = options.enable_evict.then(|| {
+            self.inner.reclaim_cache_budget(
+                shard_id,
+                options.eviction_batch_limit.min(options.eviction_count_limit),
+            )
+        }).flatten();
+        let mut eviction = options.enable_evict.then(|| {
             let engine = self.inner.storage_engine(shard_id);
-            let budget = self
-                .inner
-                .meta_heartbeat
-                .lock()
-                .expect("meta heartbeat lock poisoned")
-                .cache_budgets
-                .iter()
-                .find(|budget| budget.shard_id == shard_id)
-                .copied();
-            if let Some(budget) =
-                budget.filter(|_| self.shard_leadership(shard_id) == ShardLeadership::Leading)
-            {
-                cache_budget_signal = self
-                    .with_load_version(shard_id, budget.load_version, || {
-                        engine.cache_live_payload_bytes(shard_id)
-                    })
-                    .ok()
-                    .flatten()
-                    .map(|bytes| StorageManagerPressureSignal {
-                        name: "cache_live_payload_bytes".to_string(),
-                        observed: bytes,
-                        threshold: budget.bytes,
-                        over_threshold: bytes > budget.bytes,
-                    });
-            }
             let Some(stage_threshold) = configured_limit else {
                 let resident = engine.bucket_index_resident_bytes(shard_id);
                 return crate::engine::reports::StorageEvictionReport {
@@ -1112,6 +1092,18 @@ impl DataNodeRuntime {
             )
             .into_stage_report()
         });
+        let cache_budget_signal = cache_reclaim.map(|(budget, bytes, reclaimed)| {
+            if let Some(report) = eviction.as_mut().filter(|_| reclaimed != 0) {
+                report.dropped_object_count = report.dropped_object_count.saturating_add(reclaimed);
+                report.skipped_reason.clear();
+            }
+            StorageManagerPressureSignal {
+                name: "cache_live_payload_bytes".to_string(),
+                observed: bytes,
+                threshold: budget.bytes,
+                over_threshold: bytes > budget.bytes,
+            }
+        });
         if eviction.is_some() {
             executed_stages.push("evict".to_string());
             self.inner
@@ -1126,7 +1118,8 @@ impl DataNodeRuntime {
         pressure_decisions.push(storage_manager_pressure_decision(
             "evict",
             eviction.is_some(),
-            eviction.as_ref().is_some_and(|report| report.pressure_gate_open),
+            eviction.as_ref().is_some_and(|report| report.pressure_gate_open)
+                || cache_budget_signal.as_ref().is_some_and(|signal| signal.over_threshold),
             eviction.is_some(),
             configured_limit.zip(eviction.as_ref()).map(|(limit, report)| vec![
                 storage_manager_pressure_signal(

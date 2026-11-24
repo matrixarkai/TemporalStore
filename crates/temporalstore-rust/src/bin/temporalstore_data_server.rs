@@ -448,6 +448,7 @@ fn main() {
     // byte-for-byte the behaviour this server had before the check existed.
     if let Some(state) = raft_state.as_ref() {
         runtime.set_shard_leadership_source(std::sync::Arc::new(RaftShardLeadership {
+            runtime: state.runtime.clone(),
             cluster: state.runtime.cluster(),
             local_node_id: state.local_node_id,
             raft_shard_id: state.raft_shard_id,
@@ -2855,6 +2856,7 @@ struct ServerRaftState {
 /// compaction off on every deployment where the question is unanswerable -- which is far more
 /// damage than the waste it was meant to save.
 struct RaftShardLeadership {
+    runtime: ProductionRaftRuntime,
     cluster: RaftCluster,
     local_node_id: RaftNodeId,
     raft_shard_id: ShardId,
@@ -2871,6 +2873,15 @@ impl std::fmt::Debug for RaftShardLeadership {
 }
 
 impl ShardLeadershipSource for RaftShardLeadership {
+    fn reclaim_cache_budget(
+        &self,
+        budget: temporalstore_rust::meta::ShardCacheBudget,
+        limit: usize,
+        authorized: &dyn Fn() -> bool,
+    ) -> Option<(u64, usize)> {
+        self.runtime.reclaim_cache_budget(budget, limit, authorized)
+    }
+
     fn shard_storage_engine(&self, shard_id: ShardId) -> Option<TemporalEngine> {
         self.cluster.local_replica_engine(shard_id)
     }
