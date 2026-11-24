@@ -601,3 +601,17 @@ exact, and teardown returned both stores from 4,096 records to zero. The
 repeat-gated entity-scale sweep with a fixed 512-row hot set served 21,070 rows/s
 at 5,000 resident rows and about 10,400 rows/s at both 20,000 and 50,000 rows;
 repeat drift stayed below 2.9% and every value matched.
+
+## Routing Feast through a TemporalStore table
+
+Install temporalstore-sdk from the same checkout as the Feast integration.
+In the Feast online store configuration, set meta_url to the metaserver,
+namespace to the TemporalStore namespace, and table_name to an existing
+online-store table. Provision the table and its shard ranges before
+materializing features. Provide TS_META_ADMIN_TOKEN in the Feast process
+environment if the metaserver requires authentication.
+
+The shared SDK sends reads and writes directly to the gRPC endpoints
+advertised in the table topology. Use datanodes with checked gRPC requests
+and binary field presence support. The existing host and port settings
+continue to select the HTTP command client when meta_url is omitted.

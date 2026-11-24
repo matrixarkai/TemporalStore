@@ -306,6 +306,11 @@ message Command {
     ListPushMany list_push_many = 80;
     ListPopMany list_pop_many = 81;
     StringLen string_len = 82;
+    HashGetAll hash_get_all = 83;
+    CommonTtl common_ttl = 84;
+    StringGetRange string_get_range = 85;
+    FeatureAggregateQuery feature_agg_query = 86;
+    FeatureAggregateQuery feature_proto_agg_query = 87;
   }
 }
 
@@ -336,6 +341,14 @@ message CommandResponse {
   // A removal reports what it did: `count` is the samples after, `samples_before` and
   // `cells_before` as for a rollup, and this is the cells it took out.
   uint64 cells_removed = 16;
+  // Presence for a single optional binary value, including an empty one.
+  optional bool value_present = 19;
+  // For a positional projection, bit i%8 of byte i/8 says whether values[i] exists.
+  optional bytes values_present = 20;
+  // Field names in the same order as values for a hash entry response.
+  repeated string entry_names = 21;
+  // Signed integer for numeric commands, including TTL's negative sentinel values.
+  optional sint64 integer = 22;
 }
 
 message StringSet {
@@ -345,6 +358,16 @@ message StringSet {
 }
 
 message StringLen {
+  string key = 1;
+}
+
+message StringGetRange {
+  string key = 1;
+  sint64 start = 2;
+  sint64 end = 3;
+}
+
+message CommonTtl {
   string key = 1;
 }
 
@@ -360,6 +383,10 @@ message HashSet {
   string key = 1;
   string field = 2;
   bytes value = 3;
+}
+
+message HashGetAll {
+  string key = 1;
 }
 
 message HashGet {
@@ -416,6 +443,14 @@ message ZSetScan {
   string key = 1;
   bytes after = 2;
   uint64 limit = 3;
+}
+
+message FeatureAggregateQuery {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  string aggregator = 4;
+  optional uint64 count = 5;
 }
 
 message FeaturePoint {
