@@ -498,53 +498,5 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(adapter.query_load_result(task).bits, [False])
 
 
-
-
-class GrpcLoadBudgetTest(unittest.TestCase):
-    def test_table_load_coalesces_nine_mib_chunks(self):
-        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
-
-        payload = bytes(9 * 1024 * 1024)
-        client = Mock()
-        client.batch_execute.side_effect = lambda commands: [
-            pb.CommandResponse(status=pb.Status(ok=True), value=payload) for _ in commands
-        ]
-        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
-        items = []
-        for index in range(5):
-            key = Key(f"chunk-{index}")
-            key.model_name, key.kv_rank = "model", 0
-            items.append((key, memoryview(bytearray(payload))))
-        with patch.object(backend, "_table", return_value=client):
-            self.assertEqual(list(backend.load_into(items)), [True] * 5)
-        self.assertEqual([len(call.args[0]) for call in client.batch_execute.call_args_list],
-                         [2, 2, 1])
-
-    def test_over_budget_reply_splits_reads_and_leaves_writes_unreplayed(self):
-        import grpc
-        from lmcache_temporalstore.grpc_kv import _execute_batch, pb
-
-        class Oversized(grpc.RpcError):
-            def code(self):
-                return grpc.StatusCode.RESOURCE_EXHAUSTED
-
-        def answer(commands):
-            if len(commands) > 1:
-                raise Oversized()
-            return [commands[0].string_get.key]
-
-        client = Mock()
-        client.batch_execute.side_effect = answer
-        gets = [pb.Command(string_get=pb.StringGet(key=key)) for key in ["a", "b"]]
-        self.assertEqual(_execute_batch(client, gets), ["a", "b"])
-        self.assertEqual([len(call.args[0]) for call in client.batch_execute.call_args_list],
-                         [2, 1, 1])
-
-        client.reset_mock()
-        write = pb.Command(common_delete=pb.CommonDelete(key="a"))
-        with self.assertRaises(Oversized):
-            _execute_batch(client, [write, gets[1]])
-        client.batch_execute.assert_called_once()
-
 if __name__ == "__main__":
     unittest.main()

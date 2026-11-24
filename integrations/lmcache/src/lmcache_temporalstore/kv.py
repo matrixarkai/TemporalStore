@@ -11,8 +11,6 @@ from lmcache.v1.distributed.key_codec import encode_storage_key
 class ValueBackend:
     """Ordinary KV storage over an explicitly provisioned data shard."""
 
-    _max_load_payload_bytes = 4 * 1024 * 1024
-
     def __init__(
         self, client: TemporalStoreClient, lookup_client: TemporalStoreClient,
         ttl_seconds: int,
@@ -57,7 +55,7 @@ class ValueBackend:
             # apply a second bound based on the expected response payloads.
             while end < min(len(items), offset + 128):
                 length = len(items[end][1])
-                if end > offset and size + length > self._max_load_payload_bytes:
+                if end > offset and size + length > 4 * 1024 * 1024:
                     break
                 size += length
                 end += 1
