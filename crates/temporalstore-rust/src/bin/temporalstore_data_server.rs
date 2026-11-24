@@ -528,6 +528,7 @@ fn main() {
         start_heartbeat_loop(
             engine.clone(),
             runtime.clone(),
+            raft_state.clone(),
             meta_addr.clone(),
             advertised_addr.clone(),
             binary_version.clone(),
@@ -920,6 +921,7 @@ fn main() {
                 &send_heartbeat(
                     &engine,
                     &runtime,
+                    raft_state.as_ref(),
                     &meta_addr,
                     &advertised_addr,
                     &binary_version,
@@ -2997,6 +2999,7 @@ fn validate_node_topology_from_meta(
 fn send_heartbeat(
     engine: &TemporalEngine,
     runtime: &DataNodeRuntime,
+    raft_state: Option<&ServerRaftState>,
     meta_addr: &str,
     server_addr: &str,
     binary_version: &str,
@@ -3025,6 +3028,20 @@ fn send_heartbeat(
             shard_stat_info: stats.shard_stat_info,
         })
         .collect();
+    let mut shard_states = runtime.shard_serving_states();
+    if let Some(raft) = raft_state {
+        let status = raft.runtime.status();
+        let local = status.nodes.iter().find(|node| node.node_id == raft.local_node_id);
+        let shard = shard_states.iter_mut().find(|shard| shard.shard_id == raft.raft_shard_id);
+        if let (Some(node), Some(shard)) = (local, shard) {
+            shard.raft_role = Some(temporalstore_rust::meta::DataRaftShardRole {
+                term: node.current_term,
+                is_leader: status.leader_id == raft.local_node_id
+                    && node.role == temporalstore_rust::raft::RaftRole::Leader
+                    && node.alive,
+            });
+        }
+    }
     let request = ServerHeartbeatRequest {
         server_addr: server_addr.to_string(),
         boot_time_ms,
@@ -3032,7 +3049,7 @@ fn send_heartbeat(
         shard_loads,
         shard_stat_loads,
         runtime_load: runtime.server_runtime_load(),
-        shard_states: runtime.shard_serving_states(),
+        shard_states,
     };
     let response =
         post_json_with_options_and_headers::<_, ServerHeartbeatResponse>(
@@ -3515,6 +3532,7 @@ mod tests {
         let _ = send_heartbeat(
             &engine,
             &runtime,
+            None,
             &meta_addr,
             "127.0.0.1:19",
             "test",
@@ -3588,6 +3606,7 @@ mod tests {
                                         temporalstore_rust::meta::TableServingOptions::default(),
                                 }),
                                 shards: vec![temporalstore_rust::meta::TableShard {
+                                    raft_route: None,
                                     load_version: 0,
                                     shard_id: 9,
                                     start_bucket: 90,

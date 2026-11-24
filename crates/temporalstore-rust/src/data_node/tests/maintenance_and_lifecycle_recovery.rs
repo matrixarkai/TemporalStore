@@ -1418,6 +1418,7 @@ fn runtime_builds_style_server_load_report() {
             serving_options: crate::meta::TableServingOptions::default(),
         }),
         shards: vec![crate::meta::TableShard {
+            raft_route: None,
             load_version: 0,
             shard_id: 7,
             start_bucket: 10,
@@ -1438,6 +1439,7 @@ fn runtime_builds_style_server_load_report() {
         status: Status::ok(),
         table: None,
         shards: vec![crate::meta::TableShard {
+            raft_route: None,
             load_version: 0,
             shard_id: 7,
             start_bucket: 0,
@@ -3382,6 +3384,7 @@ fn the_slot_index_metric_counts_resident_buckets_not_the_routing_range() {
     // the metric exported 4,294,967,295 per shard whatever the index held -- and these are SUMMED
     // across shards. Nothing asserted it, which is why it stayed that way.
     let shard = crate::meta::ServerShardServingState {
+        raft_role: None,
         shard_id: 1,
         dirty_bucket_count: 3,
         storage: crate::control::ShardCanonicalStorageStats {

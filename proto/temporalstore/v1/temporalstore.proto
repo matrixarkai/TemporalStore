@@ -2598,6 +2598,7 @@ message MfServerShardServingState {
   uint64 wal_sequence = 17;
   uint64 dirty_object_count = 18;
   uint64 dirty_bucket_count = 19;
+  MfDataRaftShardRole raft_role = 20;
 }
 
 message MfTableServingOptions {
@@ -2708,6 +2709,11 @@ message MfShardCanonicalStorageStats {
   uint64 stale_bytes_ppm = 55;
   uint64 append_watermark = 56;
   uint64 compaction_watermark = 57;
+}
+
+message MfDataRaftShardRole {
+  uint64 term = 1;
+  bool is_leader = 2;
 }
 
 message MfMembershipUpdateTaskPlan {

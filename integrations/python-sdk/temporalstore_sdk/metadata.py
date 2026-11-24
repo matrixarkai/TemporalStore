@@ -57,8 +57,8 @@ class TableTopology:
     def shard_for_key(self, key: str) -> Shard:
         if self.shard_count <= 0:
             raise MetadataError("invalid_topology", "table has no shards")
-        shard_id = self.first_shard_id + _bucket_for_key(key) % self.shard_count
-        position = shard_id - self.first_shard_id
+        position = 0 if self.shard_count == 1 else _bucket_for_key(key) % self.shard_count
+        shard_id = self.first_shard_id + position
         if position >= len(self.shards) or self.shards[position].shard_id != shard_id:
             raise MetadataError("invalid_topology", f"table is missing shard {shard_id}")
         return self.shards[position]
@@ -125,13 +125,24 @@ class MetadataClient:
         return TableTopology(
             namespace, table, info["topology_version"], info["first_shard_id"], info["shard_count"],
             tuple(
-                Shard(
-                    row["shard_id"], row["primary"], tuple(row["replicas"]),
-                    row.get("load_version", 0),
-                    (row.get("primary_endpoint") or {}).get("grpc_addr"),
-                    tuple(endpoint["grpc_addr"] for endpoint in row.get("replica_endpoints", ())
-                          if endpoint.get("grpc_addr")),
-                )
+                self._decode_shard(row)
                 for row in sorted(body["shards"], key=lambda item: item["shard_id"])
             ),
+        )
+
+    @staticmethod
+    def _decode_shard(row) -> Shard:
+        raft_route = row.get("raft_route")
+        if raft_route is None:
+            endpoint = row.get("primary_endpoint") or {}
+            primary = row["primary"]
+            version = row.get("load_version", 0)
+        else:
+            endpoint = raft_route.get("endpoint") or {}
+            primary = endpoint.get("server_addr")
+            version = raft_route["load_version"]
+        return Shard(
+            row["shard_id"], primary, tuple(row["replicas"]), version, endpoint.get("grpc_addr"),
+            tuple(endpoint["grpc_addr"] for endpoint in row.get("replica_endpoints", ())
+                  if endpoint.get("grpc_addr")),
         )

@@ -6,6 +6,7 @@ from threading import Lock
 from time import monotonic
 from typing import Iterable
 
+import grpc
 from temporalstore.v1 import temporalstore_pb2 as pb
 
 from .client import CommandClient
@@ -69,17 +70,23 @@ class TableClient:
                 self._channels[shard.primary_grpc] = channel
             return channel
 
-    def _invalidate_stale_route(self, status: pb.Status) -> None:
-        if status.code == "load_version_mismatch":
-            with self._lock:
+    def _invalidate_route(self, topology: TableTopology) -> None:
+        with self._lock:
+            if self._topology is topology:
                 self._expires_at = 0.0
 
     def execute(self, command: pb.Command) -> pb.ExecuteResponse:
-        shard = self._shard_for_command(self._current_topology(), command)
-        response = self._channel_for(shard).execute(
-            shard.shard_id, command, load_version=shard.load_version or None,
-        )
-        self._invalidate_stale_route(response.status)
+        topology = self._current_topology()
+        shard = self._shard_for_command(topology, command)
+        channel = self._channel_for(shard)
+        try:
+            response = channel.execute(shard.shard_id, command, load_version=shard.load_version or None)
+        except grpc.RpcError as error:
+            if error.code() == grpc.StatusCode.UNAVAILABLE:
+                self._invalidate_route(topology)
+            raise
+        if response.status.code in {"load_version_mismatch", "raft_error"}:
+            self._invalidate_route(topology)
         return response
 
     def batch_execute(self, commands: Iterable[pb.Command]) -> list[pb.CommandResponse]:
@@ -95,10 +102,17 @@ class TableClient:
         channels = {shard: self._channel_for(shard) for shard in groups}
         indexed = []
         for shard, group in groups.items():
-            response = channels[shard].batch_execute(
-                shard.shard_id, (command for _, command in group), load_version=shard.load_version or None,
-            )
-            self._invalidate_stale_route(response.status)
+            try:
+                response = channels[shard].batch_execute(
+                    shard.shard_id, (command for _, command in group),
+                    load_version=shard.load_version or None,
+                )
+            except grpc.RpcError as error:
+                if error.code() == grpc.StatusCode.UNAVAILABLE:
+                    self._invalidate_route(topology)
+                raise
+            if response.status.code in {"load_version_mismatch", "raft_error"}:
+                self._invalidate_route(topology)
             if len(response.responses) != len(group):
                 if not response.status.ok:
                     raise MetadataError(response.status.code, response.status.message)

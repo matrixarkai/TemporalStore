@@ -520,6 +520,7 @@ mod tests {
 
     fn serving_state(shard_id: ShardId, state: &str) -> ServerShardServingState {
         ServerShardServingState {
+            raft_role: None,
             shard_id,
             serving_state: state.to_string(),
             worker_index: 0,

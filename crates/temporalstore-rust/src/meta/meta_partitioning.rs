@@ -43,6 +43,41 @@ fn owner_is_serving(state: &MetaState, server_addr: &str) -> bool {
         .unwrap_or(true)
 }
 
+fn data_raft_route(state: &MetaState, table: &TableMetaInfo, shard_id: ShardId) -> Option<DataRaftRoute> {
+    let reporters = state.data_raft_reporters.get(&shard_id)?;
+    let owning_table = table_for_shard(state, shard_id)?;
+    if owning_table.info.table_id != table.table_id {
+        return None;
+    }
+    let mut newest = None;
+    let mut leader = None;
+    let mut conflict = false;
+    for addr in reporters {
+        let Some(server) = state.servers.get(addr) else { continue };
+        for shard in server.shard_states.iter().filter(|shard| {
+            shard.shard_id == shard_id && shard.loaded
+                && (shard.table_name.is_empty() || shard.table_name == table.table_name)
+        }) {
+            let Some(role) = shard.raft_role else { continue };
+            let epoch = (shard.load_version, role.term);
+            if newest.is_none_or(|current| epoch > current) {
+                newest = Some(epoch);
+                leader = None;
+                conflict = false;
+            }
+            if newest != Some(epoch) || !role.is_leader || shard.readonly
+                || server.state != MetaEntityState::Normal || server.reboot_detected {
+                continue;
+            }
+            conflict |= leader.is_some_and(|current| current != addr);
+            leader = Some(addr);
+        }
+    }
+    let load_version = newest.map_or(0, |(version, _)| version);
+    let endpoint = leader.filter(|_| !conflict).map(|addr| server_endpoint(state, addr));
+    Some(DataRaftRoute { endpoint, load_version })
+}
+
 pub(super) fn build_shards(
     state: &MetaState,
     table: &TableMetaInfo,
@@ -152,6 +187,7 @@ pub(super) fn build_shards(
             .unwrap_or(true);
         if !serving {
             shards.push(TableShard {
+                raft_route: None,
                 shard_id,
                 start_bucket,
                 end_bucket,
@@ -323,6 +359,7 @@ pub(super) fn build_shards(
             .map(|server_addr| reported_load_version(state, server_addr, shard_id))
             .unwrap_or(0);
         shards.push(TableShard {
+            raft_route: data_raft_route(state, table, shard_id),
             shard_id,
             start_bucket,
             end_bucket,
@@ -336,4 +373,72 @@ pub(super) fn build_shards(
     shards
 }
 
+#[cfg(test)]
+mod raft_route_tests {
+    use super::*;
 
+    #[test]
+    fn elected_leader_route_preserves_placement_and_rejects_old_terms() {
+        let meta = SingleNodeMeta::default();
+        assert!(meta.add_table(AddTableRequest {
+            namespace: "kvcache".into(), table_name: "model".into(),
+            first_shard_id: 100, shard_count: 1, replica_count: 3,
+            partition_version: 0, serving_options: Default::default(),
+        }).status.ok);
+        for (node_id, host) in [(1, "a"), (2, "b"), (3, "c")] {
+            assert!(meta.register_server(RegisterServerRequest {
+                server_addr: format!("{host}:1000"), grpc_addr: Some(format!("{host}:2000")),
+                node_id, location: String::new(), binary_version: String::new(),
+                numa_nodes: Vec::new(), registered_at_ms: 0,
+            }).status.ok);
+        }
+        assert!(meta.register(RegisterShardRequest {
+            shard_id: 100, server_addr: "a:1000".into(), registered_at_ms: 0,
+        }).status.ok);
+        let report = |host: &str, term, is_leader| {
+            assert!(meta.server_heartbeat(ServerHeartbeatRequest {
+                server_addr: format!("{host}:1000"),
+                boot_time_ms: 1, binary_version: String::new(),
+                shard_loads: Vec::new(), shard_stat_loads: Vec::new(),
+                runtime_load: Default::default(),
+                shard_states: vec![ServerShardServingState {
+                    shard_id: 100, loaded: true, load_version: 7, table_name: "model".into(),
+                    raft_role: Some(DataRaftShardRole { term, is_leader }),
+                    ..Default::default()
+                }],
+            }).status.ok);
+        };
+        let topology = |meta: &SingleNodeMeta, old_topology_version| {
+            meta.get_table_topology(GetTableTopologyRequest {
+                namespace: "kvcache".into(), table_name: "model".into(),
+                client_location: String::new(), old_topology_version,
+            })
+        };
+
+        report("a", 1, true);
+        let first = topology(&meta, 0);
+        let version = first.table.unwrap().topology_version;
+        let route = first.shards[0].raft_route.as_ref().unwrap();
+        assert_eq!(route.endpoint.as_ref().unwrap().grpc_addr.as_deref(), Some("a:2000"));
+
+        report("b", 2, false);
+        let interim = topology(&meta, version);
+        assert!(!interim.unchanged);
+        assert!(interim.shards[0].raft_route.as_ref().unwrap().endpoint.is_none());
+
+        report("b", 2, true);
+        report("a", 1, true);
+        let current = topology(&meta, 0);
+        assert_eq!(current.shards[0].primary.as_deref(), Some("a:1000"));
+        let route = current.shards[0].raft_route.as_ref().unwrap();
+        assert_eq!(route.endpoint.as_ref().unwrap().grpc_addr.as_deref(), Some("b:2000"));
+        assert_eq!(route.load_version, 7);
+        let current_version = current.table.as_ref().unwrap().topology_version;
+        report("b", 2, true);
+        assert!(topology(&meta, current_version).unchanged);
+
+        let restored = SingleNodeMeta::default();
+        assert!(restored.install_snapshot(meta.export_snapshot()).status.ok);
+        assert_eq!(topology(&restored, 0).shards, current.shards);
+    }
+}

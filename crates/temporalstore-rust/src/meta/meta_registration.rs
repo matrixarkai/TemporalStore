@@ -5,6 +5,42 @@
 
 use super::*;
 
+fn raft_reports(states: &[ServerShardServingState])
+    -> impl Iterator<Item = (ShardId, u64, &str, bool, bool, DataRaftShardRole)> + '_
+{
+    states.iter().filter_map(|shard| Some((
+        shard.shard_id, shard.load_version, shard.table_name.as_str(),
+        shard.loaded, shard.readonly, shard.raft_role?,
+    )))
+}
+
+pub(super) fn update_data_raft_reporters(
+    state: &mut MetaState,
+    addr: &str,
+    previous: &[ShardId],
+    current: &[ShardId],
+) {
+    for shard_id in previous {
+        if let Some(servers) = state.data_raft_reporters.get_mut(shard_id) {
+            servers.remove(addr);
+            if servers.is_empty() {
+                state.data_raft_reporters.remove(shard_id);
+            }
+        }
+    }
+    for &shard_id in current {
+        state.data_raft_reporters.entry(shard_id).or_default().insert(addr.to_string());
+    }
+    let version = record_topology_event(state, "data_raft_role", format!("server:{addr}"), "");
+    for &shard_id in previous.iter().chain(current) {
+        let key = table_for_shard(state, shard_id)
+            .map(|table| table_key(&table.info.namespace, &table.info.table_name));
+        if let Some(table) = key.and_then(|key| state.tables.get_mut(&key)) {
+            table.info.topology_version = version;
+        }
+    }
+}
+
 impl SingleNodeMeta {
     pub fn register_server(&self, mut request: RegisterServerRequest) -> AckResponse {
         if let Some(status) = self.meta_change_refusal() {
@@ -58,6 +94,9 @@ impl SingleNodeMeta {
         let grpc_changed = state.servers.get(&request.server_addr)
             .and_then(|server| server.grpc_addr.as_ref()) != request.grpc_addr.as_ref();
         let server_addr = request.server_addr.clone();
+        let previous_raft_shards = state.servers.get(&server_addr)
+            .map(|server| raft_reports(&server.shard_states).map(|report| report.0).collect::<Vec<_>>())
+            .unwrap_or_default();
         state.servers.insert(
             server_addr.clone(),
             ServerMetaInfo {
@@ -106,13 +145,17 @@ impl SingleNodeMeta {
             MetaEntityState::Normal,
             now,
         );
-        let topology_version = record_topology_event(
+        record_topology_event(
             &mut state,
             "register_server",
             format!("server:{server_addr}"),
             "state=normal",
         );
+        if !previous_raft_shards.is_empty() {
+            update_data_raft_reporters(&mut state, &server_addr, &previous_raft_shards, &[]);
+        }
         if grpc_changed {
+            let topology_version = state.topology_version;
             for table in state.tables.values_mut() {
                 table.info.topology_version = topology_version;
             }
@@ -268,6 +311,14 @@ impl SingleNodeMeta {
         // an old build that never sends them.
         server.reports_shard_states =
             server.reports_shard_states || !request.shard_states.is_empty();
+        let changed_raft_reports = if !raft_reports(&server.shard_states).eq(raft_reports(&request.shard_states)) {
+            Some((
+                raft_reports(&server.shard_states).map(|report| report.0).collect::<Vec<_>>(),
+                raft_reports(&request.shard_states).map(|report| report.0).collect::<Vec<_>>(),
+            ))
+        } else {
+            None
+        };
         server.shard_states = request.shard_states;
         // Summarised so the read path does not have to walk the lists. Folded
         // above, before the lock, over the same values these fields now hold.
@@ -289,10 +340,13 @@ impl SingleNodeMeta {
                 ),
             );
         }
+        if let Some((previous, current)) = changed_raft_reports {
+            update_data_raft_reporters(&mut state, &request.server_addr, &previous, &current);
+        }
         ServerHeartbeatResponse {
             status: Status::ok(),
             forbid_auto_register: false,
-            topology_version,
+            topology_version: state.topology_version,
             server_state,
         }
     }

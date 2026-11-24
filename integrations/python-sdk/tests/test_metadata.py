@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import unittest
 
-from temporalstore_sdk import MetadataError, Shard, TableTopology
+from temporalstore_sdk import MetadataClient, MetadataError, Shard, TableTopology
 from temporalstore_sdk.metadata import _crc64
 
 
@@ -29,3 +29,24 @@ class TablePlacementTest(unittest.TestCase):
         topology = TableTopology("kvcache", "model", 1, 73, 2, ())
         with self.assertRaisesRegex(MetadataError, "missing shard"):
             topology.shard_for_key("alpha")
+
+    def test_raft_routing_prefers_the_elected_endpoint_and_its_generation(self):
+        row = {
+            "shard_id": 73, "primary": "assigned:1000", "replicas": ["assigned:1000"],
+            "primary_endpoint": {"grpc_addr": "assigned:2000"}, "load_version": 4,
+            "raft_route": {
+                "endpoint": {"server_addr": "leader:1000", "grpc_addr": "leader:2000"},
+                "load_version": 7,
+            },
+        }
+        shard = MetadataClient._decode_shard(row)
+        self.assertEqual((shard.primary, shard.primary_grpc, shard.load_version),
+                         ("leader:1000", "leader:2000", 7))
+        row["raft_route"]["endpoint"] = None
+        shard = MetadataClient._decode_shard(row)
+        self.assertIsNone(shard.primary_grpc)
+        self.assertIsNone(shard.primary)
+        del row["raft_route"]
+        shard = MetadataClient._decode_shard(row)
+        self.assertEqual((shard.primary, shard.primary_grpc, shard.load_version),
+                         ("assigned:1000", "assigned:2000", 4))

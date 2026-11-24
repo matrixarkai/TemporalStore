@@ -373,6 +373,12 @@ pub struct ServerRuntimeLoad {
     pub degraded_reasons: Vec<String>,
 }
 
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataRaftShardRole {
+    pub term: u64,
+    pub is_leader: bool,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerShardServingState {
     pub shard_id: ShardId,
@@ -396,6 +402,8 @@ pub struct ServerShardServingState {
     pub wal_sequence: u64,
     pub dirty_object_count: u64,
     pub dirty_bucket_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_role: Option<DataRaftShardRole>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -994,6 +1002,12 @@ pub struct TableMetaInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataRaftRoute {
+    pub endpoint: Option<ServerEndpoint>,
+    pub load_version: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TableShard {
     pub shard_id: ShardId,
     pub start_bucket: u64,
@@ -1013,6 +1027,8 @@ pub struct TableShard {
     /// existed reads as 0 for the same reason.
     #[serde(default)]
     pub load_version: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_route: Option<DataRaftRoute>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1833,6 +1849,8 @@ pub(crate) struct MetaState {
     /// of everything above the cursor.
     shards: BTreeMap<ShardId, ShardLocation>,
     servers: BTreeMap<String, ServerMetaInfo>,
+    #[serde(default)]
+    data_raft_reporters: BTreeMap<ShardId, BTreeSet<String>>,
     proxies: BTreeMap<String, ProxyMetaInfo>,
     proxy_groups: BTreeMap<String, ProxyGroupInfo>,
     namespaces: BTreeMap<String, MetaEntityState>,
@@ -2770,6 +2788,7 @@ mod tests {
 
         let state_for = |shard_id: u64, serving_state: &str, records: u64, bytes: u64| {
             ServerShardServingState {
+                raft_role: None,
                 shard_id,
                 serving_state: serving_state.to_string(),
                 total_records: records as usize,
@@ -2929,6 +2948,7 @@ mod tests {
                 ..ServerRuntimeLoad::default()
             },
             shard_states: vec![ServerShardServingState {
+                raft_role: None,
                 shard_id: 7,
                 serving_state: "serving".to_string(),
                 worker_index: 3,
@@ -3774,6 +3794,7 @@ mod tests {
                 shard_stat_loads: Vec::new(),
                 runtime_load: ServerRuntimeLoad::default(),
                 shard_states: vec![ServerShardServingState {
+                    raft_role: None,
                     shard_id: 1,
                     loaded: true,
                     load_version: 7,
@@ -6593,6 +6614,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
                 // The record and storage counters a scrape reports are summed
                 // from these, not from the loads above.
                 shard_states: vec![ServerShardServingState {
+                    raft_role: None,
                     shard_id: node + 1,
                     total_records: 11 + node as usize,
                     storage_bytes: 2048,
@@ -7816,6 +7838,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             shard_states: loaded
                 .iter()
                 .map(|shard_id| ServerShardServingState {
+                    raft_role: None,
                     shard_id: *shard_id,
                     serving_state: "serving".to_string(),
                     worker_index: 0,
@@ -10512,6 +10535,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
                 shard_stat_loads: Vec::new(),
                 runtime_load: ServerRuntimeLoad::default(),
                 shard_states: vec![ServerShardServingState {
+                    raft_role: None,
                     shard_id: 1,
                     serving_state: serving_state.to_string(),
                     loaded: serving_state != "failed",
@@ -10842,6 +10866,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             shard_stat_loads: Vec::new(),
             runtime_load: ServerRuntimeLoad::default(),
             shard_states: vec![ServerShardServingState {
+                raft_role: None,
                 shard_id: 42,
                 serving_state: "serving".to_string(),
                 worker_index: 0,
@@ -10985,6 +11010,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             shard_stat_loads: Vec::new(),
             runtime_load: ServerRuntimeLoad::default(),
             shard_states: vec![ServerShardServingState {
+                raft_role: None,
                 shard_id: 77,
                 serving_state: "serving".to_string(),
                 worker_index: 0,
@@ -11080,6 +11106,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             shard_stat_loads: Vec::new(),
             runtime_load: ServerRuntimeLoad::default(),
             shard_states: vec![ServerShardServingState {
+                raft_role: None,
                 shard_id: 7,
                 load_version: 9,
                 serving_state: "serving".to_string(),

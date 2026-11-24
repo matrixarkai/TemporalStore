@@ -2989,6 +2989,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(index, (records, bytes))| temporalstore_rust::meta::ServerShardServingState {
+                    raft_role: None,
                     shard_id: index as temporalstore_rust::types::ShardId + 1,
                     serving_state: "serving".to_string(),
                     worker_index: 0,

@@ -292,6 +292,7 @@ pub(super) fn topology_for_shard(
             serving_options: crate::meta::TableServingOptions::default(),
         }),
         shards: vec![TableShard {
+            raft_route: None,
             load_version: 0,
             shard_id,
             start_bucket: 0,

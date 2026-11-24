@@ -369,7 +369,13 @@ impl SingleNodeMeta {
             );
         }
         for addr in &plan.servers {
-            state.servers.remove(addr);
+            if let Some(server) = state.servers.remove(addr) {
+                let reported = server.shard_states.iter().filter(|shard| shard.raft_role.is_some())
+                    .map(|shard| shard.shard_id).collect::<Vec<_>>();
+                if !reported.is_empty() {
+                    super::meta_registration::update_data_raft_reporters(&mut state, addr, &reported, &[]);
+                }
+            }
             state.dropped_since_ms.remove(&dropped_key("server", addr));
             record_topology_event(
                 &mut state,

@@ -2,6 +2,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import grpc
+
 from temporalstore_sdk import MetadataError, Shard, TableClient, TableTopology, commands
 
 
@@ -80,3 +82,39 @@ class TableClientTest(unittest.TestCase):
                 self.assertEqual(metadata.table_topology.call_count, 2)
                 calls = channel.return_value.batch_execute.call_args_list
                 self.assertEqual([call.kwargs["load_version"] for call in calls], [7, 8])
+
+    def test_transport_unavailable_refreshes_next_request_without_resending_writes(self):
+        class Unavailable(grpc.RpcError):
+            def code(self):
+                return grpc.StatusCode.UNAVAILABLE
+
+        for rpc in ("execute", "batch_execute"):
+            with self.subTest(rpc=rpc):
+                metadata = Mock()
+                metadata.table_topology.side_effect = [
+                    TableTopology("kvcache", "model", 1, 73, 1,
+                                  (Shard(73, None, (), 7, "primary-a"),)),
+                    TableTopology("kvcache", "model", 2, 73, 1,
+                                  (Shard(73, None, (), 8, "primary-b"),)),
+                ]
+                first, second = Mock(), Mock()
+                getattr(first, rpc).side_effect = Unavailable
+                getattr(second, rpc).return_value = (
+                    commands.ExecuteResponse(status=commands.Status(ok=True))
+                    if rpc == "execute" else commands.BatchExecuteResponse(
+                        responses=[commands.CommandResponse(count=1)],
+                    )
+                )
+                write = commands.Command(string_set=commands.StringSet(key="a", value=b"value"))
+                request = write if rpc == "execute" else [write]
+                with patch("temporalstore_sdk.table.CommandClient", side_effect=[first, second]):
+                    with TableClient(metadata, "kvcache", "model") as table:
+                        call = getattr(table, rpc)
+                        with self.assertRaises(Unavailable):
+                            call(request)
+                        getattr(first, rpc).assert_called_once()
+                        getattr(second, rpc).assert_not_called()
+                        self.assertEqual(metadata.table_topology.call_count, 1)
+                        call(request)
+                        self.assertEqual(metadata.table_topology.call_count, 2)
+                        self.assertEqual(getattr(second, rpc).call_args.kwargs["load_version"], 8)

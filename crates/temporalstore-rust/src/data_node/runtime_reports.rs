@@ -506,6 +506,7 @@ impl DataNodeRuntime {
                 };
                 let worker = self.shard_worker_info(stats.shard_id);
                 ServerShardServingState {
+                    raft_role: None,
                     shard_id: stats.shard_id,
                     serving_state: serving_state.to_string(),
                     worker_index: worker.worker_index,
