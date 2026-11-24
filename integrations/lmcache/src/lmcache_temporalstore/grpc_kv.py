@@ -1,16 +1,27 @@
 # SPDX-License-Identifier: Apache-2.0
 """LMCache's model-layout tables over the shared TemporalStore SDK."""
 
+from __future__ import annotations
+
+import json
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from hashlib import sha256
 from threading import Lock
 from time import monotonic, sleep
+from typing import TYPE_CHECKING
 
 from lmcache.v1.distributed.api import ObjectKey
 from temporalstore_sdk import MetadataClient, MetadataError, RaftPrimaryUnavailable, TableClient, commands as pb
 
 from .kv import ValueBackend
 from .layout import layout_table_name
+
+if TYPE_CHECKING:
+    from lmcache.v1.memory_management import MemoryObjMetadata
+
+
+TABLE_DESCRIPTOR_KEY = "__lmcache_layout_v1"
 
 
 def _table_for_key(key: ObjectKey) -> str:
@@ -52,6 +63,7 @@ class TableValueBackend(ValueBackend):
         self._ttl_ms = ttl_seconds * 1000 or None
         self._tables: dict[str, TableClient] = {}
         self._lock = Lock()
+        self._registered_layouts: dict[str, tuple[int, set[tuple]]] = {}
 
     def _table(self, name: str) -> TableClient:
         with self._lock:
@@ -60,6 +72,48 @@ class TableValueBackend(ValueBackend):
                 client = TableClient(self._metadata, self._namespace, name, timeout_seconds=self._timeout)
                 self._tables[name] = client
             return client
+
+    def register_layouts(self, metadata_by_key: Mapping[ObjectKey, MemoryObjMetadata]) -> None:
+        pending_by_table: dict[str, dict[tuple, ObjectKey]] = {}
+        for key, metadata in metadata_by_key.items():
+            shapes = tuple(tuple(shape) for shape in (metadata.shapes or [metadata.shape]))
+            dtypes = tuple(str(dtype) if dtype is not None else None
+                           for dtype in (metadata.dtypes or [metadata.dtype]))
+            layout = (key.kv_rank, key.object_group_id, shapes, dtypes, metadata.fmt.value)
+            pending_by_table.setdefault(_table_for_key(key), {})[layout] = key
+
+        for name, layouts in pending_by_table.items():
+            client = self._table(name)
+            version = client.topology_version()
+            previous_version, registered = self._registered_layouts.get(name, (version, set()))
+            if previous_version != version:
+                registered = set()
+            pending = layouts.keys() - registered
+            if not pending:
+                continue
+
+            fields = []
+            for layout in sorted(pending, key=repr):
+                rank, group, shapes, dtypes, memory_format = layout
+                key = layouts[layout]
+                value = json.dumps({
+                    "model": key.model_name,
+                    "world_size": (rank >> 24) & 255,
+                    "local_world_size": (rank >> 8) & 255,
+                    "rank": rank,
+                    "group": group,
+                    "shapes": shapes,
+                    "dtypes": dtypes,
+                    "memory_format": memory_format,
+                }, separators=(",", ":")).encode("utf-8")
+                fields.append(pb.HashEntry(field=sha256(value).hexdigest(), value=value))
+
+            command = pb.Command(hash_multi_set=pb.HashMultiSet(key=TABLE_DESCRIPTOR_KEY, entries=fields))
+            for _, response in self._store_responses(client, [command]):
+                if not response.status.ok:
+                    raise MetadataError(response.status.code, response.status.message)
+            registered.update(pending)
+            self._registered_layouts[name] = version, registered
 
     def _iter_responses(self, entries, *, lookup, partial=False):
         groups = {}

@@ -64,6 +64,9 @@ Registry metadata and placement are managed by TemporalStore. Each LMCache
 chunk is one binary value under its existing encoded key. The value carries
 no header or companion record. Conditional writes keep the first payload
 and its expiry, and the adapter rejects loads with a mismatched buffer size.
+The first store for each tensor layout records its dtype, shape, and memory
+format in the table's shared descriptor key. All ranks and groups in the
+same table share that descriptor.
 
 ## Ordinary KV values (experimental)
 

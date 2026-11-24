@@ -299,6 +299,52 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(client.batch_execute.call_args.kwargs, {"timeout_seconds": 1})
         self.assertEqual(client.iter_batch_responses.call_args.kwargs, {})
 
+    def test_table_layouts_share_one_descriptor_key_and_follow_table_versions(self):
+        import json
+        from types import SimpleNamespace
+
+        from lmcache_temporalstore.grpc_kv import TABLE_DESCRIPTOR_KEY, TableValueBackend, pb
+
+        backend = TableValueBackend("http://example.test", "kvcache", 5, 1, 0)
+        self.addCleanup(backend.close)
+        first, second = Key("first"), Key("second")
+        for key in (first, second):
+            key.model_name = "fixture/model"
+            key.kv_rank = (4 << 24) | (2 << 8)
+            key.object_group_id = 0
+        metadata = SimpleNamespace(
+            shape=(16, 32), dtype="torch.float16", shapes=None, dtypes=None,
+            fmt=SimpleNamespace(value=2),
+        )
+        client = Mock()
+        client.topology_version.return_value = 7
+        result = pb.CommandResponse(status=pb.Status(ok=True))
+        client.iter_batch_responses.side_effect = lambda _: iter([(0, result)])
+
+        with patch.object(backend, "_table", return_value=client):
+            backend.register_layouts({first: metadata, second: metadata})
+            backend.register_layouts({second: metadata})
+            client.iter_batch_responses.assert_called_once()
+            command = client.iter_batch_responses.call_args.args[0][0].hash_multi_set
+            self.assertEqual(command.key, TABLE_DESCRIPTOR_KEY)
+            self.assertEqual(len(command.entries), 1)
+            self.assertEqual(json.loads(command.entries[0].value), {
+                "model": "fixture/model", "world_size": 4, "local_world_size": 2,
+                "rank": first.kv_rank, "group": 0, "shapes": [[16, 32]],
+                "dtypes": ["torch.float16"], "memory_format": 2,
+            })
+
+            second.object_group_id = 1
+            backend.register_layouts({second: metadata})
+            second_command = client.iter_batch_responses.call_args.args[0][0].hash_multi_set
+            self.assertEqual(second_command.key, TABLE_DESCRIPTOR_KEY)
+            self.assertNotEqual(command.entries[0].field, second_command.entries[0].field)
+
+            client.topology_version.return_value = 8
+            backend.register_layouts({first: metadata})
+            self.assertEqual(client.iter_batch_responses.call_count, 3)
+            self.assertEqual(client.iter_batch_responses.call_args.args[0][0].hash_multi_set, command)
+
     def test_table_store_waits_for_an_elected_primary_before_sending(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
         from temporalstore_sdk import RaftPrimaryUnavailable

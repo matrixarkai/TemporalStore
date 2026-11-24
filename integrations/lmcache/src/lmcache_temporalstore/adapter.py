@@ -377,6 +377,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         success = len(keys) == len(objects)
         try:
             entries = {}
+            layouts = {}
             for key, obj in zip(keys, objects):
                 size = obj.get_size()
                 payload = memoryview(obj.byte_array).cast("B")[:size]
@@ -384,6 +385,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                     success = False
                     continue
                 entries.setdefault(key, payload)
+                if self._config.meta_url and key not in layouts:
+                    layouts[key] = obj.metadata
+            if layouts:
+                self._values.register_layouts(layouts)
             batch = list(entries.items())
             written = {}
             try:

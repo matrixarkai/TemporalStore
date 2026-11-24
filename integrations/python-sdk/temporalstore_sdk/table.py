@@ -70,6 +70,10 @@ class TableClient:
                 self._expires_at = monotonic() + ttl
             return self._topology
 
+    def topology_version(self) -> int:
+        """Return the version of the table topology used for routing."""
+        return self._current_topology().version
+
     @staticmethod
     def _shard_for_command(topology: TableTopology, command: pb.Command) -> Shard:
         kind = command.WhichOneof("kind")
