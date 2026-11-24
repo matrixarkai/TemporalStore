@@ -4,5 +4,6 @@
 from temporalstore.v1 import temporalstore_pb2 as commands
 
 from .client import CommandClient
+from .metadata import MetadataClient, MetadataError, Shard, TableTopology
 
-__all__ = ["CommandClient", "commands"]
+__all__ = ["CommandClient", "MetadataClient", "MetadataError", "Shard", "TableTopology", "commands"]
