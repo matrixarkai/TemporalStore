@@ -134,6 +134,21 @@ python integrations/lmcache/tests/vllm_smoke.py --model "$MODEL"
 ```
 
 
+### SSD cache sizing
+
+On dedicated KV-cache datanodes, set `TS_CACHE_DISK_TIER=1` to enable the
+disk cache. Size `TS_CACHE_MEMORY_BYTES` and `TS_CACHE_SSD_BYTES` in bytes
+using the measured working set and available local storage. Set
+`TS_CACHE_PMEM_BYTES=0` to disable that tier or provide its byte capacity.
+The datanode uses `TS_CACHE_DIR` for the SSD tier and its `pmem` subdirectory
+for explicitly provisioned PMEM. Keep the cache directory across restarts
+and set `TS_CACHE_RECOVER_ON_START=1` to restore its indexes at startup.
+
+For tensor payloads, measure compression before setting
+`TS_CACHE_COMPRESSION_ENABLED=0`, `TS_WAL_COMPRESS_RECORDS=0`, and
+`TS_BLOCK_STORE_COMPRESSION_ENABLED=false` on dedicated nodes. These flags
+apply to the cache, WAL, and block store respectively.
+
 ### Replicas across datanodes
 
 For L2 redundancy, configure one TemporalStore adapter per independent

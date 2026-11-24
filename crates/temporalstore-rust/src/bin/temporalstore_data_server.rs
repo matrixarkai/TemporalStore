@@ -70,6 +70,9 @@ use tracing::{debug, error, info, warn};
 #[path = "server/context_explicit_route.rs"]
 mod context_explicit_route;
 
+#[path = "server/cache_tiers.rs"]
+mod cache_tiers;
+
 #[path = "server/grpc.rs"]
 mod grpc;
 
@@ -192,14 +195,29 @@ fn main() {
         disk_cache_tier,
         "deployment profile - cache tier follows the storage backend"
     );
-    let engine = TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
+    let engine = match cache_tiers::open_configured_cache(
+        std::path::Path::new(&cache_dir),
         cache_memory_bytes,
-        cache_dir,
-        block_store_dir,
-        index_dir,
-        block_store_options,
         disk_cache_tier,
-    );
+    ) {
+        Ok(Some(cache)) => TemporalEngine::with_cache_block_store_and_index_dir(
+            cache,
+            temporalstore_rust::BlockStore::with_options(block_store_dir, block_store_options),
+            index_dir,
+        ),
+        Ok(None) => TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
+            cache_memory_bytes,
+            cache_dir,
+            block_store_dir,
+            index_dir,
+            block_store_options,
+            disk_cache_tier,
+        ),
+        Err(message) => {
+            error!(%message, "could not configure cache tiers");
+            std::process::exit(2);
+        }
+    };
     // Join-empty mode (TS_SERVER_JOIN_EMPTY): register as a server but load and
     // self-register no shard, waiting for the metaserver to place shards here via
     // `/load`. This is the clean path for metaserver-driven placement onto a fresh
