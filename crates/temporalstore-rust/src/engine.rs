@@ -3567,7 +3567,7 @@ impl TemporalEngine {
         // state is still private to this thread here, so the same pass excludes nobody.
         // `ensure_expiry_order` stays at its call sites as the repair for an emptied mirror.
         ensure_expiry_order(&mut state);
-        state.expiry_scan_positions = [None; 2];
+        state.expiry_scan_positions = [None, None];
         self.shards
             .write()
             .expect("engine lock poisoned")
@@ -6115,7 +6115,7 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         // that folds a delta onto a shard already in service would land exactly on the
         // never-repaired case.
         shard.expiry_by_deadline.clear();
-        shard.expiry_scan_positions = [None; 2];
+        shard.expiry_scan_positions = [None, None];
     }
 }
 
@@ -7995,7 +7995,7 @@ pub(in crate::engine) fn due_window_after(
     use std::ops::Bound::{Excluded, Unbounded};
 
     let mut selected = Vec::new();
-    let mut last_inspected = None;
+    let mut last_inspected: Option<&(u64, std::sync::Arc<str>)> = None;
     let mut walked = 0usize;
     let walk_cap = scan_budget.saturating_mul(16);
     let lower = after.map_or(Unbounded, Excluded);
