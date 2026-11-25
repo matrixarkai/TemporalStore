@@ -382,6 +382,33 @@ class AdapterTest(unittest.TestCase):
                 self.assertEqual(put.string_set_conditional.key, get.string_get.key)
                 self.assertLessEqual(client.batch_execute.call_args.kwargs["timeout_seconds"], 1)
 
+    def test_remote_store_timeout_uses_one_byte_exact_readback(self):
+        import grpc
+
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        class RemoteTimeout(grpc.RpcError):
+            def code(self):
+                return grpc.StatusCode.CANCELLED
+
+            def details(self):
+                return "Timeout%20expired"
+
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
+        self.addCleanup(backend.close)
+        key = Key("timeout")
+        key.model_name, key.kv_rank = "fixture/model", 0
+        client = Mock()
+        client.iter_batch_responses.side_effect = RemoteTimeout
+        client.batch_execute.return_value = [
+            pb.CommandResponse(status=pb.Status(ok=True), value=b"tensor"),
+        ]
+        with patch.object(backend, "_table", return_value=client):
+            self.assertEqual(list(backend.iter_store_results([(key, memoryview(b"tensor"))])), [(0, False)])
+        self.assertEqual(backend.stores_confirmed_by_read, 1)
+        client.iter_batch_responses.assert_called_once()
+        client.batch_execute.assert_called_once()
+
     def test_store_readback_waits_for_a_new_leader_without_writing_again(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
         from temporalstore_sdk import RaftPrimaryUnavailable

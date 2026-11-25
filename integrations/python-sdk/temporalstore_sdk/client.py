@@ -8,6 +8,17 @@ from temporalstore.v1 import temporalstore_pb2 as pb
 from temporalstore.v1.temporalstore_pb2_grpc import TemporalStoreServiceStub
 
 
+def write_outcome_is_unknown(error: grpc.RpcError) -> bool:
+    """Identify transport failures that may have interrupted an accepted write."""
+    code = error.code()
+    if code in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
+        return True
+    # The server's timeout layer can report its deadline as CANCELLED.
+    return code == grpc.StatusCode.CANCELLED and error.details() in {
+        "Timeout expired", "Timeout%20expired",
+    }
+
+
 def command_channel(target: str, credentials: Optional[grpc.ChannelCredentials]) -> grpc.Channel:
     limit = 40 * 1024 * 1024
     options = (

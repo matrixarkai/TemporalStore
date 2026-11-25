@@ -55,6 +55,38 @@ class TableClientTest(unittest.TestCase):
             self.assertEqual(error.exception.code, "raft_error")
             self.assertEqual(received, [(73, 7, [command]), (73, 7, [command])])
 
+    def test_server_deadline_keeps_the_insert_outcome_without_retrying(self):
+        class Cancelled(grpc.RpcError):
+            def __init__(self, detail):
+                self.detail = detail
+
+            def code(self):
+                return grpc.StatusCode.CANCELLED
+
+            def details(self):
+                return self.detail
+
+        metadata = Mock()
+        metadata.table_topology.return_value = TableTopology("kvcache", "model", 1, 73, 1, (
+            Shard(73, None, (), 7, "primary-a"),
+        ))
+        command = commands.Command(string_set_conditional=commands.StringSetConditional(
+            key="chunk", value=b"payload", condition=commands.STRING_SET_CONDITION_IF_NOT_EXISTS,
+        ))
+        for detail, recoverable in (
+            ("Timeout expired", True), ("Timeout%20expired", True), ("caller cancelled", False),
+        ):
+            with self.subTest(detail=detail), patch("temporalstore_sdk.table.CommandClient") as channel:
+                channel.return_value.batch_execute.side_effect = Cancelled(detail)
+                with TableClient(metadata, "kvcache", "model", preserve_insert_outcomes=True) as table:
+                    if recoverable:
+                        [reply] = table.batch_execute([command])
+                        self.assertEqual(reply.status.code, "write_outcome_unknown")
+                    else:
+                        with self.assertRaises(Cancelled):
+                            table.batch_execute([command])
+                channel.return_value.batch_execute.assert_called_once()
+
     def test_batches_by_advertised_primary_and_restores_request_order(self):
         metadata = Mock()
         metadata.table_topology.return_value = TableTopology(

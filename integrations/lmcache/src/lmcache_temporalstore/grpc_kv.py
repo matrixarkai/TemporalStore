@@ -17,6 +17,7 @@ from temporalstore_sdk import (
     MetadataClient, MetadataError, ProxyCommandClient, ProxyTableClient,
     RaftPrimaryUnavailable, TableClient, commands as pb,
 )
+from temporalstore_sdk.client import write_outcome_is_unknown
 
 from .kv import ValueBackend
 from .layout import layout_table_name
@@ -333,9 +334,7 @@ class TableValueBackend(ValueBackend):
                         MetadataError(status.code, status.message),
                     ))
         except grpc.RpcError as error:
-            if len(replied) < len(entries) and error.code() in (
-                grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.UNAVAILABLE,
-            ):
+            if len(replied) < len(entries) and write_outcome_is_unknown(error):
                 transport_error = error
                 failures.extend(
                     (index, document["key"], True, error)

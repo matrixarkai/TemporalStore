@@ -11,7 +11,7 @@ from typing import Iterable, Iterator
 import grpc
 from temporalstore.v1 import temporalstore_pb2 as pb
 
-from .client import CommandClient
+from .client import CommandClient, write_outcome_is_unknown
 from .metadata import MetadataClient, MetadataError, RaftPrimaryUnavailable, Shard, TableTopology
 
 
@@ -226,10 +226,12 @@ class TableClient:
             with closing(responses) as batches:
                 for group, response in batches:
                     if isinstance(response, grpc.RpcError):
-                        if response.code() == grpc.StatusCode.UNAVAILABLE:
-                            self._invalidate_route(topology)
-                        if response.code() not in _TRANSIENT_RPC_ERRORS:
+                        if response.code() not in _TRANSIENT_RPC_ERRORS and not (
+                            recoverable_inserts and write_outcome_is_unknown(response)
+                        ):
                             raise response
+                        if recoverable_inserts or response.code() == grpc.StatusCode.UNAVAILABLE:
+                            self._invalidate_route(topology)
                         code = "write_outcome_unknown" if recoverable_inserts else "read_unavailable"
                         status = pb.Status(code=code, message=response.details() or "")
                     elif len(response.responses) != len(group):
