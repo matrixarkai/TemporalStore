@@ -194,7 +194,7 @@ class TableValueBackend(ValueBackend):
             remaining = deadline - monotonic()
             if remaining <= 0:
                 return responses
-            if options.get("allow_partial_reads"):
+            if options.get("allow_partial_reads") or self._proxy is not None:
                 try:
                     retry = client.batch_execute(
                         [commands[index] for index in stale],
@@ -253,7 +253,7 @@ class TableValueBackend(ValueBackend):
         ordered = [None] * len(entries)
         for index, document, response in self._iter_responses(entries, lookup=lookup):
             if not response.status.ok:
-                if lookup and self._proxy is None and response.status.code in _LOOKUP_TEMPORARILY_UNAVAILABLE:
+                if lookup and response.status.code in _LOOKUP_TEMPORARILY_UNAVAILABLE:
                     ordered[index] = {"value": 0}
                     continue
                 raise MetadataError(response.status.code, response.status.message)

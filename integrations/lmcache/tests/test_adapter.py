@@ -274,6 +274,39 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(second.kwargs, {"timeout_seconds": 0.75, "allow_partial_reads": True})
         self.assertEqual(second.args[0], first.args[0][:1])
 
+    def test_proxy_lookup_keeps_hits_and_retries_only_stale_results(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from temporalstore_sdk import MetadataError
+
+        backend = TableValueBackend(
+            "grpc://example.test", "kvcache", 5, 1, 0,
+            proxy_grpc_target="127.0.0.1:1",
+        )
+        self.addCleanup(backend.close)
+        client = Mock()
+        client.batch_execute.side_effect = [
+            [
+                pb.CommandResponse(status=pb.Status(code="no_grpc_primary")),
+                pb.CommandResponse(status=pb.Status(ok=True), count=7),
+                pb.CommandResponse(status=pb.Status(code="raft_not_leader")),
+            ],
+            [pb.CommandResponse(status=pb.Status(ok=True), count=4)],
+            [pb.CommandResponse(status=pb.Status(code="permission_denied"))],
+        ]
+        keys = [Key("unavailable"), Key("healthy"), Key("stale")]
+        for key in keys:
+            key.model_name, key.kv_rank = "fixture/model", 0
+        with patch.object(backend, "_table", return_value=client), patch(
+            "lmcache_temporalstore.grpc_kv.monotonic", side_effect=[10.0, 10.25, 11.0],
+        ):
+            self.assertEqual(backend.lengths(keys), [0, 7, 4])
+            with self.assertRaisesRegex(MetadataError, "permission_denied"):
+                backend.lengths(keys[:1])
+        first, second, _ = client.batch_execute.call_args_list
+        self.assertEqual(first.kwargs, {"timeout_seconds": 1})
+        self.assertEqual(second.kwargs, {"timeout_seconds": 0.75})
+        self.assertEqual(second.args[0], first.args[0][2:])
+
     def test_table_store_accounts_for_confirmed_chunks_when_a_shard_fails(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
         from temporalstore_sdk import MetadataError
