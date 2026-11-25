@@ -186,6 +186,11 @@ one second before retrying on the next lookup. This lets reachable replicas
 serve queued requests while the link recovers. Blob transfers and metadata
 writes still use `timeout_seconds`.
 
+For distributed KV storage, `store_retry_timeout_seconds` sets the retry
+window after the datanode or proxy reports that a cache insert was rejected
+before it started. It defaults to five seconds and cannot exceed
+`timeout_seconds`. An uncertain write is checked by exact readback.
+
 To measure the L2 path independent of model inference, use LMCache's adapter
 benchmark against a disposable datanode:
 

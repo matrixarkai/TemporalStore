@@ -60,6 +60,7 @@ class TableValueBackend(ValueBackend):
     def __init__(
         self, meta_url: str, namespace: str, timeout_seconds: float,
         lookup_timeout_seconds: float, ttl_seconds: int, *, proxy_grpc_target: str = "",
+        store_retry_timeout_seconds: float = 5.0,
     ) -> None:
         self._metadata = MetadataClient(
             meta_url, credential_provider=lambda: os.environ.get("TS_META_ADMIN_TOKEN"),
@@ -69,6 +70,7 @@ class TableValueBackend(ValueBackend):
         self._proxy = ProxyCommandClient(proxy_grpc_target) if proxy_grpc_target else None
         self._namespace = namespace
         self._timeout = timeout_seconds
+        self._store_retry_timeout = min(timeout_seconds, store_retry_timeout_seconds)
         self._lookup_timeout = lookup_timeout_seconds
         self._ttl_ms = ttl_seconds * 1000 or None
         self._tables: dict[str, TableClient] = {}
@@ -182,12 +184,19 @@ class TableValueBackend(ValueBackend):
 
     def _store_responses(self, client, commands):
         deadline = None
+        rejected = None
         pending = dict(enumerate(commands))
         while pending:
+            options = {}
+            if deadline is not None:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise rejected
+                options["timeout_seconds"] = remaining
             positions = list(pending)
             rejected = None
             try:
-                for position, response in client.iter_batch_responses(list(pending.values())):
+                for position, response in client.iter_batch_responses(list(pending.values()), **options):
                     index = positions[position]
                     if response.status.code in _STORE_NOT_STARTED:
                         rejected = MetadataError(response.status.code, response.status.message)
@@ -207,7 +216,7 @@ class TableValueBackend(ValueBackend):
                 raise MetadataError("invalid_batch", "datanode returned incomplete store responses")
             now = monotonic()
             if deadline is None:
-                deadline = now + min(self._timeout, 5.0)
+                deadline = now + self._store_retry_timeout
             remaining = deadline - now
             if remaining <= 0:
                 raise rejected

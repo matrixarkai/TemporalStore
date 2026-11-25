@@ -560,6 +560,31 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(client.iter_batch_responses.call_count, 2)
         wait.assert_called_once_with(0.25)
 
+    def test_store_retry_uses_the_configured_budget_and_remaining_rpc_timeout(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from temporalstore_sdk import MetadataError
+
+        backend = TableValueBackend(
+            "grpc://example.test", "kvcache", 30, 1, 0, store_retry_timeout_seconds=12,
+        )
+        self.addCleanup(backend.close)
+        client = Mock()
+        rejected = pb.CommandResponse(status=pb.Status(code="raft_write_not_started"))
+        client.iter_batch_responses.side_effect = [iter([(0, rejected)]), iter([(0, rejected)])]
+        command = pb.Command(string_set=pb.StringSet(key="key", value=b"payload"))
+        with patch(
+            "lmcache_temporalstore.grpc_kv.monotonic", side_effect=[10.0, 17.0, 22.0],
+        ), patch("lmcache_temporalstore.grpc_kv.sleep") as wait:
+            with self.assertRaises(MetadataError) as outcome:
+                list(backend._store_responses(client, [command]))
+
+        self.assertEqual(outcome.exception.code, "raft_write_not_started")
+        first, retry = client.iter_batch_responses.call_args_list
+        self.assertEqual(first.kwargs, {})
+        self.assertEqual(retry.kwargs, {"timeout_seconds": 5.0})
+        self.assertEqual(first.args, retry.args)
+        wait.assert_called_once_with(0.25)
+
     def test_table_store_retries_only_writes_rejected_before_proposal(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
 

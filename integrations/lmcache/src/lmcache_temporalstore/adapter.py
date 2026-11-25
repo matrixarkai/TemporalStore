@@ -59,6 +59,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     storage_backend: str | None = None
     meta_url: str = ""
     proxy_grpc_target: str = ""
+    store_retry_timeout_seconds: float = 5.0
 
     def __post_init__(self) -> None:
         if self.storage_backend is None:
@@ -80,6 +81,9 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
             max_capacity_gb=float(values.get("max_capacity_gb", cls.max_capacity_gb)),
             ttl_seconds=int(values.get("ttl_seconds", cls.ttl_seconds)),
             timeout_seconds=float(values.get("timeout_seconds", cls.timeout_seconds)),
+            store_retry_timeout_seconds=float(values.get(
+                "store_retry_timeout_seconds", cls.store_retry_timeout_seconds,
+            )),
             namespace=str(values.get("namespace", cls.namespace)),
             remote_storage=remote_storage,
             lookup_timeout_seconds=float(lookup_timeout) if lookup_timeout is not None else None,
@@ -96,6 +100,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
             "blob_url and data_url are datanode HTTP URLs; shard_id selects the "
             "command shard; max_capacity_gb bounds local adapter writes; "
             "ttl_seconds expires metadata; timeout_seconds bounds each request; "
+            "store_retry_timeout_seconds bounds retries for rejected cache inserts; "
             "namespace isolates one LMCache server's keys and eviction budget; "
             "remote_storage marks a datanode on another host; "
             "lookup_timeout_seconds bounds metadata lookup "
@@ -125,6 +130,8 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             raise ValueError("capacity, shard_id and timeout_seconds must be positive")
         if config.ttl_seconds < 0:
             raise ValueError("ttl_seconds must be nonnegative")
+        if not isfinite(config.store_retry_timeout_seconds) or config.store_retry_timeout_seconds <= 0:
+            raise ValueError("store_retry_timeout_seconds must be finite and positive")
         lookup_timeout = config.lookup_timeout_seconds
         if lookup_timeout is None:
             lookup_timeout = (
@@ -146,6 +153,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             self._values = TableValueBackend(
                 config.meta_url, config.namespace or "kvcache", config.timeout_seconds,
                 lookup_timeout, config.ttl_seconds, proxy_grpc_target=config.proxy_grpc_target,
+                store_retry_timeout_seconds=config.store_retry_timeout_seconds,
             )
         else:
             from urllib.parse import urlsplit
