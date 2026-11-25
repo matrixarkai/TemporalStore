@@ -3758,6 +3758,11 @@ pub enum RaftError {
     SnapshotBackpressure { node_id: RaftNodeId },
     #[error("node {node_id} is not leader")]
     NotLeader { node_id: RaftNodeId },
+    #[error("proposal was rejected before appending: {cause}")]
+    ProposalNotStarted {
+        #[source]
+        cause: Box<RaftError>,
+    },
     #[error("election is prohibited by raft config")]
     ElectionProhibited,
     #[error("raft wal error: {0}")]
@@ -3784,6 +3789,22 @@ pub enum RaftError {
     #[error("invalid data raft command: {0}")]
     InvalidDataRaftCommand(String),
 }
+
+impl RaftError {
+    fn before_proposal_append(self) -> Self {
+        Self::ProposalNotStarted {
+            cause: Box::new(self),
+        }
+    }
+
+    fn legacy_proposal_error(self) -> Self {
+        match self {
+            Self::ProposalNotStarted { cause } => *cause,
+            error => error,
+        }
+    }
+}
+
 
 pub fn serialize_data_raft_log(entry: &DataRaftLogCodecEntry) -> Result<Vec<u8>, RaftError> {
     if entry.wal_sequence == 0 {
@@ -4793,6 +4814,18 @@ impl RaftCluster {
     where
         T: RaftTransport + Clone + Send + 'static,
     {
+        self.propose_distributed_with_admission(command, transport)
+            .map_err(RaftError::legacy_proposal_error)
+    }
+
+    fn propose_distributed_with_admission<T>(
+        &self,
+        command: Command,
+        transport: &T,
+    ) -> Result<CommandResponse, RaftError>
+    where
+        T: RaftTransport + Clone + Send + 'static,
+    {
         let limit = self
             .inner
             .read()
@@ -4808,8 +4841,15 @@ impl RaftCluster {
             Err(err) => return Err(err),
         };
         let mut last_response = CommandResponse::Empty;
-        for chunk in chunks {
-            last_response = self.propose_distributed_one(chunk, transport, None)?;
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            let result = self.propose_distributed_one(chunk, transport, None);
+            // Earlier chunks may have committed. The entire command can be
+            // retried only when the first chunk was rejected before append.
+            last_response = if index == 0 {
+                result?
+            } else {
+                result.map_err(RaftError::legacy_proposal_error)?
+            };
         }
         Ok(last_response)
     }
@@ -4983,17 +5023,7 @@ impl RaftCluster {
                     limit: inner.config.max_memory_replicate_log_bytes,
                 });
             }
-            if let Some((live, required)) = inner.joint_majority_failure() {
-                return Err(RaftError::NoMajority { live, required });
-            }
-            let required = inner.required_majority();
-            let live = inner.live_quorum_participants();
-            if live < required {
-                return Err(RaftError::NoMajority { live, required });
-            }
-            if !inner.leader_lease_valid() {
-                return Err(RaftError::LeaderUnavailable);
-            }
+            inner.check_proposal_quorum()?;
             let leader_id = inner.leader_id;
             let shard_id = inner.shard_id;
             let leader = inner
@@ -5118,17 +5148,7 @@ impl RaftCluster {
                     limit: inner.config.max_memory_replicate_log_bytes,
                 });
             }
-            if let Some((live, required)) = inner.joint_majority_failure() {
-                return Err(RaftError::NoMajority { live, required });
-            }
-            let required = inner.required_majority();
-            let live = inner.live_quorum_participants();
-            if live < required {
-                return Err(RaftError::NoMajority { live, required });
-            }
-            if !inner.leader_lease_valid() {
-                return Err(RaftError::LeaderUnavailable);
-            }
+            inner.check_proposal_quorum()?;
             let leader_id = inner.leader_id;
             let shard_id = inner.shard_id;
             let leader = inner
@@ -5249,17 +5269,7 @@ impl RaftCluster {
                     limit: inner.config.max_memory_replicate_log_bytes,
                 });
             }
-            if let Some((live, required)) = inner.joint_majority_failure() {
-                return Err(RaftError::NoMajority { live, required });
-            }
-            let required = inner.required_majority();
-            let live = inner.live_quorum_participants();
-            if live < required {
-                return Err(RaftError::NoMajority { live, required });
-            }
-            if !inner.leader_lease_valid() {
-                return Err(RaftError::LeaderUnavailable);
-            }
+            let required = inner.check_proposal_quorum()?;
             let leader_id = inner.leader_id;
             let shard_id = inner.shard_id;
             let leader = inner
