@@ -460,14 +460,15 @@ fn the_dump_threshold_counts_log_records_not_dirty_objects() {
 /// prepare that never ran: the control asks for a target the active slab is nowhere near and must
 /// produce NO roll, and the treatment asks for one it has passed and must produce exactly one.
 #[test]
-fn the_prepare_stage_can_roll_a_slab_and_take_the_block_store_mutex() {
+fn the_prepare_stage_rolls_the_owner_cursor_at_target() {
     const RECORDS: usize = 500;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = round_engine(dir.path());
     seed_in_batches(&engine, 1, RECORDS, 100);
 
-    let offset = engine.block_store.active_slab_write_offset();
+    let (_, offset) = engine.block_store.owned_slab_position_for_test(1)
+        .expect("the fixture created a shard writer");
     assert!(
         offset > 0,
         "the fixture wrote nothing to the active slab, so neither arm below means anything"

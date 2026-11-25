@@ -2512,7 +2512,7 @@ impl TemporalEngine {
             .collect::<Vec<BlockAppendRecord>>();
         let published_addresses = self
             .block_store
-            .append_batch_with_block_metadata(append_records)
+            .append_batch_with_block_metadata_for_shard(shard_id, append_records)
             .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
         let index_bytes = {
             let mut shards = self.shards.write().expect("engine lock poisoned");

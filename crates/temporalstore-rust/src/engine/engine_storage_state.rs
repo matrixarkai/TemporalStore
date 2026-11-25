@@ -595,6 +595,9 @@ pub(super) struct ShardState {
     /// replay); a missing index file replays the whole retained WAL onto empty state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) applied_wal_sequence: Option<u64>,
+    /// The file-backed source and remote sequence already installed in this local image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) file_restore_frontier: Option<(String, u64)>,
     /// Relocation prefix folded into this image; not a WAL or load replay cursor.
     #[serde(default)]
     pub(super) captured_relocation_sequence: u64,
@@ -10465,6 +10468,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         shard_id: _,
         shard_id_known: _,
         applied_wal_sequence: _,
+        file_restore_frontier: _,
         captured_relocation_sequence: _,
         wal_apply_discontinuous: _,
         index_format_version: _,

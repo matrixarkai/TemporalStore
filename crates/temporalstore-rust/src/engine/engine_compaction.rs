@@ -1174,7 +1174,7 @@ fn flush_container_batch(
     // that stays true when the elements inside them move between blocks.
     let ordinal = u32::try_from(batch_ordinal).unwrap_or(u32::MAX);
     let new_address = block_store
-        .append_block_of_object(&bytes, object_id, Some(routing_bucket), ordinal)
+        .append_block_of_object_for_shard(shard_id, &bytes, object_id, Some(routing_bucket), ordinal)
         .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
     let _ = cache.put(
         CacheKey::page_with_slot_generation(
@@ -1288,7 +1288,8 @@ pub(super) fn compact_block_addresses<'a>(
         // give every block of a multi-block object the same index, and the index entries would
         // collide -- which reads back as a reload losing rows.
         let new_address = block_store
-            .append_block_of_object(
+            .append_block_of_object_for_shard(
+                shard_id,
                 &bytes,
                 Some(stable_block_object_id(shard_id, model_id, &object_key)),
                 Some(routing_bucket),
@@ -1354,7 +1355,8 @@ pub(super) fn compact_feature_block_addresses(
             continue;
         };
         let new_address = block_store
-            .append_block_of_object(
+            .append_block_of_object_for_shard(
+                shard_id,
                 &bytes,
                 Some(stable_block_object_id(shard_id, model_id, object_key)),
                 Some(routing_bucket),

@@ -162,7 +162,10 @@ fn a_bounded_collection_resumes_and_removes_what_one_unbounded_pass_removes() {
 fn a_mostly_live_store_with_a_stale_slab_closes_the_gate_and_the_stage_skips_collection() {
     let runtime = seeded_over(2000);
     // The gate measures collectable space, not the writable slab holding the newest live blocks.
-    runtime.engine().block_store().roll_slab().unwrap();
+    let store = runtime.engine().block_store();
+    let sealed = store.roll_slab_for_shard(SHARD).unwrap().previous_block_slab_id;
+    assert!(runtime.engine().live_block_slab_ids(SHARD).contains(&sealed));
+    assert!(!store.active_block_slab_ids().contains(&sealed));
     runtime.engine().publish_block_slab_live_bytes();
     let gate = runtime
         .engine()

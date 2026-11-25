@@ -25,12 +25,33 @@ impl BlockStoreReadSnapshot {
             return;
         }
         let mut inner = self.store.inner.lock().expect("block store lock poisoned");
+        Self::insert_pin(&mut inner, &mut self.first, &mut self.remaining, slab);
+    }
+
+    pub(super) fn belongs_to(&self, store: &BlockStore) -> bool {
+        Arc::ptr_eq(&self.store.inner, &store.inner)
+    }
+
+    /// Called under the lock that makes an imported slab visible to collection.
+    pub(super) fn pin_locked(&mut self, inner: &mut BlockStoreInner, slab: u64) {
+        if self.first == Some(slab) || self.remaining.contains(&slab) {
+            return;
+        }
+        Self::insert_pin(inner, &mut self.first, &mut self.remaining, slab);
+    }
+
+    fn insert_pin(
+        inner: &mut BlockStoreInner,
+        first: &mut Option<u64>,
+        remaining: &mut BTreeSet<u64>,
+        slab: u64,
+    ) {
         let readers = inner.read_pins.entry(slab).or_default();
         *readers = readers.checked_add(1).expect("slab reader count exhausted");
-        if self.first.is_none() {
-            self.first = Some(slab);
+        if first.is_none() {
+            *first = Some(slab);
         } else {
-            self.remaining.insert(slab);
+            remaining.insert(slab);
         }
     }
 }
@@ -53,6 +74,111 @@ impl Drop for BlockStoreReadSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct RawSlabSource {
+        id: u64,
+        contents: &'static [u8],
+    }
+
+    impl SharedSlabSource for RawSlabSource {
+        fn fetch_slab(&self, id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
+            Ok((id == self.id).then(|| self.contents.to_vec()))
+        }
+    }
+
+    #[test]
+    fn attaching_a_second_checkpoint_source_preserves_the_first() {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        let cursor = store.current_block_slab_id();
+        let ids = store.reserve_checkpoint_slab_ids(2).unwrap();
+        let first = *ids.start();
+        let second = *ids.end();
+        let source = |id, contents| Arc::new(RawSlabSource { id, contents });
+        store
+            .attach_checkpoint_slab_source(first, first, "first", source(first, b"first"))
+            .unwrap();
+        store
+            .attach_checkpoint_slab_source(second, second, "second", source(second, b"second"))
+            .unwrap();
+        assert!(store
+            .attach_checkpoint_slab_source(first, second, "overlap", source(first, b"wrong"))
+            .is_err());
+        assert!(store.slab_ids().unwrap().is_empty());
+        assert_eq!(store.read_slab(first).unwrap(), b"first");
+        assert_eq!(store.read_slab(second).unwrap(), b"second");
+        assert_eq!(store.current_block_slab_id(), cursor);
+    }
+
+    #[test]
+    fn a_remapped_raw_slab_does_not_become_the_legacy_writer_after_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        let legacy = store.append(b"local").unwrap();
+        let incoming = record::encode_slab_owner(19, 42);
+        let imported = *store.reserve_checkpoint_slab_ids(1).unwrap().start();
+        let mut staging = BlockStoreReadSnapshot::new(&store);
+        store
+            .stage_transferred_slab(imported, &incoming, None, &mut staging, true)
+            .unwrap();
+        assert_eq!(store.current_block_slab_id(), legacy.block_slab_id());
+        store.sync_durable().unwrap();
+        drop(staging);
+        drop(store);
+        let manifest = slab_manifest_path(root.path());
+        if manifest.exists() {
+            std::fs::remove_file(manifest).unwrap();
+        }
+
+        let reopened = BlockStore::new(root.path());
+        assert_eq!(reopened.current_block_slab_id(), legacy.block_slab_id());
+        assert_eq!(reopened.read_slab(imported).unwrap(), incoming);
+        assert_eq!(reopened.exported_slab_owner(imported).unwrap(), None);
+        let next = reopened.append(b"next").unwrap();
+        assert_eq!(next.block_slab_id(), legacy.block_slab_id());
+        assert_eq!(reopened.read_slab(imported).unwrap(), incoming);
+    }
+
+    #[test]
+    fn staged_checkpoint_slab_is_retained_and_conflicts_leave_its_bytes_intact() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let source = BlockStore::new(source.path());
+        let destination = BlockStore::new(destination.path());
+        let first = source
+            .append_block_of_object_for_shard(42, b"first", None, None, 0)
+            .unwrap();
+        source.sync_durable().unwrap();
+        let id = first.block_slab_id();
+        let (bytes, owner) = source.read_slab_for_transfer(id).unwrap();
+        let mut staging = BlockStoreReadSnapshot::new(&destination);
+        destination
+            .stage_transferred_slab(id, &bytes, owner, &mut staging, false)
+            .unwrap();
+        assert!(destination
+            .gc_slabs_before(u64::MAX)
+            .unwrap()
+            .removed_block_slab_ids
+            .is_empty());
+        destination
+            .stage_transferred_slab(id, &bytes, owner, &mut staging, false)
+            .unwrap();
+        let mut changed = bytes.clone();
+        *changed.last_mut().unwrap() ^= 1;
+        assert!(destination
+            .stage_transferred_slab(id, &changed, owner, &mut staging, false)
+            .is_err());
+        assert_eq!(destination.read(&first).unwrap(), b"first");
+        drop(staging);
+        assert_eq!(
+            destination
+                .gc_slabs_before(u64::MAX)
+                .unwrap()
+                .removed_block_slab_ids,
+            [id]
+        );
+    }
 
     #[test]
     fn nested_readers_protect_only_named_slabs_until_last_release() {
@@ -130,5 +256,20 @@ mod tests {
                 .removed_block_slab_ids,
             [first.block_slab_id()]
         );
+    }
+
+    #[test]
+    fn import_cannot_replace_an_open_slab_under_a_read_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        let id = 9;
+        store.install_slab(id, b"legacy bytes").unwrap();
+        let mut reader = BlockStoreReadSnapshot::new(&store);
+        reader.pin(id);
+        assert!(store.install_slab(id, b"replacement").is_err());
+        assert_eq!(store.read_slab(id).unwrap(), b"legacy bytes");
+        drop(reader);
+        store.install_slab(id, b"replacement").unwrap();
+        assert_eq!(store.read_slab(id).unwrap(), b"replacement");
     }
 }

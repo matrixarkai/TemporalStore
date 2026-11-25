@@ -37,6 +37,63 @@ impl BlockStore {
     /// active slab's data and persist the extent manifest once. No-op when
     /// nothing was deferred (e.g. the live per-append-fsync path).
     pub fn sync_durable(&self) -> Result<(), BlockStoreError> {
+        let owned_writers = {
+            let inner = self.inner.lock().expect("block store lock poisoned");
+            inner.check_owned_recovery()?;
+            inner.owned_writers.values().cloned().collect::<Vec<_>>()
+        };
+        self.sync_durable_writers(owned_writers)
+    }
+
+    /// Commit locally relocated destinations without waiting for unrelated writers.
+    /// Whole images must use the complete barrier instead.
+    pub(crate) fn sync_relocation_destinations<'a>(
+        &self,
+        shard_id: u64,
+        destinations: impl IntoIterator<Item = &'a ElementEntry>,
+    ) -> Result<(), BlockStoreError> {
+        let writer = {
+            let inner = self.inner.lock().expect("block store lock poisoned");
+            inner.check_owned_recovery()?;
+            let mut nonempty = false;
+            for destination in destinations {
+                nonempty = true;
+                if inner.slabs.get(&destination.block_slab_id())
+                    .and_then(|slab| slab.owner_shard_id) != Some(shard_id)
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "relocation destination does not belong to the selected writer",
+                    ).into());
+                }
+            }
+            if nonempty {
+                Some(inner.owned_writers.get(&shard_id).cloned().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData,
+                        "relocation destination writer is not loaded")
+                })?)
+            } else {
+                None
+            }
+        };
+        self.sync_durable_writers(writer)
+    }
+
+    fn sync_durable_writers(
+        &self,
+        writers: impl IntoIterator<Item = Arc<Mutex<owned_writer::OwnedWriter>>>,
+    ) -> Result<(), BlockStoreError> {
+        for writer in writers {
+            let mut writer = writer.lock().expect("owned slab writer lock poisoned");
+            writer.sync(&self.read_view.root)?;
+            if let Some(retired) = writer.take_retired() {
+                self.inner
+                    .lock()
+                    .expect("block store lock poisoned")
+                    .owned_active
+                    .remove(&retired);
+            }
+        }
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         if inner.relaxed_dirty {
             let path = slab_path(&inner.root, inner.block_slab_id);
@@ -97,6 +154,7 @@ impl BlockStore {
         block_ordinal: u32,
     ) -> Result<ElementEntry, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.check_owned_recovery()?;
         if !inner.root_created {
             std::fs::create_dir_all(&inner.root)?;
             inner.root_created = true;
@@ -184,6 +242,7 @@ impl BlockStore {
                 .map(|address| vec![address]);
         }
         let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.check_owned_recovery()?;
         if records.is_empty() {
             return Ok(Vec::new());
         }

@@ -79,6 +79,8 @@ mod wal_application;
 mod maintenance_log;
 #[path = "engine/portable_checkpoint.rs"]
 mod portable_checkpoint;
+pub(crate) use portable_checkpoint::{translate_portable_checkpoint_index, PortableCheckpointImage};
+pub(crate) use packed_blocks::decode_feature_block as decode_shared_wal_packed_block;
 mod storage_lifecycle_methods;
 pub(crate) use storage_lifecycle_methods::dump_gate_delays;
 pub use storage_lifecycle_methods::{
@@ -789,7 +791,7 @@ impl TemporalEngine {
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
-        self.execute_with_storage_override(request, None, Vec::new())
+        self.execute_with_storage_override(request, None, Vec::new(), false)
     }
 
     /// Apply `request`, attaching `blocks` to its log record instead of whatever this node
@@ -807,11 +809,30 @@ impl TemporalEngine {
         request: ExecuteRequest,
         blocks: Vec<crate::wal::StagedBlock>,
     ) -> ExecuteResponse {
-        self.execute_with_storage_override(request, None, blocks)
+        self.execute_with_storage_override(request, None, blocks, false)
+    }
+
+    pub(crate) fn execute_shared_wal_command(
+        &self,
+        request: ExecuteRequest,
+        blocks: Vec<crate::wal::StagedBlock>,
+    ) -> ExecuteResponse {
+        self.execute_with_storage_override(request, None, blocks, true)
+    }
+
+    pub(crate) fn stage_shared_wal_command_for_file_restore(
+        &self,
+        request: ExecuteRequest,
+        blocks: Vec<crate::wal::StagedBlock>,
+    ) -> ExecuteResponse {
+        let _restoring = WalReplayGuard::enter();
+        // The remote WAL remains the recovery source until the entire tail has
+        // been installed and one complete local image has been committed.
+        self.execute_with_storage_override(request, Some(false), blocks, true)
     }
 
     pub fn execute_durable(&self, request: ExecuteRequest) -> ExecuteResponse {
-        self.execute_with_storage_override(request, Some(false), Vec::new())
+        self.execute_with_storage_override(request, Some(false), Vec::new(), false)
     }
 
     /// Apply a committed raft entry to the state machine, durably (fsync'd WAL) but with a
@@ -839,7 +860,7 @@ impl TemporalEngine {
     ) -> ExecuteResponse {
         let _guard = RaftApplyGuard::enter();
         let _clock = ReplayClockGuard::enter(leader_time_ms);
-        self.execute_with_storage_override(request, Some(false), Vec::new())
+        self.execute_with_storage_override(request, Some(false), Vec::new(), false)
     }
 
     /// Apply a batch of committed raft entries to the state machine. Under
@@ -884,7 +905,7 @@ impl TemporalEngine {
         let mut responses = Vec::with_capacity(requests.len());
         for (request, leader_time_ms) in requests {
             let _clock = ReplayClockGuard::enter(leader_time_ms);
-            responses.push(self.execute_with_storage_override(request, Some(false), Vec::new()));
+            responses.push(self.execute_with_storage_override(request, Some(false), Vec::new(), false));
         }
         let barrier = batch_guard.take_barrier();
         drop(batch_guard);
@@ -956,10 +977,10 @@ impl TemporalEngine {
         };
         match replication_mode {
             EventReplicationMode::SyncStorage => {
-                self.execute_with_storage_override(request, Some(false), Vec::new())
+                self.execute_with_storage_override(request, Some(false), Vec::new(), false)
             }
             EventReplicationMode::AsyncStorage => {
-                self.execute_with_storage_override(request, Some(true), Vec::new())
+                self.execute_with_storage_override(request, Some(true), Vec::new(), false)
             }
             EventReplicationMode::Raft | EventReplicationMode::Inherit => self.execute(request),
         }
@@ -1056,6 +1077,7 @@ impl TemporalEngine {
         request: ExecuteRequest,
         async_storage_override: Option<bool>,
         mut carried_blocks: Vec<crate::wal::StagedBlock>,
+        shared_wal_replay: bool,
     ) -> ExecuteResponse {
         // The flags every write asks about are read from the environment once for this operation:
         // see `env_flag::OperationEnv`.
@@ -1158,7 +1180,7 @@ impl TemporalEngine {
         // a retryable status so a concurrent write cannot interleave with replay -- which
         // would regress the WAL anchor and double-apply on the next restart. The replay
         // thread re-drives records under replaying_wal(), which bypasses this gate.
-        if !replaying_wal() && info.recovering {
+        if !replaying_wal() && !shared_wal_replay && info.recovering {
             return ExecuteResponse {
                 status: Status::error(
                     "shard_not_loaded",
@@ -9153,7 +9175,8 @@ fn append_owned_value_of_object(
         });
     }
     let address = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
-        block_store.append_block_of_object(
+        block_store.append_block_of_object_for_shard(
+            shard_id,
             &bytes,
             Some(object_id),
             Some(routing_bucket),
@@ -9226,7 +9249,8 @@ fn append_value_inner(
         if let Some(object_id) = object_id {
             block_in_wal::stage(object_id, element_name, bytes);
         }
-        return block_store.append_block_of_object(
+        return block_store.append_block_of_object_for_shard(
+            shard_id,
             bytes,
             object_id,
             routing_bucket,
