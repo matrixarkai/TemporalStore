@@ -761,6 +761,58 @@ mod tests {
     }
 
     #[test]
+    fn selected_relocation_barrier_does_not_commit_unrelated_legacy_data() {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        let legacy = store.append(b"legacy pending data").unwrap();
+        store.inner.lock().unwrap().relaxed_dirty = true;
+        let selected = append_deferred(&store, 7, b"selected destination");
+        let before_cursor = fs::read(cursor_path(root.path(), 7)).unwrap();
+        let legacy_path = slab_path(root.path(), legacy.block_slab_id());
+        let held = root.path().join("legacy-held");
+        fs::rename(&legacy_path, &held).unwrap();
+
+        store.sync_relocation_destinations(7, [&selected]).unwrap();
+        assert!(store.inner.lock().unwrap().relaxed_dirty);
+        assert_ne!(fs::read(cursor_path(root.path(), 7)).unwrap(), before_cursor);
+        let writer = store.inner.lock().unwrap().owned_writers[&7].clone();
+        assert!(!writer.lock().unwrap().current.as_ref().unwrap().dirty);
+        assert!(store.sync_durable().is_err());
+        assert!(store.inner.lock().unwrap().relaxed_dirty);
+
+        fs::rename(&held, &legacy_path).unwrap();
+        store.sync_durable().unwrap();
+        assert!(!store.inner.lock().unwrap().relaxed_dirty);
+        drop(store);
+        let reopened = BlockStore::new(root.path());
+        assert_eq!(reopened.read(&selected).unwrap(), b"selected destination");
+        assert_eq!(reopened.read(&legacy).unwrap(), b"legacy pending data");
+    }
+
+    #[test]
+    fn empty_relocation_barrier_leaves_pending_legacy_data_untouched() {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        let legacy = store.append(b"legacy pending data").unwrap();
+        store.inner.lock().unwrap().relaxed_dirty = true;
+        let legacy_path = slab_path(root.path(), legacy.block_slab_id());
+        let held = root.path().join("legacy-held");
+        fs::rename(&legacy_path, &held).unwrap();
+
+        store.sync_relocation_destinations(99, std::iter::empty()).unwrap();
+        {
+            let inner = store.inner.lock().unwrap();
+            assert!(inner.relaxed_dirty);
+            assert!(inner.owned_writers.is_empty());
+        }
+        assert!(store.sync_durable().is_err());
+        fs::rename(&held, &legacy_path).unwrap();
+        store.sync_durable().unwrap();
+        drop(store);
+        assert_eq!(BlockStore::new(root.path()).read(&legacy).unwrap(), b"legacy pending data");
+    }
+
+    #[test]
     fn independent_owner_cursor_commits_survive_reopen() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
