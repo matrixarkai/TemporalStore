@@ -30,6 +30,9 @@ TABLE_DESCRIPTOR_KEY = "__lmcache_layout_v1"
 _STORE_NOT_STARTED = {"raft_write_not_started", "load_version_mismatch"}
 _STORE_OUTCOME_UNCERTAIN = {"raft_error", "write_outcome_unknown"}
 _STORE_READBACK_ROUTE_CHANGED = {"raft_not_leader", "load_version_mismatch"}
+_LOOKUP_TEMPORARILY_UNAVAILABLE = {
+    "raft_not_leader", "load_version_mismatch", "no_grpc_primary", "read_unavailable",
+}
 
 
 def _table_for_key(key: ObjectKey) -> str:
@@ -83,7 +86,10 @@ class TableValueBackend(ValueBackend):
             client = self._tables.get(name)
             if client is None:
                 if self._proxy is None:
-                    client = TableClient(self._metadata, self._namespace, name, timeout_seconds=self._timeout)
+                    client = TableClient(
+                        self._metadata, self._namespace, name, timeout_seconds=self._timeout,
+                        parallel_reads=True,
+                    )
                 else:
                     client = ProxyTableClient(
                         self._metadata, self._proxy, self._namespace, name, timeout_seconds=self._timeout,
@@ -153,6 +159,10 @@ class TableValueBackend(ValueBackend):
                     end += 1
                 if partial:
                     responses = self._store_responses(client, commands)
+                elif lookup and self._proxy is None:
+                    responses = enumerate(self._read_batch(
+                        client, commands, dict(options, allow_partial_reads=True),
+                    ))
                 elif all(command.WhichOneof("kind") in {"string_get", "string_len"} for command in commands):
                     responses = enumerate(self._read_batch(client, commands, options))
                 else:
@@ -175,12 +185,29 @@ class TableValueBackend(ValueBackend):
             if not route_changed or remaining <= 0:
                 raise
         else:
-            if not any(response.status.code == "raft_not_leader" for response in responses):
+            stale = [
+                index for index, response in enumerate(responses)
+                if response.status.code == "raft_not_leader"
+            ]
+            if not stale:
                 return responses
             remaining = deadline - monotonic()
             if remaining <= 0:
                 return responses
-        return client.batch_execute(commands, timeout_seconds=remaining)
+            if options.get("allow_partial_reads"):
+                try:
+                    retry = client.batch_execute(
+                        [commands[index] for index in stale],
+                        **dict(options, timeout_seconds=remaining),
+                    )
+                except grpc.RpcError as error:
+                    if error.code() in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
+                        return responses
+                    raise
+                for index, response in zip(stale, retry, strict=True):
+                    responses[index] = response
+                return responses
+        return client.batch_execute(commands, **dict(options, timeout_seconds=remaining))
 
     def _store_responses(self, client, commands):
         deadline = None
@@ -226,6 +253,9 @@ class TableValueBackend(ValueBackend):
         ordered = [None] * len(entries)
         for index, document, response in self._iter_responses(entries, lookup=lookup):
             if not response.status.ok:
+                if lookup and self._proxy is None and response.status.code in _LOOKUP_TEMPORARILY_UNAVAILABLE:
+                    ordered[index] = {"value": 0}
+                    continue
                 raise MetadataError(response.status.code, response.status.message)
             value = (response.value or None) if document["kind"] == "string_get" else response.count
             ordered[index] = {"value": value}

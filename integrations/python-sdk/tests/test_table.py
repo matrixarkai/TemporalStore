@@ -245,6 +245,73 @@ class TableClientTest(unittest.TestCase):
         first._start_batch.assert_not_called()
         second._start_batch.assert_not_called()
 
+    def test_partial_lookup_keeps_healthy_results_during_an_election(self):
+        metadata = Mock()
+        metadata.table_topology.return_value = TableTopology("kvcache", "model", 1, 73, 2, (
+            Shard(73, None, (), 7, uses_raft_route=True), Shard(74, None, (), 8, "primary-b"),
+        ))
+        client = Mock()
+        client.batch_execute.return_value = commands.BatchExecuteResponse(
+            status=commands.Status(ok=True),
+            responses=[commands.CommandResponse(status=commands.Status(ok=True), count=1)],
+        )
+        with patch("temporalstore_sdk.table.CommandClient", return_value=client):
+            with TableClient(metadata, "kvcache", "model", parallel_reads=True) as table:
+                keys = [get("123456789"), get("alpha")]
+                with self.assertRaises(MetadataError) as missing:
+                    table.batch_execute(keys)
+                self.assertEqual(missing.exception.code, "no_grpc_primary")
+                client.batch_execute.assert_not_called()
+
+                result = table.batch_execute(keys, allow_partial_reads=True)
+                self.assertTrue(result[0].status.ok)
+                self.assertEqual(result[0].count, 1)
+                self.assertEqual(result[1].status.code, "no_grpc_primary")
+                client.batch_execute.assert_called_once()
+                self.assertEqual(client.batch_execute.call_args.args[0], 74)
+                client.reset_mock()
+
+                write = commands.Command(string_set=commands.StringSet(key="123456789", value=b"x"))
+                with self.assertRaisesRegex(ValueError, "read-only"):
+                    table.batch_execute([write, *keys], allow_partial_reads=True)
+                with self.assertRaises(MetadataError):
+                    table.batch_execute([write, *keys])
+                client.batch_execute.assert_not_called()
+
+    def test_partial_lookup_only_tolerates_transient_transport_errors(self):
+        metadata = Mock()
+        metadata.table_topology.return_value = TableTopology("kvcache", "model", 1, 73, 2, (
+            Shard(73, None, (), 7, "primary-a"), Shard(74, None, (), 8, "primary-b"),
+        ))
+        first, second = Mock(), Mock()
+        second._start_batch.return_value.result.return_value = commands.BatchExecuteResponse(
+            status=commands.Status(ok=True),
+            responses=[commands.CommandResponse(status=commands.Status(ok=True), count=2)],
+        )
+
+        class ReadError(grpc.RpcError):
+            def __init__(self, status):
+                super().__init__()
+                self.status = status
+
+            def code(self):
+                return self.status
+
+            def details(self):
+                return self.status.name
+
+        with patch("temporalstore_sdk.table.CommandClient", side_effect=[first, second]):
+            with TableClient(metadata, "kvcache", "model", parallel_reads=True) as table:
+                reads = [get("alpha"), get("123456789")]
+                first._start_batch.return_value.result.side_effect = ReadError(grpc.StatusCode.UNAVAILABLE)
+                result = table.batch_execute(reads, allow_partial_reads=True)
+                self.assertEqual(result[0].status.code, "read_unavailable")
+                self.assertEqual(result[1].count, 2)
+
+                first._start_batch.return_value.result.side_effect = ReadError(grpc.StatusCode.PERMISSION_DENIED)
+                with self.assertRaises(ReadError):
+                    table.batch_execute(reads, allow_partial_reads=True)
+
     def test_rejected_read_cancels_outstanding_shard_requests(self):
         metadata = Mock()
         metadata.table_topology.return_value = TableTopology("kvcache", "model", 1, 73, 2, (

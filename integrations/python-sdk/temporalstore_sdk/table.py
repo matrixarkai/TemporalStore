@@ -25,6 +25,8 @@ _PARALLEL_READ_KINDS = frozenset({
     "hash_get", "hash_get_all", "hash_multi_get", "string_get", "string_get_range",
     "string_len",
 })
+_READ_ROUTE_ERRORS = frozenset({"load_version_mismatch", "raft_not_leader"})
+_READ_RPC_ERRORS = frozenset({grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED})
 _MAX_INFLIGHT_READ_SHARDS = 8
 
 
@@ -122,41 +124,80 @@ class TableClient:
 
     def batch_execute(
         self, commands: Iterable[pb.Command], *, timeout_seconds: float | None = None,
+        allow_partial_reads: bool = False,
     ) -> list[pb.CommandResponse]:
+        """Return results in request order.
+
+        A read-only batch can opt in to per-shard errors for temporary routing
+        and transport failures. Other failures are propagated to the caller.
+        """
+        options = {"allow_partial_reads": True} if allow_partial_reads else {}
         indexed = sorted(
-            self.iter_batch_responses(commands, timeout_seconds=timeout_seconds),
+            self.iter_batch_responses(commands, timeout_seconds=timeout_seconds, **options),
             key=lambda item: item[0],
         )
         return [result for _, result in indexed]
 
     def iter_batch_responses(
         self, commands: Iterable[pb.Command], *, timeout_seconds: float | None = None,
+        allow_partial_reads: bool = False,
     ) -> Iterator[tuple[int, pb.CommandResponse]]:
-        """Yield confirmed shard results with their original request positions."""
+        """Yield shard results in request positions, with optional per-shard read failures."""
         commands = list(commands)
         if not commands:
             return
+        read_only = all(command.WhichOneof("kind") in _PARALLEL_READ_KINDS for command in commands)
+        if allow_partial_reads and not read_only:
+            raise ValueError("partial results require a read-only batch")
         topology = self._current_topology()
         groups: dict[Shard, list[tuple[int, pb.Command]]] = {}
         for position, command in enumerate(commands):
             shard = self._shard_for_command(topology, command)
             groups.setdefault(shard, []).append((position, command))
-        # Validate all routes before issuing any writes.
-        channels = {shard: self._channel_for(shard) for shard in groups}
-        parallel = self._parallel_reads and len(groups) > 1 and all(
-            command.WhichOneof("kind") in _PARALLEL_READ_KINDS for command in commands
-        )
+        # A write batch validates all routes before it can dispatch any command.
+        channels = {}
+        missing = []
+        for shard, group in groups.items():
+            try:
+                channels[shard] = self._channel_for(shard)
+            except RaftPrimaryUnavailable as error:
+                if not allow_partial_reads:
+                    raise
+                status = pb.Status(code=error.code, message=str(error))
+                missing.extend((position, pb.CommandResponse(status=status)) for position, _ in group)
+        if missing:
+            groups = {shard: groups[shard] for shard in channels}
+            yield from missing
+        parallel = len(groups) > 1 and self._parallel_reads and read_only
         try:
-            responses = self._batch_responses(groups, channels, parallel, timeout_seconds)
+            responses = self._batch_responses(
+                groups, channels, parallel, timeout_seconds, allow_partial_reads,
+            )
             with closing(responses) as batches:
                 for group, response in batches:
-                    if response.status.code in _ROUTE_ERROR_CODES:
-                        self._invalidate_route(topology)
-                    if len(response.responses) != len(group):
-                        if not response.status.ok:
-                            raise MetadataError(response.status.code, response.status.message)
-                        raise MetadataError("invalid_batch", "datanode returned the wrong response count")
-                    for (position, _), result in zip(group, response.responses):
+                    if isinstance(response, grpc.RpcError):
+                        if response.code() == grpc.StatusCode.UNAVAILABLE:
+                            self._invalidate_route(topology)
+                        if response.code() not in _READ_RPC_ERRORS:
+                            raise response
+                        status = pb.Status(code="read_unavailable", message=response.details() or "")
+                    elif len(response.responses) != len(group):
+                        status = (response.status if not response.status.ok else pb.Status(
+                            code="invalid_batch", message="datanode returned the wrong response count",
+                        ))
+                        if status.code in _ROUTE_ERROR_CODES:
+                            self._invalidate_route(topology)
+                        if not (allow_partial_reads and status.code in _READ_ROUTE_ERRORS):
+                            raise MetadataError(status.code, status.message)
+                    else:
+                        status = None
+                        if response.status.code in _ROUTE_ERROR_CODES:
+                            self._invalidate_route(topology)
+                    results = (
+                        response.responses if status is None
+                        else (pb.CommandResponse(status=status) for _ in group)
+                    )
+                    for (position, _), result in zip(group, results):
                         if result.status.code in _ROUTE_ERROR_CODES:
                             self._invalidate_route(topology)
                         yield position, result
@@ -166,15 +207,20 @@ class TableClient:
             raise
 
     @staticmethod
-    def _batch_responses(groups, channels, parallel, timeout_seconds):
+    def _batch_responses(groups, channels, parallel, timeout_seconds, preserve_rpc_error):
         options = {} if timeout_seconds is None else {"timeout_seconds": timeout_seconds}
         if not parallel:
             for shard, group in groups.items():
-                response = channels[shard].batch_execute(
-                    shard.shard_id, (command for _, command in group),
-                    load_version=shard.load_version or None,
-                    **options,
-                )
+                try:
+                    response = channels[shard].batch_execute(
+                        shard.shard_id, (command for _, command in group),
+                        load_version=shard.load_version or None,
+                        **options,
+                    )
+                except grpc.RpcError as error:
+                    if not preserve_rpc_error:
+                        raise
+                    response = error
                 yield group, response
             return
 
@@ -191,7 +237,13 @@ class TableClient:
                     inflight.callback(future.cancel)
                     futures.append((group, future))
                 for group, future in futures:
-                    yield group, future.result()
+                    try:
+                        response = future.result()
+                    except grpc.RpcError as error:
+                        if not preserve_rpc_error:
+                            raise
+                        response = error
+                    yield group, response
 
     def close(self) -> None:
         with self._lock:

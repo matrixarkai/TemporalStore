@@ -256,18 +256,23 @@ class AdapterTest(unittest.TestCase):
         self.addCleanup(backend.close)
         client = Mock()
         client.batch_execute.side_effect = [
-            [pb.CommandResponse(status=pb.Status(code="raft_not_leader"))],
+            [
+                pb.CommandResponse(status=pb.Status(code="raft_not_leader")),
+                pb.CommandResponse(status=pb.Status(ok=True), count=7),
+            ],
             [pb.CommandResponse(status=pb.Status(ok=True), count=4)],
         ]
-        key = Key("after-election")
-        key.model_name, key.kv_rank = "fixture/model", 0
+        keys = [Key("after-election"), Key("healthy")]
+        for key in keys:
+            key.model_name, key.kv_rank = "fixture/model", 0
         with patch.object(backend, "_table", return_value=client), patch(
             "lmcache_temporalstore.grpc_kv.monotonic", side_effect=[10.0, 10.25]
         ):
-            self.assertEqual(backend.lengths([key]), [4])
-        self.assertEqual([call.kwargs for call in client.batch_execute.call_args_list], [
-            {"timeout_seconds": 1}, {"timeout_seconds": 0.75},
-        ])
+            self.assertEqual(backend.lengths(keys), [4, 7])
+        first, second = client.batch_execute.call_args_list
+        self.assertEqual(first.kwargs, {"timeout_seconds": 1, "allow_partial_reads": True})
+        self.assertEqual(second.kwargs, {"timeout_seconds": 0.75, "allow_partial_reads": True})
+        self.assertEqual(second.args[0], first.args[0][:1])
 
     def test_table_store_accounts_for_confirmed_chunks_when_a_shard_fails(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
@@ -451,7 +456,10 @@ class AdapterTest(unittest.TestCase):
 
         create.assert_called_once()
         self.assertEqual(create.call_args.kwargs["timeout_seconds"], 5)
-        self.assertEqual(client.batch_execute.call_args.kwargs, {"timeout_seconds": 1})
+        self.assertTrue(create.call_args.kwargs["parallel_reads"])
+        self.assertEqual(client.batch_execute.call_args.kwargs, {
+            "timeout_seconds": 1, "allow_partial_reads": True,
+        })
         self.assertEqual(client.iter_batch_responses.call_args.kwargs, {})
 
     def test_direct_load_retries_an_unavailable_leader_with_the_remaining_timeout(self):
