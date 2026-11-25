@@ -200,10 +200,14 @@ impl OwnedWriter {
         }
         let reservation = reservation_path(root, id);
         publish_new_header(&reservation, &header, false)?;
-        sync_writer_directory(root)?;
+        let file = {
+            let directory = File::open(root)?;
+            directory.sync_all()?;
 
-        let file = publish_new_header(&path, &header, true)?;
-        sync_writer_directory(root)?;
+            let file = publish_new_header(&path, &header, true)?;
+            directory.sync_all()?;
+            file
+        };
 
         let initial_offset = OWNED_SLAB_HEADER_LEN as u64;
         publish_cursor(root, owner, id, initial_offset)?;
@@ -1181,6 +1185,70 @@ mod tests {
         assert_eq!(resolved.len(), before.len());
         assert!(!resolved.contains(&first.block_slab_id()));
         assert_eq!(store.read(&first).unwrap(), b"first");
+    }
+
+    #[test]
+    fn failed_slab_publication_preserves_reservation_and_writer_cursors() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let store = BlockStore::new(root);
+        let outgoing = store
+            .append_block_of_object_for_shard(0, b"outgoing", None, None, 0)
+            .unwrap();
+        let peer = store
+            .append_block_of_object_for_shard(42, b"peer", None, None, 0)
+            .unwrap();
+        store.sync_durable().unwrap();
+
+        let old_cursor = fs::read(cursor_path(root, 0)).unwrap();
+        let peer_cursor = fs::read(cursor_path(root, 42)).unwrap();
+        let active = store.active_block_slab_ids();
+        let blocked_id = {
+            let inner = store.inner.lock().unwrap();
+            inner.owned_highest_id
+                .max(inner.block_slab_id)
+                .max(inner.slabs.last_key_value().map_or(0, |(id, _)| *id))
+                + 1
+        };
+        let colliding_temp = slab_path(root, blocked_id).with_extension("writing");
+        fs::write(&colliding_temp, b"occupied").unwrap();
+        assert!(matches!(
+            store.roll_slab_for_shard(0),
+            Err(BlockStoreError::Io(error)) if error.kind() == ErrorKind::AlreadyExists
+        ));
+        assert_eq!(fs::read(&colliding_temp).unwrap(), b"occupied");
+        assert!(!slab_path(root, blocked_id).exists());
+        assert_eq!(stored_slab_owner(root, blocked_id).unwrap(), Some(0));
+        assert_eq!(fs::read(cursor_path(root, 0)).unwrap(), old_cursor);
+        assert_eq!(fs::read(cursor_path(root, 42)).unwrap(), peer_cursor);
+        assert_eq!(store.active_block_slab_ids(), active);
+        fs::remove_file(colliding_temp).unwrap();
+        drop(store);
+
+        let reopened = BlockStore::new(root);
+        assert_eq!(reopened.read(&outgoing).unwrap(), b"outgoing");
+        assert_eq!(reopened.read(&peer).unwrap(), b"peer");
+        let retry = reopened.roll_slab_for_shard(0).unwrap();
+        assert_eq!(retry.previous_block_slab_id, outgoing.block_slab_id());
+        assert!(retry.new_block_slab_id > blocked_id);
+        assert_eq!(stored_slab_owner(root, blocked_id).unwrap(), Some(0));
+        assert_eq!(fs::read(cursor_path(root, 42)).unwrap(), peer_cursor);
+        let current = reopened
+            .append_block_of_object_for_shard(0, b"current", None, None, 0)
+            .unwrap();
+        assert_eq!(current.block_slab_id(), retry.new_block_slab_id);
+        reopened.sync_durable().unwrap();
+        drop(reopened);
+
+        let reopened = BlockStore::new(root);
+        assert_eq!(reopened.read(&outgoing).unwrap(), b"outgoing");
+        assert_eq!(reopened.read(&current).unwrap(), b"current");
+        assert_eq!(reopened.read(&peer).unwrap(), b"peer");
+        assert_eq!(fs::read(cursor_path(root, 42)).unwrap(), peer_cursor);
+        let inner = reopened.inner.lock().unwrap();
+        assert_eq!(inner.owned_active, BTreeSet::from([
+            retry.new_block_slab_id, peer.block_slab_id(),
+        ]));
     }
 
     #[test]
