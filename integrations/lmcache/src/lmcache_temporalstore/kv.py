@@ -79,7 +79,10 @@ class ValueBackend:
                 found = payload is not None and len(payload) == len(destination)
                 if found:
                     destination[:] = payload
+                del payload, answer
                 yield found
+            # Free copied responses before issuing the next request.
+            del responses
             offset = end
 
     def delete_batch(self, keys: list[ObjectKey]) -> None:
