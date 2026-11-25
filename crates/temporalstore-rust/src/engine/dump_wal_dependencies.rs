@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 use super::storage_bucket_internals::LiveBlockEntry;
 
