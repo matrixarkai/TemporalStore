@@ -60,9 +60,10 @@ replication. Workers using the same model and layout reuse a shared table.
    shared `namespace`. The SDK discovers the owning shard and sends native
    gRPC requests to its datanode.
 3. Start vLLM with `LMCacheMPConnector`. For a cross-worker smoke test, disable
-   vLLM prefix caching, send a prompt, and wait for the L2 store counter to
-   increase. Clear LMCache L1 with `POST /cache/clear`, repeat the prompt on
-   the second worker, and check that the L2 load counter increased.
+   vLLM prefix caching, send a fresh prompt, and wait for the sum of the
+   writer's `stores` and `stores_confirmed_by_read` counters to increase.
+   Clear LMCache L1 on both workers with `POST /cache/clear`. Repeat the
+   prompt on the second worker and check that its L2 `loads` counter increased.
 
 See the [LMCache integration guide](integrations/lmcache/README.md) for
 model-layout naming, adapter configuration, and benchmarking commands.

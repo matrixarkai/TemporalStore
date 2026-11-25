@@ -100,19 +100,24 @@ in the connector extra config, pass `--disable-hybrid-kv-cache-manager` to
 vLLM, and run the LMCache server with
 `--supported-transfer-mode engine_driven`.
 
-To verify L2 reuse, send a prompt longer than one LMCache chunk, wait for the
-L2 adapter to report a store in LMCache's `/status`, clear LMCache L1 with
-`POST /cache/clear` on the test server, then send the same prompt. The L2
-adapter's `loads` counter must increase. Leaving L1 warm can produce a hit
-without reading from TemporalStore. To test handoff between two vLLM
-processes attached to this LMCache server, pass the second process's URL
-with `--reload-vllm-url`. Use the same model and KV layout on both processes.
+To verify L2 reuse, send a fresh prompt longer than one LMCache chunk and
+wait for the writer adapter's `stores` plus `stores_confirmed_by_read` to
+increase in LMCache's `/status`. The second counter records writes that the
+adapter confirmed by reading the exact bytes after an uncertain reply.
+Clear L1 with `POST /cache/clear` on both LMCache servers, then replay the
+prompt. The replay adapter's `loads` counter must increase.
 
-Run the check against dedicated test servers with prefix caching disabled:
+Run the check against dedicated test servers with prefix caching disabled.
+Use the same model, KV layout, and TemporalStore namespace on both workers.
 
 ```bash
-python integrations/lmcache/tests/vllm_smoke.py --model "$MODEL"
+python integrations/lmcache/tests/vllm_smoke.py --model "$MODEL" \
+  --vllm-url "$WRITER_VLLM_URL" --lmcache-url "$WRITER_LMCACHE_URL" \
+  --reload-vllm-url "$READER_VLLM_URL" --reload-lmcache-url "$READER_LMCACHE_URL"
 ```
+
+For a single LMCache server, omit `--reload-lmcache-url`. For a
+single vLLM worker, also omit `--reload-vllm-url`.
 
 
 ### SSD cache sizing
