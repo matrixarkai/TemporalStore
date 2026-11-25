@@ -29,7 +29,8 @@ TABLE_DESCRIPTOR_KEY = "__lmcache_layout_v1"
 # Both codes identify rejection before any work for the affected command.
 _STORE_NOT_STARTED = {"raft_write_not_started", "load_version_mismatch"}
 _STORE_OUTCOME_UNCERTAIN = {"raft_error", "write_outcome_unknown"}
-_STORE_READBACK_ROUTE_CHANGED = {"raft_not_leader", "load_version_mismatch"}
+_READ_ROUTE_CHANGED = {"raft_not_leader", "load_version_mismatch"}
+_READ_RETRYABLE_STATUS = _READ_ROUTE_CHANGED | {"read_unavailable"}
 _LOOKUP_TEMPORARILY_UNAVAILABLE = {
     "raft_not_leader", "load_version_mismatch", "no_grpc_primary", "read_unavailable",
 }
@@ -89,7 +90,7 @@ class TableValueBackend(ValueBackend):
                 if self._proxy is None:
                     client = TableClient(
                         self._metadata, self._namespace, name, timeout_seconds=self._timeout,
-                        parallel_reads=True,
+                        parallel_reads=True, preserve_insert_outcomes=True,
                     )
                 else:
                     client = ProxyTableClient(
@@ -179,7 +180,7 @@ class TableValueBackend(ValueBackend):
             responses = client.batch_execute(commands, **options)
         except (MetadataError, grpc.RpcError) as error:
             route_changed = (
-                error.code == "raft_not_leader" if isinstance(error, MetadataError)
+                error.code in _READ_RETRYABLE_STATUS if isinstance(error, MetadataError)
                 else error.code() == grpc.StatusCode.UNAVAILABLE
             )
             remaining = deadline - monotonic()
@@ -188,7 +189,7 @@ class TableValueBackend(ValueBackend):
         else:
             stale = [
                 index for index, response in enumerate(responses)
-                if response.status.code == "raft_not_leader"
+                if response.status.code in _READ_RETRYABLE_STATUS
             ]
             if not stale:
                 return responses
@@ -274,7 +275,7 @@ class TableValueBackend(ValueBackend):
     def _confirm_stored_value(self, key, stored_key, payload, deadline):
         client = self._table(_table_for_key(key))
         command = _command({"kind": "string_get", "key": stored_key})
-        retryable = _STORE_READBACK_ROUTE_CHANGED
+        retryable = _READ_ROUTE_CHANGED
         if self._proxy is not None:
             # Proxy versions wrap unavailable data nodes in these status codes.
             retryable = retryable | {"status_error", "server_error"}

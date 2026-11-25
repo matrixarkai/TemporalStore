@@ -26,7 +26,10 @@ _PARALLEL_READ_KINDS = frozenset({
     "string_len",
 })
 _READ_ROUTE_ERRORS = frozenset({"load_version_mismatch", "raft_not_leader"})
-_READ_RPC_ERRORS = frozenset({grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED})
+_INSERT_ROUTE_ERRORS = frozenset({
+    "load_version_mismatch", "raft_write_not_started", "raft_error", "write_outcome_unknown",
+})
+_TRANSIENT_RPC_ERRORS = frozenset({grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED})
 _MAX_INFLIGHT_READ_SHARDS = 8
 
 
@@ -58,6 +61,7 @@ class TableClient:
         topology_ttl_seconds: float = 5.0,
         timeout_seconds: float = 10.0,
         parallel_reads: bool = False,
+        preserve_insert_outcomes: bool = False,
     ):
         if not namespace or not table:
             raise ValueError("namespace and table are required")
@@ -69,6 +73,7 @@ class TableClient:
         self._topology_ttl = topology_ttl_seconds
         self._timeout = timeout_seconds
         self._parallel_reads = parallel_reads
+        self._preserve_insert_outcomes = preserve_insert_outcomes
         self._topology = None
         self._expires_at = 0.0
         self._channels: dict[str, CommandClient] = {}
@@ -167,7 +172,7 @@ class TableClient:
         self, commands: Iterable[pb.Command], *, timeout_seconds: float | None = None,
         allow_partial_reads: bool = False,
     ) -> Iterator[tuple[int, pb.CommandResponse]]:
-        """Yield shard results in request positions, with optional per-shard read failures."""
+        """Yield indexed shard results, including opted-in read or insert failures."""
         commands = list(commands)
         if not commands:
             return
@@ -198,26 +203,33 @@ class TableClient:
         if missing:
             groups = {shard: groups[shard] for shard in channels}
             yield from missing
+        recoverable_inserts = self._preserve_insert_outcomes and all(
+            command.HasField("string_set_conditional")
+            and command.string_set_conditional.condition == pb.STRING_SET_CONDITION_IF_NOT_EXISTS
+            for command in commands
+        )
         parallel = len(groups) > 1 and self._parallel_reads and read_only
         try:
             responses = self._batch_responses(
-                groups, channels, parallel, timeout_seconds, allow_partial_reads, deadline,
+                groups, channels, parallel, timeout_seconds, allow_partial_reads or recoverable_inserts, deadline,
             )
             with closing(responses) as batches:
                 for group, response in batches:
                     if isinstance(response, grpc.RpcError):
                         if response.code() == grpc.StatusCode.UNAVAILABLE:
                             self._invalidate_route(topology)
-                        if response.code() not in _READ_RPC_ERRORS:
+                        if response.code() not in _TRANSIENT_RPC_ERRORS:
                             raise response
-                        status = pb.Status(code="read_unavailable", message=response.details() or "")
+                        code = "write_outcome_unknown" if recoverable_inserts else "read_unavailable"
+                        status = pb.Status(code=code, message=response.details() or "")
                     elif len(response.responses) != len(group):
                         status = (response.status if not response.status.ok else pb.Status(
                             code="invalid_batch", message="datanode returned the wrong response count",
                         ))
                         if status.code in _ROUTE_ERROR_CODES:
                             self._invalidate_route(topology)
-                        if not (allow_partial_reads and status.code in _READ_ROUTE_ERRORS):
+                        if not ((allow_partial_reads and status.code in _READ_ROUTE_ERRORS)
+                                or (recoverable_inserts and status.code in _INSERT_ROUTE_ERRORS)):
                             raise MetadataError(status.code, status.message)
                     else:
                         status = None

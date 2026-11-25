@@ -249,30 +249,33 @@ class AdapterTest(unittest.TestCase):
         adapter_module.BlobClient = self.old_blob
         adapter_module.TemporalStoreClient = self.old_data
 
-    def test_table_lookup_retries_a_stale_primary_within_its_original_deadline(self):
+    def test_table_lookup_retries_only_affected_reads_within_its_original_deadline(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
 
         backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
         self.addCleanup(backend.close)
-        client = Mock()
-        client.batch_execute.side_effect = [
-            [
-                pb.CommandResponse(status=pb.Status(code="raft_not_leader")),
-                pb.CommandResponse(status=pb.Status(ok=True), count=7),
-            ],
-            [pb.CommandResponse(status=pb.Status(ok=True), count=4)],
-        ]
-        keys = [Key("after-election"), Key("healthy")]
+        keys = [Key("after-election"), Key("healthy"), Key("absent")]
         for key in keys:
             key.model_name, key.kv_rank = "fixture/model", 0
-        with patch.object(backend, "_table", return_value=client), patch(
-            "lmcache_temporalstore.grpc_kv.monotonic", side_effect=[10.0, 10.25]
-        ):
-            self.assertEqual(backend.lengths(keys), [4, 7])
-        first, second = client.batch_execute.call_args_list
-        self.assertEqual(first.kwargs, {"timeout_seconds": 1, "allow_partial_reads": True})
-        self.assertEqual(second.kwargs, {"timeout_seconds": 0.75, "allow_partial_reads": True})
-        self.assertEqual(second.args[0], first.args[0][:1])
+        for code in ("raft_not_leader", "read_unavailable", "load_version_mismatch"):
+            with self.subTest(code=code):
+                client = Mock()
+                client.batch_execute.side_effect = [
+                    [
+                        pb.CommandResponse(status=pb.Status(code=code)),
+                        pb.CommandResponse(status=pb.Status(ok=True), count=7),
+                        pb.CommandResponse(status=pb.Status(ok=True), count=0),
+                    ],
+                    [pb.CommandResponse(status=pb.Status(ok=True), count=4)],
+                ]
+                with patch.object(backend, "_table", return_value=client), patch(
+                    "lmcache_temporalstore.grpc_kv.monotonic", side_effect=[10.0, 10.25]
+                ):
+                    self.assertEqual(backend.lengths(keys), [4, 7, 0])
+                first, second = client.batch_execute.call_args_list
+                self.assertEqual(first.kwargs, {"timeout_seconds": 1, "allow_partial_reads": True})
+                self.assertEqual(second.kwargs, {"timeout_seconds": 0.75, "allow_partial_reads": True})
+                self.assertEqual(second.args[0], first.args[0][:1])
 
     def test_proxy_lookup_keeps_hits_and_retries_only_stale_results(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb

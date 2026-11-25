@@ -18,6 +18,43 @@ def get(key):
 
 
 class TableClientTest(unittest.TestCase):
+    def test_single_shard_insert_keeps_batch_error_for_opted_in_caller(self):
+        received = []
+        command = commands.Command(string_set_conditional=commands.StringSetConditional(
+            key="chunk", value=b"\x00\xff",
+            condition=commands.STRING_SET_CONDITION_IF_NOT_EXISTS,
+        ))
+
+        class Datashard(TemporalStoreServiceServicer):
+            def BatchExecuteChecked(self, request, context):
+                received.append((request.shard_id, request.load_version, list(request.commands)))
+                return commands.BatchExecuteResponse(
+                    status=commands.Status(code="raft_error", message="leader changed"),
+                )
+
+        with ExitStack() as stack:
+            worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
+            server = grpc.server(worker)
+            add_TemporalStoreServiceServicer_to_server(Datashard(), server)
+            port = server.add_insecure_port("127.0.0.1:0")
+            server.start()
+            stack.callback(lambda: server.stop(0).wait(timeout=3))
+            metadata = Mock()
+            metadata.table_topology.return_value = TableTopology("kvcache", "model", 1, 73, 1, (
+                Shard(73, None, (), 7, f"127.0.0.1:{port}"),
+            ))
+            opted_in = stack.enter_context(TableClient(
+                metadata, "kvcache", "model", timeout_seconds=3, preserve_insert_outcomes=True,
+            ))
+            [(index, response)] = opted_in.iter_batch_responses([command])
+            self.assertEqual((index, response.status.code), (0, "raft_error"))
+            self.assertEqual(received, [(73, 7, [command])])
+            default = stack.enter_context(TableClient(metadata, "kvcache", "model", timeout_seconds=3))
+            with self.assertRaises(MetadataError) as error:
+                default.batch_execute([command])
+            self.assertEqual(error.exception.code, "raft_error")
+            self.assertEqual(received, [(73, 7, [command]), (73, 7, [command])])
+
     def test_batches_by_advertised_primary_and_restores_request_order(self):
         metadata = Mock()
         metadata.table_topology.return_value = TableTopology(
