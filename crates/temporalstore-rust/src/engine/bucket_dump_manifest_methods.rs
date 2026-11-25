@@ -194,7 +194,7 @@ impl TemporalEngine {
                 .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
             (snapshot, Some(bytes), publication)
         } else {
-            let (snapshot, publication) = self.capture_shard_checkpoint(shard_id)
+            let (snapshot, publication) = self.capture_bucket_dump_checkpoint(shard_id)
                 .ok_or_else(|| Status::error("checkpoint_unavailable",
                     "shard is unloaded or its WAL application is incomplete"))?;
             (snapshot, None, publication)
@@ -235,12 +235,14 @@ impl TemporalEngine {
                     .get(&shard_id)
                     .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
                     .unwrap_or((0, u32::MAX));
-                bucket_storage_summaries_from_visit(&dump_index_state, start, end, |consume| {
-                    visit_live_block_entries(&dump_index_state, |entry| {
-                        consume(&entry);
-                        observe_entry(&entry);
-                    });
-                })
+                super::storage_reporting::selected_bucket_storage_summaries_from_visit(
+                    &dump_index_state, start, end, &selected_buckets, |consume| {
+                        visit_live_block_entries(&dump_index_state, |entry| {
+                            consume(&entry);
+                            observe_entry(&entry);
+                        });
+                    },
+                )
             }
         };
         let mut bucket_summaries = summaries

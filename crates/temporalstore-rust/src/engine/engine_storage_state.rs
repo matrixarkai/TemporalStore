@@ -757,6 +757,50 @@ pub(super) struct ShardState {
 }
 
 impl ShardState {
+    /// Copy the state needed to publish a bucket dump under the shard guard.
+    /// The expiry scheduler's deadline tree is rebuilt from the persisted TTL ledger.
+    /// Bucket reconstruction, dump reports and encoding use that ledger.
+    pub(super) fn clone_for_bucket_dump(&self) -> Self {
+        Self {
+            index_format_version: self.index_format_version,
+            wal_resident_blocks: self.wal_resident_blocks.clone(),
+            buckets_pending_flag_refresh: self.buckets_pending_flag_refresh.clone(),
+            live_user_bytes: self.live_user_bytes,
+            live_objects_with_logical_size: self.live_objects_with_logical_size,
+            durable_items: self.durable_items,
+            expiry_by_deadline: BTreeMap::new(),
+            side_tables: self.side_tables.clone(),
+            seen: self.seen.clone(),
+            buckets: self.buckets.clone(),
+            object_block_layouts: self.object_block_layouts.clone(),
+            control_state_changes: self.control_state_changes.clone(),
+            control_state_selection: self.control_state_selection.clone(),
+            rollups: self.rollups.clone(),
+            control_coalesce_persist: self.control_coalesce_persist,
+            control_state_max_size: self.control_state_max_size,
+            control_distinct_sketch: self.control_distinct_sketch,
+            set_listing_from_map: self.set_listing_from_map,
+            feature_max_age_ms: self.feature_max_age_ms,
+            context_event_timeline: self.context_event_timeline.clone(),
+            context_dirty_index: self.context_dirty_index.clone(),
+            bucket_index: self.bucket_index.clone(),
+            applied_wal_sequence: self.applied_wal_sequence,
+            captured_relocation_sequence: self.captured_relocation_sequence,
+            wal_apply_discontinuous: self.wal_apply_discontinuous,
+            bucket_recency: self.bucket_recency.clone(),
+            dirty_objects: self.dirty_objects.clone(),
+            index_flush_countdown: self.index_flush_countdown,
+            publish_index_flush_countdown: self.publish_index_flush_countdown,
+            promote_scan_done: self.promote_scan_done,
+            evict_sampler: self.evict_sampler.clone(),
+            routing_range_start: self.routing_range_start,
+            routing_range_end: self.routing_range_end,
+            routing_range_known: self.routing_range_known,
+            shard_id: self.shard_id,
+            shard_id_known: self.shard_id_known,
+        }
+    }
+
     /// Record the range this shard is loaded on. Called once, by `install_shard_state`.
     pub(super) fn set_routing_range(&mut self, start_routing_bucket: u32, end_routing_bucket: u32) {
         self.routing_range_start = start_routing_bucket;

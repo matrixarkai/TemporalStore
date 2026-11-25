@@ -113,11 +113,26 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> Option<(ShardState, checkpoint_publication::CheckpointPublication)> {
+        self.capture_shard_checkpoint_with(shard_id, ShardState::clone)
+    }
+
+    pub(super) fn capture_bucket_dump_checkpoint(
+        &self,
+        shard_id: ShardId,
+    ) -> Option<(ShardState, checkpoint_publication::CheckpointPublication)> {
+        self.capture_shard_checkpoint_with(shard_id, ShardState::clone_for_bucket_dump)
+    }
+
+    fn capture_shard_checkpoint_with(
+        &self,
+        shard_id: ShardId,
+        copy: fn(&ShardState) -> ShardState,
+    ) -> Option<(ShardState, checkpoint_publication::CheckpointPublication)> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id)?;
         let anchor = shard.checkpoint_wal_sequence()?;
         let publication = self.checkpoint_publications.capture(shard_id);
-        let mut snapshot = shard.clone();
+        let mut snapshot = copy(shard);
         snapshot.applied_wal_sequence = Some(anchor);
         drop(shards);
         // Release markers are memory-only. Persist complete block indexes in the owned
