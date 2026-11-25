@@ -1273,39 +1273,25 @@ fn expiry_scan_budget(limit: usize) -> usize {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
         let now = now_ms();
-        // Read each window from where its cursor left off. Asking about every deadline to find
-        // a window of sixteen made a round cost the size of the whole set, on every cycle.
         let hot_limit = request.max_hot_buckets_per_round;
         let cold_limit = request.max_cold_buckets_per_round;
         let scan_budget = Self::expiry_scan_budget(hot_limit.max(cold_limit));
-        // Read the DUE keys, not a window of the keyspace that might contain some.
-        //
-        // These windows used to walk `expires_at_ms` in KEY order from a cursor, testing each
-        // deadline as they went, so a key that was not due was still walked and charged against
-        // the budget. That made time-to-expire a function of the keyspace: measured at
-        // keyspace/scan_budget rounds, with ten expired keys behind 10,000 live ones surviving
-        // more than sixty rounds.
-        //
-        // `expiry_by_deadline` orders the same deadlines by deadline, so the due keys are a
-        // PREFIX and the walk stops at the first one in the future. The cursors are no longer
-        // needed -- a due key is at the front, not somewhere ahead of a cursor -- and the
-        // request and report fields that carried them are gone.
         let phase = std::time::Instant::now();
         crate::engine::ensure_expiry_order(shard);
-        let hot_selected = if zero_disables && hot_limit == 0 {
-            Vec::new()
-        } else {
-            crate::engine::due_window(shard, now, hot_limit, scan_budget, |key| {
-                expiry_record_is_hot(shard, key)
-            })
+        let select = |class: usize, limit, hot| {
+            let keep = |key: &str| expiry_record_is_hot(shard, key) == hot;
+            if !zero_disables {
+                return (crate::engine::due_window(shard, now, limit, scan_budget, keep), None);
+            }
+            if limit == 0 {
+                return (Vec::new(), None);
+            }
+            crate::engine::due_window_after(
+                shard, now, limit, scan_budget, shard.expiry_scan_positions[class].as_ref(), keep,
+            )
         };
-        let cold_selected = if zero_disables && cold_limit == 0 {
-            Vec::new()
-        } else {
-            crate::engine::due_window(shard, now, cold_limit, scan_budget, |key| {
-                !expiry_record_is_hot(shard, key)
-            })
-        };
+        let (hot_selected, next_hot) = select(0, hot_limit, true);
+        let (cold_selected, next_cold) = select(1, cold_limit, false);
         EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.select, phase);
         let mut expired_records_removed = 0;
         let mut skipped_records = 0usize;
@@ -1520,6 +1506,12 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 }
             });
             EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.checkpoint, phase);
+        }
+        // An append error leaves the previous positions intact so unlogged work can retry.
+        // Policy-disabled cold scans still report skipped work, without advancing cold expiry.
+        if zero_disables {
+            shard.expiry_scan_positions[0] = next_hot;
+            shard.expiry_scan_positions[1] = if request.load_cold_buckets { next_cold } else { None };
         }
         // The control arm of `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop` keeps the
         // flush inside the region, so the guard has a positive control to compare against.

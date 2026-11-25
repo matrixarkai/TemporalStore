@@ -302,6 +302,9 @@ pub(super) struct ShardState {
     /// `expires_at_ms` above: the ordering here is the whole point of this map and is untouched,
     /// but the characters it orders are the ones that map already holds.
     pub(super) expiry_by_deadline: BTreeMap<(u64, Arc<str>), ()>,
+    /// Last inspected deadlines for the bounded hot and cold maintenance scans.
+    #[serde(skip)]
+    pub(super) expiry_scan_positions: [Option<(u64, Arc<str>)>; 2],
     // ONE FIELD FOR BOTH ADDRESS MAPS NOW, keyed by `AddressMap`, behind `strings()` /
     // `_mut()` and `context_nodes()` / `_mut()`. `default`, because an index written before
     // this merge carries `strings` and no `address_maps` and must still DECODE -- the stamp
@@ -10433,6 +10436,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // refill happens in the expiry path rather than here, and is left to it.
         buckets_pending_flag_refresh: _,
         expiry_by_deadline: _,
+        expiry_scan_positions: _,
         rollups: _,
         control_coalesce_persist: _,
         control_state_max_size: _,

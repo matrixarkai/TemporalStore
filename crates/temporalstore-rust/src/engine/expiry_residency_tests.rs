@@ -306,6 +306,113 @@ fn mixed_hot_and_cold_expiry_with_a_large_resident_cache() {
 }
 
 #[test]
+fn bounded_due_window_resumes_after_selection_and_wraps_to_new_earlier_deadlines() {
+    use std::cell::Cell;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let mut shards = engine.shards.write().unwrap();
+    let shard = shards.get_mut(&1).unwrap();
+    for index in 0..16 {
+        set_expiry(shard, format!("cold-{index:02}"), 2);
+    }
+    set_expiry(shard, "hot-first".into(), 3);
+    set_expiry(shard, "hot-second".into(), 4);
+    set_expiry(shard, "hot-future".into(), 6);
+
+    let visits = Cell::new(0);
+    let keep = |key: &str| {
+        visits.set(visits.get() + 1);
+        key.starts_with("hot-")
+    };
+
+    let (selected, cursor) = due_window_after(shard, 5, 1, 1, None, keep);
+    assert!(selected.is_empty());
+    assert_eq!(visits.replace(0), 16);
+    assert_eq!(cursor.as_ref().map(|(ttl, key)| (*ttl, key.as_ref())),
+        Some((2, "cold-15")));
+
+    let (selected, cursor) = due_window_after(shard, 5, 1, 1, cursor.as_ref(), keep);
+    assert_eq!(selected, vec![("hot-first".to_owned(), 3)]);
+    assert_eq!(visits.replace(0), 1);
+    assert_eq!(cursor.as_ref().map(|(ttl, key)| (*ttl, key.as_ref())),
+        Some((3, "hot-first")));
+
+    assert!(clear_expiry(shard, "hot-first"));
+    set_expiry(shard, "hot-earlier".into(), 1);
+    let (selected, cursor) = due_window_after(shard, 5, 1, 1, cursor.as_ref(), keep);
+    assert_eq!(selected, vec![("hot-second".to_owned(), 4)]);
+    assert_eq!(visits.replace(0), 1);
+    assert!(cursor.is_none());
+
+    assert!(clear_expiry(shard, "hot-second"));
+    let (selected, _) = due_window_after(shard, 5, 1, 1, cursor.as_ref(), keep);
+    assert_eq!(selected, vec![("hot-earlier".to_owned(), 1)]);
+    assert_eq!(visits.get(), 1);
+}
+
+#[test]
+fn bounded_expiry_resumes_past_a_released_prefix_when_cold_expiry_is_disabled() {
+    assert_bounded_expiry_crosses_residency_prefix(false);
+}
+
+#[test]
+fn bounded_expiry_resumes_past_a_resident_prefix_when_hot_expiry_is_disabled() {
+    assert_bounded_expiry_crosses_residency_prefix(true);
+}
+
+fn assert_bounded_expiry_crosses_residency_prefix(cold_target: bool) {
+    const PREFIX: usize = 1_025;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path(), "cache");
+    let hot = "late-due";
+    let hot_bucket = engine.routing_bucket_for_key(1, hot);
+    let cold: Vec<_> = (0..)
+        .map(|index| format!("cold-{index:04}"))
+        .filter(|key| engine.routing_bucket_for_key(1, key) != hot_bucket)
+        .take(PREFIX)
+        .collect();
+    seed(&engine, cold.iter().map(String::as_str).chain([hot]).map(|key| {
+        Command::StringSet { key: key.to_owned(), value: vec![b'v'; 1024] }
+    }).collect());
+    let dump = engine.create_bucket_dump_manifest(1, []).unwrap();
+    engine.clear_dumped_bucket_dirty_state(1, &dump);
+    let mut buckets: Vec<_> = cold.iter().map(|key| engine.routing_bucket_for_key(1, key)).collect();
+    buckets.sort_unstable();
+    buckets.dedup();
+    {
+        let mut shards = engine.shards.write().unwrap();
+        let shard = shards.get_mut(&1).unwrap();
+        let to_release = if cold_target { &[hot_bucket][..] } else { &buckets };
+        let released = storage_bucket_internals::release_bucket_blocks(shard, to_release);
+        assert_eq!(released.released_buckets.len(), to_release.len());
+        for key in &cold {
+            set_expiry(shard, key.clone(), 1);
+            assert_eq!(recovery_sweep_compact::expiry_record_is_hot(shard, key), cold_target);
+        }
+        set_expiry(shard, hot.to_owned(), 2);
+        assert_eq!(recovery_sweep_compact::expiry_record_is_hot(shard, hot), !cold_target);
+    }
+    let request = ShardExpirySweepRequest {
+        shard_id: 1,
+        max_hot_buckets_per_round: usize::from(!cold_target),
+        max_cold_buckets_per_round: 1,
+        load_cold_buckets: cold_target,
+        ..Default::default()
+    };
+    let before = engine.block_store.stats().bytes_read;
+    assert_eq!(engine.sweep_expired_records_for_maintenance(request.clone())
+        .unwrap().expired_records_removed, 0);
+    assert_eq!(engine.sweep_expired_records_for_maintenance(request)
+        .unwrap().expired_records_removed, 1);
+    assert_eq!(engine.block_store.stats().bytes_read, before);
+    let shards = engine.shards.read().unwrap();
+    let shard = &shards[&1];
+    assert!(!shard.strings().contains_key(hot));
+    assert!(cold.iter().all(|key| shard.strings().contains_key(key.as_str())));
+}
+
+#[test]
 fn released_objects_use_the_cold_expiry_policy_without_payload_reload() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_at(dir.path(), "cache-a");
