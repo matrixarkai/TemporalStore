@@ -294,7 +294,12 @@ class AdapterTest(unittest.TestCase):
             result = adapter.pop_completed_store_tasks()[task]
 
         self.assertFalse(result.success)
-        self.assertEqual(adapter.report_status()["stores"], 1)
+        status = adapter.report_status()
+        self.assertEqual(status["stores"], 1)
+        self.assertEqual(status["store_tasks_submitted"], 1)
+        self.assertEqual(status["store_keys_submitted"], 2)
+        self.assertEqual(status["store_tasks_pending"], 0)
+        self.assertEqual(status["store_tasks_failed"], 1)
         self.assertEqual(adapter.report_status()["bytes_used"], 3)
         self.assertEqual(adapter._entries, {keys[0]: 3})
         client.iter_batch_responses.assert_called_once()
@@ -318,6 +323,34 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(create.call_args.kwargs["timeout_seconds"], 5)
         self.assertEqual(client.batch_execute.call_args.kwargs, {"timeout_seconds": 1})
         self.assertEqual(client.iter_batch_responses.call_args.kwargs, {})
+
+    def test_direct_load_retries_an_unavailable_leader_with_the_remaining_timeout(self):
+        import grpc
+
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        class Disconnected(grpc.RpcError):
+            def code(self):
+                return grpc.StatusCode.UNAVAILABLE
+
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
+        self.addCleanup(backend.close)
+        key = Key("leader-failover")
+        key.model_name, key.kv_rank = "fixture/model", 0
+        destination = bytearray(3)
+        with patch("lmcache_temporalstore.grpc_kv.TableClient") as create:
+            client = create.return_value
+            client.batch_execute.side_effect = [
+                Disconnected(),
+                [pb.CommandResponse(status=pb.Status(ok=True), value=b"new")],
+            ]
+            self.assertEqual(list(backend.load_into([(key, memoryview(destination))])), [True])
+
+        self.assertEqual(destination, b"new")
+        first, retry = client.batch_execute.call_args_list
+        self.assertEqual(first.args, retry.args)
+        self.assertGreater(retry.kwargs["timeout_seconds"], 0)
+        self.assertLessEqual(retry.kwargs["timeout_seconds"], 5)
 
     def test_metaserver_selects_distributed_kv_by_default(self):
         config = adapter_module.TemporalStoreL2AdapterConfig

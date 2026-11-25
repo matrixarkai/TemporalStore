@@ -182,6 +182,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         self._publishing: set[ObjectKey] = set()
         self._used = 0
         self._stores = 0
+        self._submitted_store_tasks = 0
+        self._submitted_store_keys = 0
+        self._completed_store_tasks = 0
+        self._failed_store_tasks = 0
         self._loads = 0
         self._lookups = 0
         self._done_store: dict[L2TaskId, L2StoreResult] = {}
@@ -213,6 +217,8 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             else:
                 store = self._store_values if self._values is not None else self._store
                 self._store_pool.submit(store, task_id, list(keys), list(objects))
+                self._submitted_store_tasks += 1
+                self._submitted_store_keys += len(keys)
         return task_id
 
     def pop_completed_store_tasks(self) -> dict[L2TaskId, L2StoreResult]:
@@ -270,6 +276,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 "adapter": "temporalstore",
                 "storage_backend": self._config.storage_backend,
                 "stores": self._stores,
+                "store_tasks_submitted": self._submitted_store_tasks,
+                "store_keys_submitted": self._submitted_store_keys,
+                "store_tasks_pending": self._submitted_store_tasks - self._completed_store_tasks,
+                "store_tasks_failed": self._failed_store_tasks,
                 "loads": self._loads,
                 "lookups": self._lookups,
                 "bytes_used": self._used,
@@ -379,6 +389,13 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             removed, amounts = zip(*accounted)
             self._notify_keys_deleted(list(removed), list(amounts))
 
+    def _complete_store_task(self, task_id: L2TaskId, success: bool, transferred: int) -> None:
+        with self._lock:
+            self._done_store[task_id] = L2StoreResult(success, transferred)
+            self._completed_store_tasks += 1
+            self._failed_store_tasks += not success
+        self._store_event.notify()
+
     def _store_values(
         self, task_id: int, keys: list[ObjectKey], objects: list[MemoryObj]
     ) -> None:
@@ -422,9 +439,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             success = False
             logger.exception("TemporalStore L2 value write failed")
         finally:
-            with self._lock:
-                self._done_store[task_id] = L2StoreResult(success, transferred)
-            self._store_event.notify()
+            self._complete_store_task(task_id, success, transferred)
 
     def _publish_stores(self, pending: dict[ObjectKey, tuple[int, bool]]) -> int:
         commands = []
@@ -526,9 +541,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             logger.exception("TemporalStore L2 store task failed")
         finally:
             publish()
-            with self._lock:
-                self._done_store[task_id] = L2StoreResult(success, transferred)
-            self._store_event.notify()
+            self._complete_store_task(task_id, success, transferred)
 
     def _lookup(self, task_id: int, keys: list[ObjectKey]) -> None:
         bitmap = Bitmap(len(keys))

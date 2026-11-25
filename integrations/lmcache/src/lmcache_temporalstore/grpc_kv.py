@@ -11,6 +11,7 @@ from threading import Lock
 from time import monotonic, sleep
 from typing import TYPE_CHECKING
 
+import grpc
 from lmcache.v1.distributed.api import ObjectKey
 from temporalstore_sdk import (
     MetadataClient, MetadataError, ProxyCommandClient, ProxyTableClient,
@@ -160,11 +161,13 @@ class TableValueBackend(ValueBackend):
         deadline = monotonic() + options.get("timeout_seconds", self._timeout)
         try:
             responses = client.batch_execute(commands, **options)
-        except MetadataError as error:
-            if error.code != "raft_not_leader":
-                raise
+        except (MetadataError, grpc.RpcError) as error:
+            route_changed = (
+                error.code == "raft_not_leader" if isinstance(error, MetadataError)
+                else error.code() == grpc.StatusCode.UNAVAILABLE
+            )
             remaining = deadline - monotonic()
-            if remaining <= 0:
+            if not route_changed or remaining <= 0:
                 raise
         else:
             if not any(response.status.code == "raft_not_leader" for response in responses):
