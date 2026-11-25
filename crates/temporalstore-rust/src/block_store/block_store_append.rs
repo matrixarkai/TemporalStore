@@ -42,7 +42,7 @@ impl BlockStore {
             inner.check_owned_recovery()?;
             inner.owned_writers.values().cloned().collect::<Vec<_>>()
         };
-        self.sync_durable_writers(owned_writers)
+        self.sync_durable_writers(owned_writers, true)
     }
 
     /// Commit locally relocated destinations without waiting for unrelated writers.
@@ -76,12 +76,13 @@ impl BlockStore {
                 None
             }
         };
-        self.sync_durable_writers(writer)
+        self.sync_durable_writers(writer, false)
     }
 
     fn sync_durable_writers(
         &self,
         writers: impl IntoIterator<Item = Arc<Mutex<owned_writer::OwnedWriter>>>,
+        include_legacy: bool,
     ) -> Result<(), BlockStoreError> {
         for writer in writers {
             let mut writer = writer.lock().expect("owned slab writer lock poisoned");
@@ -94,14 +95,15 @@ impl BlockStore {
                     .remove(&retired);
             }
         }
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        if inner.relaxed_dirty {
-            let path = slab_path(&inner.root, inner.block_slab_id);
-            OpenOptions::new().append(true).open(&path)?.sync_data()?;
-            inner.persist_slab_manifest_counted()?;
-            inner.relaxed_dirty = false;
+        if include_legacy {
+            let mut inner = self.inner.lock().expect("block store lock poisoned");
+            if inner.relaxed_dirty {
+                let path = slab_path(&inner.root, inner.block_slab_id);
+                OpenOptions::new().append(true).open(&path)?.sync_data()?;
+                inner.persist_slab_manifest_counted()?;
+                inner.relaxed_dirty = false;
+            }
         }
-        drop(inner);
         #[cfg(test)]
         {
             let after = AFTER_NEXT_SYNC.with(|slot| {
