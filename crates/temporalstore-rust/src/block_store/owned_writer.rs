@@ -498,6 +498,14 @@ impl BlockStoreInner {
 }
 
 impl BlockStore {
+    #[cfg(test)]
+    pub(crate) fn owned_slab_position_for_test(&self, shard_id: u64) -> Option<(u64, u64)> {
+        let writer = self.inner.lock().expect("block store lock poisoned")
+            .owned_writers.get(&shard_id)?.clone();
+        let writer = writer.lock().expect("owned slab writer lock poisoned");
+        Some((writer.id()?, writer.offset()))
+    }
+
     pub(crate) fn active_block_slab_ids(&self) -> BTreeSet<u64> {
         let inner = self.inner.lock().expect("block store lock poisoned");
         let mut active = inner.owned_active.clone();
@@ -674,6 +682,83 @@ impl BlockStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn append_deferred(store: &BlockStore, owner: u64, bytes: &[u8]) -> ElementEntry {
+        let (writer, options) = store.owned_writer(owner).unwrap();
+        let mut writer = writer.lock().unwrap();
+        store.append_owned_record(owner, &mut writer, options, (bytes, None, None, 0)).unwrap()
+    }
+
+    #[test]
+    fn relocation_sync_leaves_unrelated_dirty_writer_locked_and_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        let address = append_deferred(&store, 0, b"selected");
+        let peer_address = append_deferred(&store, 42, b"unacknowledged peer");
+        let peer_cursor = fs::read(cursor_path(root.path(), 42)).unwrap();
+        let peer = store.inner.lock().unwrap().owned_writers[&42].clone();
+        let (send, receive) = std::sync::mpsc::channel();
+        let completed = std::thread::scope(|scope| {
+            let blocked = peer.lock().unwrap();
+            assert!(blocked.current.as_ref().unwrap().dirty);
+            let store_ref = &store;
+            let address_ref = &address;
+            let worker = scope.spawn(move || {
+                send.send(store_ref.sync_relocation_destinations(0, [address_ref]).is_ok()).unwrap();
+            });
+            let result = receive.recv_timeout(std::time::Duration::from_secs(5));
+            drop(blocked);
+            worker.join().unwrap();
+            result
+        });
+        assert!(completed.unwrap());
+        assert!(peer.lock().unwrap().current.as_ref().unwrap().dirty);
+        assert_eq!(fs::read(cursor_path(root.path(), 42)).unwrap(), peer_cursor);
+        assert_eq!(store.read(&peer_address).unwrap(), b"unacknowledged peer");
+        drop(store);
+        let reopened = BlockStore::new(root.path());
+        assert_eq!(reopened.read(&address).unwrap(), b"selected");
+    }
+
+    #[test]
+    fn relocation_sync_rejects_foreign_and_legacy_destinations_before_syncing() {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        let selected = append_deferred(&store, 0, b"selected");
+        let peer = append_deferred(&store, 42, b"peer");
+        let legacy = store.append(b"legacy").unwrap();
+        let before = fs::read(cursor_path(root.path(), 0)).unwrap();
+        for invalid in [&peer, &legacy] {
+            assert!(store.sync_relocation_destinations(0, [&selected, invalid]).is_err());
+            assert_eq!(fs::read(cursor_path(root.path(), 0)).unwrap(), before);
+        }
+        let writer = store.inner.lock().unwrap().owned_writers[&0].clone();
+        assert!(writer.lock().unwrap().current.as_ref().unwrap().dirty);
+    }
+
+    #[test]
+    fn relocation_sync_cursor_failure_is_retryable() {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        let selected = append_deferred(&store, 0, b"retry selected");
+        let before = fs::read(cursor_path(root.path(), 0)).unwrap();
+        let blocked = cursor_path(root.path(), 0).with_extension("tmp");
+        fs::create_dir(&blocked).unwrap();
+        assert!(store.sync_relocation_destinations(0, [&selected]).is_err());
+        assert_eq!(fs::read(cursor_path(root.path(), 0)).unwrap(), before);
+        fs::remove_dir(&blocked).unwrap();
+        store.sync_relocation_destinations(0, [&selected]).unwrap();
+        drop(store);
+        assert_eq!(BlockStore::new(root.path()).read(&selected).unwrap(), b"retry selected");
+    }
+
+    #[test]
+    fn empty_relocation_sync_does_not_create_a_writer() {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        store.sync_relocation_destinations(42, std::iter::empty()).unwrap();
+        assert!(store.inner.lock().unwrap().owned_writers.is_empty());
+    }
 
     #[test]
     fn independent_owner_cursor_commits_survive_reopen() {
@@ -855,6 +940,65 @@ mod tests {
             .gc_slabs_before_with_live_refs(u64::MAX, [])
             .is_err());
         assert_eq!(fs::read(path).unwrap(), header);
+    }
+
+    #[test]
+    fn lazy_checkpoint_reservation_refuses_unaddressable_ids() {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        let first = store.append(b"first").unwrap();
+        let active = store.current_block_slab_id();
+        let slabs = store.slab_ids().unwrap();
+        for limit in [MAX_ADDRESSABLE_BLOCK_SLAB_ID, u64::MAX] {
+            assert!(store.reserve_lazy_checkpoint_range(limit, 0).is_err());
+            assert_eq!(store.current_block_slab_id(), active);
+            assert_eq!(store.slab_ids().unwrap(), slabs);
+        }
+        let second = store.append(b"second").unwrap();
+        assert_eq!(second.block_slab_id(), active);
+        store.sync_durable().unwrap();
+        drop(store);
+        let reopened = BlockStore::new(root.path());
+        assert_eq!(reopened.read(&first).unwrap(), b"first");
+        assert_eq!(reopened.read(&second).unwrap(), b"second");
+    }
+
+    #[test]
+    fn same_owner_and_id_cannot_replace_a_different_slab() {
+        let root_a = tempfile::tempdir().unwrap();
+        let root_b = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let source_a = BlockStore::new(root_a.path());
+        let source_b = BlockStore::new(root_b.path());
+        let receiver = BlockStore::new(destination.path());
+        let first = source_a
+            .append_block_of_object_for_shard(42, b"first", None, None, 0)
+            .unwrap();
+        let second = source_b
+            .append_block_of_object_for_shard(42, b"other", None, None, 0)
+            .unwrap();
+        let id = first.block_slab_id();
+        assert_eq!(id, second.block_slab_id());
+        source_a.sync_durable().unwrap();
+        source_b.sync_durable().unwrap();
+        let (first_bytes, owner) = source_a.read_slab_for_transfer(id).unwrap();
+        let (second_bytes, second_owner) = source_b.read_slab_for_transfer(id).unwrap();
+        assert_eq!(owner, Some(42));
+        assert_eq!(owner, second_owner);
+        receiver.install_transferred_slab(id, &first_bytes, owner).unwrap();
+
+        let mut snapshot = BlockStoreReadSnapshot::new(&receiver);
+        snapshot.pin(id);
+        assert!(receiver.install_transferred_slab(id, &second_bytes, owner).is_err());
+        assert_eq!(receiver.read(&first).unwrap(), b"first");
+        drop(snapshot);
+        assert!(receiver.install_transferred_slab(id, &second_bytes, owner).is_err());
+        receiver.install_transferred_slab(id, &first_bytes, owner).unwrap();
+        drop(receiver);
+
+        let reopened = BlockStore::new(destination.path());
+        assert_eq!(reopened.read(&first).unwrap(), b"first");
+        assert_eq!(reopened.read_slab(id).unwrap(), first_bytes);
     }
 
     #[test]

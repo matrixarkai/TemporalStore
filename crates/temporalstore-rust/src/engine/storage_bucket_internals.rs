@@ -195,6 +195,15 @@ pub(super) fn storage_reclaim_candidates_from_slab_reports(
                 .saturating_mul(10_000_u64.saturating_sub(report.live_ref_density_basis_points))
                 .saturating_div(10_000)
                 .saturating_add(stale_block_estimate);
+            // An entirely live owned slab includes a fixed format header in its physical
+            // extent. Those bytes cannot be reclaimed by relocating its live records.
+            if !fully_stale
+                && reclaim_score == 0
+                && report.live_block_refs == report.block_count
+                && report.block_count != 0
+            {
+                return None;
+            }
             Some(StorageReclaimCandidate {
                 block_slab_id: report.block_slab_id,
                 physical_bytes: report.physical_bytes,

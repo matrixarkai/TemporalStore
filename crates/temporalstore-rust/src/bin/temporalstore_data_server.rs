@@ -224,8 +224,26 @@ fn main() {
         );
         std::process::exit(2);
     }
-    let defer_startup_load_to_networked_restore =
-        !join_empty && networked_uri.is_some() && !local_state_present;
+    let has_lazy_checkpoints = engine.block_store().has_saved_lazy_checkpoints().unwrap_or_else(|err| {
+        error!(%err, "cannot inspect saved lazy checkpoints");
+        std::process::exit(1);
+    });
+    if has_lazy_checkpoints && networked_uri.is_none() {
+        let StorageBackend::SharedPath { root, cluster_id } = &storage_backend else {
+            error!("refusing startup: saved lazy checkpoints require their configured shared backend");
+            std::process::exit(1);
+        };
+        let replicator = SharedStoreReplicator::new(
+            cluster_id.clone(), Arc::new(FileObjectStore::new(root.clone())),
+        );
+        if let Err(err) = replicator.reattach_lazy_checkpoint_sources(&engine.block_store()) {
+            error!(%err, "refusing startup: cannot reattach saved lazy checkpoints");
+            std::process::exit(1);
+        }
+    }
+    let defer_startup_load_to_networked_restore = !join_empty
+        && networked_uri.is_some()
+        && (!local_state_present || has_lazy_checkpoints);
     if !join_empty && !defer_startup_load_to_networked_restore {
         let startup_load = startup_load_shard_request(shard_id, node_id);
         let load_response = engine.load_shard_with(startup_load);
@@ -382,7 +400,7 @@ fn main() {
             shard_id,
             node_id,
             local_state_present,
-            !join_empty,
+            defer_startup_load_to_networked_restore,
         )
     });
     if networked_uri.is_some() && _matrixobject_networked_durability.is_none() {
@@ -1848,24 +1866,35 @@ fn replay_shared_wal_tail(
 /// Locally they are in the block store. Across nodes they are not, unless something carries them.
 fn gather_result_blocks(
     engine: &TemporalEngine,
-    shard_id: ShardId,
     outcomes: &[temporalstore_rust::wal::WalOutcomeItem],
+    mut staged: Vec<temporalstore_rust::wal::StagedBlock>,
 ) -> Vec<temporalstore_rust::wal::StagedBlock> {
-    let mut blocks = Vec::new();
+    if outcomes.is_empty() {
+        return staged;
+    }
+    let mut carried = staged.iter().map(|block| (block.object_id, block.element_name.as_deref()))
+        .collect::<std::collections::HashSet<_>>();
+    let block_store = engine.block_store();
+    let mut gathered = Vec::new();
     for item in outcomes {
         let Some(address) = item.resolved_address() else {
             continue;
         };
-        if let Ok(bytes) = engine.block_store().read(&address) {
-            blocks.push(temporalstore_rust::wal::StagedBlock {
+        let identity = (item.object_id, item.element_name.as_deref());
+        if carried.contains(&identity) {
+            continue;
+        }
+        if let Ok(bytes) = block_store.read(&address) {
+            carried.insert(identity);
+            gathered.push(temporalstore_rust::wal::StagedBlock {
                 object_id: item.object_id,
                 element_name: item.element_name.as_deref().map(std::sync::Arc::from),
                 bytes,
             });
         }
     }
-    let _ = shard_id;
-    blocks
+    staged.extend(gathered);
+    staged
 }
 
 
@@ -1931,13 +1960,8 @@ fn publish_shard_checkpoint(
             // its own, and the checkpoint only covers what was written before it. Without this
             // the successor's index is right and every read of the tail returns nothing.
             //
-            // Empty on the local record for a synchronous write -- that block went to the block
-            // store rather than into the record -- so they are gathered here.
-            staged_blocks: if record.staged_blocks.is_empty() {
-                gather_result_blocks(engine, shard_id, &record.outcomes)
-            } else {
-                record.staged_blocks
-            },
+            // A record can contain both WAL-resident and physically stored blocks.
+            staged_blocks: gather_result_blocks(engine, &record.outcomes, record.staged_blocks),
         };
         if let Err(err) = runtime.block_on(replicator.publish_wal_entry(entry)) {
             return PublishShardCheckpointResponse {
@@ -2447,6 +2471,17 @@ fn wire_matrixobject_networked_durability(
         }
     };
     let replicator = Arc::new(SharedStoreReplicator::new(cluster_id, Arc::new(store)));
+    if let Err(err) = replicator.reattach_lazy_checkpoint_sources(&engine.block_store()) {
+        error!(shard_id, %err, "cannot reattach saved lazy checkpoints");
+        return None;
+    }
+    if local_state_present && auto_load {
+        let load = engine.load_shard_with(startup_load_shard_request(shard_id, node_id));
+        if !load.status.ok {
+            error!(shard_id, message = %load.status.message, "local reload after lazy source attachment failed");
+            return None;
+        }
+    }
 
     // Fresh node: rebuild from the networked store via conformance lazy
     // data-follow (index + address map, then WAL tail; old blocks fetched on demand).

@@ -1652,19 +1652,7 @@ fn build_installed_engine(
                 .install_transferred_slab(slab.block_slab_id, &slab.bytes, slab.owner_shard_id)
                 .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
         }
-        // An image with no range cannot be installed: see `RaftSnapshotStateImage::routing_range`.
-        // Refused by name, so the failure says WHAT arrived rather than that a field was missing.
-        let routing_range = image.routing_range.ok_or_else(|| {
-            RaftError::SnapshotEncoding(format!(
-                "snapshot state image for shard {shard_id} carries no routing range, so the buckets \
-                 its index names cannot be accounted for. It was encoded before the range travelled \
-                 with the image; re-take the snapshot from a leader running this build."
-            ))
-        })?;
-        engine
-            .install_index_bytes_in_empty_wal(shard_id, &image.index_bytes, routing_range)
-            .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
-        engine.load_shard(shard_id);
+        install_snapshot_index(&engine, shard_id, image)?;
     } else {
         engine.load_shard(shard_id);
         for entry in &snapshot.entries {

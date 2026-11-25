@@ -6245,31 +6245,7 @@ fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> Result<TemporalEngine, Ra
             block_store.install_transferred_slab(slab.block_slab_id, &slab.bytes, slab.owner_shard_id)
                 .map_err(|error| RaftError::SnapshotEncoding(error.to_string()))?;
         }
-        // NOT `let _ =` FOR THE RANGE. This installer's own note above is about an image
-        // mishandled here leaving a quietly EMPTY engine; an image with no range is exactly that
-        // case, so it is reported and the shard is left unloaded rather than loaded off an index
-        // whose buckets nothing can account for.
-        match image.routing_range {
-            Some(routing_range) => {
-                match engine.install_index_bytes_in_empty_wal(
-                    snapshot.shard_id,
-                    &image.index_bytes,
-                    routing_range,
-                ) {
-                    Ok(()) => engine.load_shard(snapshot.shard_id),
-                    Err(err) => tracing::error!(shard_id = snapshot.shard_id,
-                        error = %err, "snapshot index could not be installed into the fresh engine"),
-                }
-            }
-            None => {
-                tracing::error!(
-                    shard_id = snapshot.shard_id,
-                    "snapshot state image carries no routing range, so the buckets its index \
-                     names cannot be accounted for; not installing it. Re-take the snapshot from \
-                     a leader running this build."
-                );
-            }
-        }
+        install_snapshot_index(&engine, snapshot.shard_id, image)?;
     } else {
         engine.load_shard(snapshot.shard_id);
         for entry in &snapshot.entries {
@@ -6286,6 +6262,33 @@ fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> Result<TemporalEngine, Ra
         }
     }
     Ok(engine)
+}
+
+fn install_snapshot_index(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    image: &RaftSnapshotStateImage,
+) -> Result<(), RaftError> {
+    let routing_range = image.routing_range.ok_or_else(|| {
+        RaftError::SnapshotEncoding(format!("snapshot state image for shard {shard_id} has no routing range"))
+    })?;
+    engine
+        .install_index_bytes_in_empty_wal(shard_id, &image.index_bytes, routing_range)
+        .map_err(|error| RaftError::SnapshotEncoding(error.to_string()))?;
+    let response = engine.load_shard_with(crate::control::LoadShardRequest {
+        shard_id,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: routing_range.start_routing_bucket,
+        end_routing_bucket: routing_range.end_routing_bucket,
+        readonly: false,
+        table_name: String::new(),
+    });
+    if !response.status.ok {
+        return Err(RaftError::SnapshotEncoding(response.status.message));
+    }
+    Ok(())
 }
 
 /// Move a node onto a snapshot, given an engine already rebuilt from that same snapshot.

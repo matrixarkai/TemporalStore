@@ -79,6 +79,7 @@ mod wal_application;
 mod maintenance_log;
 #[path = "engine/portable_checkpoint.rs"]
 mod portable_checkpoint;
+pub(crate) use portable_checkpoint::translate_portable_checkpoint_index;
 mod storage_lifecycle_methods;
 pub(crate) use storage_lifecycle_methods::dump_gate_delays;
 pub use storage_lifecycle_methods::{

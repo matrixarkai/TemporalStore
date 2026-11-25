@@ -675,6 +675,26 @@ fn the_slab_read_is_what_a_snapshot_is() {
     );
 }
 
+#[test]
+fn an_invalid_snapshot_index_cannot_publish_a_replacement_engine() {
+    let cluster = cluster_with(16);
+    let mut snapshot = cluster.create_snapshot().unwrap();
+    let image = snapshot.state_image.as_mut().expect("physical state image");
+    let range = image.routing_range.take();
+    assert!(matches!(
+        crate::raft::rebuild_snapshot_engine(&snapshot),
+        Err(RaftError::SnapshotEncoding(_))
+    ));
+    let image = snapshot.state_image.as_mut().unwrap();
+    image.routing_range = range;
+    image.index_bytes.truncate(1);
+    assert!(matches!(
+        crate::raft::rebuild_snapshot_engine(&snapshot),
+        Err(RaftError::SnapshotEncoding(_))
+    ));
+    assert_the_fixture_is_populated(&cluster, 16);
+}
+
 /// WHY INCREMENTAL IS NOT AVAILABLE -- established from the installers, not assumed.
 ///
 /// Every path that consumes a state image builds a FRESH `TemporalEngine` and replaces with it;

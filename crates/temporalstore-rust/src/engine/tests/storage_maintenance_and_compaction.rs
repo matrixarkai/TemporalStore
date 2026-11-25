@@ -10343,7 +10343,8 @@ fn shard_with_a_full_data_slab(
     let mut written = 0usize;
     while !engine
         .block_store()
-        .needs_slab_preparation_with_target(target)
+        .owned_slab_position_for_test(1)
+        .is_some_and(|(_, offset)| offset >= target)
     {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -10388,7 +10389,8 @@ fn the_prepare_stage_rolls_the_next_data_slab() {
     assert!(
         engine
             .block_store()
-            .needs_slab_preparation_with_target(TARGET),
+            .owned_slab_position_for_test(1)
+            .is_some_and(|(_, offset)| offset >= TARGET),
         "the fixture did not fill a slab to the target, so prepare has nothing to do",
     );
 
@@ -10415,7 +10417,8 @@ fn the_prepare_stage_rolls_the_next_data_slab() {
     assert!(
         !engine
             .block_store()
-            .needs_slab_preparation_with_target(TARGET),
+            .owned_slab_position_for_test(1)
+            .is_some_and(|(_, offset)| offset >= TARGET),
         "the active slab is still at target after prepare ran",
     );
 
@@ -10506,7 +10509,8 @@ fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
     assert!(
         engine
             .block_store()
-            .needs_slab_preparation_with_target(TARGET),
+            .owned_slab_position_for_test(1)
+            .is_some_and(|(_, offset)| offset >= TARGET),
         "the fixture did not fill a slab, so neither arm below is refusing anything",
     );
 

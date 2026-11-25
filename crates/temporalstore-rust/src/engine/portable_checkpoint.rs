@@ -2,11 +2,95 @@
 // Copyright 2026 MatrixArkAI
 
 use super::*;
+use crate::block_store::slab_restore_bindings::SlabRestoreBindings;
+use object_record::BlockAddress as ObjectBlockAddress;
+use timestamped_series::TimestampedSeries;
 
 pub(crate) struct PortableCheckpointImage {
     pub(crate) index_bytes: Vec<u8>,
     pub(crate) block_slab_ids: BTreeSet<u64>,
     pub(crate) routing_range: routing_range_stamp::RoutingRangeStamp,
+}
+
+/// Rewrite the physical locations of a decoded, detached checkpoint image.
+/// The output is decoded again on load, which reconstructs the runtime indexes
+/// and tallies from the translated on-disk rows.
+pub(crate) fn translate_portable_checkpoint_index(
+    bytes: &[u8],
+    lineage: &str,
+    bindings: &SlabRestoreBindings,
+) -> std::io::Result<Vec<u8>> {
+    let mut snapshot = decode_index_bytes(bytes)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    let translate = |entry: &mut ElementEntry| bindings.translate_entry(lineage, entry);
+    let index = &mut snapshot.bucket_index;
+    for bucket in index.bucket_map.values_mut() {
+        for block in bucket.block_index.blocks_mut_unaccounted() {
+            translate(&mut block.address)?;
+        }
+        if !bucket.tombstone_elements.is_empty() {
+            let mut rows = bucket
+                .tombstone_elements
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            for row in &mut rows {
+                row.block.0 = u64::from(bindings.translate_slab_id(lineage, row.block.0)?);
+            }
+            bucket.rebuild_tombstone_elements(rows);
+        }
+    }
+    index
+        .hashes
+        .try_visit_element_values_mut(None, |_, mut fields| {
+            for (_, address) in fields.iter_mut() {
+                translate(address)?;
+            }
+            Ok::<_, std::io::Error>(())
+        })?;
+    index
+        .sets
+        .try_visit_element_values_mut(None, |_, mut members| {
+            for (_, address) in members.iter_mut() {
+                translate(address)?;
+            }
+            Ok::<_, std::io::Error>(())
+        })?;
+    index
+        .zsets
+        .try_visit_element_values_mut(None, |_, mut members| {
+            for (_, (_, address)) in members.iter_mut() {
+                translate(address)?;
+            }
+            Ok::<_, std::io::Error>(())
+        })?;
+    index
+        .lists
+        .try_visit_element_values_mut(None, |_, mut elements| {
+            for (_, address) in elements.iter_mut() {
+                translate(address)?;
+            }
+            Ok::<_, std::io::Error>(())
+        })?;
+    for slots in index.objects.values_mut() {
+        for slot in slots.values_mut() {
+            for (_, address) in slot.points_mut() {
+                translate(address)?;
+            }
+            let record = slot.record_mut();
+            if let ObjectBlockAddress::One(word) = record.block_address() {
+                if record.block_size() != 0 || word != 0 {
+                    let mut address = record.try_address().map_err(std::io::Error::other)?;
+                    translate(&mut address)?;
+                    record.set_block_address(ObjectBlockAddress::One(address.address_word()));
+                }
+            }
+        }
+    }
+    for address in snapshot.context_nodes_mut().values_mut() {
+        translate(address)?;
+    }
+    Ok(serialize_index(&snapshot))
 }
 
 impl TemporalEngine {
@@ -73,5 +157,77 @@ impl TemporalEngine {
             )
             .map_err(|err| std::io::Error::other(err.message))?;
         }
+    }
+}
+
+#[cfg(test)]
+mod restore_translation_tests {
+    use super::*;
+    use crate::block_store::slab_restore_bindings::SourceSlab;
+
+    #[test]
+    fn translates_the_persisted_model_and_bucket_addresses_together() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            root.path().join("cache"),
+            root.path().join("blocks"),
+            root.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for command in [
+            Command::StringSet {
+                key: "str".to_owned(),
+                value: vec![1; 96],
+            },
+            Command::HashSet {
+                key: "hash".to_owned(),
+                field: "field".to_owned(),
+                value: vec![2; 96],
+            },
+        ] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command
+                    })
+                    .status
+                    .ok
+            );
+        }
+        let image = engine.export_portable_checkpoint_index(1).unwrap();
+        assert_eq!(image.block_slab_ids.len(), 1);
+        let source_id = *image.block_slab_ids.first().unwrap() as u32;
+        let mut bindings = SlabRestoreBindings::default();
+        assert!(
+            translate_portable_checkpoint_index(&image.index_bytes, "source", &bindings).is_err()
+        );
+        bindings
+            .bind(
+                SourceSlab {
+                    lineage: "source".to_owned(),
+                    slab_id: source_id,
+                },
+                99,
+                u32::MAX,
+            )
+            .unwrap();
+        let bytes =
+            translate_portable_checkpoint_index(&image.index_bytes, "source", &bindings).unwrap();
+        let translated = decode_index_bytes(&bytes).unwrap();
+        let live = storage_bucket_internals::collect_model_live_block_entries(&translated);
+        assert_eq!(live.len(), 2);
+        assert!(live.iter().all(|entry| entry.address.block_slab_id() == 99));
+        let indexed = translated
+            .bucket_index
+            .bucket_map
+            .values()
+            .flat_map(|bucket| bucket.block_index.values())
+            .collect::<Vec<_>>();
+        assert_eq!(indexed.len(), 2);
+        assert!(indexed
+            .iter()
+            .all(|block| block.address.block_slab_id() == 99));
     }
 }

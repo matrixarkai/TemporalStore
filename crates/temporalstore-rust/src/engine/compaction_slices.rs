@@ -587,7 +587,13 @@ impl TemporalEngine {
         let batch = std::mem::take(&mut pass.pending_relocations);
         // The block store's own sync, not `compaction_barrier`: that one carries the injected-failure
         // seam the barrier tests arm for the finish.
-        if sync_block_store && self.block_store.sync_durable().is_err() {
+        // Only the new addresses are published by this delta. Old addresses stay pinned;
+        // full-base publication below still needs the complete durability barrier.
+        if sync_block_store && (batch.iter().any(|(_, new, _)| new.entry.is_none())
+            || self.block_store.sync_relocation_destinations(
+                shard_id,
+                batch.iter().filter_map(|(_, new, _)| new.entry.as_ref()),
+            ).is_err()) {
             pass.records_complete = false;
             return;
         }
@@ -752,5 +758,55 @@ impl SlicedPass {
         self.retired_container_wal_blocks.extend(stats.retired_container_wal_blocks);
         self.rewritten_block_refs += stats.rewritten_block_refs;
         self.slices += 1;
+    }
+}
+
+#[cfg(test)]
+mod relocation_barrier_tests {
+    use super::*;
+
+    fn pending(old: crate::block_store::ElementEntry, new: crate::block_store::ElementEntry) -> SlicedPass {
+        let moved = super::super::compaction::MovedBlock {
+            model_id: "string".into(), object_key: "key".into(), element_name: None,
+            old: old.clone(), new: new.clone(),
+        };
+        SlicedPass {
+            target_block_slab_id: new.block_slab_id(),
+            drain_block_slab_ids: BTreeSet::from([old.block_slab_id()]),
+            pre_round_slabs: BTreeSet::from([old.block_slab_id()]),
+            remaining_keys: Vec::new(), by_bucket: false, bucket_cursor: None,
+            pending_bucket_owners: Vec::new(), buckets_exhausted: true,
+            retired_container_wal_blocks: Vec::new(), wal_placements_seen: HashMap::new(),
+            relocated_wal_blocks: Vec::new(), rewritten_block_refs: 1, slices: 1,
+            pending_relocations: vec![relocation_pair(0, 0, u32::MAX, &moved)],
+            records_written: 0, records_complete: true, bytes_written_before_relocation: 0,
+        }
+    }
+
+    #[test]
+    fn delta_flush_validates_destination_owner_before_publishing() {
+        for (owner, missing) in [(0, false), (42, false), (0, true)] {
+            let root = tempfile::tempdir().unwrap();
+            let engine = TemporalEngine::with_local_dirs(
+                1 << 20, root.path().join("cache"), root.path().join("blocks"),
+                root.path().join("indexes"),
+            );
+            let old = engine.block_store.append_block_of_object_for_shard(
+                0, b"old", None, None, 0,
+            ).unwrap();
+            let new = engine.block_store.append_block_of_object_for_shard(
+                owner, b"new", None, None, 0,
+            ).unwrap();
+            let mut pass = pending(old, new.clone());
+            if missing { pass.pending_relocations[0].1.entry = None; }
+            let before = engine.index_log_store.record_count(0).unwrap();
+            engine.flush_relocation_records(0, &mut pass, true);
+            let valid = owner == 0 && !missing;
+            assert_eq!(pass.records_complete, valid);
+            assert_eq!(pass.records_written, usize::from(valid));
+            assert_eq!(engine.index_log_store.record_count(0).unwrap(), before + usize::from(valid));
+            assert_eq!(pass.pre_round_slabs.len(), 1);
+            if valid { assert_eq!(engine.block_store.read(&new).unwrap(), b"new"); }
+        }
     }
 }

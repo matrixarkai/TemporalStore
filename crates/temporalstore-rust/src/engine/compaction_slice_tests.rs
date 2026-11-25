@@ -60,7 +60,7 @@ fn seed(engine: &TemporalEngine, keys: usize) -> (BTreeMap<String, Vec<u8>>, BTr
         commands.push(Command::SetAdd { key: "order".into(), member: format!("m-{i}").into_bytes() });
     }
     assert!(engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands }).status.ok);
-    engine.block_store.roll_slab().unwrap();
+    engine.block_store.roll_slab_for_shard(1).unwrap();
     let mut commands = Vec::new();
     for i in (0..keys).filter(|i| middle(*i)) {
         commands.push(Command::StringSet { key: format!("key-{i}"), value: value_of(i, 0) });
@@ -68,7 +68,7 @@ fn seed(engine: &TemporalEngine, keys: usize) -> (BTreeMap<String, Vec<u8>>, BTr
     }
     if !commands.is_empty() {
         assert!(engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands }).status.ok);
-        engine.block_store.roll_slab().unwrap();
+        engine.block_store.roll_slab_for_shard(1).unwrap();
     }
     for i in 0..keys / 20 {
         write(engine, i, 1, &mut expected);
@@ -245,7 +245,7 @@ fn selected_entity_compaction_moves_only_the_named_point_and_keeps_its_bytes() {
     }
     let before = points.clone();
     shard.context_entities_mut().insert(Arc::from("collection:with:colons"), points.into());
-    let target = engine.block_store.roll_slab().unwrap().new_block_slab_id;
+    let target = engine.block_store.roll_slab_for_shard(1).unwrap().new_block_slab_id;
     let mut stats = CompactionRewriteStats::for_round(target, u64::MAX, usize::MAX);
     let keys = std::collections::HashSet::from([Arc::from("collection:with:colons:2")]);
     engine.relocate_unkeyed_blocks(1, &mut shard, 0, u32::MAX, Some(&keys), &mut stats).unwrap();
@@ -274,7 +274,7 @@ fn feature_slice_case(count: usize, cursor: bool, routing_end: u32) {
     }).collect();
     assert!(engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands }).status.ok);
     let drain = engine.block_store.slab_ids().unwrap().into_iter().collect::<BTreeSet<_>>();
-    engine.block_store.roll_slab().unwrap();
+    engine.block_store.roll_slab_for_shard(1).unwrap();
     if !cursor {
         let mut shards = engine.shards_write_marked();
         shards.get_mut(&1).unwrap().bucket_index.block_slab_live.forget_for_test();

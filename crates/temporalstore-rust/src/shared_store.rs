@@ -238,6 +238,24 @@ pub struct SharedStoreCheckpointManifest {
     pub routing_range: Option<crate::engine::routing_range_stamp::RoutingRangeStamp>,
 }
 
+impl SharedStoreCheckpointManifest {
+    fn validate_slab_addresses(&self) -> Result<(), BlockStoreError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for slab in &self.block_slabs {
+            if slab.block_slab_id > crate::block_store::MAX_ADDRESSABLE_BLOCK_SLAB_ID
+                || !seen.insert(slab.block_slab_id)
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "checkpoint contains an invalid or duplicate slab ID",
+                ).into());
+            }
+            slab_owner_from_transfer_key(slab.block_slab_id, &slab.key)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SharedStoreReplayCursor {
     pub shard_id: ShardId,
@@ -970,6 +988,73 @@ impl<O> SharedStoreReplicator<O>
 where
     O: ObjectStore + 'static,
 {
+    fn attach_bound_lazy_checkpoint<F>(
+        &self,
+        manifest: &SharedStoreCheckpointManifest,
+        generation: String,
+        bindings: crate::block_store::slab_restore_bindings::SlabRestoreBindings,
+        block_store: &BlockStore,
+        make_source: F,
+    ) -> Result<(), SharedStoreReplicationError>
+    where
+        F: FnOnce(Arc<O>, BTreeMap<u64, SharedSlabAddress>) -> Arc<dyn SharedSlabSource>,
+    {
+        let source_ids = bindings.local_sources(&generation)?;
+        let (&first, _) = source_ids.first_key_value().ok_or_else(invalid_slab_transfer_key)?;
+        let (&last, _) = source_ids.last_key_value().ok_or_else(invalid_slab_transfer_key)?;
+        if last - first + 1 != source_ids.len() as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData, "saved lazy checkpoint has a noncontiguous allocation",
+            ).into());
+        }
+        let original = make_source(Arc::clone(&self.object_store), checkpoint_slab_addresses(manifest));
+        let lazy_slabs = manifest.block_slabs.iter().map(|slab| {
+            let id = bindings.translate_slab_id(&generation, slab.block_slab_id)?;
+            Ok(LazyCheckpointSlab {
+                block_slab_id: u64::from(id),
+                physical_bytes: slab.byte_size,
+                logical_bytes: slab.logical_bytes,
+                first_block_id: slab.first_block_id,
+                last_block_id: slab.last_block_id,
+                created_unix_ms: slab.created_unix_ms,
+                updated_unix_ms: slab.updated_unix_ms,
+            })
+        }).collect::<Result<Vec<_>, std::io::Error>>()?;
+        block_store.install_lazy_checkpoint_slabs(&lazy_slabs)?;
+        let source = Arc::new(BoundCheckpointSlabSource {
+            original, generation: generation.clone(), bindings, source_ids,
+        });
+        block_store.attach_checkpoint_slab_source(first, last, &generation, source)?;
+        Ok(())
+    }
+
+    fn reattach_lazy_checkpoint_sources_with<F>(
+        &self, block_store: &BlockStore, make_source: F,
+    ) -> Result<(), SharedStoreReplicationError>
+    where
+        F: Fn(Arc<O>, BTreeMap<u64, SharedSlabAddress>) -> Arc<dyn SharedSlabSource>,
+    {
+        for (generation, bytes) in block_store.saved_lazy_checkpoint_manifests()? {
+            if sha256_hex(&bytes) != generation {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData, "saved lazy checkpoint digest mismatch",
+                ).into());
+            }
+            let manifest = decode_checkpoint_manifest(&bytes)?;
+            if manifest.cluster_id != self.cluster_id {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData, "saved lazy checkpoint cluster mismatch",
+                ).into());
+            }
+            manifest.validate_slab_addresses()?;
+            let ids = manifest.block_slabs.iter().map(|slab| slab.block_slab_id as u32)
+                .collect::<Vec<_>>();
+            let bindings = block_store.bind_checkpoint_slab_ids(&generation, &ids, false)?;
+            self.attach_bound_lazy_checkpoint(&manifest, generation, bindings, block_store, &make_source)?;
+        }
+        Ok(())
+    }
+
     pub fn new(cluster_id: impl Into<String>, object_store: Arc<O>) -> Self {
         Self {
             cluster_id: cluster_id.into(),
@@ -2147,6 +2232,7 @@ where
         engine: &TemporalEngine,
         block_store: &BlockStore,
     ) -> Result<(), SharedStoreReplicationError> {
+        manifest.validate_slab_addresses()?;
         let index = self.object_store.get(&manifest.index_key).await?;
         verify_checksum(
             &manifest.index_key,
@@ -2160,16 +2246,56 @@ where
                 what: format!("checkpoint manifest {} records none", manifest.checkpoint_id),
             }
         })?;
-        engine.install_index_bytes(manifest.shard_id, &index, routing_range)?;
-
-        for slab in &manifest.block_slabs {
+        let transfer_owners = manifest.block_slabs.iter()
+            .map(|slab| slab_owner_from_transfer_key(slab.block_slab_id, &slab.key))
+            .collect::<Result<Vec<_>, _>>()?;
+        // The producer writes a fresh durable checkpoint identity per image.
+        // Hash the entire manifest to bind retries to its exact declared bytes.
+        let generation = transfer_owners.iter().any(Option::is_some)
+            .then(|| sha256_hex(&encode_checkpoint_manifest(manifest)));
+        let bindings = generation.as_ref().map(|generation| {
+            let source_ids = manifest.block_slabs.iter().map(|slab| slab.block_slab_id as u32)
+                .collect::<Vec<_>>();
+            block_store.bind_checkpoint_slab_ids(generation, &source_ids, true)
+        }).transpose()?;
+        let translated_index;
+        let index = match (&generation, &bindings) {
+            (Some(generation), Some(bindings)) => {
+                translated_index = crate::engine::translate_portable_checkpoint_index(
+                    &index, generation, bindings,
+                )?;
+                translated_index.as_slice()
+            }
+            _ => index.as_ref(),
+        };
+        let mut retained = crate::block_store::BlockStoreReadSnapshot::new(block_store);
+        for (slab, owner) in manifest.block_slabs.iter().zip(transfer_owners) {
             let bytes = self.object_store.get(&slab.key).await?;
             verify_checksum(&slab.key, &bytes, slab.byte_size, &slab.sha256)?;
-            block_store.install_transferred_slab(
-                slab.block_slab_id, &bytes,
-                slab_owner_from_transfer_key(slab.block_slab_id, &slab.key)?,
+            if let (Some(generation), Some(bindings)) = (&generation, &bindings) {
+                let rewritten;
+                let (destination, bytes) = if owner.is_some() {
+                    let source = crate::block_store::slab_restore_bindings::SourceSlab {
+                        lineage: generation.clone(),
+                        slab_id: slab.block_slab_id as u32,
+                    };
+                    let mut owned_bytes = bytes.to_vec();
+                    let destination = bindings.translate_slab(&source, &mut owned_bytes, owner)?;
+                    rewritten = owned_bytes;
+                    (destination, rewritten.as_slice())
+                } else {
+                    (bindings.translate_slab_id(generation, slab.block_slab_id)?, bytes.as_ref())
+                };
+                block_store.stage_transferred_slab(
+                    u64::from(destination), bytes, owner, &mut retained, true,
+                )?;
+                continue;
+            }
+            block_store.stage_transferred_slab(
+                slab.block_slab_id, &bytes, owner, &mut retained, false,
             )?;
         }
+        engine.install_index_bytes(manifest.shard_id, index, routing_range)?;
         Ok(())
     }
 
@@ -3317,6 +3443,43 @@ struct SharedSlabAddress {
     sha256: String,
 }
 
+#[derive(Debug)]
+struct BoundCheckpointSlabSource {
+    original: Arc<dyn SharedSlabSource>,
+    generation: String,
+    bindings: crate::block_store::slab_restore_bindings::SlabRestoreBindings,
+    source_ids: BTreeMap<u64, u32>,
+}
+
+impl SharedSlabSource for BoundCheckpointSlabSource {
+    fn slab_owner_shard_id(&self, local_id: u64) -> Result<Option<u64>, BlockStoreError> {
+        match self.source_ids.get(&local_id) {
+            Some(&original) => self.original.slab_owner_shard_id(u64::from(original)),
+            None => Ok(None),
+        }
+    }
+
+    fn fetch_slab(&self, local_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
+        let Some(&original) = self.source_ids.get(&local_id) else {
+            return Ok(None);
+        };
+        // The backend verifies the transferred bytes before their ID is rewritten.
+        let Some(mut bytes) = self.original.fetch_slab(u64::from(original))? else {
+            return Ok(None);
+        };
+        let owner = self.original.slab_owner_shard_id(u64::from(original))?;
+        self.bindings.translate_slab(
+            &crate::block_store::slab_restore_bindings::SourceSlab {
+                lineage: self.generation.clone(),
+                slab_id: original,
+            },
+            &mut bytes,
+            owner,
+        )?;
+        Ok(Some(bytes))
+    }
+}
+
 /// Lazy read-through source backing conformance recovery on the shared-filesystem
 /// (`FileObjectStore`) backend. Holds the checkpoint's slab address map (slab id ->
 /// shared object key) with no slab bytes, and resolves each slab on demand to a
@@ -3482,6 +3645,7 @@ where
             .await?
             .pop()
             .ok_or(SharedStoreReplicationError::CheckpointNotFound(shard_id))?;
+        manifest.validate_slab_addresses()?;
         let index = self.object_store.get(&manifest.index_key).await?;
         verify_checksum(
             &manifest.index_key,
@@ -3495,23 +3659,24 @@ where
                 what: format!("checkpoint manifest {} records none", manifest.checkpoint_id),
             }
         })?;
-        engine.install_index_bytes(manifest.shard_id, &index, routing_range)?;
-
-        let mut slabs = BTreeMap::new();
-        let mut max_slab_id = 0u64;
+        let mut owned = false;
         for slab in &manifest.block_slabs {
-            max_slab_id = max_slab_id.max(slab.block_slab_id);
-            slabs.insert(
-                slab.block_slab_id,
-                SharedSlabAddress {
-                    key: slab.key.clone(),
-                    byte_size: slab.byte_size,
-                    sha256: slab.sha256.clone(),
-                },
-            );
+            owned |= slab_owner_from_transfer_key(slab.block_slab_id, &slab.key)?.is_some();
         }
-        let source = make_source(Arc::clone(&self.object_store), slabs);
-        block_store.attach_shared_slab_source(source);
+        if owned {
+            let manifest_bytes = encode_checkpoint_manifest(&manifest);
+            let generation = sha256_hex(&manifest_bytes);
+            let ids = manifest.block_slabs.iter().map(|slab| slab.block_slab_id as u32)
+                .collect::<Vec<_>>();
+            let bindings = block_store.bind_checkpoint_slab_ids(&generation, &ids, true)?;
+            let index = crate::engine::translate_portable_checkpoint_index(&index, &generation, &bindings)?;
+            block_store.persist_lazy_checkpoint_manifest(&generation, &manifest_bytes)?;
+            self.attach_bound_lazy_checkpoint(&manifest, generation, bindings, block_store, make_source)?;
+            engine.install_index_bytes(manifest.shard_id, &index, routing_range)?;
+            return Ok(manifest);
+        }
+        let slabs = checkpoint_slab_addresses(&manifest);
+        let max_slab_id = slabs.last_key_value().map_or(0, |(id, _)| *id);
         // Roll local appends past the checkpoint's slab/block-id range so replayed WAL-tail
         // and new writes never overwrite a slab still served lazily from shared storage.
         if !manifest.block_slabs.is_empty() {
@@ -3535,8 +3700,21 @@ where
                 .collect();
             block_store.install_lazy_checkpoint_slabs(&lazy_slabs)?;
         }
+        let source = make_source(Arc::clone(&self.object_store), slabs);
+        block_store.attach_shared_slab_source(source);
+        engine.install_index_bytes(manifest.shard_id, &index, routing_range)?;
         Ok(manifest)
     }
+}
+
+fn checkpoint_slab_addresses(manifest: &SharedStoreCheckpointManifest) -> BTreeMap<u64, SharedSlabAddress> {
+    manifest.block_slabs.iter().map(|slab| {
+        (slab.block_slab_id, SharedSlabAddress {
+            key: slab.key.clone(),
+            byte_size: slab.byte_size,
+            sha256: slab.sha256.clone(),
+        })
+    }).collect()
 }
 
 /// How many replayed entries share one durable barrier.
@@ -3863,6 +4041,13 @@ mod wal_run_extension {
 // why both layouts have their own test rather than one standing for both.
 
 impl SharedStoreReplicator<FileObjectStore> {
+    pub fn reattach_lazy_checkpoint_sources(
+        &self, block_store: &BlockStore,
+    ) -> Result<(), SharedStoreReplicationError> {
+        self.reattach_lazy_checkpoint_sources_with(block_store, |store, slabs| {
+            Arc::new(SharedPathSlabSource::new(store, slabs))
+        })
+    }
     /// Conformance LAZY restore for the shared-filesystem backend: install the served
     /// INDEX and a per-slab shared address map WITHOUT downloading any slab bytes.
     /// Old (pre-checkpoint) blocks are then read lazily through [`SharedPathSlabSource`]
@@ -3883,6 +4068,13 @@ impl SharedStoreReplicator<FileObjectStore> {
 }
 
 impl SharedStoreReplicator<MatrixObjectHttpStore> {
+    pub fn reattach_lazy_checkpoint_sources(
+        &self, block_store: &BlockStore,
+    ) -> Result<(), SharedStoreReplicationError> {
+        self.reattach_lazy_checkpoint_sources_with(block_store, |store, slabs| {
+            Arc::new(MatrixObjectSlabSource::new(store, slabs))
+        })
+    }
     /// Conformance LAZY restore for the *networked* matrixobject backend: install
     /// the served INDEX and a per-slab shared address map WITHOUT downloading any slab
     /// bytes. Old (pre-checkpoint) blocks are then fetched lazily over the network
@@ -3904,6 +4096,13 @@ impl SharedStoreReplicator<MatrixObjectHttpStore> {
 }
 
 impl SharedStoreReplicator<NetworkedMatrixObject> {
+    pub fn reattach_lazy_checkpoint_sources(
+        &self, block_store: &BlockStore,
+    ) -> Result<(), SharedStoreReplicationError> {
+        self.reattach_lazy_checkpoint_sources_with(block_store, |store, slabs| {
+            Arc::new(MatrixObjectSlabSource::new(store, slabs))
+        })
+    }
     /// The same lazy restore for the networked store a node actually holds, whichever way
     /// it reaches the cluster. See the impl for [`MatrixObjectHttpStore`].
     pub async fn restore_index_and_block_addresses(
@@ -11390,6 +11589,25 @@ mod tests {
                 },
             ),
         }
+    }
+
+    #[test]
+    fn restore_checks_slab_ids_and_declared_owners_before_staging() {
+        let owned = SharedStoreBlockSlab {
+            key: owned_block_slab_object_name(3, 42),
+            ..sample_slab(3, true)
+        };
+        let valid = sample_checkpoint_manifest(true, vec![owned.clone(), sample_slab(4, false)]);
+        assert!(valid.validate_slab_addresses().is_ok());
+        let duplicated = sample_checkpoint_manifest(true, vec![owned.clone(), sample_slab(3, false)]);
+        assert!(duplicated.validate_slab_addresses().is_err());
+        let wrong_id = SharedStoreBlockSlab { block_slab_id: 4, ..owned };
+        assert!(sample_checkpoint_manifest(true, vec![wrong_id]).validate_slab_addresses().is_err());
+        let reserved = SharedStoreBlockSlab {
+            block_slab_id: u64::from(u32::MAX),
+            ..sample_slab(4, false)
+        };
+        assert!(sample_checkpoint_manifest(true, vec![reserved]).validate_slab_addresses().is_err());
     }
 
     #[test]
