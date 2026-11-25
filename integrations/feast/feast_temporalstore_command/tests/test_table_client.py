@@ -19,7 +19,7 @@ class TableFeastClientTest(unittest.TestCase):
         self.addCleanup(self.patch.stop)
         self.table = constructor.return_value
         self.client = TableFeastClient(
-            "grpc://example.test", "feast", "online", "legacy", 9999, 40, 10, 1,
+            "example.test:17201", "feast", "online", "legacy", 9999, 40, 10, 1,
             4 * 1024 * 1024, 16, 2,
         )
         self.addCleanup(self.client.close)

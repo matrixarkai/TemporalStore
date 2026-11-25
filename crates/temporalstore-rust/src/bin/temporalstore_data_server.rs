@@ -112,9 +112,11 @@ fn main() {
     if let Some(arenas) = arena_cap {
         tracing::info!(arena_max = arenas, "capped malloc arenas (TS_MALLOC_ARENA_MAX overrides; MALLOC_ARENA_MAX wins)");
     }
-    let addr = temporalstore_rust::env_flag::env_value("TS_SERVER_BIND_ADDR")
-        .or_else(|| temporalstore_rust::env_flag::env_value("TS_SERVER_ADDR"))
-        .unwrap_or_else(|| "127.0.0.1:17002".to_string());
+    let explicit_bind = temporalstore_rust::env_flag::env_value("TS_SERVER_BIND_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_SERVER_ADDR"));
+    let grpc_bind = temporalstore_rust::env_flag::env_value("TS_SERVER_GRPC_BIND_ADDR")
+        .or_else(|| explicit_bind.is_none().then(|| "127.0.0.1:17202".to_owned()));
+    let addr = explicit_bind.unwrap_or_else(|| "127.0.0.1:17002".to_owned());
     let advertised_addr = temporalstore_rust::env_flag::env_value("TS_SERVER_ADVERTISE_ADDR")
         .or_else(|| temporalstore_rust::env_flag::env_value("TS_SERVER_ADDR"))
         .unwrap_or_else(|| addr.clone());
@@ -473,17 +475,16 @@ fn main() {
     // ("local", "none", "standalone", "off", or empty) always mean standalone.
     // Decided once, up where the deployment profile is named, so the profile the
     // node logs and the topology it actually runs cannot drift apart.
-    let grpc_advertised_addr = temporalstore_rust::env_flag::env_value("TS_SERVER_GRPC_BIND_ADDR")
-        .map(|grpc_addr| {
-            let bound = grpc::start(&grpc_addr, runtime.clone(), raft_state.clone())
-                .expect("failed to start datanode gRPC listener");
-            temporalstore_rust::env_flag::env_value("TS_SERVER_GRPC_ADVERTISE_ADDR")
-                .unwrap_or_else(|| {
-                    assert!(is_single_node || !bound.ip().is_unspecified(),
-                        "TS_SERVER_GRPC_ADVERTISE_ADDR is required for a wildcard gRPC bind");
-                    bound.to_string()
-                })
-        });
+    let grpc_advertised_addr = grpc_bind.map(|grpc_addr| {
+        let bound = grpc::start(&grpc_addr, runtime.clone(), raft_state.clone())
+            .expect("failed to start datanode gRPC listener");
+        temporalstore_rust::env_flag::env_value("TS_SERVER_GRPC_ADVERTISE_ADDR")
+            .unwrap_or_else(|| {
+                assert!(is_single_node || !bound.ip().is_unspecified(),
+                    "TS_SERVER_GRPC_ADVERTISE_ADDR is required for a wildcard gRPC bind");
+                bound.to_string()
+            })
+    });
     let standalone = is_single_node;
     if standalone {
         info!(

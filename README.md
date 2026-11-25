@@ -443,7 +443,9 @@ docker compose -f docker-compose.single-node.yml up --build -d
 curl -fsS http://127.0.0.1:17102/health
 ```
 
-The Compose setup runs a metaserver on `17101` and a data node on `17102`.
+The Compose setup exposes gRPC on `127.0.0.1:17201` for metadata and
+`127.0.0.1:17202` for commands. HTTP health and compatibility endpoints are
+available on ports `17101` and `17102`.
 A named volume preserves data across container restarts. `/health` checks process
 liveness, not whether every shard can serve requests.
 

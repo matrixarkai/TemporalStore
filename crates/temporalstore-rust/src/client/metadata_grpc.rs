@@ -410,12 +410,10 @@ mod tests {
         );
         tokio::task::spawn_blocking(move || {
             let client = TemporalStoreClient::with_options(ClientOptions {
-                meta_addr: None,
-                meta_grpc_target: Some(target),
                 connect_timeout_ms: 3_000,
                 io_timeout_ms: 3_000,
                 meta_sync_deadline_ms: 3_000,
-                ..Default::default()
+                ..ClientOptions::direct(target)
             });
             let table = client.open_table_from_meta("kvcache", "model").unwrap();
             assert_eq!(table.options().table_id, 13);

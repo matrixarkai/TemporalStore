@@ -85,7 +85,7 @@ def test_metadata_grpc_uses_versioned_topology_and_bearer_credentials():
         ))
         port = server.add_insecure_port("127.0.0.1:0")
         server.start()
-        client = MetadataClient(f"grpc://127.0.0.1:{port}", credential_provider=lambda: "test-token")
+        client = MetadataClient(f"127.0.0.1:{port}", credential_provider=lambda: "test-token")
         try:
             first = client.table_topology("kvcache", "model")
             assert (first.table_id, first.version) == (7, 42)

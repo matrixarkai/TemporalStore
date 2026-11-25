@@ -80,7 +80,7 @@ class TableTopology:
 
 
 class MetadataClient:
-    """Resolve tables over the metaserver endpoint's selected transport."""
+    """Resolve tables over gRPC by default, or from an explicit HTTP URL."""
 
     def __init__(
         self,
@@ -90,7 +90,7 @@ class MetadataClient:
         timeout_seconds: float = 5.0,
         require_grpc: bool = False,
     ):
-        endpoint = urlsplit(url)
+        endpoint = urlsplit(url if "://" in url else f"grpc://{url}")
         if require_grpc and endpoint.scheme not in ("grpc", "grpcs"):
             raise ValueError("expected a grpc:// or grpcs:// metaserver URL")
         if (endpoint.scheme not in ("grpc", "grpcs", "http", "https") or not endpoint.hostname

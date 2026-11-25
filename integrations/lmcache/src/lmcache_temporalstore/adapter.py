@@ -91,7 +91,7 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     @classmethod
     def help(cls) -> str:
         return (
-            "meta_url (grpc:// or grpcs://) selects distributed KV storage; storage_backend can select blob or kv; "
+            "meta_url (host:port, grpc:// or grpcs://) selects distributed KV storage; storage_backend can select blob or kv; "
             "proxy_grpc_target routes table commands through a gRPC proxy; "
             "blob_url and data_url are datanode HTTP URLs; shard_id selects the "
             "command shard; max_capacity_gb bounds local adapter writes; "
