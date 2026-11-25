@@ -2438,11 +2438,9 @@ impl BlockStore {
     /// lets a later read fetch a missing old slab on demand from shared storage,
     /// cache it locally, and serve it — instead of installing every slab up front.
     pub fn attach_shared_slab_source(&self, source: Arc<dyn SharedSlabSource>) {
-        self
-            .read_view
-            .sources
-            .write()
-            .expect("shared slab source lock poisoned").default = Some(source);
+        let previous = self.read_view.sources.write()
+            .expect("shared slab source lock poisoned").default.replace(source);
+        drop(previous);
     }
 
     pub(crate) fn attach_checkpoint_slab_source(
