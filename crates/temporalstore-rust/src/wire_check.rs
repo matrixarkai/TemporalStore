@@ -24,7 +24,7 @@ pub(crate) struct Parsed {
 
 fn wire_type(ty: &str, enums: &BTreeSet<String>) -> u8 {
     match ty {
-        "int32" | "int64" | "uint32" | "uint64" | "bool" => 0,
+        "int32" | "int64" | "uint32" | "uint64" | "sint32" | "sint64" | "bool" => 0,
         "double" => 1,
         "string" | "bytes" => 2,
         other if enums.contains(other) => 0,
@@ -52,7 +52,10 @@ pub(crate) fn parse_proto(text: &str) -> Parsed {
         if let Some(rest) = line.strip_prefix("message ") {
             let name = rest.split_whitespace().next().unwrap().to_string();
             parsed.messages.insert(name.clone(), Shape::default());
-            stack.push(Open::Message(name));
+            // An empty message can close on the declaration line.
+            if !rest.split_once('{').is_some_and(|(_, body)| body.trim() == "}") {
+                stack.push(Open::Message(name));
+            }
         } else if let Some(rest) = line.strip_prefix("enum ") {
             let name = rest.split_whitespace().next().unwrap().to_string();
             parsed.enums.insert(name.clone(), BTreeSet::new());
