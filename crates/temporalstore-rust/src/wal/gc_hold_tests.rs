@@ -254,3 +254,77 @@ fn a_reader_that_appears_during_the_pass_stops_the_swap() {
     let reopened = LocalWriteAheadLogStore::new(dir.path());
     assert_eq!(sequences(&reopened).first().copied(), Some(1));
 }
+
+#[test]
+fn lowering_a_lease_after_temp_sync_stops_active_rename() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let _policy = SegmentPolicy::set(0);
+    let (dir, store) = log_of(200);
+    let mut lease = store.retain_read_sequence(3, 174);
+    let (at_rename, wait_to_lower) = mpsc::channel();
+    let (lowered, wait_to_rename) = mpsc::channel();
+    let borrower = std::thread::spawn(move || {
+        wait_to_lower.recv_timeout(Duration::from_secs(5)).unwrap();
+        lease.retain_earlier(40);
+        let _ = lowered.send(lease);
+    });
+    let retained = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let late = std::rc::Rc::clone(&retained);
+    BEFORE_WAL_GC_ACTIVE_RENAME.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            at_rename.send(()).map_err(std::io::Error::other)?;
+            let lease = wait_to_rename.recv_timeout(Duration::from_secs(5))
+                .map_err(std::io::Error::other)?;
+            *late.borrow_mut() = Some(lease);
+            Ok(())
+        }));
+    });
+    let first = store.gc_before_sequence_unchecked(3, 150);
+    BEFORE_WAL_GC_ACTIVE_RENAME.with(|hook| *hook.borrow_mut() = None);
+    borrower.join().unwrap();
+    let first = first.unwrap();
+    assert!(retained.borrow().is_some(), "reached the active replacement boundary");
+    assert!(first.skipped_raced);
+    assert_eq!(first.records_removed, 0);
+    assert_eq!(sequences(&store), (1_u64..=200).collect::<Vec<_>>());
+    drop(retained);
+    let retry = store.gc_before_sequence_unchecked(3, 150).unwrap();
+    assert!(!retry.skipped_raced);
+    assert_eq!(retry.records_removed, 149);
+    drop(store);
+    let reopened = LocalWriteAheadLogStore::new(dir.path());
+    assert_eq!(sequences(&reopened), (150_u64..=200).collect::<Vec<_>>());
+}
+
+#[test]
+fn failed_active_rename_cleans_temp_and_releases_the_shard_reservation() {
+    let _policy = SegmentPolicy::set(0);
+    let (dir, store) = log_of(200);
+    let path = {
+        let mut inner = store.lock_inner_raw();
+        active_wal_path(&mut inner, 3)
+    };
+    let temporary = path.with_extension("jsonl.tmp");
+    let before = std::fs::read(path.as_path()).unwrap();
+    let expected_temp = temporary.clone();
+    BEFORE_WAL_GC_ACTIVE_RENAME.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            assert!(expected_temp.is_file(), "reached the active replacement boundary");
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected WAL rename failure"))
+        }));
+    });
+    let failed = store.gc_before_sequence_unchecked(3, 150);
+    BEFORE_WAL_GC_ACTIVE_RENAME.with(|hook| *hook.borrow_mut() = None);
+    assert!(failed.unwrap_err().to_string().contains("injected WAL rename failure"));
+    assert!(!temporary.exists());
+    assert_eq!(std::fs::read(path.as_path()).unwrap(), before);
+    assert!(!store.group_commit_coordinator(3).read_retention.lock().unwrap().collecting);
+    let retried = store.gc_before_sequence_unchecked(3, 150).unwrap();
+    assert!(!retried.skipped_raced);
+    assert_eq!(retried.records_removed, 149);
+    drop(store);
+    let reopened = LocalWriteAheadLogStore::new(dir.path());
+    assert_eq!(sequences(&reopened), (150_u64..=200).collect::<Vec<_>>());
+}
