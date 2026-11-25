@@ -5,6 +5,12 @@
 use super::*;
 
 #[cfg(test)]
+thread_local! {
+    pub(super) static EVICTION_RELEASE_RETRY_LOCKS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
 #[path = "lifecycle_report_work_tests.rs"]
 mod lifecycle_report_work_tests;
 
@@ -2850,12 +2856,14 @@ impl TemporalEngine {
         // Release derived index state, not cached page values. The cache owns its own capacity
         // policy; retaining a page does not prevent the bucket from becoming cold. Destructive
         // deletion instead invalidates cached pages above and removes the records below.
-        if !delete_drop && !victims.is_empty() {
+        if !delete_drop && retained_inline.len() < victims.len() {
             let candidates = victims
                 .iter()
                 .map(|victim| victim.routing_bucket)
                 .filter(|bucket| !retained_inline.contains(bucket))
                 .collect::<Vec<_>>();
+            #[cfg(test)]
+            EVICTION_RELEASE_RETRY_LOCKS.with(|count| count.set(count.get() + 1));
             let mut shards = self.shards.write().expect("shards lock poisoned");
             if let Some(shard) = shards.get_mut(&shard_id) {
                 let remaining = crate::engine::storage_bucket_internals::release_bucket_blocks(
