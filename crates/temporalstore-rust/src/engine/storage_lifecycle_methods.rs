@@ -1312,20 +1312,29 @@ impl TemporalEngine {
         &self,
         request: &StorageLifecycleRequest,
     ) -> crate::block_store::BlockStorePurgeDelayedDestroyReport {
+        self.try_purge_storage_delayed_destroy(request).unwrap_or_else(|error| {
+            tracing::warn!(shard_id = request.shard_id, ?error, "purge deferred");
+            Default::default()
+        })
+    }
+
+    pub(crate) fn try_purge_storage_delayed_destroy(
+        &self,
+        request: &StorageLifecycleRequest,
+    ) -> Result<crate::block_store::BlockStorePurgeDelayedDestroyReport, Status> {
         if !request.purge_delayed_destroy {
-            return Default::default();
+            return Ok(Default::default());
         }
         // Nothing can be purged or restored without a quarantine entry. A concurrent
         // quarantine is left for the next round, never deleted without the checks below.
         match self.block_store.has_delayed_destroy_slabs() {
-            Ok(false) => return crate::block_store::BlockStorePurgeDelayedDestroyReport {
+            Ok(false) => return Ok(crate::block_store::BlockStorePurgeDelayedDestroyReport {
                 max_slabs_per_round: crate::block_store::DELAYED_DESTROY_MAX_SLABS_PER_ROUND,
                 ..Default::default()
-            },
+            }),
             Ok(true) => (),
             Err(error) => {
-                tracing::warn!(shard_id = request.shard_id, %error, "purge deferred: quarantine unavailable");
-                return Default::default();
+                return Err(Status::error("page_gc_quarantine_unavailable", error.to_string()));
             }
         }
         let min_age_ms = request
@@ -1348,8 +1357,7 @@ impl TemporalEngine {
             Ok(manifests) => manifests,
             // Recovery can skip damaged dumps; physical deletion cannot assume they own nothing.
             Err(error) => {
-                tracing::warn!(shard_id = request.shard_id, %error, "reclaim deferred: dump ownership unavailable");
-                return Default::default();
+                return Err(Status::error("page_gc_ownership_unavailable", error.to_string()));
             }
         };
         for manifest in manifests {
@@ -1371,7 +1379,7 @@ impl TemporalEngine {
         if has_retention_owners {
             let candidates = match self.block_store.delayed_destroy_slab_ids() {
                 Ok(ids) => ids,
-                Err(_) => return Default::default(),
+                Err(error) => return Err(Status::error("page_gc_quarantine_unavailable", error.to_string())),
             };
             let dependencies = self.storage_block_gc_dependency_plan(
                 request.shard_id,
@@ -1408,7 +1416,7 @@ impl TemporalEngine {
                 selected,
             )
         }
-        .unwrap_or_default();
+        .map_err(|error| Status::error("page_gc_purge_failed", error.to_string()))?;
         // A round that stopped on its budget saw only part of the quarantine, and a slab it could not
         // restore is still named by the live set: neither has checked everything.
         if checks_whole_quarantine
@@ -1418,7 +1426,7 @@ impl TemporalEngine {
             self.block_store
                 .note_quarantine_checked(report.quarantine_arrivals_seen);
         }
-        report
+        Ok(report)
     }
 
     /// Whether a periodic purge of the quarantine, made with `grace_ms` and no retention owner, would
