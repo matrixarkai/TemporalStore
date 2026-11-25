@@ -26,6 +26,14 @@ fn catalog_state_to_slab_state(state: crate::index_log::SlabCatalogState) -> Blo
 }
 
 impl BlockStore {
+    pub(crate) fn checkpoint_slab_descriptors(
+        &self,
+        ids: &BTreeSet<u64>,
+    ) -> BTreeMap<u64, BlockStoreSlabDescriptor> {
+        let inner = self.inner.lock().expect("block store lock poisoned");
+        ids.iter().filter_map(|&id| inner.slabs.get(&id).cloned().map(|slab| (id, slab))).collect()
+    }
+
     pub fn slab_descriptors(&self) -> Vec<BlockStoreSlabDescriptor> {
         self.inner
             .lock()
