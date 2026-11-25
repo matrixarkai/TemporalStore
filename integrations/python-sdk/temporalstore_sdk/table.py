@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Table-scoped data routing through the metaserver."""
 
-from contextlib import closing, ExitStack
+from contextlib import closing, contextmanager, ExitStack
 from itertools import islice
 from math import isfinite
 from threading import Lock
@@ -30,6 +30,20 @@ _READ_RPC_ERRORS = frozenset({grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADL
 _MAX_INFLIGHT_READ_SHARDS = 8
 
 
+
+
+def _remaining_read_timeout(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise MetadataError("deadline_exceeded", "table read deadline expired")
+    return remaining
+
+
+def _undispatched_reads(group) -> pb.BatchExecuteResponse:
+    status = pb.Status(code="read_unavailable", message="table read deadline expired before dispatch")
+    return pb.BatchExecuteResponse(
+        responses=(pb.CommandResponse(status=status) for _ in group),
+    )
 
 
 class TableClient:
@@ -61,12 +75,22 @@ class TableClient:
         self._lock = Lock()
         self._closed = False
 
-    def _current_topology(self) -> TableTopology:
-        with self._lock:
+    @contextmanager
+    def _timed_route_lock(self, deadline: float):
+        if not self._lock.acquire(timeout=_remaining_read_timeout(deadline)):
+            raise MetadataError("deadline_exceeded", "table routing wait exceeded the read deadline")
+        try:
+            yield
+        finally:
+            self._lock.release()
+
+    def _current_topology(self, deadline: float | None = None) -> TableTopology:
+        with self._lock if deadline is None else self._timed_route_lock(deadline):
             if self._closed:
                 raise RuntimeError("table client is closed")
             if self._topology is None or monotonic() >= self._expires_at:
-                self._topology = self._metadata.table_topology(self._namespace, self._table)
+                options = {} if deadline is None else {"timeout_seconds": _remaining_read_timeout(deadline)}
+                self._topology = self._metadata.table_topology(self._namespace, self._table, **options)
                 ttl = self._topology_ttl
                 if any(shard.uses_raft_route and not shard.primary_grpc for shard in self._topology.shards):
                     ttl = min(ttl, _ELECTION_TOPOLOGY_TTL_SECONDS)
@@ -89,12 +113,12 @@ class TableClient:
             raise ValueError("table routing requires a single-key command")
         return topology.shard_for_key(key)
 
-    def _channel_for(self, shard: Shard) -> CommandClient:
+    def _channel_for(self, shard: Shard, deadline: float | None = None) -> CommandClient:
         if not shard.primary_grpc:
             if shard.uses_raft_route and shard.primary is None:
                 raise RaftPrimaryUnavailable(shard.shard_id)
             raise MetadataError("no_grpc_primary", f"shard {shard.shard_id} has no gRPC primary")
-        with self._lock:
+        with self._lock if deadline is None else self._timed_route_lock(deadline):
             if self._closed:
                 raise RuntimeError("table client is closed")
             channel = self._channels.get(shard.primary_grpc)
@@ -130,6 +154,7 @@ class TableClient:
 
         A read-only batch can opt in to per-shard errors for temporary routing
         and transport failures. Other failures are propagated to the caller.
+        An explicit read timeout is shared by route discovery and shard RPCs.
         """
         options = {"allow_partial_reads": True} if allow_partial_reads else {}
         indexed = sorted(
@@ -149,7 +174,12 @@ class TableClient:
         read_only = all(command.WhichOneof("kind") in _PARALLEL_READ_KINDS for command in commands)
         if allow_partial_reads and not read_only:
             raise ValueError("partial results require a read-only batch")
-        topology = self._current_topology()
+        deadline = None
+        if read_only and timeout_seconds is not None:
+            if not isfinite(timeout_seconds) or timeout_seconds <= 0:
+                raise ValueError("read timeout must be finite and positive")
+            deadline = monotonic() + timeout_seconds
+        topology = self._current_topology(deadline)
         groups: dict[Shard, list[tuple[int, pb.Command]]] = {}
         for position, command in enumerate(commands):
             shard = self._shard_for_command(topology, command)
@@ -159,7 +189,7 @@ class TableClient:
         missing = []
         for shard, group in groups.items():
             try:
-                channels[shard] = self._channel_for(shard)
+                channels[shard] = self._channel_for(shard, deadline)
             except RaftPrimaryUnavailable as error:
                 if not allow_partial_reads:
                     raise
@@ -171,7 +201,7 @@ class TableClient:
         parallel = len(groups) > 1 and self._parallel_reads and read_only
         try:
             responses = self._batch_responses(
-                groups, channels, parallel, timeout_seconds, allow_partial_reads,
+                groups, channels, parallel, timeout_seconds, allow_partial_reads, deadline,
             )
             with closing(responses) as batches:
                 for group, response in batches:
@@ -207,10 +237,18 @@ class TableClient:
             raise
 
     @staticmethod
-    def _batch_responses(groups, channels, parallel, timeout_seconds, preserve_rpc_error):
+    def _batch_responses(groups, channels, parallel, timeout_seconds, preserve_rpc_error, deadline):
         options = {} if timeout_seconds is None else {"timeout_seconds": timeout_seconds}
         if not parallel:
             for shard, group in groups.items():
+                if deadline is not None:
+                    try:
+                        options["timeout_seconds"] = _remaining_read_timeout(deadline)
+                    except MetadataError:
+                        if not preserve_rpc_error:
+                            raise
+                        yield group, _undispatched_reads(group)
+                        continue
                 try:
                     response = channels[shard].batch_execute(
                         shard.shard_id, (command for _, command in group),
@@ -228,7 +266,16 @@ class TableClient:
         while window := list(islice(pending, _MAX_INFLIGHT_READ_SHARDS)):
             with ExitStack() as inflight:
                 futures = []
+                pending_deadline = []
                 for shard, group in window:
+                    if deadline is not None:
+                        try:
+                            options["timeout_seconds"] = _remaining_read_timeout(deadline)
+                        except MetadataError:
+                            if not preserve_rpc_error:
+                                raise
+                            pending_deadline.append(group)
+                            continue
                     future = channels[shard]._start_batch(
                         shard.shard_id, (command for _, command in group),
                         load_version=shard.load_version or None,
@@ -244,6 +291,8 @@ class TableClient:
                             raise
                         response = error
                     yield group, response
+                for group in pending_deadline:
+                    yield group, _undispatched_reads(group)
 
     def close(self) -> None:
         with self._lock:

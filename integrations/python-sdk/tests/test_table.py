@@ -83,7 +83,9 @@ class TableClientTest(unittest.TestCase):
         metadata.table_topology.return_value = TableTopology(
             "kvcache", "model", 1, 73, 1, (Shard(73, None, (), 7, "primary"),),
         )
-        with patch("temporalstore_sdk.table.CommandClient") as channel:
+        with patch("temporalstore_sdk.table.CommandClient") as channel, patch(
+            "temporalstore_sdk.table.monotonic", return_value=10,
+        ):
             channel.return_value.batch_execute.return_value = commands.BatchExecuteResponse(
                 responses=[commands.CommandResponse()],
             )
@@ -95,7 +97,78 @@ class TableClientTest(unittest.TestCase):
                 [call.kwargs for call in channel.return_value.batch_execute.call_args_list],
                 [{"load_version": 7, "timeout_seconds": 1}, {"load_version": 7}],
             )
-            metadata.table_topology.assert_called_once()
+            metadata.table_topology.assert_called_once_with("kvcache", "model", timeout_seconds=1)
+
+    def test_timed_read_uses_one_budget_across_discovery_and_sequential_shards(self):
+        metadata = Mock()
+        topology = TableTopology("kvcache", "model", 1, 73, 2, (
+            Shard(73, None, (), 7, "first"), Shard(74, None, (), 8, "second"),
+        ))
+        elapsed = 0.0
+
+        def discover(*_, timeout_seconds):
+            nonlocal elapsed
+            self.assertEqual(timeout_seconds, 1)
+            elapsed += 0.25
+            return topology
+
+        def read(*_, **kwargs):
+            nonlocal elapsed
+            elapsed += 0.25
+            return commands.BatchExecuteResponse(responses=[commands.CommandResponse(count=1)])
+
+        metadata.table_topology.side_effect = discover
+        with patch("temporalstore_sdk.table.monotonic", side_effect=lambda: elapsed), patch(
+            "temporalstore_sdk.table.CommandClient",
+        ) as channel, TableClient(metadata, "kvcache", "model") as table:
+            channel.return_value.batch_execute.side_effect = read
+            results = table.batch_execute([get("alpha"), get("123456789")], timeout_seconds=1)
+        self.assertEqual([item.count for item in results], [1, 1])
+        self.assertEqual(
+            [call.kwargs["timeout_seconds"] for call in channel.return_value.batch_execute.call_args_list],
+            [0.75, 0.5],
+        )
+
+    def test_timed_partial_read_preserves_a_reply_when_another_shard_cannot_start(self):
+        metadata = Mock()
+        metadata.table_topology.return_value = TableTopology("kvcache", "model", 1, 73, 2, (
+            Shard(73, None, (), 7, "first"), Shard(74, None, (), 8, "second"),
+        ))
+        first, second = Mock(), Mock()
+        with patch("temporalstore_sdk.table.monotonic", return_value=0.0) as clock, patch(
+            "temporalstore_sdk.table.CommandClient", side_effect=[first, second],
+        ), TableClient(metadata, "kvcache", "model") as table:
+            def read(*_, **kwargs):
+                clock.return_value = 1
+                return commands.BatchExecuteResponse(
+                    responses=[commands.CommandResponse(status=commands.Status(ok=True), count=1)],
+                )
+
+            first.batch_execute.side_effect = read
+            hit, expired = table.batch_execute(
+                [get("alpha"), get("123456789")], timeout_seconds=1,
+                allow_partial_reads=True,
+            )
+            self.assertEqual(hit.count, 1)
+            self.assertEqual(expired.status.code, "read_unavailable")
+            second.batch_execute.assert_not_called()
+
+    def test_discovery_that_spends_the_read_deadline_does_not_dispatch(self):
+        metadata = Mock()
+        with patch("temporalstore_sdk.table.monotonic", return_value=0.0) as clock, patch(
+            "temporalstore_sdk.table.CommandClient",
+        ) as channel, TableClient(metadata, "kvcache", "model") as table:
+            def discover(*_, timeout_seconds):
+                clock.return_value = timeout_seconds
+                return TableTopology(
+                    "kvcache", "model", 1, 73, 1, (Shard(73, None, (), 7, "primary"),),
+                )
+
+            metadata.table_topology.side_effect = discover
+            with self.assertRaises(MetadataError) as timed_out:
+                table.batch_execute([get("key")], timeout_seconds=0.5)
+            self.assertEqual(timed_out.exception.code, "deadline_exceeded")
+            channel.assert_not_called()
 
     def test_stale_fence_expires_route_without_retrying_the_failed_write(self):
         metadata = Mock()

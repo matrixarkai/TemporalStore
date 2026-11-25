@@ -201,6 +201,10 @@ class TableValueBackend(ValueBackend):
                         [commands[index] for index in stale],
                         **dict(options, timeout_seconds=remaining),
                     )
+                except MetadataError as error:
+                    if error.code in {"unavailable", "deadline_exceeded"}:
+                        return responses
+                    raise
                 except grpc.RpcError as error:
                     if error.code() in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
                         return responses
