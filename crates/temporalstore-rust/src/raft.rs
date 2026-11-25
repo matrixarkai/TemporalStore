@@ -1439,11 +1439,12 @@ struct NodeWalCursor {
     /// until the segment is a multiple of it, so the one O(log) base write per segment
     /// stays a bounded fraction of the bytes that segment costs.
     base_bytes: u64,
-    /// Last log index already written into the active segment, and the term at that
-    /// index. An incremental record is only sound while the in-memory log still agrees
-    /// with both; a conflict overwrite or a snapshot compaction re-bases instead.
+    /// Bounds and length of the log written by the previous record. A delta must
+    /// still follow the same prefix, even when a delayed entry filled an earlier hole.
+    persisted_first_index: u64,
     persisted_last_index: u64,
     persisted_last_term: u64,
+    persisted_entry_count: usize,
     /// False until a full base record has been written into the active segment.
     has_base: bool,
 }
@@ -5922,43 +5923,42 @@ fn append_entry(node: &mut RaftNode, entry: RaftLogEntry) {
     {
         return;
     }
-    // Raft §5.3: truncate ONLY on a genuine term conflict (same index, different term).
-    // An entry already present with the SAME term is a no-op -- unconditionally
-    // truncating on index<=last (a stale/duplicate/reordered AppendEntries that is a
-    // prefix of the committed log) would delete committed suffix entries, rewind
-    // applied state, and double-execute non-idempotent commands on re-apply.
-    // A log is ordered by index, so an entry past the last one cannot already be in it: the
-    // common append, which a scan of the whole log used to confirm one entry at a time.
-    let existing = match node.log.last() {
-        Some(last) if last.index < entry.index => None,
-        _ => node.log.iter().find(|existing| existing.index == entry.index),
+    let position = match node.log.last() {
+        Some(last) if last.index >= entry.index => node
+            .log
+            .binary_search_by_key(&entry.index, |existing| existing.index),
+        _ => Err(node.log.len()),
     };
-    if let Some(existing) = existing {
-        if existing.term == entry.term {
+    if let Ok(index) = position {
+        if node.log[index].term == entry.term {
             return;
         }
-        // Raft §5.3 one step further: THE CONFLICT IS FLOORED AT THE COMMIT POINT. A
-        // conflicting entry at or below `commit_index` would overwrite an entry this group has
-        // already committed, which Raft forbids, so it is refused here instead of absorbed.
-        // Without the floor the truncation below rewinds `applied` while `max_applied_index`
-        // deliberately stays put, and the apply loops then SKIP the replacement entry -- the
-        // apply cursor advances over a command that never ran and the state machine keeps the
-        // superseded one. Refusing is what makes that state unreachable rather than papered over.
-        if entry.index <= node.commit_index {
-            node.pipeline_state.committed_overwrite_rejections = node
-                .pipeline_state
-                .committed_overwrite_rejections
-                .saturating_add(1);
-            return;
-        }
-        node.log.retain(|existing| existing.index < entry.index);
-        node.applied.retain(|applied| *applied < entry.index);
-        node.applied_index = node.applied.iter().next_back().copied().unwrap_or_default();
-        // max_applied_index is intentionally NOT lowered (monotonic exactly-once floor); with the
-        // floor above, nothing can rewind the log below it any more, so the floor can no longer
-        // be reached by an entry that has not actually been applied.
     }
-    node.log.push(entry);
+
+    // A committed prefix is immutable, even if a retired entry is no longer in memory.
+    if entry.index <= node.commit_index {
+        node.pipeline_state.committed_overwrite_rejections = node
+            .pipeline_state
+            .committed_overwrite_rejections
+            .saturating_add(1);
+        return;
+    }
+
+    match position {
+        Ok(index) => {
+            // Same index, different term: replace the conflicting suffix.
+            node.log.truncate(index);
+            node.applied.retain(|applied| *applied < entry.index);
+            node.applied_index = node.applied.iter().next_back().copied().unwrap_or_default();
+            node.log.push(entry);
+        }
+        Err(index) if index == node.log.len() => node.log.push(entry),
+        Err(index) => {
+            // A delayed entry can fill an uncommitted hole without replacing
+            // the higher entries that were already present.
+            node.log.insert(index, entry);
+        }
+    }
 }
 
 /// A writer that keeps only how many bytes were written to it.
