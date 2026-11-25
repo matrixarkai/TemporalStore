@@ -341,14 +341,18 @@ fn scenario(model: &Model) {
     }
     println!("covered: {name} first={first:?}");
 
-    // A second slab, so a disagreement about WHICH slab is visible and not only whether any is.
-    engine.block_store().roll_slab().unwrap();
+    // Roll the writer that received the first generation's blocks.
+    let roll = engine.block_store().roll_slab_for_shard(1).unwrap();
     must(&engine, "overwrite", (model.put)(0, 2));
     let rolled = agree(&engine, name, "after a roll and a second generation");
     // A control-state series writes its block only when due, so a second generation lands in no
     // new slab; the agreement above is still checked, only the two-slab expectation does not hold.
     if !name.starts_with("control_state") {
         assert!(rolled.len() >= 2, "{name}: expected two live slabs after the roll, got {rolled:?}");
+        assert!(rolled.contains(&roll.new_block_slab_id),
+            "{name}: no live block landed on the new owned slab: {rolled:?}");
+        assert!(first.iter().any(|id| rolled.contains(id)),
+            "{name}: no previously live slab survived the second generation: {rolled:?}");
     }
 
     if let Some(unput) = model.unput {
