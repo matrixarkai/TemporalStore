@@ -373,7 +373,7 @@ class AdapterTest(unittest.TestCase):
                 self.assertEqual(status["stores"], 0)
                 self.assertEqual(status["bytes_used"], 0)
                 client.iter_batch_responses.assert_called_once()
-                client.batch_execute.assert_called_once()
+                self.assertEqual(client.batch_execute.call_count, 2 if not stored else 1)
                 put = client.iter_batch_responses.call_args.args[0][0]
                 get = client.batch_execute.call_args.args[0][0]
                 self.assertEqual(put.string_set_conditional.key, get.string_get.key)
@@ -410,6 +410,37 @@ class AdapterTest(unittest.TestCase):
             [call.kwargs["timeout_seconds"] for call in client.batch_execute.call_args_list],
             [2, 1.75, 1.5],
         )
+
+    def test_uncertain_write_can_become_visible_after_the_first_readback(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 2, 0)
+        self.addCleanup(backend.close)
+        key = Key("pending-apply")
+        key.model_name, key.kv_rank = "fixture/model", 0
+        client = Mock()
+        client.iter_batch_responses.return_value = iter([
+            (0, pb.CommandResponse(status=pb.Status(code="raft_error", message="leader changed"))),
+        ])
+        client.batch_execute.side_effect = [
+            [pb.CommandResponse(status=pb.Status(ok=True), value_present=False)],
+            [pb.CommandResponse(status=pb.Status(ok=True), value=b"tensor", value_present=True)],
+        ]
+        with patch.object(backend, "_table", return_value=client), patch(
+            "lmcache_temporalstore.grpc_kv.monotonic", side_effect=[0, 0, 0, 0.25],
+        ), patch("lmcache_temporalstore.grpc_kv.sleep") as wait:
+            results = list(backend.iter_store_results([(key, memoryview(b"tensor"))]))
+
+        self.assertEqual(results, [(0, False)])
+        self.assertEqual(backend.stores_confirmed_by_read, 1)
+        client.iter_batch_responses.assert_called_once()
+        wait.assert_called_once_with(0.25)
+        self.assertEqual(
+            [call.kwargs["timeout_seconds"] for call in client.batch_execute.call_args_list],
+            [2, 1.75],
+        )
+        for call in client.batch_execute.call_args_list:
+            self.assertTrue(call.args[0][0].HasField("string_get"))
 
     def test_proxy_store_readback_retries_a_backend_transport_status(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
@@ -510,7 +541,7 @@ class AdapterTest(unittest.TestCase):
 
                 self.assertEqual(backend.stores_confirmed_by_read, int(stored == b"tensor"))
                 client.iter_batch_responses.assert_called_once()
-                client.batch_execute.assert_called_once()
+                self.assertEqual(client.batch_execute.call_count, 2 if not stored else 1)
                 pending_put = client.iter_batch_responses.call_args.args[0][1]
                 read = client.batch_execute.call_args.args[0][0]
                 self.assertEqual(read.string_get.key, pending_put.string_set_conditional.key)
