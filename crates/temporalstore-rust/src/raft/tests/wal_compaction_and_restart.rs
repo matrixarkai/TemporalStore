@@ -2135,3 +2135,119 @@ fn compaction_does_not_rebuild_the_image_for_a_log_that_is_already_small() {
         second.reason, second.applied_log_bytes, second.max_applied_log_bytes
     );
 }
+
+/// WHAT ONE ACKNOWLEDGED WRITE COSTS ON THE IN-TREE RAFT WAL, by payload size.
+///
+/// Prints bytes on disk per write and the bytes beyond the payload and key. Ignored: it prices,
+/// it does not gate.
+#[test]
+#[ignore]
+fn what_one_raft_write_costs_on_the_in_tree_wal() {
+    const WRITES: usize = 400;
+    for payload in [0usize, 9, 32, 256, 1024] {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster =
+            RaftCluster::new_single_shard_with_wal(dir.path(), 91, [1], RaftConfig::default())
+                .unwrap();
+        // One warm-up write so the segment header and the first full record are not charged.
+        cluster
+            .propose(Command::StringSet { key: "warm".to_string(), value: vec![1u8; payload] })
+            .unwrap();
+        let before = wal_dir_bytes(dir.path());
+        let mut command_bytes = 0u64;
+        for i in 0..WRITES {
+            let key = format!("k{i:06}");
+            command_bytes += (key.len() + payload) as u64;
+            cluster
+                .propose(Command::StringSet { key, value: vec![7u8; payload] })
+                .unwrap();
+        }
+        let disk = wal_dir_bytes(dir.path()) - before;
+        println!(
+            "RAFTWAL payload={payload:5} disk/write={:8.2} key+value/write={:8.2} overhead/write={:8.2}",
+            disk as f64 / WRITES as f64,
+            command_bytes as f64 / WRITES as f64,
+            (disk as f64 - command_bytes as f64) / WRITES as f64
+        );
+    }
+}
+
+/// Where the bytes of one in-tree raft WAL record go. Ignored: it prices.
+#[test]
+#[ignore]
+fn where_the_bytes_of_one_in_tree_raft_wal_record_go() {
+    use prost::Message as _;
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 91, [1], RaftConfig::default()).unwrap();
+    for i in 0..20 {
+        cluster
+            .propose(Command::StringSet { key: format!("k{i:06}"), value: vec![7u8; 32] })
+            .unwrap();
+    }
+    fn files(path: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(path).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() { files(&p, out) } else { out.push(p) }
+        }
+    }
+    let mut all = Vec::new();
+    files(dir.path(), &mut all);
+    for path in all {
+        let bytes = std::fs::read(&path).unwrap();
+        let mut at = 0usize;
+        let mut last = None;
+        while at + 5 <= bytes.len() && bytes[at] == 0xA7 {
+            let len = u32::from_le_bytes(bytes[at + 1..at + 5].try_into().unwrap()) as usize;
+            if at + 5 + len > bytes.len() { break; }
+            last = Some((at, len));
+            at += 5 + len;
+        }
+        let Some((start, len)) = last else { continue };
+        let payload = &bytes[start + 5..start + 5 + len];
+        let envelope = crate::sdk::v1::WalEnvelope::decode(payload).unwrap();
+        println!("RECBYTES file={} frame=5 payload={len}", path.display());
+        println!("RECBYTES  checksum=0x{:08x} (fixed32, 5 B with tag)", envelope.checksum);
+        let record = envelope.record.clone().unwrap();
+        println!("RECBYTES  record encoded_len={}", record.encoded_len());
+        println!("RECBYTES  hard_state={} membership={} fence={} delta={} entries={}",
+            record.hard_state.as_ref().map(|m| m.encoded_len()).unwrap_or(0),
+            record.membership.as_ref().map(|m| m.encoded_len()).unwrap_or(0),
+            record.storage_apply_fence.as_ref().map(|m| m.encoded_len()).unwrap_or(0),
+            envelope.delta.as_ref().map(|m| m.encoded_len()).unwrap_or(0),
+            record.entries.iter().map(|e| e.encoded_len()).sum::<usize>());
+        println!("RECBYTES  other: {:?}", record);
+    }
+}
+
+/// CPU of one record checksum: the SHA-256 of a JSON rendering this WAL used to take, against the
+/// CRC-32C of the protobuf bytes it takes now, on the record a one-entry append writes.
+/// Ignored: it prices.
+#[test]
+#[ignore]
+fn what_one_raft_wal_checksum_costs_in_cpu() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 91, [1], RaftConfig::default()).unwrap();
+    for i in 0..5 {
+        cluster
+            .propose(Command::StringSet { key: format!("k{i:06}"), value: vec![7u8; 32] })
+            .unwrap();
+    }
+    let record = LocalRaftWal::new(dir.path()).load_node(91, 1).unwrap().unwrap();
+    const N: u32 = 20_000;
+    let mut sink = 0u64;
+    let t = std::time::Instant::now();
+    for _ in 0..N {
+        let json = serde_json::to_vec(&record).unwrap();
+        sink ^= Sha256::digest(&json)[0] as u64;
+    }
+    let old_ns = t.elapsed().as_nanos() as f64 / N as f64;
+    let t = std::time::Instant::now();
+    for _ in 0..N {
+        sink ^= raft_wal_checksum(&record).unwrap() as u64;
+    }
+    let new_ns = t.elapsed().as_nanos() as f64 / N as f64;
+    println!("CHECKSUMCPU old(json+sha256)={old_ns:.0} ns  new(proto+crc32c)={new_ns:.0} ns  ratio={:.1}x sink={sink}", old_ns / new_ns);
+}
