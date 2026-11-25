@@ -557,6 +557,90 @@ fn a_pass_writes_a_durable_relocation_record_for_every_block_it_moved() {
     assert_eq!(recorded, expected, "the pass must record exactly every block it moved");
 }
 
+// One string per owner gives exactly one relocation pair per live input page.
+fn terminal_receipt_case(keys: usize, fail_tail: bool) -> (String, Vec<usize>) {
+    use super::compaction_slices::{FAIL_FINAL_RELOCATION_APPEND, PASS_SUMMARY};
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let expected: BTreeMap<_, _> = (0..keys)
+        .map(|i| (format!("receipt-{i}"), value_of(i, 0)))
+        .collect();
+    let commands = expected.iter()
+        .map(|(key, value)| Command::StringSet { key: key.clone(), value: value.clone() })
+        .collect();
+    assert!(engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands }).status.ok);
+    let drain = engine.block_store.slab_ids().unwrap().into_iter().collect();
+    assert!(engine.block_store.roll_slab().is_ok());
+
+    PASS_SUMMARY.with(|receipt| receipt.take());
+    FAIL_FINAL_RELOCATION_APPEND.with(|fail| fail.set(fail_tail));
+    engine.compact_shard_blocks_draining_sliced(1, drain, 32).unwrap();
+    assert!(!FAIL_FINAL_RELOCATION_APPEND.with(|fail| fail.replace(false)),
+        "the final relocation append was never reached");
+    let receipt = PASS_SUMMARY.with(|receipt| receipt.take()).expect("terminal receipt");
+    let mut batches = Vec::new();
+    engine.index_log_store.for_each_delta_record_above_anchor(1, 0, 0, |record| {
+        if !record.relocated_from.is_empty() {
+            assert_eq!(record.relocated_from.len(), record.items.len());
+            batches.push(record.items.len());
+        }
+    }).unwrap();
+    drop(engine);
+    let reopened = open(dir.path());
+    assert_every_key_reads(&reopened, &expected, "after terminal receipt");
+    assert_index_agrees(&reopened, "after terminal receipt");
+    (receipt, batches)
+}
+
+fn assert_receipt_field(receipt: &str, field: &str, value: impl std::fmt::Display) {
+    let expected = format!("{field}={value}");
+    assert!(receipt.split_whitespace().any(|token| token == expected.as_str()),
+        "missing {expected} in {receipt}");
+}
+
+#[test]
+fn terminal_receipt_counts_a_small_final_batch() {
+    let (receipt, batches) = terminal_receipt_case(12, false);
+    assert_eq!(batches, vec![12]);
+    assert_receipt_field(&receipt, "moved_refs", 12);
+    assert_receipt_field(&receipt, "records", 12);
+    assert_receipt_field(&receipt, "records_complete", true);
+    assert_receipt_field(&receipt, "records_failed", 0);
+    assert_receipt_field(&receipt, "records_pending", 0);
+    assert_receipt_field(&receipt, "image_published", true);
+    assert_receipt_field(&receipt, "status", "ok");
+}
+
+#[test]
+fn terminal_receipt_counts_intermediate_batches_and_the_tail() {
+    let (receipt, batches) = terminal_receipt_case(1500, false);
+    assert!(batches.len() >= 2);
+    assert!(batches[0] >= 1024);
+    assert!((1..1024).contains(batches.last().unwrap()));
+    assert_eq!(batches.iter().sum::<usize>(), 1500);
+    assert_receipt_field(&receipt, "moved_refs", 1500);
+    assert_receipt_field(&receipt, "records", 1500);
+    assert_receipt_field(&receipt, "records_complete", true);
+    assert_receipt_field(&receipt, "records_failed", 0);
+    assert_receipt_field(&receipt, "records_pending", 0);
+    assert_receipt_field(&receipt, "image_published", true);
+    assert_receipt_field(&receipt, "status", "ok");
+}
+
+#[test]
+fn terminal_receipt_distinguishes_failed_tail_from_published_image() {
+    let (receipt, batches) = terminal_receipt_case(12, true);
+    assert!(batches.is_empty());
+    assert_receipt_field(&receipt, "moved_refs", 12);
+    assert_receipt_field(&receipt, "records", 0);
+    assert_receipt_field(&receipt, "records_complete", false);
+    assert_receipt_field(&receipt, "records_failed", 12);
+    assert_receipt_field(&receipt, "records_pending", 0);
+    assert_receipt_field(&receipt, "image_published", true);
+    assert_receipt_field(&receipt, "status", "ok");
+}
+
 /// A KEYED STEP NAMES THE BLOCKS OF ITS OWN BUCKETS, NOT THE SHARD'S. Naming a block's object needs an
 /// inversion of the object tables; built with the whole-shard walk once per bucket a 200-key step
 /// visited every object of every kind about 200 times, which measured 4.1 s a step at 100k keys and
