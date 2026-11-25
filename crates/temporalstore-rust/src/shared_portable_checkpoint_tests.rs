@@ -16,6 +16,77 @@ fn engine(root: &Path, role: &str) -> TemporalEngine {
     )
 }
 
+#[test]
+fn shared_wal_cannot_install_an_unbound_address_that_reads_wrong_local_bytes() {
+    use crate::wal::{StagedBlock, WalOutcomeItem};
+
+    let root = tempfile::tempdir().unwrap();
+    let source = engine(root.path(), "source");
+    let recipient = engine(root.path(), "recipient");
+    recipient.load_shard(1);
+    let append = |engine: &TemporalEngine, bytes: &[u8]| {
+        engine.block_store()
+            .append_block_of_object_for_shard(1, bytes, None, None, 0)
+            .unwrap()
+    };
+    let foreign = append(&source, b"right");
+    let local = append(&recipient, b"wrong");
+    let carried_first = append(&source, b"first");
+    assert_eq!(foreign.address_word(), local.address_word());
+    assert_eq!(foreign.length(), local.length());
+    assert_eq!(recipient.block_store().read(&foreign).unwrap(), b"wrong");
+
+    let outcome = |id, key: &str, address| WalOutcomeItem {
+        kind: "string".into(),
+        object_key: key.to_owned(),
+        element_name: None,
+        object_id: id,
+        routing_bucket: 1,
+        address: Some(address),
+        value: None,
+        ttl: None,
+        deleted: false,
+        meta: false,
+    };
+    let mut entry = SharedStoreWalEntry {
+        shard_id: 1,
+        wal_index: 2,
+        command: None,
+        outcomes: vec![outcome(1, "first", carried_first), outcome(2, "second", foreign)],
+        staged_blocks: vec![StagedBlock {
+            object_id: 1,
+            element_name: None,
+            bytes: b"first".to_vec(),
+        }],
+    };
+    let read = |key: &str| recipient.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet { key: key.to_owned() },
+    }).response;
+    let replay = |entry| SharedStoreReplicator::<FileObjectStore>::apply_replayed_wal_entry(
+        1, 2, entry, &recipient, false,
+    );
+    match replay(entry.clone()).unwrap_err() {
+        SharedStoreReplicationError::ApplyFailed { wal_index: 2, status } => {
+            assert_eq!(status.code, "shared_wal_unbound_address");
+        }
+        error => panic!("wrong replay error: {error}"),
+    }
+    assert_eq!(read("first"), CommandResponse::Bytes { value: None });
+    assert_eq!(read("second"), CommandResponse::Bytes { value: None });
+    assert_eq!(recipient.block_store().read(&local).unwrap(), b"wrong");
+
+    entry.staged_blocks.push(StagedBlock {
+        object_id: 2,
+        element_name: None,
+        bytes: b"right".to_vec(),
+    });
+    replay(entry).unwrap();
+    assert_eq!(read("first"), CommandResponse::Bytes { value: Some(b"first".to_vec()) });
+    assert_eq!(read("second"), CommandResponse::Bytes { value: Some(b"right".to_vec()) });
+    assert_eq!(recipient.block_store().read(&local).unwrap(), b"wrong");
+}
+
 #[tokio::test]
 async fn owned_checkpoints_from_independent_stores_can_share_a_destination() {
     independent_checkpoint_restore(false).await;
