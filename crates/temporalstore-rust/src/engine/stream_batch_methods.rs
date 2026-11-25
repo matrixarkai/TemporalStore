@@ -908,7 +908,6 @@ impl TemporalEngine {
             return Ok(());
         }
 
-        let admission = self.serving_admission.lock();
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
             return Err(Status::error(
@@ -952,7 +951,6 @@ impl TemporalEngine {
             #[cfg(test)]
             HASH_BATCH_EXPANSIONS.with(|count| count.set(count.get().saturating_add(1)));
             drop(shards);
-            drop(admission);
             let response = self.batch_execute(BatchExecuteRequest {
                 shard_id,
                 commands: keys
@@ -1064,7 +1062,6 @@ impl TemporalEngine {
             snapshot.push(index, routing_bucket, Ok(plan));
         }
         drop(shards);
-        drop(admission);
         #[cfg(test)]
         if let Some(after) = AFTER_PROJECTED_READ_PLAN.with(|slot| slot.borrow_mut().take()) {
             after();
@@ -1342,7 +1339,6 @@ impl TemporalEngine {
             return results.finish(Status::ok());
         }
         let _slab_target_scope = crate::storage_config::SlabTargetScope::new();
-        let admission = self.serving_admission.lock();
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
             // returns a BATCH-LEVEL topology error with ZERO CmdResponse entries when the
@@ -2254,7 +2250,6 @@ impl TemporalEngine {
             }
         }
         drop(shards);
-        drop(admission);
         if let Some(sequence) = pending_barrier_seq.filter(|_| !options.defer_barrier) {
             if let Err(status) = self.commit_shared_row_barrier(shard_id, sequence) {
                 return results.finish(status);
