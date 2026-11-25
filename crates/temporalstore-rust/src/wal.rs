@@ -1218,7 +1218,6 @@ thread_local! {
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
     inner: Arc<Mutex<WriteAheadLogInner>>,
-    read_retention: Arc<Mutex<ReadRetentions>>,
     // Group-commit coordinators, one per shard, so writers for one shard share a durability
     // barrier without serializing an unrelated shard's fsync behind it. Always consulted --
     // `group_commit_configured` returns true, and `TS_GROUP_COMMIT`, which this comment used to
@@ -1244,16 +1243,22 @@ pub(crate) struct WriteAheadLogIdentity {
 #[derive(Debug)]
 pub(crate) struct WriteAheadLogReadLease {
     identity: WriteAheadLogIdentity,
-    retention: std::sync::Weak<Mutex<ReadRetentions>>,
+    coordinator: std::sync::Weak<GroupCommitCoordinator>,
     slot: usize,
-    shard: ShardId,
     sequence: u64,
 }
 
 #[derive(Debug, Default)]
 struct ReadRetentions {
-    slots: Vec<Option<(ShardId, u64)>>,
+    slots: Vec<Option<u64>>,
+    collecting: bool,
     registrations: registration_records::RegistrationRecords,
+}
+
+impl ReadRetentions {
+    fn floor(&self) -> Option<u64> {
+        self.slots.iter().copied().flatten().min()
+    }
 }
 
 impl WriteAheadLogReadLease {
@@ -1265,10 +1270,10 @@ impl WriteAheadLogReadLease {
         if sequence >= self.sequence {
             return;
         }
-        if let Some(owner) = self.retention.upgrade() {
-            let mut retention = owner.lock().expect("read retention lock poisoned");
-            debug_assert_eq!(retention.slots[self.slot], Some((self.shard, self.sequence)));
-            retention.slots[self.slot] = Some((self.shard, sequence));
+        if let Some(owner) = self.coordinator.upgrade() {
+            let mut retention = owner.read_retention.lock().expect("read retention lock poisoned");
+            debug_assert_eq!(retention.slots[self.slot], Some(self.sequence));
+            retention.slots[self.slot] = Some(sequence);
             self.sequence = sequence;
         }
     }
@@ -1276,20 +1281,26 @@ impl WriteAheadLogReadLease {
 
 impl Drop for WriteAheadLogReadLease {
     fn drop(&mut self) {
-        if let Some(owner) = self.retention.upgrade() {
-            if let Ok(mut retention) = owner.lock() {
-                debug_assert_eq!(retention.slots[self.slot], Some((self.shard, self.sequence)));
+        if let Some(owner) = self.coordinator.upgrade() {
+            if let Ok(mut retention) = owner.read_retention.lock() {
+                debug_assert_eq!(retention.slots[self.slot], Some(self.sequence));
                 retention.slots[self.slot] = None;
             };
         }
     }
 }
 
-fn retained_block_floor(inner: &WriteAheadLogInner, readers: &ReadRetentions, shard: ShardId) -> Option<u64> {
+fn retained_block_floor(
+    inner: &WriteAheadLogInner,
+    readers: Option<&GroupCommitCoordinator>,
+    shard: ShardId,
+) -> Option<u64> {
+    let lease_floor = readers.and_then(|coordinator| {
+        coordinator.read_retention.lock().expect("read retention lock poisoned")
+            .floor()
+    });
     inner.block_retention_floor_by_shard.get(&shard).copied().into_iter()
-        .chain(readers.slots.iter().filter_map(|slot| {
-            slot.filter(|(held, _)| *held == shard).map(|(_, sequence)| sequence)
-        })).min()
+        .chain(lease_floor).min()
 }
 
 #[cfg(test)]
@@ -1342,6 +1353,9 @@ struct GroupCommitState {
 #[derive(Debug, Default)]
 struct GroupCommitCoordinator {
     state: Mutex<GroupCommitState>,
+    // No barrier or append-lock wait under this mutex. The active rename
+    // holds it only while publishing the new file name.
+    read_retention: Mutex<ReadRetentions>,
     pending: AtomicUsize,
     // Commit waiters sleep here until `durable_seq` covers them (the commit waiters).
     wake: std::sync::Condvar,
@@ -1466,8 +1480,6 @@ struct WriteAheadLogInner {
     /// Bumped each time a roll replaces a shard's active piece. A reclaim pass that copied from the
     /// piece it saw when it planned refuses to swap if this moved.
     gc_epoch_by_shard: HashMap<ShardId, u64>,
-    /// Shards with a reclaim pass in flight. A second pass is declined, not queued.
-    gc_running: HashSet<ShardId>,
     // Lowest sequence whose record may still hold the only copy of a block's bytes -- the dump
     // watermark. A block written into the WAL is addressed by the byte offset of its record and
     // has no copy in a slab until it is dumped, so reclaiming that record destroys the block.
@@ -1619,7 +1631,6 @@ impl LocalWriteAheadLogStore {
                 durable_sequence_by_shard: HashMap::new(),
                 verified_len_by_shard: HashMap::new(),
                 gc_epoch_by_shard: HashMap::new(),
-                gc_running: HashSet::new(),
                 block_retention_floor_by_shard: HashMap::new(),
                 base_by_shard: HashMap::new(),
                 prealloc_physical_by_shard: HashMap::new(),
@@ -1629,7 +1640,6 @@ impl LocalWriteAheadLogStore {
                 group_writes: 0,
                 group_records: 0,
             })),
-            read_retention: Arc::new(Mutex::new(ReadRetentions::default())),
             sync_coord: Arc::new(Mutex::new(HashMap::new())),
             flat_append: Arc::new(AtomicBool::new(true)),
             flusher_started: Arc::new(AtomicBool::new(false)),
@@ -2536,7 +2546,6 @@ impl LocalWriteAheadLogStore {
             return;
         }
         let inner = Arc::downgrade(&self.inner);
-        let retention = Arc::downgrade(&self.read_retention);
         let coord = Arc::downgrade(&self.sync_coord);
         let flat = Arc::downgrade(&self.flat_append);
         let started = Arc::downgrade(&self.flusher_started);
@@ -2544,12 +2553,12 @@ impl LocalWriteAheadLogStore {
             .name("wal-loop-flush".to_string())
             .spawn(move || loop {
                 std::thread::sleep(wal_group_loop_interval());
-                let (Some(inner), Some(read_retention), Some(sync_coord), Some(flat_append), Some(flusher_started)) =
-                    (inner.upgrade(), retention.upgrade(), coord.upgrade(), flat.upgrade(), started.upgrade())
+                let (Some(inner), Some(sync_coord), Some(flat_append), Some(flusher_started)) =
+                    (inner.upgrade(), coord.upgrade(), flat.upgrade(), started.upgrade())
                 else {
                     return;
                 };
-                let store = LocalWriteAheadLogStore { inner, read_retention, sync_coord, flat_append, flusher_started };
+                let store = LocalWriteAheadLogStore { inner, sync_coord, flat_append, flusher_started };
                 let shards: Vec<ShardId> = {
                     let guard = store.lock_inner_raw();
                     guard
@@ -2568,6 +2577,14 @@ impl LocalWriteAheadLogStore {
         if spawned.is_err() {
             self.flusher_started.store(false, AtomicOrdering::Release);
         }
+    }
+
+    fn existing_group_commit_coordinator(
+        &self,
+        shard_id: ShardId,
+    ) -> Option<Arc<GroupCommitCoordinator>> {
+        self.sync_coord.lock().expect("wal sync coordinator map poisoned")
+            .get(&shard_id).cloned()
     }
 
     fn group_commit_coordinator(&self, shard_id: ShardId) -> Arc<GroupCommitCoordinator> {
@@ -3315,13 +3332,23 @@ impl LocalWriteAheadLogStore {
     /// The shard's block-retention floor, if one is registered.
     pub fn block_retention_floor(&self, shard_id: ShardId) -> Option<u64> {
         let inner = self.lock_inner_raw();
-        let readers = self.read_retention.lock().expect("read retention lock poisoned");
-        retained_block_floor(&inner, &readers, shard_id)
+        let coordinator = self.existing_group_commit_coordinator(shard_id);
+        retained_block_floor(&inner, coordinator.as_deref(), shard_id)
     }
 
     /// Called before releasing the index scope whose live floor already protects this sequence.
     pub(crate) fn retain_read_sequence(&self, shard_id: ShardId, sequence: u64) -> WriteAheadLogReadLease {
-        let mut readers = self.read_retention.lock().expect("read retention lock poisoned");
+        let coordinator = self.group_commit_coordinator(shard_id);
+        let mut readers = coordinator.read_retention.lock().expect("read retention lock poisoned");
+        self.register_read_lease(&coordinator, &mut readers, sequence)
+    }
+
+    fn register_read_lease(
+        &self,
+        coordinator: &Arc<GroupCommitCoordinator>,
+        readers: &mut ReadRetentions,
+        sequence: u64,
+    ) -> WriteAheadLogReadLease {
         let slot = match readers.slots.iter().position(Option::is_none) {
             Some(slot) => slot,
             None => {
@@ -3330,8 +3357,13 @@ impl LocalWriteAheadLogStore {
                 slot
             }
         };
-        readers.slots[slot] = Some((shard_id, sequence));
-        WriteAheadLogReadLease { identity: self.weak_identity(), retention: Arc::downgrade(&self.read_retention), slot, shard: shard_id, sequence }
+        readers.slots[slot] = Some(sequence);
+        WriteAheadLogReadLease {
+            identity: self.weak_identity(),
+            coordinator: Arc::downgrade(coordinator),
+            slot,
+            sequence,
+        }
     }
 
     /// Drop the shard's floor, letting GC reclaim freely again. Call this only once no block
@@ -3553,24 +3585,24 @@ impl LocalWriteAheadLogStore {
         //
         // One pass per shard at a time: a second caller is declined, not queued, because the pass
         // it would have run is the one already in flight.
+        let coordinator = self.group_commit_coordinator(shard_id);
+        let Some(_running) = GcRunning::begin(Arc::clone(&coordinator)) else {
+            return Ok(WriteAheadLogGcReport {
+                shard_id,
+                retain_from_sequence,
+                effective_retain_from_sequence: retain_from_sequence,
+                skipped_raced: true,
+                ..WriteAheadLogGcReport::default()
+            });
+        };
         let mut tally = WalReadTally::start();
         let (plan, source) = {
             let mut inner = self.lock_inner();
-            if !inner.gc_running.insert(shard_id) {
-                return Ok(WriteAheadLogGcReport {
-                    shard_id,
-                    retain_from_sequence,
-                    effective_retain_from_sequence: retain_from_sequence,
-                    skipped_raced: true,
-                    ..WriteAheadLogGcReport::default()
-                });
-            }
-            let readers = self.read_retention.lock().expect("read retention lock poisoned");
-            match plan_gc_locked(&mut inner, shard_id, retain_from_sequence, self.flat_append(), &readers, &mut tally) {
-                Ok(Some(planned)) => planned,
-                Ok(None) => {
-                    inner.gc_running.remove(&shard_id);
-                    // (an absent log has reclaimed nothing, so the default base of 0 is correct)
+            let floor = retained_block_floor(&inner, Some(&coordinator), shard_id);
+            match plan_gc_locked(&mut inner, shard_id, retain_from_sequence, self.flat_append(), floor, &mut tally)? {
+                Some(planned) => planned,
+                None => {
+                    // An absent log has reclaimed nothing.
                     return Ok(WriteAheadLogGcReport {
                         shard_id,
                         retain_from_sequence,
@@ -3578,13 +3610,8 @@ impl LocalWriteAheadLogStore {
                         ..WriteAheadLogGcReport::default()
                     });
                 }
-                Err(err) => {
-                    inner.gc_running.remove(&shard_id);
-                    return Err(err);
-                }
             }
         };
-        let _running = GcRunning { store: self, shard_id };
         let full_scans_under_mutex = plan.full_scans;
         gc_phase("planned");
 
@@ -3680,10 +3707,8 @@ impl LocalWriteAheadLogStore {
         let mut inner = self.lock_inner();
         inner.point_readers.clear_shard(shard_id);
         let epoch_now = inner.gc_epoch_by_shard.get(&shard_id).copied().unwrap_or(0);
-        let floor_now = {
-            let readers = self.read_retention.lock().expect("read retention lock poisoned");
-            retained_block_floor(&inner, &readers, shard_id).unwrap_or(u64::MAX)
-        };
+        let floor_now = retained_block_floor(&inner, Some(&coordinator), shard_id)
+            .unwrap_or(u64::MAX);
         let record_end_now = active_record_end(&mut inner, shard_id);
         // Refused, not repaired: a roll renamed the piece this pass copied from, or a reader
         // appeared that needs a record this pass was about to drop. The temp file describes a
@@ -3705,7 +3730,28 @@ impl LocalWriteAheadLogStore {
         temp.flush()?;
         temp.sync_all()?;
         drop(temp);
-        fs::rename(&temp_path, plan.path.as_path())?;
+        #[cfg(test)]
+        let injected = BEFORE_WAL_GC_ACTIVE_RENAME.with(|hook| hook.borrow_mut().take())
+            .map_or(Ok(()), |hook| hook());
+        // The initial floor check can avoid an unnecessary tail copy and sync.
+        // The final check also covers leases that changed while that I/O ran.
+        // Hold the selected retention lock through the namespace transition.
+        let readers = coordinator.read_retention.lock().expect("read retention lock poisoned");
+        if readers.floor().is_some_and(|floor| plan.effective_retain > floor) {
+            drop(readers);
+            let _ = fs::remove_file(&temp_path);
+            return Ok(declined(false, true));
+        }
+        let rename = || fs::rename(&temp_path, plan.path.as_path());
+        #[cfg(test)]
+        let replaced = injected.and_then(|()| rename());
+        #[cfg(not(test))]
+        let replaced = rename();
+        drop(readers);
+        if let Err(error) = replaced {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error.into());
+        }
         sync_parent_dir(&plan.path)?;
         // Reclaim is the only thing that moves the base, so refresh the cache here rather than
         // letting an append compute a log id against a stale one.
@@ -4196,7 +4242,7 @@ fn plan_gc_locked<'t>(
     shard_id: ShardId,
     retain_from_sequence: u64,
     flat_append: bool,
-    readers: &ReadRetentions,
+    retained_floor: Option<u64>,
     tally: &'t mut WalReadTally,
 ) -> Result<Option<(WalGcPlan, CountedWalFile<'t>)>, WriteAheadLogError> {
     fs::create_dir_all(&inner.root)?;
@@ -4224,7 +4270,7 @@ fn plan_gc_locked<'t>(
     // only copy of a block's bytes -- a block in the WAL has no copy in a slab until it is
     // dumped -- so removing it loses data that the served index still points at, and the
     // read fails at some later, unrelated moment.
-    let floor = retained_block_floor(inner, readers, shard_id).unwrap_or(u64::MAX);
+    let floor = retained_floor.unwrap_or(u64::MAX);
     let clamped_by_block_retention = effective_retain > floor;
     let effective_retain = effective_retain.min(floor);
     // The cache of open readers names pieces this pass is about to unlink.
@@ -4251,15 +4297,25 @@ fn plan_gc_locked<'t>(
 
 /// Clears a shard's "a reclaim pass is running" mark on every way out, including an error and a
 /// panic, so one failed pass cannot decline every later one.
-struct GcRunning<'a> {
-    store: &'a LocalWriteAheadLogStore,
-    shard_id: ShardId,
+struct GcRunning(Arc<GroupCommitCoordinator>);
+
+impl GcRunning {
+    fn begin(coordinator: Arc<GroupCommitCoordinator>) -> Option<Self> {
+        {
+            let mut readers = coordinator.read_retention.lock().expect("read retention lock poisoned");
+            if readers.collecting {
+                return None;
+            }
+            readers.collecting = true;
+        }
+        Some(Self(coordinator))
+    }
 }
 
-impl Drop for GcRunning<'_> {
+impl Drop for GcRunning {
     fn drop(&mut self) {
-        if let Ok(mut inner) = self.store.inner.lock() {
-            inner.gc_running.remove(&self.shard_id);
+        if let Ok(mut readers) = self.0.read_retention.lock() {
+            readers.collecting = false;
         }
     }
 }
@@ -4363,6 +4419,11 @@ fn gc_phase(_phase: &'static str) {
 
 #[cfg(test)]
 thread_local! {
+    // Called with the append mutex held. A test may lower a read lease
+    // here, but must not enter an operation that acquires the append mutex.
+    static BEFORE_WAL_GC_ACTIVE_RENAME:
+        std::cell::RefCell<Option<Box<dyn FnOnce() -> std::io::Result<()>>>> =
+        const { std::cell::RefCell::new(None) };
     pub(crate) static GC_PHASE_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&'static str)>>> =
         const { std::cell::RefCell::new(None) };
     /// Plants the old behaviour in the plan step: resolve the log by walking it all, under the mutex.
