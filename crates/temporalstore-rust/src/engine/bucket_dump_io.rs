@@ -1281,11 +1281,21 @@ pub(super) fn latest_bucket_dump_manifest_shared_at(
 ///
 /// `wal_reclaim_never_frees_what_the_default_load_path_replays` (engine/tests/expiry_scale.rs)
 /// drives the divergent state above and fails if this goes back to reading the index-log order.
+#[cfg(test)]
 #[track_caller]
 pub(super) fn durable_recovery_bucket_dump_manifest_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
 ) -> Option<BucketDumpManifest> {
+    durable_recovery_bucket_dump_manifest_shared_at(index_dir, shard_id)
+        .map(own_memoised_manifest)
+}
+
+#[track_caller]
+pub(super) fn durable_recovery_bucket_dump_manifest_shared_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+) -> Option<std::sync::Arc<BucketDumpManifest>> {
     list_bucket_dump_manifests_shared_at(index_dir, shard_id)
         .ok()?
         .into_iter()
@@ -1299,7 +1309,6 @@ pub(super) fn durable_recovery_bucket_dump_manifest_at(
                 manifest.created_unix_ms,
             )
         })
-        .map(own_memoised_manifest)
 }
 
 /// The manifest's checksum, over its own protobuf encoding with the checksum field emptied.
