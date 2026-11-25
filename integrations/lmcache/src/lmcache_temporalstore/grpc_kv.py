@@ -275,6 +275,7 @@ class TableValueBackend(ValueBackend):
             # Proxy versions wrap unavailable data nodes in these status codes.
             retryable = retryable | {"status_error", "server_error"}
 
+        recheck_missing = True
         while (remaining := deadline - monotonic()) > 0:
             try:
                 replies = client.batch_execute([command], timeout_seconds=remaining)
@@ -292,8 +293,14 @@ class TableValueBackend(ValueBackend):
                 reply = replies[0]
                 if reply.status.ok:
                     value = reply.value
-                    return bool(value) and value == payload
-                if reply.status.code not in retryable:
+                    if value or reply.value_present:
+                        return bool(value) and value == payload
+                    if not recheck_missing:
+                        return False
+                    # A new leader may not have applied the uncertain write yet.
+                    # Recheck once within the existing deadline without writing again.
+                    recheck_missing = False
+                elif reply.status.code not in retryable:
                     return False
 
             remaining = deadline - monotonic()
