@@ -411,6 +411,47 @@ class AdapterTest(unittest.TestCase):
             [2, 1.75, 1.5],
         )
 
+    def test_unavailable_shard_does_not_use_other_writes_readback_time(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from lmcache.v1.distributed.key_codec import encode_storage_key
+        from temporalstore_sdk import MetadataError, RaftPrimaryUnavailable
+
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 2, 0)
+        self.addCleanup(backend.close)
+        keys = [Key("unavailable-shard"), Key("available-shard")]
+        for key in keys:
+            key.model_name, key.kv_rank = "fixture/model", 0
+        client = Mock()
+        client.iter_batch_responses.return_value = iter([
+            (0, pb.CommandResponse(status=pb.Status(code="raft_error", message="old leader"))),
+            (1, pb.CommandResponse(status=pb.Status(code="write_outcome_unknown"))),
+        ])
+        now = 0.0
+
+        def advance(seconds):
+            nonlocal now
+            now += seconds
+
+        def read(commands, *, timeout_seconds):
+            if commands[0].string_get.key == encode_storage_key(keys[0]):
+                raise RaftPrimaryUnavailable(73)
+            self.assertEqual(commands[0].string_get.key, encode_storage_key(keys[1]))
+            self.assertEqual(timeout_seconds, 1)
+            return [pb.CommandResponse(status=pb.Status(ok=True), value=b"tensor")]
+
+        client.batch_execute.side_effect = read
+        with patch.object(backend, "_table", return_value=client), patch(
+            "lmcache_temporalstore.grpc_kv.monotonic", side_effect=lambda: now,
+        ), patch("lmcache_temporalstore.grpc_kv.sleep", side_effect=advance):
+            results = backend.iter_store_results([(key, memoryview(b"tensor")) for key in keys])
+            self.assertEqual(next(results), (1, False))
+            with self.assertRaisesRegex(MetadataError, "old leader"):
+                next(results)
+
+        self.assertEqual(now, 1)
+        self.assertEqual(backend.stores_confirmed_by_read, 1)
+        client.iter_batch_responses.assert_called_once()
+
     def test_uncertain_write_can_become_visible_after_the_first_readback(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
 

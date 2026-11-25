@@ -341,15 +341,24 @@ class TableValueBackend(ValueBackend):
         except MetadataError as error:
             first_error = error
 
-        deadline = monotonic() + min(self._timeout, self._lookup_timeout, 5.0) if failures else 0.0
+        waiting = sum(uncertain for _, _, uncertain, _ in failures)
+        deadline = monotonic() + min(self._timeout, self._lookup_timeout, 5.0) if waiting else 0.0
         for index, stored_key, uncertain, error in failures:
-            key, payload = chunks[index]
-            if uncertain and self._confirm_stored_value(key, stored_key, payload, deadline):
-                with self._lock:
-                    self._stores_confirmed_by_read += 1
-                # The value is usable. The read cannot assign ownership of the insert.
-                yield index, False
-            elif first_error is None or error is transport_error:
+            if uncertain:
+                key, payload = chunks[index]
+                read_deadline = deadline
+                if waiting > 1:
+                    # Leave time to confirm writes whose shards already recovered.
+                    now = min(monotonic(), deadline)
+                    read_deadline = now + (deadline - now) / waiting
+                waiting -= 1
+                if self._confirm_stored_value(key, stored_key, payload, read_deadline):
+                    with self._lock:
+                        self._stores_confirmed_by_read += 1
+                    # The value is usable. The read cannot assign ownership of the insert.
+                    yield index, False
+                    continue
+            if first_error is None or error is transport_error:
                 first_error = error
         if first_error is not None:
             raise first_error
