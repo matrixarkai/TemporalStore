@@ -367,12 +367,18 @@ pub(super) fn recover_owned_writers(
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if let Some(id) = name.strip_prefix("slab_reservation_") {
-            if id.ends_with(".writing") {
+        if let Some(stem) = name.strip_prefix("slab_reservation_") {
+            let pending = stem.strip_suffix(".writing");
+            let id = pending.unwrap_or(stem).parse::<u64>().map_err(|_| invalid_cursor())?;
+            if id > MAX_ADDRESSABLE_BLOCK_SLAB_ID {
+                return Err(invalid_cursor().into());
+            }
+            highest = highest.max(id);
+            // A staging name fences allocation even if its contents were only
+            // partly written. Ownership still requires the published name.
+            if pending.is_some() {
                 continue;
             }
-            let id = id.parse::<u64>().map_err(|_| invalid_cursor())?;
-            highest = highest.max(id);
             let reservation = fs::read(entry.path())?;
             let owner = slab_owner(&reservation, id)?.ok_or_else(invalid_cursor)?;
             if let Some(slab) = slabs.get_mut(&id) {
@@ -1205,6 +1211,36 @@ mod tests {
         store.sync_durable().unwrap();
         store.sync_durable().unwrap();
         assert_eq!(store.stats().slab_manifest_writes, writes);
+    }
+
+    #[test]
+    fn interrupted_reservation_names_are_never_reused_after_reopen() {
+        let id = 1;
+        let header = encode_slab_owner(id, 7);
+        for interrupted in [&header[..], &header[..3]] {
+            let root = tempfile::tempdir().unwrap();
+            let temp = reservation_path(root.path(), id).with_extension("writing");
+            let mut file = File::create(&temp).unwrap();
+            file.write_all(interrupted).unwrap();
+            file.sync_all().unwrap();
+            sync_writer_directory(root.path()).unwrap();
+            drop(file);
+
+            let store = BlockStore::new(root.path());
+            let owned = store.append_block_of_object_for_shard(7, b"owned", None, None, 0).unwrap();
+            assert!(owned.block_slab_id() > id);
+            let legacy = store.append(b"legacy").unwrap();
+            assert_ne!(legacy.block_slab_id(), id);
+            store.sync_durable().unwrap();
+            assert_eq!(fs::read(&temp).unwrap(), interrupted);
+            assert!(!reservation_path(root.path(), id).exists());
+            assert!(!slab_path(root.path(), id).exists());
+            drop(store);
+
+            let reopened = BlockStore::new(root.path());
+            assert_eq!(reopened.read(&owned).unwrap(), b"owned");
+            assert_eq!(reopened.read(&legacy).unwrap(), b"legacy");
+        }
     }
 
     #[test]

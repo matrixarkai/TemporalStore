@@ -587,8 +587,7 @@ pub(super) fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<
     chunks
 }
 
-#[cfg(test)]
-pub(super) fn decode_feature_block(bytes: &[u8]) -> Option<Vec<FeaturePoint>> {
+pub(crate) fn decode_feature_block(bytes: &[u8]) -> Option<Vec<FeaturePoint>> {
     match decode_feature_block_strict(bytes) {
         PackedFeatureBlockDecode::Packed(points) => Some(points),
         PackedFeatureBlockDecode::Legacy | PackedFeatureBlockDecode::Corrupt(_) => None,

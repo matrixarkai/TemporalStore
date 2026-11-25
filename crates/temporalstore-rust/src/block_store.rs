@@ -2311,6 +2311,14 @@ impl BlockStore {
             }
             _ => block_slab_id,
         };
+        let block_slab_id = if owned_highest_id != 0
+            && block_slab_id <= owned_highest_id
+            && !slab_path(&root, block_slab_id).is_file()
+        {
+            owned_highest_id.saturating_add(1)
+        } else {
+            block_slab_id
+        };
         if let Some((high, _)) = restore_watermark {
             for slab in slabs.range_mut(..=high).map(|(_, descriptor)| descriptor) {
                 if slab.owner_shard_id.is_none()
@@ -2645,7 +2653,11 @@ impl BlockStore {
     /// read-through source (if any) on a local miss, caching it, and counting the
     /// on-demand fetch. A no-op when the slab already exists locally or no source is
     /// attached; in the latter case the normal read path surfaces the miss.
-    fn ensure_slab_present(&self, block_slab_id: u64) -> Result<(), BlockStoreError> {
+    pub(crate) fn has_local_slab(&self, id: u64) -> std::io::Result<bool> {
+        slab_path(&self.read_view.root, id).try_exists()
+    }
+
+    pub(crate) fn ensure_slab_present(&self, block_slab_id: u64) -> Result<(), BlockStoreError> {
         // With no source attached there is nothing to fetch from, so the answer is the same
         // whether or not the file exists: ask that first and a read skips the existence check.
         let (source, reserved_destination) = {

@@ -1008,6 +1008,14 @@ impl TemporalEngine {
     }
 
     pub fn load_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
+        self.load_shard_with_shared_tail(request, || Ok(()))
+    }
+
+    pub(crate) fn load_shard_with_shared_tail(
+        &self,
+        request: LoadShardRequest,
+        replay_tail: impl FnOnce() -> Result<(), Status>,
+    ) -> LoadShardResponse {
         if self
             .infos
             .read()
@@ -1228,6 +1236,7 @@ impl TemporalEngine {
             self.wal_store
                 .seed_undumped_from_sequence(request.shard_id, replay_watermark);
         }
+        let restore_result = restore_result.and_then(|_| replay_tail());
         if let Err(status) = restore_result {
             // ReplayWal returns DataLoss on a WAL hole and aborts Load. Unwind the
             // partially-loaded shard and refuse the load rather than serve truncated
@@ -1580,6 +1589,104 @@ impl TemporalEngine {
     /// Partial application is the failure this exists to prevent: a successor that installs four
     /// of five items serves a shard that looks whole and is not. Refusing sends the caller back to
     /// re-executing, which is worse but honest.
+    pub(crate) fn local_file_restore_frontier(
+        &self,
+        shard_id: ShardId,
+        source: &str,
+    ) -> Result<Option<u64>, Status> {
+        let Some(snapshot) = self.load_index_base_only(shard_id, false) else { return Ok(None) };
+        match snapshot.file_restore_frontier {
+            Some((stored, index)) if stored == source => Ok(Some(index)),
+            Some(_) => Err(Status::error(
+                "shared_wal_source_mismatch", "local restored image belongs to another shared WAL source",
+            )),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn commit_file_restore_image(
+        &self,
+        shard_id: ShardId,
+        source: &str,
+        remote_index: u64,
+    ) -> Result<(), Status> {
+        let (start, end) = self.shard_routing_range(shard_id);
+        {
+            let mut shards = self.shards.write().expect("engine lock poisoned");
+            let shard = shards.get_mut(&shard_id).ok_or_else(|| {
+                Status::error("shared_wal_commit_failed", "shared restore shard is absent")
+            })?;
+            if promote_model_maps_to_bucket_index_authority(shard_id, shard, start, end) {
+                reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
+            }
+            rebuild_bucket_first_index(shard_id, shard, start, end);
+            // The block barrier and the captured publication below make this
+            // complete restored generation local. No client can add a dirty
+            // prefix while this shard is recovering.
+            if shard.applied_wal_sequence.unwrap_or(0) == 0
+                && shard.captured_relocation_sequence == 0
+            {
+                let buckets = shard.bucket_index.bucket_map.iter()
+                    .map(|(&bucket, _)| bucket).collect::<Vec<_>>();
+                let generations = super::storage_reporting::dirty_generations_of(
+                    shard, &buckets, start, end,
+                );
+                for &id in &buckets {
+                    if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&id) {
+                        if let Some(&generation) = generations.get(&id) {
+                            bucket.dirty_generation = bucket.dirty_generation.max(generation);
+                        }
+                        bucket.set_dirty(false);
+                        bucket.first_dirty_wal_sequence = 0;
+                        bucket.first_dirty_index_log_sequence = 0;
+                        for block in bucket.block_index.blocks_mut_unaccounted() {
+                            block.set_dirty(false);
+                        }
+                    }
+                }
+                super::storage_bucket_internals::clear_retained_inline_page_dirty_state(shard, &buckets);
+                shard.dirty_objects.drain_buckets(&buckets);
+                shard.mark_items_dumped();
+            }
+            refresh_bucket_runtime_flags(shard);
+        }
+        let (mut snapshot, publication) = self.capture_shard_checkpoint(shard_id).ok_or_else(|| {
+            Status::error("shared_wal_commit_failed", "shared restore has no complete local image")
+        })?;
+        let has_synthetic = std::cell::Cell::new(false);
+        visit_live_block_entries(&snapshot, |entry| {
+            if crate::wal_record::is_wal_resident(entry.address.block_slab_id()) {
+                has_synthetic.set(true);
+            }
+        });
+        if has_synthetic.get() {
+            return Err(Status::error(
+                "shared_wal_commit_failed", "shared restore image depends on unavailable local WAL",
+            ));
+        }
+        self.block_store.sync_durable()
+            .map_err(|err| Status::error("shared_wal_commit_failed", err.to_string()))?;
+        snapshot.file_restore_frontier = Some((source.to_owned(), remote_index));
+        let bytes = serialize_index(&snapshot);
+        let superseded = || Status::error(
+            "shared_wal_commit_superseded", "shared restore checkpoint was superseded",
+        );
+        let published = self.checkpoint_publications.publish(&publication, || {
+            fs::create_dir_all(&self.index_dir)?;
+            atomic_write_bytes(&self.index_path(shard_id), &bytes)
+        }).map_err(|err| Status::error("shared_wal_commit_failed", err.to_string()))?;
+        if published.is_none() {
+            return Err(superseded());
+        }
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        if !self.checkpoint_publications.is_current_after_publish(&publication) {
+            return Err(superseded());
+        }
+        let shard = shards.get_mut(&shard_id).ok_or_else(superseded)?;
+        shard.file_restore_frontier = snapshot.file_restore_frontier;
+        Ok(())
+    }
+
     pub fn install_shared_outcomes(
         &self,
         shard_id: ShardId,
@@ -1601,6 +1708,16 @@ impl TemporalEngine {
         outcomes: &[crate::wal::WalOutcomeItem],
         carried: &[crate::wal::StagedBlock],
     ) -> bool {
+        self.install_shared_outcomes_with_carriers(shard_id, outcomes, carried, None)
+    }
+
+    pub(crate) fn install_shared_outcomes_with_carriers(
+        &self,
+        shard_id: ShardId,
+        outcomes: &[crate::wal::WalOutcomeItem],
+        carried: &[crate::wal::StagedBlock],
+        carriers: Option<&[Option<usize>]>,
+    ) -> bool {
         if !outcomes.is_empty() && outcomes.iter().all(|item| {
             item.kind == "record" && item.deleted && item.meta && item.address.is_none()
                 && item.element_name.is_none() && item.value.is_none() && item.ttl.is_none()
@@ -1619,15 +1736,29 @@ impl TemporalEngine {
             return true;
         }
         let mut localised = Vec::with_capacity(outcomes.len());
-        for item in outcomes {
+        let mut packed_addresses = BTreeMap::<(u64, u64, usize), ElementEntry>::new();
+        for (position, item) in outcomes.iter().enumerate() {
             let mut item = item.clone();
-            if let (Some(address), Some(block)) = (
-                item.resolved_address(),
-                carried.iter().find(|block| {
+            let carrier = carriers.and_then(|carriers| carriers[position]);
+            let block = match carriers {
+                Some(_) => carrier.and_then(|index| carried.get(index)),
+                None => carried.iter().find(|block| {
                     block.object_id == item.object_id
                         && block.element_name.as_deref() == item.element_name.as_deref()
                 }),
+            };
+            if let (Some(address), Some(block)) = (
+                item.resolved_address(),
+                block,
             ) {
+                let packed_key = carrier
+                    .filter(|_| item.element_name.is_some() && block.element_name.is_none())
+                    .map(|index| (address.address_word(), address.length(), index));
+                if let Some(local) = packed_key.and_then(|key| packed_addresses.get(&key)) {
+                    item.address = Some(local.clone());
+                    localised.push(item);
+                    continue;
+                }
                 if !matches!(self.block_store.read(&address), Ok(bytes) if bytes == block.bytes) {
                     // A foreign address can resolve to unrelated local bytes. The carried
                     // block is authoritative, even when that address is readable here.
@@ -1644,6 +1775,9 @@ impl TemporalEngine {
                         Some(item.routing_bucket),
                         false,
                     ) {
+                        if let Some(key) = packed_key {
+                            packed_addresses.insert(key, local.clone());
+                        }
                         item.address = Some(local);
                     } else {
                         return false;
@@ -1652,10 +1786,13 @@ impl TemporalEngine {
             }
             localised.push(item);
         }
-        if localised
-            .iter()
-            .any(|item| !self.apply_outcome_item(shard_id, item, carried))
-        {
+        if localised.iter().enumerate().any(|(position, item)| {
+            let item_blocks = carriers.and_then(|indices| indices[position])
+                .and_then(|index| carried.get(index))
+                .map(std::slice::from_ref)
+                .unwrap_or(carried);
+            !self.apply_outcome_item(shard_id, item, item_blocks)
+        }) {
             return false;
         }
         let outcomes = &localised[..];
@@ -3857,5 +3994,35 @@ where
                 address.length()
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod file_restore_publication_tests {
+    use super::*;
+
+    #[test]
+    fn file_restore_checkpoint_cannot_publish_after_its_capture_is_invalidated() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 << 20, root.path().join("cache"), root.path().join("blocks"),
+            root.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        assert!(engine.execute_durable(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: "prior".into(), value: b"seed".to_vec() },
+        }).status.ok);
+        engine.materialize_synthetic_blocks(1);
+        engine.flush_shard_index(1);
+        let prior = std::fs::read(engine.index_path(1)).unwrap();
+        let owner = engine.clone();
+        let failure = engine.block_store.with_after_next_sync_for_test(
+            move || owner.checkpoint_publications.forget(1),
+            || engine.commit_file_restore_image(1, "source", 1),
+        ).unwrap_err();
+        assert_eq!(failure.code, "shared_wal_commit_superseded");
+        assert_eq!(std::fs::read(engine.index_path(1)).unwrap(), prior);
+        assert!(engine.capture_shard_checkpoint(1).unwrap().0.file_restore_frontier.is_none());
     }
 }
