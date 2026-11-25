@@ -134,6 +134,8 @@ field Command 78 2 single
 field Command 79 2 single
 field Command 80 2 single
 field Command 81 2 single
+# Additive string length command.
+field Command 82 2 single
 message CommandResponse
 field CommandResponse 1 2 single
 field CommandResponse 2 2 single

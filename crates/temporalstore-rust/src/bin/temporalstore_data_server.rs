@@ -70,6 +70,9 @@ use tracing::{debug, error, info, warn};
 #[path = "server/context_explicit_route.rs"]
 mod context_explicit_route;
 
+#[path = "server/grpc.rs"]
+mod grpc;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ServerTopologyValidationRequest {
     #[serde(default)]
@@ -706,6 +709,10 @@ fn main() {
         _ => None,
     };
 
+    if let Some(grpc_addr) = temporalstore_rust::env_flag::env_value("TS_SERVER_GRPC_BIND_ADDR") {
+        grpc::start(&grpc_addr, runtime.clone(), raft_state.clone())
+            .expect("failed to start datanode gRPC listener");
+    }
     info!(%addr, "temporalstore server listening");
     // Streaming pre-handler: owns `/blob/<key>` and moves bytes straight between
     // the socket and the object store (no full-body buffering). Everything else
@@ -2592,6 +2599,14 @@ fn raft_config_from_env() -> RaftConfig {
         replication_deadline_ms: env_u64(
             "TS_RAFT_REPLICATION_DEADLINE_MS",
             defaults.replication_deadline_ms,
+        ),
+        max_memory_replicate_log_bytes: env_u64(
+            "TS_RAFT_MAX_MEMORY_REPLICATE_LOG_BYTES",
+            defaults.max_memory_replicate_log_bytes,
+        ),
+        max_apply_batch_bytes: env_u64(
+            "TS_RAFT_MAX_APPLY_BATCH_BYTES",
+            defaults.max_apply_batch_bytes,
         ),
         max_inflights_replicate: env_u64(
             "TS_RAFT_MAX_INFLIGHTS_REPLICATE",
