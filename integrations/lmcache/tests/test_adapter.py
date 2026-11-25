@@ -472,6 +472,50 @@ class AdapterTest(unittest.TestCase):
         read = client.batch_execute.call_args.args[0][0]
         self.assertEqual(read.string_get.key, write.string_set_conditional.key)
 
+    def test_interrupted_store_confirms_only_unanswered_chunks_by_reading(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, grpc, pb
+
+        class DeadlineExceeded(grpc.RpcError):
+            def code(self):
+                return grpc.StatusCode.DEADLINE_EXCEEDED
+
+        keys = [Key("acknowledged"), Key("interrupted")]
+        for key in keys:
+            key.model_name, key.kv_rank = "fixture/model", 0
+        chunks = [(key, memoryview(b"tensor")) for key in keys]
+        for stored in (b"tensor", b"wrong!", b""):
+            with self.subTest(stored=stored):
+                backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
+                self.addCleanup(backend.close)
+                error = DeadlineExceeded()
+
+                def replies():
+                    yield 0, pb.CommandResponse(status=pb.Status(ok=True), count=1)
+                    raise error
+
+                client = Mock()
+                client.iter_batch_responses.return_value = replies()
+                client.batch_execute.return_value = [
+                    pb.CommandResponse(status=pb.Status(ok=True), value=stored),
+                ]
+                with patch.object(backend, "_table", return_value=client):
+                    results = backend.iter_store_results(chunks)
+                    self.assertEqual(next(results), (0, True))
+                    if stored == b"tensor":
+                        self.assertEqual(list(results), [(1, False)])
+                    else:
+                        with self.assertRaises(DeadlineExceeded) as caught:
+                            next(results)
+                        self.assertIs(caught.exception, error)
+
+                self.assertEqual(backend.stores_confirmed_by_read, int(stored == b"tensor"))
+                client.iter_batch_responses.assert_called_once()
+                client.batch_execute.assert_called_once()
+                pending_put = client.iter_batch_responses.call_args.args[0][1]
+                read = client.batch_execute.call_args.args[0][0]
+                self.assertEqual(read.string_get.key, pending_put.string_set_conditional.key)
+                self.assertLessEqual(client.batch_execute.call_args.kwargs["timeout_seconds"], 1)
+
     def test_lookup_and_store_share_a_table_client_with_distinct_deadlines(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
 

@@ -305,28 +305,44 @@ class TableValueBackend(ValueBackend):
     ) -> Iterator[tuple[int, bool]]:
         failures = []
         entries = self._store_entries(chunks)
+        replied = set()
         first_error = None
+        transport_error = None
         try:
             for index, document, response in self._iter_responses(entries, lookup=False, partial=True):
+                replied.add(index)
                 if response.status.ok:
                     yield index, response.count == 1
                 else:
-                    failures.append((index, document["key"], response.status))
-        except (MetadataError, grpc.RpcError) as error:
-            # Reconcile replies already received before propagating an interrupted batch.
-            first_error = error
-        deadline = monotonic() + min(self._timeout, self._lookup_timeout, 5.0) if failures else 0.0
-        for index, stored_key, status in failures:
-            key, payload = chunks[index]
-            if status.code in _STORE_OUTCOME_UNCERTAIN and self._confirm_stored_value(
-                key, stored_key, payload, deadline,
+                    status = response.status
+                    failures.append((
+                        index, document["key"], status.code in _STORE_OUTCOME_UNCERTAIN,
+                        MetadataError(status.code, status.message),
+                    ))
+        except grpc.RpcError as error:
+            if len(replied) < len(entries) and error.code() in (
+                grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.UNAVAILABLE,
             ):
+                transport_error = error
+                failures.extend(
+                    (index, document["key"], True, error)
+                    for index, (_, document) in enumerate(entries) if index not in replied
+                )
+            else:
+                first_error = error
+        except MetadataError as error:
+            first_error = error
+
+        deadline = monotonic() + min(self._timeout, self._lookup_timeout, 5.0) if failures else 0.0
+        for index, stored_key, uncertain, error in failures:
+            key, payload = chunks[index]
+            if uncertain and self._confirm_stored_value(key, stored_key, payload, deadline):
                 with self._lock:
                     self._stores_confirmed_by_read += 1
                 # The value is usable. The read cannot assign ownership of the insert.
                 yield index, False
-            elif first_error is None:
-                first_error = MetadataError(status.code, status.message)
+            elif first_error is None or error is transport_error:
+                first_error = error
         if first_error is not None:
             raise first_error
 
