@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 TABLE_DESCRIPTOR_KEY = "__lmcache_layout_v1"
 # Both codes identify rejection before any work for the affected command.
 _STORE_NOT_STARTED = {"raft_write_not_started", "load_version_mismatch"}
+_STORE_OUTCOME_UNCERTAIN = {"raft_error", "write_outcome_unknown"}
+_STORE_READBACK_ROUTE_CHANGED = {"raft_not_leader", "load_version_mismatch"}
 
 
 def _table_for_key(key: ObjectKey) -> str:
@@ -71,6 +73,7 @@ class TableValueBackend(ValueBackend):
         self._ttl_ms = ttl_seconds * 1000 or None
         self._tables: dict[str, TableClient] = {}
         self._lock = Lock()
+        self._stores_confirmed_by_read = 0
         self._registered_layouts: dict[str, tuple[tuple[int | None, int | None], set[tuple]]] = {}
 
     def _table(self, name: str) -> TableClient:
@@ -219,17 +222,74 @@ class TableValueBackend(ValueBackend):
             ordered[index] = {"value": value}
         return ordered
 
+    @property
+    def stores_confirmed_by_read(self) -> int:
+        with self._lock:
+            return self._stores_confirmed_by_read
+
+    def _confirm_stored_value(self, key, stored_key, payload, deadline):
+        client = self._table(_table_for_key(key))
+        command = _command({"kind": "string_get", "key": stored_key})
+        retryable = _STORE_READBACK_ROUTE_CHANGED
+        if self._proxy is not None:
+            # Proxy versions wrap unavailable data nodes in these status codes.
+            retryable = retryable | {"status_error", "server_error"}
+
+        while (remaining := deadline - monotonic()) > 0:
+            try:
+                replies = client.batch_execute([command], timeout_seconds=remaining)
+            except RaftPrimaryUnavailable:
+                pass
+            except MetadataError as error:
+                if error.code not in retryable:
+                    return False
+            except grpc.RpcError as error:
+                if error.code() != grpc.StatusCode.UNAVAILABLE:
+                    return False
+            else:
+                if len(replies) != 1:
+                    return False
+                reply = replies[0]
+                if reply.status.ok:
+                    value = reply.value
+                    return bool(value) and value == payload
+                if reply.status.code not in retryable:
+                    return False
+
+            remaining = deadline - monotonic()
+            if remaining > 0:
+                sleep(min(0.25, remaining))
+        return False
+
     def iter_store_results(
         self, chunks: list[tuple[ObjectKey, memoryview]],
     ) -> Iterator[tuple[int, bool]]:
-        failure = None
-        for index, _, response in self._iter_responses(self._store_entries(chunks), lookup=False, partial=True):
-            if response.status.ok:
-                yield index, response.count == 1
-            elif failure is None:
-                failure = MetadataError(response.status.code, response.status.message)
-        if failure is not None:
-            raise failure
+        failures = []
+        entries = self._store_entries(chunks)
+        first_error = None
+        try:
+            for index, document, response in self._iter_responses(entries, lookup=False, partial=True):
+                if response.status.ok:
+                    yield index, response.count == 1
+                else:
+                    failures.append((index, document["key"], response.status))
+        except (MetadataError, grpc.RpcError) as error:
+            # Reconcile replies already received before propagating an interrupted batch.
+            first_error = error
+        deadline = monotonic() + min(self._timeout, self._lookup_timeout, 5.0) if failures else 0.0
+        for index, stored_key, status in failures:
+            key, payload = chunks[index]
+            if status.code in _STORE_OUTCOME_UNCERTAIN and self._confirm_stored_value(
+                key, stored_key, payload, deadline,
+            ):
+                with self._lock:
+                    self._stores_confirmed_by_read += 1
+                # The value is usable. The read cannot assign ownership of the insert.
+                yield index, False
+            elif first_error is None:
+                first_error = MetadataError(status.code, status.message)
+        if first_error is not None:
+            raise first_error
 
     def close(self) -> None:
         for client in self._tables.values():

@@ -276,6 +276,9 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 "adapter": "temporalstore",
                 "storage_backend": self._config.storage_backend,
                 "stores": self._stores,
+                "stores_confirmed_by_read": (
+                    self._values.stores_confirmed_by_read if self._values is not None else 0
+                ),
                 "store_tasks_submitted": self._submitted_store_tasks,
                 "store_keys_submitted": self._submitted_store_keys,
                 "store_tasks_pending": self._submitted_store_tasks - self._completed_store_tasks,

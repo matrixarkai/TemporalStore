@@ -28,6 +28,10 @@ class ValueBackend:
             self._lookup.close()
         self._client.close()
 
+    @property
+    def stores_confirmed_by_read(self) -> int:
+        return 0
+
     def _store_entries(self, chunks: list[tuple[ObjectKey, memoryview]]) -> list[tuple[ObjectKey, dict]]:
         return [
             (key, {
