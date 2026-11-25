@@ -864,7 +864,7 @@ mod tests {
         assert_eq!(manifest.version, 4);
         assert!(manifest.wal_frames.is_empty());
         assert_eq!(manifest.block_slab_ids, [super::super::HOT_BLOCK_SLAB_ID]);
-        let mut capture = super::super::decode_index_bytes(&manifest.index_bytes).unwrap();
+        let mut capture = super::super::decode_index_bytes(crate::engine::bucket_dump_io::installable_image(&manifest).unwrap()).unwrap();
         assert!(capture.wal_resident_blocks.is_empty());
         let entries = collect_live_block_entries(&capture);
         assert_eq!(entries.len(), 1);
@@ -962,7 +962,7 @@ mod tests {
         let (record, id) = reopened.wal_store.append_batch_as_one_record_at(
             1, vec![item.clone(), item.clone()], old.staged_blocks.clone(), true,
         ).unwrap();
-        let mut snapshot = super::super::decode_index_bytes(&manifest.index_bytes).unwrap();
+        let mut snapshot = super::super::decode_index_bytes(crate::engine::bucket_dump_io::installable_image(&manifest).unwrap()).unwrap();
         let placement = super::super::block_in_wal::wal_resident_key(item.object_id, item.element_name.as_deref());
         snapshot.wal_resident_blocks.get_mut(&placement).unwrap().sequence = record.sequence;
         snapshot.wal_resident_blocks.get_mut(&placement).unwrap().log_id = id;
@@ -1147,7 +1147,7 @@ mod tests {
         assert_eq!(manifest.version, 4);
         assert_eq!(manifest.wal_frames.len(), 2);
         source.validate_bucket_dump_manifest(&manifest).unwrap();
-        let state = crate::engine::decode_index_bytes(&manifest.index_bytes).unwrap();
+        let state = crate::engine::decode_index_bytes(crate::engine::bucket_dump_io::installable_image(&manifest).unwrap()).unwrap();
         let entries = crate::engine::storage_bucket_internals::collect_live_block_entries(&state);
         let mut commitments = std::collections::BTreeMap::new();
         for field in ["old", "second"] {
@@ -1370,10 +1370,10 @@ mod tests {
             unused
         };
         let manifest = source.create_bucket_dump_manifest(1, [owner]).unwrap();
-        assert_eq!(manifest.index_bytes, bytes, "completed release image must encode identically");
+        assert_eq!(crate::engine::bucket_dump_io::installable_image(&manifest).unwrap(), bytes.as_slice(), "completed release image must encode identically");
         assert!(source.shards.read().unwrap()[&1].bucket_index.released_buckets.contains(&released));
         assert!(source.shards.read().unwrap()[&1].wal_resident_blocks.contains_key(&unused));
-        let decoded = super::super::decode_index_bytes(&manifest.index_bytes).unwrap();
+        let decoded = super::super::decode_index_bytes(crate::engine::bucket_dump_io::installable_image(&manifest).unwrap()).unwrap();
         assert!(!decoded.wal_resident_blocks.contains_key(&unused));
         let entries = super::super::storage_bucket_internals::collect_live_block_entries(&decoded);
         let slabs = entries.iter().map(|entry| entry.address.block_slab_id())
