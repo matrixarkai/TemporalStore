@@ -413,3 +413,85 @@ fn other_append_paths_keep_their_existing_large_frame_placement() {
     assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()));
     block_in_wal::take_staged();
 }
+
+#[test]
+fn replicated_insert_only_strings_reload_before_and_after_materialization() {
+    let _value_once = value_once_in_test(true);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path(), "raft-cache-before");
+    let slab_bytes = engine.block_store.stats().bytes_written;
+    let syncs = engine.write_ahead_log_store().stats(1).syncs;
+    let leader_stamp = super::now_ms();
+    let payloads = [("raft-key-0", 0u8), ("raft-key-1", 255u8)].map(|(key, marker)| {
+        let mut bytes = vec![marker; 4_718_592];
+        bytes[3] = !marker;
+        (key, bytes)
+    });
+    let requests = payloads
+        .iter()
+        .enumerate()
+        .map(|(index, (key, bytes))| {
+            (
+                ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSetConditional {
+                        key: (*key).to_owned(),
+                        value: bytes.clone(),
+                        ttl_ms: Some(600_000),
+                        condition: crate::types::StringSetCondition::IfNotExists,
+                        return_old: false,
+                        keep_ttl: false,
+                    },
+                },
+                Some(leader_stamp + index as u64),
+            )
+        })
+        .collect();
+
+    let writes = engine.execute_raft_apply_batch_at(requests);
+    assert_eq!(writes.len(), payloads.len());
+    for response in writes {
+        assert!(response.status.ok, "{response:?}");
+        assert_eq!(response.response, CommandResponse::Integer { value: 1 });
+    }
+    assert!(engine.write_ahead_log_store().stats(1).syncs > syncs);
+    assert_eq!(engine.block_store.stats().bytes_written, slab_bytes);
+    for (key, _) in &payloads {
+        let address = engine.string_block_address(1, key).unwrap();
+        assert!(crate::wal_record::is_wal_resident(address.block_slab_id()));
+    }
+    drop(engine);
+
+    let verify = |engine: &TemporalEngine| {
+        engine.cache.invalidate_shard(1).unwrap();
+        for (index, (key, bytes)) in payloads.iter().enumerate() {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: (*key).to_owned(),
+                },
+            });
+            assert!(response.status.ok, "{response:?}");
+            assert_eq!(
+                response.response,
+                CommandResponse::Bytes {
+                    value: Some(bytes.clone())
+                }
+            );
+            let shards = engine.shards.read().unwrap();
+            assert_eq!(
+                shards[&1].expires_at_ms().get(*key),
+                Some(&(leader_stamp + index as u64 + 600_000))
+            );
+        }
+    };
+
+    let restored = engine_at(dir.path(), "raft-cache-after");
+    verify(&restored);
+    assert_eq!(restored.materialize_synthetic_blocks(1), payloads.len());
+    assert!(restored.block_store.stats().bytes_written > slab_bytes);
+    drop(restored);
+
+    let reopened = engine_at(dir.path(), "raft-cache-materialized");
+    verify(&reopened);
+}
