@@ -10393,7 +10393,19 @@ pub(super) static REPACK_ADOPTED_FIELDS: std::sync::atomic::AtomicUsize =
 pub(super) static REPACK_ADOPTED_HASHED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(test)]
+pub(super) fn thread_repack_calls() -> usize {
+    THREAD_REPACK_CALLS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static THREAD_REPACK_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
+    #[cfg(test)]
+    THREAD_REPACK_CALLS.with(|calls| calls.set(calls.get() + 1));
     let ShardState {
         // ----- Packed here. Deserialized, and filled one entry at a time. -----
         wal_resident_blocks,

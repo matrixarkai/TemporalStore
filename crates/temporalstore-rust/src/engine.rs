@@ -4920,8 +4920,6 @@ pub(super) fn encode_index_bytes_as_plain_json(shard: &ShardState) -> Vec<u8> {
 /// every leaf. It rides the load rather than a timer or a flag, because the load is the moment the
 /// whole structure is in hand and already paid for.
 pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
-    #[cfg(test)]
-    bucket_dump_manifest_methods::note_checkpoint_decode();
     // WRAPPED RATHER THAN EDITED PER ARM, so that a second payload added later is packed without
     // anyone having to remember to.
     let mut state = decode_index_bytes_inner(bytes)?;
@@ -4929,9 +4927,10 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
     Ok(state)
 }
 
-/// The codec arms themselves. Reached only through `decode_index_bytes` above, which packs what
-/// this fills -- so a second arm added here is covered without being told to be.
+/// Validate and decode the complete image. Recovery can defer packing until it selects an image.
 fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
+    #[cfg(test)]
+    bucket_dump_manifest_methods::note_checkpoint_decode();
     if !bytes.starts_with(INDEX_CONTAINER_MAGIC) {
         return Err("served index is not a container: it does not start with the container magic"
             .to_string());
