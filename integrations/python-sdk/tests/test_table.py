@@ -268,6 +268,46 @@ class TableClientTest(unittest.TestCase):
                         self.assertEqual(metadata.table_topology.call_count, 2)
                         self.assertEqual(getattr(second, rpc).call_args.kwargs["load_version"], 8)
 
+    def test_unary_read_refreshes_a_stale_route_within_the_original_deadline(self):
+        class Unavailable(grpc.RpcError):
+            def code(self):
+                return grpc.StatusCode.UNAVAILABLE
+
+        for failure in (Unavailable(), commands.ExecuteResponse(
+            status=commands.Status(code="raft_not_leader"),
+        )):
+            with self.subTest(failure=failure):
+                clock = [100.0]
+                metadata = Mock()
+                metadata.table_topology.side_effect = [
+                    TableTopology("kvcache", "model", 1, 73, 1,
+                                  (Shard(73, None, (), 7, "primary-a"),)),
+                    TableTopology("kvcache", "model", 2, 73, 1,
+                                  (Shard(73, None, (), 8, "primary-b"),)),
+                ]
+                first, second = Mock(), Mock()
+
+                def stale(*args, **kwargs):
+                    clock[0] += 0.6
+                    if isinstance(failure, grpc.RpcError):
+                        raise failure
+                    return failure
+
+                first.execute.side_effect = stale
+                second.execute.return_value = commands.ExecuteResponse(status=commands.Status(ok=True))
+                with patch("temporalstore_sdk.table.monotonic", side_effect=lambda: clock[0]), \
+                     patch("temporalstore_sdk.table.CommandClient", side_effect=[first, second]):
+                    with TableClient(metadata, "kvcache", "model", timeout_seconds=1) as table:
+                        self.assertTrue(table.execute(get("key")).status.ok)
+
+                self.assertEqual(metadata.table_topology.call_count, 2)
+                first.execute.assert_called_once()
+                second.execute.assert_called_once()
+                self.assertEqual(first.execute.call_args.kwargs["load_version"], 7)
+                self.assertEqual(second.execute.call_args.kwargs["load_version"], 8)
+                self.assertAlmostEqual(first.execute.call_args.kwargs["timeout_seconds"], 1.0)
+                self.assertAlmostEqual(second.execute.call_args.kwargs["timeout_seconds"], 0.4)
+
     def test_missing_elected_leader_refreshes_before_normal_topology_ttl(self):
         metadata = Mock()
         metadata.table_topology.side_effect = [

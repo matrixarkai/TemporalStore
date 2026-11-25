@@ -35,12 +35,14 @@ class CommandClient:
 
     def execute(
         self, shard_id: int, command: pb.Command, *, load_version: Optional[int] = None,
+        timeout_seconds: Optional[float] = None,
     ) -> pb.ExecuteResponse:
         request = pb.ExecuteRequest(shard_id=shard_id, command=command)
+        timeout = self._timeout if timeout_seconds is None else timeout_seconds
         if load_version is not None:
             request.load_version = load_version
-            return self._service.ExecuteChecked(request, timeout=self._timeout)
-        return self._service.Execute(request, timeout=self._timeout)
+            return self._service.ExecuteChecked(request, timeout=timeout)
+        return self._service.Execute(request, timeout=timeout)
 
     def _batch_call(self, shard_id, commands, load_version):
         request = pb.BatchExecuteRequest(shard_id=shard_id, commands=commands)

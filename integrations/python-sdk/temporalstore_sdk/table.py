@@ -138,18 +138,28 @@ class TableClient:
                 self._expires_at = 0.0
 
     def execute(self, command: pb.Command) -> pb.ExecuteResponse:
-        topology = self._current_topology()
-        shard = self._shard_for_command(topology, command)
-        channel = self._channel_for(shard)
-        try:
-            response = channel.execute(shard.shard_id, command, load_version=shard.load_version or None)
-        except grpc.RpcError as error:
-            if error.code() == grpc.StatusCode.UNAVAILABLE:
+        is_read = command.WhichOneof("kind") in _PARALLEL_READ_KINDS
+        deadline = monotonic() + self._timeout if is_read else None
+        for attempt in range(2 if is_read else 1):
+            topology = self._current_topology(deadline)
+            shard = self._shard_for_command(topology, command)
+            channel = self._channel_for(shard, deadline)
+            options = {} if deadline is None else {"timeout_seconds": _remaining_read_timeout(deadline)}
+            try:
+                response = channel.execute(shard.shard_id, command,
+                                           load_version=shard.load_version or None, **options)
+            except grpc.RpcError as error:
+                if error.code() != grpc.StatusCode.UNAVAILABLE:
+                    raise
                 self._invalidate_route(topology)
-            raise
-        if response.status.code in _ROUTE_ERROR_CODES:
-            self._invalidate_route(topology)
-        return response
+                if not is_read or attempt or monotonic() >= deadline:
+                    raise
+                continue
+            if response.status.code in _ROUTE_ERROR_CODES:
+                self._invalidate_route(topology)
+                if is_read and not attempt and response.status.code in _READ_ROUTE_ERRORS and monotonic() < deadline:
+                    continue
+            return response
 
     def batch_execute(
         self, commands: Iterable[pb.Command], *, timeout_seconds: float | None = None,
