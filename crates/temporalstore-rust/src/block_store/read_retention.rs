@@ -58,8 +58,11 @@ impl BlockStoreReadSnapshot {
 
 impl Drop for BlockStoreReadSnapshot {
     fn drop(&mut self) {
+        let Some(first) = self.first else {
+            return;
+        };
         if let Ok(mut inner) = self.store.inner.lock() {
-            for slab in self.first.iter().chain(self.remaining.iter()) {
+            for slab in std::iter::once(&first).chain(self.remaining.iter()) {
                 if let Some(readers) = inner.read_pins.get_mut(slab) {
                     *readers -= 1;
                     if *readers == 0 {
@@ -85,6 +88,73 @@ mod tests {
         fn fetch_slab(&self, id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
             Ok((id == self.id).then(|| self.contents.to_vec()))
         }
+    }
+
+    #[test]
+    fn dropping_an_empty_read_snapshot_does_not_wait_for_the_catalog() {
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        let snapshot = BlockStoreReadSnapshot::new(&store);
+        let held = store.inner.lock().unwrap();
+        let (done, completed) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            drop(snapshot);
+            done.send(()).unwrap();
+        });
+        let observed = completed.recv_timeout(std::time::Duration::from_secs(5));
+        drop(held);
+        reader.join().unwrap();
+        observed.expect("empty snapshot teardown waited for the catalog");
+    }
+
+    #[test]
+    fn replacing_the_default_source_releases_the_registry_before_dropping_it() {
+        #[derive(Debug)]
+        struct PausedSource {
+            entered: std::sync::mpsc::Sender<()>,
+            resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+
+        impl SharedSlabSource for PausedSource {
+            fn fetch_slab(&self, _: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
+                Ok(None)
+            }
+        }
+
+        impl Drop for PausedSource {
+            fn drop(&mut self) {
+                let _ = self.entered.send(());
+                let _ = self.resume.get_mut().unwrap().recv();
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(root.path());
+        let (entered, paused) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        let id = store.current_block_slab_id() + 8;
+        store.attach_shared_slab_source(Arc::new(PausedSource {
+            entered, resume: std::sync::Mutex::new(resume),
+        }));
+        let writer = store.clone();
+        let attach = std::thread::spawn(move || {
+            writer.attach_shared_slab_source(Arc::new(RawSlabSource { id, contents: b"new source" }));
+        });
+
+        let timeout = std::time::Duration::from_secs(5);
+        if let Err(error) = paused.recv_timeout(timeout) {
+            let _ = release.send(());
+            let _ = attach.join();
+            panic!("previous source did not reach teardown: {error}");
+        }
+        let reader = store.clone();
+        let (done, complete) = std::sync::mpsc::channel();
+        let fetching = std::thread::spawn(move || done.send(reader.read_slab(id)).unwrap());
+        let observed = complete.recv_timeout(timeout);
+        release.send(()).unwrap();
+        attach.join().unwrap();
+        fetching.join().unwrap();
+        assert_eq!(observed.unwrap().unwrap(), b"new source");
     }
 
     #[test]
