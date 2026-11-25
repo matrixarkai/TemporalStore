@@ -96,11 +96,28 @@ fn expiry_keeps_independently_live_records_in_memory_and_wal_recovery() {
             let before = engine.wal_store.cached_last_sequence(1);
             let mirror = Arc::new(OutcomeMirror::default());
             engine.set_maintenance_wal_mirror(mirror.clone());
-            let report = engine.sweep_expired_records_for_maintenance(ShardExpirySweepRequest {
+            let request = ShardExpirySweepRequest {
                 shard_id: 1, max_hot_buckets_per_round: usize::from(!cold),
                 max_cold_buckets_per_round: usize::from(cold), load_cold_buckets: true,
                 ..Default::default()
-            }).unwrap();
+            };
+            let positions = [
+                Some((0, Arc::<str>::from("before-hot"))),
+                Some((0, Arc::<str>::from("before-cold"))),
+            ];
+            engine.shards.write().unwrap().get_mut(&1).unwrap().expiry_scan_positions =
+                positions.clone();
+            FAIL_APPEND_AFTER.with(|remaining| remaining.set(Some(0)));
+            assert!(engine.sweep_expired_records_for_maintenance(request.clone()).is_err());
+            assert_eq!(engine.wal_store.cached_last_sequence(1), before);
+            assert!(mirror.0.lock().unwrap().is_empty());
+            {
+                let shards = engine.shards.read().unwrap();
+                assert_eq!(shards[&1].expiry_scan_positions, positions);
+                assert!(shards[&1].strings().contains_key(due.as_str()));
+                assert!(shards[&1].strings().contains_key(live.as_str()));
+            }
+            let report = engine.sweep_expired_records_for_maintenance(request).unwrap();
             assert_eq!(report.expired_records_removed, 1);
             {
                 let shards = engine.shards.read().unwrap();

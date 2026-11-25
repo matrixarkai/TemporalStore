@@ -3588,6 +3588,7 @@ impl TemporalEngine {
         // state is still private to this thread here, so the same pass excludes nobody.
         // `ensure_expiry_order` stays at its call sites as the repair for an emptied mirror.
         ensure_expiry_order(&mut state);
+        state.expiry_scan_positions = [None, None];
         self.shards
             .write()
             .expect("engine lock poisoned")
@@ -6135,6 +6136,7 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         // that folds a delta onto a shard already in service would land exactly on the
         // never-repaired case.
         shard.expiry_by_deadline.clear();
+        shard.expiry_scan_positions = [None, None];
     }
 }
 
@@ -8000,35 +8002,39 @@ pub(in crate::engine) fn due_window<F>(
 where
     F: Fn(&str) -> bool,
 {
+    due_window_after(shard, now, limit, scan_budget, None, keep).0
+}
+
+pub(in crate::engine) fn due_window_after(
+    shard: &ShardState,
+    now: u64,
+    limit: usize,
+    scan_budget: usize,
+    after: Option<&(u64, std::sync::Arc<str>)>,
+    keep: impl Fn(&str) -> bool,
+) -> (Vec<(String, u64)>, Option<(u64, std::sync::Arc<str>)>) {
+    use std::ops::Bound::{Excluded, Unbounded};
+
     let mut selected = Vec::new();
+    let mut last_inspected: Option<&(u64, std::sync::Arc<str>)> = None;
     let mut walked = 0usize;
-    // A long run of due keys that `keep` rejects -- the other residency class, which a sweep that
-    // does not load cold buckets never removes -- sits at the FRONT of the view round after round.
-    // A walk capped at `scan_budget` ended inside that run and never reached an accepted key
-    // behind it, so one class could starve the other for as long as the run lasted. The walk gets
-    // a multiple of the budget instead: still bounded, and wide enough to step over a run the
-    // size of the budget many times over.
     let walk_cap = scan_budget.saturating_mul(16);
-    for ((expires_at, key), ()) in shard.expiry_by_deadline.iter() {
+    let lower = after.map_or(Unbounded, Excluded);
+    for (entry @ (expires_at, key), ()) in shard.expiry_by_deadline.range((lower, Unbounded)) {
         if *expires_at > now {
             break;
         }
-        if limit > 0 && selected.len() >= limit {
-            break;
+        if (limit > 0 && selected.len() >= limit) || (walk_cap > 0 && walked >= walk_cap) {
+            return (selected, last_inspected.cloned());
         }
-        if scan_budget > 0 && walked >= walk_cap {
-            break;
-        }
-        walked = walked.saturating_add(1);
-        // TRANSIENT, NOT RESIDENT. The returned `String`s leave this function and are dropped by
-        // the sweep that consumes them; the signature is left alone so no caller moves. This is
-        // one allocation per DUE key on a bounded round -- the same cost as the `String` clone it
-        // replaces -- and it is not one of the copies the footprint counts.
-        if keep(&**key) {
+        walked += 1;
+        last_inspected = Some(entry);
+        if keep(key) {
             selected.push((key.to_string(), *expires_at));
         }
     }
-    selected
+    // Reaching the end of the due range lets the next round begin at the front.
+    (selected, None)
 }
 
 fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
