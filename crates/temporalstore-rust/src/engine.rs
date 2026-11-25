@@ -277,7 +277,6 @@ use crate::engine::timestamped_series::TimestampedSeries as _;
 #[derive(Debug, Clone)]
 pub struct TemporalEngine {
     shards: Arc<shard_guard::ShardsLock>,
-    serving_admission: Arc<parking_lot::FairMutex<()>>,
     cache: MultiLayerCache,
     block_store: BlockStore,
     wal_store: LocalWriteAheadLogStore,

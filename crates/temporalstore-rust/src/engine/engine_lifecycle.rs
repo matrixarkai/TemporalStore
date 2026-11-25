@@ -542,7 +542,6 @@ impl TemporalEngine {
         let index_log_store = LocalIndexLogStore::new(index_dir.join("indexlogs"));
         Self {
             shards: Arc::default(),
-            serving_admission: Arc::default(),
             checkpoint_publications: Arc::default(),
             retention_registry: Arc::default(),
             cache,
