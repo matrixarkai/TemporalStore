@@ -106,6 +106,16 @@ impl ObjectLifecycleAccumulator {
         self.observe_identity(object_id, term);
     }
 
+    pub(super) fn merge(&mut self, other: Self) {
+        self.live_block_refs += other.live_block_refs;
+        self.reused.extend(other.reused);
+        for (object_id, term) in other.owners {
+            if self.owners.insert(object_id, term).is_some_and(|prior| prior != term) {
+                self.reused.insert(object_id);
+            }
+        }
+    }
+
     fn observe_identity(&mut self, object_id: u64, term: u64) {
         self.live_block_refs += 1;
         // One term plus a conflict bit is enough to answer whether an id has multiple owners.

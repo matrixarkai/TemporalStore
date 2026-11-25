@@ -53,7 +53,7 @@ fn durable_restore_reads_the_base_and_catalog_in_one_pass() {
     let count = frames(&engine);
     let reader = open(dir.path(), "cold-reader-cache");
     crate::index_log::probe::reset();
-    let (state, anchor, catalog) = reader.load_durable_index_with_catalog(1, false);
+    let (state, anchor, catalog, _proof) = reader.load_durable_index_with_catalog(1, false).unwrap();
     assert_eq!(crate::index_log::probe::fold_frames_read(), count);
     assert_eq!(catalog, Some(expected));
     assert_eq!(state.unwrap().applied_wal_sequence, Some(anchor));
@@ -70,7 +70,7 @@ fn durable_restore_selects_the_newer_manifest_before_its_only_pass() {
     fs::write(engine.index_path(1), old_base).unwrap();
     let count = frames(&engine);
     crate::index_log::probe::reset();
-    let (state, anchor, _) = engine.load_durable_index_with_catalog(1, false);
+    let (state, anchor, _, _proof) = engine.load_durable_index_with_catalog(1, false).unwrap();
     assert_eq!(crate::index_log::probe::fold_frames_read(), count);
     assert_eq!(anchor, manifest.wal_sequence);
     assert!(state.unwrap().string_address("newer").is_some());
@@ -87,7 +87,7 @@ fn durable_restore_leaves_an_append_for_exactly_one_wal_replay() {
         shard_id: 1, command: Command::StringAppend { key: "base".into(), value: b"-tail".to_vec() },
     }).status.ok);
     fs::write(engine.index_path(1), &old_base).unwrap();
-    let (selected, anchor, _) = engine.load_durable_index_with_catalog(1, false);
+    let (selected, anchor, _, _proof) = engine.load_durable_index_with_catalog(1, false).unwrap();
     assert_eq!(anchor, base.applied_wal_sequence.unwrap());
     assert_eq!(selected.unwrap().string_address("base"), base.string_address("base"));
     drop(engine);
@@ -110,7 +110,7 @@ fn catalog_recovery_survives_an_absent_or_rejected_base() {
         else { fs::remove_file(engine.index_path(1)).unwrap(); }
         let count = frames(&engine);
         crate::index_log::probe::reset();
-        let (state, anchor, catalog) = engine.load_durable_index_with_catalog(1, false);
+        let (state, anchor, catalog, _proof) = engine.load_durable_index_with_catalog(1, false).unwrap();
         assert_eq!(crate::index_log::probe::fold_frames_read(), count);
         assert!(state.is_none());
         assert_eq!(anchor, 0);
@@ -146,7 +146,7 @@ fn a_corrupt_tail_never_installs_a_partial_catalog() {
     log.write_all(&crate::log_framing::encode_record(b"invalid record")).unwrap();
     log.sync_all().unwrap();
     assert!(engine.load_index_checked_with_catalog(1, false).is_err());
-    let (state, _, catalog) = engine.load_durable_index_with_catalog(1, false);
+    let (state, _, catalog, _proof) = engine.load_durable_index_with_catalog(1, false).unwrap();
     assert!(state.is_some(), "the durable base must remain available for WAL recovery");
     assert!(catalog.is_none(), "a valid prefix is not a complete catalog scan");
 }

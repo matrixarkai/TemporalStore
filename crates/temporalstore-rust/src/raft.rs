@@ -206,6 +206,8 @@ impl Clone for RaftSnapshotStateImage {
 pub struct RaftSnapshotStateImageSlab {
     pub block_slab_id: u64,
     pub bytes: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_shard_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4428,7 +4430,7 @@ impl RaftCluster {
                 node.pipeline_state = record.pipeline_state;
                 if let Some(snapshot) = record.installed_snapshot.clone() {
                     if node.replica_role.can_serve_data() {
-                        install_snapshot_state(&mut node, snapshot);
+                        install_snapshot_state(&mut node, snapshot)?;
                     } else {
                         node.current_term = node.current_term.max(snapshot.last_included_term);
                         node.commit_index = node.commit_index.max(snapshot.last_included_index);
@@ -6228,7 +6230,7 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
 /// Splitting it out is what lets `maybe_trigger_snapshot` build one engine per install target
 /// while holding NOTHING. The publish that follows is the cheap half, and it is the only half
 /// that has to be atomic with the eligibility check -- see `node_accepts_snapshot`.
-fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> TemporalEngine {
+fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> Result<TemporalEngine, RaftError> {
     let engine = TemporalEngine::default();
     if let Some(image) = &snapshot.state_image {
         #[cfg(test)]
@@ -6240,33 +6242,10 @@ fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> TemporalEngine {
         // restored an image-carrying record before this installer learned about images.
         let block_store = engine.block_store();
         for slab in &image.slabs {
-            let _ = block_store.install_slab(slab.block_slab_id, &slab.bytes);
+            block_store.install_transferred_slab(slab.block_slab_id, &slab.bytes, slab.owner_shard_id)
+                .map_err(|error| RaftError::SnapshotEncoding(error.to_string()))?;
         }
-        // NOT `let _ =` FOR THE RANGE. This installer's own note above is about an image
-        // mishandled here leaving a quietly EMPTY engine; an image with no range is exactly that
-        // case, so it is reported and the shard is left unloaded rather than loaded off an index
-        // whose buckets nothing can account for.
-        match image.routing_range {
-            Some(routing_range) => {
-                match engine.install_index_bytes_in_empty_wal(
-                    snapshot.shard_id,
-                    &image.index_bytes,
-                    routing_range,
-                ) {
-                    Ok(()) => engine.load_shard(snapshot.shard_id),
-                    Err(err) => tracing::error!(shard_id = snapshot.shard_id,
-                        error = %err, "snapshot index could not be installed into the fresh engine"),
-                }
-            }
-            None => {
-                tracing::error!(
-                    shard_id = snapshot.shard_id,
-                    "snapshot state image carries no routing range, so the buckets its index \
-                     names cannot be accounted for; not installing it. Re-take the snapshot from \
-                     a leader running this build."
-                );
-            }
-        }
+        install_snapshot_index(&engine, snapshot.shard_id, image)?;
     } else {
         engine.load_shard(snapshot.shard_id);
         for entry in &snapshot.entries {
@@ -6282,7 +6261,34 @@ fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> TemporalEngine {
             );
         }
     }
+    Ok(engine)
+}
+
+fn install_snapshot_index(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    image: &RaftSnapshotStateImage,
+) -> Result<(), RaftError> {
+    let routing_range = image.routing_range.ok_or_else(|| {
+        RaftError::SnapshotEncoding(format!("snapshot state image for shard {shard_id} has no routing range"))
+    })?;
     engine
+        .install_index_bytes_in_empty_wal(shard_id, &image.index_bytes, routing_range)
+        .map_err(|error| RaftError::SnapshotEncoding(error.to_string()))?;
+    let response = engine.load_shard_with(crate::control::LoadShardRequest {
+        shard_id,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: routing_range.start_routing_bucket,
+        end_routing_bucket: routing_range.end_routing_bucket,
+        readonly: false,
+        table_name: String::new(),
+    });
+    if !response.status.ok {
+        return Err(RaftError::SnapshotEncoding(response.status.message));
+    }
+    Ok(())
 }
 
 /// Move a node onto a snapshot, given an engine already rebuilt from that same snapshot.
@@ -6316,14 +6322,15 @@ fn publish_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot, engine: T
 }
 
 /// Rebuild and publish in one step, for the callers that hold a guard across both anyway.
-fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
-    let engine = rebuild_snapshot_engine(&snapshot);
+fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) -> Result<(), RaftError> {
+    let engine = rebuild_snapshot_engine(&snapshot)?;
     publish_snapshot_state(node, snapshot, engine);
+    Ok(())
 }
 
-fn install_snapshot_state_for_role(node: &mut RaftNode, snapshot: RaftSnapshot) {
+fn install_snapshot_state_for_role(node: &mut RaftNode, snapshot: RaftSnapshot) -> Result<(), RaftError> {
     if node.replica_role.can_serve_data() {
-        install_snapshot_state(node, snapshot);
+        install_snapshot_state(node, snapshot)?;
     } else {
         node.current_term = node.current_term.max(snapshot.last_included_term);
         node.commit_index = node.commit_index.max(snapshot.last_included_index);
@@ -6334,6 +6341,7 @@ fn install_snapshot_state_for_role(node: &mut RaftNode, snapshot: RaftSnapshot) 
         node.max_applied_index = node.max_applied_index.max(snapshot.last_included_index);
         node.installed_snapshot = Some(snapshot);
     }
+    Ok(())
 }
 
 fn install_leader_snapshot_tail(
@@ -6344,7 +6352,10 @@ fn install_leader_snapshot_tail(
 ) {
     if let Some(snapshot) = leader_snapshot {
         if node_last_log_or_snapshot_index(node) < snapshot.last_included_index {
-            install_snapshot_state_for_role(node, snapshot);
+            if let Err(error) = install_snapshot_state_for_role(node, snapshot) {
+                tracing::error!(%error, "snapshot catch-up refused");
+                return;
+            }
         }
     }
     // A catch-up may not pull a node BACKWARDS.

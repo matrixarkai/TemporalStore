@@ -67,6 +67,8 @@ pub(super) struct WireSlabDescriptor {
     pub(super) first_error_offset: Option<u64>,
     #[prost(string, optional, tag = "14")]
     pub(super) first_error: Option<String>,
+    #[prost(uint64, optional, tag = "15")]
+    pub(super) owner_shard_id: Option<u64>,
 }
 
 /// The whole manifest: a version and every slab descriptor.
@@ -108,6 +110,7 @@ fn descriptor_from_wire(wire: WireSlabDescriptor) -> Result<BlockStoreSlabDescri
     let WireSlabDescriptor {
         stored_slab_id,
         block_slab_id,
+        owner_shard_id,
         state,
         physical_bytes,
         logical_bytes,
@@ -140,6 +143,7 @@ fn descriptor_from_wire(wire: WireSlabDescriptor) -> Result<BlockStoreSlabDescri
     Ok(BlockStoreSlabDescriptor {
         stored_slab_id,
         block_slab_id,
+        owner_shard_id,
         state,
         physical_bytes,
         logical_bytes,
@@ -159,6 +163,7 @@ fn descriptor_to_wire(descriptor: &BlockStoreSlabDescriptor) -> WireSlabDescript
     let BlockStoreSlabDescriptor {
         stored_slab_id,
         block_slab_id,
+        owner_shard_id,
         state,
         physical_bytes,
         logical_bytes,
@@ -181,6 +186,7 @@ fn descriptor_to_wire(descriptor: &BlockStoreSlabDescriptor) -> WireSlabDescript
     WireSlabDescriptor {
         stored_slab_id,
         block_slab_id,
+        owner_shard_id,
         state: state as i32,
         physical_bytes,
         logical_bytes,
@@ -233,6 +239,7 @@ mod tests {
         BlockStoreSlabDescriptor {
             stored_slab_id: slab + 1_000,
             block_slab_id: slab,
+            owner_shard_id: Some(42),
             state,
             physical_bytes: 11_111 + slab,
             logical_bytes: 22_222 + slab,
@@ -252,6 +259,7 @@ mod tests {
         BlockStoreSlabDescriptor {
             stored_slab_id: slab,
             block_slab_id: slab,
+            owner_shard_id: None,
             state: BlockStoreSlabState::Sealed,
             physical_bytes: 0,
             logical_bytes: 0,
@@ -389,6 +397,7 @@ mod tests {
         let descriptor = BlockStoreSlabDescriptor {
             stored_slab_id: 1,
             block_slab_id: 2,
+            owner_shard_id: None,
             state: BlockStoreSlabState::Sealed,
             physical_bytes: 3,
             logical_bytes: 4,

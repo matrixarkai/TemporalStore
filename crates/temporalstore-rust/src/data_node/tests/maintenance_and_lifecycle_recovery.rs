@@ -2272,6 +2272,7 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
     // the resident live set. Deleting it makes the manifest uninstallable and loses data on
     // a lagging follower's replay / snapshot-install. The gated storage-manager cycle blocks
     // this via storage_block_gc_dependency_plan; the operator path must mirror the guard.
+    const SHARD: ShardId = 1;
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -2279,31 +2280,37 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
         dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
-    engine.load_shard(1);
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
+    engine.load_shard(SHARD);
+    let response = engine.execute(ExecuteRequest {
+        shard_id: SHARD,
         command: Command::StringSet {
             key: "gc-key".to_string(),
             value: b"v1".to_vec(),
         },
     });
-    // Dump: the manifest captures the slab (id 0) holding v1.
-    let manifest = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+    assert!(response.status.ok, "initial write failed: {response:?}");
+    let original_slabs = engine.live_block_slab_ids(SHARD);
+    assert_eq!(original_slabs.len(), 1, "v1 must have one owned slab");
+    // The manifest must capture the owned slab that actually holds v1.
+    let manifest = engine.create_bucket_dump_manifest(SHARD, Vec::new()).unwrap();
     assert!(
         !manifest.block_slab_ids.is_empty(),
         "dump manifest should reference the slab holding v1"
     );
-    // Roll to a new slab and overwrite: slab 0 becomes stale (not live) but is still named
-    // by the manifest.
-    engine.block_store().roll_slab().unwrap();
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
+    assert_eq!(manifest.block_slab_ids, original_slabs);
+    // Roll the same shard's writer before overwriting so the manifest alone pins v1.
+    let roll = engine.block_store().roll_slab_for_shard(SHARD).unwrap();
+    assert_eq!(roll.previous_block_slab_id, original_slabs[0]);
+    let response = engine.execute(ExecuteRequest {
+        shard_id: SHARD,
         command: Command::StringSet {
             key: "gc-key".to_string(),
             value: b"v2".to_vec(),
         },
     });
-    let live = engine.live_block_slab_ids(1);
+    assert!(response.status.ok, "overwrite failed: {response:?}");
+    let live = engine.live_block_slab_ids(SHARD);
+    assert_eq!(live, vec![roll.new_block_slab_id]);
     assert!(
         !manifest.block_slab_ids.iter().any(|s| live.contains(s)),
         "manifest slab must be stale (not live) to exercise the guard; live={live:?}"
@@ -2320,7 +2327,7 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
     // Aggressive operator sweep that would delete the stale manifest slab.
     let submitted = runtime.submit_gc(
         GcRequest {
-            shard_id: 1,
+            shard_id: SHARD,
             retain_wal_from_sequence: None,
             retain_index_log_from_sequence: None,
             retain_block_slabs_from_id: Some(u64::MAX),
@@ -10063,14 +10070,21 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
         .collect::<BTreeSet<_>>();
     // Roll, so the named bucket's blocks land somewhere else. This is what makes a slab holding
     // ONLY unnamed-bucket blocks exist at all.
-    engine.block_store().roll_slab().expect("roll a fresh slab");
+    let roll = engine
+        .block_store()
+        .roll_slab_for_shard(SHARD)
+        .expect("roll the shard's owned slab");
+    assert!(outside_slabs.contains(&roll.previous_block_slab_id));
     for key in named_keys.iter() {
         slabpin_write(&engine, SHARD, key);
     }
     let named_slabs = engine
-        .live_block_slab_ids(SHARD)
+        .bucket_storage_summaries(SHARD)
         .into_iter()
-        .filter(|slab| !outside_slabs.contains(slab))
+        .find(|summary| summary.routing_bucket == named_bucket)
+        .expect("named bucket must contain the written blocks")
+        .block_slab_ids
+        .into_iter()
         .collect::<BTreeSet<_>>();
 
     let manifest = engine
@@ -10100,10 +10114,18 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
          holds buckets {shard_buckets:?}, the dump named {named_bucket})"
     );
     assert!(
-        !outside_slabs.is_empty() && !named_slabs.is_empty(),
+        !outside_slabs.is_empty()
+            && !named_slabs.is_empty()
+            && outside_slabs.is_disjoint(&named_slabs),
         "the roll did not separate the two halves: the unnamed buckets sit on {outside_slabs:?} \
          and the named bucket on {named_slabs:?}. Sharing a slab makes the manifest name it and \
          the hazard cannot arise"
+    );
+
+    assert_eq!(named_slabs, BTreeSet::from([roll.new_block_slab_id]));
+    assert!(
+        outside_slabs.iter().all(|slab| manifest.block_slab_ids.contains(slab)),
+        "the durable manifest must pin every slab of its unnamed buckets"
     );
 
     // THE CONTROL, taken before anything is compacted or swept: the same manifest, installed into
@@ -12319,6 +12341,12 @@ fn reclaim_is_refused_while_the_shard_is_recovering() {
             max_background_queue_depth: 8,
         },
     );
+    let periodic = runtime.run_wal_reclaim_slot_for_test(1, &StorageManagerOptions::default());
+    assert_eq!(periodic.skipped_stages, ["shard_recovering"]);
+    assert!(periodic.executed_stages.is_empty());
+    assert!(!periodic.wal_reclaim_round.dumped);
+    assert_eq!(periodic.wal_reclaim_round.moved_blocks, 0);
+    assert!(periodic.lifecycle_report.is_none());
     let submitted = runtime.submit_gc(
         GcRequest {
             shard_id: 1,

@@ -1377,7 +1377,16 @@ pub(super) fn bucket_dump_generation_id(manifest: &BucketDumpManifest) -> String
     for block_slab_id in &manifest.block_slab_ids {
         digest.update(block_slab_id.to_le_bytes());
     }
+
     digest.update(manifest.index_sha256.as_bytes());
+    if manifest.version >= 4 {
+        digest.update(b"dump-wal-frames-v1");
+        for commitment in &manifest.wal_frames {
+            digest.update(commitment.log_id.to_le_bytes());
+            digest.update((commitment.sha256.len() as u64).to_le_bytes());
+            digest.update(commitment.sha256.as_bytes());
+        }
+    }
     if manifest.version >= 3 {
         digest.update(manifest.object_lifecycle.live_object_ids.to_le_bytes());
         digest.update(manifest.object_lifecycle.live_block_refs.to_le_bytes());

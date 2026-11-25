@@ -368,10 +368,22 @@ fn owned_dump_capture_encodes_once_after_registration_retirement() {
     assert!(state.string_address("live").is_some());
     assert!(state.string_address("gone").is_none());
     assert_eq!(manifest.index_sha256, sha256_hex_bytes(&manifest.index_bytes));
-    // This image retains a WAL dependency; only the slab-backed case is portable
-    // without carrying source logs.
-    let status = engine.validate_bucket_dump_manifest(&manifest).unwrap_err();
-    assert_eq!(status.code, "slot_dump_missing_block_segments");
+    assert_eq!(manifest.version, 4);
+    assert_eq!(manifest.wal_frames.len(), 1);
+    engine.validate_bucket_dump_manifest(&manifest).unwrap();
+    let unrelated_root = tempfile::tempdir().unwrap();
+    let unrelated = engine_at(unrelated_root.path());
+    let before_index = std::fs::read(unrelated.index_path(1)).ok();
+    let before_manifests = unrelated.list_bucket_dump_manifests(1);
+    let (before, _) = unrelated.capture_shard_checkpoint(1).unwrap();
+    let status = unrelated.validate_bucket_dump_manifest(&manifest).unwrap_err();
+    assert_eq!(status.code, "slot_dump_invalid_wal_binding");
+    let status = unrelated.install_bucket_dump_manifest(&manifest).unwrap_err();
+    assert_eq!(status.code, "slot_dump_invalid_wal_binding");
+    assert_eq!(std::fs::read(unrelated.index_path(1)).ok(), before_index);
+    assert_eq!(unrelated.list_bucket_dump_manifests(1), before_manifests);
+    let (after, _) = unrelated.capture_shard_checkpoint(1).unwrap();
+    assert_eq!(serialize_index(&before), serialize_index(&after));
     drop(engine);
     let restored = engine_at(dir.path());
     for (key, expected) in [("live", Some(vec![7; 256])), ("gone", None)] {

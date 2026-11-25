@@ -400,7 +400,7 @@ impl TemporalEngine {
             };
             match self
                 .block_store()
-                .prepare_next_slab_with_target(slab_target_bytes)
+                .prepare_next_slab_for_shard(request.shard_id, slab_target_bytes)
             {
                 Ok(Some(roll)) => prepared_block_slab_id = Some(roll.new_block_slab_id),
                 Ok(None) => {}
@@ -443,25 +443,8 @@ impl TemporalEngine {
             ..StorageManagerStageReport::default()
         });
 
-        // Materialize before the dump captures its index. Moving blocks afterwards changes the
-        // live bucket generation and leaves the durable manifest unable to authorize reclaim.
-        let wal_resident_blocks_before = self.wal_resident_block_count(request.shard_id);
-        let wal_resident_blocks_materialised = if request.enable_wal_reclaim
-            && !request.dry_run
-            && wal_resident_blocks_before > 0
-        {
-            let per_round = if request.max_dump_buckets_per_round == 0 {
-                usize::MAX
-            } else {
-                request.max_dump_buckets_per_round
-            };
-            self.materialize_oldest_resident_blocks(
-                request.shard_id,
-                wal_resident_blocks_before.saturating_sub(per_round),
-            )
-        } else {
-            0
-        };
+        // String payloads remain WAL-backed across dump publication.
+        let wal_resident_blocks_materialised = 0;
         let mut lifecycle_report = if request.dry_run {
             None
         } else {

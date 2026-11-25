@@ -1468,6 +1468,7 @@ struct WriteAheadLogInner {
     gc_epoch_by_shard: HashMap<ShardId, u64>,
     /// Shards with a reclaim pass in flight. A second pass is declined, not queued.
     gc_running: HashSet<ShardId>,
+    manifest_floor_revision: HashMap<ShardId, u64>,
     // Lowest sequence whose record may still hold the only copy of a block's bytes -- the dump
     // watermark. A block written into the WAL is addressed by the byte offset of its record and
     // has no copy in a slab until it is dumped, so reclaiming that record destroys the block.
@@ -1620,6 +1621,7 @@ impl LocalWriteAheadLogStore {
                 verified_len_by_shard: HashMap::new(),
                 gc_epoch_by_shard: HashMap::new(),
                 gc_running: HashSet::new(),
+                manifest_floor_revision: HashMap::new(),
                 block_retention_floor_by_shard: HashMap::new(),
                 base_by_shard: HashMap::new(),
                 prealloc_physical_by_shard: HashMap::new(),
@@ -2931,6 +2933,34 @@ impl LocalWriteAheadLogStore {
         .map(|(records, truncated, _resume_at)| (records, truncated))
     }
 
+    // Discover a verified frame boundary without the recovery tail repair.
+    pub(crate) fn dump_segment_start_at(
+        &self,
+        shard_id: ShardId,
+        carrier_id: u64,
+    ) -> Result<Option<ReplayPosition>, WriteAheadLogError> {
+        let inner = self.lock_inner();
+        let Some((path, _)) = locate_log_id(&inner.root, shard_id, carrier_id)? else {
+            return Ok(None);
+        };
+        let (base, _) = read_wal_base(&path)?;
+        Ok(Some(ReplayPosition::at_record_start(base)))
+    }
+
+    // Use the replay scanner's framing and checksum verification, without
+    // editing a possibly torn log during manifest preflight.
+    pub(crate) fn scan_dump_frame_window(
+        &self,
+        shard_id: ShardId,
+        from: ReplayPosition,
+        end: u64,
+        budget: u64,
+    ) -> Result<(Vec<(u64, Vec<u8>, WriteAheadLogRecord)>, bool, ReplayPosition), WriteAheadLogError> {
+        self.scan_collect(shard_id, from.log_id(), end, budget, false, true,
+            |id, bytes, decoded| decoded.map(|record| (id, bytes, record)))
+            .map(|(records, more, next)| (records, more, ReplayPosition::at_record_start(next)))
+    }
+
     /// One bounded window of decoded records, and where to resume reading.
     ///
     /// `scan_decoded` says whether it stopped early; this also says WHERE, so a caller replaying a
@@ -3134,6 +3164,9 @@ impl LocalWriteAheadLogStore {
                 // record -- its first byte is not a frame marker, so the reader falls to
                 // newline-delimited mode and hands back a fragment. `last_wal_sequence_forward`
                 // takes this same first step; the two walkers read one format and must agree.
+                if log_id >= end_offset {
+                    break 'segments;
+                }
                 let at = header_len.saturating_add(log_id.saturating_sub(base));
                 let stepped = skip_block_footer_if_due(&mut reader, at, header_len)?;
                 if stepped != at {
@@ -3141,6 +3174,9 @@ impl LocalWriteAheadLogStore {
                     // stepped over are counted here exactly as the closed-block branch counts
                     // the ones it skips.
                     log_id = log_id.saturating_add(stepped.saturating_sub(at));
+                }
+                if log_id >= end_offset {
+                    break 'segments;
                 }
                 // Reads a record by the length it declares when it is framed that way, and to
                 // the newline when it is not, so one loop walks a log holding both. The
@@ -3334,6 +3370,49 @@ impl LocalWriteAheadLogStore {
         WriteAheadLogReadLease { identity: self.weak_identity(), retention: Arc::downgrade(&self.read_retention), slot, shard: shard_id, sequence }
     }
 
+    /// Protect a candidate's dependencies before inspecting previously unpinned WAL records.
+    /// A collector already in flight may be unlinking a sealed segment using its original floor.
+    pub(crate) fn try_retain_unprotected_read_sequence(
+        &self, shard_id: ShardId, sequence: u64,
+    ) -> Option<WriteAheadLogReadLease> {
+        let inner = self.lock_inner_raw();
+        if inner.gc_running.contains(&shard_id) {
+            return None;
+        }
+        let lease = self.retain_read_sequence(shard_id, sequence);
+        drop(inner);
+        Some(lease)
+    }
+
+    pub(crate) fn manifest_floor_revision(&self, shard: ShardId) -> u64 {
+        self.lock_inner_raw().manifest_floor_revision.get(&shard).copied().unwrap_or_default()
+    }
+
+    pub(crate) fn replace_manifest_floor_if_current(
+        &self, shard: ShardId, revision: u64, floor: Option<u64>,
+    ) -> Result<(), ()> {
+        let mut inner = self.lock_inner_raw();
+        if inner.manifest_floor_revision.get(&shard).copied().unwrap_or_default() != revision {
+            return Err(());
+        }
+        if let Some(floor) = floor {
+            inner.block_retention_floor_by_shard.insert(shard, floor);
+        } else {
+            inner.block_retention_floor_by_shard.remove(&shard);
+        }
+        Ok(())
+    }
+
+    // Call while holding the candidate lease, even after a failed write that may have renamed
+    // the image. A refresh of the previous catalog cannot erase the newly adopted dependency.
+    pub(crate) fn adopt_manifest_floor(&self, shard: ShardId, floor: u64) {
+        let mut inner = self.lock_inner_raw();
+        let revision = inner.manifest_floor_revision.entry(shard).or_default();
+        *revision = revision.checked_add(1).expect("manifest floor revision exhausted");
+        inner.block_retention_floor_by_shard.entry(shard)
+            .and_modify(|current| *current = (*current).min(floor)).or_insert(floor);
+    }
+
     /// Drop the shard's floor, letting GC reclaim freely again. Call this only once no block
     /// resolves inside this shard's WAL.
     pub fn clear_block_retention_floor(&self, shard_id: ShardId) {
@@ -3441,6 +3520,18 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         log_ids: &[u64],
     ) -> Result<Vec<Option<Vec<u8>>>, WriteAheadLogError> {
+        self.read_frames_with_ends(shard_id, log_ids).map(|records| {
+            records.into_iter().map(|record| record.map(|(bytes, _)| bytes)).collect()
+        })
+    }
+
+    // The end is in on-disk log coordinates. Packed continuation headers,
+    // footers, and padding count here even when absent from decoded bytes.
+    pub(crate) fn read_frames_with_ends(
+        &self,
+        shard_id: ShardId,
+        log_ids: &[u64],
+    ) -> Result<Vec<Option<(Vec<u8>, ReplayPosition)>>, WriteAheadLogError> {
         let mut inner = self.lock_inner();
         // (path, base offset, header length, bytes of records) of every non-empty piece, in order.
         let mut spans: Vec<(PathBuf, u64, u64, u64)> = Vec::new();
@@ -3478,7 +3569,13 @@ impl LocalWriteAheadLogStore {
                 inner.stats.reads += 1;
                 inner.stats.bytes_read += record.physical_bytes;
             }
-            out.push(raw.map(|record| record.bytes));
+            let frame = raw.map(|record| {
+                log_id.checked_add(record.physical_bytes)
+                    .map(|end| (record.bytes, ReplayPosition::at_record_start(end)))
+                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData,
+                                                       "WAL frame end overflows log coordinates"))
+            }).transpose()?;
+            out.push(frame);
         }
         Ok(out)
     }
@@ -11648,6 +11745,41 @@ mod tests {
         assert!(!report.clamped_by_durable_index);
         assert_eq!(report.effective_retain_from_sequence, 4);
         assert_eq!(report.records_after, 3, "sequences 4, 5 and 6 survive");
+    }
+
+    #[test]
+    fn stale_dump_retention_refresh_cannot_erase_adopted_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&reopened, 1, 6);
+        let stale = reopened.manifest_floor_revision(1);
+        let lease = reopened.try_retain_unprotected_read_sequence(1, 3).unwrap();
+        reopened.adopt_manifest_floor(1, 3);
+        drop(lease);
+        assert!(reopened.replace_manifest_floor_if_current(1, stale, None).is_err());
+        reopened.gc_before_sequence_unchecked(1, 6).unwrap();
+        assert_eq!(sequences_on_disk(dir.path(), 1), vec![3, 4, 5, 6]);
+        let refreshed = reopened.manifest_floor_revision(1);
+        reopened.replace_manifest_floor_if_current(1, refreshed, None).unwrap();
+        reopened.gc_before_sequence_unchecked(1, 6).unwrap();
+        assert_eq!(sequences_on_disk(dir.path(), 1), vec![6]);
+    }
+
+    #[test]
+    fn candidate_dump_read_lease_protects_floor_and_allows_eligible_reclaim() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 6);
+        store.lock_inner_raw().gc_running.insert(1);
+        assert!(store.try_retain_unprotected_read_sequence(1, 3).is_none());
+        store.lock_inner_raw().gc_running.remove(&1);
+        let lease = store.try_retain_unprotected_read_sequence(1, 3).unwrap();
+        let report = store.gc_before_sequence_unchecked(1, 6).unwrap();
+        assert_eq!(report.effective_retain_from_sequence, 3);
+        assert_eq!(sequences_on_disk(dir.path(), 1), vec![3, 4, 5, 6]);
+        drop(lease);
+        store.gc_before_sequence_unchecked(1, 6).unwrap();
+        assert_eq!(sequences_on_disk(dir.path(), 1), vec![6]);
     }
 
     #[test]

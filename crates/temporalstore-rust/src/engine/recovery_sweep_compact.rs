@@ -2325,7 +2325,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             None => {
                 let roll = self
                     .block_store
-                    .roll_slab()
+                    .roll_slab_for_shard(shard_id)
                     .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
                 (roll.previous_block_slab_id, roll.new_block_slab_id)
             }

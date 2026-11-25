@@ -429,6 +429,7 @@ fn installed_snapshot_to_proto(snapshot: &RaftSnapshot) -> io::Result<v1::WalIns
                 .map(|slab| v1::WalStateImageSlab {
                     block_slab_id: slab.block_slab_id,
                     slab: slab.bytes.clone(),
+                    owner_shard_id: slab.owner_shard_id,
                 })
                 .collect(),
             start_routing_bucket: image
@@ -470,6 +471,7 @@ fn installed_snapshot_from_proto(snapshot: v1::WalInstalledSnapshot) -> io::Resu
             .map(|slab| RaftSnapshotStateImageSlab {
                 block_slab_id: slab.block_slab_id,
                 bytes: slab.slab,
+                owner_shard_id: slab.owner_shard_id,
             })
             .collect(),
     });
@@ -1818,7 +1820,9 @@ fn every_command_the_raft_wal_carries_is_protobuf() {
             state_image: Some(RaftSnapshotStateImage {
                 index_bytes: vec![7; 5],
                 next_block_id: 8,
-                slabs: vec![RaftSnapshotStateImageSlab { block_slab_id: 3, bytes: vec![9; 4] }],
+                slabs: vec![RaftSnapshotStateImageSlab {
+                    block_slab_id: 3, bytes: vec![9; 4], owner_shard_id: Some(0),
+                }],
                 routing_range: Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
                     start_routing_bucket: 10,
                     end_routing_bucket: 20,

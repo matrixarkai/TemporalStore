@@ -831,7 +831,15 @@ pub struct ObjectManagerRuntimeReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DumpWalFrameCommitment {
+    pub log_id: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BucketDumpManifest {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wal_frames: Vec<DumpWalFrameCommitment>,
     pub version: u32,
     pub shard_id: ShardId,
     pub manifest_id: String,

@@ -660,6 +660,15 @@ impl DataNodeRuntime {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn run_wal_reclaim_slot_for_test(
+        &self, shard_id: ShardId, options: &StorageManagerOptions,
+    ) -> StorageManagerLoopReport {
+        self.run_storage_manager_once_with_report_details(
+            shard_id, options_for_slot(options, HeavySlot::WalReclaim), false,
+        )
+    }
+
     pub fn run_storage_manager_once(
         &self,
         shard_id: ShardId,
@@ -748,7 +757,10 @@ impl DataNodeRuntime {
             // on the overwhelming majority of cycles. A failure is recorded and does not stop
             // the cycle: the inline roll in `append` remains the fallback, so the only
             // consequence is that the next append pays for the roll, exactly as it does today.
-            match self.inner.engine.block_store().prepare_next_slab() {
+            match self.inner.engine.block_store().prepare_next_slab_for_shard(
+                shard_id,
+                crate::storage_config::effective_block_slab_target_bytes(),
+            ) {
                 Ok(Some(roll)) => {
                     tracing::debug!(
                         previous_block_slab_id = roll.previous_block_slab_id,
@@ -824,21 +836,8 @@ impl DataNodeRuntime {
         let mut wal_reclaim_round = StorageManagerWalReclaimRound::default();
         if options.enable_wal_reclaim && dump_pressure {
             let dump_started = std::time::Instant::now();
-            // Publish relocated addresses before the dump captures their generations.
-            let resident = self.inner.engine.wal_resident_block_count(shard_id);
-            let moved_blocks = if resident > 0 {
-                self.inner.engine.materialize_oldest_resident_blocks(
-                    shard_id,
-                    resident.saturating_sub(if options.max_dump_buckets_per_round == 0 {
-                        usize::MAX
-                    } else {
-                        options.max_dump_buckets_per_round
-                    }),
-                )
-            } else {
-                0
-            };
-            wal_reclaim_round.moved_blocks = moved_blocks;
+            // Keep String payloads in the WAL during dump publication.
+            wal_reclaim_round.moved_blocks = 0;
             let response = self.apply_storage_lifecycle_with_report_details(StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
@@ -2160,7 +2159,10 @@ impl DataNodeRuntime {
             return None;
         }
         if options.enable_prepare {
-            if let Err(error) = self.inner.engine.block_store().prepare_next_slab() {
+            if let Err(error) = self.inner.engine.block_store().prepare_next_slab_for_shard(
+                shard_id,
+                crate::storage_config::effective_block_slab_target_bytes(),
+            ) {
                 tracing::warn!(
                     %error,
                     "storage manager could not pre-allocate the next data slab; \

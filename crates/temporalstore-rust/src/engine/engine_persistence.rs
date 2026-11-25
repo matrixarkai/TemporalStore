@@ -466,28 +466,41 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
         warm_cache: bool,
-    ) -> (Option<ShardState>, u64, Option<crate::index_log::MetaItem>) {
+    ) -> Result<(Option<ShardState>, u64, Option<crate::index_log::MetaItem>,
+                 Option<super::dump_wal_dependencies::VerifiedDumpWal>), Status> {
         let base = self.read_index_base(shard_id);
         let mut watermark = base.as_ref().and_then(|(state, _)| state.applied_wal_sequence).unwrap_or(0);
         let mut selected = base.map(|(state, present)| (state, present, false));
+        let mut wal_proof = None;
         // Use the highest durable WAL frontier, not the last manifest in index-log order:
         // WAL reclamation can already have removed records covered by an earlier manifest.
         if let Some(manifest) = durable_recovery_bucket_dump_manifest_at(&self.index_dir, shard_id)
-            .filter(|manifest| manifest.wal_sequence > watermark)
+            .filter(|manifest| manifest.wal_sequence > watermark || (manifest.version == 4 && manifest.wal_sequence == watermark))
         {
             match installable_image(&manifest).map_err(|error| error.to_string())
                 .and_then(crate::engine::decode_index_bytes)
             {
                 Ok(state) => {
+                    if manifest.version >= 4 || !manifest.wal_frames.is_empty() {
+                        self.validate_bucket_dump_manifest(&manifest)?;
+                        let entries = collect_live_block_entries(&state);
+                        let mut proof = self.verify_committed_dump_wal(&manifest, &state, &entries)?
+                            .ok_or_else(|| Status::error("slot_dump_invalid_wal_binding", "missing WAL proof"))?;
+                        proof.arm_adoption();
+                        wal_proof = Some(proof);
+                    }
                     watermark = manifest.wal_sequence;
                     selected = Some((state, true, true));
+                }
+                Err(_) if manifest.version >= 4 => {
+                    return Err(Status::error("slot_dump_invalid_index", "cannot load committed WAL manifest image"));
                 }
                 Err(_) => note_index_load(IndexLoadPath::Undecodable),
             }
         }
         let Some((mut state, present, from_manifest)) = selected else {
             let catalog = self.index_log_store.recover_delta_records(shard_id, |_| {}).ok().flatten();
-            return (None, watermark, catalog);
+            return Ok((None, watermark, catalog, None));
         };
         let catalog = self.fold_relocations_and_catalog(shard_id, &mut state);
         let loaded = if from_manifest {
@@ -497,7 +510,7 @@ impl TemporalEngine {
         } else {
             self.finish_index_load(shard_id, state, present, warm_cache)
         };
-        (loaded, watermark, catalog)
+        Ok((loaded, watermark, catalog, wal_proof))
     }
 
     pub(super) fn load_index_checked_with_catalog(
