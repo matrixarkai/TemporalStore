@@ -249,6 +249,61 @@ class AdapterTest(unittest.TestCase):
         adapter_module.BlobClient = self.old_blob
         adapter_module.TemporalStoreClient = self.old_data
 
+    def test_kv_backend_keeps_one_binary_value_and_rejects_wrong_destination_size(self):
+        adapter = adapter_module.TemporalStoreL2Adapter({"storage_backend": "kv"})
+        self.addCleanup(adapter.close)
+        key = Key("kv-chunk")
+        commands = []
+
+        def batch_execute(batch):
+            answers = []
+            for command in batch:
+                commands.append(command["kind"])
+                name = command["key"]
+                kind = command["kind"]
+                values = adapter._data.values
+                if kind == "string_set_conditional":
+                    self.assertEqual(command["condition"], "if_not_exists")
+                    self.assertIsInstance(command["value"], memoryview)
+                    created = name not in values
+                    values.setdefault(name, bytes(command["value"]))
+                    answers.append({"kind": "integer", "value": int(created)})
+                elif kind == "string_len":
+                    answers.append({"kind": "integer", "value": len(values.get(name, b""))})
+                elif kind == "string_get":
+                    answers.append({"kind": "bytes", "value": values.get(name)})
+                else:
+                    self.assertEqual(kind, "common_delete")
+                    values.pop(name)
+                    answers.append({"kind": "integer", "value": 1})
+            return answers
+
+        adapter._data.batch_execute = batch_execute
+        payload = bytes((0, 128, 255))
+        for data, expected in ((payload, len(payload)), (b"bad", 0)):
+            task = adapter.submit_store_task([key], [Memory(data)])
+            adapter._store_pool.submit(lambda: None).result(timeout=2)
+            result = adapter.pop_completed_store_tasks()[task]
+            self.assertTrue(result.success)
+            self.assertEqual(result.transferred, expected)
+        self.assertEqual(adapter._data.values, {"kv-chunk": payload})
+        task = adapter.submit_lookup_and_lock_task([key, Key("unknown")], {})
+        adapter._lookup_pool.submit(lambda: None).result(timeout=2)
+        self.assertEqual(adapter.query_lookup_and_lock_result(task).bits, [True, False])
+
+        too_short, exact = Memory(b"ab"), Memory(b"abc")
+        task = adapter.submit_load_task([key, key], [too_short, exact])
+        adapter._load_pool.submit(lambda: None).result(timeout=2)
+        self.assertEqual(adapter.query_load_result(task).bits, [False, True])
+        self.assertEqual(too_short.byte_array, b"ab")
+        self.assertEqual(exact.byte_array, payload)
+        adapter.submit_unlock([key])
+        adapter.delete([key])
+        adapter._store_pool.submit(lambda: None).result(timeout=2)
+        self.assertEqual(adapter._data.values, {})
+        self.assertEqual(commands.count("string_set_conditional"), 2)
+        self.assertEqual(commands.count("common_delete"), 1)
+
     def test_store_lookup_load_and_capacity_eviction(self):
         adapter = self.adapter
         self.assertEqual(len({adapter.get_store_event_fd(),
