@@ -2572,7 +2572,7 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
             100.0 * bytes as f64 / whole as f64
         );
     }
-    // ---- AND THE DIFFERENCE BETWEEN THE TWO COLUMNS IS ONE CLASS, MEASURED SIDE BY SIDE ----
+    // ---- BUCKET COST PLUS THE EXPLICIT V33 OWNER/BOUNDS LEDGER, SIDE BY SIDE ----
     //
     // THE SAME CORPUS ON THE SHIPPED RANGE, so the comparison is between two ROUTING RANGES and not
     // between two store sizes. Without this the claim "the fall is the per-bucket class" would be a
@@ -2595,6 +2595,18 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
         shipped.buckets
     );
     let shipped_walk = walk(&shipped);
+    let owner_unbounded = owner_row_ledger(&reading, u32::MAX);
+    let owner_shipped = owner_row_ledger(&shipped, SHIPPED_END_BUCKET);
+    // The old coarse `objects/subtree` subtotal remains part of the full structural walk.
+    // This independent, closed ledger decomposes it before attributing the range delta.
+    assert_eq!(owner_unbounded.values().sum::<usize>(), walked.tally.bytes_of("objects/subtree"));
+    assert_eq!(owner_shipped.values().sum::<usize>(), shipped_walk.tally.bytes_of("objects/subtree"));
+    for term in owner_unbounded.keys() {
+        if *term != "owner/filed" && *term != "bounds/end" {
+            assert_eq!(owner_unbounded[term], owner_shipped[term],
+                "range-blind owner term {term}");
+        }
+    }
     let per_object = |bytes: usize| bytes as f64 / reading.objects as f64;
     println!();
     println!("================ THE SAME CORPUS ON BOTH RANGES, BY SCALE ================");
@@ -2619,9 +2631,8 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
         per_object(whole) - per_object(shipped.slot_index_entry_bytes())
     );
 
-    // THE PER-BLOCK CLASS DOES NOT KNOW WHICH RANGE IT IS ON. That is the statement that makes the
-    // whole difference between the two published columns attributable to ONE class rather than
-    // spread over the index -- and it is asserted rather than inferred from the two totals.
+    // THE PER-BLOCK CLASS DOES NOT KNOW WHICH RANGE IT IS ON. The owner-row ledger below
+    // separately accounts for the filed IDs and bounds that do know the range.
     //
     // THE EXACT CLAUSE AND THE TOLERANT ONE, AND THE EXACT ONE IS NOT DERIVED FROM IT. The two
     // columns write the same objects in the same order, and a per-block term depends only on the
@@ -2648,15 +2659,23 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
     let whole_difference = per_object(whole) - per_object(shipped.slot_index_entry_bytes());
     let bucket_difference = per_object(walked.tally.at_scale(Scale::PerBucket))
         - per_object(shipped_walk.tally.at_scale(Scale::PerBucket));
+    let filed_delta = owner_unbounded["owner/filed"] as i64 - owner_shipped["owner/filed"] as i64;
+    let bounds_delta = owner_unbounded["bounds/end"] as i64 - owner_shipped["bounds/end"] as i64;
+    let bucket_delta = walked.tally.at_scale(Scale::PerBucket) as i64
+        - shipped_walk.tally.at_scale(Scale::PerBucket) as i64;
+    assert_eq!(whole as i64 - shipped.slot_index_entry_bytes() as i64,
+        bucket_delta + filed_delta + bounds_delta,
+        "no unclassified range-sensitive byte outside buckets, filed owner IDs and bounds");
+    let owner_difference = (filed_delta + bounds_delta) as f64 / reading.objects as f64;
+    let bucket_residual = whole_difference - owner_difference;
     assert!(
-        (whole_difference - bucket_difference).abs() / whole_difference < 0.02,
-        "[CLAUSE the-difference-is-one-class] the whole differs by {whole_difference:.3} B/object \
-         between the two ranges and the per-bucket class by {bucket_difference:.3}, so the other \
-         two classes carry some of it and the attribution is wrong"
+        (bucket_residual - bucket_difference).abs() / bucket_residual < 0.02,
+        "after the exact owner/bounds ledger, the remaining range delta must be per-bucket"
     );
+    println!("  explicit owner filed delta {filed_delta} B; bounds delta {bounds_delta} B");
     println!(
         "  `slot_index` is {:.2} B/object here against {:.2} on the shipped range, and {:.3} of the \
-         {:.3} B/object difference is the per-bucket class alone: EVERY per-bucket term divides by \
+         {:.3} B/object difference is the per-bucket class (the owner/bounds delta is above): EVERY per-bucket term divides by \
          ONE object on this range. The per-block class does not move. Read the two columns together \
          or neither.",
         per_object(whole),
@@ -2665,4 +2684,93 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
         whole_difference
     );
     println!();
+}
+
+// A second-level ledger for the v33 String subtree. No engine hashing counters are touched:
+// each tuple key/filed ID/address is joined to the independently written block-map entry.
+fn owner_row_ledger(reading: &Reading, end: u32) -> BTreeMap<&'static str, usize> {
+    let core = &reading.value["slot_index"];
+    let objects = core["objects"].as_object().expect("model tables");
+    let owner = objects["string"].as_array().expect("v33 String tuple");
+    assert_eq!(owner.len(), 3, "no unclassified tuple field");
+    assert_eq!(owner[0], "string_owner_rows_v1");
+    assert_eq!(owner[1], serde_json::json!([0, end]));
+    let rows = owner[2].as_array().unwrap();
+    assert_eq!(rows.len(), reading.objects);
+    assert!(!rows.is_empty());
+    let mut expected = BTreeMap::new();
+    for (bucket, node) in core["bucket_map"].as_object().unwrap() {
+        let bucket: u32 = bucket.parse().unwrap();
+        for (key, block) in node["block_index"].as_object().unwrap() {
+            let parts = crate::index_log::block_ref_key_parts(key).expect("written block identity");
+            assert_eq!(parts.kind, "string");
+            assert!(expected.insert(parts.object_key.to_owned(), (bucket, block["address"].clone())).is_none());
+        }
+    }
+    assert_eq!(expected.len(), reading.objects);
+    let mut ledger = BTreeMap::new();
+    ledger.insert("objects/punctuation", 1 + objects.len()); // open brace, commas, close
+    ledger.insert("objects/names", objects.keys().map(|name| klen(name) + 1).sum());
+    let mut other = 0;
+    for (name, table) in objects {
+        assert!(crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(name).is_some(),
+            "unclassified model {name}");
+        if name != "string" {
+            assert!(table.as_object().unwrap().is_empty(), "String-only corpus");
+            other += jlen(table);
+        }
+    }
+    assert!(other > 0, "other model envelopes are explicitly charged");
+    ledger.insert("objects/other-models", other);
+    ledger.insert("owner/version", jlen(&owner[0]));
+    ledger.insert("owner/tuple-punctuation", 4); // open, two commas, close
+    ledger.insert("bounds/punctuation", 3); // open, comma, close
+    ledger.insert("bounds/start", 1);
+    ledger.insert("bounds/end", jlen(&serde_json::json!(end)));
+    ledger.insert("owner/row-list-open", 1);
+    for name in ["owner/filed", "owner/verified", "owner/key", "owner/slot", "owner/row-punctuation"] {
+        ledger.insert(name, 0);
+    }
+    for value in rows {
+        let row = value.as_array().unwrap();
+        assert_eq!(row.len(), 4, "no unclassified owner field");
+        let key = row[2].as_str().unwrap();
+        let (bucket, address) = expected.remove(key).expect("unique real written String key");
+        assert_eq!(row[0], serde_json::json!(bucket));
+        assert_eq!(row[1], true);
+        let slot: crate::engine::object_record::ObjectSlot = serde_json::from_value(row[3].clone()).unwrap();
+        assert_eq!(serde_json::to_value(slot.address()).unwrap(), address,
+            "owner and block address agree for {key}");
+        for (term, field) in ["owner/filed", "owner/verified", "owner/key", "owner/slot"].into_iter().zip(row) {
+            *ledger.get_mut(term).unwrap() += jlen(field);
+        }
+        // Row open + three commas + row close + outer comma (or last outer close).
+        *ledger.get_mut("owner/row-punctuation").unwrap() += 6;
+    }
+    assert!(expected.is_empty(), "every independently written key was represented");
+    assert!(ledger.values().all(|bytes| *bytes > 0));
+    assert_eq!(ledger.values().sum::<usize>(), jlen(&core["objects"]), "owner ledger part-sum-whole");
+    ledger
+}
+
+#[test]
+fn owner_row_ledger_refuses_unclassified_fields_keys_bounds_and_addresses() {
+    let mut reading = reading_on(2, PUBLISHED_WIDTH, KeyShape::Padded, SHIPPED_END_BUCKET);
+    let original = reading.value.clone();
+    owner_row_ledger(&reading, SHIPPED_END_BUCKET);
+    for control in 0..5 {
+        reading.value = original.clone();
+        let owner = &mut reading.value["slot_index"]["objects"]["string"];
+        match control {
+            0 => owner.as_array_mut().unwrap().push(serde_json::Value::Null),
+            1 => owner[2][0][2] = serde_json::json!("not-a-written-object"),
+            2 => owner[1][1] = serde_json::json!(SHIPPED_END_BUCKET - 1),
+            3 => owner[2][0][3] = owner[2][1][3].clone(),
+            4 => owner[0] = serde_json::json!("string_owner_rows_v99"),
+            _ => unreachable!(),
+        }
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            owner_row_ledger(&reading, SHIPPED_END_BUCKET)
+        })).is_err(), "negative control {control} must not fit the ledger");
+    }
 }

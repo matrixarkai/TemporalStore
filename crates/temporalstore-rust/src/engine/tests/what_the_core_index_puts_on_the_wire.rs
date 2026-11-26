@@ -874,14 +874,51 @@ fn the_legacy_spelling_of_the_one_wire_field_still_loads_and_an_unknown_one_does
     let from_unknown: CoreIndex = serde_json::from_value(serde_json::Value::Object(unknown))
         .expect("an unrecognised key is ignored, which is what lets a newer index load into an older engine");
     for restored in [&from_legacy, &from_unknown] {
-        let restored = serde_json::to_value(restored).expect("the decoded core index serializes");
-        for field in unchanged {
-            assert_eq!(restored.get(field), encoded.get(field), "durable field {field}");
+        let written = serde_json::to_value(restored).expect("the decoded core index serializes");
+        for field in ["hashes", "lists", "sets", "zsets"] {
+            assert_eq!(written.get(field), encoded.get(field), "durable field {field}");
         }
+        // A legacy flat String map is intentionally upgraded to a v33 owner tuple. Compare
+        // every original typed key and complete slot, not two normalizations of the same input.
+        assert_eq!(restored.objects.len(), index.objects.len());
+        for (kind, original) in &index.objects {
+            let actual = restored.objects.get(kind).expect("all model tables survive");
+            assert_eq!(actual.len(), original.len());
+            for (key, slot) in original.iter() {
+                assert_eq!(serde_json::to_value(actual.get(key).unwrap()).unwrap(),
+                    serde_json::to_value(slot).unwrap(), "durable object {kind:?}/{key}");
+            }
+        }
+        let owner = written["objects"]["string"].as_array().unwrap();
+        assert_eq!(owner.len(), 3);
+        assert_eq!(owner[0], "string_owner_rows_v1");
+        assert_eq!(owner[1], serde_json::json!([0, u32::MAX]));
+        let rows = owner[2].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].as_array().unwrap().len(), 4);
+        assert_eq!(rows[0][1], false, "legacy rows without filing evidence stay unverified");
+        assert_eq!(rows[0][2], "an-object");
     }
     assert!(
         from_unknown.bucket_map.is_empty(),
         "an unrecognised spelling must leave the map at its default; if this were populated the \
          test above would pass whatever the alias did"
     );
+}
+
+#[test]
+fn unknown_bucket_field_defaults_independently_and_unknown_string_version_is_refused() {
+    let index = an_index_with_every_field_populated();
+    let mut value = serde_json::to_value(&index).unwrap();
+    let fields = value.as_object_mut().unwrap();
+    let buckets = fields.remove("bucket_map").unwrap();
+    fields.insert("slotz".to_owned(), buckets);
+    let unknown: CoreIndex = serde_json::from_value(value).unwrap();
+    // This assertion is reached without any raw-map versus owner-tuple comparison first.
+    assert!(unknown.bucket_map.is_empty());
+    assert_eq!(unknown.objects.len(), index.objects.len());
+    let mut current = serde_json::to_value(&unknown).unwrap();
+    current["objects"]["string"][0] = serde_json::json!("string_owner_rows_v99");
+    assert!(serde_json::from_value::<CoreIndex>(current).is_err(),
+        "ignoring an unknown top-level slot name must not accept unknown String wire versions");
 }

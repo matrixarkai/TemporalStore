@@ -222,6 +222,7 @@ impl ObjectRows {
     }
 
     pub(super) fn adopt_key(&mut self, key: &str, canonical: &ModelKey) -> bool {
+        if self.is_empty() { return false; }
         let Some((old, _)) = self.get_key_value(key) else { return false; };
         if std::sync::Arc::ptr_eq(old, canonical) { return false; }
         match self {
@@ -454,6 +455,107 @@ impl<'de> Deserialize<'de> for ObjectRows {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    fn reset_adoption_key_work() {
+        crate::engine::hashing::reset_object_id_derivations();
+        crate::engine::hashing::reset_routing_bucket_derivations();
+    }
+
+    #[test]
+    fn empty_owner_adoption_declines_without_hashing_or_changing_the_table() {
+        let canonical: ModelKey = Arc::from("wide-feature-write");
+        for bounds in [(0, 1023), (50, 100), (0, u32::MAX)] {
+            let mut rows = ObjectRows::string(bounds);
+            let before = rmp_serde::to_vec_named(&rows).unwrap();
+            reset_adoption_key_work();
+            assert!(!rows.adopt_key(&canonical, &canonical));
+            assert_eq!(crate::engine::hashing::routing_bucket_derivations(), (0, 0));
+            assert_eq!(crate::engine::hashing::object_id_derivations(), (0, 0));
+            assert!(rows.is_empty());
+            assert_eq!(rows.len(), 0);
+            assert_eq!(rmp_serde::to_vec_named(&rows).unwrap(), before);
+            assert_eq!(rows.selected_strings(bounds.0).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn nonempty_owner_adoption_keeps_filing_slot_metadata_and_canonical_identity() {
+        let held: ModelKey = Arc::from("shared-feature-and-string");
+        let canonical: ModelKey = Arc::from("shared-feature-and-string");
+        assert!(!Arc::ptr_eq(&held, &canonical));
+        let mut rows = ObjectRows::string((0, 1023));
+        let routed = block_routing_bucket(&held, 0, 1023);
+        let filed = (routed + 1) % 1024;
+        let mut slot = ObjectSlot::default();
+        slot.set_address(&crate::ElementEntry::from_parts(3, 128, 64, Some(11), Some(22)));
+        slot.set_logical_size(91);
+        let address = slot.address();
+        let logical_size = slot.logical_size();
+        rows.insert(held.clone(), slot);
+        assert!(rows.file_string(&held, filed));
+        let before = rmp_serde::to_vec_named(&rows).unwrap();
+
+        reset_adoption_key_work();
+        assert!(rows.adopt_key(&held, &canonical));
+        assert_eq!(crate::engine::hashing::routing_bucket_derivations(),
+            (2, 2 * held.len() as u64));
+        assert_eq!(crate::engine::hashing::object_id_derivations(), (0, 0));
+        assert_eq!(rows.len(), 1);
+        {
+            let (key, slot) = rows.selected_strings(filed).unwrap().next().unwrap();
+            assert!(Arc::ptr_eq(key, &canonical));
+            assert!(!Arc::ptr_eq(key, &held));
+            assert_eq!(slot.address(), address);
+            assert_eq!(slot.logical_size(), logical_size);
+        }
+        assert_eq!(rows.selected_strings(routed).unwrap().count(), 0);
+        assert_eq!(rmp_serde::to_vec_named(&rows).unwrap(), before);
+
+        reset_adoption_key_work();
+        assert!(!rows.adopt_key(&canonical, &canonical));
+        assert_eq!(crate::engine::hashing::routing_bucket_derivations(),
+            (1, held.len() as u64));
+        assert_eq!(rmp_serde::to_vec_named(&rows).unwrap(), before);
+
+        let absent: ModelKey = Arc::from("absent-string");
+        reset_adoption_key_work();
+        assert!(!rows.adopt_key(&absent, &absent));
+        assert_eq!(crate::engine::hashing::routing_bucket_derivations(),
+            (1, absent.len() as u64));
+        assert_eq!(rmp_serde::to_vec_named(&rows).unwrap(), before);
+    }
+
+    #[test]
+    fn real_feature_batch_preserves_payload_and_the_seven_route_bound() {
+        use crate::engine::TemporalEngine;
+        use crate::types::{Command, CommandResponse, ExecuteRequest, FeaturePoint};
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20, dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let key = "wide-feature-write";
+        let points: Vec<_> = (1..=128_u64).map(|timestamp_ms| FeaturePoint {
+            timestamp_ms, value: timestamp_ms.to_le_bytes().to_vec(),
+        }).collect();
+        reset_adoption_key_work();
+        let stored = engine.execute(ExecuteRequest {
+            shard_id: 1, command: Command::FeatureAppend { key: key.into(), points: points.clone() },
+        });
+        let routes = crate::engine::hashing::routing_bucket_derivations();
+        let identities = crate::engine::hashing::object_id_derivations();
+        assert!(stored.status.ok, "{:?}", stored.status);
+        assert_eq!(routes, (7, 7 * key.len() as u64));
+        assert_eq!(identities, (5, 5 * ("feature".len() + key.len()) as u64));
+        engine.shards.with_state(1, |shard| assert!(shard.unwrap().strings().is_empty()));
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 1, command: Command::FeatureQuery {
+                key: key.into(), start_ms: 1, end_ms: 128, count: Some(128),
+            },
+        });
+        assert!(read.status.ok, "{:?}", read.status);
+        assert_eq!(read.response, CommandResponse::FeaturePoints { points });
+    }
 
     #[test]
     fn legacy_rows_move_once_and_require_filing_before_selected_capture() {
