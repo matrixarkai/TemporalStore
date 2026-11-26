@@ -18,7 +18,6 @@ from temporalstore_sdk import (
     RaftPrimaryUnavailable, TableClient, commands as pb,
 )
 from temporalstore_sdk.cache_wire import CacheInsert
-from temporalstore_sdk.client import write_outcome_is_unknown
 
 from .kv import ValueBackend
 from .layout import layout_table_name
@@ -353,30 +352,21 @@ class TableValueBackend(ValueBackend):
     ) -> Iterator[tuple[int, bool]]:
         failures = []
         entries = self._store_entries(chunks)
-        replied = set()
         first_error = None
-        transport_error = None
+        # A proxy status cannot identify the durability mode of the serving owner.
+        can_reconcile = self._proxy is None
         try:
             for index, document, response in self._iter_responses(entries, lookup=False, partial=True):
-                replied.add(index)
                 if response.status.ok:
                     yield index, response.count == 1
                 else:
                     status = response.status
                     failures.append((
-                        index, document["key"], status.code in _STORE_OUTCOME_UNCERTAIN,
+                        index, document["key"],
+                        can_reconcile and status.code in _STORE_OUTCOME_UNCERTAIN,
                         MetadataError(status.code, status.message),
                     ))
-        except grpc.RpcError as error:
-            if len(replied) < len(entries) and write_outcome_is_unknown(error):
-                transport_error = error
-                failures.extend(
-                    (index, document["key"], True, error)
-                    for index, (_, document) in enumerate(entries) if index not in replied
-                )
-            else:
-                first_error = error
-        except MetadataError as error:
+        except (MetadataError, grpc.RpcError) as error:
             first_error = error
 
         waiting = sum(uncertain for _, _, uncertain, _ in failures)
@@ -396,7 +386,7 @@ class TableValueBackend(ValueBackend):
                     # The value is usable. The read cannot assign ownership of the insert.
                     yield index, False
                     continue
-            if first_error is None or error is transport_error:
+            if first_error is None:
                 first_error = error
         if first_error is not None:
             raise first_error

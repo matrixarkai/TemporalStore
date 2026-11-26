@@ -382,7 +382,7 @@ class AdapterTest(unittest.TestCase):
                 self.assertEqual(put.string_set_conditional.key, get.string_get.key)
                 self.assertLessEqual(client.batch_execute.call_args.kwargs["timeout_seconds"], 1)
 
-    def test_remote_store_timeout_uses_one_byte_exact_readback(self):
+    def test_unclassified_remote_timeout_preserves_the_error_without_readback(self):
         import grpc
 
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
@@ -404,10 +404,61 @@ class AdapterTest(unittest.TestCase):
             pb.CommandResponse(status=pb.Status(ok=True), value=b"tensor"),
         ]
         with patch.object(backend, "_table", return_value=client):
-            self.assertEqual(list(backend.iter_store_results([(key, memoryview(b"tensor"))])), [(0, False)])
-        self.assertEqual(backend.stores_confirmed_by_read, 1)
+            with self.assertRaises(RemoteTimeout):
+                list(backend.iter_store_results([(key, memoryview(b"tensor"))]))
+        self.assertEqual(backend.stores_confirmed_by_read, 0)
         client.iter_batch_responses.assert_called_once()
-        client.batch_execute.assert_called_once()
+        client.batch_execute.assert_not_called()
+
+    def test_shared_store_timeout_does_not_confirm_an_insert_by_local_read(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        import grpc
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from temporalstore.v1 import temporalstore_pb2_grpc as rpc
+        from temporalstore_sdk import MetadataError
+        from temporalstore_sdk.metadata import Shard, TableTopology
+
+        class LocalOwner(rpc.TemporalStoreServiceServicer):
+            def __init__(self):
+                self.payload = b""
+                self.reads = 0
+
+            def BatchExecuteChecked(self, request, context):
+                command, = request.commands
+                if command.HasField("string_set_conditional"):
+                    self.payload = command.string_set_conditional.value
+                    context.abort(grpc.StatusCode.DEADLINE_EXCEEDED, "shared publication timed out")
+                self.reads += 1
+                return pb.BatchExecuteResponse(
+                    status=pb.Status(ok=True),
+                    responses=[pb.CommandResponse(status=pb.Status(ok=True), value=self.payload)],
+                )
+
+        owner = LocalOwner()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            server = grpc.server(pool)
+            rpc.add_TemporalStoreServiceServicer_to_server(owner, server)
+            port = server.add_insecure_port("127.0.0.1:0")
+            self.assertGreater(port, 0)
+            server.start()
+            try:
+                backend = TableValueBackend("grpc://example.test", "kvcache", 2, 1, 0)
+                try:
+                    shard = Shard(73, None, (), 7, f"127.0.0.1:{port}")
+                    topology = TableTopology("kvcache", "model", 1, 73, 1, (shard,))
+                    key = Key("locally-applied")
+                    key.model_name, key.kv_rank = "fixture/model", 0
+                    with patch.object(backend._metadata, "table_topology", return_value=topology):
+                        with self.assertRaisesRegex(MetadataError, "write_durability_unconfirmed"):
+                            list(backend.iter_store_results([(key, memoryview(b"tensor"))]))
+                    self.assertEqual(backend.stores_confirmed_by_read, 0)
+                finally:
+                    backend.close()
+            finally:
+                self.assertTrue(server.stop(0).wait(2))
+        self.assertEqual(owner.payload, b"tensor")
+        self.assertEqual(owner.reads, 0)
 
     def test_store_readback_waits_for_a_new_leader_without_writing_again(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
@@ -513,8 +564,9 @@ class AdapterTest(unittest.TestCase):
         for call in client.batch_execute.call_args_list:
             self.assertTrue(call.args[0][0].HasField("string_get"))
 
-    def test_proxy_store_readback_retries_a_backend_transport_status(self):
+    def test_proxy_unknown_durability_never_confirms_through_readback(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from temporalstore_sdk import MetadataError
 
         backend = TableValueBackend(
             "grpc://example.test", "kvcache", 5, 1, 0, proxy_grpc_target="proxy.test:17200",
@@ -526,21 +578,13 @@ class AdapterTest(unittest.TestCase):
         client.iter_batch_responses.return_value = iter([
             (0, pb.CommandResponse(status=pb.Status(code="write_outcome_unknown"))),
         ])
-        client.batch_execute.side_effect = [
-            [pb.CommandResponse(status=pb.Status(code="status_error"))],
-            [pb.CommandResponse(status=pb.Status(code="server_error"))],
-            [pb.CommandResponse(status=pb.Status(ok=True), value=b"tensor")],
-        ]
-        with patch.object(backend, "_table", return_value=client), patch(
-            "lmcache_temporalstore.grpc_kv.sleep",
-        ):
-            results = list(backend.iter_store_results([(key, memoryview(b"tensor"))]))
-
-        self.assertEqual(results, [(0, False)])
+        with patch.object(backend, "_table", return_value=client):
+            with self.assertRaisesRegex(MetadataError, "write_outcome_unknown"):
+                list(backend.iter_store_results([(key, memoryview(b"tensor"))]))
         client.iter_batch_responses.assert_called_once()
-        self.assertEqual(client.batch_execute.call_count, 3)
-        for call in client.batch_execute.call_args_list:
-            self.assertTrue(call.args[0][0].HasField("string_get"))
+        client.batch_execute.assert_not_called()
+        self.assertEqual(backend.stores_confirmed_by_read, 0)
+
 
     def test_store_reconciles_received_reply_before_propagating_batch_failure(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
@@ -574,49 +618,32 @@ class AdapterTest(unittest.TestCase):
         read = client.batch_execute.call_args.args[0][0]
         self.assertEqual(read.string_get.key, write.string_set_conditional.key)
 
-    def test_interrupted_store_confirms_only_unanswered_chunks_by_reading(self):
+    def test_interrupted_store_preserves_acknowledged_results_and_reports_the_error(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, grpc, pb
 
-        class DeadlineExceeded(grpc.RpcError):
-            def code(self):
-                return grpc.StatusCode.DEADLINE_EXCEEDED
-
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
+        self.addCleanup(backend.close)
         keys = [Key("acknowledged"), Key("interrupted")]
         for key in keys:
             key.model_name, key.kv_rank = "fixture/model", 0
+        error = grpc.RpcError("interrupted")
         chunks = [(key, memoryview(b"tensor")) for key in keys]
-        for stored in (b"tensor", b"wrong!", b""):
-            with self.subTest(stored=stored):
-                backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
-                self.addCleanup(backend.close)
-                error = DeadlineExceeded()
 
-                def replies():
-                    yield 0, pb.CommandResponse(status=pb.Status(ok=True), count=1)
-                    raise error
+        def replies():
+            yield 0, pb.CommandResponse(status=pb.Status(ok=True), count=1)
+            raise error
 
-                client = Mock()
-                client.iter_batch_responses.return_value = replies()
-                client.batch_execute.return_value = [
-                    pb.CommandResponse(status=pb.Status(ok=True), value=stored),
-                ]
-                with patch.object(backend, "_table", return_value=client):
-                    results = backend.iter_store_results(chunks)
-                    self.assertEqual(next(results), (0, True))
-                    if stored == b"tensor":
-                        self.assertEqual(list(results), [(1, False)])
-                    else:
-                        with self.assertRaises(DeadlineExceeded) as caught:
-                            next(results)
-                        self.assertIs(caught.exception, error)
-
-                self.assertEqual(backend.stores_confirmed_by_read, int(stored == b"tensor"))
-                client.iter_batch_responses.assert_called_once()
-                self.assertEqual(client.batch_execute.call_count, 2 if not stored else 1)
-                pending_put = client.iter_batch_responses.call_args.args[0][1]
-                read = client.batch_execute.call_args.args[0][0]
-                self.assertEqual(read.string_get.key, pending_put.string_set_conditional.key)
-                self.assertLessEqual(client.batch_execute.call_args.kwargs["timeout_seconds"], 1)
+        client = Mock()
+        client.iter_batch_responses.return_value = replies()
+        with patch.object(backend, "_table", return_value=client):
+            results = backend.iter_store_results(chunks)
+            self.assertEqual(next(results), (0, True))
+            with self.assertRaises(grpc.RpcError) as caught:
+                next(results)
+            self.assertIs(caught.exception, error)
+        self.assertEqual(backend.stores_confirmed_by_read, 0)
+        client.iter_batch_responses.assert_called_once()
+        client.batch_execute.assert_not_called()
 
     def test_lookup_and_store_share_a_table_client_with_distinct_deadlines(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb

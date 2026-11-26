@@ -205,7 +205,9 @@ writes still use `timeout_seconds`.
 For distributed KV storage, `store_retry_timeout_seconds` sets the retry
 window after the datanode or proxy reports that a cache insert was rejected
 before it started. It defaults to five seconds and cannot exceed
-`timeout_seconds`. An uncertain write is checked by exact readback.
+`timeout_seconds`. Direct Raft writes with an uncertain outcome may be checked
+by exact readback. A timeout with unknown publication durability is returned
+as a failure.
 
 To measure the L2 path independent of model inference, use LMCache's adapter
 benchmark against a disposable datanode:

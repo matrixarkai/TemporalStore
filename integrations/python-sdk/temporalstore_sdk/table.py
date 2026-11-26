@@ -247,7 +247,13 @@ class TableClient:
                             raise response
                         if recoverable_inserts or response.code() == grpc.StatusCode.UNAVAILABLE:
                             self._invalidate_route(topology)
-                        code = "write_outcome_unknown" if recoverable_inserts else "read_unavailable"
+                        code = "read_unavailable"
+                        if recoverable_inserts:
+                            shard = self._shard_for_command(topology, group[0][1])
+                            code = (
+                                "write_outcome_unknown" if shard.uses_raft_route
+                                else "write_durability_unconfirmed"
+                            )
                         status = pb.Status(code=code, message=response.details() or "")
                     elif len(response.responses) != len(group):
                         status = (response.status if not response.status.ok else pb.Status(
