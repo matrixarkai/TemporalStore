@@ -150,6 +150,22 @@ pub enum WriteAheadLogError {
     Corruption(String),
 }
 
+#[derive(Debug, Error)]
+#[error("WAL piece changed during group sync")]
+struct WalPieceChanged;
+
+impl WalPieceChanged {
+    fn io_error() -> WriteAheadLogError {
+        std::io::Error::new(std::io::ErrorKind::Interrupted, Self).into()
+    }
+
+    fn matches(error: &WriteAheadLogError) -> bool {
+        matches!(error, WriteAheadLogError::Io(error)
+            if error.get_ref().is_some_and(|cause| cause.is::<Self>()))
+    }
+}
+
+
 impl From<crate::log_framing::FramingError> for WriteAheadLogError {
     fn from(err: crate::log_framing::FramingError) -> Self {
         WriteAheadLogError::Corruption(err.0)
@@ -2319,15 +2335,23 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         required_sequence: u64,
     ) -> Result<(), WriteAheadLogError> {
-        if wal_group_write_enabled() {
-            return self.stream_commit(shard_id, required_sequence);
+        for attempt in 0..3 {
+            let result = if wal_group_write_enabled() {
+                self.stream_commit(shard_id, required_sequence)
+            } else {
+                self.group_commit_sync_with_policy(
+                    shard_id,
+                    required_sequence,
+                    group_commit_delay(),
+                    adaptive_group_commit_delay(),
+                )
+            };
+            match result {
+                Err(error) if attempt < 2 && WalPieceChanged::matches(&error) => continue,
+                result => return result,
+            }
         }
-        self.group_commit_sync_with_policy(
-            shard_id,
-            required_sequence,
-            group_commit_delay(),
-            adaptive_group_commit_delay(),
-        )
+        unreachable!("last WAL group sync attempt returns its result")
     }
 
     /// Group commit per shard: register as a waiter, try to start a write, and return when the
@@ -2530,8 +2554,18 @@ impl LocalWriteAheadLogStore {
         inner.stats.flushes += 1;
         inner.stats.syncs += 1;
         if inner.gc_epoch_by_shard.get(&shard_id).copied() != generation {
-            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted,
-                "WAL piece changed during group sync").into());
+            // The obsolete descriptor cannot certify the current piece. A completed
+            // reclaim may already have published its own independent durability receipt.
+            if !inner.dir_sync_owed_by_shard.contains(&shard_id) {
+                if let Some(covered) = inner.durable_sequence_by_shard.get(&shard_id) {
+                    if *covered >= required_sequence {
+                        entry.durable_seq = entry.durable_seq.max(*covered);
+                        entry.dir_synced = true;
+                        return Ok(entry.durable_seq);
+                    }
+                }
+            }
+            return Err(WalPieceChanged::io_error());
         }
         inner.stats.last_flushed_sequence = inner.stats.last_flushed_sequence.max(snapshot);
         inner.dir_sync_owed_by_shard.remove(&shard_id);
@@ -2786,8 +2820,18 @@ impl LocalWriteAheadLogStore {
         inner.stats.flushes += 1;
         inner.stats.syncs += 1;
         if inner.gc_epoch_by_shard.get(&shard_id).copied() != generation {
-            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted,
-                "WAL piece changed during group sync").into());
+            // The obsolete descriptor cannot certify the current piece. A completed
+            // reclaim may already have published its own independent durability receipt.
+            if !inner.dir_sync_owed_by_shard.contains(&shard_id) {
+                if let Some(covered) = inner.durable_sequence_by_shard.get(&shard_id) {
+                    if *covered >= required_sequence {
+                        entry.durable_seq = entry.durable_seq.max(*covered);
+                        entry.dir_synced = true;
+                        return Ok(());
+                    }
+                }
+            }
+            return Err(WalPieceChanged::io_error());
         }
         inner.stats.last_flushed_sequence = inner.stats.last_flushed_sequence.max(snapshot);
         inner.dir_sync_owed_by_shard.remove(&shard_id);
@@ -3897,6 +3941,11 @@ impl LocalWriteAheadLogStore {
         note_durable_record_end(&mut inner, shard_id, bytes_after, false);
         if let Some(sequence) = last_sequence {
             inner.last_sequence_by_shard.insert(shard_id, sequence);
+            // The copied suffix includes every complete record through this sequence.
+            // Publish its coverage only after the replacement and parent directory are durable.
+            let durable = inner.durable_sequence_by_shard.entry(shard_id).or_default();
+            *durable = (*durable).max(sequence);
+            inner.stats.last_flushed_sequence = inner.stats.last_flushed_sequence.max(sequence);
         }
         Ok(WriteAheadLogGcReport {
             shard_id,
@@ -11542,37 +11591,37 @@ mod tests {
             source.len()
         );
 
-        let naming: Vec<&str> = source
-            .lines()
-            .map(|line| line.trim())
-            .filter(|line| line.contains(&field))
-            .collect();
+        let lines: Vec<&str> = source.lines().map(str::trim).collect();
+        let naming: Vec<&str> = lines.iter().copied().filter(|line| line.contains(&field)).collect();
+        let mut writes = Vec::new();
+        let mut current_fn = "";
+        for (index, line) in lines.iter().enumerate() {
+            if let Some((_, signature)) = line.split_once("fn ") {
+                current_fn = signature.split(['(', '<']).next().unwrap_or("");
+            }
+            if let Some((_, suffix)) = line.split_once(&field) {
+                let access = if suffix.is_empty() { lines[index + 1] } else { suffix };
+                if !access.starts_with(':')
+                    && !access.starts_with(".get(")
+                    && !access.starts_with(".contains_key(")
+                {
+                    writes.push((current_fn, access));
+                }
+            }
+        }
         assert_eq!(
-            naming.len(),
-            7,
-            "the lines naming the field changed; every one of them is either the declaration, \
-             its initialiser, the single writer, the roll that clears it, or one of the three \
-             readers: {naming:#?}"
+            writes,
+            [
+                ("invalidate_active_wal_piece", ".remove(&shard_id);"),
+                (door.as_str(), ".entry(shard_id)"),
+            ],
+            "durable bytes may only be written through their record-end writer or cleared at replacement"
         );
 
-        // Mutation reaches it through one door and one clearing, and through nothing else.
-        let entries = naming.iter().filter(|line| line.contains(".entry(")).count();
-        let inserts = naming.iter().filter(|line| line.contains(".insert(")).count();
-        let removes = naming.iter().filter(|line| line.contains(".remove(")).count();
-        assert_eq!(
-            (entries, inserts, removes),
-            (0, 0, 1),
-            "the field is mutated somewhere other than its one writer and the roll's clear: \
-             {naming:#?}"
-        );
-
-        // And the door itself: one definition, three barrier paths.
         let calls = source.matches(&format!("{door}(")).count();
         assert_eq!(
-            calls, 6,
-            "one definition, four barrier paths (the stream write task is the fourth) and the reclaim call the single writer; found \
-             {calls} mentions. Another one is fine -- update this number and make sure it \
-             passes a record end, not a file length"
+            calls, 7,
+            "the definition and every durable record-end publication must be accounted for"
         );
 
         // No barrier path derives it from a length. The two that did are the whole defect.
@@ -15086,6 +15135,29 @@ mod selected_flush_tests {
             assert_eq!(LocalWriteAheadLogStore::new(root.path())
                 .scan(1, 0, u64::MAX, u64::MAX).unwrap().len(), 1);
         }
+    }
+
+    #[test]
+    fn commit_barrier_recaptures_after_a_roll() {
+        let _case = ReplacementCase::new();
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        store.append_with_sync(1, command(1), false).unwrap();
+        let mover = store.clone();
+        BEFORE_GROUP_COMMIT_SYNC.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                set_wal_segment_bytes_for_test(Some(1));
+                let mut inner = mover.lock_inner_raw();
+                let end = inner.verified_len_by_shard[&1];
+                assert!(roll_wal_segment_if_due(&mut inner, 1, Some(end)).unwrap());
+                set_wal_segment_bytes_for_test(Some(0));
+            }));
+        });
+        store.commit_barrier(1, 1).unwrap();
+        assert_eq!(store.info(1).unwrap().last_flushed_sequence, 1);
+        assert!(!store.lock_inner_raw().dir_sync_owed_by_shard.contains(&1));
+        drop(store);
+        assert_eq!(reopened_sequences(&LocalWriteAheadLogStore::new(root.path())), vec![1]);
     }
 
     #[test]

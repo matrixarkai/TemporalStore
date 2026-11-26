@@ -625,7 +625,8 @@ fn a_write_landing_during_the_cycle_is_never_lost() {
         total_writes,
         WRITERS * per_writer * VERSIONS,
         "not every write was acknowledged, so a missing value below could be a write that never \
-         happened rather than one that was lost"
+         happened rather than one that was lost. Recorded write and read problems: {:?}",
+        problems.lock().expect("problem lock")
     );
     assert!(reads_done.load(Ordering::Relaxed) > 0, "no concurrent read ran");
 
