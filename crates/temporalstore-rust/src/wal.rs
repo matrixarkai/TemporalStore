@@ -14986,9 +14986,10 @@ mod selected_flush_tests {
         drop(store);
         let cold = LocalWriteAheadLogStore::new(root.path());
         for shard in [1, 2] {
-            let rows = cold.scan(shard, 0, u64::MAX, u64::MAX).unwrap();
+            let (rows, truncated) = cold.scan_decoded(shard, 0, u64::MAX, u64::MAX).unwrap();
+            assert!(!truncated);
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].sequence, 1);
+            assert_eq!(rows[0].1.sequence, 1);
         }
     }
 
@@ -15278,8 +15279,9 @@ mod selected_flush_tests {
             assert!(!inner.base_by_shard.contains_key(&1));
             assert!(!inner.durable_active_bytes_by_shard.contains_key(&1));
             assert!(inner.dir_sync_owed_by_shard.contains(&1));
-            assert!(!inner.gc_running.contains(&1));
         }
+        let coordinator = store.group_commit_coordinator(1);
+        assert!(!coordinator.read_retention.lock().unwrap().collecting);
         WAL_REPLACEMENT_ERROR.with(|fault| fault.set(None));
         let flush = store.flush(1).unwrap();
         assert_eq!(flush.last_sequence, 4);
