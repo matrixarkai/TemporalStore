@@ -303,7 +303,8 @@ fn failed_active_rename_cleans_temp_and_releases_the_shard_reservation() {
     let _policy = SegmentPolicy::set(0);
     let (dir, store) = log_of(200);
     let path = {
-        let mut inner = store.lock_inner_raw();
+        let shard_writer = store.shard_writer(3);
+        let mut inner = shard_writer.lock_inner_raw();
         active_wal_path(&mut inner, 3)
     };
     let temporary = path.with_extension("jsonl.tmp");
