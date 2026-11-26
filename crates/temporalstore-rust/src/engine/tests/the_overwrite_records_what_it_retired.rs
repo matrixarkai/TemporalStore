@@ -416,17 +416,18 @@ fn noisy_value(index: usize, round: usize, len: usize) -> Vec<u8> {
 }
 
 fn live_bytes(engine: &crate::TemporalEngine) -> u64 {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    assert!(
-        shard.bucket_index.block_slab_live.is_ready(),
-        "the live tally is not derived, so every ratio below has a provisional zero denominator"
-    );
-    shard
-        .bucket_index
-        .block_slab_live
-        .iter()
-        .fold(0_u64, |total, (_, tally)| total.saturating_add(tally.bytes))
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        assert!(
+            shard.bucket_index.block_slab_live.is_ready(),
+            "the live tally is not derived, so every ratio below has a provisional zero denominator"
+        );
+        shard
+            .bucket_index
+            .block_slab_live
+            .iter()
+            .fold(0_u64, |total, (_, tally)| total.saturating_add(tally.bytes))
+    })
 }
 
 #[test]
@@ -655,9 +656,10 @@ fn the_space_figure_moves_at_the_overwrite() {
     // ---- bucket index (which empties the record wholesale), so a target here would be pinning
     // ---- which of the two happened first.
     let buckets: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        shard.bucket_index.bucket_map.keys().copied().collect()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            shard.bucket_index.bucket_map.keys().copied().collect()
+        })
     };
     assert!(!buckets.is_empty(), "no bucket to dump, so the reclaim round has nothing to act on");
     let cycle = engine.run_storage_manager_cycle(crate::engine::reports::StorageManagerCycleRequest {

@@ -40,7 +40,7 @@ __all__ = [
 ]
 
 _READ_ONLY_COMMAND_KINDS = frozenset({
-    "string_get", "hash_get", "hash_multi_get", "set_members", "set_scan",
+    "common_exists", "string_get", "string_len", "hash_get", "hash_multi_get", "set_members", "set_scan",
     "feature_query", "feature_query_filtered", "feature_agg_query",
     "feature_proto_agg_query", "sequence_query", "window_reduce_rank",
 })
@@ -100,7 +100,8 @@ def _binary_command(command: Dict[str, Any]) -> Dict[str, Any]:
             for name, value in encoded.get("entries", [])
         ]
     elif kind in {"string_set", "string_set_ex", "string_set_conditional", "hash_set"}:
-        encoded["value"] = _required_binary(encoded["value"])
+        value = encoded["value"]
+        encoded["value"] = value if isinstance(value, memoryview) else _required_binary(value)
     elif kind in {"set_add", "set_remove", "zset_add", "zset_score", "zset_remove"}:
         encoded["member"] = _required_binary(encoded["member"])
     elif kind == "set_scan":
@@ -171,6 +172,7 @@ class TemporalStoreClient:
         max_batch_request_bytes: int = 4 * 1024 * 1024,
         max_write_batch_commands: Optional[int] = None,
         max_async_read_batches: int = 1,
+        require_binary_batch: bool = False,
     ) -> None:
         write_batch_commands = (
             max_batch_commands
@@ -187,6 +189,9 @@ class TemporalStoreClient:
                 or not isinstance(max_async_read_batches, int)
                 or not 1 <= max_async_read_batches <= 32):
             raise ValueError("async read batch concurrency must be between 1 and 32")
+        if require_binary_batch and msgpack is None:
+            raise ValueError("binary command batches require msgpack")
+        self._require_binary_batch = require_binary_batch
         self.host = host
         self.port = port
         self.shard_id = shard_id
@@ -415,7 +420,7 @@ class TemporalStoreClient:
                     envelope = msgpack.unpackb(raw, raw=False)
                     results.extend(self._decode_batch_envelope(envelope, chunk))
             except TemporalStoreCommandError as error:
-                if error.code != "http_404" or results:
+                if self._require_binary_batch or error.code != "http_404" or results:
                     raise
                 self._binary_batch_supported = False
             except (ValueError, msgpack.UnpackException) as error:

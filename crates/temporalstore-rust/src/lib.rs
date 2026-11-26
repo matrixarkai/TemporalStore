@@ -59,10 +59,9 @@ pub mod index_log;
 pub mod ingestion;
 pub mod llm_context;
 pub(crate) mod log_framing;
-#[cfg(feature = "matrixobject")]
 pub mod matrixobject_direct;
-#[cfg(feature = "matrixobject")]
-pub mod matrixobject_store;
+#[cfg(test)]
+pub(crate) mod matrixobject_test_plane;
 pub mod meta;
 pub mod partition_id;
 pub mod proxy;
@@ -345,8 +344,6 @@ pub use rebalance::{
 };
 pub use redis::{execute_redis_command, read_command, serve_redis_proxy, RespValue};
 pub use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
-#[cfg(feature = "matrixobject")]
-pub use matrixobject_store::MatrixObjectObjectStore;
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
     SharedStoreWalEntry, SharedStoreBlockSlab, SharedStoreReplayCursor,

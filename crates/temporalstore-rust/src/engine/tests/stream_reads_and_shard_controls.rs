@@ -2328,20 +2328,21 @@ fn bucket_index_is_authoritative_when_secondary_views_are_missing() {
     );
 
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.bucket_index.bucket_map.is_empty());
-        // THE THIRD FIXTURE OF THE SAME SHAPE, and the only one of the three that was red before
-        // the fold's ref loss was found rather than because of it. `hashes` and `sets` keep their
-        // refs in the LOOKUP -- they have no `ObjectSlot` rows -- so clearing those two drops
-        // nothing, and it is the strings clear alone that un-names this object's blocks.
-        let surrendered = clear_string_rows_keeping_their_blocks_named(shard);
-        assert!(
-            surrendered > 0,
-            "denominator: no string row carried refs, so clearing the rows is not the missing              secondary view this test means to simulate"
-        );
-        shard.bucket_index.hashes.clear_for_test();
-        shard.bucket_index.sets.clear_for_test();
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard loaded");
+            assert!(!shard.bucket_index.bucket_map.is_empty());
+            // THE THIRD FIXTURE OF THE SAME SHAPE, and the only one of the three that was red before
+            // the fold's ref loss was found rather than because of it. `hashes` and `sets` keep their
+            // refs in the LOOKUP -- they have no `ObjectSlot` rows -- so clearing those two drops
+            // nothing, and it is the strings clear alone that un-names this object's blocks.
+            let surrendered = clear_string_rows_keeping_their_blocks_named(shard);
+            assert!(
+                surrendered > 0,
+                "denominator: no string row carried refs, so clearing the rows is not the missing              secondary view this test means to simulate"
+            );
+            shard.bucket_index.hashes.clear_for_test();
+            shard.bucket_index.sets.clear_for_test();
+        })
     }
 
     let exists = engine.execute(ExecuteRequest {
@@ -2393,33 +2394,34 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
     );
 
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.bucket_index.bucket_map.is_empty());
-        let stale = shard
-            .strings_mut()
-            .get_mut("slot-authority")
-            .expect("secondary string view");
-        // The object id used to be planted here too. An address holds none, so what makes this
-        // address STALE is the slab coordinates below -- which is the whole of what a reader reads
-        // off it.
-        // The routing bucket used to be planted here too. An address does not hold one, so what
-        // made this address STALE is now the object id and the slab coordinates below -- which is
-        // the whole of what a reader reads off it.
-        // The slab id is half of one packed word now, so it is planted by rebuilding the address
-        // through the checked constructor rather than by assigning a field. Every other part is
-        // carried across unchanged, which is what makes this a STALE address and not a new one.
-        // THROUGH THE SETTER, because the row is a slot: `set_address` rewrites the block words
-        // and leaves the deadline, the model id and the dirty bit alone, which is what makes this
-        // a stale ADDRESS rather than a replaced row.
-        let planted = ElementEntry::from_parts(
-            stale.block_slab_id().wrapping_add(999),
-            stale.offset(),
-            stale.length(),
-            stale.block_id(),
-            None,
-        );
-        stale.set_address(&planted);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard loaded");
+            assert!(!shard.bucket_index.bucket_map.is_empty());
+            let stale = shard
+                .strings_mut()
+                .get_mut("slot-authority")
+                .expect("secondary string view");
+            // The object id used to be planted here too. An address holds none, so what makes this
+            // address STALE is the slab coordinates below -- which is the whole of what a reader reads
+            // off it.
+            // The routing bucket used to be planted here too. An address does not hold one, so what
+            // made this address STALE is now the object id and the slab coordinates below -- which is
+            // the whole of what a reader reads off it.
+            // The slab id is half of one packed word now, so it is planted by rebuilding the address
+            // through the checked constructor rather than by assigning a field. Every other part is
+            // carried across unchanged, which is what makes this a STALE address and not a new one.
+            // THROUGH THE SETTER, because the row is a slot: `set_address` rewrites the block words
+            // and leaves the deadline, the model id and the dirty bit alone, which is what makes this
+            // a stale ADDRESS rather than a replaced row.
+            let planted = ElementEntry::from_parts(
+                stale.block_slab_id().wrapping_add(999),
+                stale.offset(),
+                stale.length(),
+                stale.block_id(),
+                None,
+            );
+            stale.set_address(&planted);
+        })
     }
 
     let recovery = engine.storage_recovery_report(1);
@@ -2458,11 +2460,12 @@ fn legacy_model_maps_are_promoted_to_bucket_index_authority() {
     );
 
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.strings().is_empty());
-        shard.bucket_index.bucket_map.clear();
-        shard.promote_scan_done = true;
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard loaded");
+            assert!(!shard.strings().is_empty());
+            shard.bucket_index.bucket_map.clear();
+            shard.promote_scan_done = true;
+        })
     }
 
     let get = engine.execute(ExecuteRequest {
@@ -2510,14 +2513,15 @@ fn cold_read_uses_bucket_block_address_after_cache_and_model_maps_are_cleared() 
     );
 
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.bucket_index.bucket_map.is_empty());
-        let surrendered = clear_string_rows_keeping_their_blocks_named(shard);
-        assert!(
-            surrendered > 0,
-            "denominator: no string row carried refs, so clearing the rows is not the eviction              this test means to simulate"
-        );
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard loaded");
+            assert!(!shard.bucket_index.bucket_map.is_empty());
+            let surrendered = clear_string_rows_keeping_their_blocks_named(shard);
+            assert!(
+                surrendered > 0,
+                "denominator: no string row carried refs, so clearing the rows is not the eviction              this test means to simulate"
+            );
+        })
     }
     let _ = engine
         .cache()
@@ -2593,9 +2597,10 @@ fn recovery_reconciles_model_views_from_bucket_index_authority() {
     let recovered = TemporalEngine::with_local_dirs(1024, &cache_dir, &block_dir, &index_dir);
     recovered.load_shard(1);
     {
-        let shards = recovered.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("recovered shard");
-        assert!(shard.strings().contains_key("recover-slot-view"));
+        recovered.shards.with_state(1, |state| {
+            let shard = state.expect("recovered shard");
+            assert!(shard.strings().contains_key("recover-slot-view"));
+        })
     }
     let get = recovered.execute(ExecuteRequest {
         shard_id: 1,
@@ -3383,4 +3388,146 @@ fn clear_string_rows_keeping_their_blocks_named(
     }
     shard.strings_mut().clear();
     moved
+}
+
+/// A listing must release its read guard on the shard before it builds the summaries.
+///
+/// Every writer takes the write guard for its whole command, so for as long as a listing holds the
+/// read guard no write is acknowledged. The listing used to hold it across the copy out of the
+/// shard AND the summaries and digests built from the copy, and across reading the latest manifest
+/// off disk. On a 1M-key fill, whole-shard listings took 14% of the run with the longest at 4.5 s,
+/// and 27 of 29 seconds in which no write was acknowledged overlapped one.
+///
+/// The hook runs on the listing's thread at the point it has let the shard go. A write started
+/// there from another thread must finish while the listing is parked; if the listing still held
+/// its guard the write could not finish until the hook returned.
+#[test]
+fn a_writer_is_not_blocked_while_a_listing_builds_its_summaries() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "first".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+
+    let finished_while_parked = Arc::new(AtomicBool::new(false));
+    let writer_engine = engine.clone();
+    let flag = Arc::clone(&finished_while_parked);
+    // The writer is joined AFTER the listing returns. Joining it inside the hook would wait on a
+    // write that cannot finish while the listing still holds the guard, so a listing that held it
+    // would hang the test instead of failing it.
+    let parked_writer = Arc::new(std::sync::Mutex::new(None));
+    let parked = Arc::clone(&parked_writer);
+    crate::engine::storage_reporting::on_next_listing_released(move || {
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            writer_engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "during".to_string(),
+                    value: b"v".to_vec(),
+                },
+            });
+            let _ = done_tx.send(());
+        });
+        flag.store(
+            done_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            Ordering::SeqCst,
+        );
+        *parked.lock().expect("parked writer slot") = Some(writer);
+    });
+
+    let _ = engine.bucket_storage_summaries(1);
+    if let Some(writer) = parked_writer.lock().expect("parked writer slot").take() {
+        writer.join().expect("writer thread");
+    }
+    assert!(
+        finished_while_parked.load(Ordering::SeqCst),
+        "a write could not finish while the listing was building its summaries: the listing \
+         still holds its read guard on the shard"
+    );
+}
+
+/// A listing reports the shard as it stood when the listing took its copy, not as it stands when the
+/// summaries are finished building.
+///
+/// Building the summaries after the guard is released is only sound if they are built from what the
+/// guard covered. A write that lands in between must not appear in this listing and must appear in
+/// the next one; a build that went back to the live shard once the guard was released would show it
+/// in this one, and would be reading the shard without holding it.
+#[test]
+fn a_listing_built_after_the_guard_is_released_reports_the_shard_as_it_was_copied() {
+    use std::sync::{mpsc, Arc};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn dirty_objects(engine: &TemporalEngine) -> u64 {
+        engine
+            .bucket_storage_summaries(1)
+            .iter()
+            .map(|summary| summary.dirty_object_count)
+            .sum()
+    }
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "first".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    let before = dirty_objects(&engine);
+    assert!(before > 0, "the seed write left no dirty object to count");
+
+    let wrote_while_parked = Arc::new(AtomicBool::new(false));
+    let writer_engine = engine.clone();
+    let flag = Arc::clone(&wrote_while_parked);
+    // Joined after the listing returns, so a listing that held its guard fails the assertions
+    // below instead of hanging the test (see the other test).
+    let parked_writer = Arc::new(std::sync::Mutex::new(None));
+    let parked = Arc::clone(&parked_writer);
+    crate::engine::storage_reporting::on_next_listing_released(move || {
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            writer_engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "during".to_string(),
+                    value: b"v".to_vec(),
+                },
+            });
+            let _ = done_tx.send(());
+        });
+        flag.store(
+            done_rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok(),
+            Ordering::SeqCst,
+        );
+        *parked.lock().expect("parked writer slot") = Some(writer);
+    });
+
+    let during_listing = dirty_objects(&engine);
+    if let Some(writer) = parked_writer.lock().expect("parked writer slot").take() {
+        writer.join().expect("writer thread");
+    }
+    assert!(
+        wrote_while_parked.load(Ordering::SeqCst),
+        "the write could not finish while the listing was parked"
+    );
+    assert_eq!(
+        during_listing, before,
+        "a write that landed after the listing took its copy showed up in that listing"
+    );
+    assert_eq!(
+        dirty_objects(&engine),
+        before + 1,
+        "the next listing does not show the write that landed during the last one"
+    );
 }

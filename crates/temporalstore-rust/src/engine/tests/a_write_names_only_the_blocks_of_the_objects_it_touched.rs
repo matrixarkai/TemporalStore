@@ -95,103 +95,104 @@ fn subsets(all: &[String]) -> Vec<Vec<String>> {
 fn check(engine: &TemporalEngine, all: &[String], tally: &mut Tally) {
     use crate::engine::state::BlockKeysByPosition;
     let (start, end) = routing_range(engine);
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let index = &shard.bucket_index;
-    assert!(!index.bucket_map.is_empty(), "no bucket index was built");
-    let full = BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let index = &shard.bucket_index;
+        assert!(!index.bucket_map.is_empty(), "no bucket index was built");
+        let full = BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
 
-    for subset in subsets(all) {
-        let wanted: BTreeSet<&str> = subset.iter().map(String::as_str).collect();
-        let restricted = BlockKeysByPosition::from_parts_for_keys(
-            &index.objects,
-            &index.object_block_lookup,
-            wanted.iter().copied(),
-        );
-        for (_, node) in index.bucket_map.iter() {
-            for (handle, block) in node.block_index.iter() {
-                let before = full
-                    .identity_of(node, *handle, block)
-                    .map(|identity| identity.object_key.to_string());
-                let after = restricted
-                    .identity_of(node, *handle, block)
-                    .map(|identity| identity.object_key.to_string());
-                if block.deleted() {
-                    // A DELETED BLOCK IS NAMED BY ITS BUCKET'S TOMBSTONE ROW, never by the
-                    // inversion, so restricting the inversion must not move the answer at all --
-                    // whichever objects were asked about.
-                    assert_eq!(before, after, "a deleted block is named differently");
-                    tally.deleted_blocks += 1;
-                    if before.is_some() {
-                        tally.deleted_blocks_named += 1;
-                    }
-                } else {
-                    match &before {
-                        Some(key) if wanted.contains(key.as_str()) => {
-                            assert_eq!(before, after, "a live block of a named object differs");
-                            tally.live_named_in_subset += 1;
+        for subset in subsets(all) {
+            let wanted: BTreeSet<&str> = subset.iter().map(String::as_str).collect();
+            let restricted = BlockKeysByPosition::from_parts_for_keys(
+                &index.objects,
+                &index.object_block_lookup,
+                wanted.iter().copied(),
+            );
+            for (_, node) in index.bucket_map.iter() {
+                for (handle, block) in node.block_index.iter() {
+                    let before = full
+                        .identity_of(node, *handle, block)
+                        .map(|identity| identity.object_key.to_string());
+                    let after = restricted
+                        .identity_of(node, *handle, block)
+                        .map(|identity| identity.object_key.to_string());
+                    if block.deleted() {
+                        // A DELETED BLOCK IS NAMED BY ITS BUCKET'S TOMBSTONE ROW, never by the
+                        // inversion, so restricting the inversion must not move the answer at all --
+                        // whichever objects were asked about.
+                        assert_eq!(before, after, "a deleted block is named differently");
+                        tally.deleted_blocks += 1;
+                        if before.is_some() {
+                            tally.deleted_blocks_named += 1;
                         }
-                        _ => {
-                            assert_eq!(
-                                None, after,
-                                "a live block of an object that was not asked about was named"
-                            );
-                            tally.live_other_object_left_unnamed += 1;
+                    } else {
+                        match &before {
+                            Some(key) if wanted.contains(key.as_str()) => {
+                                assert_eq!(before, after, "a live block of a named object differs");
+                                tally.live_named_in_subset += 1;
+                            }
+                            _ => {
+                                assert_eq!(
+                                    None, after,
+                                    "a live block of an object that was not asked about was named"
+                                );
+                                tally.live_other_object_left_unnamed += 1;
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // END TO END: the rows the walk emits for these keys against the rows the whole-shard
-        // inversion yields for the same keys, compared as sets of everything a row states.
-        let keys: Vec<String> = subset.clone();
-        let items = collect_command_index_items_for(shard, &keys, start, end, None);
-        let row = |routing_bucket: u32, handle: &str, object: &str, model: &str, deleted: bool| {
-            format!("{routing_bucket}|{handle}|{object}|{model}|{deleted}")
-        };
-        let mut got: Vec<String> = items
-            .iter()
-            .map(|item| {
-                row(
-                    item.routing_bucket,
-                    &item.block_ref_key,
-                    &item.object_key,
-                    &item.model_id,
-                    item.deleted,
-                )
-            })
-            .collect();
-        let buckets: BTreeSet<u32> = wanted
-            .iter()
-            .map(|key| block_routing_bucket(key, start, end))
-            .collect();
-        let mut expected: Vec<String> = Vec::new();
-        for routing_bucket in buckets {
-            let Some(node) = index.bucket_map.get(&routing_bucket) else {
-                continue;
+            // END TO END: the rows the walk emits for these keys against the rows the whole-shard
+            // inversion yields for the same keys, compared as sets of everything a row states.
+            let keys: Vec<String> = subset.clone();
+            let items = collect_command_index_items_for(shard, &keys, start, end, None);
+            let row = |routing_bucket: u32, handle: &str, object: &str, model: &str, deleted: bool| {
+                format!("{routing_bucket}|{handle}|{object}|{model}|{deleted}")
             };
-            for (handle, block) in node.block_index.iter() {
-                let Some(beside) = full.identity_of(node, *handle, block) else {
+            let mut got: Vec<String> = items
+                .iter()
+                .map(|item| {
+                    row(
+                        item.routing_bucket,
+                        &item.block_ref_key,
+                        &item.object_key,
+                        &item.model_id,
+                        item.deleted,
+                    )
+                })
+                .collect();
+            let buckets: BTreeSet<u32> = wanted
+                .iter()
+                .map(|key| block_routing_bucket(key, start, end))
+                .collect();
+            let mut expected: Vec<String> = Vec::new();
+            for routing_bucket in buckets {
+                let Some(node) = index.bucket_map.get(&routing_bucket) else {
                     continue;
                 };
-                if wanted.contains(beside.object_key.as_ref()) {
-                    expected.push(row(
-                        routing_bucket,
-                        &handle.to_string(),
-                        beside.object_key,
-                        block.model_id().as_str(),
-                        block.deleted(),
-                    ));
+                for (handle, block) in node.block_index.iter() {
+                    let Some(beside) = full.identity_of(node, *handle, block) else {
+                        continue;
+                    };
+                    if wanted.contains(beside.object_key.as_ref()) {
+                        expected.push(row(
+                            routing_bucket,
+                            &handle.to_string(),
+                            beside.object_key,
+                            block.model_id().as_str(),
+                            block.deleted(),
+                        ));
+                    }
                 }
             }
+            got.sort();
+            expected.sort();
+            assert_eq!(expected, got, "the walk emitted different rows for {subset:?}");
+            tally.emitted_rows += got.len();
+            tally.emitted_deleted_rows += items.iter().filter(|item| item.deleted).count();
         }
-        got.sort();
-        expected.sort();
-        assert_eq!(expected, got, "the walk emitted different rows for {subset:?}");
-        tally.emitted_rows += got.len();
-        tally.emitted_deleted_rows += items.iter().filter(|item| item.deleted).count();
-    }
+    })
 }
 
 #[test]
@@ -325,25 +326,27 @@ mod probe {
     /// (allocations, bytes) of the walk that builds a write's index-log rows for `TARGET`.
     fn walk_cost(engine: &TemporalEngine) -> (u64, u64, usize) {
         let (start, end) = routing_range(engine);
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let keys = vec![TARGET.to_string()];
-        let probe = Probe::start();
-        let items = collect_command_index_items_for(shard, &keys, start, end, None);
-        let counts = probe.stop();
-        (counts.allocs, counts.alloc_bytes, items.len())
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            let keys = vec![TARGET.to_string()];
+            let probe = Probe::start();
+            let items = collect_command_index_items_for(shard, &keys, start, end, None);
+            let counts = probe.stop();
+            (counts.allocs, counts.alloc_bytes, items.len())
+        })
     }
 
     /// (allocations, bytes) of the WHOLE-SHARD inversion, the cost this removes from the walk.
     fn whole_shard_cost(engine: &TemporalEngine) -> (u64, u64) {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let index = &shard.bucket_index;
-        let probe = Probe::start();
-        let keys = BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
-        let counts = probe.stop();
-        assert!(!keys.names_no_position());
-        (counts.allocs, counts.alloc_bytes)
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            let index = &shard.bucket_index;
+            let probe = Probe::start();
+            let keys = BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
+            let counts = probe.stop();
+            assert!(!keys.names_no_position());
+            (counts.allocs, counts.alloc_bytes)
+        })
     }
 
     #[test]

@@ -270,6 +270,7 @@ pub(super) fn trim_timestamped_series(
         routing_bucket,
         series,
         max_size,
+        0,
         boundary_record,
         None,
     )
@@ -288,12 +289,23 @@ pub(super) fn trim_timestamped_series_naming_what_left(
     routing_bucket: u32,
     series: &mut impl super::timestamped_series::TimestampedSeriesWrite,
     max_size: usize,
+    max_age_ms: u64,
     boundary_record: bool,
     mut vacated: Option<&mut Vec<ElementEntry>>,
 ) -> bool {
     let mut newest_dropped = None;
     let mut object_id = None;
-    while series.len() > max_size {
+    // THE AGE CUT, when one is configured: points older than `max_age_ms` before the newest the
+    // series holds. Measured from the series itself so a replay needs no clock, and read once,
+    // because dropping the oldest never moves the newest.
+    let age_floor = if max_age_ms == 0 {
+        None
+    } else {
+        series.range(..).next_back().map(|(newest, _)| newest.saturating_sub(max_age_ms))
+    };
+    while series.len() > max_size
+        || age_floor.is_some_and(|floor| series.points().next().is_some_and(|(oldest, _)| oldest < floor))
+    {
         // THE OLDEST POINT IS THE FIRST, because `points` promises ascending order. A
         // representation that could not promise it is not a timestamped series.
         let Some((oldest, address)) = series
@@ -480,7 +492,7 @@ fn append_timestamped_kv_blocks_inner(
         for packed in &encoded_blocks {
             super::block_in_wal::stage(object_id, None, packed.as_slice());
         }
-        let addresses = block_store.append_batch_with_block_metadata(writes)?;
+        let addresses = block_store.append_batch_with_block_metadata_for_shard(shard_id, writes)?;
         if addresses.len() != chunk_points.len() {
             return Err(BlockStoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -575,8 +587,7 @@ pub(super) fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<
     chunks
 }
 
-#[cfg(test)]
-pub(super) fn decode_feature_block(bytes: &[u8]) -> Option<Vec<FeaturePoint>> {
+pub(crate) fn decode_feature_block(bytes: &[u8]) -> Option<Vec<FeaturePoint>> {
     match decode_feature_block_strict(bytes) {
         PackedFeatureBlockDecode::Packed(points) => Some(points),
         PackedFeatureBlockDecode::Legacy | PackedFeatureBlockDecode::Corrupt(_) => None,

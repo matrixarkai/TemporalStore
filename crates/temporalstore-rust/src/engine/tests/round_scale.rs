@@ -139,8 +139,9 @@ use crate::engine::reports::StorageManagerCycleRequest;
 /// now come off one listing (`a_plan_lists_the_shards_blocks_once`). The round's census loses
 /// exactly one pass: measured 22,000 entries over 2,000
 /// records = 11x. The two older tables above state 12 for the tree before that change.
-// 11 -> 10: a detailed apply lists the shard once for its object lifecycle and its samples (`an_apply_lists_the_shard_once_for_its_report`).
-const WALKS_PER_ROUND: u64 = 10;
+// A detailed apply shares its lifecycle listing; recovery coverage uses maintained dirty nodes.
+// Each removes one pass. The two-size census below checks their combined work.
+const WALKS_PER_ROUND: u64 = 9;
 
 /// The same, once the dirty set has drained.
 ///
@@ -157,8 +158,10 @@ const WALKS_PER_ROUND: u64 = 10;
 /// tree, the idle round materialises 24,000 live-block entries over 2,000 records, which is 12x --
 /// the same as the steady round, so the manifest no longer makes an idle shard dearer.
 /// 12 -> 11 FOR THE SAME REASON AS `WALKS_PER_ROUND`, and it was measured: the idle round also loses one pass.
-// 11 -> 10 for the same reason as `WALKS_PER_ROUND`.
-const WALKS_PER_IDLE_ROUND: u64 = 10;
+// The idle census checks the same pair of removed passes after the dirty set drains.
+// With an empty dirty set, the census records 16,000 entries for 2,000 records.
+// Compare raw entries below so a partial extra walk is not hidden by division.
+const WALKS_PER_IDLE_ROUND: u64 = 8;
 
 fn round_engine(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
@@ -325,11 +328,7 @@ fn an_idle_round_still_walks_the_live_block_set() {
     seed_in_batches(&engine, 1, RECORDS, 1);
 
     let dirty_before = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        shards
-            .get(&1)
-            .map(|shard| shard.dirty_objects.len())
-            .unwrap_or(0)
+        engine.shards.with_state(1, |shard| shard.map_or(0, |shard| shard.dirty_objects.len()))
     };
     assert_eq!(
         dirty_before, RECORDS,
@@ -343,11 +342,7 @@ fn an_idle_round_still_walks_the_live_block_set() {
     );
 
     let dirty_after = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        shards
-            .get(&1)
-            .map(|shard| shard.dirty_objects.len())
-            .unwrap_or(0)
+        engine.shards.with_state(1, |shard| shard.map_or(0, |shard| shard.dirty_objects.len()))
     };
     assert_eq!(
         dirty_after, 0,
@@ -369,9 +364,9 @@ fn an_idle_round_still_walks_the_live_block_set() {
          live-block entries = {walks}x the store"
     );
     assert_eq!(
-        walks, WALKS_PER_IDLE_ROUND,
-        "an idle round now costs {walks} whole-store walks per record, not the measured \
-         {WALKS_PER_IDLE_ROUND}. An idle shard pays this every cycle for as long as it is loaded"
+        entries, WALKS_PER_IDLE_ROUND * RECORDS as u64,
+        "an idle round visited {entries} entries for {RECORDS} live records; the measured \
+         budget is {WALKS_PER_IDLE_ROUND} complete walks"
     );
 }
 
@@ -396,11 +391,7 @@ fn the_dump_threshold_counts_log_records_not_dirty_objects() {
             ..round_request()
         });
         let dirty = {
-            let shards = engine.shards.read().expect("shards lock poisoned");
-            shards
-                .get(&1)
-                .map(|shard| shard.dirty_objects.len())
-                .unwrap_or(0)
+            engine.shards.with_state(1, |shard| shard.map_or(0, |shard| shard.dirty_objects.len()))
         };
         println!(
             "  {records} objects in batches of {batch:<5} -> undumped log records {:>5}, \
@@ -457,14 +448,15 @@ fn the_dump_threshold_counts_log_records_not_dirty_objects() {
 /// prepare that never ran: the control asks for a target the active slab is nowhere near and must
 /// produce NO roll, and the treatment asks for one it has passed and must produce exactly one.
 #[test]
-fn the_prepare_stage_can_roll_a_slab_and_take_the_block_store_mutex() {
+fn the_prepare_stage_rolls_the_owner_cursor_at_target() {
     const RECORDS: usize = 500;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = round_engine(dir.path());
     seed_in_batches(&engine, 1, RECORDS, 100);
 
-    let offset = engine.block_store.active_slab_write_offset();
+    let (_, offset) = engine.block_store.owned_slab_position_for_test(1)
+        .expect("the fixture created a shard writer");
     assert!(
         offset > 0,
         "the fixture wrote nothing to the active slab, so neither arm below means anything"
@@ -782,17 +774,18 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     // from the shard below rather than written down, so a fixture that stops releasing anything
     // fails the denominator instead of quietly measuring the easy case.
     let (indexed_blocks, released_buckets) = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
-        (
-            shard
-                .bucket_index
-                .bucket_map
-                .values()
-                .map(|bucket| bucket.block_index.len())
-                .sum::<usize>() as u64,
-            shard.bucket_index.released_buckets.len(),
-        )
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
+            (
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .values()
+                    .map(|bucket| bucket.block_index.len())
+                    .sum::<usize>() as u64,
+                shard.bucket_index.released_buckets.len(),
+            )
+        })
     };
 
     // THE DENOMINATOR for everything below. With nothing released the supplement walk never

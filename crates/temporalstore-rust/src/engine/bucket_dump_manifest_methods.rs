@@ -41,33 +41,145 @@ pub(crate) fn stop_bucket_dump_prune_after_first_phase_for_test(stop: bool) {
 }
 
 impl TemporalEngine {
+    /// Remove only fallback placements that the captured physical image makes redundant.
+    pub(super) fn prepare_checkpoint_wal_retirements(
+        &self,
+        shard_id: ShardId,
+        snapshot: &mut ShardState,
+        mut retained_objects: std::collections::HashSet<u64>,
+        described_wal_blocks: usize,
+    ) -> Vec<block_in_wal::RegistrationRetirement> {
+        let mut retirements = if bulk_ingest_mode() {
+            Vec::new()
+        } else {
+            block_in_wal::unreferenced_registrations(
+                &self.block_store, shard_id, &self.wal_store, &retained_objects,
+            )
+        };
+        retirements.retain(|retirement| {
+            snapshot.wal_resident_blocks.get(&retirement.folded_key)
+                .is_some_and(|placement| placement.log_id == retirement.log_id
+                    && placement.sequence == retirement.sequence)
+        });
+        if !retirements.is_empty() {
+            // Released bucket markers are memory-only. Their serialized model maps
+            // still own frames even when the decoded bucket has no block entries.
+            //
+            // Only the objects that still have a block inside the log matter here, so the walk
+            // asks for exactly those. It used to materialise every live block of the dump's model
+            // maps into owned entries -- the whole store, once more per dirty round -- and then
+            // throw all but the log-resident ones away. The filter runs before the walk's own
+            // per-block dedup, and blocks the dedup merges share a slab, offset and length and so
+            // share residency, so the set of objects found is the same.
+            storage_bucket_internals::visit_model_live_blocks(
+                snapshot,
+                storage_bucket_internals::ModelWalkTally::WholeShardEntries,
+                |_, address| crate::wal_record::is_wal_resident(address.block_slab_id()),
+                |kind, object_key, _element_name, _address| {
+                    retained_objects.insert(stable_block_object_id(
+                        shard_id,
+                        kind.as_str(),
+                        object_key.as_str(),
+                    ));
+                },
+            );
+            retirements = block_in_wal::unreferenced_registrations(
+                &self.block_store, shard_id, &self.wal_store, &retained_objects,
+            );
+            retirements.retain(|retirement| {
+                snapshot.wal_resident_blocks.get(&retirement.folded_key)
+                    .is_some_and(|placement| placement.log_id == retirement.log_id
+                        && placement.sequence == retirement.sequence)
+            });
+        }
+        retirements.extend(block_in_wal::unreferenced_physical_registrations(
+            &self.block_store, shard_id, &self.wal_store, snapshot, false,
+        ));
+        retirements.retain(|retirement| {
+            snapshot.wal_resident_blocks.get(&retirement.folded_key)
+                .is_some_and(|placement| placement.log_id == retirement.log_id
+                    && placement.sequence == retirement.sequence)
+        });
+        if !retirements.is_empty() {
+            // A legacy or unnameable index is not proof that a frame is unused.
+            let mut visited = 0;
+            let indexed_wal_blocks = snapshot.bucket_index.bucket_map.values()
+                .flat_map(|bucket| bucket.block_index.values())
+                .filter(|block| {
+                    visited += 1;
+                    crate::wal_record::is_wal_resident(block.address.block_slab_id())
+                }).count();
+            storage_bucket_internals::note_bucket_block_visits(visited);
+            if snapshot.bucket_index.bucket_map.is_empty()
+                || indexed_wal_blocks != described_wal_blocks
+            {
+                retirements.clear();
+            } else {
+                for retirement in &retirements {
+                    snapshot.wal_resident_blocks.remove(&retirement.folded_key);
+                }
+                // Retirement used to re-encode a decoded image, whose field stamp
+                // had been filled from the container header.
+                snapshot.index_format_version = SHARD_INDEX_FORMAT_VERSION;
+            }
+        }
+        retirements
+    }
+
+    /// Commit proposals only after durable publication, never over a newer load or write.
+    pub(super) fn finish_checkpoint_wal_retirements(
+        &self,
+        shard_id: ShardId,
+        publication: &checkpoint_publication::CheckpointPublication,
+        anchor: u64,
+        mut retirements: Vec<block_in_wal::RegistrationRetirement>,
+    ) {
+        if !retirements.is_empty() {
+            self.shards.with_state_mut(shard_id, |state| {
+                if let Some(shard) = state {
+                    // A changed shard may need a newer frame, or belong to a different load.
+                    // Leave its bookkeeping alone; a later dump can retry the retirement.
+                    if self.checkpoint_publications.is_current_after_publish(publication)
+                        && self.wal_store.stats_without_rescan(shard_id).last_sequence
+                            == anchor
+                    {
+                        retirements.retain(|retirement| {
+                            shard.wal_resident_blocks.get(&retirement.folded_key)
+                                .is_some_and(|placement| placement.log_id == retirement.log_id
+                                    && placement.sequence == retirement.sequence)
+                        });
+                        for retirement in &retirements {
+                            shard.wal_resident_blocks.remove(&retirement.folded_key);
+                        }
+                        block_in_wal::retire_unchanged_registrations(
+                            &self.block_store, shard_id, &retirements,
+                        );
+                    }
+                }
+            });
+        }
+    }
+
     pub fn create_bucket_dump_manifest(
         &self,
         shard_id: ShardId,
         selected_buckets: impl IntoIterator<Item = u32>,
     ) -> Result<BucketDumpManifest, Status> {
         let selected_buckets = selected_buckets.into_iter().collect::<BTreeSet<_>>();
-        if !self
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .contains_key(&shard_id)
-        {
+        if self.shards.handle(shard_id).is_none() {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         }
         // Bulk ingest dumps an exported image whose summaries are volatile, so only that path asks
         // the live shard for them. Every other dump summarises the CAPTURED state off the one
         // listing taken of it below, instead of listing the live shard first and the capture again.
         let live_summaries = bulk_ingest_mode().then(|| self.bucket_storage_summaries(shard_id));
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: capture checkpoint (clone under read guard)");
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let (mut dump_index_state, mut captured_bytes, publication) = if bulk_ingest_mode() {
-            let publication = {
-                let shards = self.shards.read().expect("engine lock poisoned");
-                if !shards.contains_key(&shard_id) {
-                    return Err(Status::error("shard_not_loaded", "shard is not loaded"));
-                }
-                self.checkpoint_publications.capture(shard_id)
-            };
+            let publication = self.shards.with_state(shard_id, |state| {
+                state.map(|_| self.checkpoint_publications.capture(shard_id))
+            }).ok_or_else(|| Status::error("shard_not_loaded", "shard is not loaded"))?;
             let bytes = self.export_index_bytes(shard_id)
                 .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
             let snapshot = crate::engine::decode_index_bytes(&bytes)
@@ -79,10 +191,13 @@ impl TemporalEngine {
                     "shard is unloaded or its WAL application is incomplete"))?;
             (snapshot, None, publication)
         };
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: summaries walk of the captured copy");
         let mut retained_objects = std::collections::HashSet::new();
         let mut block_slab_ids = BTreeSet::new();
         let mut described_wal_blocks = 0usize;
         let mut lifecycle = ObjectLifecycleAccumulator::default();
+        let mut coverage_digests = crate::engine::storage_reporting::BucketDigestBuilder::default();
         // Consume block facts once without retaining a temporary row per field in the shard.
         let mut observe_entry = |entry: &LiveBlockEntry| {
             let slab = entry.address.block_slab_id();
@@ -96,6 +211,7 @@ impl TemporalEngine {
             let bucket = entry.filed_bucket().unwrap_or_else(|| self.routing_bucket_for_key(shard_id, &entry.object_key));
             if selected_buckets.is_empty() || selected_buckets.contains(&bucket) {
                 lifecycle.observe(shard_id, entry);
+                coverage_digests.observe(shard_id, entry);
             }
         };
         let summaries = match live_summaries {
@@ -126,90 +242,32 @@ impl TemporalEngine {
             })
             .collect::<Vec<_>>();
         bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
-        let mut retirements = if bulk_ingest_mode() {
-            Vec::new()
-        } else {
-            block_in_wal::unreferenced_registrations(
-                &self.block_store, shard_id, &self.wal_store, &retained_objects,
-            )
-        };
-        retirements.retain(|retirement| {
-            dump_index_state.wal_resident_blocks.get(&retirement.folded_key)
-                .is_some_and(|placement| placement.log_id == retirement.log_id
-                    && placement.sequence == retirement.sequence)
-        });
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: WAL-resident retirements");
+        let retirements = self.prepare_checkpoint_wal_retirements(
+            shard_id, &mut dump_index_state, retained_objects, described_wal_blocks,
+        );
+        let captured_wal_floor = super::storage_lifecycle_methods::wal_floor_of_index_image(&dump_index_state);
         if !retirements.is_empty() {
-            // Released bucket markers are memory-only. Their serialized model maps
-            // still own frames even when the decoded bucket has no block entries.
-            //
-            // Only the objects that still have a block inside the log matter here, so the walk
-            // asks for exactly those. It used to materialise every live block of the dump's model
-            // maps into owned entries -- the whole store, once more per dirty round -- and then
-            // throw all but the log-resident ones away. The filter runs before the walk's own
-            // per-block dedup, and blocks the dedup merges share a slab, offset and length and so
-            // share residency, so the set of objects found is the same.
-            storage_bucket_internals::visit_model_live_blocks(
-                &dump_index_state,
-                storage_bucket_internals::ModelWalkTally::WholeShardEntries,
-                |_, address| crate::wal_record::is_wal_resident(address.block_slab_id()),
-                |kind, object_key, _element_name, _address| {
-                    retained_objects.insert(stable_block_object_id(
-                        shard_id,
-                        kind.as_str(),
-                        object_key.as_str(),
-                    ));
-                },
-            );
-            retirements = block_in_wal::unreferenced_registrations(
-                &self.block_store, shard_id, &self.wal_store, &retained_objects,
-            );
-            retirements.retain(|retirement| {
-                dump_index_state.wal_resident_blocks.get(&retirement.folded_key)
-                    .is_some_and(|placement| placement.log_id == retirement.log_id
-                        && placement.sequence == retirement.sequence)
-            });
-        }
-        retirements.extend(block_in_wal::unreferenced_physical_registrations(
-            &self.block_store, shard_id, &self.wal_store, &dump_index_state, false,
-        ));
-        retirements.retain(|retirement| {
-            dump_index_state.wal_resident_blocks.get(&retirement.folded_key)
-                .is_some_and(|placement| placement.log_id == retirement.log_id
-                    && placement.sequence == retirement.sequence)
-        });
-        if !retirements.is_empty() {
-            // A legacy or unnameable index is not proof that a frame is unused.
-            let mut visited = 0;
-            let indexed_wal_blocks = dump_index_state.bucket_index.bucket_map.values()
-                .flat_map(|bucket| bucket.block_index.values())
-                .filter(|block| {
-                    visited += 1;
-                    crate::wal_record::is_wal_resident(block.address.block_slab_id())
-                }).count();
-            storage_bucket_internals::note_bucket_block_visits(visited);
-            if dump_index_state.bucket_index.bucket_map.is_empty()
-                || indexed_wal_blocks != described_wal_blocks
-            {
-                retirements.clear();
-            } else {
-                for retirement in &retirements {
-                    dump_index_state.wal_resident_blocks.remove(&retirement.folded_key);
-                }
-                // Retirement used to re-encode a decoded image, whose field stamp
-                // had been filled from the container header.
-                dump_index_state.index_format_version = SHARD_INDEX_FORMAT_VERSION;
-                captured_bytes = None;
-            }
+            captured_bytes = None;
         }
         // Keep the owned capture until its final form is ready. Encoding and then
         // decoding it here used to duplicate every model map and repack its trees.
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: serialize_index");
         let index_bytes = captured_bytes.unwrap_or_else(|| serialize_index(&dump_index_state));
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: sha256 of the image");
         let index_sha256 = sha256_hex_bytes(&index_bytes);
         // Capture first, then sync, then publish. A writer can advance the served index
         // while the barrier runs; capturing afterwards could publish data it did not cover.
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: block store sync_durable");
         self.block_store.sync_durable().map_err(|err| {
             Status::error("slot_dump_failed", format!("block durability barrier failed before dump publication: {err}"))
         })?;
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: wal flush");
         self.wal_store.flush(shard_id).map_err(|err| {
             Status::error("slot_dump_failed", format!("wal flush failed before dump publication: {err}"))
         })?;
@@ -225,10 +283,13 @@ impl TemporalEngine {
         // embedded index's own anchor so reload replays exactly the WAL suffix it lacks.
         // An unanchored frozen image claims no records, never the live tail after capture.
         let wal_sequence = dump_index_state.applied_wal_sequence.unwrap_or(0);
-        let created_unix_ms = now_ms();
+        let parent = latest_bucket_dump_manifest_at(&self.index_dir, shard_id);
+        // Distinct captures must not replace one another within the clock's resolution.
+        let created_unix_ms = publication.allocate_dump_time_ms(
+            now_ms(), parent.as_ref().map_or(0, |manifest| manifest.created_unix_ms),
+        ).map_err(|error| Status::error("slot_dump_failed", error.to_string()))?;
         let manifest_id = format!("{shard_id}-{index_log_sequence}-{created_unix_ms}");
-        let parent_manifest_id = latest_bucket_dump_manifest_at(&self.index_dir, shard_id)
-            .map(|manifest| manifest.manifest_id);
+        let parent_manifest_id = parent.map(|manifest| manifest.manifest_id);
         // EVERY SLAB THE EMBEDDED INDEX WILL INSTALL, not only the dumped buckets'.
         //
         // `index_bytes` above is the WHOLE-SHARD index, and #1642 proved it has to stay whole:
@@ -301,37 +362,24 @@ impl TemporalEngine {
         manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
         let manifest_checksum = bucket_dump_manifest_checksum_in_place(&mut manifest)?;
         manifest.checksum = manifest_checksum;
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: persist manifest + mark_dumped");
         let published = self.checkpoint_publications.publish(&publication, || {
-            self.persist_bucket_dump_manifest(&manifest)?;
+            let metadata = self.persist_bucket_dump_manifest_metadata(&manifest, true)?;
             self.wal_store.mark_dumped(shard_id);
-            Ok(())
+            Ok(metadata)
         }).map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
-        if published.is_none() {
+        let Some(metadata) = published else {
             return Err(Status::error("checkpoint_superseded", "a newer checkpoint was published during capture"));
-        }
-        if !retirements.is_empty() {
-            let mut shards = self.shards.write().expect("engine lock poisoned");
-            if let Some(shard) = shards.get_mut(&shard_id) {
-                // A changed shard may need a newer frame, or belong to a different load.
-                // Leave its bookkeeping alone; a later dump can retry the retirement.
-                if self.checkpoint_publications.is_current_after_publish(&publication)
-                    && self.wal_store.stats_without_rescan(shard_id).last_sequence
-                        == dump_index_state.applied_wal_sequence.unwrap_or(0)
-                {
-                    retirements.retain(|retirement| {
-                        shard.wal_resident_blocks.get(&retirement.folded_key)
-                            .is_some_and(|placement| placement.log_id == retirement.log_id
-                                && placement.sequence == retirement.sequence)
-                    });
-                    for retirement in &retirements {
-                        shard.wal_resident_blocks.remove(&retirement.folded_key);
-                    }
-                    block_in_wal::retire_unchanged_registrations(
-                        &self.block_store, shard_id, &retirements,
-                    );
-                }
-            }
-        }
+        };
+        bucket_dump_io::remember_published_capture(
+            &self.index_dir, &manifest, metadata.as_ref(), coverage_digests.finish(), captured_wal_floor,
+        );
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: retirement under the shard write lock");
+        self.finish_checkpoint_wal_retirements(
+            shard_id, &publication, wal_sequence, retirements,
+        );
         // The manifest is durable from here, so this shard's log is dumped up to its current
         // durable length. Marked AFTER the write and behind its `?`, never before: a watermark
         // that ran ahead of the manifest would let a restart mid-dump skip records the failed
@@ -345,6 +393,8 @@ impl TemporalEngine {
         // (this manifest-create path has no visibility into those consumers), and
         // `install_latest_manifest_if_newer_on_load` bridges the on-disk base to the manifest
         // anchor on reload, so fold(base + retained deltas) stays complete.
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("after the dump (rest of the round)");
         Ok(manifest)
     }
 
@@ -533,6 +583,8 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> Vec<BucketDumpInstallRollForwardReport> {
+        let slot = self.pass_slot(shard_id);
+        let _lifecycle = slot.lock().expect("compaction pass lock poisoned");
         self.interrupted_bucket_dump_installs(shard_id)
             .into_iter()
             .map(|marker| {
@@ -547,7 +599,7 @@ impl TemporalEngine {
                     .flatten()
                     .map(|manifest| {
                         if manifest.manifest_kind == "merged_slot_dump" {
-                            let merged_report = self.install_merged_bucket_dump_manifest(&manifest);
+                            let merged_report = self.install_merged_bucket_dump_manifest_reserved(&manifest);
                             if merged_report.installed {
                                 Ok(())
                             } else {
@@ -557,7 +609,7 @@ impl TemporalEngine {
                                 ))
                             }
                         } else {
-                            self.install_bucket_dump_manifest(&manifest)
+                            self.install_bucket_dump_manifest_reserved(&manifest)
                         }
                     }) {
                         Some(Ok(())) => {
@@ -1300,15 +1352,12 @@ impl TemporalEngine {
             bucket_dump_entries_by_key(manifest.shard_id, restored, &manifest_buckets, |key| {
                 self.routing_bucket_for_key(manifest.shard_id, key)
             });
-        let current_entries = {
-            let shards = self.shards.read().expect("engine lock poisoned");
-            let Some(current) = shards.get(&manifest.shard_id) else {
-                return (Vec::new(), Vec::new());
-            };
-            bucket_dump_entries_by_key(manifest.shard_id, current, &manifest_buckets, |key| {
+        let Some(current_entries) = self.shards.with_state(manifest.shard_id, |state| {
+            let current = state?;
+            Some(bucket_dump_entries_by_key(manifest.shard_id, current, &manifest_buckets, |key| {
                 self.routing_bucket_for_key(manifest.shard_id, key)
-            })
-        };
+            }))
+        }) else { return (Vec::new(), Vec::new()); };
         // bucket_dump_entries_by_key keys blocks by "kind:object_key:element name:page_id",
         // so a value update (which allocates a new page_id) shows up as a removed block
         // plus a new block for the same object. Classify at the object level (strip the
@@ -1580,6 +1629,15 @@ impl TemporalEngine {
     }
 
     pub fn install_bucket_dump_manifest(&self, manifest: &BucketDumpManifest) -> Result<(), Status> {
+        let slot = self.pass_slot(manifest.shard_id);
+        let _lifecycle = slot.lock().expect("compaction pass lock poisoned");
+        self.install_bucket_dump_manifest_reserved(manifest)
+    }
+
+    pub(super) fn install_bucket_dump_manifest_reserved(
+        &self,
+        manifest: &BucketDumpManifest,
+    ) -> Result<(), Status> {
         self.validate_bucket_dump_manifest(manifest)?;
         let preflight = self.bucket_dump_install_preflight_report(manifest);
         if !preflight.install_safe {
@@ -1686,15 +1744,21 @@ impl TemporalEngine {
         // persist_index_bytes is a no-op, which would leave the stale pre-manifest index on
         // disk while the advanced replay watermark suppresses replay of the records this
         // manifest embeds -- silently losing them. Recovery install must always materialize.
-        self.persist_index_bytes_durable(manifest.shard_id, &restored_index_bytes)
-            .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
-        self.persist_bucket_dump_install_marker(manifest, "install")
-            .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
-        let shard_was_loaded = self
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .contains_key(&manifest.shard_id);
+        let closing = self.shards.with_state_mut(manifest.shard_id, |state| {
+            state.map(|_| self.checkpoint_publications.begin_close(manifest.shard_id))
+        }).map(|closing| closing.drain());
+        let install = if let Some(drained) = closing.as_ref() {
+            self.persist_index_bytes_during_close(&restored_index_bytes, drained)
+        } else {
+            self.persist_index_bytes_durable(manifest.shard_id, &restored_index_bytes)
+        }.and_then(|_| self.persist_bucket_dump_install_marker(manifest, "install"));
+        if let Err(err) = install {
+            if let Some(drained) = closing {
+                assert!(self.checkpoint_publications.finish_close(drained));
+            }
+            return Err(Status::error("slot_dump_install_failed", err.to_string()));
+        }
+        let shard_was_loaded = closing.is_some();
         if shard_was_loaded {
             // Gate serving off BEFORE the swap, the way load_shard_with does. Between the swap
             // and the replay below the shard describes itself as it was AT THE DUMP, which is
@@ -1716,6 +1780,8 @@ impl TemporalEngine {
             // residual is meant to come back into range under the shard's own range. Nothing that
             // is already filed moves: this places, it does not filter.
             self.install_shard_state(manifest.shard_id, restored);
+            let drained = closing.expect("loaded manifest install did not reserve close");
+            assert!(self.checkpoint_publications.finish_close(drained));
         }
         // Persist the manifest BEFORE the replay. If the replay below fails, the durable state
         // is the embedded index anchored at the dump plus this manifest -- behind the log, never
@@ -1764,6 +1830,15 @@ impl TemporalEngine {
         &self,
         manifest: &BucketDumpManifest,
     ) -> BucketDumpMergedInstallReport {
+        let slot = self.pass_slot(manifest.shard_id);
+        let _lifecycle = slot.lock().expect("compaction pass lock poisoned");
+        self.install_merged_bucket_dump_manifest_reserved(manifest)
+    }
+
+    fn install_merged_bucket_dump_manifest_reserved(
+        &self,
+        manifest: &BucketDumpManifest,
+    ) -> BucketDumpMergedInstallReport {
         let preflight = self.bucket_dump_install_preflight_report(manifest);
         let rollback_marker_written = self
             .persist_bucket_dump_install_marker(manifest, "rollback")
@@ -1791,7 +1866,7 @@ impl TemporalEngine {
                 status_code: "slot_dump_install_preflight_failed".to_string(),
             };
         }
-        match self.install_bucket_dump_manifest(manifest) {
+        match self.install_bucket_dump_manifest_reserved(manifest) {
             Ok(()) => {
                 let mut load_version_handoff = manifest.load_version_handoff.clone();
                 if let Some(handoff) = load_version_handoff.as_mut() {

@@ -528,51 +528,52 @@ fn a_wide_range_fixture_cannot_tell_the_two_placements_apart() {
     );
 
     let keys = seed(&engine, 0, RECORDS);
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    let _released = assert_no_released_bucket_is_dirty(shard);
+    engine.shards.with_state(1, |shard_state| {
+        let shard = shard_state.expect("shard 1");
+        let _released = assert_no_released_bucket_is_dirty(shard);
 
-    let entries = collect_live_block_entries(shard);
-    assert!(
-        !entries.is_empty(),
-        "the fixture stored no live block, so the misfiled count below is zero because there is \
-         nothing to misfile"
-    );
+        let entries = collect_live_block_entries(shard);
+        assert!(
+            !entries.is_empty(),
+            "the fixture stored no live block, so the misfiled count below is zero because there is \
+             nothing to misfile"
+        );
 
-    let misfiled = entries
-        .iter()
-        .filter(|entry| {
-            summarised_under(entry, start, end)
-                != block_routing_bucket(&entry.object_key, 0, WIDE_END_BUCKET)
-        })
-        .count();
-    assert_eq!(
-        misfiled, 0,
-        "{misfiled} of {} live blocks on the WIDE shard are summarised somewhere other than the \
-         `0..u32::MAX` placement",
-        entries.len()
-    );
+        let misfiled = entries
+            .iter()
+            .filter(|entry| {
+                summarised_under(entry, start, end)
+                    != block_routing_bucket(&entry.object_key, 0, WIDE_END_BUCKET)
+            })
+            .count();
+        assert_eq!(
+            misfiled, 0,
+            "{misfiled} of {} live blocks on the WIDE shard are summarised somewhere other than the \
+             `0..u32::MAX` placement",
+            entries.len()
+        );
 
-    // And now the half that says what that zero is worth.
-    let placements_differ = keys
-        .iter()
-        .filter(|key| {
-            block_routing_bucket(key, start, end) != block_routing_bucket(key, 0, WIDE_END_BUCKET)
-        })
-        .count();
-    assert_eq!(
-        placements_differ, 0,
-        "on this shard the two placements are the same function of the same arguments, so the \
-         zero above measures the substitution and not the engine. If this is ever non-zero the \
-         zero above has become a real reading and this comment is wrong."
-    );
-    println!(
-        "  WIDE shard: {} live blocks, {misfiled} misfiled, and the two placements agree on \
-         {}/{} keys -- the zero is an identity",
-        entries.len(),
-        keys.len() - placements_differ,
-        keys.len()
-    );
+        // And now the half that says what that zero is worth.
+        let placements_differ = keys
+            .iter()
+            .filter(|key| {
+                block_routing_bucket(key, start, end) != block_routing_bucket(key, 0, WIDE_END_BUCKET)
+            })
+            .count();
+        assert_eq!(
+            placements_differ, 0,
+            "on this shard the two placements are the same function of the same arguments, so the \
+             zero above measures the substitution and not the engine. If this is ever non-zero the \
+             zero above has become a real reading and this comment is wrong."
+        );
+        println!(
+            "  WIDE shard: {} live blocks, {misfiled} misfiled, and the two placements agree on \
+             {}/{} keys -- the zero is an identity",
+            entries.len(),
+            keys.len() - placements_differ,
+            keys.len()
+        );
+    })
 }
 
 // =============================================================================================
@@ -673,115 +674,116 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
             "{label}: the shard did not load on the narrow range, so this measures the identity"
         );
 
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1");
-        let _released = assert_no_released_bucket_is_dirty(shard);
+        engine.shards.with_state_mut(1, |shard_state| {
+            let shard = shard_state.expect("shard 1");
+            let _released = assert_no_released_bucket_is_dirty(shard);
 
-        let blocks_before = collect_live_block_entries(shard).len();
-        assert!(
-            blocks_before > 0,
-            "{label}: the fixture stored no block, so there is nothing to file anywhere"
-        );
+            let blocks_before = collect_live_block_entries(shard).len();
+            assert!(
+                blocks_before > 0,
+                "{label}: the fixture stored no block, so there is nothing to file anywhere"
+            );
 
-        // Put the model-map addresses into the state an older index decodes into. The bucket index
-        // is rebuilt FROM these below, which is what a replay tail and a bulk flush both do.
-        let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
-        assert!(
-            !keys.is_empty(),
-            "{label}: the string model map is empty, so the reconstruct has no source"
-        );
-        for key in &keys {
-            let older = as_an_older_build_wrote_it(&shard.string_address(key.as_str()).expect("key present"));
-            shard.set_string_address(key.as_str().into(), &older);
-        }
-
-        // THE PRODUCTION RECONSTRUCT, with the argument under test.
-        rebuild_bucket_first_index(1, shard, 0, rebuild_end);
-        refresh_bucket_runtime_flags(shard);
-
-        let entries = collect_live_block_entries(shard);
-        assert_eq!(
-            entries.len(),
-            blocks_before,
-            "{label}: the reconstruct changed the block count ({blocks_before} -> {}), so the two \
-             arms are not comparing the same store",
-            entries.len()
-        );
-        // DENOMINATOR: every block reports which bucket the reconstruct FILED it in. That is where
-        // the two ranges part company -- the reconstruct places a block by the bucket its ARGUMENTS
-        // name -- and a block whose filing the walk cannot report would be credited by a hash over
-        // the whole keyspace instead, which is a different measurement.
-        let filed_count = entries
-            .iter()
-            .filter(|entry| entry.filed_bucket().is_some())
-            .count();
-        assert_eq!(
-            filed_count,
-            entries.len(),
-            "{label}: {filed_count} of {} blocks report a filing after the reconstruct, and all of \
-             them should: the bucket-index arm of the walk has the map key in hand.",
-            entries.len()
-        );
-
-        let filed = filed_buckets(shard);
-        let summarised = summarised_buckets(shard, start, end);
-        let only_filed: Vec<u32> = filed.difference(&summarised).copied().collect();
-        let only_summarised: Vec<u32> = summarised.difference(&filed).copied().collect();
-
-        // How many BLOCKS are credited to a bucket other than the one they are filed in.
-        let named = super::BlockObjects::of(&shard.bucket_index);
-        let mut misplaced = 0usize;
-        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-            for (handle, _block) in &bucket.block_index {
-                let credited =
-                    block_routing_bucket(named.at(*routing_bucket, *handle), start, end);
-                if credited != *routing_bucket {
-                    misplaced += 1;
-                }
+            // Put the model-map addresses into the state an older index decodes into. The bucket index
+            // is rebuilt FROM these below, which is what a replay tail and a bulk flush both do.
+            let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
+            assert!(
+                !keys.is_empty(),
+                "{label}: the string model map is empty, so the reconstruct has no source"
+            );
+            for key in &keys {
+                let older = as_an_older_build_wrote_it(&shard.string_address(key.as_str()).expect("key present"));
+                shard.set_string_address(key.as_str().into(), &older);
             }
-        }
-        println!(
-            "  {label}: {} blocks, {misplaced} placed differently by the two ranges; only-filed \
-             {} buckets, only-summarised {} buckets (both must be 0 -- the summary walk reads the \
-             filing rather than deriving a placement)",
-            entries.len(),
-            only_filed.len(),
-            only_summarised.len()
-        );
 
-        // THE BUCKET SETS ARE EQUAL IN BOTH ARMS, and that is the change rather than the fixture.
-        // The summary walk credits a block to the bucket it is FILED in, so it cannot name a bucket
-        // the filing does not, whatever range the reconstruct was handed. This assertion is outside
-        // the arms on purpose: a property of the walk does not belong inside a branch on the
-        // argument, and putting it there is how the previous version came to require the opposite in
-        // one arm and this in the other.
-        assert!(
-            only_filed.is_empty() && only_summarised.is_empty(),
-            "{label}: the filed and summarised bucket sets must be equal at EVERY range, because \
-             the summary walk reads the filing rather than deriving a placement; only-filed \
-             {only_filed:?}, only-summarised {only_summarised:?}"
-        );
+            // THE PRODUCTION RECONSTRUCT, with the argument under test.
+            rebuild_bucket_first_index(1, shard, 0, rebuild_end);
+            refresh_bucket_runtime_flags(shard);
 
-        if expect_disagreement {
+            let entries = collect_live_block_entries(shard);
             assert_eq!(
-                misplaced,
                 entries.len(),
-                "the reconstruct the replay tail runs places every block by \
-                 `block_routing_bucket(key, 0, u32::MAX)`, and a derivation over the shard's range \
-                 would place it by `block_routing_bucket(key, 0, {NARROW_END_BUCKET})`. Those are \
-                 different functions of the same key (asserted separately), so all {} blocks have to \
-                 land differently and {misplaced} did. mx#1938 measured zero of these because its \
-                 shard made the two functions identical.",
+                blocks_before,
+                "{label}: the reconstruct changed the block count ({blocks_before} -> {}), so the two \
+                 arms are not comparing the same store",
                 entries.len()
             );
-        } else {
+            // DENOMINATOR: every block reports which bucket the reconstruct FILED it in. That is where
+            // the two ranges part company -- the reconstruct places a block by the bucket its ARGUMENTS
+            // name -- and a block whose filing the walk cannot report would be credited by a hash over
+            // the whole keyspace instead, which is a different measurement.
+            let filed_count = entries
+                .iter()
+                .filter(|entry| entry.filed_bucket().is_some())
+                .count();
             assert_eq!(
-                misplaced, 0,
-                "with the shard's own range passed to the SAME reconstruct, the filing and the \
-                 derivation choose the same bucket for every block. This is the reconciliation, and \
-                 it is one argument."
+                filed_count,
+                entries.len(),
+                "{label}: {filed_count} of {} blocks report a filing after the reconstruct, and all of \
+                 them should: the bucket-index arm of the walk has the map key in hand.",
+                entries.len()
             );
-        }
+
+            let filed = filed_buckets(shard);
+            let summarised = summarised_buckets(shard, start, end);
+            let only_filed: Vec<u32> = filed.difference(&summarised).copied().collect();
+            let only_summarised: Vec<u32> = summarised.difference(&filed).copied().collect();
+
+            // How many BLOCKS are credited to a bucket other than the one they are filed in.
+            let named = super::BlockObjects::of(&shard.bucket_index);
+            let mut misplaced = 0usize;
+            for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+                for (handle, _block) in &bucket.block_index {
+                    let credited =
+                        block_routing_bucket(named.at(*routing_bucket, *handle), start, end);
+                    if credited != *routing_bucket {
+                        misplaced += 1;
+                    }
+                }
+            }
+            println!(
+                "  {label}: {} blocks, {misplaced} placed differently by the two ranges; only-filed \
+                 {} buckets, only-summarised {} buckets (both must be 0 -- the summary walk reads the \
+                 filing rather than deriving a placement)",
+                entries.len(),
+                only_filed.len(),
+                only_summarised.len()
+            );
+
+            // THE BUCKET SETS ARE EQUAL IN BOTH ARMS, and that is the change rather than the fixture.
+            // The summary walk credits a block to the bucket it is FILED in, so it cannot name a bucket
+            // the filing does not, whatever range the reconstruct was handed. This assertion is outside
+            // the arms on purpose: a property of the walk does not belong inside a branch on the
+            // argument, and putting it there is how the previous version came to require the opposite in
+            // one arm and this in the other.
+            assert!(
+                only_filed.is_empty() && only_summarised.is_empty(),
+                "{label}: the filed and summarised bucket sets must be equal at EVERY range, because \
+                 the summary walk reads the filing rather than deriving a placement; only-filed \
+                 {only_filed:?}, only-summarised {only_summarised:?}"
+            );
+
+            if expect_disagreement {
+                assert_eq!(
+                    misplaced,
+                    entries.len(),
+                    "the reconstruct the replay tail runs places every block by \
+                     `block_routing_bucket(key, 0, u32::MAX)`, and a derivation over the shard's range \
+                     would place it by `block_routing_bucket(key, 0, {NARROW_END_BUCKET})`. Those are \
+                     different functions of the same key (asserted separately), so all {} blocks have to \
+                     land differently and {misplaced} did. mx#1938 measured zero of these because its \
+                     shard made the two functions identical.",
+                    entries.len()
+                );
+            } else {
+                assert_eq!(
+                    misplaced, 0,
+                    "with the shard's own range passed to the SAME reconstruct, the filing and the \
+                     derivation choose the same bucket for every block. This is the reconciliation, and \
+                     it is one argument."
+                );
+            }
+        });
     }
 }
 
@@ -809,104 +811,105 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
         let written = seed(&engine, 0, RECORDS);
         let (start, end) = routing_range(&engine);
 
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1");
-        let _released = assert_no_released_bucket_is_dirty(shard);
+        engine.shards.with_state_mut(1, |shard_state| {
+            let shard = shard_state.expect("shard 1");
+            let _released = assert_no_released_bucket_is_dirty(shard);
 
-        if break_it {
-            let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
-            for key in &keys {
-                let older = as_an_older_build_wrote_it(&shard.string_address(key.as_str()).expect("key"));
-                shard.set_string_address(key.as_str().into(), &older);
+            if break_it {
+                let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
+                for key in &keys {
+                    let older = as_an_older_build_wrote_it(&shard.string_address(key.as_str()).expect("key"));
+                    shard.set_string_address(key.as_str().into(), &older);
+                }
+                rebuild_bucket_first_index(1, shard, 0, WIDE_END_BUCKET);
+                refresh_bucket_runtime_flags(shard);
             }
-            rebuild_bucket_first_index(1, shard, 0, WIDE_END_BUCKET);
-            refresh_bucket_runtime_flags(shard);
-        }
 
-        // The witness: the fixture's own keys, hashed with the shard's own range. It shares no
-        // state with `shard.dirty_objects` -- comparing the dirty set against a re-derivation of
-        // itself would pass however wrong both were.
-        let witness: BTreeSet<u32> = written
-            .iter()
-            .map(|key| dirty_set_would_file(key, start, end))
-            .collect();
-        let engine_dirty: BTreeSet<u32> = shard.dirty_objects.bucket_ids().collect();
-        assert!(
-            !witness.is_empty(),
-            "{label}: the witness names no bucket, so every comparison below is vacuous"
-        );
-        assert_eq!(
-            engine_dirty, witness,
-            "{label}: the dirty set and a witness built outside the engine disagree; only-engine \
-             {:?}, only-witness {:?}",
-            engine_dirty.difference(&witness).take(5).collect::<Vec<_>>(),
-            witness.difference(&engine_dirty).take(5).collect::<Vec<_>>(),
-        );
+            // The witness: the fixture's own keys, hashed with the shard's own range. It shares no
+            // state with `shard.dirty_objects` -- comparing the dirty set against a re-derivation of
+            // itself would pass however wrong both were.
+            let witness: BTreeSet<u32> = written
+                .iter()
+                .map(|key| dirty_set_would_file(key, start, end))
+                .collect();
+            let engine_dirty: BTreeSet<u32> = shard.dirty_objects.bucket_ids().collect();
+            assert!(
+                !witness.is_empty(),
+                "{label}: the witness names no bucket, so every comparison below is vacuous"
+            );
+            assert_eq!(
+                engine_dirty, witness,
+                "{label}: the dirty set and a witness built outside the engine disagree; only-engine \
+                 {:?}, only-witness {:?}",
+                engine_dirty.difference(&witness).take(5).collect::<Vec<_>>(),
+                witness.difference(&engine_dirty).take(5).collect::<Vec<_>>(),
+            );
 
-        let entries = collect_live_block_entries(shard);
-        let dirty_blocks = entries
-            .iter()
-            .filter(|entry| shard.dirty_objects.contains(&entry.object_key))
-            .count();
-        assert!(
-            dirty_blocks > 0,
-            "{label}: no live block belongs to a dirty object, so the precondition below holds \
-             over an empty set"
-        );
+            let entries = collect_live_block_entries(shard);
+            let dirty_blocks = entries
+                .iter()
+                .filter(|entry| shard.dirty_objects.contains(&entry.object_key))
+                .count();
+            assert!(
+                dirty_blocks > 0,
+                "{label}: no live block belongs to a dirty object, so the precondition below holds \
+                 over an empty set"
+            );
 
-        // HALF ONE -- CAN THE SCOPED WALK REACH THE BLOCK AT ALL? It enters at
-        // `bucket_map[dirty bucket]`, so a block of a dirty object FILED anywhere else is a block
-        // the scoped walk never looks at. This is the half that loses data.
-        let named = super::BlockObjects::of(&shard.bucket_index);
-        let mut unreachable = 0usize;
-        let mut miscredited = 0usize;
-        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-            for (handle, _block) in &bucket.block_index {
-                let object_key = named.at(*routing_bucket, *handle);
-                if !shard.dirty_objects.contains(object_key) {
-                    continue;
-                }
-                if !witness.contains(routing_bucket) {
-                    unreachable += 1;
-                }
-                // HALF TWO -- WOULD IT CREDIT THE BLOCK TO THE RIGHT BUCKET? Asserted separately,
-                // because a block that is reachable and credited elsewhere is a different defect
-                // from one that cannot be reached.
-                let credited = block_routing_bucket(object_key, start, end);
-                if !witness.contains(&credited) {
-                    miscredited += 1;
+            // HALF ONE -- CAN THE SCOPED WALK REACH THE BLOCK AT ALL? It enters at
+            // `bucket_map[dirty bucket]`, so a block of a dirty object FILED anywhere else is a block
+            // the scoped walk never looks at. This is the half that loses data.
+            let named = super::BlockObjects::of(&shard.bucket_index);
+            let mut unreachable = 0usize;
+            let mut miscredited = 0usize;
+            for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+                for (handle, _block) in &bucket.block_index {
+                    let object_key = named.at(*routing_bucket, *handle);
+                    if !shard.dirty_objects.contains(object_key) {
+                        continue;
+                    }
+                    if !witness.contains(routing_bucket) {
+                        unreachable += 1;
+                    }
+                    // HALF TWO -- WOULD IT CREDIT THE BLOCK TO THE RIGHT BUCKET? Asserted separately,
+                    // because a block that is reachable and credited elsewhere is a different defect
+                    // from one that cannot be reached.
+                    let credited = block_routing_bucket(object_key, start, end);
+                    if !witness.contains(&credited) {
+                        miscredited += 1;
+                    }
                 }
             }
-        }
-        println!(
-            "  {label}: {dirty_blocks} blocks of dirty objects, {unreachable} filed where a scoped \
-             walk never looks, {miscredited} credited to a bucket the dirty set does not name"
-        );
+            println!(
+                "  {label}: {dirty_blocks} blocks of dirty objects, {unreachable} filed where a scoped \
+                 walk never looks, {miscredited} credited to a bucket the dirty set does not name"
+            );
 
-        if break_it {
-            assert_eq!(
-                unreachable, dirty_blocks,
-                "after the reconstruct every block is FILED by `block_routing_bucket(key, 0, \
-                 u32::MAX)` while the dirty set still keys on the shard's own range, so every \
-                 block of a dirty object sits in a bucket a walk scoped to the dirty set never \
-                 opens. The dump that names the dirty bucket then carries no slab for any of \
-                 them. That is the losing direction, and it is all {dirty_blocks} blocks."
-            );
-            assert_eq!(
-                miscredited, 0,
-                "the blocks are still unrouted, so the summary walk's own fallback would credit \
-                 them to the shard's range and get the right bucket. It is the FILING that moved, \
-                 which is why this half is counted separately from the half above."
-            );
-        } else {
-            assert_eq!(
-                (unreachable, miscredited),
-                (0, 0),
-                "on the live write path every address carries `block_routing_bucket(key, start, \
-                 end)`, which is what the dirty set keys on, so both halves hold for all \
-                 {dirty_blocks} blocks"
-            );
-        }
+            if break_it {
+                assert_eq!(
+                    unreachable, dirty_blocks,
+                    "after the reconstruct every block is FILED by `block_routing_bucket(key, 0, \
+                     u32::MAX)` while the dirty set still keys on the shard's own range, so every \
+                     block of a dirty object sits in a bucket a walk scoped to the dirty set never \
+                     opens. The dump that names the dirty bucket then carries no slab for any of \
+                     them. That is the losing direction, and it is all {dirty_blocks} blocks."
+                );
+                assert_eq!(
+                    miscredited, 0,
+                    "the blocks are still unrouted, so the summary walk's own fallback would credit \
+                     them to the shard's range and get the right bucket. It is the FILING that moved, \
+                     which is why this half is counted separately from the half above."
+                );
+            } else {
+                assert_eq!(
+                    (unreachable, miscredited),
+                    (0, 0),
+                    "on the live write path every address carries `block_routing_bucket(key, start, \
+                     end)`, which is what the dirty set keys on, so both halves hold for all \
+                     {dirty_blocks} blocks"
+                );
+            }
+        });
     }
 }
 
@@ -941,91 +944,92 @@ fn the_scoped_walk_equals_the_full_walk_on_every_bucket_the_dirty_set_names() {
         start: u32,
         end: u32,
     ) -> u64 {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
-        let _released = assert_no_released_bucket_is_dirty(shard);
+        engine.shards.with_state(1, |shard_state| {
+            let shard = shard_state.expect("shard 1");
+            let _released = assert_no_released_bucket_is_dirty(shard);
 
-        let witness: BTreeSet<u32> = outstanding
-            .iter()
-            .map(|key| dirty_set_would_file(key, start, end))
-            .collect();
-        let engine_dirty: BTreeSet<u32> = shard.dirty_objects.bucket_ids().collect();
-        assert_eq!(
-            engine_dirty, witness,
-            "{label}: the engine's dirty bucket set and the witness built outside it disagree"
-        );
-        if expect_empty {
-            assert!(
-                witness.is_empty(),
-                "{label}: this point is supposed to have nothing outstanding and the witness \
-                 names {} buckets",
-                witness.len()
+            let witness: BTreeSet<u32> = outstanding
+                .iter()
+                .map(|key| dirty_set_would_file(key, start, end))
+                .collect();
+            let engine_dirty: BTreeSet<u32> = shard.dirty_objects.bucket_ids().collect();
+            assert_eq!(
+                engine_dirty, witness,
+                "{label}: the engine's dirty bucket set and the witness built outside it disagree"
             );
-        }
-
-        let full = full_live_block_summaries(shard, start, end);
-        let (scoped, _visits) = scoped_live_block_summaries(shard, start, end);
-
-        // DIRECTION ONE, THE ONE THAT LOSES DATA: a bucket the dirty set names where the two
-        // walks do not agree block for block.
-        let mut disagreeing: Vec<(u32, u64, u64)> = Vec::new();
-        for routing_bucket in &witness {
-            let full_count = full.get(routing_bucket).copied().unwrap_or(0);
-            let scoped_count = scoped.get(routing_bucket).copied().unwrap_or(0);
-            if full_count != scoped_count {
-                disagreeing.push((*routing_bucket, full_count, scoped_count));
+            if expect_empty {
+                assert!(
+                    witness.is_empty(),
+                    "{label}: this point is supposed to have nothing outstanding and the witness \
+                     names {} buckets",
+                    witness.len()
+                );
             }
-        }
-        assert!(
-            disagreeing.is_empty(),
-            "{label}: {} of {} buckets the dirty set names are summarised differently by the \
-             scoped walk than by the full one (bucket, full, scoped): {:?}. Every one of these \
-             is a dump that carries fewer blocks than the bucket holds -- silent, and discovered \
-             only when something looks for a record that is not there.",
-            disagreeing.len(),
-            witness.len(),
-            &disagreeing[..disagreeing.len().min(5)]
-        );
 
-        // DIRECTION TWO, THE ONE THAT ONLY WASTES: buckets the full walk summarises and the
-        // scoped walk never looks at. This is the saving, and it is reported, not feared.
-        let skipped: Vec<u32> = full
-            .keys()
-            .filter(|routing_bucket| !scoped.contains_key(routing_bucket))
-            .copied()
-            .collect();
-        let skipped_blocks: u64 = skipped.iter().map(|b| full[b]).sum();
-        for routing_bucket in &skipped {
+            let full = full_live_block_summaries(shard, start, end);
+            let (scoped, _visits) = scoped_live_block_summaries(shard, start, end);
+
+            // DIRECTION ONE, THE ONE THAT LOSES DATA: a bucket the dirty set names where the two
+            // walks do not agree block for block.
+            let mut disagreeing: Vec<(u32, u64, u64)> = Vec::new();
+            for routing_bucket in &witness {
+                let full_count = full.get(routing_bucket).copied().unwrap_or(0);
+                let scoped_count = scoped.get(routing_bucket).copied().unwrap_or(0);
+                if full_count != scoped_count {
+                    disagreeing.push((*routing_bucket, full_count, scoped_count));
+                }
+            }
             assert!(
-                !witness.contains(routing_bucket),
-                "{label}: bucket {routing_bucket} is in the dirty witness AND was skipped by the \
-                 scoped walk; that is the losing direction and direction one should have caught it"
+                disagreeing.is_empty(),
+                "{label}: {} of {} buckets the dirty set names are summarised differently by the \
+                 scoped walk than by the full one (bucket, full, scoped): {:?}. Every one of these \
+                 is a dump that carries fewer blocks than the bucket holds -- silent, and discovered \
+                 only when something looks for a record that is not there.",
+                disagreeing.len(),
+                witness.len(),
+                &disagreeing[..disagreeing.len().min(5)]
             );
-        }
 
-        // And nothing invented: a bucket the scoped walk credits that the full walk does not.
-        let invented: Vec<u32> = scoped
-            .keys()
-            .filter(|routing_bucket| !full.contains_key(routing_bucket))
-            .copied()
-            .collect();
-        assert!(
-            invented.is_empty(),
-            "{label}: the scoped walk credited {} buckets the full walk does not summarise at \
-             all: {:?}",
-            invented.len(),
-            &invented[..invented.len().min(5)]
-        );
+            // DIRECTION TWO, THE ONE THAT ONLY WASTES: buckets the full walk summarises and the
+            // scoped walk never looks at. This is the saving, and it is reported, not feared.
+            let skipped: Vec<u32> = full
+                .keys()
+                .filter(|routing_bucket| !scoped.contains_key(routing_bucket))
+                .copied()
+                .collect();
+            let skipped_blocks: u64 = skipped.iter().map(|b| full[b]).sum();
+            for routing_bucket in &skipped {
+                assert!(
+                    !witness.contains(routing_bucket),
+                    "{label}: bucket {routing_bucket} is in the dirty witness AND was skipped by the \
+                     scoped walk; that is the losing direction and direction one should have caught it"
+                );
+            }
 
-        println!(
-            "  {label:<34} witness {:>5}, full {:>5} buckets, scoped {:>5}, skipped {:>5} \
-             buckets / {skipped_blocks:>6} blocks",
-            witness.len(),
-            full.len(),
-            scoped.len(),
-            skipped.len()
-        );
-        skipped_blocks
+            // And nothing invented: a bucket the scoped walk credits that the full walk does not.
+            let invented: Vec<u32> = scoped
+                .keys()
+                .filter(|routing_bucket| !full.contains_key(routing_bucket))
+                .copied()
+                .collect();
+            assert!(
+                invented.is_empty(),
+                "{label}: the scoped walk credited {} buckets the full walk does not summarise at \
+                 all: {:?}",
+                invented.len(),
+                &invented[..invented.len().min(5)]
+            );
+
+            println!(
+                "  {label:<34} witness {:>5}, full {:>5} buckets, scoped {:>5}, skipped {:>5} \
+                 buckets / {skipped_blocks:>6} blocks",
+                witness.len(),
+                full.len(),
+                scoped.len(),
+                skipped.len()
+            );
+            skipped_blocks
+        })
     }
 
     saved_total += check(&engine, "1: fresh store", &outstanding, true, start, end);
@@ -1038,15 +1042,14 @@ fn the_scoped_walk_equals_the_full_walk_on_every_bucket_the_dirty_set_names() {
     let report = one_round(&engine);
     assert!(report.errors.is_empty(), "the settling round errored: {:?}", report.errors);
     let _ = one_round(&engine);
-    {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let drained = shards.get(&1).expect("shard 1").dirty_objects.len();
+    engine.shards.with_state(1, |shard_state| {
+        let drained = shard_state.expect("shard 1").dirty_objects.len();
         assert_eq!(
             drained, 0,
             "the settling rounds left {drained} dirty objects behind, so point 3 is not the \
              empty-backlog point it claims to be"
         );
-    }
+    });
     outstanding.clear();
     saved_total += check(&engine, "3: after a dumping round", &outstanding, true, start, end);
     checkpoints += 1;
@@ -1089,16 +1092,17 @@ fn a_round_immediately_after_a_restart_would_see_no_buckets_at_all() {
         load_on_range(&engine, NARROW_END_BUCKET);
         seed(&engine, 0, RECORDS);
         let (start, end) = routing_range(&engine);
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
-        let full = full_live_block_summaries(shard, start, end);
-        let (_scoped, visits) = scoped_live_block_summaries(shard, start, end);
-        assert!(
-            visits > 0,
-            "before the restart the scoped walk must visit something, or the after-figure is not \
-             a change"
-        );
-        (full.len(), full.values().sum::<u64>())
+        engine.shards.with_state(1, |shard_state| {
+            let shard = shard_state.expect("shard 1");
+            let full = full_live_block_summaries(shard, start, end);
+            let (_scoped, visits) = scoped_live_block_summaries(shard, start, end);
+            assert!(
+                visits > 0,
+                "before the restart the scoped walk must visit something, or the after-figure is not \
+                 a change"
+            );
+            (full.len(), full.values().sum::<u64>())
+        })
     };
     assert!(
         buckets_before > 0 && blocks_before > 0,
@@ -1111,38 +1115,39 @@ fn a_round_immediately_after_a_restart_would_see_no_buckets_at_all() {
     load_on_range(&engine, NARROW_END_BUCKET);
     let (start, end) = routing_range(&engine);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    let _released = assert_no_released_bucket_is_dirty(shard);
+    engine.shards.with_state(1, |shard_state| {
+        let shard = shard_state.expect("shard 1");
+        let _released = assert_no_released_bucket_is_dirty(shard);
 
-    let dirty_after = shard.dirty_objects.len();
-    assert_eq!(
-        dirty_after, 0,
-        "the clear-dirty-on-load contract says a load clears every flag, and the shard came back \
-         holding {dirty_after} dirty objects. The rest of this test measures the consequence of \
-         that contract and means nothing without it."
-    );
+        let dirty_after = shard.dirty_objects.len();
+        assert_eq!(
+            dirty_after, 0,
+            "the clear-dirty-on-load contract says a load clears every flag, and the shard came back \
+             holding {dirty_after} dirty objects. The rest of this test measures the consequence of \
+             that contract and means nothing without it."
+        );
 
-    let full = full_live_block_summaries(shard, start, end);
-    let (scoped, visits) = scoped_live_block_summaries(shard, start, end);
-    assert!(
-        !full.is_empty(),
-        "the shard came back from the restart holding no live block, so the comparison below is \
-         between two empty sets"
-    );
-    assert!(
-        scoped.is_empty() && visits == 0,
-        "a walk scoped to an empty dirty set has nothing to visit, and this one credited {} \
-         buckets over {visits} visits",
-        scoped.len()
-    );
-    println!(
-        "  after the restart: full walk {} buckets / {} blocks, scoped walk {} buckets / {visits} \
-         visits -- the ENTIRE store is in the losing direction",
-        full.len(),
-        full.values().sum::<u64>(),
-        scoped.len()
-    );
+        let full = full_live_block_summaries(shard, start, end);
+        let (scoped, visits) = scoped_live_block_summaries(shard, start, end);
+        assert!(
+            !full.is_empty(),
+            "the shard came back from the restart holding no live block, so the comparison below is \
+             between two empty sets"
+        );
+        assert!(
+            scoped.is_empty() && visits == 0,
+            "a walk scoped to an empty dirty set has nothing to visit, and this one credited {} \
+             buckets over {visits} visits",
+            scoped.len()
+        );
+        println!(
+            "  after the restart: full walk {} buckets / {} blocks, scoped walk {} buckets / {visits} \
+             visits -- the ENTIRE store is in the losing direction",
+            full.len(),
+            full.values().sum::<u64>(),
+            scoped.len()
+        );
+    })
 }
 
 // =============================================================================================
@@ -1177,80 +1182,81 @@ fn summary_walk_measurement_tracks_the_combined_summary_entry_point() {
         let _ = one_round(&engine);
         let (start, end) = routing_range(&engine);
 
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
-        let _released = assert_no_released_bucket_is_dirty(shard);
-        let outstanding = shard.dirty_objects.len();
-        assert_eq!(
-            outstanding, 0,
-            "{records} records: the settling rounds left {outstanding} dirty objects, so this is \
-             not the empty round it is reported as"
-        );
+        let (one_walk, _released, scoped_visits, full, summary_site) = engine.shards.with_state(1, |shard_state| {
+            let shard = shard_state.expect("shard 1");
+            let _released = assert_no_released_bucket_is_dirty(shard);
+            let outstanding = shard.dirty_objects.len();
+            assert_eq!(
+                outstanding, 0,
+                "{records} records: the settling rounds left {outstanding} dirty objects, so this is \
+                 not the empty round it is reported as"
+            );
 
-        // ONE FULL WALK, and -- the point of taking it here -- the NAME the engine charges it
-        // under. The per-site tally is keyed by `file:line` of the caller, so calling the walk on
-        // its own with the tally cleared makes the key SELF-LOCATING: exactly one site is charged
-        // and it is this walk's. Nothing below has to hard-code a line number that drifts.
-        let full = full_live_block_summaries(shard, start, end);
-        crate::engine::reset_live_block_scan_entries();
-        crate::engine::reset_live_block_scan_sites();
-        // The cycle uses the combined summary/digest entry point. Calibrate that
-        // call site while keeping the standalone summary as the membership oracle.
-        let _ = crate::engine::storage_reporting::bucket_summaries_and_digests(
-            1, shard, start, end, true,
-        );
-        let one_walk = crate::engine::live_block_scan_entries();
-        let charged = crate::engine::live_block_scan_sites_snapshot();
-        assert_eq!(
-            charged.len(),
-            1,
-            "{records} records: one call of `bucket_storage_summaries` charged {} calling sites, \
-             so the key below is not this walk's: {:?}",
-            charged.len(),
-            charged.keys().collect::<Vec<_>>()
-        );
-        let summary_site = charged.keys().next().expect("exactly one site").clone();
-        assert!(
-            one_walk > 0,
-            "{records} records: the full walk charged nothing, so the instrument is not connected"
-        );
+            // ONE FULL WALK, and -- the point of taking it here -- the NAME the engine charges it
+            // under. The per-site tally is keyed by `file:line` of the caller, so calling the walk on
+            // its own with the tally cleared makes the key SELF-LOCATING: exactly one site is charged
+            // and it is this walk's. Nothing below has to hard-code a line number that drifts.
+            let full = full_live_block_summaries(shard, start, end);
+            crate::engine::reset_live_block_scan_entries();
+            crate::engine::reset_live_block_scan_sites();
+            // The cycle uses the combined summary/digest entry point. Calibrate that
+            // call site while keeping the standalone summary as the membership oracle.
+            let _ = crate::engine::storage_reporting::bucket_summaries_and_digests(
+                1, shard, start, end, true,
+            );
+            let one_walk = crate::engine::live_block_scan_entries();
+            let charged = crate::engine::live_block_scan_sites_snapshot();
+            assert_eq!(
+                charged.len(),
+                1,
+                "{records} records: one call of `bucket_storage_summaries` charged {} calling sites, \
+                 so the key below is not this walk's: {:?}",
+                charged.len(),
+                charged.keys().collect::<Vec<_>>()
+            );
+            let summary_site = charged.keys().next().expect("exactly one site").clone();
+            assert!(
+                one_walk > 0,
+                "{records} records: the full walk charged nothing, so the instrument is not connected"
+            );
 
-        // THE SCOPED WALK, and the residual around it.
-        crate::engine::reset_live_block_scan_entries();
-        let (scoped, scoped_visits) = scoped_live_block_summaries(shard, start, end);
-        let residual = crate::engine::live_block_scan_entries();
-        assert_eq!(
-            residual, 0,
-            "{records} records: the scoped walk charged {residual} entries to the engine's own \
-             live-block counter. It reads `bucket_map` directly and should charge nothing."
-        );
-        // A 0 residual is the one reading indistinguishable from a disconnected instrument, so
-        // plant a real whole-store walk inside the same span and recover it exactly.
-        //
-        // THE PLANT IS `one_walk`, NOT `collect_live_block_entries(...).len()`, and the difference
-        // is a measurement in itself. A settled shard has RELEASED buckets, and a released bucket
-        // holds no entry in `bucket_map`, so `collect_live_block_entries` walks the index AND then
-        // re-walks the model maps to supplement them -- charging about twice the store to return
-        // one entry per block. Comparing the charge against the returned length is comparing two
-        // different quantities, and the first form of this assertion did exactly that (39,860
-        // charged against 20,000 returned). `one_walk` was charged by the SAME call under the
-        // SAME shard state a moment ago, so it is the plant this span can recover exactly.
-        let _ = crate::engine::storage_reporting::bucket_summaries_and_digests(
-            1, shard, start, end, true,
-        );
-        let recovered = crate::engine::live_block_scan_entries();
-        assert_eq!(
-            recovered, one_walk,
-            "{records} records: a whole-store summary walk charging {one_walk} entries was \
-             planted inside the span that had just read 0, and the instrument recovered \
-             {recovered}. Without this the 0 above says nothing."
-        );
-        assert!(
-            scoped.is_empty() && scoped_visits == 0,
-            "{records} records: the backlog is empty, so the scoped walk has no bucket to visit \
-             and it visited {scoped_visits}"
-        );
-        drop(shards);
+            // THE SCOPED WALK, and the residual around it.
+            crate::engine::reset_live_block_scan_entries();
+            let (scoped, scoped_visits) = scoped_live_block_summaries(shard, start, end);
+            let residual = crate::engine::live_block_scan_entries();
+            assert_eq!(
+                residual, 0,
+                "{records} records: the scoped walk charged {residual} entries to the engine's own \
+                 live-block counter. It reads `bucket_map` directly and should charge nothing."
+            );
+            // A 0 residual is the one reading indistinguishable from a disconnected instrument, so
+            // plant a real whole-store walk inside the same span and recover it exactly.
+            //
+            // THE PLANT IS `one_walk`, NOT `collect_live_block_entries(...).len()`, and the difference
+            // is a measurement in itself. A settled shard has RELEASED buckets, and a released bucket
+            // holds no entry in `bucket_map`, so `collect_live_block_entries` walks the index AND then
+            // re-walks the model maps to supplement them -- charging about twice the store to return
+            // one entry per block. Comparing the charge against the returned length is comparing two
+            // different quantities, and the first form of this assertion did exactly that (39,860
+            // charged against 20,000 returned). `one_walk` was charged by the SAME call under the
+            // SAME shard state a moment ago, so it is the plant this span can recover exactly.
+            let _ = crate::engine::storage_reporting::bucket_summaries_and_digests(
+                1, shard, start, end, true,
+            );
+            let recovered = crate::engine::live_block_scan_entries();
+            assert_eq!(
+                recovered, one_walk,
+                "{records} records: a whole-store summary walk charging {one_walk} entries was \
+                 planted inside the span that had just read 0, and the instrument recovered \
+                 {recovered}. Without this the 0 above says nothing."
+            );
+            assert!(
+                scoped.is_empty() && scoped_visits == 0,
+                "{records} records: the backlog is empty, so the scoped walk has no bucket to visit \
+                 and it visited {scoped_visits}"
+            );
+            (one_walk, _released, scoped_visits, full, summary_site)
+        });
 
         // NOW THE ROUND ITSELF, which is what the saving has to be priced against. One round with
         // nothing to do, with the whole-call counter and the per-site tally read around it.
@@ -1443,7 +1449,7 @@ pub(super) fn call_arguments(lines: &[&str], line_index: usize, needle: &str) ->
 /// range IS that shard's own range.
 ///
 /// TWO RUN OVER A DECODED MANIFEST INDEX, and there the whole range is load-bearing.
-/// `install_bucket_dump_manifest` and the durable-manifest recovery base in `lifecycle.rs` both
+/// `install_bucket_dump_manifest` and the durable-manifest recovery base in `engine_persistence.rs` both
 /// call `rebuild_bucket_block_ownership` on the output of `decode_index_bytes` -- a WHOLE-SHARD
 /// image carrying explicit routing buckets from whatever range the source shard ran on. That
 /// rebuild does not merely PLACE unrouted blocks by the range it is handed, it also FILTERS on it,
@@ -1488,7 +1494,7 @@ fn the_three_rebuild_call_sites_still_on_the_whole_range_are_each_right_to_be() 
     const WHOLE_RANGE_SITES: &[&str] = &[
         "engine/bucket_dump_manifest_methods.rs :: rebuild_bucket_block_ownership x1",
         "engine/engine_lifecycle.rs :: promote_model_maps_to_bucket_index_authority x1",
-        "engine/engine_lifecycle.rs :: rebuild_bucket_block_ownership x1",
+        "engine/engine_persistence.rs :: rebuild_bucket_block_ownership x1",
     ];
     const REBUILDS: [&str; 3] = [
         "rebuild_bucket_block_ownership(",

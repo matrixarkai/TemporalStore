@@ -249,11 +249,9 @@ fn runtime_queued_unload_waits_for_prior_shard_work() {
 
 /// THE RUNTIME'S MUTEXES HAVE ONE GLOBAL ORDER, AND HERE IS THE NUMBER.
 ///
-/// `DataNodeRuntimeInner` declares thirteen mutexes. Nothing stops two of them being held at
-/// once, and several paths do hold two or three: `cancel_job` holds `jobs` then `queue` and
-/// charges `stats` inside both, `submit` holds `queue` across the two rejection paths that
-/// charge `stats`, and `stats()` holds three at once so its report is one cut rather than three
-/// readings taken at three instants.
+/// Runtime queue, jobs and statistics paths can hold multiple mutexes:
+/// `cancel_job` holds `jobs` then `queue` and charges `stats` inside both;
+/// `submit` holds `queue` across rejection paths that charge `stats`.
 ///
 /// Two of those paths taking the same pair in OPPOSITE orders is a deadlock with no symptom
 /// until it happens and no recovery when it does -- and it is invisible to every test that
@@ -293,78 +291,120 @@ fn the_data_node_runtime_locks_have_one_global_order() {
         ),
     ];
 
-    // One held guard. `depth` is the brace depth it was taken at, so leaving that block drops it;
-    // `name` is what it is bound to, so an explicit `drop(name)` ends it early.
-    struct Held {
-        field: String,
-        line: usize,
-        depth: i64,
-        name: String,
-    }
-
-    // (outer field, inner field, file, line the outer was taken, line the inner was taken)
-    let mut edges: Vec<(String, String, &str, usize, usize)> = Vec::new();
-    let mut acquisitions = 0usize;
-
-    for (file, source) in SOURCES {
-        // Collapse a chain written one method per line onto the line it starts on, so
-        // `self\n    .inner\n    .queue\n    .lock()` matches as one acquisition. Without this
-        // step the scan matches almost nothing in this crate -- and a scan that matched nothing
-        // reads exactly like a clean one, which is what the denominator assertions below exist
-        // to catch.
-        let raw: Vec<&str> = source.lines().collect();
-        let mut joined: Vec<String> = raw.iter().map(|line| (*line).to_string()).collect();
-        let mut owner: Vec<usize> = (0..raw.len()).collect();
-        for index in 1..raw.len() {
-            if raw[index].trim_start().starts_with('.') {
-                let target = owner[index - 1];
-                let continuation = raw[index].trim_start().to_string();
-                joined[target].push_str(&continuation);
-                joined[index].clear();
-                owner[index] = target;
-            }
+    fn scan<'a>(
+        sources: &[(&'a str, &str)],
+    ) -> (usize, Vec<(String, String, &'a str, usize, usize)>) {
+        // One held guard. `depth` is the brace depth it was taken at, so leaving that block drops it;
+        // `name` is what it is bound to, so an explicit `drop(name)` ends it early.
+        struct Held {
+            field: String,
+            line: usize,
+            depth: i64,
+            name: String,
         }
 
-        let mut held: Vec<Held> = Vec::new();
-        let mut depth: i64 = 0;
-        for (index, line) in joined.iter().enumerate() {
-            let trimmed = line.trim_start();
+        // (outer field, inner field, file, line the outer was taken, line the inner was taken)
+        let mut edges: Vec<(String, String, &str, usize, usize)> = Vec::new();
+        let mut acquisitions = 0usize;
 
-            // A new function body resets the stack. Brace depth alone does not: every method of
-            // an `impl` block sits at the same depth as its siblings.
-            if trimmed.starts_with("fn ")
-                || trimmed.starts_with("pub fn ")
-                || trimmed.starts_with("pub(crate) fn ")
-                || trimmed.starts_with("pub(super) fn ")
-                || trimmed.starts_with("async fn ")
-            {
-                held.clear();
-            }
-
-            // An explicit `drop(name)` ends that guard's region before its block does.
-            held.retain(|guard| !line.contains(&format!("drop({})", guard.name)));
-
-            if let Some(field) = runtime_lock_field(line) {
-                acquisitions += 1;
-                for outer in &held {
-                    edges.push((outer.field.clone(), field.clone(), file, outer.line, index + 1));
-                }
-                if let Some(name) = bound_guard_name(trimmed) {
-                    held.push(Held {
-                        field,
-                        line: index + 1,
-                        depth,
-                        name,
-                    });
+        for &(file, source) in sources {
+            // Collapse a chain written one method per line onto the line it starts on, so
+            // `self\n    .inner\n    .queue\n    .lock()` matches as one acquisition. Without this
+            // step the scan matches almost nothing in this crate -- and a scan that matched nothing
+            // reads exactly like a clean one, which is what the denominator assertions below exist
+            // to catch.
+            let raw: Vec<&str> = source.lines().collect();
+            let mut joined: Vec<String> = raw.iter().map(|line| (*line).to_string()).collect();
+            let mut owner: Vec<usize> = (0..raw.len()).collect();
+            for index in 1..raw.len() {
+                if raw[index].trim_start().starts_with('.') {
+                    let target = owner[index - 1];
+                    let continuation = raw[index].trim_start().to_string();
+                    joined[target].push_str(&continuation);
+                    joined[index].clear();
+                    owner[index] = target;
                 }
             }
 
-            depth += line.matches('{').count() as i64;
-            depth -= line.matches('}').count() as i64;
-            // Leaving the block a guard was taken in drops it.
-            held.retain(|guard| guard.depth <= depth);
+            let mut held: Vec<Held> = Vec::new();
+            let mut depth: i64 = 0;
+            for (index, line) in joined.iter().enumerate() {
+                let trimmed = line.trim_start();
+
+                // A new function body resets the stack. Brace depth alone does not: every method of
+                // an `impl` block sits at the same depth as its siblings.
+                if trimmed.starts_with("fn ")
+                    || trimmed.starts_with("pub fn ")
+                    || trimmed.starts_with("pub(crate) fn ")
+                    || trimmed.starts_with("pub(super) fn ")
+                    || trimmed.starts_with("async fn ")
+                {
+                    held.clear();
+                }
+
+                // An explicit `drop(name)` ends that guard's region before its block does.
+                held.retain(|guard| !line.contains(&format!("drop({})", guard.name)));
+
+                if let Some(field) = runtime_lock_field(line) {
+                    acquisitions += 1;
+                    for outer in &held {
+                        edges.push((
+                            outer.field.clone(),
+                            field.clone(),
+                            file,
+                            outer.line,
+                            index + 1,
+                        ));
+                    }
+                    if let Some(name) = bound_guard_name(trimmed) {
+                        held.push(Held {
+                            field,
+                            line: index + 1,
+                            depth,
+                            name,
+                        });
+                    }
+                }
+
+                depth += line.matches('{').count() as i64;
+                depth -= line.matches('}').count() as i64;
+                // Leaving the block a guard was taken in drops it.
+                held.retain(|guard| guard.depth <= depth);
+            }
         }
+
+        (acquisitions, edges)
     }
+
+    let (acquisitions, edges) = scan(&SOURCES);
+    let (control_acquisitions, control_edges) = scan(&[(
+        "nested-control",
+        r#"
+fn nested_control() {
+    let first = self.inner.first.lock().expect("first");
+    let second = self.inner.second.lock().expect("second");
+    let third = self.inner.third.lock().expect("third");
+    let fourth = self.inner.fourth.lock().expect("fourth");
+}
+"#,
+    )]);
+    assert_eq!(control_acquisitions, 4);
+    let control_pairs: Vec<_> = control_edges
+        .iter()
+        .map(|(from, to, ..)| (from.as_str(), to.as_str()))
+        .collect();
+    assert_eq!(
+        control_pairs,
+        vec![
+            ("first", "second"),
+            ("first", "third"),
+            ("second", "third"),
+            ("first", "fourth"),
+            ("second", "fourth"),
+            ("third", "fourth"),
+        ],
+        "the scanner must record edges from every live guard, not just one"
+    );
 
     // ---- DENOMINATORS, AND THE POSITIVE CONTROL -------------------------------------------
     //
@@ -403,8 +443,8 @@ nesting means the guard-lifetime tracking stopped working and an inversion would
         "the scan did not see `queue` held while `stats` was taken, which `submit` and \
 `cancel_job` both do. It is not reading these files the way it thinks it is",
     );
-    // And the detector must not be pinned to one outer lock: a bug that only ever recorded edges
-    // out of `queue` would make every graph acyclic and pass for ever.
+    // The synthetic control above checks three outer guards independently of
+    // production changes that remove a shared lock. Keep both real nesting roots.
     let mut outer_fields: Vec<&str> = Vec::new();
     for (from, ..) in &edges {
         if !outer_fields.contains(&from.as_str()) {
@@ -412,13 +452,31 @@ nesting means the guard-lifetime tracking stopped working and an inversion would
         }
     }
     assert!(
-        outer_fields.len() >= 3,
-        "every nesting edge the scan found comes out of one of {} lock(s) ({:?}). More than that \
-many are held across another acquisition in these files, so the scan is recording edges out of \
-one guard only -- and an inversion involving any other guard would be invisible",
-        outer_fields.len(),
+        outer_fields.contains(&"jobs") && outer_fields.contains(&"queue"),
+        "the scanner must retain the real jobs and queue nesting roots; found {:?}",
         outer_fields,
     );
+
+    fn cyclic_nodes<'a>(pairs: &[(&'a str, &'a str)]) -> Vec<&'a str> {
+        let mut remaining: Vec<_> = pairs.iter().flat_map(|(a, b)| [*a, *b]).collect();
+        remaining.sort_unstable();
+        remaining.dedup();
+        while let Some(index) = remaining.iter().position(|node| {
+            !pairs
+                .iter()
+                .any(|(from, to)| to == node && remaining.contains(from))
+        }) {
+            remaining.remove(index);
+        }
+        remaining
+    }
+    assert!(cyclic_nodes(&[("a", "b"), ("b", "c"), ("a", "c")]).is_empty());
+    assert_eq!(cyclic_nodes(&[("a", "b"), ("b", "a")]), vec!["a", "b"]);
+    assert_eq!(
+        cyclic_nodes(&[("a", "b"), ("b", "c"), ("c", "a")]),
+        vec!["a", "b", "c"]
+    );
+    assert_eq!(cyclic_nodes(&[("a", "a")]), vec!["a"]);
 
     // ---- THE PROPERTY ---------------------------------------------------------------------
     let mut nodes: Vec<&str> = Vec::new();
@@ -450,19 +508,31 @@ one guard only -- and an inversion involving any other guard would be invisible"
                 ));
             }
         }
-        if !cycles.iter().any(|seen| seen.contains(&format!("`{to}`")) && seen.contains(&format!("`{from}`")))
+        if !cycles
+            .iter()
+            .any(|seen| seen.contains(&format!("`{to}`")) && seen.contains(&format!("`{from}`")))
         {
             cycles.push(description);
         }
     }
 
+    let pairs: Vec<_> = edges
+        .iter()
+        .map(|(from, to, ..)| (from.as_str(), to.as_str()))
+        .collect();
+    let unranked = cyclic_nodes(&pairs);
+    if !unranked.is_empty() && cycles.is_empty() {
+        cycles.push(format!(
+            "no topological lock order for {:?}; edges: {:?}",
+            unranked, pairs
+        ));
+    }
     assert!(
         cycles.is_empty(),
         "{} of the {} nesting edges over {} runtime mutexes form a cycle, so no global lock \
 order exists and two threads on these paths deadlock outright -- each holding what the other \
 waits for, with no timeout and no recovery:\n  {}\n\nFix it by taking them in the order the REST \
-of the runtime already uses. Do NOT fix it by dropping a guard and re-taking it: releasing one \
-mid-report tears the single cut that holding them together exists to produce",
+of the runtime already uses, preserving the coherence required by each snapshot",
         cycles.len(),
         edges.len(),
         nodes.len(),

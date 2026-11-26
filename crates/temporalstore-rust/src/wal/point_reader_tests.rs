@@ -67,7 +67,7 @@ fn sealed_readers_reuse_the_descriptor_without_relisting_or_reopening() {
     }
     assert_eq!(FILE_OPENS.with(|count| count.get()), 1);
     assert_eq!(WAL_SEGMENT_LISTINGS.with(|count| count.get()), 1);
-    assert_eq!(store.inner.lock().unwrap().point_readers.readers.len(), 1);
+    assert_eq!(store.shard_writer(7).lock_inner_raw().point_readers.readers.len(), 1);
 }
 
 #[cfg(unix)]
@@ -119,7 +119,7 @@ fn a_sealed_descriptor_serves_different_records_inside_its_extent() {
     read(&store, 7, first, 127, 1);
     read(&store, 7, second, 127, 2);
     assert_eq!(FILE_OPENS.with(|count| count.get()), 1);
-    assert_eq!(store.inner.lock().unwrap().point_readers.readers.len(), 1);
+    assert_eq!(store.shard_writer(7).lock_inner_raw().point_readers.readers.len(), 1);
 }
 
 #[test]
@@ -132,7 +132,8 @@ fn growing_active_segments_do_not_retain_descriptors() {
     let second = append(&store, 7, 2);
     read(&store, 7, second, 127, 2);
     read(&store, 7, first, 0, 1);
-    let inner = store.inner.lock().unwrap();
+    let shard_writer = store.shard_writer(7);
+    let inner = shard_writer.lock_inner_raw();
     assert!(inner.point_readers.readers.is_empty());
     assert_eq!(inner.point_readers.open_file_bytes, 0);
 }
@@ -147,10 +148,11 @@ fn owned_reclaim_closes_descriptors_before_unlink_and_preserves_survivors() {
     let second = append(&store, 7, 2);
     read(&store, 7, first, 0, 1);
     read(&store, 7, second, 0, 2);
-    assert_eq!(store.inner.lock().unwrap().point_readers.readers.len(), 2);
+    assert_eq!(store.shard_writer(7).lock_inner_raw().point_readers.readers.len(), 2);
     store.gc_before_sequence_unchecked(7, second.0).unwrap();
     {
-        let inner = store.inner.lock().unwrap();
+        let shard_writer = store.shard_writer(7);
+        let inner = shard_writer.lock_inner_raw();
         assert!(inner.point_readers.readers.is_empty());
         assert_eq!(inner.point_readers.open_file_bytes, 0);
     }
@@ -178,7 +180,7 @@ fn replaced_same_length_files_do_not_serve_cached_inode_bytes() {
     assert!(store
         .read_carried_block_at_log_id(7, position.1, position.0, 127, 127, None)
         .is_err());
-    assert!(store.inner.lock().unwrap().point_readers.readers.is_empty());
+    assert!(store.shard_writer(7).lock_inner_raw().point_readers.readers.is_empty());
 }
 
 #[cfg(unix)]
@@ -194,7 +196,8 @@ fn deleted_sealed_files_are_not_read_through_retained_descriptors() {
         .read_carried_block_at_log_id(7, position.1, position.0, 0, 0, None)
         .unwrap()
         .is_none());
-    let inner = store.inner.lock().unwrap();
+    let shard_writer = store.shard_writer(7);
+    let inner = shard_writer.lock_inner_raw();
     assert!(inner.point_readers.readers.is_empty());
     assert_eq!(inner.point_readers.open_file_bytes, 0);
 }
@@ -204,14 +207,17 @@ fn deleted_sealed_files_are_not_read_through_retained_descriptors() {
 fn stale_directory_generations_force_one_refresh_when_another_writer_rolls() {
     let _policy = RollPolicy::new(1);
     let dir = tempfile::tempdir().unwrap();
+    // One writer owns the directory; the store under test only reads it, so it never takes the
+    // append lock the writer holds.
+    let writer = LocalWriteAheadLogStore::new(dir.path());
+    let first = append(&writer, 7, 1);
     let store = LocalWriteAheadLogStore::new(dir.path());
-    let first = append(&store, 7, 1);
     read(&store, 7, first, 0, 1);
-    let other = LocalWriteAheadLogStore::new(dir.path());
-    let second = append(&other, 7, 2);
+    let second = append(&writer, 7, 2);
     {
         // Simulate a filesystem whose directory timestamps did not distinguish the roll.
-        let mut inner = store.inner.lock().unwrap();
+        let shard_writer = store.shard_writer(7);
+        let mut inner = shard_writer.lock_inner_raw();
         let directory = inner.point_readers.directories.front_mut().unwrap();
         Arc::get_mut(directory).unwrap().stamp = stamp(&dir.path().metadata().unwrap());
     }
@@ -236,8 +242,9 @@ fn reader_cache_keeps_shards_and_store_owners_separate() {
         read(&first, 8, first_eight, 127, 2);
         read(&second, 7, second_seven, 127, 3);
     }
-    assert_eq!(first.inner.lock().unwrap().point_readers.readers.len(), 2);
-    assert_eq!(second.inner.lock().unwrap().point_readers.readers.len(), 1);
+    assert_eq!(first.shard_writer(7).lock_inner_raw().point_readers.readers.len(), 1);
+    assert_eq!(first.shard_writer(8).lock_inner_raw().point_readers.readers.len(), 1);
+    assert_eq!(second.shard_writer(7).lock_inner_raw().point_readers.readers.len(), 1);
 }
 
 #[cfg(unix)]
@@ -251,7 +258,8 @@ fn descriptor_count_and_retained_metadata_stay_bounded() {
         .collect();
     for (index, position) in positions.into_iter().enumerate() {
         read(&store, 7, position, 0, index as u8);
-        let inner = store.inner.lock().unwrap();
+        let shard_writer = store.shard_writer(7);
+        let inner = shard_writer.lock_inner_raw();
         let cache = &inner.point_readers;
         assert!(cache.readers.len() <= MAX_READERS);
         assert!(

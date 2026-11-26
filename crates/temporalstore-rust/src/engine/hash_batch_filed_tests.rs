@@ -70,47 +70,48 @@ fn generic_hash_batch_does_not_repeat_post_write_filing_or_change_layout() {
                 "the writer's filed index needs no post-write filing"
             );
             if count > 0 {
-                let shards = engine.shards.read().unwrap();
-                let shard = shards.get(&1).unwrap();
-                let fields = shard.bucket_index.hashes.get("row").unwrap();
-                let addresses = fields
-                    .iter()
-                    .map(|(_, address)| crate::engine::live_block_key(address))
-                    .collect::<std::collections::BTreeSet<_>>();
-                assert_eq!(
-                    addresses.len(),
-                    count,
-                    "small fields keep their existing block layout"
-                );
-                assert_eq!(
-                    shard
-                        .bucket_index
-                        .block_refs_for("hash", "row", None)
-                        .unwrap()
-                        .len(),
-                    count
-                );
-                drop(shards);
+                engine.shards.with_state(1, |owner| {
+                    let shard = owner.unwrap();
+                    let fields = shard.bucket_index.hashes.get("row").unwrap();
+                    let addresses = fields
+                        .iter()
+                        .map(|(_, address)| crate::engine::live_block_key(address))
+                        .collect::<std::collections::BTreeSet<_>>();
+                    assert_eq!(
+                        addresses.len(),
+                        count,
+                        "small fields keep their existing block layout"
+                    );
+                    assert_eq!(
+                        shard
+                            .bucket_index
+                            .block_refs_for("hash", "row", None)
+                            .unwrap()
+                            .len(),
+                        count
+                    );
+                });
                 let fields = (0..count)
                     .map(|index| format!("field-{index:03}"))
                     .collect::<Vec<_>>();
                 let before = crate::engine::storage_bucket_internals::bucket_block_upserts();
-                let mut shards = engine.shards.write().unwrap();
-                assert!(
-                    crate::engine::storage_bucket_internals::sync_written_hash_fields(
-                        shards.get_mut(&1).unwrap(),
-                        1,
-                        "row",
-                        fields.iter().map(String::as_str),
-                    )
-                );
-                let control =
-                    crate::engine::storage_bucket_internals::bucket_block_upserts() - before;
-                assert_eq!(
-                    control, count as u64,
-                    "the counter must see the previous sync path"
-                );
-                println!("hash-batch fields={count} async={async_storage} post_write_files={filed} control_files={control}");
+                engine.shards.with_state_mut(1, |owner| {
+                    assert!(
+                        crate::engine::storage_bucket_internals::sync_written_hash_fields(
+                            owner.unwrap(),
+                            1,
+                            "row",
+                            fields.iter().map(String::as_str),
+                        )
+                    );
+                    let control =
+                        crate::engine::storage_bucket_internals::bucket_block_upserts() - before;
+                    assert_eq!(
+                        control, count as u64,
+                        "the counter must see the previous sync path"
+                    );
+                    println!("hash-batch fields={count} async={async_storage} post_write_files={filed} control_files={control}");
+                });
             }
         }
     }
@@ -195,16 +196,15 @@ fn generic_hash_batch_duplicate_fields_and_readds_survive_restart() {
         assert!(
             matches!(response.response, CommandResponse::Bytes { value: Some(ref bytes) } if bytes == b"retained payload")
         );
-        let shards = recovered.shards.read().unwrap();
-        assert_eq!(
-            shards
-                .get(&1)
-                .unwrap()
-                .bucket_index
-                .block_refs_for("hash", "row", None)
-                .unwrap()
-                .len(),
-            3
-        );
+        recovered.shards.with_state(1, |owner| {
+            assert_eq!(
+                owner.unwrap()
+                    .bucket_index
+                    .block_refs_for("hash", "row", None)
+                    .unwrap()
+                    .len(),
+                3
+            );
+        });
     }
 }

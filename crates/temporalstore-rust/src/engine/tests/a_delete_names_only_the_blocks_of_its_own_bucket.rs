@@ -14,7 +14,7 @@
 //! its own objects.
 //!
 //! TWO ARMS, BECAUSE THEY GUARD DIFFERENT FAILURES.
-//!   * `a_delete_visits_the_objects_of_its_bucket_and_not_of_the_shard` counts the objects visited
+//!   * `a_delete_reads_none_of_the_bucket_it_leaves_behind` counts the objects visited
 //!     per delete at two shard sizes and requires the count not to grow with the shard, with a
 //!     control that switches the owners off and requires the count to grow with it, so the counter
 //!     is known to be able to see the dimension.
@@ -68,14 +68,14 @@ fn fill(engine: &TemporalEngine, keys: usize) {
     }
 }
 
-/// Objects visited per delete, for `deletes` keys removed from a shard of `keys` string keys.
-fn visits_per_delete(keys: usize, deletes: usize, owners_disabled: bool) -> f64 {
-    // 500 keys a bucket at every size, so what grows with the shard is the bucket count and not the bucket.
-    let buckets = (keys / 500) as u32;
+/// Objects visited per delete, for `deletes` keys removed from a shard of `keys` string keys held in
+/// four buckets (so a bucket grows with the shard). `object_local` false takes the path that names
+/// the whole bucket, which is the control.
+fn visits_per_delete(keys: usize, deletes: usize, object_local: bool) -> f64 {
     let dir = tempfile::tempdir().unwrap();
-    let engine = engine_on(dir.path(), buckets);
+    let engine = engine_on(dir.path(), 4);
     fill(&engine, keys);
-    crate::engine::state::disable_bucket_owners_for_test(owners_disabled);
+    crate::engine::disable_object_local_delete_for_test(!object_local);
     let (_, visits) = crate::engine::state::measure_block_identity_visits_for_test(|| {
         for index in 0..deletes {
             run(
@@ -86,38 +86,84 @@ fn visits_per_delete(keys: usize, deletes: usize, owners_disabled: bool) -> f64 
             );
         }
     });
-    crate::engine::state::disable_bucket_owners_for_test(false);
+    crate::engine::disable_object_local_delete_for_test(false);
     visits as f64 / deletes as f64
 }
 
 #[test]
-fn a_delete_visits_the_objects_of_its_bucket_and_not_of_the_shard() {
+fn a_delete_reads_none_of_the_bucket_it_leaves_behind() {
     const SMALL: usize = 2_000;
     const LARGE: usize = 16_000;
     const DELETES: usize = 40;
 
-    let small = visits_per_delete(SMALL, DELETES, false);
-    let large = visits_per_delete(LARGE, DELETES, false);
-    // THE CONTROL: with the owners off the walk runs, and what it visits is the shard.
-    let walk_small = visits_per_delete(SMALL, DELETES, true);
-    let walk_large = visits_per_delete(LARGE, DELETES, true);
+    let small = visits_per_delete(SMALL, DELETES, true);
+    let large = visits_per_delete(LARGE, DELETES, true);
+    // THE CONTROL: the path that names the whole bucket visits the bucket, and the bucket grows
+    // with the shard here, so a count that stayed flat on this path would prove nothing.
+    let named_small = visits_per_delete(SMALL, DELETES, false);
+    let named_large = visits_per_delete(LARGE, DELETES, false);
     println!(
-        "  objects visited per delete: owners {small:.1} at {SMALL} keys, {large:.1} at {LARGE}; \
-         walk {walk_small:.1} at {SMALL}, {walk_large:.1} at {LARGE}"
+        "  objects visited per delete: by handle {small:.1} at {SMALL} keys, {large:.1} at {LARGE};          naming the bucket {named_small:.1} at {SMALL}, {named_large:.1} at {LARGE}"
     );
     assert!(
-        walk_large > 4.0 * walk_small && walk_large > 1_000.0,
-        "the control is blind to the shard's size: the walk visited {walk_small:.1} per delete at \
-         {SMALL} keys and {walk_large:.1} at {LARGE}, so a count that stayed flat would prove nothing"
+        named_large > 4.0 * named_small && named_large > 1_000.0,
+        "the control is blind to the bucket's size: naming it visited {named_small:.1} per delete at          {SMALL} keys and {named_large:.1} at {LARGE}, so a count that stayed flat would prove nothing"
     );
     assert!(
-        large <= 2.0 * small.max(1.0),
-        "a delete visited {large:.1} objects at {LARGE} keys against {small:.1} at {SMALL}: the \
-         naming of a bucket's blocks is paying for the shard again"
+        small <= 1.0 && large <= 1.0,
+        "a delete by handle visited {small:.1} objects at {SMALL} keys and {large:.1} at {LARGE}: it is          reading the bucket again"
     );
-    assert!(
-        large < walk_large / 20.0,
-        "the owner path visited {large:.1} objects per delete, against {walk_large:.1} for the walk"
+}
+
+/// What a bucket holds after the same deletes, by handle and by naming the bucket.
+fn buckets_after_deletes(object_local: bool) -> Vec<(u32, usize, Vec<u64>)> {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path(), 4);
+    fill(&engine, 1_200);
+    crate::engine::disable_object_local_delete_for_test(!object_local);
+    for index in 0..1_200 {
+        if index % 3 == 0 {
+            run(
+                &engine,
+                Command::StringSet {
+                    key: format!("k-{index:07}"),
+                    value: vec![b'w'; 300],
+                },
+            );
+        }
+        if index % 4 == 0 {
+            run(
+                &engine,
+                Command::CommonDelete {
+                    key: format!("k-{index:07}"),
+                },
+            );
+        }
+    }
+    crate::engine::disable_object_local_delete_for_test(false);
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.expect("shard 1 is loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(bucket, node)| {
+                let mut ids: Vec<u64> = node.object_index.iter().copied().collect();
+                ids.sort_unstable();
+                (*bucket, node.block_index.len(), ids)
+            })
+            .collect()
+    })
+}
+
+#[test]
+fn removing_by_handle_leaves_each_bucket_as_naming_it_does() {
+    let by_handle = buckets_after_deletes(true);
+    let by_naming = buckets_after_deletes(false);
+    assert!(!by_handle.is_empty(), "the fixture left no bucket to compare");
+    assert_eq!(
+        by_handle, by_naming,
+        "the same deletes left the buckets different: (bucket, blocks, object ids) by handle against by naming"
     );
 }
 
@@ -146,13 +192,14 @@ fn the_owners_record_every_object_that_holds_a_ref() {
             );
         }
     }
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    assert!(
-        shard.bucket_index.bucket_owners.get().is_some(),
-        "an installed shard has its owners built"
-    );
-    shard.bucket_index.assert_bucket_owners_cover_every_ref();
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.expect("shard 1 is loaded");
+        assert!(
+            shard.bucket_index.bucket_owners.get().is_some(),
+            "an installed shard has its owners built"
+        );
+        shard.bucket_index.assert_bucket_owners_cover_every_ref();
+    });
 }
 
 /// The footprint of the owners, per object, on a shard of 20,000 string keys. Run by hand:
@@ -163,14 +210,15 @@ fn the_owners_footprint_per_object() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path(), 40);
     fill(&engine, 20_000);
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let owners = shard.bucket_index.bucket_owners.get().expect("owners are built");
-    let objects: usize = shard.bucket_index.objects.values().map(|table| table.len()).sum();
-    println!(
-        "  owners: {} entries over {objects} objects, {} reserved bytes = {:.1} B per object",
-        owners.entries(),
-        owners.reserved_bytes(),
-        owners.reserved_bytes() as f64 / objects as f64
-    );
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.expect("shard 1 is loaded");
+        let owners = shard.bucket_index.bucket_owners.get().expect("owners are built");
+        let objects: usize = shard.bucket_index.objects.values().map(|table| table.len()).sum();
+        println!(
+            "  owners: {} entries over {objects} objects, {} reserved bytes = {:.1} B per object",
+            owners.entries(),
+            owners.reserved_bytes(),
+            owners.reserved_bytes() as f64 / objects as f64
+        );
+    });
 }

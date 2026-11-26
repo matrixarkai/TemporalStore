@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! MODE=gateway TARGET=matrixobject://127.0.0.1:22110 K=64 OPS=2000 VALUE=1024 \
-//!   cargo run --release -p temporalstore-rust --features matrixobject --example direct_vs_gateway_latency
+//!   cargo run --release -p temporalstore-rust --example direct_vs_gateway_latency
 //! MODE=direct  TARGET=127.0.0.1:22111,127.0.0.1:22112,127.0.0.1:22113 K=64 OPS=2000 ...
 //! ```
 //!
@@ -19,7 +19,7 @@ use std::time::Instant;
 use bytes::Bytes;
 use temporalstore_rust::matrixobject_direct::DirectConfig;
 use temporalstore_snapshot::object_store::{
-    MatrixObjectMode, NetworkedMatrixObjectStore, ObjectStore,
+    MatrixObjectMode, NetworkedMatrixObject, ObjectStore,
 };
 
 fn env(name: &str, default: &str) -> String {
@@ -59,7 +59,7 @@ async fn main() {
 
     let store = match mode {
         MatrixObjectMode::Gateway => {
-            NetworkedMatrixObjectStore::connect(mode, &target).expect("connect to the gateway")
+            NetworkedMatrixObject::connect(mode, &target).expect("connect to the gateway")
         }
         MatrixObjectMode::Direct => DirectConfig::from_env(&target)
             .and_then(|config| config.connect())

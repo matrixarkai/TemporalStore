@@ -765,29 +765,21 @@ fn a_steady_state_append_asks_for_the_active_pieces_length_a_fixed_number_of_tim
          being incremented"
     );
 
-    // The result: the per-append cost does not move with the log.
-    assert_eq!(
-        small_asks as usize, small * 3,
-        "{small} steady-state appends asked for the active piece's length {small_asks} times, \
-         not {} -- an append asks three times: once to check the piece exists, once to confirm \
-         no other writer moved its end, and once to decide whether it is full. \
-         There used to be a fourth, taken by the group-commit barrier to record how much of the \
-         piece it had just made durable. It asked the wrong question: under preallocation the \
-         file's length is the RESERVATION, not the records, so the barrier recorded a durable \
-         byte count up to a whole 256 KiB chunk above what the log actually held. The record end \
-         is already in hand on that path, so the answer cost a `statx` that was not needed even \
-         to be wrong",
-        small * 3
+    // The result: a warm append asks the filesystem for the piece length ZERO times. The store holds
+    // the directory lock for its whole life and keeps the record end of every shard in its cache,
+    // so the three asks an append used to make (does the piece exist, did another writer move its
+    // end, is it full) are gone. What is left is a roll check at a segment boundary, so the count
+    // per append is far under one and does not grow with the log.
+    assert!(
+        small_per < 0.1 && large_per < 0.1,
+        "steady-state appends asked for the active piece's length {small_asks} times over {small} 
+         and {large_asks} over {large}: a warm append must ask almost never (old behaviour: 3 per 
+         append), per append {small_per} and {large_per}"
     );
-    assert_eq!(
-        large_asks as usize, large * 3,
-        "{large} steady-state appends asked {large_asks} times, not {}", large * 3
-    );
-    assert_eq!(
-        small_per, large_per,
-        "the per-append ask count moved between a {small}-record log and a {large}-record one \
-         ({small_per} against {large_per}). A quantity that grows with the log is a scan wearing \
-         a constant's clothes"
+    assert!(
+        large_per <= small_per,
+        "the per-append ask count grew with the log ({small_per} against {large_per}): a quantity 
+         that grows with the log is a scan wearing a constant's clothes"
     );
 }
 

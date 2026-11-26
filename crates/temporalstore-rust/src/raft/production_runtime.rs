@@ -235,6 +235,11 @@ impl ProductionRaftRuntime {
     }
 
     pub fn propose(&self, command: Command) -> Result<CommandResponse, RaftError> {
+        if matches!(command, Command::LeaderEstablish) {
+            return Err(RaftError::InvalidConfig(
+                "leader establishment is a Raft runtime operation".to_string(),
+            ));
+        }
         if self.cluster.leader_id() != self.options.local_node_id {
             return Err(RaftError::NotLeader {
                 node_id: self.options.local_node_id,
@@ -360,6 +365,9 @@ impl ProductionRaftRuntime {
         };
         let rpc_options = self.options.rpc;
         let snapshot_check_interval = self.options.snapshot_check_interval_ms;
+        // Writers enable the marker only after every replica can decode it.
+        let write_election_marker =
+            std::env::var("TS_RAFT_ELECTION_MARKER").as_deref() == Ok("1");
         let auth_token = self
             .options
             .security
@@ -630,6 +638,9 @@ impl ProductionRaftRuntime {
                                 // timeouts fire and supersede it.
                                 force_heartbeat = true;
                                 last_contact_epoch = cluster.leader_contact_epoch();
+                                if !write_election_marker {
+                                    continue;
+                                }
                                 // Commit one entry of this term, which moves the commit point to
                                 // cover everything before it. Until that happens a leader cannot
                                 // safely treat older entries as committed however many replicas

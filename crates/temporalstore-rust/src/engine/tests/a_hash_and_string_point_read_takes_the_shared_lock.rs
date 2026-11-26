@@ -114,16 +114,18 @@ fn each_point_read_answers_while_the_shared_lock_is_held() {
     }
     let mut answered = 0usize;
     for (label, command, expected) in reads() {
-        let held = engine.shards.read().expect("engine lock poisoned");
-        let (sender, receiver) = mpsc::channel();
-        let worker = {
-            let engine = Arc::clone(&engine);
-            std::thread::spawn(move || {
-                let _ = sender.send(run(&engine, command));
-            })
-        };
-        let got = receiver.recv_timeout(Duration::from_secs(5));
-        drop(held);
+        let (got, worker) = engine.shards.with_state(1, |owner| {
+            assert!(owner.is_some());
+            let (sender, receiver) = mpsc::channel();
+            let worker = {
+                let engine = Arc::clone(&engine);
+                std::thread::spawn(move || {
+                    let _ = sender.send(run(&engine, command));
+                })
+            };
+            let got = receiver.recv_timeout(Duration::from_secs(5));
+            (got, worker)
+        });
         worker.join().expect("the read thread");
         assert_eq!(
             Ok(expected),

@@ -17,6 +17,8 @@ mod paths;
 mod slab_manifest;
 mod slab_manifest_wire;
 mod slab_reports;
+mod owned_writer;
+pub(crate) mod slab_restore_bindings;
 #[path = "block_store/block_store_append.rs"]
 mod append;
 #[path = "block_store/block_store_read.rs"]
@@ -1119,6 +1121,10 @@ pub struct BlockStoreStats {
 /// when the slab is not part of the recovered checkpoint.
 pub trait SharedSlabSource: Send + Sync + std::fmt::Debug {
     fn fetch_slab(&self, block_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError>;
+
+    fn slab_owner_shard_id(&self, _block_slab_id: u64) -> Result<Option<u64>, BlockStoreError> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1625,6 +1631,8 @@ pub struct BlockStoreSlabDescriptor {
     /// key on every open, and `a_slab_descriptor_carries_the_same_number_twice` fails if they
     /// ever do.
     pub stored_slab_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_shard_id: Option<u64>,
     #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub state: BlockStoreSlabState,
@@ -1658,10 +1666,8 @@ pub struct BlockStoreSlabDescriptor {
     pub first_error: Option<String>,
 }
 
-/// One per slab. Six `Option`s of eight bytes each is 96 of its 168 bytes, which is the shape
-/// `BlockAddress` replaced with a presence byte -- worth it there at one per stored block, not
-/// worth a wire change here at one per gigabyte.
-const _: () = assert!(std::mem::size_of::<BlockStoreSlabDescriptor>() == 168);
+/// One per slab. The optional owner adds 16 bytes and supports the full shard ID range.
+const _: () = assert!(std::mem::size_of::<BlockStoreSlabDescriptor>() == 184);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabSummary {
@@ -1799,6 +1805,8 @@ pub struct StreamBackedSlabRuntimeReport {
 pub struct BlockStoreSlabReport {
     #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_shard_id: Option<u64>,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
     pub block_count: u64,
@@ -1916,8 +1924,15 @@ pub struct BlockStore {
 #[derive(Debug)]
 struct ReadView {
     root: PathBuf,
-    source: std::sync::RwLock<Option<Arc<dyn SharedSlabSource>>>,
+    sources: std::sync::RwLock<SharedSlabSources>,
     counters: slab_backend::ReadCounters,
+}
+
+#[derive(Debug, Default)]
+struct SharedSlabSources {
+    default: Option<Arc<dyn SharedSlabSource>>,
+    // The first reserved ID is the key. Reserved ranges have no holes.
+    ranges: BTreeMap<u64, (u64, String, Arc<dyn SharedSlabSource>)>,
 }
 
 #[derive(Debug)]
@@ -1967,6 +1982,10 @@ struct BlockStoreInner {
     // cleared by sync_durable(). See bulk_relaxed_durability().
     relaxed_dirty: bool,
     block_slab_id: u64,
+    owned_writers: BTreeMap<u64, Arc<Mutex<owned_writer::OwnedWriter>>>,
+    owned_active: BTreeSet<u64>,
+    owned_highest_id: u64,
+    owned_recovery_error: Option<String>,
     write_offset: u64,
     next_block_id: u64,
     options: BlockStoreOptions,
@@ -2000,7 +2019,7 @@ struct BlockStoreInner {
     /// computed fresh at the call. So a stale tally that overstates live bytes costs a round of
     /// collection, and one that understates them cannot reach anything the live-set test would
     /// have retained.
-    live_block_bytes: Option<BTreeMap<u64, BlockStoreSlabLive>>,
+    live_block_bytes: Option<Arc<BTreeMap<u64, BlockStoreSlabLive>>>,
     stats: BlockStoreStats,
     /// The earliest moment any slab now in quarantine was set aside -- when this process KNOWS it.
     ///
@@ -2037,6 +2056,12 @@ struct BlockStoreInner {
     /// caller. Equal to `quarantine_arrivals` means every slab now in quarantine was in it for
     /// such a round; anything less means a slab arrived since and nothing has looked at it.
     quarantine_checked_arrivals: u64,
+    /// The last purge round read the whole quarantine directory and found nothing left in it, and
+    /// nothing has been set aside since. An EMPTY quarantine has no earliest arrival to publish,
+    /// which reads as "not entitled to an opinion" and made every idle round walk the shard to
+    /// check a quarantine with nothing in it. Cleared at the one place a slab is set aside and
+    /// false in a fresh process, whose directory the manifest may not know.
+    quarantine_known_empty: bool,
     // Set only by Default: the store owns its minted scratch directory, and the last
     // clone's drop removes it. Never set for a caller-supplied root.
     scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
@@ -2080,6 +2105,23 @@ fn observe_quarantined_arrival(
 /// round with a real live set, so none is waiting to be restored. `earliest == None` is "not
 /// entitled to an opinion" and answers false, and so does `min_age == 0` because nothing is then
 /// younger than the age.
+/// [`quarantine_purge_would_do_nothing`], or a quarantine known to be empty.
+///
+/// An empty quarantine is nothing to destroy and nothing to restore, so a round over it can change
+/// nothing whatever the age. `checked == arrivals` still has to hold: a slab that arrived since is
+/// not in the empty directory the last round read.
+fn quarantine_purge_has_nothing_to_do(
+    earliest: Option<u64>,
+    now: u64,
+    min_age_ms: u64,
+    arrivals: u64,
+    checked: u64,
+    known_empty: bool,
+) -> bool {
+    (known_empty && checked == arrivals)
+        || quarantine_purge_would_do_nothing(earliest, now, min_age_ms, arrivals, checked)
+}
+
 fn quarantine_purge_would_do_nothing(
     earliest: Option<u64>,
     now: u64,
@@ -2125,6 +2167,19 @@ mod quarantine_wait_guards {
     fn a_quarantine_that_has_aged_out_is_not_waiting() {
         assert!(quarantine_purge_would_do_nothing(Some(1_000), 1_000 + HOUR - 1, HOUR, 3, 3));
         assert!(!quarantine_purge_would_do_nothing(Some(1_000), 1_000 + HOUR, HOUR, 3, 3));
+    }
+
+    /// A quarantine the last round found empty has nothing to purge at any age, until something
+    /// arrives. Planted fault: drop the `known_empty` arm, or drop `checked == arrivals` from it.
+    #[test]
+    fn a_quarantine_known_to_be_empty_waits_whatever_the_age() {
+        use super::quarantine_purge_has_nothing_to_do as nothing;
+        assert!(nothing(None, 2_000, HOUR, 3, 3, true));
+        assert!(nothing(None, 2_000, 0, 3, 3, true));
+        // Not known empty: no earliest still means the round must look (the control).
+        assert!(!nothing(None, 2_000, HOUR, 3, 3, false));
+        // A slab arrived since the empty read.
+        assert!(!nothing(None, 2_000, HOUR, 4, 3, true));
     }
 
     /// No opinion on the earliest arrival, and an age of zero, both mean the round must look.
@@ -2185,11 +2240,7 @@ impl BlockStore {
     pub fn with_options(root: impl Into<PathBuf>, options: BlockStoreOptions) -> Self {
         let root = root.into();
         let root_created = std::fs::create_dir_all(&root).is_ok();
-        let block_slab_id = latest_slab_id_at(&root).unwrap_or_default();
-        let mut write_offset = slab_path(&root, block_slab_id)
-            .metadata()
-            .map(|metadata| metadata.len())
-            .unwrap_or_default();
+        let latest_slab_id = latest_slab_id_at(&root).unwrap_or_default();
         let manifest_exists = slab_manifest_path(&root).exists();
         // WHAT THE OPEN READS, TAKEN ON THE OPEN'S OWN TALLY. Every byte below also lands on the
         // process counter when these tallies drop; this is the per-store figure beside it, and
@@ -2220,6 +2271,69 @@ impl BlockStore {
         // integer -- on a live-store copy, the bulk of a steady-state open.
         let next_block_id = 0;
         let reconciled = reconcile_slab_manifest_with_disk(&root, &mut slabs).unwrap_or_default();
+        let (owned_writers, owned_active, mut owned_highest_id, mut owned_recovery_error) =
+            match owned_writer::recover_owned_writers(&root, &mut slabs) {
+                Ok((writers, active, highest)) => (writers, active, highest, None),
+                Err(error) => (BTreeMap::new(), BTreeSet::new(), 0, Some(error.to_string())),
+            };
+        let restore_watermark = match slab_restore_bindings::read_restore_watermark(&root) {
+            Ok(highest) => highest,
+            Err(error) => {
+                owned_recovery_error.get_or_insert_with(|| error.to_string());
+                None
+            }
+        };
+        if let Some((high, _)) = restore_watermark {
+            owned_highest_id = owned_highest_id.max(high);
+        }
+        let block_slab_id = if owned_writer::has_owned_format(&root, latest_slab_id).unwrap_or(true) {
+            slabs
+                .values()
+                .rev()
+                .find(|slab| {
+                    slab.owner_shard_id.is_none()
+                        && slab.state == BlockStoreSlabState::Sealed
+                        && slab_path(&root, slab.block_slab_id).is_file()
+                })
+                .map_or_else(|| latest_slab_id.saturating_add(1), |slab| slab.block_slab_id)
+        } else {
+            latest_slab_id
+        };
+        let block_slab_id = match restore_watermark {
+            // A raw slab installed in a reserved range is immutable. Only the cursor
+            // captured when reserving that range can still be writable below the bound.
+            Some((high, legacy_cursor)) if block_slab_id <= high => {
+                if slab_path(&root, legacy_cursor).is_file() {
+                    legacy_cursor
+                } else {
+                    high.max(latest_slab_id).saturating_add(1)
+                }
+            }
+            _ => block_slab_id,
+        };
+        let block_slab_id = if owned_highest_id != 0
+            && block_slab_id <= owned_highest_id
+            && !slab_path(&root, block_slab_id).is_file()
+        {
+            owned_highest_id.saturating_add(1)
+        } else {
+            block_slab_id
+        };
+        if let Some((high, _)) = restore_watermark {
+            for slab in slabs.range_mut(..=high).map(|(_, descriptor)| descriptor) {
+                if slab.owner_shard_id.is_none()
+                    && slab.block_slab_id != block_slab_id
+                    && slab.state == BlockStoreSlabState::Active
+                {
+                    slab.state = BlockStoreSlabState::Sealed;
+                    manifest_rebuilt = true;
+                }
+            }
+        }
+        let mut write_offset = slab_path(&root, block_slab_id)
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
         let slab_manifest_reconciled_on_open = reconciled.changed;
         let slabs_skipped_reinspection_on_open = reconciled.slabs_skipped_reinspection;
         // The manifest this open read, plus every slab the inspection read on its workers.
@@ -2227,6 +2341,7 @@ impl BlockStore {
         let open_file_bytes_read = loaded_bytes.saturating_add(reconciled.file_bytes_read);
         let open_file_reads = loaded_reads.saturating_add(reconciled.file_reads);
         manifest_rebuilt |= slab_manifest_reconciled_on_open;
+        manifest_rebuilt |= !owned_active.is_empty();
         ensure_slab_descriptor(
             &mut slabs,
             &root,
@@ -2242,7 +2357,9 @@ impl BlockStore {
         let active_readable_prefix = slabs
             .get(&block_slab_id)
             .map(|slab| slab.readable_prefix_physical_bytes);
-        if let Some(readable_prefix) = active_readable_prefix {
+        if let Some(readable_prefix) =
+            active_readable_prefix.filter(|_| owned_recovery_error.is_none())
+        {
             if readable_prefix < write_offset {
                 if let Ok(file) = OpenOptions::new()
                     .write(true)
@@ -2269,13 +2386,13 @@ impl BlockStore {
         // is about to install. A rebuild-on-open IS a whole manifest write and belongs in the
         // number the caller reads afterwards.
         let mut stats = BlockStoreStats::default();
-        if manifest_rebuilt {
+        if manifest_rebuilt && owned_recovery_error.is_none() {
             let _ = persist_slab_manifest(&root, &slabs, &mut stats);
         }
         let identity = BlockStoreIdentity::new();
         let read_view = Arc::new(ReadView {
             root: root.clone(),
-            source: std::sync::RwLock::new(None),
+            sources: std::sync::RwLock::new(SharedSlabSources::default()),
             counters: slab_backend::ReadCounters::default(),
         });
         Self {
@@ -2289,6 +2406,10 @@ impl BlockStore {
                 active_append_file: None,
                 relaxed_dirty: false,
                 block_slab_id,
+                owned_writers,
+                owned_active,
+                owned_highest_id,
+                owned_recovery_error,
                 write_offset,
                 next_block_id,
                 options,
@@ -2306,6 +2427,7 @@ impl BlockStore {
                 delayed_destroy_earliest_unix_ms: None,
                 quarantine_arrivals: 0,
                 quarantine_checked_arrivals: 0,
+                quarantine_known_empty: false,
                 scratch: None,
             })),
         }
@@ -2316,19 +2438,37 @@ impl BlockStore {
     /// lets a later read fetch a missing old slab on demand from shared storage,
     /// cache it locally, and serve it — instead of installing every slab up front.
     pub fn attach_shared_slab_source(&self, source: Arc<dyn SharedSlabSource>) {
-        *self
-            .read_view
-            .source
-            .write()
-            .expect("shared slab source lock poisoned") = Some(source);
+        let previous = self.read_view.sources.write()
+            .expect("shared slab source lock poisoned").default.replace(source);
+        drop(previous);
+    }
+
+    pub(crate) fn attach_checkpoint_slab_source(
+        &self,
+        first: u64,
+        last: u64,
+        generation: &str,
+        source: Arc<dyn SharedSlabSource>,
+    ) -> Result<(), BlockStoreError> {
+        let mut sources = self.read_view.sources.write().expect("shared slab source lock poisoned");
+        if sources.ranges.get(&first).is_some_and(|(end, name, _)| *end == last && name == generation) {
+            return Ok(());
+        }
+        if first > last
+            || sources.ranges.range(..=last).next_back().is_some_and(|(_, (end, _, _))| *end >= first)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "lazy checkpoint slab allocations overlap",
+            ).into());
+        }
+        sources.ranges.insert(first, (last, generation.to_owned(), source));
+        Ok(())
     }
 
     pub fn has_shared_slab_source(&self) -> bool {
-        self.read_view
-            .source
-            .read()
-            .expect("shared slab source lock poisoned")
-            .is_some()
+        let sources = self.read_view.sources.read().expect("shared slab source lock poisoned");
+        sources.default.is_some() || !sources.ranges.is_empty()
     }
 
     /// The next free block id this store would assign on the next append. Recorded in a
@@ -2338,6 +2478,45 @@ impl BlockStore {
             .lock()
             .expect("block store lock poisoned")
             .next_block_id
+    }
+
+    /// Reserve destination IDs without switching either the legacy or an owned writer.
+    /// A failed restore can leave unused IDs, but a restart must never reuse them.
+    #[cfg(test)]
+    pub(crate) fn reserve_checkpoint_slab_ids(
+        &self,
+        count: u64,
+    ) -> Result<std::ops::RangeInclusive<u64>, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.reserve_checkpoint_slab_ids(count)
+    }
+
+    pub(crate) fn bind_checkpoint_slab_ids(
+        &self,
+        generation: &str,
+        source_ids: &[u32],
+        allow_reserve: bool,
+    ) -> Result<slab_restore_bindings::SlabRestoreBindings, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        slab_restore_bindings::load_or_bind_checkpoint(&mut inner, generation, source_ids, allow_reserve)
+    }
+
+    pub(crate) fn persist_lazy_checkpoint_manifest(
+        &self, generation: &str, bytes: &[u8],
+    ) -> Result<(), BlockStoreError> {
+        let inner = self.inner.lock().expect("block store lock poisoned");
+        inner.check_owned_recovery()?;
+        slab_restore_bindings::persist_lazy_manifest(&inner.root, generation, bytes)?;
+        Ok(())
+    }
+
+    pub(crate) fn saved_lazy_checkpoint_manifests(&self) -> Result<Vec<(String, Vec<u8>)>, BlockStoreError> {
+        Ok(slab_restore_bindings::read_lazy_manifests(&self.read_view.root)?)
+    }
+
+    /// Whether startup needs to reattach a lazy checkpoint source before loading an index.
+    pub fn has_saved_lazy_checkpoints(&self) -> Result<bool, BlockStoreError> {
+        Ok(slab_restore_bindings::has_lazy_manifests(&self.read_view.root)?)
     }
 
     /// Reserve the slab-id (and block-id) range consumed by a lazily-restored checkpoint
@@ -2351,26 +2530,35 @@ impl BlockStore {
         next_block_id_floor: u64,
     ) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.check_owned_recovery()?;
         std::fs::create_dir_all(&inner.root)?;
         inner.root_created = true;
-        inner.active_append_file = None;
         let existing_max = slab_ids_at(&inner.root)?.into_iter().max();
-        let new_slab_id = through_slab_id
+        let highest = through_slab_id
             .max(inner.block_slab_id)
-            .max(existing_max.unwrap_or_default())
-            .saturating_add(1);
+            .max(inner.owned_highest_id)
+            .max(existing_max.unwrap_or_default());
+        let new_slab_id = highest
+            .checked_add(1)
+            .filter(|&id| id <= MAX_ADDRESSABLE_BLOCK_SLAB_ID)
+            .ok_or(BlockAddressOutOfRange {
+                block_slab_id: highest.saturating_add(1),
+                offset: 0,
+                block_id: None,
+            })?;
         let path = slab_path(&inner.root, new_slab_id);
-        let file = std::fs::File::create(&path)?;
+        let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
         crate::durability_metrics::record_barrier("block_store_checkpoint_reserve");
         file.sync_all()?;
         sync_parent_dir(&path)?;
+        inner.active_append_file = None;
         inner.block_slab_id = new_slab_id;
         inner.write_offset = 0;
         inner.next_block_id = inner.next_block_id.max(next_block_id_floor);
         let now = now_unix_ms();
         // Any previously-active local slab is now sealed; the reserved slab is active.
         for slab in inner.slabs.values_mut() {
-            if slab.state == BlockStoreSlabState::Active {
+            if slab.state == BlockStoreSlabState::Active && slab.owner_shard_id.is_none() {
                 slab.state = BlockStoreSlabState::Sealed;
                 slab.updated_unix_ms = Some(now);
             }
@@ -2380,6 +2568,7 @@ impl BlockStore {
             BlockStoreSlabDescriptor {
                 stored_slab_id: new_slab_id,
                 block_slab_id: new_slab_id,
+                owner_shard_id: None,
                 state: BlockStoreSlabState::Active,
                 physical_bytes: 0,
                 logical_bytes: 0,
@@ -2433,6 +2622,7 @@ impl BlockStore {
             let descriptor = BlockStoreSlabDescriptor {
                 stored_slab_id: slab.block_slab_id,
                 block_slab_id: slab.block_slab_id,
+                owner_shard_id: None,
                 state: BlockStoreSlabState::Sealed,
                 physical_bytes: slab.physical_bytes,
                 logical_bytes: slab.logical_bytes,
@@ -2461,15 +2651,20 @@ impl BlockStore {
     /// read-through source (if any) on a local miss, caching it, and counting the
     /// on-demand fetch. A no-op when the slab already exists locally or no source is
     /// attached; in the latter case the normal read path surfaces the miss.
-    fn ensure_slab_present(&self, block_slab_id: u64) -> Result<(), BlockStoreError> {
+    pub(crate) fn has_local_slab(&self, id: u64) -> std::io::Result<bool> {
+        slab_path(&self.read_view.root, id).try_exists()
+    }
+
+    pub(crate) fn ensure_slab_present(&self, block_slab_id: u64) -> Result<(), BlockStoreError> {
         // With no source attached there is nothing to fetch from, so the answer is the same
         // whether or not the file exists: ask that first and a read skips the existence check.
-        let source = self
-            .read_view
-            .source
-            .read()
-            .expect("shared slab source lock poisoned")
-            .clone();
+        let (source, reserved_destination) = {
+            let sources = self.read_view.sources.read().expect("shared slab source lock poisoned");
+            match sources.ranges.range(..=block_slab_id).next_back() {
+                Some((_, (last, _, source))) if block_slab_id <= *last => (Some(source.clone()), true),
+                _ => (sources.default.clone(), false),
+            }
+        };
         let Some(source) = source else {
             return Ok(());
         };
@@ -2477,7 +2672,10 @@ impl BlockStore {
             return Ok(());
         }
         if let Some(bytes) = source.fetch_slab(block_slab_id)? {
-            self.install_slab(block_slab_id, &bytes)?;
+            self.install_slab_with_format(
+                block_slab_id, &bytes, Some(source.slab_owner_shard_id(block_slab_id)?),
+                None, reserved_destination,
+            )?;
             self.inner
                 .lock()
                 .expect("block store lock poisoned")
@@ -2814,6 +3012,8 @@ impl BlockStore {
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
         let mut live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.check_owned_recovery()?;
+        live_block_slab_ids.extend(inner.owned_active.iter().copied());
         live_block_slab_ids.extend(inner.read_pins.keys().copied());
         let trash_dir = delayed_destroy_dir(&inner.root);
         let mut purged = Vec::new();
@@ -3013,6 +3213,15 @@ impl BlockStore {
         } else {
             None
         };
+        // EVERY ENTRY THE ROUND EXAMINED LEFT THE DIRECTORY (destroyed or restored), and the round
+        // reached the end of it: nothing is in quarantine. A stopped round, a stayer of any kind and a
+        // name that is not a slab all make the counts differ, so each of them answers "not known".
+        inner.quarantine_known_empty =
+            !budget_exhausted && examined == purged.len() + restored.len();
+        if inner.quarantine_known_empty {
+            // Nothing remains to check against a live set; later arrivals invalidate this epoch.
+            inner.quarantine_checked_arrivals = inner.quarantine_arrivals;
+        }
         purged.sort_unstable();
         restored.sort_unstable();
         restore_blocked.sort_unstable();
@@ -3051,6 +3260,7 @@ impl BlockStore {
         if !purged.is_empty() || !restored.is_empty() {
             sync_delayed_destroy_dirs(&root)?;
             inner.persist_slab_manifest_counted()?;
+            inner.cleanup_purged_reservations(&purged, &trash_dir)?;
         }
         retained_too_young.sort_unstable();
         Ok(BlockStorePurgeDelayedDestroyReport {
@@ -3113,12 +3323,13 @@ impl BlockStore {
     /// out: a retention owner can name a quarantined slab without any slab arriving.
     pub fn quarantine_waits_for_age(&self, min_age_ms: u64) -> bool {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        quarantine_purge_would_do_nothing(
+        quarantine_purge_has_nothing_to_do(
             inner.delayed_destroy_earliest_unix_ms,
             now_unix_ms(),
             min_age_ms,
             inner.quarantine_arrivals,
             inner.quarantine_checked_arrivals,
+            inner.quarantine_known_empty,
         )
     }
 
@@ -3203,6 +3414,13 @@ impl BlockStore {
     ///
     /// What the reclaim planner needs out of `slab_reports()`, at the cost of a header walk
     /// instead of a CRC-and-decompress of every record in the store.
+    ///
+    /// A slab is read and counted only when its file is not the one last counted: the answer for
+    /// a file is a function of its bytes, a sealed slab is never written again, and the written
+    /// one grows, so its length (and modification time) move. Every other slab costs one `stat`.
+    /// Before this the call read EVERY slab file in full on every maintenance round, so a
+    /// quiet shard paid for the whole store's size each time: 3.8 ms at 100,000 keys and 13.4 ms
+    /// at 300,000 inside one pressure snapshot.
     pub fn slab_block_counts(&self) -> Result<Vec<(u64, u64, u64)>, BlockStoreError> {
         let root = self
             .inner
@@ -3212,14 +3430,37 @@ impl BlockStore {
             .clone();
         let mut tally = BlockStoreReadTally::start();
         let mut out = Vec::new();
+        let mut seen = BTreeSet::new();
         for block_slab_id in slab_ids_at(&root)? {
+            // Taken BEFORE the read: a file that grows in between is then recorded under the
+            // shorter length, and the next call sees a mismatch and counts it again.
+            let signature = std::fs::metadata(slab_path(&root, block_slab_id))
+                .ok()
+                .and_then(|meta| meta.modified().ok().map(|modified| (meta.len(), modified)));
+            if let Some(signature) = signature {
+                if let Some((physical_bytes, block_count)) =
+                    slab_count_memo_get(&root, block_slab_id, signature)
+                {
+                    seen.insert(block_slab_id);
+                    out.push((block_slab_id, physical_bytes, block_count));
+                    continue;
+                }
+            }
             let bytes = LocalSlabBackend::new(&root)
                 .read_all(block_slab_id, &mut tally)?
                 .into_bytes_charged_to_the_process_only();
+            #[cfg(test)]
+            SLAB_COUNT_FULL_READS.with(|cell| cell.set(cell.get() + 1));
+            let owned_format = owned_writer::has_owned_format(&root, block_slab_id)?;
             let (block_count, physical_bytes) =
-                crate::block_store::record::count_slab_blocks(&bytes, block_slab_id);
+                crate::block_store::record::count_slab_blocks(&bytes, block_slab_id, owned_format);
+            if let Some(signature) = signature {
+                slab_count_memo_put(&root, block_slab_id, signature, physical_bytes, block_count);
+                seen.insert(block_slab_id);
+            }
             out.push((block_slab_id, physical_bytes, block_count));
         }
+        slab_count_memo_retain(&root, &seen);
         Ok(out)
     }
 
@@ -3236,12 +3477,14 @@ impl BlockStore {
             let bytes = LocalSlabBackend::new(&root)
                 .read_all(block_slab_id, &mut tally)?
                 .into_bytes_charged_to_the_process_only();
-            reports.push(inspect_slab(&bytes, block_slab_id));
+            let owned_format = owned_writer::has_owned_format(&root, block_slab_id)?;
+            reports.push(inspect_slab(&bytes, block_slab_id, owned_format));
         }
         Ok(reports)
     }
 
     pub fn stats(&self) -> BlockStoreStats {
+        crate::engine::shard_guard::note_store_read();
         let mut stats = self.inner.lock().expect("block store lock poisoned").stats;
         self.read_view.counters.merge_into(&mut stats);
         stats
@@ -3256,7 +3499,8 @@ impl BlockStore {
             let bytes = LocalSlabBackend::new(&root)
                 .read_all(block_slab_id, &mut tally)?
                 .into_bytes_charged_to_the_process_only();
-            if record::inspect_slab_corruption(&bytes, block_slab_id) {
+            let owned_format = owned_writer::has_owned_format(&root, block_slab_id)?;
+            if record::inspect_slab_corruption(&bytes, block_slab_id, owned_format) {
                 corrupt.push(block_slab_id);
             }
         }
@@ -3366,6 +3610,29 @@ pub(crate) fn block_wal_single_barrier() -> bool {
 /// path starts paying per barrier for a file that grows per write, and both are worth revisiting
 /// together -- with the group-size table above as the guide to how much is there.
 impl BlockStoreInner {
+    fn reserve_checkpoint_slab_ids(
+        &mut self,
+        count: u64,
+    ) -> Result<std::ops::RangeInclusive<u64>, BlockStoreError> {
+        self.check_owned_recovery()?;
+        let highest = self.owned_highest_id
+            .max(self.block_slab_id)
+            .max(self.slabs.last_key_value().map_or(0, |(id, _)| *id));
+        let end = highest.checked_add(count)
+            .filter(|&id| count != 0 && id <= MAX_ADDRESSABLE_BLOCK_SLAB_ID)
+            .ok_or(BlockAddressOutOfRange {
+                block_slab_id: highest.saturating_add(count),
+                offset: 0,
+                block_id: None,
+            })?;
+        std::fs::create_dir_all(&self.root)?;
+        // A post-rename sync failure has an uncertain on-disk outcome. Keep the
+        // larger bound in memory even when the caller receives an error.
+        self.owned_highest_id = end;
+        slab_restore_bindings::persist_restore_watermark(&self.root, end, self.block_slab_id)?;
+        Ok(highest + 1..=end)
+    }
+
     /// Write the slab manifest out and count it against THIS store's stats.
     ///
     /// Every route that persists from a locked store goes through here, so the count cannot drift
@@ -3378,6 +3645,7 @@ impl BlockStoreInner {
 fn roll_slab_inner(
     inner: &mut BlockStoreInner,
 ) -> Result<BlockStoreRollReport, BlockStoreError> {
+    inner.check_owned_recovery()?;
     std::fs::create_dir_all(&inner.root)?;
     inner.root_created = true;
     inner.active_append_file = None;
@@ -3397,7 +3665,9 @@ fn roll_slab_inner(
         .max()
         .map(|id| id.saturating_add(1))
         .unwrap_or_default();
-    inner.block_slab_id = next_from_current.max(next_from_disk);
+    inner.block_slab_id = next_from_current
+        .max(next_from_disk)
+        .max(inner.owned_highest_id.saturating_add(1));
     inner.write_offset = 0;
     let path = slab_path(&inner.root, inner.block_slab_id);
     let file = std::fs::File::create(&path)?;
@@ -3412,6 +3682,7 @@ fn roll_slab_inner(
     let new_slab = BlockStoreSlabDescriptor {
         stored_slab_id: inner.block_slab_id,
         block_slab_id: inner.block_slab_id,
+        owner_shard_id: None,
         state: BlockStoreSlabState::Active,
         physical_bytes: 0,
         logical_bytes: 0,
@@ -3531,6 +3802,56 @@ fn compute_slab_usage(
         };
     }
     usage_by_slab.into_values().map(|acc| acc.usage).collect()
+}
+
+/// The last count of each slab file, keyed by the store's root and the slab id, and valid while the
+/// file's length and modification time are the ones it was counted at.
+type SlabCountSignature = (u64, std::time::SystemTime);
+type SlabCountMemo = std::collections::HashMap<(PathBuf, u64), (SlabCountSignature, u64, u64)>;
+
+fn slab_count_memo() -> &'static Mutex<SlabCountMemo> {
+    static MEMO: std::sync::OnceLock<Mutex<SlabCountMemo>> = std::sync::OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(SlabCountMemo::new()))
+}
+
+fn slab_count_memo_get(
+    root: &PathBuf,
+    block_slab_id: u64,
+    signature: SlabCountSignature,
+) -> Option<(u64, u64)> {
+    let memo = slab_count_memo().lock().ok()?;
+    memo.get(&(root.clone(), block_slab_id))
+        .filter(|(held, _, _)| *held == signature)
+        .map(|(_, physical_bytes, block_count)| (*physical_bytes, *block_count))
+}
+
+fn slab_count_memo_put(
+    root: &PathBuf,
+    block_slab_id: u64,
+    signature: SlabCountSignature,
+    physical_bytes: u64,
+    block_count: u64,
+) {
+    if let Ok(mut memo) = slab_count_memo().lock() {
+        // Bounded: a process that opens many roots (tests) must not grow this without limit.
+        if memo.len() > 65_536 {
+            memo.clear();
+        }
+        memo.insert((root.clone(), block_slab_id), (signature, physical_bytes, block_count));
+    }
+}
+
+/// Forget the slabs of `root` that this listing did not see: they were destroyed.
+fn slab_count_memo_retain(root: &PathBuf, seen: &BTreeSet<u64>) {
+    if let Ok(mut memo) = slab_count_memo().lock() {
+        memo.retain(|(memo_root, block_slab_id), _| memo_root != root || seen.contains(block_slab_id));
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Slab files `slab_block_counts` read in full on this thread.
+    static SLAB_COUNT_FULL_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 impl Default for BlockStore {
@@ -4154,6 +4475,8 @@ mod open_read_scale;
 #[cfg(test)]
 #[path = "block_store/restore_only_tests.rs"]
 mod restore_only_tests;
+#[path = "block_store/an_empty_quarantine_waits_tests.rs"]
+mod an_empty_quarantine_waits_tests;
 
 #[cfg(test)]
 mod tests {
@@ -9107,6 +9430,40 @@ const RETIRED_NAMES: &[&str] = &[
             block_slab_id += 1;
         }
         BlockStore::new(root)
+    }
+
+    fn slab_count_full_reads() -> u64 {
+        SLAB_COUNT_FULL_READS.with(|cell| cell.get())
+    }
+
+    /// A slab that has not changed is counted once, not on every call, and one that grew is counted
+    /// again. The call used to read every slab file in full every time.
+    #[test]
+    fn a_slab_that_has_not_changed_is_not_read_again_to_be_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = rolled_store_fixture(dir.path(), 6);
+        let start = slab_count_full_reads();
+        let first = store.slab_block_counts().unwrap();
+        let after_first = slab_count_full_reads();
+        assert_eq!(after_first - start, 6, "the first call counts every slab");
+        let second = store.slab_block_counts().unwrap();
+        assert_eq!(first, second, "an unchanged store counts the same");
+        assert_eq!(
+            slab_count_full_reads(),
+            after_first,
+            "the second call read a slab file it had already counted",
+        );
+        // A write to one slab moves its length, so exactly that slab is counted again.
+        {
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(slab_path(dir.path(), 3))
+                .unwrap();
+            file.write_all(&[0u8; 16]).unwrap();
+        }
+        let third = store.slab_block_counts().unwrap();
+        assert_eq!(slab_count_full_reads(), after_first + 1, "only the changed slab is read");
+        assert_eq!(third.len(), first.len());
     }
 
     /// One roll against a store that already holds `slabs` slabs, timed and counted. Prints;

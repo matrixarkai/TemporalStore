@@ -24,9 +24,10 @@ use std::time::{Duration, Instant};
 /// The tick period, in milliseconds, the server runs the storage manager with when the
 /// environment does not set one. Zero is the whole-round loop.
 ///
-/// The tick loop is opt-in until a comparison of the two on the same fixture, showing whole-round
-/// latency and loop CPU share, is part of the change that makes it the default.
-pub const DEFAULT_STORAGE_MANAGER_TICK_MS: u64 = 0;
+/// The tick loop is the default: a compaction pass runs as 200-key steps, one per tick, instead of
+/// one whole pass per due time (the comparison on a matched fixture is in the change that made it
+/// the default). Setting the variable to 0 selects the whole-round loop.
+pub const DEFAULT_STORAGE_MANAGER_TICK_MS: u64 = 30;
 
 /// The tick period for the value of `MATRIXARK_STORAGE_MANAGER_TICK_MS`, if it is set.
 /// Zero selects the whole-round loop; anything unparseable falls back to the default.
@@ -256,15 +257,15 @@ impl ShardRoundState {
 mod tests {
     use super::*;
 
-    /// The server starts the whole-round loop unless the tick period is set, and an unusable
-    /// setting does not switch the tick loop on by accident.
+    /// The server starts the tick loop unless the period is set to zero, and an unusable setting
+    /// does not switch it off by accident.
     #[test]
-    fn the_whole_round_loop_is_the_default_and_the_tick_loop_is_opt_in() {
-        assert_eq!(storage_manager_tick_ms(None), 0, "unset must run the whole-round loop");
-        assert_eq!(storage_manager_tick_ms(Some("not a number")), 0);
-        assert_eq!(storage_manager_tick_ms(Some("")), 0);
-        assert_eq!(storage_manager_tick_ms(Some(" 30 ")), 30);
-        assert_eq!(storage_manager_tick_ms(Some("0")), 0);
+    fn the_server_default_runs_the_tick_loop_and_zero_selects_the_whole_round() {
+        assert_eq!(storage_manager_tick_ms(None), 30, "unset must run the tick loop");
+        assert_eq!(storage_manager_tick_ms(Some("not a number")), 30);
+        assert_eq!(storage_manager_tick_ms(Some("")), 30);
+        assert_eq!(storage_manager_tick_ms(Some(" 50 ")), 50);
+        assert_eq!(storage_manager_tick_ms(Some("0")), 0, "zero is the whole-round loop");
     }
 
     #[test]

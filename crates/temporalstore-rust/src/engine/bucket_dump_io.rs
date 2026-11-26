@@ -332,8 +332,8 @@ where
 /// guards were inert -- they can only hold back a manifest that would otherwise be pruned, so
 /// their block counters were structurally stuck at zero.
 ///
-/// Anything older is now prunable unless a follower cursor or raft snapshot ref pins it, which
-/// is exactly what those cursors are for.
+/// Older images remain only for bucket coverage, the recovery anchor, or follower/snapshot
+/// dependencies.
 pub(super) fn retained_bucket_dump_manifest_ids<M>(manifests: &[M]) -> BTreeSet<String>
 where
     M: std::borrow::Borrow<BucketDumpManifest>,
@@ -370,7 +370,35 @@ where
             covered.extend(manifest.bucket_ids.iter().copied());
         }
     }
+    // Recovery chooses the highest WAL anchor, which need not be the newest index-log item.
+    if let Some(manifest) = manifests.iter().map(std::borrow::Borrow::borrow).max_by_key(|m| {
+        (m.wal_sequence, m.index_log_sequence, m.created_unix_ms)
+    }) {
+        retained.insert(manifest.manifest_id.clone());
+    }
     retained
+}
+
+#[cfg(test)]
+mod recovery_anchor_retention_tests {
+    use super::*;
+
+    #[test]
+    fn pruning_preserves_the_highest_wal_anchor_without_retaining_obsolete_images() {
+        let image = |id: &str, wal_sequence, index_log_sequence| BucketDumpManifest {
+            manifest_id: id.into(), wal_sequence, index_log_sequence,
+            bucket_ids: vec![1], ..Default::default()
+        };
+        let mut images = vec![image("obsolete", 2, 1), image("recovery", 10, 2), image("newest", 3, 3)];
+        assert_eq!(retained_bucket_dump_manifest_ids(&images),
+            BTreeSet::from(["newest".into(), "recovery".into()]));
+        images.push(image("advanced", 11, 4));
+        assert_eq!(retained_bucket_dump_manifest_ids(&images), BTreeSet::from(["advanced".into()]));
+        images.push(BucketDumpManifest { manifest_id: "empty".into(),
+            index_log_sequence: 5, ..Default::default() });
+        assert_eq!(retained_bucket_dump_manifest_ids(&images),
+            BTreeSet::from(["advanced".into(), "empty".into()]));
+    }
 }
 
 /// A cursor older than every manifest we kept: nothing retained can serve it. Named because the
@@ -389,7 +417,7 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
     raft_snapshot_refs: &[BucketDumpRaftSnapshotRef],
 ) -> Result<BucketDumpManifestPrunePlan, std::io::Error> {
     let manifests = list_bucket_dump_manifests_shared_at(index_dir, shard_id)?;
-    let mut retained = retained_bucket_dump_manifest_ids(&manifests);
+    let mut retained = retained_bucket_dump_manifest_ids_memoised(&manifests);
     let mut follower_blocks = Vec::new();
     let mut raft_snapshot_blocks = Vec::new();
     for cursor in follower_cursors
@@ -656,6 +684,65 @@ fn remember_manifest(
     });
 }
 
+struct PublishedCaptureFacts {
+    identity: ManifestFileIdentity,
+    checksum: String,
+    digests: BTreeMap<u32, super::storage_reporting::BucketFingerprintDigest>,
+    wal_floor: Option<u64>,
+}
+
+thread_local! {
+    static PUBLISHED_CAPTURE_FACTS: std::cell::RefCell<
+        BTreeMap<PathBuf, BTreeMap<PathBuf, PublishedCaptureFacts>>,
+    > = std::cell::RefCell::new(BTreeMap::new());
+}
+
+/// Retain small owner facts, not another copy of the manifest's whole-shard image.
+/// The listing must still read and checksum-verify the exact published document.
+pub(super) fn remember_published_capture(
+    index_dir: &Path,
+    manifest: &BucketDumpManifest,
+    metadata: Option<&std::fs::Metadata>,
+    mut digests: BTreeMap<u32, super::storage_reporting::BucketFingerprintDigest>,
+    wal_floor: Option<u64>,
+) {
+    if !manifest_parse_memo_enabled() {
+        return;
+    }
+    let Some(identity) = metadata.and_then(manifest_file_identity) else { return; };
+    let path = bucket_dump_manifest_path(index_dir, manifest.shard_id, &manifest.manifest_id);
+    let Some(dir) = path.parent().map(Path::to_path_buf) else { return; };
+    let coverage = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
+    digests.retain(|bucket, _| coverage.contains(bucket));
+    PUBLISHED_CAPTURE_FACTS.with(|memo| {
+        memo.borrow_mut().entry(dir).or_default().insert(path,
+            PublishedCaptureFacts { identity, checksum: manifest.checksum.clone(), digests, wal_floor });
+    });
+}
+
+fn adopt_published_capture(
+    dir: &Path,
+    path: &Path,
+    identity: ManifestFileIdentity,
+    manifest: &std::sync::Arc<BucketDumpManifest>,
+) {
+    let facts = PUBLISHED_CAPTURE_FACTS.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        let entries = memo.get_mut(dir)?;
+        let facts = entries.remove(path);
+        if entries.is_empty() { memo.remove(dir); }
+        facts
+    });
+    let Some(facts) = facts else { return; };
+    // A stat-before-read can observe an old inode before reading its replacement.
+    // Bind the facts to the verified document too, not just to the stat result.
+    if facts.identity != identity || facts.checksum != manifest.checksum || manifest.checksum.is_empty() {
+        return;
+    }
+    manifest_digests_memoised(manifest.shard_id, manifest, || Some(facts.digests));
+    let _ = manifest_wal_floor_memoised(manifest, || Ok(facts.wal_floor));
+}
+
 /// Bound the memo by the directory it describes, so a pruned manifest cannot be remembered for
 /// ever: a listing that saw the whole directory drops everything the directory no longer holds.
 fn retain_memoised_manifests(dir: &std::path::Path, present: &std::collections::BTreeSet<PathBuf>) {
@@ -666,6 +753,13 @@ fn retain_memoised_manifests(dir: &std::path::Path, present: &std::collections::
             if entries.is_empty() {
                 memo.remove(dir);
             }
+        }
+    });
+    PUBLISHED_CAPTURE_FACTS.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if let Some(entries) = memo.get_mut(dir) {
+            entries.retain(|path, _| present.contains(path));
+            if entries.is_empty() { memo.remove(dir); }
         }
     });
 }
@@ -683,6 +777,8 @@ pub(super) fn clear_bucket_dump_manifest_parse_memo() {
     MANIFEST_PARSE_MEMO.with(|memo| memo.borrow_mut().clear());
     MANIFEST_DIGEST_MEMO.with(|memo| memo.borrow_mut().clear());
     MANIFEST_WAL_FLOOR_MEMO.with(|memo| memo.borrow_mut().clear());
+    PUBLISHED_CAPTURE_FACTS.with(|memo| memo.borrow_mut().clear());
+    RETAINED_IDS_MEMO.with(|memo| memo.borrow_mut().clear());
 }
 
 type ManifestWalFloor = Result<Option<u64>, ()>;
@@ -749,6 +845,7 @@ thread_local! {
     static MANIFEST_DIGEST_MISSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// Digests describe only the owners in `bucket_ids`, not every owner in the embedded shard image.
 /// `compute` runs only for a manifest this thread has not computed for, and its answer -- including
 /// "this manifest cannot be fingerprinted" -- is kept with the manifest.
 pub(super) fn manifest_digests_memoised(
@@ -801,6 +898,87 @@ pub fn reset_manifest_digest_memo_counts() {
     MANIFEST_DIGEST_MISSES.with(|cell| cell.set(0));
 }
 
+struct RetainedIdsEntry {
+    /// Held, not just compared, so the addresses stay this list's identity for as long as the entry
+    /// exists (the digest memo above argues the same).
+    manifests: Vec<std::sync::Arc<BucketDumpManifest>>,
+    retained: BTreeSet<String>,
+}
+
+/// WHICH MANIFESTS THE SHARD KEEPS, FOR A LIST OF MANIFESTS THIS THREAD HAS ALREADY SEEN.
+///
+/// `retained_bucket_dump_manifest_ids` walks the manifests newest first and builds the set of every
+/// bucket they cover, so one call costs a set insert per bucket per retained manifest. It is a pure
+/// function of the manifests' content, a manifest is never rewritten, and the listing hands out the
+/// same `Arc` for as long as the file is unchanged -- so the same list of allocations is the same
+/// answer. The plan asked it on every round of a drained shard, where nothing moves: about half of
+/// one quiet round's instructions at a thousand keys.
+///
+/// A NEW MANIFEST, A PRUNED ONE, OR A REWRITTEN FILE IS A DIFFERENT LIST and misses. An entry lives
+/// only while something other than this memo holds every one of its manifests, the same bound the
+/// digest memo has.
+thread_local! {
+    static RETAINED_IDS_MEMO: std::cell::RefCell<Vec<RetainedIdsEntry>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static RETAINED_IDS_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static RETAINED_IDS_MISSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+pub(super) fn retained_bucket_dump_manifest_ids_memoised(
+    manifests: &[std::sync::Arc<BucketDumpManifest>],
+) -> BTreeSet<String> {
+    let enabled = manifest_parse_memo_enabled();
+    if enabled {
+        let hit = RETAINED_IDS_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            memo.retain(|entry| {
+                entry
+                    .manifests
+                    .iter()
+                    .all(|manifest| std::sync::Arc::strong_count(manifest) > 1)
+            });
+            memo.iter()
+                .find(|entry| {
+                    entry.manifests.len() == manifests.len()
+                        && entry
+                            .manifests
+                            .iter()
+                            .zip(manifests)
+                            .all(|(held, asked)| std::sync::Arc::ptr_eq(held, asked))
+                })
+                .map(|entry| entry.retained.clone())
+        });
+        if let Some(retained) = hit {
+            RETAINED_IDS_HITS.with(|cell| cell.set(cell.get().saturating_add(1)));
+            return retained;
+        }
+    }
+    RETAINED_IDS_MISSES.with(|cell| cell.set(cell.get().saturating_add(1)));
+    let retained = retained_bucket_dump_manifest_ids(manifests);
+    if enabled {
+        RETAINED_IDS_MEMO.with(|memo| {
+            memo.borrow_mut().push(RetainedIdsEntry {
+                manifests: manifests.to_vec(),
+                retained: retained.clone(),
+            });
+        });
+    }
+    retained
+}
+
+/// How many retained-set lookups this thread served from memory, and how many computed.
+pub fn retained_ids_memo_counts() -> (u64, u64) {
+    (
+        RETAINED_IDS_HITS.with(std::cell::Cell::get),
+        RETAINED_IDS_MISSES.with(std::cell::Cell::get),
+    )
+}
+
+/// Zero the two counts, so a probe measures a round rather than a thread's history.
+pub fn reset_retained_ids_memo_counts() {
+    RETAINED_IDS_HITS.with(|cell| cell.set(0));
+    RETAINED_IDS_MISSES.with(|cell| cell.set(0));
+}
 #[cfg(test)]
 thread_local! {
     static MANIFEST_PARSE_MEMO_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -941,6 +1119,7 @@ fn list_bucket_dump_manifests_with_policy_at(
             .and_then(manifest_file_identity);
         if let Some(identity) = identity {
             if let Some(manifest) = memoised_manifest(&dir, &path, identity) {
+                adopt_published_capture(&dir, &path, identity, &manifest);
                 MANIFEST_PARSE_HITS.with(|cell| cell.set(cell.get().saturating_add(1)));
                 manifests.push(manifest);
                 continue;
@@ -989,6 +1168,7 @@ fn list_bucket_dump_manifests_with_policy_at(
         let manifest = std::sync::Arc::new(manifest);
         if let Some(identity) = identity {
             remember_manifest(&dir, &path, identity, &manifest);
+            adopt_published_capture(&dir, &path, identity, &manifest);
         }
         manifests.push(manifest);
     }
@@ -1101,11 +1281,21 @@ pub(super) fn latest_bucket_dump_manifest_shared_at(
 ///
 /// `wal_reclaim_never_frees_what_the_default_load_path_replays` (engine/tests/expiry_scale.rs)
 /// drives the divergent state above and fails if this goes back to reading the index-log order.
+#[cfg(test)]
 #[track_caller]
 pub(super) fn durable_recovery_bucket_dump_manifest_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
 ) -> Option<BucketDumpManifest> {
+    durable_recovery_bucket_dump_manifest_shared_at(index_dir, shard_id)
+        .map(own_memoised_manifest)
+}
+
+#[track_caller]
+pub(super) fn durable_recovery_bucket_dump_manifest_shared_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+) -> Option<std::sync::Arc<BucketDumpManifest>> {
     list_bucket_dump_manifests_shared_at(index_dir, shard_id)
         .ok()?
         .into_iter()
@@ -1119,7 +1309,6 @@ pub(super) fn durable_recovery_bucket_dump_manifest_at(
                 manifest.created_unix_ms,
             )
         })
-        .map(own_memoised_manifest)
 }
 
 /// The manifest's checksum, over its own protobuf encoding with the checksum field emptied.

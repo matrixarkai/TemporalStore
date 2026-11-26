@@ -36,7 +36,7 @@ fn wal_application_receipts_track_single_and_batch_writes_in_both_modes() {
         let dir = tempfile::tempdir().unwrap();
         let engine = open_engine(dir.path(), asynchronous);
         execute(&engine, set("single", b"one"));
-        assert_eq!(engine.shards.read().unwrap()[&1].checkpoint_wal_sequence(), Some(1));
+        assert_eq!(engine.shards.with_state(1, |state| state.unwrap().checkpoint_wal_sequence()), Some(1));
         assert!(engine.batch_execute(crate::types::BatchExecuteRequest {
             shard_id: 1, commands: vec![
                 set("batch-a", b"two"), set("batch-b", b"three"),
@@ -102,7 +102,7 @@ fn wal_application_discontinuous_images_refuse_publication_until_reload() {
         let durable = std::fs::read(store.index_path(1)).unwrap();
         store.wal_store.append_with_sync(1, set("pending", b"two"), true).unwrap();
         execute(&store, set("last", b"three"));
-        assert!(store.shards.read().unwrap()[&1].checkpoint_wal_sequence().is_none());
+        assert!(store.shards.with_state(1, |state| state.unwrap().checkpoint_wal_sequence()).is_none());
         assert!(store.create_bucket_dump_manifest(1, []).is_err());
         assert!(!store.dump_index_catalog(1));
         assert!(store.export_index_bytes(1).is_err());
@@ -159,7 +159,7 @@ fn wal_application_maintenance_does_not_cover_an_unapplied_prefix() {
                 let report = store.apply_storage_eviction(1, 1, 1, false, true);
                 assert_eq!(report.dropped_object_count, 1);
             }
-            assert_eq!(store.shards.read().unwrap()[&1].checkpoint_wal_sequence(), None);
+            assert_eq!(store.shards.with_state(1, |state| state.unwrap().checkpoint_wal_sequence()), None);
             assert_eq!(store.index_log_store.stats(1).last_sequence, index_sequence);
             assert_eq!(std::fs::read(store.index_path(1)).unwrap(), base);
             assert!(store.create_bucket_dump_manifest(1, []).is_err());
@@ -203,7 +203,7 @@ fn wal_application_physical_import_starts_a_new_local_log_domain() {
     for key in ["old-a", "old-b", "old-c"] { read(&destination, key, key.as_bytes()); }
     assert!(destination.install_index_bytes_in_empty_wal(1, &bytes, range).is_err());
     execute(&destination, set("new", b"local"));
-    assert_eq!(destination.shards.read().unwrap()[&1].checkpoint_wal_sequence(), Some(1));
+    assert_eq!(destination.shards.with_state(1, |state| state.unwrap().checkpoint_wal_sequence()), Some(1));
     destination.flush_shard_index(1);
     drop(destination);
     let restored = TemporalEngine::with_local_dirs(

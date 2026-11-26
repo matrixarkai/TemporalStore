@@ -53,7 +53,9 @@ fn assert_lazy_expiry_with_residents(trigger: Command, writes_new_field: bool, p
                     value: Some(vec![7])
                 }
             );
-            assert!(engine.cache.peek(&CacheKey::hash(1, key, field)));
+            let cached_key = CacheKey::hash(1, key, field);
+            assert!(!engine.cache.peek(&cached_key), "point reads must not duplicate physical payloads");
+            seed_query_response(&engine, cached_key, &CommandResponse::Bytes { value: Some(vec![7]) });
         }
     }
     for index in 0..pages {
@@ -83,14 +85,13 @@ fn assert_lazy_expiry_with_residents(trigger: Command, writes_new_field: bool, p
             ttl_ms: 250,
         },
     );
-    let deadline = {
-        let shards = engine.shards.read().unwrap();
-        *shards[&1]
+    let deadline = engine.shards.with_state(1, |shard| {
+        *shard.unwrap()
             .expires_at_ms()
             .get("due")
             .expect("deadline was recorded")
-    };
-    // EXPIRE invalidates query entries; warm them again while the deadline is live.
+    });
+    // Keep valid legacy query entries alongside physical blocks to exercise invalidation itself.
     for field in ["a", "b"] {
         assert_eq!(
             run(
@@ -104,7 +105,9 @@ fn assert_lazy_expiry_with_residents(trigger: Command, writes_new_field: bool, p
                 value: Some(vec![7])
             }
         );
-        assert!(engine.cache.peek(&CacheKey::hash(1, "due", field)));
+        let cached_key = CacheKey::hash(1, "due", field);
+        assert!(!engine.cache.peek(&cached_key), "EXPIRE must clear the prior logical entry");
+        seed_query_response(&engine, cached_key, &CommandResponse::Bytes { value: Some(vec![7]) });
     }
     assert!(now_ms() < deadline, "the cache was not warm before expiry");
     let limit = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -124,6 +127,12 @@ fn assert_lazy_expiry_with_residents(trigger: Command, writes_new_field: bool, p
         CACHE_SWEEP_COUNTS.set_armed(true);
     }
     run(&engine, trigger);
+    for field in ["a", "b"] {
+        assert!(!engine.cache.peek(&CacheKey::hash(1, "due", field)),
+                "lazy expiry left a logical sibling cached: {field}");
+        assert!(engine.cache.peek(&CacheKey::hash(1, "live", field)),
+                "lazy expiry removed an independently live logical entry: {field}");
+    }
     if pages > 0 {
         let counts = CACHE_SWEEP_COUNTS.read_batched();
         CACHE_SWEEP_COUNTS.set_armed(false);
@@ -215,16 +224,15 @@ fn assert_lazy_expiry_with_residents(trigger: Command, writes_new_field: bool, p
             "expired field was visible after restart: {field}"
         );
     }
-    {
-        let shards = restored.shards.read().unwrap();
-        let row = shards[&1].bucket_index.hashes.get("due");
+    restored.shards.with_state(1, |shard| {
+        let row = shard.unwrap().bucket_index.hashes.get("due");
         for field in ["a", "b"] {
             assert!(
                 row.and_then(|row| row.get(field)).is_none(),
                 "expired field returned after restart: {field}"
             );
         }
-    }
+    });
     assert_eq!(
         run(
             &restored,
@@ -396,10 +404,12 @@ fn assert_independent_family_expiry(expire_base: bool) {
         },
     );
     let expired_key = if expire_base { "due" } else { &family_key };
-    let deadline = *engine.shards.read().unwrap()[&1]
-        .expires_at_ms()
-        .get(expired_key)
-        .unwrap();
+    let deadline = engine.shards.with_state(1, |shard| {
+        *shard.unwrap()
+            .expires_at_ms()
+            .get(expired_key)
+            .unwrap()
+    });
     for field in ["a", "b"] {
         assert_eq!(
             run(
@@ -541,10 +551,12 @@ fn lazy_expiry_is_recorded_even_when_a_selection_write_loses() {
         before,
         "a live losing write must remain a no-op"
     );
-    let deadline = *engine.shards.read().unwrap()[&1]
-        .expires_at_ms()
-        .get(family_key.as_str())
-        .unwrap();
+    let deadline = engine.shards.with_state(1, |shard| {
+        *shard.unwrap()
+            .expires_at_ms()
+            .get(family_key.as_str())
+            .unwrap()
+    });
     while now_ms() <= deadline {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -567,9 +579,9 @@ fn lazy_expiry_is_recorded_even_when_a_selection_write_loses() {
     drop(engine);
     let restored = engine_at(dir.path(), "cache-reopen");
     restored.load_shard(1);
-    assert!(!restored.shards.read().unwrap()[&1]
-        .strings()
-        .contains_key(family_key.as_str()));
+    assert!(!restored.shards.with_state(1, |shard| {
+        shard.unwrap().strings().contains_key(family_key.as_str())
+    }));
     assert_eq!(
         run(
             &restored,

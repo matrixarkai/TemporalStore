@@ -240,9 +240,8 @@ fn both_rebuilds_keep_tombstones_values_and_ownership_watermarks() {
         });
         assert!(result.status.ok);
         assert!(result.responses.iter().all(|row| row.status.ok));
-        {
-            let mut shards = engine.shards_write_marked();
-            let shard = shards.get_mut(&1).unwrap();
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.unwrap();
             let tombstones = collect_rebuild_tombstones::<true>(shard);
             assert!(!tombstones.is_empty());
             rebuild_bucket_first_index(1, shard, 0, u32::MAX);
@@ -274,7 +273,7 @@ fn both_rebuilds_keep_tombstones_values_and_ownership_watermarks() {
             assert!(validate_bucket_ownership_index(1, shard, 0, u32::MAX)
                 .mismatches
                 .is_empty());
-        }
+        });
         check_values(&engine);
         assert!(engine.compact_shard_blocks(1).unwrap().rewritten_block_refs > 0);
         drop(engine);

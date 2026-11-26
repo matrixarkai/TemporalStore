@@ -7,7 +7,8 @@ use super::*;
 fn acquiring_and_releasing_a_read_lease_does_not_wait_for_wal_io() {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalWriteAheadLogStore::new(dir.path());
-    let held = store.inner.lock().unwrap();
+    let shard_writer = store.shard_writer(1);
+    let held = shard_writer.lock_inner_raw();
     let (sender, receiver) = std::sync::mpsc::channel();
     let reader = store.clone();
     let started = Arc::new(std::sync::Barrier::new(2));
@@ -46,13 +47,15 @@ fn read_leases_scope_floors_and_reuse_slots_without_retaining_the_owner() {
     assert_eq!(store.block_retention_floor(1), Some(5));
     drop(second);
     assert_eq!(store.block_retention_floor(1), None);
-    let count = store.read_retention.lock().unwrap().slots.len();
+    let coordinator = store.group_commit_coordinator(1);
+    let count = coordinator.read_retention.lock().unwrap().slots.len();
     for _ in 0..100 {
         let lease = store.retain_read_sequence(1, 7);
         assert_eq!(store.block_retention_floor(1), Some(7));
         drop(lease);
     }
-    assert_eq!(store.read_retention.lock().unwrap().slots.len(), count);
+    assert_eq!(coordinator.read_retention.lock().unwrap().slots.len(), count);
+    drop(coordinator);
     drop(store);
     assert!(!identity.is_live());
     drop(other);
@@ -106,4 +109,44 @@ fn reclaim_preserves_a_leased_record_and_advances_after_release() {
         .read_frame_at_log_id(1, positions[2].1)
         .unwrap()
         .is_some());
+}
+
+#[test]
+fn holding_one_shard_retention_does_not_hold_a_peer_lease_or_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalWriteAheadLogStore::new(dir.path());
+    let held_coordinator = store.group_commit_coordinator(1);
+    let held = held_coordinator.read_retention.lock().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    let peer = store.clone();
+    let worker = std::thread::spawn(move || {
+        let mut lease = peer.retain_read_sequence(2, 8);
+        lease.retain_earlier(6);
+        peer.replace_block_location(19, 2, 7, 1, None);
+        let result = peer.registered_block_floor(19, 2);
+        peer.remove_block_location(19, 2, 7, 1);
+        drop(lease);
+        let _ = send.send(result);
+    });
+    let result = receive.recv_timeout(std::time::Duration::from_secs(5));
+    drop(held);
+    worker.join().unwrap();
+    assert_eq!(result.unwrap(), Some(7));
+    assert_eq!(store.block_retention_floor(2), None);
+}
+
+#[test]
+fn failed_collection_plan_releases_only_its_shard_reservation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("wal");
+    std::fs::write(&root, b"not a directory").unwrap();
+    let store = LocalWriteAheadLogStore::new(&root);
+    let peer = GcRunning::begin(store.group_commit_coordinator(2)).unwrap();
+    assert!(store.gc_before_sequence_unchecked(1, 2).is_err());
+    std::fs::remove_file(&root).unwrap();
+    let retry = store.gc_before_sequence_unchecked(1, 2).unwrap();
+    assert!(!retry.skipped_raced);
+    assert!(store.gc_before_sequence_unchecked(2, 2).unwrap().skipped_raced);
+    drop(peer);
+    assert!(!store.gc_before_sequence_unchecked(2, 2).unwrap().skipped_raced);
 }

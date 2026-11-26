@@ -160,6 +160,8 @@ mod a_compaction_does_not_lose_a_dirty_objects_dump;
 mod a_counter_increment_writes_its_series_when_due;
 #[path = "tests/a_manifest_is_fingerprinted_once_not_once_per_plan.rs"]
 mod a_manifest_is_fingerprinted_once_not_once_per_plan;
+#[path = "tests/a_retained_manifest_set_is_computed_once_per_list.rs"]
+mod a_retained_manifest_set_is_computed_once_per_list;
 #[path = "tests/a_hash_get_all_shares_its_block_keys.rs"]
 mod a_hash_get_all_shares_its_block_keys;
 #[path = "tests/a_feature_sum_reads_each_point_in_place.rs"]
@@ -589,6 +591,10 @@ mod a_string_increment_and_append_are_one_step;
 mod a_set_length_and_membership_read_the_member_map;
 #[path = "tests/an_expiry_sweep_that_fails_is_counted.rs"]
 mod an_expiry_sweep_that_fails_is_counted;
+#[path = "tests/a_real_slab_block_lost_after_the_ack_is_read_from_its_log_record.rs"]
+mod a_real_slab_block_lost_after_the_ack_is_read_from_its_log_record;
+#[path = "tests/the_dirty_only_reclaim_plan_equals_the_whole_plan.rs"]
+mod the_dirty_only_reclaim_plan_equals_the_whole_plan;
 #[path = "tests/the_figure_after_a_dump_is_the_bytes_appended_since_it.rs"]
 mod the_figure_after_a_dump_is_the_bytes_appended_since_it;
 #[path = "tests/a_hash_field_presence_is_read_from_its_row.rs"]
@@ -647,3 +653,15 @@ mod a_sorted_set_range_and_pop_select_the_first_members;
 mod a_write_asks_the_cache_before_it_invalidates;
 #[path = "tests/an_apply_lists_the_shard_once_for_its_report.rs"]
 mod an_apply_lists_the_shard_once_for_its_report;
+#[path = "tests/a_feature_series_drops_points_past_its_age_cut.rs"]
+mod a_feature_series_drops_points_past_its_age_cut;
+#[path = "tests/a_model_read_takes_the_shared_lock.rs"]
+mod a_model_read_takes_the_shared_lock;
+#[path = "tests/the_tally_names_the_walks_slabs_in_every_model.rs"]
+mod the_tally_names_the_walks_slabs_in_every_model;
+#[path = "tests/every_maintenance_step_queues_behind_a_command.rs"]
+mod every_maintenance_step_queues_behind_a_command;
+#[path = "tests/a_scalar_reporter_visits_at_most_its_cap_at_every_scale.rs"]
+mod a_scalar_reporter_visits_at_most_its_cap_at_every_scale;
+#[path = "tests/shard_lock_holds_are_attributed_by_call_site.rs"]
+mod shard_lock_holds_are_attributed_by_call_site;

@@ -239,15 +239,14 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     // ---- reassigns `set_dirty(any_block_dirty)` only for the buckets that held a BLOCK of the
     // ---- published object, while dropping the key from the set unconditionally -- so a bucket
     // ---- whose only dirt was a non-block-backed key is never recomputed.
-    let (after_dump, after_dump_nodes_dirty, after_dump_set_buckets) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
+    let (after_dump, after_dump_nodes_dirty, after_dump_set_buckets) = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
         (
             shard.dirty_objects.len(),
             shard.bucket_index.bucket_map.values().filter(|node| node.dirty()).count(),
             shard.dirty_objects.bucket_counts().count(),
         )
-    };
+    });
 
     for index in [1usize, 5, 9] {
         let out = engine.execute(ExecuteRequest {
@@ -295,45 +294,49 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
         .load(std::sync::atomic::Ordering::Relaxed)
         .saturating_sub(visits_before);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
+    let (by_set, by_objects, by_blocks, by_node, bucket_total, block_total_in_shard,
+        set_total, object_total, block_total, widest_object, set_members_with_no_block) =
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1");
+            let by_set = authority(shard);
+            let by_objects = derived_distinct_objects(shard);
+            let by_blocks = derived_dirty_blocks(shard);
+            let by_node = node_state(shard);
 
-    let by_set = authority(shard);
-    let by_objects = derived_distinct_objects(shard);
-    let by_blocks = derived_dirty_blocks(shard);
-    let by_node = node_state(shard);
+            let bucket_total = shard.bucket_index.bucket_map.len();
+            // What a per-bucket block walk would have to look at: a block's own `dirty` bit is the only
+            // thing that marks it, so finding the dirty ones means visiting all of them.
+            let block_total_in_shard: usize = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|bucket| bucket.block_index.len())
+                .sum();
+            let set_total: u64 = by_set.values().sum();
+            let object_total: u64 = by_objects.values().sum();
+            let block_total: u64 = by_blocks.values().sum();
 
-    let bucket_total = shard.bucket_index.bucket_map.len();
-    // What a per-bucket block walk would have to look at: a block's own `dirty` bit is the only
-    // thing that marks it, so finding the dirty ones means visiting all of them.
-    let block_total_in_shard: usize = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .map(|bucket| bucket.block_index.len())
-        .sum();
-    let set_total: u64 = by_set.values().sum();
-    let object_total: u64 = by_objects.values().sum();
-    let block_total: u64 = by_blocks.values().sum();
+            // How many blocks the busiest dirty object holds, so "not every object is single-block" is a
+            // measured property of this fixture rather than an expectation about the write path.
+            let mut blocks_per_object: BTreeMap<String, u64> = BTreeMap::new();
+            for (_bucket, _handle, object_key, _block) in super::blocks_with_identity(&shard.bucket_index) {
+                *blocks_per_object.entry(object_key.to_string()).or_default() += 1;
+            }
+            let widest_object = blocks_per_object.values().copied().max().unwrap_or(0);
 
-    // How many blocks the busiest dirty object holds, so "not every object is single-block" is a
-    // measured property of this fixture rather than an expectation about the write path.
-    let mut blocks_per_object: BTreeMap<String, u64> = BTreeMap::new();
-    for (_bucket, _handle, object_key, _block) in super::blocks_with_identity(&shard.bucket_index) {
-        *blocks_per_object.entry(object_key.to_string()).or_default() += 1;
-    }
-    let widest_object = blocks_per_object.values().copied().max().unwrap_or(0);
-
-    // How much of the set has no live block anywhere -- the term no block walk can ever reach.
-    let any_block: BTreeSet<String> = super::blocks_with_identity(&shard.bucket_index)
-        .into_iter()
-        .map(|(_, _, object_key, _)| object_key.to_string())
-        .collect();
-    let set_members_with_no_block = shard
-        .dirty_objects
-        .iter()
-        .filter(|key| !any_block.contains(*key))
-        .count();
+            // How much of the set has no live block anywhere -- the term no block walk can ever reach.
+            let any_block: BTreeSet<String> = super::blocks_with_identity(&shard.bucket_index)
+                .into_iter()
+                .map(|(_, _, object_key, _)| object_key.to_string())
+                .collect();
+            let set_members_with_no_block = shard
+                .dirty_objects
+                .iter()
+                .filter(|key| !any_block.contains(*key))
+                .count();
+            (by_set, by_objects, by_blocks, by_node, bucket_total, block_total_in_shard,
+                set_total, object_total, block_total, widest_object, set_members_with_no_block)
+        });
 
     println!();
     println!("  {KEYS} keys on a {}-bucket routing range", END_ROUTING_BUCKET + 1);

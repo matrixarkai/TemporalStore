@@ -416,6 +416,9 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
     matches!(
         command,
         Command::CommonDelete { .. }
+            // TTL edits leave blocks in place; lazy expiry uses the same filed deletion path.
+            | Command::CommonExpire { .. }
+            | Command::CommonPersist { .. }
             | Command::StringDelete { .. }
             | Command::StringSet { .. }
             | Command::StringSetEx { .. }

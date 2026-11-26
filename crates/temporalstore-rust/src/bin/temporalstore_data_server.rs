@@ -29,7 +29,7 @@ use temporalstore_rust::http::{
     post_json_with_options_and_headers, serve_with_stream_handler, HttpRequest,
     HttpRequestOptions, StreamAction, StreamTransfer,
 };
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use temporalstore_rust::ingestion::{FlinkCheckpointStatus, IngestionBatchRequest};
 use temporalstore_rust::meta::{
     AckResponse, GetTableTopologyRequest, LoadFinishRequest, ShardStatLoad, RegisterServerRequest,
@@ -51,7 +51,7 @@ use temporalstore_rust::{
     CompactionRequest, DataNodeRuntime, DataNodeRuntimeOptions, DistributedRaftCommandResponse,
 
     DistributedRaftProposeRequest, DistributedRaftReadRequest, DumpShardRequest, GcRequest,
-    LoadShardRequest, LoadShardResponse, MembershipUpdateRequest, ProductionRaftEngineKind,
+    LoadShardRequest, MembershipUpdateRequest, ProductionRaftEngineKind,
     ProductionRaftNode,
     ProductionRaftRuntime, ProductionRaftRuntimeOptions, RaftConfig, RaftControlLeadershipRequest,
     RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions,
@@ -61,7 +61,7 @@ use temporalstore_rust::{
     StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
 };
 use temporalstore_snapshot::object_store::{
-    resolve_matrixobject_mode, MatrixObjectMode, NetworkedMatrixObjectStore, ObjectStore,
+    resolve_matrixobject_mode, MatrixObjectMode, NetworkedMatrixObject, ObjectStore,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 use bytes::Bytes;
@@ -69,6 +69,9 @@ use tracing::{debug, error, info, warn};
 
 #[path = "server/context_explicit_route.rs"]
 mod context_explicit_route;
+
+#[path = "server/grpc.rs"]
+mod grpc;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ServerTopologyValidationRequest {
@@ -98,6 +101,9 @@ struct BlobReceipt {
     chunks: u64,
 }
 
+#[path = "temporalstore_data_server/blob_staging.rs"]
+mod blob_staging;
+
 fn main() {
     // Before telemetry and before any thread that allocates: the cap only governs arenas created
     // after it, and the server's resident memory otherwise drifts up with every write.
@@ -126,7 +132,7 @@ fn main() {
     // `TS_BLOCK_STORE_DIR` is the one name. The DEFAULT is deliberately left where it was:
     // changing it would move where an operator who sets neither name keeps their blocks.
     let block_store_dir = block_store_dir_from_env();
-    // Directory for the streamed attachment/blob tier (POST/GET /blob/<key>);
+    // Directory for the streamed attachment/blob tier (PUT/GET/DELETE /blob/<key>);
     // computed here so it does not outlive the move of `block_store_dir`.
     let blob_store_dir =
         std::env::var("TS_BLOB_STORE_DIR").unwrap_or_else(|_| format!("{block_store_dir}/blobs"));
@@ -154,7 +160,17 @@ fn main() {
     // cache tier exists to span the distance to shared storage, and there is no such distance
     // when the durable copy is this node's own disk. Resolving after construction (where this
     // used to sit) meant every deployment paid for a disk tier whether or not it could help.
-    let storage_decision = temporalstore_rust::StorageBackendConfig::from_env().resolve_decision();
+    let storage_config = temporalstore_rust::StorageBackendConfig::from_env();
+    // A setting that named the retired node-local MatrixObject store is refused by name rather
+    // than ignored: ignoring it would start the node somewhere the operator did not point it.
+    let retired_settings = storage_config.retired_settings();
+    if !retired_settings.is_empty() {
+        for message in &retired_settings {
+            eprintln!("refusing to start: {message}");
+        }
+        std::process::exit(2);
+    }
+    let storage_decision = storage_config.resolve_decision();
     let storage_backend = storage_decision.backend.clone();
     // Kept alongside the backend so /metrics can publish why this node chose it. The log
     // line below is not reachable from a portal, an operator's browser, or a dashboard.
@@ -203,8 +219,37 @@ fn main() {
     // startup — no shared URI, or a node with intact local state, or join-empty
     // placement — loads here exactly as before, so default behavior is unchanged.
     let networked_uri = matrixobject_networked_target();
-    let defer_startup_load_to_networked_restore =
-        !join_empty && networked_uri.is_some() && !local_state_present;
+    // The MatrixObject backend IS the cluster: with no gateway and no metadata group named there
+    // is nothing for it to talk to, and there is no node-local store to run on instead.
+    if matches!(storage_backend, StorageBackend::MatrixObject { .. }) && networked_uri.is_none() {
+        eprintln!(
+            "refusing to start: the matrixobject storage backend ({}) needs a MatrixObject cluster; \
+             set TS_SHARED_STORE_URI (gateway) or TS_MATRIXOBJECT_META (direct). There is no node-local \
+             MatrixObject store.",
+            storage_decision.reason
+        );
+        std::process::exit(2);
+    }
+    let has_lazy_checkpoints = engine.block_store().has_saved_lazy_checkpoints().unwrap_or_else(|err| {
+        error!(%err, "cannot inspect saved lazy checkpoints");
+        std::process::exit(1);
+    });
+    if has_lazy_checkpoints && networked_uri.is_none() {
+        let StorageBackend::SharedPath { root, cluster_id } = &storage_backend else {
+            error!("refusing startup: saved lazy checkpoints require their configured shared backend");
+            std::process::exit(1);
+        };
+        let replicator = SharedStoreReplicator::new(
+            cluster_id.clone(), Arc::new(FileObjectStore::new(root.clone())),
+        );
+        if let Err(err) = replicator.reattach_lazy_checkpoint_sources(&engine.block_store()) {
+            error!(%err, "refusing startup: cannot reattach saved lazy checkpoints");
+            std::process::exit(1);
+        }
+    }
+    let defer_startup_load_to_networked_restore = !join_empty
+        && networked_uri.is_some()
+        && (!local_state_present || has_lazy_checkpoints);
     if !join_empty && !defer_startup_load_to_networked_restore {
         let startup_load = startup_load_shard_request(shard_id, node_id);
         let load_response = engine.load_shard_with(startup_load);
@@ -285,10 +330,10 @@ fn main() {
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(30_000);
     //
-    // MATRIXARK_STORAGE_MANAGER_TICK_MS opts in to a short TICK (for example 30 ms) that does the
+    // MATRIXARK_STORAGE_MANAGER_TICK_MS sets the short TICK (30 ms unless set) that does the
     // cheap work and at most one heavy stage; each heavy stage falls due once per `interval`
     // above, the five spread across it, so a request waits behind one stage and not behind all of
-    // them. Unset or 0 runs the whole-round loop once per interval.
+    // them. 0 runs the whole-round loop once per interval.
     let storage_manager_tick_ms = temporalstore_rust::data_node::storage_manager_tick_ms(
         std::env::var("MATRIXARK_STORAGE_MANAGER_TICK_MS")
             .ok()
@@ -361,18 +406,13 @@ fn main() {
             shard_id,
             node_id,
             local_state_present,
-            !join_empty,
+            defer_startup_load_to_networked_restore,
         )
     });
-    #[cfg(feature = "matrixobject")]
-    let _matrixobject_durability_rt = if networked_uri.is_some() {
-        // The networked path owns shard durability; skip the node-local on-disk path
-        // so writes are not mirrored twice.
-        None
-    } else {
-        wire_matrixobject_durability(&storage_backend, &engine, &runtime, shard_id, local_state_present)
-    };
-
+    if networked_uri.is_some() && _matrixobject_networked_durability.is_none() {
+        error!(shard_id, "refusing startup: configured networked durability could not be initialized");
+        std::process::exit(1);
+    }
     let location = std::env::var("TS_SERVER_LOCATION").unwrap_or_default();
     let binary_version = env!("CARGO_PKG_VERSION").to_string();
     // Milliseconds since the epoch when this process started, reported on every
@@ -672,6 +712,10 @@ fn main() {
         _ => None,
     };
 
+    if let Some(grpc_addr) = temporalstore_rust::env_flag::env_value("TS_SERVER_GRPC_BIND_ADDR") {
+        grpc::start(&grpc_addr, runtime.clone(), raft_state.clone())
+            .expect("failed to start datanode gRPC listener");
+    }
     info!(%addr, "temporalstore server listening");
     // Streaming pre-handler: owns `/blob/<key>` and moves bytes straight between
     // the socket and the object store (no full-body buffering). Everything else
@@ -715,6 +759,10 @@ fn main() {
         }
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => json_response(200, &Status::ok()),
+            ("POST", "/batch_delete_blobs") => {
+                handle_blob_batch_delete(&request.body, &blob_store, &handler_block_runtime)
+            }
+
             ("GET", "/metrics") => {
                 let mut metrics = engine.prometheus_metrics();
                 append_ingestion_metrics(&mut metrics, &engine);
@@ -930,53 +978,9 @@ fn main() {
             }
             ("POST", "/load") => match parse_json::<LoadShardRequest>(&request.body) {
                 Ok(req) => {
-                    // A shard reassigned here restores its data from shared storage
-                    // (when a shared backend is configured). Only a foreign shard (no
-                    // local WAL) restores, so a node's own shard is never double-applied.
-                    // Ordering matters: restore the on-disk index from the shared
-                    // checkpoint BEFORE the load so the load reads the restored index
-                    // into memory and the shard serves immediately; then replay the
-                    // shared WAL tail on top AFTER the shard is loaded (the tail applies
-                    // through execute, which needs a loaded shard).
-                    let shard_id = req.shard_id;
-                    let had_local_wal = engine
-                        .write_ahead_log_store()
-                        .stats(shard_id)
-                        .last_sequence
-                        > 0;
-                    let restore_after_wal_index = if had_local_wal {
-                        None
-                    } else {
-                        restore_shared_index_before_load(
-                            &handler_replicator,
-                            &handler_block_runtime,
-                            &engine,
-                            shard_id,
-                        )
-                    };
-                    let mut load_response = runtime.load_shard_with(req);
-                    if load_response.status.ok && !had_local_wal {
-                        // The response goes IN, so a refusal cannot be dropped on the way out:
-                        // a hole in the shared log replaces the `ok` the load itself returned,
-                        // and this response is the only thing that can tell the caller its
-                        // reassignment failed.
-                        //
-                        // What this deliberately does NOT do is unload the shard.
-                        // `unload_shard_with` materializes the in-memory index to disk before
-                        // dropping the shard, so unloading here would write the truncated
-                        // history into this node's on-disk base and make it DURABLE -- worse
-                        // than leaving it in memory, where nothing has recorded it and a
-                        // restart is enough to be rid of it. Dropping a shard without
-                        // persisting it is not something the engine offers today.
-                        replay_shared_wal_tail(
-                            &handler_replicator,
-                            &handler_block_runtime,
-                            &engine,
-                            shard_id,
-                            restore_after_wal_index.unwrap_or(0),
-                            &mut load_response,
-                        );
-                    }
+                    let load_response = load_with_shared_storage(
+                        &runtime, &handler_replicator, &handler_block_runtime, &engine, req,
+                    );
                     json_response(200, &load_response)
                 }
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
@@ -1357,12 +1361,174 @@ fn handle_readiness_route(request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
     }
 }
 
+const MAX_BLOB_DELETE_BATCH_KEYS: usize = 256;
+const MAX_BLOB_DELETE_BATCH_BODY: usize = 512 * 1024;
+
+#[derive(serde::Deserialize)]
+struct BlobDeleteBatchRequest {
+    keys: Vec<String>,
+}
+
+fn handle_blob_batch_delete(
+    body: &[u8],
+    blob_store: &FileObjectStore,
+    runtime: &tokio::runtime::Runtime,
+) -> (u16, Vec<u8>) {
+    if body.len() > MAX_BLOB_DELETE_BATCH_BODY {
+        return json_response(
+            413,
+            &Status::error("blob_delete_batch_too_large", "blob delete batch body exceeds 512 KiB"),
+        );
+    }
+    let request: BlobDeleteBatchRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(_) => {
+            return json_response(
+                400,
+                &Status::error("bad_request", "blob delete batch requires a keys array"),
+            );
+        }
+    };
+    if request.keys.len() > MAX_BLOB_DELETE_BATCH_KEYS {
+        return json_response(
+            400,
+            &Status::error("blob_delete_batch_too_large", "at most 256 blob keys per batch"),
+        );
+    }
+    let deleted = runtime.block_on(async {
+        let mut deleted = Vec::with_capacity(request.keys.len());
+        for key in request.keys {
+            deleted.push(!key.is_empty() && blob_store.delete(&key).await.is_ok());
+        }
+        deleted
+    });
+    json_response(200, &serde_json::json!({ "deleted": deleted }))
+}
+
+const MAX_BLOB_READ_BATCH_KEYS: usize = 32;
+const MAX_BLOB_READ_BATCH_BODY: usize = 64 * 1024;
+const MAX_BLOB_READ_BATCH_PAYLOAD: usize = 512 * 1024 * 1024;
+
+#[derive(serde::Deserialize)]
+struct BlobBatchReadItem {
+    key: String,
+    length: usize,
+}
+
+fn stream_blob_batch_read(
+    transfer: &mut StreamTransfer,
+    store: &FileObjectStore,
+    chunk_bytes: usize,
+) -> std::io::Result<()> {
+    if transfer.body_len() > MAX_BLOB_READ_BATCH_BODY {
+        transfer.drain_body()?;
+        write_stream_json(
+            transfer,
+            413,
+            &Status::error(
+                "blob_read_batch_too_large",
+                "blob read batch body exceeds 64 KiB",
+            ),
+        );
+        return Ok(());
+    }
+
+    let mut body = vec![0; transfer.body_len()];
+    let mut offset = 0;
+    while offset < body.len() {
+        let count = transfer.read_body(&mut body[offset..])?;
+        if count == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        offset += count;
+    }
+    let Ok(items) = serde_json::from_slice::<Vec<BlobBatchReadItem>>(&body) else {
+        write_stream_json(
+            transfer,
+            400,
+            &Status::error(
+                "bad_request",
+                "blob read batch requires an array of keys and lengths",
+            ),
+        );
+        return Ok(());
+    };
+    let expected = items
+        .iter()
+        .try_fold(0usize, |sum, item| sum.checked_add(item.length));
+    if items.len() > MAX_BLOB_READ_BATCH_KEYS
+        || expected.is_none_or(|length| length > MAX_BLOB_READ_BATCH_PAYLOAD)
+    {
+        write_stream_json(
+            transfer,
+            400,
+            &Status::error(
+                "blob_read_batch_too_large",
+                "at most 32 keys and 512 MiB per read batch",
+            ),
+        );
+        return Ok(());
+    }
+
+    // Status table followed by the successful payloads in input order.
+    // A local miss allows the caller to try the existing peer and legacy-key path.
+    let mut statuses = Vec::with_capacity(items.len());
+    let mut files = Vec::with_capacity(items.len());
+    for item in items {
+        let (status, file) = open_blob_for_batch(store, &item);
+        statuses.push(status);
+        if let Some(file) = file {
+            files.push((file, item.length));
+        }
+    }
+    let payload_len = files.iter().map(|(_, length)| *length).sum::<usize>();
+    let max_file = files.iter().map(|(_, length)| *length).max().unwrap_or(0);
+    transfer.send_head(
+        200,
+        "application/octet-stream",
+        statuses.len() + payload_len,
+    )?;
+    transfer.write_chunk(&statuses)?;
+    let mut buffer = vec![0u8; chunk_bytes.max(1).min(max_file)];
+    for (mut file, mut remaining) in files {
+        while remaining > 0 {
+            let n = remaining.min(buffer.len());
+            file.read_exact(&mut buffer[..n])?;
+            transfer.write_chunk(&buffer[..n])?;
+            remaining -= n;
+        }
+    }
+    transfer.flush()
+}
+
+fn open_blob_for_batch(
+    store: &FileObjectStore,
+    item: &BlobBatchReadItem,
+) -> (u8, Option<fs::File>) {
+    if item.key.is_empty() {
+        return (2, None);
+    }
+    let Ok(path) = store.object_path(&item.key) else {
+        return (2, None);
+    };
+    match fs::File::open(path) {
+        Ok(file)
+            if file
+                .metadata()
+                .is_ok_and(|meta| meta.is_file() && meta.len() == item.length as u64) =>
+        {
+            (1, Some(file))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => (0, None),
+        _ => (2, None),
+    }
+}
+
 /// Streamed attachment endpoint (zero-copy / no full-body buffering).
 ///
-/// `POST|PUT /blob/<key>` reads the request body off the socket in `chunk_bytes`
-/// slices and appends each slice straight into `ObjectStore::append_blob`, so
-/// neither the request body nor the object is ever materialized whole in memory;
-/// returns a JSON receipt. `GET /blob/<key>` `stat`s the stored object, sends the
+/// `POST|PUT /blob/<key>` copies the request body into a staging file in
+/// `chunk_bytes` slices and publishes the replacement once the full body has
+/// arrived. It returns a JSON receipt. `GET /blob/<key>` `stat`s the stored object, sends the
 /// `Content-Length`, then streams the file to the socket in `chunk_bytes` slices.
 ///
 /// The handler owns every `/blob/<key>` request (always returns
@@ -1386,6 +1552,13 @@ fn handle_blob_stream(
     peer_addrs: Option<&[String]>,
     peer_timeout_ms: u64,
 ) -> StreamAction {
+    if head.method == "POST" && head.path == "/batch_read_blobs" {
+        if let Err(error) = stream_blob_batch_read(transfer, blob_store, chunk_bytes) {
+            debug!(%error, "blob batch read ended early");
+            transfer.abort_response();
+        }
+        return StreamAction::Handled;
+    }
     let Some(key) = head.path.strip_prefix("/blob/") else {
         return StreamAction::Declined;
     };
@@ -1401,7 +1574,7 @@ fn handle_blob_stream(
                 return StreamAction::Handled;
             }
             let key = key.to_string();
-            match stream_blob_upload(transfer, blob_store, runtime, chunk_bytes, &key) {
+            match stream_blob_upload(transfer, blob_store, chunk_bytes, &key) {
                 Ok((bytes_written, object_length, chunks)) => write_stream_json(
                     transfer,
                     200,
@@ -1414,7 +1587,12 @@ fn handle_blob_stream(
                     },
                 ),
                 Err(err) => {
-                    write_stream_json(transfer, 500, &Status::error("blob_write_failed", err))
+                    let _ = transfer.drain_body();
+                    write_stream_json(
+                        transfer,
+                        500,
+                        &Status::error("blob_write_failed", err.to_string()),
+                    );
                 }
             }
             StreamAction::Handled
@@ -1468,12 +1646,32 @@ fn handle_blob_stream(
             }
             StreamAction::Handled
         }
+        "DELETE" => {
+            let _ = transfer.drain_body();
+            if key.is_empty() {
+                write_stream_json(
+                    transfer,
+                    400,
+                    &Status::error("bad_request", "missing blob key"),
+                );
+                return StreamAction::Handled;
+            }
+            match runtime.block_on(blob_store.delete(key)) {
+                Ok(()) => write_stream_json(transfer, 200, &Status::ok()),
+                Err(err) => write_stream_json(
+                    transfer,
+                    500,
+                    &Status::error("blob_delete_failed", err.to_string()),
+                ),
+            }
+            StreamAction::Handled
+        }
         _ => {
             let _ = transfer.drain_body();
             write_stream_json(
                 transfer,
                 405,
-                &Status::error("method_not_allowed", "use POST or GET on /blob/<key>"),
+                &Status::error("method_not_allowed", "use POST, PUT, GET or DELETE on /blob/<key>"),
             );
             StreamAction::Handled
         }
@@ -1526,10 +1724,10 @@ fn restore_shared_index_before_load(
     runtime: &Arc<tokio::runtime::Runtime>,
     engine: &TemporalEngine,
     shard_id: ShardId,
-) -> Option<u64> {
-    let replicator = replicator.as_ref()?;
+) -> Result<Option<u64>, Status> {
+    let Some(replicator) = replicator.as_ref() else { return Ok(None) };
     let after_wal_index =
-        match runtime.block_on(replicator.restore_index_and_block_addresses(
+        match runtime.block_on(replicator.restore_file_index_into_empty_local_wal(
             shard_id,
             engine,
             &engine.block_store(),
@@ -1544,51 +1742,57 @@ fn restore_shared_index_before_load(
                 );
                 manifest.checkpoint_wal_index
             }
-            Err(SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
-            Err(err) => {
-                warn!(shard_id, %err, "shared checkpoint restore failed; replaying full shared WAL");
-                0
+            Err(SharedStoreReplicationError::CheckpointNotFound(_)) => {
+                replicator.restored_file_frontier(shard_id, engine)?.unwrap_or(0)
             }
+            Err(err) => return Err(Status::error("shared_checkpoint_restore_failed", err.to_string())),
         };
-    // Inherit the dump lineage along with the data. Without it this node treats every live
-    // generation as never dumped, which blocks WAL reclaim until it has re-dumped the whole
-    // shard itself. Advisory: the data is already restored and serving, so a lineage that
-    // cannot be read costs re-dumping, not correctness.
-    match runtime.block_on(replicator.restore_bucket_dump_manifests(shard_id, engine)) {
-        Ok(0) => {}
-        Ok(restored) => info!(
-            shard_id,
-            restored, "inherited bucket-dump manifests from shared storage"
-        ),
-        Err(err) => warn!(
-            shard_id, %err,
-            "could not restore bucket-dump manifests; this node will re-dump before it can reclaim"
-        ),
-    }
-    Some(after_wal_index)
+    // The source's Dump manifests remain in shared storage. Their local WAL
+    // anchors and physical slab IDs cannot participate in this local recovery.
+    Ok(Some(after_wal_index))
+}
+
+fn load_with_shared_storage(
+    runtime: &DataNodeRuntime,
+    replicator: &Option<Arc<SharedStoreReplicator<FileObjectStore>>>,
+    block_runtime: &Arc<tokio::runtime::Runtime>,
+    engine: &TemporalEngine,
+    request: LoadShardRequest,
+) -> temporalstore_rust::LoadShardResponse {
+    let shard_id = request.shard_id;
+    let had_local_wal = engine.write_ahead_log_store().stats(shard_id).last_sequence > 0;
+    let checkpoint = if had_local_wal {
+        None
+    } else {
+        match restore_shared_index_before_load(replicator, block_runtime, engine, shard_id) {
+            Ok(checkpoint) => checkpoint,
+            Err(status) => return temporalstore_rust::LoadShardResponse { status },
+        }
+    };
+    runtime.load_shard_with_shared_tail(request, || {
+        if had_local_wal {
+            return Ok(());
+        }
+        recover_shared_wal_tail(replicator, block_runtime, engine, shard_id, checkpoint.unwrap_or(0))
+    })
 }
 
 /// Replay the shared WAL tail (records after `after_wal_index`) on top of the already
 /// loaded shard, applying each through `engine.execute` — which is why this runs AFTER
 /// the shard is loaded. No-op when no shared replicator is configured.
 ///
-/// When the tail CANNOT be replayed this writes the refusal straight into `load_response`,
-/// which is the response the handler is about to return. It is done this way, rather than by
-/// returning the status for the caller to install, because a RETURNED status is a value a caller
-/// can drop -- and a check whose result is only a value is not a check. Deleting the one line
-/// that installed it was planted and NOTHING failed; there is now no such line to delete.
-fn replay_shared_wal_tail(
+/// Required replay errors return through the load's recovery callback before serving opens.
+fn recover_shared_wal_tail(
     replicator: &Option<Arc<SharedStoreReplicator<FileObjectStore>>>,
     runtime: &Arc<tokio::runtime::Runtime>,
     engine: &TemporalEngine,
     shard_id: ShardId,
     after_wal_index: u64,
-    load_response: &mut LoadShardResponse,
-) {
+) -> Result<(), Status> {
     let Some(replicator) = replicator else {
-        return;
+        return Ok(());
     };
-    match runtime.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
+    match runtime.block_on(replicator.recover_file_wal(shard_id, after_wal_index, engine)) {
         Ok(report) => {
             if report.applied > 0 {
                 info!(
@@ -1599,6 +1803,7 @@ fn replay_shared_wal_tail(
                     "replayed shard WAL tail from shared storage"
                 );
             }
+            Ok(())
         }
         // A HOLE IS NOT A WARNING. This is a reassignment: something asked this node to take the
         // shard, and `after_wal_index` is the position the restored checkpoint vouches for. An
@@ -1613,19 +1818,15 @@ fn replay_shared_wal_tail(
                 after_wal_index,
                 "refusing a shard whose shared log is missing a span no checkpoint covers"
             );
-            load_response.status = Status::error(
+            Err(Status::error(
                 "shared_wal_replay_hole",
                 format!(
                     "shard {shard_id} cannot be served from shared storage: {err} (restore anchored at {after_wal_index})"
                 ),
-            );
+            ))
         }
-        // Every other replay failure keeps the behavior it had. Narrowing them is a separate
-        // question with a separate test, and widening this change to cover them would mean
-        // shipping an untested refusal on paths this one is not about.
-        Err(err) => {
-            warn!(shard_id, %err, "no shared-storage data replayed for shard");
-        }
+        Err(SharedStoreReplicationError::ApplyFailed { status, .. }) => Err(status),
+        Err(err) => Err(Status::error("shared_wal_replay_failed", err.to_string())),
     }
 }
 /// Read the blocks a set of results points at, so they can travel with them.
@@ -1634,26 +1835,85 @@ fn replay_shared_wal_tail(
 /// Locally they are in the block store. Across nodes they are not, unless something carries them.
 fn gather_result_blocks(
     engine: &TemporalEngine,
-    shard_id: ShardId,
     outcomes: &[temporalstore_rust::wal::WalOutcomeItem],
-) -> Vec<temporalstore_rust::wal::StagedBlock> {
-    let mut blocks = Vec::new();
-    for item in outcomes {
-        let Some(address) = item.resolved_address() else {
-            continue;
-        };
-        if let Ok(bytes) = engine.block_store().read(&address) {
-            blocks.push(temporalstore_rust::wal::StagedBlock {
-                object_id: item.object_id,
-                element_name: item.element_name.as_deref().map(std::sync::Arc::from),
-                bytes,
-            });
-        }
+    mut staged: Vec<temporalstore_rust::wal::StagedBlock>,
+) -> Result<Vec<temporalstore_rust::wal::StagedBlock>, temporalstore_rust::block_store::BlockStoreError> {
+    if outcomes.is_empty() {
+        return Ok(staged);
     }
-    let _ = shard_id;
-    blocks
+    let available = temporalstore_rust::shared_store::shared_wal_carriers(outcomes, &staged);
+    let carried = staged.iter().map(|block| (block.object_id, block.element_name.as_deref()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let block_store = engine.block_store();
+    let mut gathered = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let ambiguous = || std::io::Error::new(
+        std::io::ErrorKind::InvalidData, "ambiguous shared WAL outcome block",
+    );
+    for (item, carrier) in outcomes.iter().zip(available) {
+        let Some(address) = item.resolved_address() else { continue };
+        let identity = (item.object_id, item.element_name.as_deref());
+        if carrier.is_some() {
+            continue;
+        }
+        if carried.contains(&identity) {
+            return Err(ambiguous().into());
+        }
+        if !seen.insert((identity, address.address_word(), address.length())) {
+            continue;
+        }
+        gathered.push(temporalstore_rust::wal::StagedBlock {
+            object_id: item.object_id,
+            element_name: item.element_name.as_deref().map(std::sync::Arc::from),
+            bytes: block_store.read(&address)?,
+        });
+    }
+    staged.extend(gathered);
+    let bound = temporalstore_rust::shared_store::shared_wal_carriers(outcomes, &staged);
+    if outcomes.iter().zip(bound).any(|(item, index)| item.resolved_address().is_some() && index.is_none()) {
+        return Err(ambiguous().into());
+    }
+    Ok(staged)
 }
 
+
+fn collect_uncovered_file_wal(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    frontier: u64,
+) -> std::io::Result<Vec<SharedStoreWalEntry>> {
+    let wal = engine.write_ahead_log_store();
+    let flushed = wal.flush(shard_id).map_err(std::io::Error::other)?;
+    let tail = flushed.last_sequence;
+    if tail <= frontier {
+        return Ok(Vec::new());
+    }
+    let start = wal.replay_start_after_sequence(shard_id, frontier).map_err(std::io::Error::other)?;
+    let (records, truncated) = wal.scan_decoded(shard_id, start.log_id(), u64::MAX, u64::MAX)
+        .map_err(std::io::Error::other)?;
+    if truncated {
+        return Err(std::io::Error::other("file checkpoint WAL scan did not read the requested tail"));
+    }
+    let mut entries = Vec::new();
+    for (_, record) in records {
+        if record.sequence <= frontier {
+            continue;
+        }
+        if record.sequence > tail {
+            break;
+        }
+        let staged_blocks = gather_result_blocks(engine, &record.outcomes, record.staged_blocks)
+            .map_err(std::io::Error::other)?;
+        entries.push(SharedStoreWalEntry {
+            shard_id, wal_index: record.sequence, command: record.command,
+            outcomes: record.outcomes, staged_blocks,
+        });
+    }
+    if entries.last().map(|entry| entry.wal_index) != Some(tail) {
+        return Err(std::io::Error::other("file checkpoint WAL tail did not reach its durable end"));
+    }
+    Ok(entries)
+}
 
 /// Publish this node's data for `shard_id` to the shared object store so a future
 /// owner can replay it. Reads the shard's write-ahead log (read-only — never
@@ -1676,66 +1936,6 @@ fn publish_shard_checkpoint(
             checkpoint_wal_index: 0,
         };
     };
-    // Read the shard's WAL records (read-only) and mirror each to shared storage.
-    let records = match engine
-        .write_ahead_log_store()
-        .scan(shard_id, 0, u64::MAX, u64::MAX)
-    {
-        Ok(records) => records,
-        Err(err) => {
-            return PublishShardCheckpointResponse {
-                status: Status::error("wal_scan_failed", err.to_string()),
-                checkpoint_id: None,
-                block_slab_count: 0,
-                checkpoint_wal_index: 0,
-            };
-        }
-    };
-    let mut published = 0usize;
-    let mut last_wal_index = 0u64;
-    for (_offset, line) in records {
-        let record = match temporalstore_rust::wal::decode_wal_line(&line) {
-            Ok(record) => record,
-            Err(err) => {
-                return PublishShardCheckpointResponse {
-                    status: Status::error("wal_decode_failed", err.to_string()),
-                    checkpoint_id: None,
-                    block_slab_count: published,
-                    checkpoint_wal_index: last_wal_index,
-                };
-            }
-        };
-        let entry = SharedStoreWalEntry {
-            shard_id,
-            wal_index: record.sequence,
-            command: record.command,
-            // What the write did travels with it. A successor installs these rather than
-            // re-running the command against its own clock and its own config.
-            outcomes: record.outcomes.clone(),
-            // The blocks the results point at, so a successor can actually READ what it
-            // installs. A result names an address in THIS node's block store; a successor has
-            // its own, and the checkpoint only covers what was written before it. Without this
-            // the successor's index is right and every read of the tail returns nothing.
-            //
-            // Empty on the local record for a synchronous write -- that block went to the block
-            // store rather than into the record -- so they are gathered here.
-            staged_blocks: if record.staged_blocks.is_empty() {
-                gather_result_blocks(engine, shard_id, &record.outcomes)
-            } else {
-                record.staged_blocks
-            },
-        };
-        if let Err(err) = runtime.block_on(replicator.publish_wal_entry(entry)) {
-            return PublishShardCheckpointResponse {
-                status: Status::error("publish_wal_failed", err.to_string()),
-                checkpoint_id: None,
-                block_slab_count: published,
-                checkpoint_wal_index: last_wal_index,
-            };
-        }
-        published += 1;
-        last_wal_index = record.sequence;
-    }
     // Send the dump lineage before the checkpoint manifest, so the checkpoint manifest is
     // still the last object written and therefore still the commit point for a restore.
     // Advisory on failure: the checkpoint alone is what a restore needs today, and failing
@@ -1757,23 +1957,19 @@ fn publish_shard_checkpoint(
             "could not publish bucket-dump manifests; checkpoint still published without lineage"
         ),
     }
-    // Publish a real metadata+slab checkpoint at the current last-applied WAL index so
-    // a future owner can lazily restore (index + slab addresses) and replay only the
-    // WAL tail after this index, rather than replaying the full history. Reuses the
-    // shared WAL mirrored above for the tail.
-    let checkpoint = match runtime.block_on(replicator.publish_checkpoint(
+    let checkpoint = match runtime.block_on(replicator.publish_file_checkpoint(
         shard_id,
-        last_wal_index,
         engine,
         &engine.block_store(),
+        |frontier| collect_uncovered_file_wal(engine, shard_id, frontier),
     )) {
         Ok(manifest) => manifest,
         Err(err) => {
             return PublishShardCheckpointResponse {
                 status: Status::error("publish_checkpoint_failed", err.to_string()),
                 checkpoint_id: None,
-                block_slab_count: published,
-                checkpoint_wal_index: last_wal_index,
+                block_slab_count: 0,
+                checkpoint_wal_index: 0,
             };
         }
     };
@@ -1781,60 +1977,59 @@ fn publish_shard_checkpoint(
         status: Status::ok(),
         checkpoint_id: Some(checkpoint.checkpoint_id),
         block_slab_count: checkpoint.block_slabs.len(),
-        checkpoint_wal_index: last_wal_index,
+        checkpoint_wal_index: checkpoint.checkpoint_wal_index,
     }
 }
 
 fn stream_blob_upload(
     transfer: &mut StreamTransfer,
-    blob_store: &Arc<FileObjectStore>,
-    runtime: &Arc<tokio::runtime::Runtime>,
+    blob_store: &FileObjectStore,
     chunk_bytes: usize,
     key: &str,
-) -> Result<(u64, u64, u64), String> {
-    // Replace any prior object so an upload is idempotent.
-    runtime.block_on(async {
-        let _ = blob_store.delete(key).await;
-    });
-    let mut buf = vec![0u8; chunk_bytes];
-    let mut filled = 0usize;
-    let mut bytes_written = 0u64;
-    let mut object_length = 0u64;
+) -> std::io::Result<(u64, u64, u64)> {
+    let path = blob_store.object_path(key).map_err(std::io::Error::other)?;
+    replace_blob_from_body(&path, transfer.body_len(), chunk_bytes, |buffer| {
+        transfer.read_body(buffer)
+    })
+}
+
+fn replace_blob_from_body(
+    path: &std::path::Path,
+    length: usize,
+    chunk_bytes: usize,
+    mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
+) -> std::io::Result<(u64, u64, u64)> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("blob path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    // Keep the previous blob readable until its replacement has arrived in full.
+    let mut staging = blob_staging::StagedBlob::new(parent)?;
+    let file = staging.file_mut();
+    let mut buffer = vec![0u8; chunk_bytes.max(1).min(length)];
+    let mut remaining = length;
     let mut chunks = 0u64;
-    loop {
-        if filled == buf.len() {
-            let receipt = runtime
-                .block_on(blob_store.append_blob(key, Bytes::copy_from_slice(&buf[..filled])))
-                .map_err(|err| err.to_string())?;
-            bytes_written += receipt.bytes_written;
-            object_length = receipt.object_length;
-            chunks += 1;
-            filled = 0;
+    while remaining > 0 {
+        let size = remaining.min(buffer.len());
+        let mut filled = 0;
+        while filled < size {
+            let count = read(&mut buffer[filled..size])?;
+            if count == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "blob body ended before its declared length",
+                ));
+            }
+            filled += count;
         }
-        let n = transfer
-            .read_body(&mut buf[filled..])
-            .map_err(|err| err.to_string())?;
-        if n == 0 {
-            break;
-        }
-        filled += n;
-    }
-    if filled > 0 {
-        let receipt = runtime
-            .block_on(blob_store.append_blob(key, Bytes::copy_from_slice(&buf[..filled])))
-            .map_err(|err| err.to_string())?;
-        bytes_written += receipt.bytes_written;
-        object_length = receipt.object_length;
+        file.write_all(&buffer[..size])?;
+        remaining -= size;
         chunks += 1;
     }
-    // An empty body still creates a zero-length object so a later GET succeeds.
-    if chunks == 0 {
-        let receipt = runtime
-            .block_on(blob_store.append_blob(key, Bytes::new()))
-            .map_err(|err| err.to_string())?;
-        object_length = receipt.object_length;
-    }
-    Ok((bytes_written, object_length, chunks))
+    file.flush()?;
+    staging.publish(path, parent)?;
+    let length = length as u64;
+    Ok((length, length, chunks.max(1)))
 }
 
 /// Stream a `GET /blob/<key>` response: `stat` the object, send `Content-Length`,
@@ -1858,7 +2053,7 @@ fn stream_blob_download(
     };
     let length = file.metadata()?.len() as usize;
     transfer.send_head(200, "application/octet-stream", length)?;
-    let mut buf = vec![0u8; chunk_bytes];
+    let mut buf = vec![0u8; chunk_bytes.min(length)];
     loop {
         let n = file.read(&mut buf)?;
         if n == 0 {
@@ -2044,382 +2239,15 @@ fn local_shard_state_present(dirs: &[&str]) -> bool {
     })
 }
 
-/// Durable shared-storage sink backed by a matrixobject WAL writer.
-///
-/// The datanode's request/worker threads are plain OS threads, so blocking on
-/// the dedicated durability runtime is safe. In the default **async** mode
-/// `record_write` only enqueues the entry (cheap — a lock + push) and returns;
-/// a background task on the same runtime drains the queue in batches off the
-/// write critical path. The local WAL+block are already durable before the entry
-/// is enqueued, so acknowledgement no longer waits on the matrixobject append.
-///
-/// With `TS_MATRIXOBJECT_SYNC_FLUSH=1` the writer runs in **sync** mode instead:
-/// every write is published to the durable store before the write is
-/// acknowledged.
-#[cfg(feature = "matrixobject")]
-struct MatrixObjectWalSink {
-    handle: tokio::runtime::Handle,
-    writer: std::sync::Arc<
-        temporalstore_rust::SharedStoreStorageWriter<
-            temporalstore_rust::matrixobject_store::MatrixObjectObjectStore,
-        >,
-    >,
-    /// `false` in sync mode (each write publishes inline); `true` in async mode
-    /// (each write enqueues and the background flusher publishes).
-    async_mode: bool,
-    /// Wake the background flusher when the queue reaches `batch_full`.
-    flush_signal: std::sync::Arc<tokio::sync::Notify>,
-    batch_full: usize,
-}
-
-#[cfg(feature = "matrixobject")]
-impl std::fmt::Debug for MatrixObjectWalSink {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MatrixObjectWalSink").finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "matrixobject")]
-impl temporalstore_rust::SharedWalSink for MatrixObjectWalSink {
-    fn record_write(&self, shard_id: u64, command: &Command) {
-        let writer = std::sync::Arc::clone(&self.writer);
-        let command = command.clone();
-        // In async mode `write` only locks the queue and pushes (no durable I/O
-        // is awaited), so this returns immediately; in sync mode it publishes to
-        // the durable store before returning.
-        let result = self
-            .handle
-            .block_on(async move { writer.write(shard_id, command).await });
-        if let Err(err) = result {
-            // Durability failure: log loudly. The local write already
-            // succeeded, so the node stays available; shared storage will catch
-            // up on the next successful publish or on the next full replay.
-            eprintln!("matrixobject durable write failed for shard {shard_id}: {err}");
-        }
-        // Threshold flush: if the queue has filled up, wake the flusher now
-        // instead of waiting for the next interval tick.
-        if self.async_mode && self.writer.queued_len() >= self.batch_full {
-            self.flush_signal.notify_one();
-        }
-    }
-}
-
-/// Owns the dedicated durability runtime and the shared-store writer. Its
-/// `Drop` drains any queued (async) writes before the runtime shuts down, so a
-/// clean stop loses nothing.
-#[cfg(feature = "matrixobject")]
-struct MatrixObjectDurability {
-    rt: tokio::runtime::Runtime,
-    writer: std::sync::Arc<
-        temporalstore_rust::SharedStoreStorageWriter<
-            temporalstore_rust::matrixobject_store::MatrixObjectObjectStore,
-        >,
-    >,
-    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    async_mode: bool,
-    drain_batch: usize,
-}
-
-#[cfg(feature = "matrixobject")]
-impl Drop for MatrixObjectDurability {
-    fn drop(&mut self) {
-        self.shutdown
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        if !self.async_mode {
-            return;
-        }
-        // Graceful drain: publish everything still queued before the runtime
-        // (and the background flusher) go away. `rt` is dropped after this
-        // returns, so the handle is still live here.
-        let writer = std::sync::Arc::clone(&self.writer);
-        let drain_batch = self.drain_batch;
-        let drained = self.rt.handle().block_on(async move {
-            let mut total = 0usize;
-            loop {
-                match writer.flush_pending(drain_batch).await {
-                    Ok(report) => {
-                        total += report.flushed;
-                        if report.remaining == 0 {
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        eprintln!("matrixobject shutdown drain failed: {err}");
-                        break;
-                    }
-                }
-            }
-            total
-        });
-        if drained > 0 {
-            println!("matrixobject durability: drained {drained} queued writes on shutdown");
-        }
-    }
-}
-
-/// Build the durable matrixobject store, replay shard data from it when local
-/// state is absent, and attach a write-mirroring sink to `runtime`. Returns a
-/// guard that must be kept alive for the process lifetime (it owns the
-/// durability runtime and drains queued writes on drop). A no-op (returns
-/// `None`) for any backend other than matrixobject.
-#[cfg(feature = "matrixobject")]
-fn wire_matrixobject_durability(
-    storage_backend: &temporalstore_rust::StorageBackend,
-    engine: &TemporalEngine,
-    runtime: &DataNodeRuntime,
-    shard_id: u64,
-    local_state_present: bool,
-) -> Option<MatrixObjectDurability> {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    use std::time::Duration;
-    use temporalstore_rust::matrixobject_store::MatrixObjectObjectStore;
-    use temporalstore_rust::{
-        SharedStoreReplicator, SharedStoreStorageMode, StorageBackend,
-    };
-
-    // THE DIRECTORY COMES FROM THE BACKEND, NOT FROM A SECOND ENV READ. This read
-    // `TS_MATRIXOBJECT_STORE_DIR` here as a bare string literal, while
-    // `build_shared_object_store` read nothing at all and took `StoreOptions::default()` --
-    // which keeps the whole object store in memory. So a node running the matrixobject
-    // backend built TWO stores under one bucket name: this durable one, and a second,
-    // in-memory one that the startup check validated and dropped. Resolving the directory
-    // once, on the backend, is what makes those the same store.
-    let (bucket, cluster_id, store_dir) = match storage_backend {
-        StorageBackend::MatrixObject {
-            bucket,
-            cluster_id,
-            store_dir,
-        } => (
-            bucket.clone(),
-            cluster_id.clone(),
-            store_dir.display().to_string(),
-        ),
-        // Other backends (raft/local/shared-path) keep their existing behavior.
-        _ => return None,
-    };
-
-    // NODE-LOCAL, AND THE REASON IS NOT A MISSING CLIENT. What stood here was a
-    // networked-store TODO saying this path should become an HTTP client to
-    // `tools/matrixark_object_store_server.py` on :17200. That file is not in this repo --
-    // the Python removal left two validator scripts and nothing else -- and
-    // the object-store crate this store is built on has no network surface to
-    // serve such a client either. So the instruction named a dependency that does not
-    // exist, which is worse than no instruction: it reads as a small piece of wiring left
-    // undone.
-    //
-    // WHAT IS ACTUALLY TRUE, AND IS CHECKABLE: shard data follows a shard to another node
-    // exactly when `store_dir` is shared between those nodes. Under a shared mount this
-    // backend already provides data-follow; without one it does not, whatever
-    // `TS_MATRIXOBJECT_ENDPOINT` is set to -- the `auto` resolver probes that endpoint to
-    // decide whether to SELECT matrixobject, and nothing then connects to it. Making the
-    // endpoint mean what it says needs a server on the MatrixObject side first, which is a
-    // change to that project and not a loose end here.
-
-    // Durable, on-disk matrixobject store: flush-on-commit snapshot that is read
-    // back on construction, so its bytes survive a process restart.
-    let store = match MatrixObjectObjectStore::with_persistent_dir(&bucket, &store_dir) {
-        Ok(store) => store,
-        Err(err) => {
-            eprintln!("matrixobject durable store at {store_dir} is unusable: {err}");
-            std::process::exit(1);
-        }
-    };
-
-    let rt = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(err) => {
-            eprintln!("failed to start matrixobject durability runtime: {err}");
-            std::process::exit(1);
-        }
-    };
-
-    // All durability modes use the binary protobuf append log. Sync mode controls
-    // acknowledgement timing and group commit, not record encoding. Replay accepts
-    // older per-key records alongside the append log, so existing shards keep their order.
-    let sync_flush = env_bool("TS_MATRIXOBJECT_SYNC_FLUSH", false);
-    let group_commit = sync_flush && temporalstore_rust::wal::group_commit_configured();
-    let commit_delay = temporalstore_rust::wal::group_commit_delay();
-    let replicator = SharedStoreReplicator::new(cluster_id, Arc::new(store));
-
-    let latest = match rt.block_on(replicator.latest_persisted_wal_index(shard_id)) {
-        Ok(latest) => latest,
-        Err(err) => {
-            eprintln!("failed to read matrixobject WAL state for shard {shard_id}: {err}");
-            std::process::exit(1);
-        }
-    };
-
-    if !local_state_present && latest > 0 {
-        // S1 checkpoint recovery: restore the served index plus a lazy slab address map from
-        // the latest checkpoint, then replay ONLY the WAL tail after it -- old blocks are read
-        // out of the store on demand. A store with no checkpoint yet (or a failed restore)
-        // falls back to the full replay from 0: the old behavior, correct but O(history).
-        let after_wal_index = match rt.block_on(replicator.restore_index_and_block_addresses(
-            shard_id,
-            engine,
-            &engine.block_store(),
-        )) {
-            Ok(manifest) => {
-                println!(
-                    "restored shard {shard_id} index and lazy block addresses from matrixobject checkpoint {} (WAL tail from {})",
-                    manifest.checkpoint_id, manifest.checkpoint_wal_index
-                );
-                // Read the restored on-disk index into memory before the tail replay, which
-                // applies through the engine and needs a loaded shard.
-                engine.load_shard(shard_id);
-                manifest.checkpoint_wal_index
-            }
-            Err(temporalstore_rust::SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
-            Err(err) => {
-                eprintln!(
-                    "matrixobject checkpoint restore failed for shard {shard_id} ({err}); replaying full WAL"
-                );
-                0
-            }
-        };
-        match rt.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
-            Ok(report) => println!(
-                "recovered shard {shard_id} from matrixobject shared storage at {store_dir}: {} WAL entries replayed (through index {})",
-                report.applied, report.last_wal_index
-            ),
-            // A hole already reached the same exit as every other replay failure on this path;
-            // it gets its own arm so the operator reading the line knows the shard is missing
-            // history nothing can supply, rather than that a replay happened to fail.
-            Err(err @ temporalstore_rust::SharedStoreReplicationError::ReplayGap { .. }) => {
-                eprintln!(
-                    "matrixobject recovery for shard {shard_id} refused a hole in the shared log: {err}; \
-                     a span of this shard's history is missing and no checkpoint covers it, so this node \
-                     will not come up serving a truncated shard"
-                );
-                std::process::exit(1);
-            }
-            Err(err) => {
-                eprintln!("matrixobject recovery replay failed for shard {shard_id}: {err}");
-                std::process::exit(1);
-            }
-        }
-    } else if local_state_present {
-        println!(
-            "matrixobject durability active for shard {shard_id} at {store_dir}; local state intact, skipping replay (WAL resumes at {})",
-            latest + 1
-        );
-    } else {
-        println!(
-            "matrixobject durability active for shard {shard_id} at {store_dir}; no shared WAL yet (fresh cluster)"
-        );
-    }
-
-    // Publish this node's authoritative state as a checkpoint (index + slabs) at start, so a
-    // future fresh recovery replays only the tail instead of all history. Opt-out via env.
-    if local_state_present && env_bool("TS_MATRIXOBJECT_CHECKPOINT_ON_START", true) {
-        match rt.block_on(replicator.publish_checkpoint(
-            shard_id,
-            latest,
-            engine,
-            &engine.block_store(),
-        )) {
-            Ok(manifest) => println!(
-                "published matrixobject start checkpoint {} for shard {shard_id} at WAL index {}",
-                manifest.checkpoint_id, manifest.checkpoint_wal_index
-            ),
-            Err(err) => eprintln!(
-                "matrixobject start checkpoint publish failed for shard {shard_id}: {err}"
-            ),
-        }
-    }
-
-    let mode = SharedStoreStorageMode::from_sync_flag(sync_flush);
-    let async_mode = mode.is_async();
-
-    // Continue publishing at latest + 1 so we never overwrite persisted WAL
-    // entries.
-    let writer = Arc::new(
-        replicator
-            .storage_writer(mode, latest + 1)
-            .with_group_commit(group_commit, commit_delay),
-    );
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let flush_signal = Arc::new(tokio::sync::Notify::new());
-
-    let flush_interval_ms = env_u64("TS_MATRIXOBJECT_FLUSH_INTERVAL_MS", 100).max(1);
-    let flush_batch = env_usize("TS_MATRIXOBJECT_FLUSH_BATCH", 256).max(1);
-
-    if async_mode {
-        // Background flusher: drains the queue in batches every interval, or as
-        // soon as the queue reaches `flush_batch` (threshold flush). One drain
-        // pass coalesces up to the whole backlog into batched appends.
-        let bg_writer = Arc::clone(&writer);
-        let bg_shutdown = Arc::clone(&shutdown);
-        let bg_signal = Arc::clone(&flush_signal);
-        rt.spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_millis(flush_interval_ms));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tokio::select! {
-                    _ = ticker.tick() => {}
-                    _ = bg_signal.notified() => {}
-                }
-                if bg_shutdown.load(Ordering::SeqCst) {
-                    break;
-                }
-                loop {
-                    match bg_writer.flush_pending(flush_batch).await {
-                        Ok(report) => {
-                            if report.remaining == 0 {
-                                break;
-                            }
-                        }
-                        Err(err) => {
-                            eprintln!("matrixobject async flush failed for shard {shard_id}: {err}");
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-        println!(
-            "matrixobject durability: async batched flush (interval {flush_interval_ms}ms, batch {flush_batch}); durable local WAL covers process crash"
-        );
-    } else if group_commit {
-        println!(
-            "matrixobject durability: sync flush with timer-less group commit (concurrent writers coalesce onto a shared durable barrier; commit_delay {}us)",
-            commit_delay.as_micros()
-        );
-    } else {
-        println!("matrixobject durability: sync flush (every write durable before ack)");
-    }
-
-    runtime.set_shared_wal_sink(Arc::new(MatrixObjectWalSink {
-        handle: rt.handle().clone(),
-        writer: Arc::clone(&writer),
-        async_mode,
-        flush_signal,
-        batch_full: flush_batch,
-    }));
-
-    Some(MatrixObjectDurability {
-        rt,
-        writer,
-        shutdown,
-        async_mode,
-        drain_batch: flush_batch.max(4096),
-    })
-}
-
 /// Networked URI of the shared matrixobject object-store service, if configured.
 /// `TS_SHARED_STORE_URI=matrixobject://host:port` opts a datanode into networked
 /// cross-node lazy data-follow. Absent (or a non-matrixobject scheme) leaves the
 /// datanode on its existing behavior, byte-identical.
 ///
-/// `TS_MATRIXOBJECT_MODE=gateway|direct` chooses how the node reaches the cluster; with no
-/// mode, whichever of `TS_SHARED_STORE_URI` (gateway) and `TS_MATRIXOBJECT_META` (direct) is
-/// set decides. A configuration that names both, or that contradicts its mode, is a startup
-/// error: the node refuses to run rather than choose where its writes go.
+/// `TS_MATRIXOBJECT_MODE=gateway|direct` chooses how the node reaches the cluster. Direct is
+/// the default: with no mode, `TS_MATRIXOBJECT_META` (direct) decides even when
+/// `TS_SHARED_STORE_URI` (gateway) is also set, and the gateway is used only when it is the only
+/// one configured. A mode whose own setting is missing is a startup error.
 fn matrixobject_networked_target() -> Option<(MatrixObjectMode, String)> {
     let env = |name: &str| std::env::var(name).ok();
     let uri = env("TS_SHARED_STORE_URI");
@@ -2445,17 +2273,15 @@ fn matrixobject_networked_target() -> Option<(MatrixObjectMode, String)> {
 }
 
 /// The networked store for `mode`. Direct mode runs the gateway's request handling in this
-/// process against the metadata group named by `TS_MATRIXOBJECT_META`, and needs a binary built
-/// with the `matrixobject` feature.
+/// process against the metadata group named by `TS_MATRIXOBJECT_META`.
 fn connect_networked_store(
     mode: MatrixObjectMode,
     target: &str,
-) -> Result<NetworkedMatrixObjectStore, String> {
-    #[cfg(feature = "matrixobject")]
+) -> Result<NetworkedMatrixObject, String> {
     if mode == MatrixObjectMode::Direct {
         return temporalstore_rust::matrixobject_direct::DirectConfig::from_env(target)?.connect();
     }
-    NetworkedMatrixObjectStore::connect(mode, target).map_err(|error| error.to_string())
+    NetworkedMatrixObject::connect(mode, target).map_err(|error| error.to_string())
 }
 
 /// Durable shared-storage sink backed by a NETWORKED matrixobject WAL writer.
@@ -2465,7 +2291,7 @@ fn connect_networked_store(
 /// no enterprise crate.
 struct MatrixObjectNetworkedWalSink {
     handle: tokio::runtime::Handle,
-    writer: Arc<temporalstore_rust::SharedStoreStorageWriter<NetworkedMatrixObjectStore>>,
+    writer: Arc<temporalstore_rust::SharedStoreStorageWriter<NetworkedMatrixObject>>,
 }
 
 impl std::fmt::Debug for MatrixObjectNetworkedWalSink {
@@ -2477,11 +2303,30 @@ impl std::fmt::Debug for MatrixObjectNetworkedWalSink {
 
 impl temporalstore_rust::SharedWalSink for MatrixObjectNetworkedWalSink {
     fn record_write(&self, shard_id: u64, command: &Command) {
+        self.record_entry(shard_id, Some(command.clone()), Vec::new());
+    }
+
+    fn record_outcomes(&self, shard_id: u64, outcomes: &[temporalstore_rust::wal::WalOutcomeItem]) {
+        self.record_entry(shard_id, None, outcomes.to_vec());
+    }
+}
+
+impl MatrixObjectNetworkedWalSink {
+    fn record_entry(
+        &self,
+        shard_id: u64,
+        command: Option<Command>,
+        outcomes: Vec<temporalstore_rust::wal::WalOutcomeItem>,
+    ) {
         let writer = Arc::clone(&self.writer);
-        let command = command.clone();
         let result = self
             .handle
-            .block_on(async move { writer.write(shard_id, command).await });
+            .block_on(async move {
+                match command {
+                    Some(command) => writer.write(shard_id, command).await,
+                    None => writer.write_outcomes(shard_id, outcomes).await,
+                }
+            });
         match result {
             Ok(_) => {}
             Err(err) => {
@@ -2536,7 +2381,7 @@ fn append_networked_wal_hole_metrics(metrics: &mut String) {
 /// drop; keeping the runtime alive is all that is required.
 struct MatrixObjectNetworkedDurability {
     _rt: tokio::runtime::Runtime,
-    _writer: Arc<temporalstore_rust::SharedStoreStorageWriter<NetworkedMatrixObjectStore>>,
+    _writer: Arc<temporalstore_rust::SharedStoreStorageWriter<NetworkedMatrixObject>>,
 }
 
 /// Wire the NETWORKED matrixobject shared store into the running node so shard data
@@ -2547,8 +2392,8 @@ struct MatrixObjectNetworkedDurability {
 /// authoritative local state, publish its current state as a networked checkpoint
 /// (index + slabs) so future owners can lazily follow it. Finally, mirror every
 /// accepted write to the networked store from here on. Active only when a
-/// `matrixobject://` URI is configured; returns `None` on a bad URI or runtime
-/// failure so the node still serves from local durability.
+/// networked target is configured. A failed connection, restore, replay or WAL
+/// read returns `None`, which the caller rejects before accepting requests.
 fn wire_matrixobject_networked_durability(
     mode: MatrixObjectMode,
     uri: &str,
@@ -2583,6 +2428,17 @@ fn wire_matrixobject_networked_durability(
         }
     };
     let replicator = Arc::new(SharedStoreReplicator::new(cluster_id, Arc::new(store)));
+    if let Err(err) = replicator.reattach_lazy_checkpoint_sources(&engine.block_store()) {
+        error!(shard_id, %err, "cannot reattach saved lazy checkpoints");
+        return None;
+    }
+    if local_state_present && auto_load {
+        let load = engine.load_shard_with(startup_load_shard_request(shard_id, node_id));
+        if !load.status.ok {
+            error!(shard_id, message = %load.status.message, "local reload after lazy source attachment failed");
+            return None;
+        }
+    }
 
     // Fresh node: rebuild from the networked store via conformance lazy
     // data-follow (index + address map, then WAL tail; old blocks fetched on demand).
@@ -2604,8 +2460,8 @@ fn wire_matrixobject_networked_durability(
             }
             Err(SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
             Err(err) => {
-                warn!(shard_id, %err, "networked matrixobject checkpoint restore failed; replaying full shared WAL");
-                0
+                error!(shard_id, %err, "networked matrixobject checkpoint restore failed");
+                return None;
             }
         };
         // Read the just-restored on-disk index into memory so this node auto-serves the
@@ -2624,6 +2480,7 @@ fn wire_matrixobject_networked_durability(
                     message = %load_response.status.message,
                     "load of restored networked shard index failed"
                 );
+                return None;
             }
         }
         match rt.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
@@ -2652,6 +2509,12 @@ fn wire_matrixobject_networked_durability(
                 );
                 std::process::exit(1);
             }
+            Err(SharedStoreReplicationError::ApplyFailed { status, .. })
+                if status.code == "shared_wal_unbound_address" =>
+            {
+                error!(shard_id, message = %status.message, "networked shared WAL tail has an unbound address");
+                return None;
+            }
             // Unchanged for every other replay failure, for the reason given at the `/load` site.
             Err(err) => {
                 warn!(shard_id, %err, "no networked matrixobject data replayed for shard")
@@ -2663,7 +2526,7 @@ fn wire_matrixobject_networked_durability(
     let latest = match rt.block_on(replicator.latest_persisted_wal_index(shard_id)) {
         Ok(latest) => latest,
         Err(err) => {
-            error!(shard_id, %err, "failed to read networked matrixobject WAL state; durability disabled");
+            error!(shard_id, %err, "failed to read networked matrixobject WAL state");
             return None;
         }
     };
@@ -2738,6 +2601,14 @@ fn raft_config_from_env() -> RaftConfig {
         replication_deadline_ms: env_u64(
             "TS_RAFT_REPLICATION_DEADLINE_MS",
             defaults.replication_deadline_ms,
+        ),
+        max_memory_replicate_log_bytes: env_u64(
+            "TS_RAFT_MAX_MEMORY_REPLICATE_LOG_BYTES",
+            defaults.max_memory_replicate_log_bytes,
+        ),
+        max_apply_batch_bytes: env_u64(
+            "TS_RAFT_MAX_APPLY_BATCH_BYTES",
+            defaults.max_apply_batch_bytes,
         ),
         max_inflights_replicate: env_u64(
             "TS_RAFT_MAX_INFLIGHTS_REPLICATE",
@@ -3166,6 +3037,129 @@ fn send_heartbeat(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_wal_replays_repeated_hash_fields_in_append_order() {
+        use temporalstore_rust::shared_store::SharedStoreWalAppendMode;
+        let dir = tempdir().unwrap();
+        let source = test_engine(dir.path(), "source");
+        source.load_shard(1);
+        let mut entries = Vec::new();
+        entries.push(("field".to_string(), b"first".to_vec()));
+        entries.push(("field".to_string(), b"last".to_vec()));
+        assert!(source.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashMultiSet { key: "hash".into(), entries },
+        }).status.ok);
+        let records = source.write_ahead_log_store().scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        let record = records.iter().find_map(|(_, line)| {
+            let record = temporalstore_rust::wal::decode_wal_line(line).unwrap();
+            (record.outcomes.iter().filter(|item| item.element_name.as_deref() == Some("field")).count() == 2)
+                .then_some(record)
+        }).expect("producer must emit both writes to the same selector");
+        let blocks = gather_result_blocks(&source, &record.outcomes, record.staged_blocks).unwrap();
+        let paired = temporalstore_rust::shared_store::shared_wal_carriers(&record.outcomes, &blocks);
+        let field_pairs = record.outcomes.iter().zip(paired)
+            .filter_map(|(item, index)| (item.element_name.as_deref() == Some("field")).then(|| index.expect("field outcome must have a carrier")))
+            .collect::<Vec<_>>();
+        assert_ne!(field_pairs[0], field_pairs[1]);
+        let object_store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        for (label, mode) in [
+            ("object", SharedStoreWalAppendMode::PerKeyObject),
+            ("blob", SharedStoreWalAppendMode::ProtobufAppendBlob),
+        ] {
+            let replicator = SharedStoreReplicator::new(label, Arc::clone(&object_store))
+                .with_wal_append_mode(mode);
+            rt.block_on(replicator.publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1, wal_index: 1, command: None,
+                outcomes: record.outcomes.clone(), staged_blocks: blocks.clone(),
+            })).unwrap();
+            let follower = test_engine(dir.path(), label);
+            follower.load_shard(1);
+            assert_eq!(rt.block_on(replicator.replay_wal(1, 0, &follower)).unwrap().applied, 1);
+            let query = ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashGet { key: "hash".into(), field: "field".into() },
+            };
+            assert_eq!(follower.execute(query.clone()).response,
+                CommandResponse::Bytes { value: Some(b"last".to_vec()) });
+            follower.flush_shard_index(1);
+            drop(follower);
+            let reopened = test_engine(dir.path(), label);
+            reopened.load_shard(1);
+            assert_eq!(reopened.execute(query).response,
+                CommandResponse::Bytes { value: Some(b"last".to_vec()) });
+        }
+    }
+
+    #[test]
+    fn shared_wal_publisher_preserves_packed_fanout_and_refuses_missing_blocks() {
+        use temporalstore_rust::shared_store::SharedStoreWalAppendMode;
+        use temporalstore_rust::types::FeaturePoint;
+        use temporalstore_rust::wal::WalOutcomeItem;
+
+        let dir = tempdir().unwrap();
+        let source = test_engine(dir.path(), "source");
+        source.load_shard(1);
+        let points = vec![
+            FeaturePoint { timestamp_ms: 10, value: b"first".to_vec() },
+            FeaturePoint { timestamp_ms: 20, value: b"other".to_vec() },
+        ];
+        assert!(source.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend { key: "features".into(), points: points.clone() },
+        }).status.ok);
+        let records = source.write_ahead_log_store().scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        let packed = records.iter().find_map(|(_, line)| {
+            let record = temporalstore_rust::wal::decode_wal_line(line).unwrap();
+            (record.outcomes.iter().filter(|item| item.kind == "feature").count() == 2).then_some(record)
+        }).expect("the producer wrote two outcomes for the packed points");
+        assert_eq!(packed.staged_blocks.len(), 1);
+        let callers = temporalstore_rust::shared_store::shared_wal_carriers(
+            &packed.outcomes, &packed.staged_blocks,
+        );
+        assert_eq!(callers.iter().filter(|carrier| **carrier == Some(0)).count(), 2);
+        assert_eq!(
+            gather_result_blocks(&source, &packed.outcomes, packed.staged_blocks.clone()).unwrap(),
+            packed.staged_blocks,
+        );
+        let object_store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        for (label, mode) in [
+            ("object", SharedStoreWalAppendMode::PerKeyObject),
+            ("blob", SharedStoreWalAppendMode::ProtobufAppendBlob),
+        ] {
+            let replicator = SharedStoreReplicator::new(label, Arc::clone(&object_store))
+                .with_wal_append_mode(mode);
+            rt.block_on(replicator.publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1, wal_index: 1, command: None,
+                outcomes: packed.outcomes.clone(), staged_blocks: packed.staged_blocks.clone(),
+            })).unwrap();
+            let follower = test_engine(dir.path(), label);
+            follower.load_shard(1);
+            let report = rt.block_on(replicator.replay_wal(1, 0, &follower)).unwrap();
+            assert_eq!(report.applied, 1);
+            let result = follower.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureQuery { key: "features".into(), start_ms: 0, end_ms: 21, count: None },
+            });
+            assert_eq!(result.response, CommandResponse::FeaturePoints { points: points.clone() });
+        }
+
+        let foreign = source.block_store().append(b"missing elsewhere").unwrap();
+        let recipient = test_engine(dir.path(), "recipient");
+        let deletion = WalOutcomeItem {
+            kind: "record".into(), object_key: "old".into(), element_name: None,
+            object_id: 1, routing_bucket: 1, address: None, value: None,
+            ttl: None, deleted: true, meta: true,
+        };
+        let addressed = WalOutcomeItem {
+            kind: "string".into(), object_key: "missing".into(), object_id: 2,
+            address: Some(foreign), deleted: false, meta: false, ..deletion.clone()
+        };
+        assert!(gather_result_blocks(&recipient, &[deletion.clone()], Vec::new()).unwrap().is_empty());
+        assert!(gather_result_blocks(&recipient, &[deletion, addressed], Vec::new()).is_err());
+    }
     /// The reason is free text carrying paths and endpoint URLs, so it reaches this label with
     /// quotes and backslashes in it. An unescaped one produces a line Prometheus rejects, which
     /// takes down the WHOLE scrape rather than this one series -- strictly worse than publishing
@@ -3223,6 +3217,85 @@ mod tests {
     use super::*;
 
     const TEST_CACHE_BYTES: usize = 1024;
+
+    #[test]
+    fn blob_batch_read_distinguishes_local_hits_misses_and_invalid_lengths() {
+        let work = tempdir().unwrap();
+        std::fs::write(work.path().join("valid"), b"data").unwrap();
+        std::fs::write(work.path().join("empty"), b"").unwrap();
+        let store = FileObjectStore::new(work.path().to_path_buf());
+        for (key, length, expected) in [
+            ("valid", 4, 1),
+            ("empty", 0, 1),
+            ("missing", 4, 0),
+            ("valid", 3, 2),
+            ("../outside", 4, 2),
+            ("", 4, 2),
+        ] {
+            let (status, file) = open_blob_for_batch(
+                &store,
+                &BlobBatchReadItem {
+                    key: key.to_string(),
+                    length,
+                },
+            );
+            assert_eq!((status, file.is_some()), (expected, expected == 1), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_blob_replacement_requires_every_declared_byte_before_publishing() {
+        let work = tempdir().unwrap();
+        let key = work.path().join("nested").join("cache");
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::write(&key, b"old").unwrap();
+        let mut short = &b"part"[..];
+        let error = replace_blob_from_body(&key, 5, 3, |buffer| short.read(buffer)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(std::fs::read(&key).unwrap(), b"old");
+        assert_eq!(std::fs::read_dir(key.parent().unwrap()).unwrap().count(), 1);
+
+        let mut complete = &b"complete"[..];
+        assert_eq!(
+            replace_blob_from_body(&key, 8, 3, |buffer| complete.read(buffer)).unwrap(),
+            (8, 8, 3)
+        );
+        assert_eq!(std::fs::read(&key).unwrap(), b"complete");
+        assert_eq!(
+            replace_blob_from_body(&key, 0, 3, |_| panic!("an empty body needs no read")).unwrap(),
+            (0, 0, 1)
+        );
+        assert!(std::fs::read(&key).unwrap().is_empty());
+    }
+
+    #[test]
+    fn blob_batch_delete_returns_status_in_key_order_and_preserves_invalid_paths() {
+        let work = tempdir().unwrap();
+        let root = work.path().join("blobs");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("valid"), b"blob").unwrap();
+        std::fs::write(work.path().join("outside"), b"keep").unwrap();
+        let store = FileObjectStore::new(root.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+
+        let oversized = serde_json::to_vec(
+            &serde_json::json!({"keys": vec!["valid"; MAX_BLOB_DELETE_BATCH_KEYS + 1]}),
+        )
+        .unwrap();
+        assert_eq!(400, handle_blob_batch_delete(&oversized, &store, &runtime).0);
+        assert!(root.join("valid").is_file());
+
+        let request = br#"{"keys":["valid","missing","../outside","","valid"]}"#;
+        let (status, reply) = handle_blob_batch_delete(request, &store, &runtime);
+        assert_eq!(200, status);
+        let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+        assert_eq!(
+            reply["deleted"],
+            serde_json::json!([true, true, false, false, true])
+        );
+        assert!(!root.join("valid").exists());
+        assert!(work.path().join("outside").is_file());
+    }
 
     #[test]
     fn control_state_set_and_get_is_a_replicated_write_not_a_local_read() {
@@ -3291,6 +3364,417 @@ mod tests {
     /// The status code is asserted by NAME. "Some status came back" is also what a failure for an
     /// unrelated reason looks like, and this site deliberately leaves every other replay error on
     /// the warning path it was already on.
+    #[test]
+    fn an_unbound_shared_wal_address_cannot_open_the_shard_for_serving() {
+        use temporalstore_rust::shared_store::SharedStoreWalAppendMode;
+        use temporalstore_rust::wal::{StagedBlock, WalOutcomeItem};
+
+        for mode in [SharedStoreWalAppendMode::PerKeyObject, SharedStoreWalAppendMode::ProtobufAppendBlob] {
+            let dir = tempdir().unwrap();
+            let source = test_engine(dir.path(), "source");
+            let engine = test_engine(dir.path(), "follower");
+            let foreign = source.block_store().append(b"right").unwrap();
+            let local = engine.block_store().append(b"wrong").unwrap();
+            assert_eq!(foreign.address_word(), local.address_word());
+            assert_eq!(engine.block_store().read(&foreign).unwrap(), b"wrong");
+            let rt = Arc::new(tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1).enable_all().build().unwrap());
+            let object_store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+            let invalid = Arc::new(SharedStoreReplicator::new("invalid", object_store.clone())
+                .with_wal_append_mode(mode));
+            let mut frame = SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index: 1,
+                command: None,
+                outcomes: vec![WalOutcomeItem {
+                    kind: "string".into(), object_key: "key".into(), element_name: None,
+                    object_id: 1, routing_bucket: 1, address: Some(foreign),
+                    value: None, ttl: None, deleted: false, meta: false,
+                }],
+                staged_blocks: Vec::new(),
+            };
+            rt.block_on(invalid.publish_wal_entry(frame.clone())).unwrap();
+            let runtime = DataNodeRuntime::new(
+                engine.clone(), DataNodeRuntimeOptions::default(),
+            );
+            let query = || ExecuteRequest { shard_id: 1, command: Command::StringGet { key: "key".into() } };
+            let response = runtime.load_shard_with_shared_tail(startup_load_shard_request(1, 1), || {
+                assert!(!engine.execute(query()).status.ok);
+                recover_shared_wal_tail(&Some(invalid), &rt, &engine, 1, 0)
+            });
+            assert_eq!(response.status.code, "shared_wal_unbound_address");
+            assert!(!engine.execute(query()).status.ok);
+            assert_eq!(engine.block_store().read(&local).unwrap(), b"wrong");
+            drop(runtime);
+            drop(engine);
+
+            let engine = test_engine(dir.path(), "follower");
+            assert!(!engine.execute(query()).status.ok);
+            assert_eq!(engine.block_store().read(&local).unwrap(), b"wrong");
+            frame.staged_blocks.push(StagedBlock {
+                object_id: 1, element_name: None, bytes: b"right".to_vec(),
+            });
+            let valid = Arc::new(SharedStoreReplicator::new("valid", object_store)
+                .with_wal_append_mode(mode));
+            rt.block_on(valid.publish_wal_entry(frame)).unwrap();
+            let runtime = DataNodeRuntime::new(
+                engine.clone(), DataNodeRuntimeOptions::default(),
+            );
+            let response = runtime.load_shard_with_shared_tail(startup_load_shard_request(1, 1), || {
+                recover_shared_wal_tail(&Some(Arc::clone(&valid)), &rt, &engine, 1, 0)
+            });
+            assert!(response.status.ok, "{:?}", response.status);
+            assert_eq!(engine.execute(query()).response,
+                CommandResponse::Bytes { value: Some(b"right".to_vec()) });
+            assert!(engine.execute_durable(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet { key: "local-next".into(), value: b"durable".to_vec() },
+            }).status.ok);
+            assert!(engine.write_ahead_log_store().stats(1).last_sequence > 0);
+            drop(runtime);
+            drop(engine);
+            let engine = test_engine(dir.path(), "follower");
+            let runtime = DataNodeRuntime::new(engine.clone(), DataNodeRuntimeOptions::default());
+            assert!(load_with_shared_storage(
+                &runtime, &Some(valid), &rt, &engine, startup_load_shard_request(1, 1),
+            ).status.ok);
+            assert_eq!(engine.execute(query()).response,
+                CommandResponse::Bytes { value: Some(b"right".to_vec()) });
+            assert_eq!(engine.execute(ExecuteRequest {
+                shard_id: 1, command: Command::StringGet { key: "local-next".into() },
+            }).response, CommandResponse::Bytes { value: Some(b"durable".to_vec()) });
+        }
+    }
+
+    fn full_range_checkpoint_load_request() -> LoadShardRequest {
+        let mut request = startup_load_shard_request(1, 1);
+        request.start_routing_bucket = 0;
+        request.end_routing_bucket = u32::MAX;
+        request
+    }
+
+    #[test]
+    fn restored_file_checkpoint_republishes_in_the_same_shared_wal_sequence_space() {
+        use temporalstore_rust::shared_store::SharedStoreWalAppendMode;
+        for mode in [SharedStoreWalAppendMode::PerKeyObject, SharedStoreWalAppendMode::ProtobufAppendBlob] {
+            let dir = tempdir().unwrap();
+            let rt = Arc::new(tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1).enable_all().build().unwrap());
+            let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+            let shared = Arc::new(SharedStoreReplicator::new("two-hop", store).with_wal_append_mode(mode));
+            let replicator = Some(Arc::clone(&shared));
+            let source = test_engine(dir.path(), "source");
+            source.load_shard(1);
+            let push = |value: u8| Command::ListPush { key: "list".into(), member: vec![value], left: false };
+            let apply = |engine: &TemporalEngine, value| {
+                assert!(engine.execute_durable(ExecuteRequest { shard_id: 1, command: push(value) }).status.ok);
+            };
+            let length = |engine: &TemporalEngine| engine.execute(ExecuteRequest {
+                shard_id: 1, command: Command::ListLen { key: "list".into() },
+            }).response;
+            for index in 1..=3_u64 {
+                apply(&source, index as u8);
+                rt.block_on(shared.publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1, wal_index: index, command: Some(push(index as u8)),
+                    outcomes: Vec::new(), staged_blocks: Vec::new(),
+                })).unwrap();
+            }
+            let first = publish_shard_checkpoint(&replicator, &rt, &source, 1);
+            assert!(first.status.ok, "{:?}", first.status);
+            assert_eq!(first.checkpoint_wal_index, 3);
+
+            let receiver = test_engine(dir.path(), "receiver");
+            let runtime = DataNodeRuntime::new(receiver.clone(), DataNodeRuntimeOptions::default());
+            let request = || full_range_checkpoint_load_request();
+            let response = load_with_shared_storage(&runtime, &replicator, &rt, &receiver, request());
+            assert!(response.status.ok, "{:?}", response.status);
+            assert_eq!(length(&receiver), CommandResponse::Integer { value: 3 });
+            apply(&receiver, 4);
+            assert_eq!(receiver.write_ahead_log_store().stats(1).last_sequence, 1);
+            let fetches = receiver.block_store().stats().shared_slab_fetches;
+            let second = rt.block_on(shared.publish_file_checkpoint(
+                1, &receiver, &receiver.block_store(), |local_frontier| {
+                    assert_eq!(local_frontier, 1);
+                    apply(&receiver, 5);
+                    let uncovered = collect_uncovered_file_wal(&receiver, 1, local_frontier)?;
+                    assert_eq!(uncovered.iter().map(|entry| entry.wal_index).collect::<Vec<_>>(), [2]);
+                    Ok(uncovered)
+                },
+            )).unwrap();
+            assert!(receiver.block_store().stats().shared_slab_fetches > fetches,
+                "publication must exercise its lazy checkpoint dependency");
+            assert_eq!(second.checkpoint_wal_index, 4, "checkpoint uses the shared stream's sequence");
+
+            let third = test_engine(dir.path(), "third");
+            let runtime = DataNodeRuntime::new(third.clone(), DataNodeRuntimeOptions::default());
+            let response = load_with_shared_storage(&runtime, &replicator, &rt, &third, request());
+            assert!(response.status.ok, "{:?}", response.status);
+            assert_eq!(length(&third), CommandResponse::Integer { value: 5 });
+            let result = third.execute(ExecuteRequest {
+                shard_id: 1, command: Command::ListRange { key: "list".into(), start: 0, stop: -1 },
+            });
+            assert_eq!(result.response, CommandResponse::Members { members: (1..=5).map(|value| vec![value]).collect() });
+        }
+    }
+
+    #[test]
+    fn file_restore_does_not_use_an_inherited_dump_as_the_local_replay_base() {
+        use temporalstore_rust::shared_store::SharedStoreWalAppendMode;
+        for mode in [SharedStoreWalAppendMode::PerKeyObject, SharedStoreWalAppendMode::ProtobufAppendBlob] {
+            let dir = tempdir().unwrap();
+            let source = test_engine(dir.path(), "source");
+            source.load_shard(1);
+            let put = |value: &[u8]| ExecuteRequest {
+                shard_id: 1, command: Command::StringSet { key: "key".into(), value: value.to_vec() },
+            };
+            assert!(source.execute_durable(put(b"old dump")).status.ok);
+            let dump = source.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+            assert!(dump.wal_sequence > 0);
+            assert!(source.execute_durable(put(b"new checkpoint")).status.ok);
+            let rt = Arc::new(tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1).enable_all().build().unwrap());
+            let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+            let replicator = Some(Arc::new(SharedStoreReplicator::new("inherited", store)
+                .with_wal_append_mode(mode)));
+            let checkpoint = publish_shard_checkpoint(&replicator, &rt, &source, 1);
+            assert!(checkpoint.status.ok, "{:?}", checkpoint.status);
+            assert!(checkpoint.checkpoint_wal_index > dump.wal_sequence);
+            let receiver = test_engine(dir.path(), "receiver");
+            let runtime = DataNodeRuntime::new(receiver.clone(), DataNodeRuntimeOptions::default());
+            let request = || full_range_checkpoint_load_request();
+            let read = || ExecuteRequest { shard_id: 1, command: Command::StringGet { key: "key".into() } };
+            let response = load_with_shared_storage(&runtime, &replicator, &rt, &receiver, request());
+            assert!(response.status.ok, "{:?}", response.status);
+            assert_eq!(receiver.execute(read()).response,
+                CommandResponse::Bytes { value: Some(b"new checkpoint".to_vec()) });
+            let coverage = receiver.storage_wal_reclaim_plan(1, [], []);
+            assert!(coverage.covered_bucket_count > 0);
+            assert!(coverage.missing_bucket_generations.is_empty(), "{coverage:?}");
+            let planned = receiver.storage_lifecycle_plan(temporalstore_rust::StorageLifecycleRequest {
+                shard_id: 1, max_dump_buckets_per_round: 8, ..Default::default()
+            });
+            assert!(planned.selected_dump_buckets.is_empty(), "{planned:?}");
+            assert!(receiver.list_bucket_dump_manifests(1).is_empty(),
+                "the verified restored image covers its own generation without another Dump");
+            assert!(receiver.execute_durable(put(b"receiver WAL one")).status.ok);
+            assert_eq!(receiver.write_ahead_log_store().stats(1).last_sequence, 1,
+                "the new local WAL must use its own sequence space");
+            drop(runtime);
+            drop(receiver);
+            let receiver = test_engine(dir.path(), "receiver");
+            let runtime = DataNodeRuntime::new(receiver.clone(), DataNodeRuntimeOptions::default());
+            let response = load_with_shared_storage(&runtime, &replicator, &rt, &receiver, request());
+            assert!(response.status.ok, "{:?}", response.status);
+            assert_eq!(receiver.execute(read()).response,
+                CommandResponse::Bytes { value: Some(b"receiver WAL one".to_vec()) });
+        }
+    }
+
+    #[test]
+    fn wal_only_shared_restore_does_not_duplicate_non_idempotent_commands_after_reopen() {
+        use temporalstore_rust::shared_store::SharedStoreWalAppendMode;
+        for mode in [SharedStoreWalAppendMode::PerKeyObject, SharedStoreWalAppendMode::ProtobufAppendBlob] {
+            let dir = tempdir().unwrap();
+            let rt = Arc::new(tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1).enable_all().build().unwrap());
+            let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+            let replicator = Arc::new(SharedStoreReplicator::new("wal-only", store).with_wal_append_mode(mode));
+            rt.block_on(replicator.publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1, wal_index: 1, command: Some(Command::ListPush {
+                    key: "list".into(), member: b"only".to_vec(), left: false,
+                }),
+                outcomes: Vec::new(), staged_blocks: Vec::new(),
+            })).unwrap();
+            for _ in 0..3 {
+                let follower = test_engine(dir.path(), "recipient");
+                let runtime = DataNodeRuntime::new(follower.clone(), DataNodeRuntimeOptions::default());
+                let response = load_with_shared_storage(
+                    &runtime, &Some(Arc::clone(&replicator)), &rt, &follower,
+                    startup_load_shard_request(1, 1),
+                );
+                assert!(response.status.ok, "{:?}", response.status);
+                let answer = follower.execute(ExecuteRequest {
+                    shard_id: 1, command: Command::ListLen { key: "list".into() },
+                });
+                assert_eq!(answer.response, CommandResponse::Integer { value: 1 });
+            }
+
+            // Reuse the receiver with an unrelated WAL namespace. Without a
+            // verified replacement checkpoint, its local image cannot be a base.
+            let other = Arc::new(SharedStoreReplicator::new(
+                "unrelated", Arc::new(FileObjectStore::new(dir.path().join("other-objects"))),
+            ).with_wal_append_mode(mode));
+            let follower = test_engine(dir.path(), "recipient");
+            let runtime = DataNodeRuntime::new(follower.clone(), DataNodeRuntimeOptions::default());
+            let response = load_with_shared_storage(
+                &runtime, &Some(other), &rt, &follower, startup_load_shard_request(1, 1),
+            );
+            assert_eq!(response.status.code, "shared_wal_source_mismatch");
+        }
+    }
+
+    #[test]
+    fn shared_load_retry_rejects_unfinished_tail_after_a_durable_command_prefix() {
+        use temporalstore_rust::shared_store::SharedStoreWalAppendMode;
+        use temporalstore_rust::wal::WalOutcomeItem;
+
+        for mode in [SharedStoreWalAppendMode::PerKeyObject, SharedStoreWalAppendMode::ProtobufAppendBlob] {
+            let dir = tempdir().unwrap();
+            let rt = Arc::new(tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1).enable_all().build().unwrap());
+            let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+            let replicator = Some(Arc::new(SharedStoreReplicator::new("restart", store)
+                .with_wal_append_mode(mode)));
+            let publisher = replicator.as_ref().unwrap();
+            let remote = test_engine(dir.path(), "producer").block_store().append(b"remote").unwrap();
+            let follower = test_engine(dir.path(), "recipient");
+            let colliding = follower.block_store().append(b"local!").unwrap();
+            assert_eq!(remote.address_word(), colliding.address_word());
+            // The publisher's normal replay window is 256. Complete one whole
+            // window before the subsequent refusal, so this covers late failure.
+            for wal_index in 1..=256 {
+                rt.block_on(publisher.publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1, wal_index, command: Some(Command::StringSet {
+                        key: "prefix".into(), value: wal_index.to_le_bytes().to_vec(),
+                    }),
+                    outcomes: Vec::new(), staged_blocks: Vec::new(),
+                })).unwrap();
+            }
+            rt.block_on(publisher.publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1, wal_index: 257, command: None,
+                outcomes: vec![WalOutcomeItem {
+                    kind: "string".into(), object_key: "unbound".into(), element_name: None,
+                    object_id: 1, routing_bucket: 1, address: Some(remote), value: None,
+                    ttl: None, deleted: false, meta: false,
+                }],
+                staged_blocks: Vec::new(),
+            })).unwrap();
+            let runtime = DataNodeRuntime::new(follower.clone(), DataNodeRuntimeOptions::default());
+            let response = load_with_shared_storage(
+                &runtime, &replicator, &rt, &follower, startup_load_shard_request(1, 1),
+            );
+            assert_eq!(response.status.code, "shared_wal_unbound_address");
+            assert_eq!(follower.write_ahead_log_store().stats(1).last_sequence, 0,
+                "an unfinished shared restore cannot leave a locally serving WAL");
+            let query = || ExecuteRequest { shard_id: 1, command: Command::StringGet { key: "prefix".into() } };
+            assert!(!follower.execute(query()).status.ok);
+            drop(runtime);
+            drop(follower);
+
+            let reopened = test_engine(dir.path(), "recipient");
+            assert_eq!(reopened.write_ahead_log_store().stats(1).last_sequence, 0);
+            let runtime = DataNodeRuntime::new(reopened.clone(), DataNodeRuntimeOptions::default());
+            let retry = load_with_shared_storage(
+                &runtime, &replicator, &rt, &reopened, startup_load_shard_request(1, 1),
+            );
+            assert_eq!(retry.status.code, "shared_wal_unbound_address", "retry served a partial shard");
+            assert!(!reopened.execute(query()).status.ok);
+        }
+    }
+
+    #[test]
+    fn file_checkpoint_frontier_preserves_a_concurrent_durable_tail() {
+        use temporalstore_rust::shared_store::SharedStoreWalAppendMode;
+        for mode in [SharedStoreWalAppendMode::PerKeyObject, SharedStoreWalAppendMode::ProtobufAppendBlob] {
+            let dir = tempdir().unwrap();
+            let source = test_engine(dir.path(), "source");
+            source.load_shard(1);
+            assert!(source.execute_durable(ExecuteRequest {
+                shard_id: 1, command: Command::StringSet { key: "base".into(), value: b"base".to_vec() },
+            }).status.ok);
+            let baseline = source.write_ahead_log_store().stats(1).last_sequence;
+            assert!(baseline > 0);
+            let rt = Arc::new(tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1).enable_all().build().unwrap());
+            let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+            let shared = Arc::new(SharedStoreReplicator::new("frontier", store).with_wal_append_mode(mode));
+            let manifest = rt.block_on(shared.publish_file_checkpoint(
+                1, &source, &source.block_store(), |frontier| {
+                    assert_eq!(frontier, baseline);
+                    assert!(source.execute_durable(ExecuteRequest {
+                        shard_id: 1, command: Command::StringSet { key: "tail".into(), value: b"tail".to_vec() },
+                    }).status.ok);
+                    let tail = collect_uncovered_file_wal(&source, 1, frontier)?;
+                    assert_eq!(tail.iter().map(|entry| entry.wal_index).collect::<Vec<_>>(), [baseline + 1]);
+                    Ok(tail)
+                },
+            )).unwrap();
+            assert_eq!(manifest.checkpoint_wal_index, baseline);
+            let follower = test_engine(dir.path(), "follower");
+            let runtime = DataNodeRuntime::new(follower.clone(), DataNodeRuntimeOptions::default());
+            let response = load_with_shared_storage(
+                &runtime, &Some(shared), &rt, &follower, full_range_checkpoint_load_request(),
+            );
+            assert!(response.status.ok, "{:?}", response.status);
+            for key in ["base", "tail"] {
+                let answer = follower.execute(ExecuteRequest {
+                    shard_id: 1, command: Command::StringGet { key: key.into() },
+                });
+                assert_eq!(answer.response, CommandResponse::Bytes { value: Some(key.as_bytes().to_vec()) });
+            }
+        }
+    }
+
+    #[test]
+    fn shared_checkpoint_publishes_after_compaction_retires_a_historical_address() {
+        use temporalstore_rust::shared_store::SharedStoreWalAppendMode;
+        use temporalstore_rust::wal::{decode_wal_line, WalOutcomeItem};
+
+        for mode in [SharedStoreWalAppendMode::PerKeyObject, SharedStoreWalAppendMode::ProtobufAppendBlob] {
+            let dir = tempdir().unwrap();
+            let source = test_engine(dir.path(), "source");
+            let old = source.block_store().append(b"obsolete").unwrap();
+            source.block_store().roll_slab().unwrap();
+            let (record, _) = source.write_ahead_log_store().append_with_outcomes(
+                1, Command::StringSet { key: "key".into(), value: b"obsolete".to_vec() }, true, Vec::new(),
+                vec![WalOutcomeItem {
+                    kind: "string".into(), object_key: "key".into(), element_name: None,
+                    object_id: 1, routing_bucket: 1, address: Some(old.clone()), value: None,
+                    ttl: None, deleted: false, meta: false,
+                }],
+            ).unwrap();
+            source.load_shard(1);
+            let query = || ExecuteRequest { shard_id: 1, command: Command::StringGet { key: "key".into() } };
+            assert_eq!(source.execute(query()).response, CommandResponse::Bytes { value: Some(b"obsolete".to_vec()) });
+            assert!(source.execute_durable(ExecuteRequest {
+                shard_id: 1, command: Command::StringSet { key: "key".into(), value: b"current".to_vec() },
+            }).status.ok);
+            source.materialize_synthetic_blocks(1);
+            source.compact_shard_blocks(1).unwrap();
+            source.flush_shard_index(1);
+            let old_slab = old.block_slab_id();
+            source.block_store().gc_slabs_before_with_live_refs(old_slab + 1, []).unwrap();
+            assert!(!source.block_store().slab_ids().unwrap().contains(&old_slab));
+            drop(source);
+            let source = test_engine(dir.path(), "source");
+            source.load_shard(1);
+            assert!(source.block_store().read(&old).is_err(), "fixture did not retire the old address");
+            assert_eq!(source.execute(query()).response, CommandResponse::Bytes { value: Some(b"current".to_vec()) });
+            assert!(source.write_ahead_log_store().scan(1, 0, u64::MAX, u64::MAX).unwrap()
+                .iter().any(|(_, line)| {
+                    let old = decode_wal_line(line).unwrap();
+                    old.sequence == record.sequence && old.staged_blocks.is_empty()
+                }), "fixture lost the historical address-only WAL before publication");
+
+            let rt = Arc::new(tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1).enable_all().build().unwrap());
+            let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+            let replicator = Some(Arc::new(SharedStoreReplicator::new("compact", store)
+                .with_wal_append_mode(mode)));
+            let published = publish_shard_checkpoint(&replicator, &rt, &source, 1);
+            assert!(published.status.ok, "{}", published.status.message);
+            assert!(published.checkpoint_id.is_some());
+            assert!(published.checkpoint_wal_index > record.sequence);
+            let follower = test_engine(dir.path(), "destination");
+            let runtime = DataNodeRuntime::new(follower.clone(), DataNodeRuntimeOptions::default());
+            let response = load_with_shared_storage(
+                &runtime, &replicator, &rt, &follower, full_range_checkpoint_load_request(),
+            );
+            assert!(response.status.ok, "{:?}", response.status);
+            assert_eq!(follower.execute(query()).response, CommandResponse::Bytes { value: Some(b"current".to_vec()) });
+        }
+    }
+
     #[test]
     fn a_hole_in_the_shared_log_makes_the_load_restore_path_refuse() {
         let dir = tempdir().unwrap();
@@ -3363,10 +3847,9 @@ mod tests {
         // CONCLUSION: the response the `/load` handler would return carries the refusal. The
         // response is what is asserted, not a status handed back for someone to install -- that
         // shape was planted by deleting the install and nothing failed.
-        let mut load_response = LoadShardResponse {
-            status: Status::ok(),
+        let load_response = LoadShardResponse {
+            status: recover_shared_wal_tail(&Some(replicator), &rt, &engine, 1, 0).unwrap_err(),
         };
-        replay_shared_wal_tail(&Some(replicator), &rt, &engine, 1, 0, &mut load_response);
         assert!(
             !load_response.status.ok,
             "the /load restore path reported success over a hole in the shared log: {:?}",
@@ -4292,6 +4775,9 @@ mod tests {
     fn server_raft_control_scale_up_down_preserves_serving() {
         let dir = tempdir().unwrap();
         let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3, 4], false);
+        let replicas: Vec<_> = (2..=4)
+            .map(|node_id| test_server_raft_state(dir.path(), node_id, vec![1, 2, 3, 4], false))
+            .collect();
         for node_id in [2, 3, 4] {
             state.runtime.cluster().set_alive(node_id, true).unwrap();
             state.runtime.cluster().catch_up(node_id).unwrap();
@@ -4320,11 +4806,14 @@ mod tests {
                 value: b"after-scale-down".to_vec(),
             })
             .unwrap();
-        for node_id in [1, 2, 3] {
-            let read = state
+        for replica in std::iter::once(&state).chain(replicas.iter().take(2)) {
+            if replica.local_node_id != state.local_node_id {
+                apply_test_replica_entries(&state, replica);
+            }
+            let read = replica
                 .runtime
                 .read_local(
-                    node_id,
+                    replica.local_node_id,
                     Command::StringGet {
                         key: "server-scale-down".to_string(),
                     },
@@ -4364,11 +4853,14 @@ mod tests {
                 value: b"after-scale-up".to_vec(),
             })
             .unwrap();
-        for node_id in [1, 2, 3, 4] {
-            let read = state
+        for replica in std::iter::once(&state).chain(replicas.iter().take(3)) {
+            if replica.local_node_id != state.local_node_id {
+                apply_test_replica_entries(&state, replica);
+            }
+            let read = replica
                 .runtime
                 .read_local(
-                    node_id,
+                    replica.local_node_id,
                     Command::StringGet {
                         key: "server-scale-up".to_string(),
                     },
@@ -4421,6 +4913,7 @@ mod tests {
     fn server_raft_admin_wait_applied_reports_lag_and_success_after_catchup() {
         let dir = tempdir().unwrap();
         let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3], true);
+        let replica = test_server_raft_state(dir.path(), 3, vec![1, 2, 3], true);
         let cluster = state.runtime.cluster();
         cluster.set_alive(3, false).unwrap();
         cluster
@@ -4439,7 +4932,7 @@ mod tests {
             )
             .unwrap(),
         };
-        let (code, body) = handle_server_raft_route(&state, &wait_request).unwrap();
+        let (code, body) = handle_server_raft_route(&replica, &wait_request).unwrap();
         assert_eq!(code, 200);
         let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(response.status.code, "raft_error");
@@ -4454,6 +4947,10 @@ mod tests {
         assert_eq!(code, 200);
         let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
         assert!(response.status.ok, "{response:?}");
+        let (_, body) = handle_server_raft_route(&state, &wait_request).unwrap();
+        let shadow: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(shadow.status.code, "raft_error");
+        apply_test_replica_entries(&state, &replica);
 
         let wait_request = HttpRequest {
             method: "POST".to_string(),
@@ -4463,7 +4960,7 @@ mod tests {
             )
             .unwrap(),
         };
-        let (code, body) = handle_server_raft_route(&state, &wait_request).unwrap();
+        let (code, body) = handle_server_raft_route(&replica, &wait_request).unwrap();
         assert_eq!(code, 200);
         let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
         assert!(response.status.ok, "{response:?}");
@@ -4544,6 +5041,24 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    fn apply_test_replica_entries(leader: &ServerRaftState, replica: &ServerRaftState) {
+        // Deliver AppendEntries to the runtime that owns the target's state machine.
+        let leader = leader.runtime.cluster();
+        let follower = replica.runtime.cluster();
+        let node_id = replica.local_node_id;
+        for _ in 0..4 {
+            let request = leader.build_append_entries_request(node_id).unwrap();
+            let committed = request.leader_commit;
+            let response = follower.receive_append_entries(request).unwrap();
+            leader.record_append_entries_response(node_id, &response).unwrap();
+            if response.success && response.match_index >= committed {
+                replica.runtime.wait_for_applied_index(node_id, committed, 0).unwrap();
+                return;
+            }
+        }
+        panic!("replica {node_id} did not receive its committed entries");
     }
 
     fn test_server_raft_state(

@@ -5173,7 +5173,7 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
             if let Some(report) = reclaim_engine.maybe_dump_and_reclaim_index_logs(DEFAULT_SHARD_ID)
             {
                 eprintln!(
-                    "matrixark_rust_proxy_log_reclaim root={} wal_anchor={} index_log_bytes={}->{} ({} records removed) wal_bytes={}->{} ({} records removed) floor={:?}",
+                    "matrixark_rust_proxy_log_reclaim root={} wal_anchor={} index_log_bytes={}->{} ({} records removed) wal_bytes={}->{} ({} records removed) wal_segments_dropped={} wal_segment_bytes_dropped={} wal_bytes_copied={} wal_rewrite_skipped={} wal_sweep_failed={} floor={:?}",
                     reclaim_root.display(),
                     report.wal_anchor,
                     report.index_log_bytes_before,
@@ -5182,6 +5182,11 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
                     report.wal_bytes_before,
                     report.wal_bytes_after,
                     report.wal_records_removed,
+                    report.wal_segments_dropped,
+                    report.wal_segment_bytes_dropped,
+                    report.wal_bytes_copied,
+                    report.wal_rewrite_skipped,
+                    report.wal_sweep_failed,
                     report.wal_retention_floor,
                 );
             }

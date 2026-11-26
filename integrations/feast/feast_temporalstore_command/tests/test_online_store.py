@@ -1241,19 +1241,24 @@ class ClosedReadConnectionTest(unittest.TestCase):
 
     def test_command_batches_recover_only_when_every_command_is_known_read_only(self):
         for binary in ((False, True) if msgpack is not None else (False,)):
-            with self.subTest(binary=binary):
-                client = TemporalStoreClient()
-                client._binary_batch_supported = None if binary else False
-                commands = [{"kind": "feature_agg_query", "key": "k", "start_ms": 0, "end_ms": 10, "aggregator": "sum"}]
-                envelope = {"status": {"ok": True}, "responses": [ok({"kind": "integer", "value": 7})]}
-                body = msgpack.packb(envelope, use_bin_type=True) if binary else json.dumps(envelope).encode()
-                first, second = self.connection(body), self.connection(body)
-                first.request.side_effect = http.client.RemoteDisconnected("closed")
-                with mock.patch("http.client.HTTPConnection", side_effect=[first, second]) as opened:
-                    self.assertEqual(client.batch_execute(commands), [{"kind": "integer", "value": 7}])
-                    self.assertEqual(opened.call_count, 2)
-                    self.assertIs(first.request.call_args.kwargs["body"], second.request.call_args.kwargs["body"])
-                client.close()
+            cases = (
+                ({"kind": "feature_agg_query", "key": "k", "start_ms": 0, "end_ms": 10, "aggregator": "sum"}, 7),
+                ({"kind": "common_exists", "key": "cache-metadata"}, 1),
+            )
+            for command, value in cases:
+                with self.subTest(binary=binary, kind=command["kind"]):
+                    client = TemporalStoreClient()
+                    client._binary_batch_supported = None if binary else False
+                    expected = {"kind": "integer", "value": value}
+                    envelope = {"status": {"ok": True}, "responses": [ok(expected)]}
+                    body = msgpack.packb(envelope, use_bin_type=True) if binary else json.dumps(envelope).encode()
+                    first, second = self.connection(body), self.connection(body)
+                    first.request.side_effect = BrokenPipeError("closed")
+                    with mock.patch("http.client.HTTPConnection", side_effect=[first, second]) as opened:
+                        self.assertEqual(client.batch_execute([command]), [expected])
+                        self.assertEqual(opened.call_count, 2)
+                        self.assertIs(first.request.call_args.kwargs["body"], second.request.call_args.kwargs["body"])
+                    client.close()
 
     def test_a_real_closed_keepalive_socket_is_replaced_before_the_next_read_returns(self):
         import http.server

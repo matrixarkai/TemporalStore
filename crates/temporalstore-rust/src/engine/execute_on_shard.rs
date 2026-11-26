@@ -1312,6 +1312,7 @@ fn replace_feature_range(
     trim_boundary_record: bool,
     mut mutated: bool,
 ) -> bool {
+    let feature_max_age_ms = shard.feature_max_age_ms;
     let routing_bucket =
         block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     // HOISTED ABOVE THE SERIES BORROW. `features_mut()` borrows the whole
@@ -1375,6 +1376,7 @@ fn replace_feature_range(
         routing_bucket,
         series,
         feature_max_size,
+        feature_max_age_ms,
         trim_boundary_record,
         Some(&mut vacated),
     );
@@ -1501,6 +1503,7 @@ pub(crate) fn execute_on_shard(
     shard.control_state_max_size = control_state_max_size;
     shard.control_distinct_sketch = control_distinct_sketch;
     shard.set_listing_from_map = set_listing_from_map;
+    let feature_max_age_ms = shard.feature_max_age_ms;
     let mut mutated = false;
     let command = match command {
         Command::HashMultiSetIfTimestampOlder {
@@ -4129,6 +4132,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                feature_max_age_ms,
                 trim_boundary_record,
                 Some(&mut vacated),
             );
@@ -4309,6 +4313,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                feature_max_age_ms,
                 trim_boundary_record,
                 Some(&mut vacated),
             );
@@ -4780,6 +4785,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                feature_max_age_ms,
                 trim_boundary_record,
                 Some(&mut vacated),
             );

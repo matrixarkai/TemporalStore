@@ -107,13 +107,15 @@ fn lanes(engine: &TemporalEngine, key: &str) -> Vec<i64> {
 }
 
 fn ring_tokens(engine: &TemporalEngine, key: &str) -> Option<Vec<u64>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    shards.get(&1).expect("shard 1 is loaded").retry_ring(key).map(|ring| ring.tokens())
+    engine.shards.with_state(1, |owner| {
+        owner.expect("shard 1 is loaded").retry_ring(key).map(|ring| ring.tokens())
+    })
 }
 
 fn ring_bytes(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    shards.get(&1).expect("shard 1 is loaded").retry_ring(key).map(|ring| ring.encode())
+    engine.shards.with_state(1, |owner| {
+        owner.expect("shard 1 is loaded").retry_ring(key).map(|ring| ring.encode())
+    })
 }
 
 fn landed(n: u64) -> RetryReceipt {

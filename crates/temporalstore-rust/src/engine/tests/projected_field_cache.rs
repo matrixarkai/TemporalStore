@@ -84,11 +84,10 @@ fn timestamp_projection_reuses_seeded_fields_and_has_a_frame_fetch_control() {
     reset_counts();
     assert_eq!(engine.batch_hash_multi_get_compact_msgpack(req.clone()), hot);
     assert_eq!(counts(), (32, 0), "inline bytes survive primary payload-cache eviction");
-    {
-        let mut shards = engine.shards.write().unwrap();
-        let hashes = &mut shards.get_mut(&1).unwrap().bucket_index.hashes;
+    engine.shards.with_state_mut(1, |state| {
+        let hashes = &mut state.unwrap().bucket_index.hashes;
         *hashes = hashes.clone();
-    }
+    });
     reset_counts();
     let control = engine.batch_hash_multi_get_compact_msgpack(req);
     assert_eq!(counts(), (0, 32));
@@ -106,12 +105,17 @@ fn projected_field_retains_the_cache_buffer_including_large_and_empty_values() {
         let plan = container_blocks::Utf8ProjectionPlan::new(&fields);
         let mut scratch = container_blocks::Utf8ProjectionScratch::new();
         let info = engine.request_shard_info(1, false);
-        let mut shards = engine.shards.write().unwrap();
         reset_counts();
-        let projected = execute_hash_multi_get_projected(
+        let prepared = engine.shards.with_state(1, |state| {
+            crate::engine::execute_on_shard::PreparedHashRead::prepare(
+                &engine.cache, 1, state.unwrap(), "row", &fields, &plan, &mut scratch,
+                false, usize::MAX,
+            )
+        });
+        let projected = prepared.load(
             &engine.cache, &engine.block_store, 1,
             block_routing_bucket("row", info.start_routing_bucket, info.end_routing_bucket),
-            shards.get_mut(&1).unwrap(), "row", &fields, &plan, &mut scratch,
+            "row", &fields, &plan, &mut scratch,
         );
         assert_eq!(counts(), (1, 0));
         let ProjectedHashValues::Shared { ref frame, .. } = projected else {
@@ -185,8 +189,9 @@ fn expiry_still_removes_a_hot_field_before_projecting_it() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     seed(&engine, "value", vec![1]);
-    engine.shards.write().unwrap().get_mut(&1).unwrap()
-        .expires_at_ms_mut().insert(std::sync::Arc::from("row"), 1);
+    engine.shards.with_state_mut(1, |state| {
+        state.unwrap().expires_at_ms_mut().insert(std::sync::Arc::from("row"), 1);
+    });
     reset_counts();
     assert_eq!(read(&engine, &["value"]), vec![None]);
     assert_eq!(counts().0, 0);

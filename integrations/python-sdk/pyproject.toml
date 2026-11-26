@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=77", "grpcio-tools==1.71.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "temporalstore-sdk"
+version = "0.1.0"
+description = "Python client for the TemporalStore protobuf command service"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+readme = "README.md"
+dependencies = ["grpcio>=1.71.0", "protobuf>=5.26.1,<6"]
+
+[tool.setuptools]
+packages = ["temporalstore_sdk"]

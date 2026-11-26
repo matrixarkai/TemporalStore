@@ -15,19 +15,21 @@ impl BlockStore {
     /// Idempotent, and the last publish wins. Cheap: one map, once per maintenance round, sized
     /// by SLABS rather than by blocks.
     pub fn publish_live_block_bytes(&self, live: BTreeMap<u64, BlockStoreSlabLive>) {
-        self.inner
-            .lock()
-            .expect("block store lock poisoned")
-            .live_block_bytes = Some(live);
+        let live = Arc::new(live);
+        let retired = {
+            let mut inner = self.inner.lock().expect("block store lock poisoned");
+            inner.live_block_bytes.replace(live)
+        };
+        drop(retired);
     }
 
     /// What was last published, or `None` if nothing ever was.
     pub fn published_live_block_bytes(&self) -> Option<BTreeMap<u64, BlockStoreSlabLive>> {
-        self.inner
-            .lock()
-            .expect("block store lock poisoned")
-            .live_block_bytes
-            .clone()
+        let snapshot = {
+            let inner = self.inner.lock().expect("block store lock poisoned");
+            inner.live_block_bytes.clone()
+        };
+        snapshot.map(|live| (*live).clone())
     }
 
     /// Whether the collector is worth running now: the live fraction over noncurrent slabs
@@ -41,13 +43,13 @@ impl BlockStore {
         let logical: u64 = inner
             .slabs
             .iter()
-            .filter(|(id, _)| **id != inner.block_slab_id)
+            .filter(|(id, _)| !inner.protects_writer_slab(**id))
             .fold(0_u64, |sum, (_, slab)| sum.saturating_add(slab.logical_bytes));
         match inner.live_block_bytes.as_ref() {
             Some(published) => {
                 let live: u64 = published
                     .iter()
-                    .filter(|(id, _)| **id != inner.block_slab_id)
+                    .filter(|(id, _)| !inner.protects_writer_slab(**id))
                     .fold(0_u64, |sum, (_, slab)| sum.saturating_add(slab.live_bytes));
                 evaluate_reclaim_gate(live, logical, true, threshold_basis_points)
             }
@@ -67,7 +69,7 @@ impl BlockStore {
     /// stand, so a caller can tell "no live pages" from "no tally".
     pub fn slab_live_fractions(&self) -> Result<Vec<BlockStoreSlabLiveFraction>, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        let published = inner.live_block_bytes.clone().unwrap_or_default();
+        let published = inner.live_block_bytes.as_deref();
         let mut out = Vec::new();
         for block_slab_id in slab_ids_at(&inner.root)? {
             let physical_bytes = slab_path(&inner.root, block_slab_id)
@@ -80,7 +82,7 @@ impl BlockStore {
                 .map(|slab| slab.logical_bytes)
                 .filter(|bytes| *bytes > 0)
                 .unwrap_or(physical_bytes);
-            let live = published.get(&block_slab_id).copied().unwrap_or_default();
+            let live = published.and_then(|tally| tally.get(&block_slab_id)).copied().unwrap_or_default();
             // Capped at the denominator. A live block can be counted at its logical length while
             // the slab total was written before that block was rewritten in place, and a fraction
             // above 1 is never a useful reading.
@@ -365,7 +367,7 @@ impl BlockStore {
         max_scan_slabs: usize,
     ) -> Result<BlockStoreCandidateWindow, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        let current_block_slab_id = inner.block_slab_id;
+        inner.check_owned_recovery()?;
         let published_live = inner.live_block_bytes.clone();
         let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let slab_ids = slab_ids_at(&inner.root)?;
@@ -389,7 +391,7 @@ impl BlockStore {
                 .unwrap_or_default()
                 .saturating_add(bytes);
             let below_retention_floor = *block_slab_id < retain_from_block_slab_id;
-            let is_current = *block_slab_id == current_block_slab_id;
+            let is_current = inner.protects_writer_slab(*block_slab_id);
             let is_live = live_block_slab_ids.contains(block_slab_id)
                 || inner.read_pins.contains_key(block_slab_id);
             if !below_retention_floor || is_current || is_live {
@@ -410,7 +412,7 @@ impl BlockStore {
                 continue;
             }
             let below_retention_floor = block_slab_id < retain_from_block_slab_id;
-            let is_current = block_slab_id == current_block_slab_id;
+            let is_current = inner.protects_writer_slab(block_slab_id);
             let is_live = live_block_slab_ids.contains(&block_slab_id)
                 || inner.read_pins.contains_key(&block_slab_id);
             if below_retention_floor && !is_current && !is_live {
@@ -544,7 +546,7 @@ impl BlockStore {
         if delayed_destroy {
             std::fs::create_dir_all(delayed_destroy_dir(&inner.root))?;
         }
-        let current_block_slab_id = inner.block_slab_id;
+        inner.check_owned_recovery()?;
         let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
         let mut removed = Vec::new();
         let mut retained = Vec::new();
@@ -564,7 +566,7 @@ impl BlockStore {
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
             let below_retention_floor = block_slab_id < retain_from_block_slab_id;
-            let is_current = block_slab_id == current_block_slab_id;
+            let is_current = inner.protects_writer_slab(block_slab_id);
             let is_live = live_block_slab_ids.contains(&block_slab_id)
                 || inner.read_pins.contains_key(&block_slab_id);
             let is_selected = selected_block_slab_ids
@@ -645,6 +647,7 @@ impl BlockStore {
                     // A slab nobody has checked against a live set yet. See
                     // `BlockStore::quarantine_waits_for_age`.
                     inner.quarantine_arrivals += 1;
+                    inner.quarantine_known_empty = false;
                     delayed_destroy_ids.push(block_slab_id);
                     delayed_destroy_physical_bytes += slab_physical_bytes;
                 } else {
@@ -708,6 +711,9 @@ impl BlockStore {
         }
         if !removed.is_empty() {
             inner.persist_slab_manifest_counted()?;
+            if !delayed_destroy {
+                inner.cleanup_purged_reservations(&removed, &inner.root)?;
+            }
         }
         Ok(BlockStoreGcReport {
             retain_from_block_slab_id,

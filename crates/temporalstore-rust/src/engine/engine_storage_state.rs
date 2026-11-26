@@ -302,6 +302,9 @@ pub(super) struct ShardState {
     /// `expires_at_ms` above: the ordering here is the whole point of this map and is untouched,
     /// but the characters it orders are the ones that map already holds.
     pub(super) expiry_by_deadline: BTreeMap<(u64, Arc<str>), ()>,
+    /// Last inspected deadlines for the bounded hot and cold maintenance scans.
+    #[serde(skip)]
+    pub(super) expiry_scan_positions: [Option<(u64, Arc<str>)>; 2],
     // ONE FIELD FOR BOTH ADDRESS MAPS NOW, keyed by `AddressMap`, behind `strings()` /
     // `_mut()` and `context_nodes()` / `_mut()`. `default`, because an index written before
     // this merge carries `strings` and no `address_maps` and must still DECODE -- the stamp
@@ -438,6 +441,11 @@ pub(super) struct ShardState {
     // execute.
     #[serde(skip)]
     pub(super) set_listing_from_map: bool,
+    // Transient per-execute hint: the age cut for feature series, from
+    // Config::feature_max_age_ms(). Serde-skipped and set on EVERY execute, which is what makes it
+    // replay-correct, as for the retained-points cap above. 0 means no age cut.
+    #[serde(skip)]
+    pub(super) feature_max_age_ms: u64,
     // THE LEGACY COMPATIBILITY FIELD IS GONE, and the condition its own doc set is what
     // retired it: no door can deliver a top-level `context_events` key any more. Pre-stamp
     // images are refused on every one of `decode_index_bytes`'s callers, and images at stamp
@@ -590,6 +598,12 @@ pub(super) struct ShardState {
     /// replay); a missing index file replays the whole retained WAL onto empty state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) applied_wal_sequence: Option<u64>,
+    /// The file-backed source and remote sequence already installed in this local image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) file_restore_frontier: Option<(String, u64)>,
+    /// Relocation prefix folded into this image; not a WAL or load replay cursor.
+    #[serde(default)]
+    pub(super) captured_relocation_sequence: u64,
     /// An applied record skipped an unapplied log prefix. Only replay can establish
     /// a complete state boundary again; do not publish this in-memory image.
     #[serde(skip)]
@@ -1452,6 +1466,119 @@ mod bucket_projection_tests {
     }
 }
 
+#[cfg(test)]
+mod checkpoint_identity_tests {
+    use super::*;
+    use crate::engine::object_record::ObjectSlot;
+    use crate::engine::storage_bucket_internals::StoredModelKind;
+
+    #[test]
+    fn encoding_names_both_ref_homes_without_building_the_handle_index() {
+        let mut index = CoreIndex::default();
+        let mut handle = 0;
+        for &kind in StoredModelKind::ALL {
+            let model = Arc::<str>::from(kind.as_str());
+            for object in 0..32 {
+                let key = Arc::<str>::from(format!("{model}-{object}"));
+                let slot = index.objects.entry(kind).or_default().entry(key.clone()).or_default();
+                for block in 0..8 {
+                    let position = BlockLookupRef {
+                        routing_bucket: block,
+                        block_ref_key: handle,
+                    };
+                    // Include dual-home objects, not only the normal single-home layout.
+                    if block % 2 == 0 {
+                        slot.file_ref(position);
+                    } else {
+                        index.object_block_lookup.file(&model, &key, position);
+                    }
+                    handle += 1;
+                }
+            }
+        }
+        index.object_block_lookup.file(
+            &Arc::from("unknown-stored-model"), &Arc::from("legacy-object"),
+            BlockLookupRef { routing_bucket: 99, block_ref_key: handle },
+        );
+        let full = index.block_identities();
+        let (encoded, visits) = measure_block_identity_visits_for_test(|| {
+            BlockKeysByPosition::for_encoding(&index)
+        });
+        assert_eq!(encoded.by_position.len(), handle as usize + 1);
+        assert_eq!(encoded.by_position, full.by_position);
+        assert!(!encoded.restricted);
+        assert!(encoded.by_handle.is_empty());
+        assert_eq!(full.by_handle.len(), encoded.by_position.len());
+        assert_eq!(visits, 2 * StoredModelKind::ALL.len() * 32 + 1);
+    }
+
+    fn index_with_live_and_deleted_blocks() -> CoreIndex {
+        let mut index = CoreIndex::default();
+        for (number, &kind) in StoredModelKind::ALL.iter().enumerate() {
+            let key = Arc::<str>::from(format!("key-{number}"));
+            let bucket = (number % 3) as u32;
+            let mut node = index.bucket_map.entry(bucket).or_insert_with(|| BucketNode {
+                routing_bucket: bucket,
+                ..BucketNode::default()
+            });
+            for deleted in [false, true] {
+                let block = BlockIndex::new(
+                    kind,
+                    ElementEntry::from_parts(number as u64, u64::from(deleted) * 128, 64, Some(0), Some(1)),
+                    true, deleted,
+                );
+                let handle = block_index_handle(&key, &block);
+                node.block_index.insert_with_handle(handle, block.clone(), &mut index.block_slab_live);
+                if deleted {
+                    node.record_tombstone_element(&key, kind, "removed-field", &block.address);
+                } else if number % 2 == 0 {
+                    let mut slot = ObjectSlot::default();
+                    slot.file_ref(BlockLookupRef { routing_bucket: bucket, block_ref_key: handle });
+                    index.objects.entry(kind).or_default().insert(key.clone(), slot);
+                } else {
+                    index.object_block_lookup.file(
+                        &Arc::from(kind.as_str()), &key,
+                        BlockLookupRef { routing_bucket: bucket, block_ref_key: handle },
+                    );
+                }
+            }
+        }
+        index.released_buckets.insert(99);
+        index
+    }
+
+    #[test]
+    fn encoding_keeps_bucket_bytes_for_every_stored_model_and_tombstones() {
+        let index = index_with_live_and_deleted_blocks();
+        let full = index.block_identities();
+        let encoding = BlockKeysByPosition::for_encoding(&index);
+        let old = BucketMapAt { buckets: &index.bucket_map, keys: &full };
+        let new = BucketMapAt { buckets: &index.bucket_map, keys: &encoding };
+        assert_eq!(serde_json::to_vec(&new).unwrap(), serde_json::to_vec(&old).unwrap());
+        assert_eq!(rmp_serde::to_vec_named(&new).unwrap(), rmp_serde::to_vec_named(&old).unwrap());
+    }
+
+    #[test]
+    fn encoding_still_refuses_missing_live_and_deleted_identities() {
+        for missing_live in [false, true] {
+            let mut index = index_with_live_and_deleted_blocks();
+            if missing_live {
+                index.objects.clear();
+                index.object_block_lookup = ObjectBlockLookup::default();
+            } else {
+                for node in index.bucket_map.values_mut() {
+                    node.tombstone_elements = TombstoneElements::default();
+                }
+            }
+            assert!(rmp_serde::to_vec_named(&index).is_err());
+            let keys = index.block_identities();
+            assert!(rmp_serde::to_vec_named(&BucketMapAt {
+                buckets: &index.bucket_map, keys: &keys,
+            }).is_err());
+        }
+    }
+}
+
 thread_local! {
     /// Times THIS THREAD built a block-identity inversion restricted to named keys. Per thread, so
     /// a probe counts its own writes and not a neighbouring test's.
@@ -1519,7 +1646,13 @@ impl<'a> BlockKeysByPosition<'a> {
         >,
         lookup: &'a ObjectBlockLookup,
     ) -> Self {
-        Self::from_parts_filtered(objects, lookup, None)
+        Self::from_parts_filtered::<true>(objects, lookup, None)
+    }
+
+    // Encoding names blocks at their filed positions. Only ownership validation needs
+    // the second index that can name a block independently of its routing bucket.
+    fn for_encoding(index: &'a CoreIndex) -> Self {
+        Self::from_parts_filtered::<false>(&index.objects, &index.object_block_lookup, None)
     }
 
     pub(super) fn from_parts_for_bucket(
@@ -1530,10 +1663,10 @@ impl<'a> BlockKeysByPosition<'a> {
         lookup: &'a ObjectBlockLookup,
         routing_bucket: u32,
     ) -> Self {
-        Self::from_parts_filtered(objects, lookup, Some(routing_bucket))
+        Self::from_parts_filtered::<false>(objects, lookup, Some(routing_bucket))
     }
 
-    fn from_parts_filtered(
+    fn from_parts_filtered<const WITH_HANDLES: bool>(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
             HashMap<ModelKey, super::object_record::ObjectSlot>,
@@ -1554,7 +1687,7 @@ impl<'a> BlockKeysByPosition<'a> {
                     (block_ref.routing_bucket, block_ref.block_ref_key),
                     (model_id, object_key),
                 );
-                if routing_bucket.is_none() {
+                if WITH_HANDLES {
                     by_handle.insert(block_ref.block_ref_key, (model_id, object_key));
                 }
             }
@@ -1853,13 +1986,7 @@ impl Serialize for CoreIndex {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        // BUILT IN EVERY BUILD, BECAUSE IT IS THE SOURCE AND NOT A CHECK.
-        //
-        // It was `#[cfg(debug_assertions)]` here while the written key was composed from the
-        // entry's own copy of the identity and this inversion only CONFIRMED it. The key is
-        // composed from the inversion now, so a release build without one would write no key at
-        // all. The type's own doc prices the pass.
-        let keys = self.block_identities();
+        let keys = BlockKeysByPosition::for_encoding(self);
         let mut index = serializer.serialize_struct("CoreIndex", 6)?;
         index.serialize_field(
             "bucket_map",
@@ -10272,7 +10399,19 @@ pub(super) static REPACK_ADOPTED_FIELDS: std::sync::atomic::AtomicUsize =
 pub(super) static REPACK_ADOPTED_HASHED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(test)]
+pub(super) fn thread_repack_calls() -> usize {
+    THREAD_REPACK_CALLS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static THREAD_REPACK_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
+    #[cfg(test)]
+    THREAD_REPACK_CALLS.with(|calls| calls.set(calls.get() + 1));
     let ShardState {
         // ----- Packed here. Deserialized, and filled one entry at a time. -----
         wal_resident_blocks,
@@ -10312,11 +10451,13 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // refill happens in the expiry path rather than here, and is left to it.
         buckets_pending_flag_refresh: _,
         expiry_by_deadline: _,
+        expiry_scan_positions: _,
         rollups: _,
         control_coalesce_persist: _,
         control_state_max_size: _,
         control_distinct_sketch: _,
         set_listing_from_map: _,
+        feature_max_age_ms: _,
         dirty_objects: _,
         // A plain `u64` the decode leaves at 0 because it is `#[serde(skip)]`, and 0 is the value
         // this pass would want anyway: it means the first logged-deletion round after a load is
@@ -10343,6 +10484,8 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         shard_id: _,
         shard_id_known: _,
         applied_wal_sequence: _,
+        file_restore_frontier: _,
+        captured_relocation_sequence: _,
         wal_apply_discontinuous: _,
         index_format_version: _,
         // The bucket index's own containers are owned elsewhere and are deliberately left alone
