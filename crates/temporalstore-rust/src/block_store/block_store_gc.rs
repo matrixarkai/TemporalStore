@@ -15,10 +15,12 @@ impl BlockStore {
     /// Idempotent, and the last publish wins. Cheap: one map, once per maintenance round, sized
     /// by SLABS rather than by blocks.
     pub fn publish_live_block_bytes(&self, live: BTreeMap<u64, BlockStoreSlabLive>) {
-        self.inner
-            .lock()
-            .expect("block store lock poisoned")
-            .live_block_bytes = Some(live);
+        let retired = {
+            let mut inner = self.inner.lock().expect("block store lock poisoned");
+            inner.live_block_bytes.replace(live)
+        };
+        // Destroy the previous snapshot after releasing the catalog guard.
+        drop(retired);
     }
 
     /// What was last published, or `None` if nothing ever was.
