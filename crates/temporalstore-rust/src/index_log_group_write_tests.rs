@@ -372,3 +372,97 @@ fn pending_encode_discard_and_terminal_drop_release_exact_charges() {
     let reopened = LocalIndexLogStore::new(dir.path());
     assert!(reopened.read_delta_records(1, 0).unwrap().is_empty());
 }
+
+#[test]
+fn old_index_barrier_cannot_cover_a_ticket_registered_after_roll() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalIndexLogStore::new(dir.path());
+    let start = |wal, fail| {
+        let store = store.clone();
+        let (before, parked) = mpsc::channel();
+        let (resume, proceed) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            set_index_log_segment_bytes_for_test(Some(1));
+            BEFORE_INDEX_APPEND_BARRIER.with(|slot| *slot.borrow_mut() = Some((before, proceed)));
+            FAIL_INDEX_APPEND_BARRIER.with(|fault| fault.set(fail));
+            store.append_delta(7, Vec::new(), Vec::new(), Some(wal), None, true, true)
+        });
+        (parked, resume, writer)
+    };
+    let timeout = Duration::from_secs(5);
+    let (old_parked, old_resume, old) = start(1, false);
+    old_parked.recv_timeout(timeout).unwrap();
+    let (new_parked, new_resume, new) = start(2, true);
+    new_parked.recv_timeout(timeout).unwrap();
+    assert_eq!(store.piece_count(7), 2, "the new ticket belongs to the replacement");
+
+    old_resume.send(()).unwrap();
+    assert_eq!(old.join().unwrap().unwrap(), 1);
+    new_resume.send(()).unwrap();
+    let error = new.join().unwrap().expect_err("old file sync covered the replacement ticket");
+    assert!(error.to_string().contains("injected Index append barrier failure"));
+    assert_eq!(store.append_delta(7, Vec::new(), Vec::new(), Some(3), None, true, true).unwrap(), 3);
+    drop(store);
+    let reopened = LocalIndexLogStore::new(dir.path());
+    let rows = reopened.read_delta_records(7, 0).unwrap();
+    assert_eq!(rows.iter().map(|row| (row.sequence, row.applied_wal_sequence)).collect::<Vec<_>>(),
+        [(1, Some(1)), (2, Some(2)), (3, Some(3))]);
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_index_truncation_fences_ack_and_retries_only_the_original_file() {
+    let _group = group_write_in_test(true);
+    let _inactive = flusher_in_test(false);
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_with_pending_limit(dir.path(), 2);
+    let durable = |wal| store.append_delta(1, Vec::new(), Vec::new(), Some(wal), None, true, true);
+    assert_eq!(durable(1).unwrap(), 1);
+    let (path, whole) = active_index_log(dir.path(), 1);
+    assert_eq!(append(&store, 1, "second", 2), 2);
+    assert_eq!(append(&store, 1, "third", 3), 3);
+    let fail_truncate = || FAIL_INDEX_TAIL_TRUNCATE.with(|fault| fault.set(true));
+    FAIL_PARTIAL_FRAME_WRITE.with(|fault| fault.set(Some(40)));
+    fail_truncate();
+    let error = store.capture_checkpoint_relocations(1, 0, |_| {})
+        .err().expect("the write and its rollback must fail");
+    assert!(error.to_string().contains("injected Index tail truncation failure"));
+    let torn_len = path.metadata().unwrap().len();
+    assert!(torn_len > whole);
+    assert_eq!(pending_count(&store.root), 2);
+
+    fail_truncate();
+    assert!(durable(4).is_err(), "a new durable ticket must wait for repair");
+    fail_truncate();
+    assert!(store.read_delta_records(1, 0).is_err());
+    fail_truncate();
+    assert!(store.gc_before_sequence(1, 99).is_err());
+    let scans = index_log_tail_scans();
+    fail_truncate();
+    assert_eq!(store.stats(1).last_sequence, 0);
+    assert_eq!(index_log_tail_scans(), scans, "stats must not repair the uncertain suffix by scanning");
+    assert_eq!(path.metadata().unwrap().len(), torn_len);
+    assert_eq!(pending_count(&store.root), 2);
+    assert!(store.append_delta(2, Vec::new(), Vec::new(), Some(1), None, true, false).is_err(),
+        "the stuck target must retain its share of pending capacity");
+
+    let saved = dir.path().join("held-index-file");
+    fs::rename(&path, &saved).unwrap();
+    fs::copy(&saved, &path).unwrap();
+    let foreign = fs::read(&path).unwrap();
+    assert!(durable(4).unwrap_err().to_string().contains("rollback file identity changed"));
+    assert_eq!(fs::read(&path).unwrap(), foreign);
+    fs::remove_file(&path).unwrap();
+    fs::rename(&saved, &path).unwrap();
+
+    assert_eq!(durable(4).unwrap(), 4);
+    assert_eq!(pending_count(&store.root), 0);
+    drop(store);
+    let reopened = LocalIndexLogStore::new(dir.path());
+    let rows = reopened.read_delta_records(1, 0).unwrap();
+    assert_eq!(rows.iter().map(|row| (row.sequence, row.applied_wal_sequence)).collect::<Vec<_>>(),
+        [(1, Some(1)), (2, Some(2)), (3, Some(3)), (4, Some(4))]);
+}

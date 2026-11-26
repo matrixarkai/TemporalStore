@@ -2709,7 +2709,8 @@ struct IndexLogInner {
     shared_root: Arc<IndexLogRoot>,
     counters: Arc<IndexStreamCounters>,
     flush: Arc<std::sync::OnceLock<Arc<background_flush::StreamFlush>>>,
-    flush_gate: Arc<crate::flush_gate::FlushGate>,
+    file_durability: Option<Arc<IndexFileDurability>>,
+    failed_append: Option<FailedIndexAppend>,
     last_sequence_by_shard: HashMap<ShardId, u64>,
     // Valid only while the active file still has the path and length recorded below.
     active_span_by_shard: HashMap<ShardId, ActiveIndexSegment>,
@@ -2831,6 +2832,163 @@ impl IndexLogInner {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+struct IndexFileDurability {
+    path: PathBuf,
+    gate: crate::flush_gate::FlushGate,
+    directory_synced: AtomicBool,
+}
+
+impl IndexFileDurability {
+    fn sync_directory(&self) -> std::io::Result<()> {
+        if !self.directory_synced.load(AtomicOrdering::Acquire) {
+            #[cfg(unix)]
+            {
+                let parent = self.path.parent().expect("Index file has a parent directory");
+                let directory = fs::File::open(parent)?;
+                crate::durability_metrics::record_barrier("engine_index_log_append_directory");
+                directory.sync_all()?;
+            }
+            #[cfg(not(unix))]
+            sync_parent_dir(&self.path)?;
+            self.directory_synced.store(true, AtomicOrdering::Release);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct FailedIndexAppend {
+    path: PathBuf,
+    file: fs::File,
+    prefix_end: u64,
+    attempted_end: u64,
+}
+
+impl FailedIndexAppend {
+    fn check_target(&self, max_len: u64) -> std::io::Result<()> {
+        let held = self.file.metadata()?;
+        let named = fs::metadata(&self.path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if held.dev() != named.dev() || held.ino() != named.ino() {
+                return Err(std::io::Error::other("Index rollback file identity changed"));
+            }
+        }
+        if held.len() != named.len() || held.len() < self.prefix_end || held.len() > max_len {
+            return Err(std::io::Error::other("Index rollback length changed"));
+        }
+        Ok(())
+    }
+
+    fn rollback(&self) -> std::io::Result<()> {
+        self.check_target(self.attempted_end)?;
+        #[cfg(test)]
+        if FAIL_INDEX_TAIL_TRUNCATE.with(|fault| fault.replace(false)) {
+            return Err(std::io::Error::other("injected Index tail truncation failure"));
+        }
+        self.file.set_len(self.prefix_end)?;
+        crate::durability_metrics::record_barrier("engine_index_log_tail_rollback");
+        self.file.sync_data()?;
+        self.check_target(self.prefix_end)
+    }
+}
+
+impl IndexLogInner {
+    fn active_durability(&mut self, path: &Path) -> Arc<IndexFileDurability> {
+        if self.file_durability.as_ref().is_some_and(|active| active.path.as_path() != path) {
+            self.file_durability = None;
+        }
+        Arc::clone(self.file_durability.get_or_insert_with(|| Arc::new(IndexFileDurability {
+            path: path.to_path_buf(), gate: Default::default(), directory_synced: AtomicBool::new(false),
+        })))
+    }
+
+    fn invalidate_active_piece(&mut self) {
+        self.file_durability = None;
+        self.active_span_by_shard.remove(&self.shard_id);
+        self.active_gate_records_by_shard.remove(&self.shard_id);
+    }
+
+    fn roll_active_piece(
+        &mut self, path: &Path, length: u64, span: Option<IndexSegmentSpan>,
+    ) -> Result<Option<IndexSegmentSpan>, IndexLogError> {
+        self.check_append_fence()?;
+        let result = roll_index_log_segment_at(&self.root, self.shard_id, path, length, span);
+        if !matches!(&result, Ok(None)) {
+            // A failed parent sync can follow a successful rename. Invalidate
+            // before releasing the writer, including on the error path.
+            self.invalidate_active_piece();
+        }
+        if result.is_err() {
+            self.sealed_ledger_by_shard.remove(&self.shard_id);
+        }
+        result
+    }
+
+    fn check_append_fence(&self) -> Result<(), IndexLogError> {
+        if self.failed_append.is_some() {
+            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted,
+                "Index append has an unresolved tail").into());
+        }
+        Ok(())
+    }
+
+    fn repair_failed_append(&mut self) -> Result<(), IndexLogError> {
+        if let Some(failed) = &self.failed_append {
+            #[cfg(unix)]
+            {
+                failed.rollback()?;
+                self.failed_append = None;
+            }
+            #[cfg(not(unix))]
+            {
+                // Immediate rollback is serialized with the original write.
+                // Deferred repair requires verifying the retained file identity.
+                let _ = failed;
+                return self.check_append_fence();
+            }
+        }
+        Ok(())
+    }
+
+    fn write_active_frames(
+        &mut self, path: &Path, base_len: u64, bytes: &[u8], sync_inline: bool,
+    ) -> Result<fs::File, IndexLogError> {
+        self.check_append_fence()?;
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        let written = (|| -> std::io::Result<()> {
+            #[cfg(test)]
+            if let Some(cut) = FAIL_PARTIAL_FRAME_WRITE.with(|cell| cell.take()) {
+                file.write_all(&bytes[..cut.min(bytes.len())])?;
+                return Err(std::io::Error::other("injected: the write stopped part-way"));
+            }
+            file.write_all(bytes)?;
+            file.flush()?;
+            if sync_inline {
+                file.sync_data()?;
+                self.active_durability(path).sync_directory()?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = written {
+            let failed = FailedIndexAppend {
+                path: path.to_path_buf(), file, prefix_end: base_len,
+                attempted_end: base_len.saturating_add(bytes.len() as u64),
+            };
+            if let Err(rollback) = failed.rollback() {
+                self.failed_append = Some(failed);
+                return Err(std::io::Error::new(rollback.kind(),
+                    format!("Index write failed: {error}; rollback failed: {rollback}")).into());
+            }
+            return Err(error.into());
+        }
+        Ok(file)
+    }
+}
+
 
 fn indexlog_enabled() -> bool {
     // The index-log is the delta served-index's durable per-write delta stream: the
@@ -3004,6 +3162,9 @@ impl LocalIndexLogStore {
     pub fn log_len_bytes(&self, shard_id: ShardId) -> u64 {
         let stream = self.stream(shard_id);
         let mut inner = lock_stream_flushed(&stream);
+        if inner.failed_append.is_some() {
+            return 0;
+        }
         // Every piece, not just the one being written. After a roll the active piece is the
         // NEWEST and smallest part of the log, so reporting its length as the log's length makes
         // a log SHRINK as it grows -- and the dump cadence that reads this would stop firing
@@ -3044,6 +3205,9 @@ impl LocalIndexLogStore {
     pub fn undumped_len_since_dump(&self, shard_id: ShardId) -> u64 {
         let stream = self.stream(shard_id);
         let inner = lock_stream_flushed(&stream);
+        if inner.failed_append.is_some() {
+            return 0;
+        }
         let current = index_log_total_bytes(&inner.root, shard_id);
         let dumped = inner
             .last_dumped_len_by_shard
@@ -3060,6 +3224,9 @@ impl LocalIndexLogStore {
     pub fn mark_catalog_dumped(&self, shard_id: ShardId) {
         let stream = self.stream(shard_id);
         let mut inner = lock_stream_flushed(&stream);
+        if inner.failed_append.is_some() {
+            return;
+        }
         let current = index_log_total_bytes(&inner.root, shard_id);
         inner.last_dumped_len_by_shard.insert(shard_id, current);
         // Stamped in the same call as the length, so the two halves of the cadence -- how much
@@ -3123,7 +3290,8 @@ impl LocalIndexLogStore {
                 shared_root: Arc::clone(&self.root),
                 counters: Arc::clone(&counters),
                 flush: Arc::clone(&flush),
-                flush_gate: Arc::default(),
+                file_durability: None,
+                failed_append: None,
                 last_sequence_by_shard: HashMap::new(),
                 active_span_by_shard: HashMap::new(),
                 active_gate_records_by_shard: HashMap::new(),
@@ -3175,7 +3343,8 @@ impl LocalIndexLogStore {
             index_bytes.len()
         );
         let stream = self.stream(shard_id);
-        let mut inner = lock_stream_flushed(&stream);
+        let mut inner = stream.lock().expect("index log lock poisoned");
+        flush_queued_locked(&mut inner)?;
         inner.ensure_root()?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
             Some(sequence) => sequence,
@@ -3200,11 +3369,10 @@ impl LocalIndexLogStore {
         let (mut active, active_len) = active_index_log(&inner.root, shard_id);
         let cached_span = active_span_at(&inner, shard_id, &active, active_len);
         let sealed =
-            roll_index_log_segment_at(&inner.root, shard_id, &active, active_len, cached_span)?;
+            inner.roll_active_piece(&active, active_len, cached_span)?;
         let rolled = sealed.is_some();
         if let Some(span) = sealed {
             inner.note_sealed_piece(shard_id, span, active_len);
-            inner.active_span_by_shard.remove(&shard_id);
             // Re-resolve ONLY here. The seal RENAMES the piece away, and that rename is the one
             // event that can change which name the next record belongs under -- so the answer is
             // taken again exactly when it has been invalidated, and never cached past it. A roll
@@ -3241,18 +3409,11 @@ impl LocalIndexLogStore {
             &anchor,
             INDEX_LOG_SHAPE_ANCHOR,
         )?);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&active)?;
-        file.write_all(&bytes)?;
-        file.flush()?;
-        // Ack-path index-log append. Under the single-barrier default defer this fsync (bytes
-        // still written): the WAL is the durable recovery source and replay rebuilds the
-        // served index, so the replay-log checkpoint need not be crash-durable per write.
-        if !indexlog_wal_only_sync() {
-            file.sync_data()?;
-        }
+        // Under the single-barrier default the WAL covers this checkpoint's
+        // deferred sync. The legacy mode waits before publishing the anchor.
+        inner.write_active_frames(
+            &active, if rolled { 0 } else { active_len }, &bytes, !indexlog_wal_only_sync(),
+        )?;
         inner.counters.writes.fetch_add(1, AtomicOrdering::Relaxed);
         #[cfg(test)]
         probe::APPENDS_COMPLETED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3411,6 +3572,7 @@ impl LocalIndexLogStore {
         // NOT `lock_flushed`: this is the writer, and what is already queued stays queued.
         let stream = self.stream(shard_id);
         let mut inner = stream.lock().expect("index log lock poisoned");
+        inner.repair_failed_append()?;
         inner.ensure_root()?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
             Some(sequence) => sequence,
@@ -3454,11 +3616,10 @@ impl LocalIndexLogStore {
         let (mut active, active_len) = active_index_log(&inner.root, shard_id);
         let cached_span = active_span_at(&inner, shard_id, &active, active_len);
         let sealed =
-            roll_index_log_segment_at(&inner.root, shard_id, &active, active_len, cached_span)?;
+            inner.roll_active_piece(&active, active_len, cached_span)?;
         let rolled = sealed.is_some();
         if let Some(span) = sealed {
             inner.note_sealed_piece(shard_id, span, active_len);
-            inner.active_span_by_shard.remove(&shard_id);
             // Re-resolve ONLY here. The seal RENAMES the piece away, and that rename is the one
             // event that can change which name the next record belongs under -- so the answer is
             // taken again exactly when it has been invalidated, and never cached past it. A roll
@@ -3501,10 +3662,7 @@ impl LocalIndexLogStore {
                 encode_index_payload_into(&record, INDEX_LOG_SHAPE_DELTA, payload)?;
             }
             crate::log_framing::encode_record_into(payload, bytes);
-            let mut file = OpenOptions::new().create(true).append(true).open(&active)?;
-            file.write_all(bytes)?;
-            file.flush()?;
-            Ok(file)
+            inner.write_active_frames(&active, if rolled { 0 } else { active_len }, bytes, false)
         })(&mut payload, &mut bytes);
         let written_len = bytes.len() as u64;
         // A buffer that grew to hold one enormous record does not keep that capacity for the life
@@ -3517,7 +3675,7 @@ impl LocalIndexLogStore {
         }
         inner.encode_scratch = payload;
         inner.frame_scratch = bytes;
-        let mut file = written?;
+        let file = written?;
         inner.counters.writes.fetch_add(1, AtomicOrdering::Relaxed);
         #[cfg(test)]
         probe::APPENDS_COMPLETED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3538,15 +3696,25 @@ impl LocalIndexLogStore {
         // never reach the barrier together, so each paid for one that would have covered all of
         // them.
         let barrier = durable.then(|| {
-            let gate = Arc::clone(&inner.flush_gate);
-            let ticket = gate.register_write();
-            (gate, ticket)
+            let active = inner.active_durability(&active);
+            let ticket = active.gate.register_write();
+            (active, ticket)
         });
         drop(inner);
-        if let Some((gate, ticket)) = barrier {
-            gate.await_durable(ticket, || {
+        if let Some((active, ticket)) = barrier {
+            #[cfg(test)]
+            if let Some((arrived, resume)) = BEFORE_INDEX_APPEND_BARRIER.with(|slot| slot.borrow_mut().take()) {
+                let _ = arrived.send(());
+                let _ = resume.recv_timeout(std::time::Duration::from_secs(10));
+            }
+            active.gate.await_durable(ticket, || {
+                #[cfg(test)]
+                if FAIL_INDEX_APPEND_BARRIER.with(|fault| fault.replace(false)) {
+                    return Err(std::io::Error::other("injected Index append barrier failure"));
+                }
                 crate::durability_metrics::record_barrier("engine_index_log_append");
-                file.sync_data()
+                file.sync_data()?;
+                active.sync_directory()
             })?;
         }
         Ok(next_sequence)
@@ -3707,7 +3875,9 @@ impl LocalIndexLogStore {
             flush_queued_locked(&mut inner)?;
             inner
         } else {
-            lock_stream_flushed(&stream)
+            let inner = lock_stream_flushed(&stream);
+            inner.check_append_fence()?;
+            inner
         };
         let through_sequence = if mode == IndexReadMode::CheckpointCapture {
             match inner.last_sequence_by_shard.get(&shard_id) {
@@ -3925,6 +4095,7 @@ impl LocalIndexLogStore {
     ) -> Result<Vec<u8>, IndexLogError> {
         let stream = self.stream(shard_id);
         let inner = lock_stream_flushed(&stream);
+        inner.check_append_fence()?;
         let mut bytes: Vec<u8> = Vec::new();
         let mut at = 0_u64;
         let mut tally = IndexLogReadTally::start();
@@ -4011,6 +4182,7 @@ impl LocalIndexLogStore {
     ) -> Result<(Vec<T>, bool), IndexLogError> {
         let stream = self.stream(shard_id);
         let inner = lock_stream_flushed(&stream);
+        inner.check_append_fence()?;
         let segments = index_log_segment_paths(&inner.root, shard_id)
             .into_iter()
             .filter(|path| path.exists())
@@ -4105,6 +4277,9 @@ impl LocalIndexLogStore {
     ) -> IndexLogGateSummary {
         let stream = self.stream(shard_id);
         let mut inner = lock_stream_flushed(&stream);
+        if inner.failed_append.is_some() {
+            return IndexLogGateSummary { shard_id, retain_from_sequence, ..Default::default() };
+        }
         let active = index_log_path(&inner.root, shard_id);
         inner.ensure_sealed_ledger(shard_id);
         let mut summary = IndexLogGateSummary {
@@ -4221,7 +4396,10 @@ impl LocalIndexLogStore {
         retain_from_sequence: u64,
     ) -> IndexLogGateSummary {
         let stream = self.stream(shard_id);
-        let inner = lock_stream_flushed(&stream);
+        let mut inner = lock_stream_flushed(&stream);
+        if inner.failed_append.is_some() {
+            return IndexLogGateSummary { shard_id, retain_from_sequence, ..Default::default() };
+        }
         let root = inner.root.clone();
         let active = index_log_path(&root, shard_id);
         let mut summary = IndexLogGateSummary {
@@ -4380,7 +4558,8 @@ impl LocalIndexLogStore {
         // therefore what bounds the sweep, and `max_entries_per_round` is not it: see the note
         // on the parameter above.
         let stream = self.stream(shard_id);
-        let mut inner = lock_stream_flushed(&stream);
+        let mut inner = stream.lock().expect("index log lock poisoned");
+        flush_queued_locked(&mut inner)?;
         // AFTER the guard, so it drops BEFORE it: the release reading is taken while the lock is
         // still held. `a_sweep_holds_the_lock_every_append_needs` reads the two.
         #[cfg(test)]
@@ -4474,8 +4653,7 @@ impl LocalIndexLogStore {
                 temp.sync_all()?;
             }
             fs::rename(&temp_path, &path)?;
-            inner.active_span_by_shard.remove(&shard_id);
-            inner.active_gate_records_by_shard.remove(&shard_id);
+            inner.invalidate_active_piece();
             sync_parent_dir(&path)?;
         }
         let bytes_after = index_log_total_bytes(&root, shard_id);
@@ -4578,7 +4756,8 @@ impl LocalIndexLogStore {
         // Held to the end of the function, exactly as the budgeted sweep holds it, and for the
         // same reason: this is the lock `append_index_bytes` takes.
         let stream = self.stream(shard_id);
-        let mut inner = lock_stream_flushed(&stream);
+        let mut inner = stream.lock().expect("index log lock poisoned");
+        flush_queued_locked(&mut inner)?;
         #[cfg(test)]
         let _lock_span = probe::SweepLockSpan::new();
         fs::create_dir_all(&inner.root)?;
@@ -4709,8 +4888,7 @@ impl LocalIndexLogStore {
             temp.sync_all()?;
         }
         fs::rename(&temp_path, &path)?;
-        inner.active_span_by_shard.remove(&shard_id);
-        inner.active_gate_records_by_shard.remove(&shard_id);
+        inner.invalidate_active_piece();
         sync_parent_dir(&path)?;
         let bytes_after = index_log_total_bytes(&root, shard_id);
         Ok(IndexLogGcReport {
@@ -4737,8 +4915,12 @@ impl LocalIndexLogStore {
     pub fn stats(&self, shard_id: ShardId) -> IndexLogStats {
         let stream = self.stream(shard_id);
         let inner = lock_stream_flushed(&stream);
-        TAIL_SCANS.with(|cell| cell.set(cell.get().saturating_add(1)));
-        let last_sequence = last_sequence_at(&inner.root, shard_id).unwrap_or_default();
+        let last_sequence = if inner.failed_append.is_some() {
+            0
+        } else {
+            TAIL_SCANS.with(|cell| cell.set(cell.get().saturating_add(1)));
+            last_sequence_at(&inner.root, shard_id).unwrap_or_default()
+        };
         drop(inner);
         IndexLogStats { last_sequence, ..self.aggregate_stats() }
     }
@@ -4764,6 +4946,10 @@ impl LocalIndexLogStore {
     pub fn stats_without_rescan(&self, shard_id: ShardId) -> IndexLogStats {
         let stream = self.stream(shard_id);
         let mut inner = lock_stream_flushed(&stream);
+        if inner.failed_append.is_some() {
+            drop(inner);
+            return self.aggregate_stats();
+        }
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
             Some(sequence) => sequence,
             None => {
@@ -4997,12 +5183,16 @@ thread_local! {
     /// Make the next batch write stop after this many bytes and then fail, once.
     static FAIL_PARTIAL_FRAME_WRITE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static FAIL_PENDING_INDEX_ENCODE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
-    static BEFORE_PENDING_INDEX_ENCODE: std::cell::RefCell<Option<PendingEncodePause>> =
+    static FAIL_INDEX_TAIL_TRUNCATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_INDEX_APPEND_BARRIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static BEFORE_INDEX_APPEND_BARRIER: std::cell::RefCell<Option<IndexTestPause>> =
+        const { std::cell::RefCell::new(None) };
+    static BEFORE_PENDING_INDEX_ENCODE: std::cell::RefCell<Option<IndexTestPause>> =
         const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
-type PendingEncodePause = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+type IndexTestPause = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 
 /// Turn the batched write on or off for this thread until the guard drops.
 #[cfg(test)]
@@ -5092,7 +5282,7 @@ impl Drop for IndexLogInner {
     /// The last handle going away writes the tail. A crash loses it and replay rebuilds it; an
     /// orderly stop has no reason to.
     fn drop(&mut self) {
-        if !self.queued.is_empty() || !self.stuck.is_empty() {
+        if self.failed_append.is_some() || !self.queued.is_empty() || !self.stuck.is_empty() {
             let _ = flush_queued_locked(self);
         }
     }
@@ -5100,6 +5290,7 @@ impl Drop for IndexLogInner {
 
 /// Retry older frames before writing this stream's newly admitted records.
 fn flush_queued_locked(inner: &mut IndexLogInner) -> Result<(), IndexLogError> {
+    inner.repair_failed_append()?;
     while !inner.stuck.is_empty() {
         let batch = inner.stuck.remove(0);
         if let Err(err) = write_frames_locked(inner, batch.shard_id, &batch.bytes, &batch.frames) {
@@ -5209,31 +5400,17 @@ fn write_frames_locked(
     inner.ensure_root()?;
     let (mut active, active_len) = active_index_log(&inner.root, shard_id);
     let cached_span = active_span_at(inner, shard_id, &active, active_len);
-    let sealed = roll_index_log_segment_at(&inner.root, shard_id, &active, active_len, cached_span)?;
+    let sealed = inner.roll_active_piece(&active, active_len, cached_span)?;
     let rolled = sealed.is_some();
     if let Some(span) = sealed {
         // The seal is a piece the gate's ledger must hold, here as at the two single-record writers.
         inner.note_sealed_piece(shard_id, span, active_len);
     }
     if rolled {
-        inner.active_span_by_shard.remove(&shard_id);
         active = active_index_log(&inner.root, shard_id).0;
     }
     let base_len = if rolled { 0 } else { active_len };
-    let mut file = OpenOptions::new().create(true).append(true).open(&active)?;
-    let written = (|| -> std::io::Result<()> {
-        #[cfg(test)]
-        if let Some(cut) = FAIL_PARTIAL_FRAME_WRITE.with(|cell| cell.take()) {
-            file.write_all(&bytes[..cut.min(bytes.len())])?;
-            return Err(std::io::Error::other("injected: the write stopped part-way"));
-        }
-        file.write_all(bytes)?;
-        file.flush()
-    })();
-    if let Err(err) = written {
-        let _ = file.set_len(base_len);
-        return Err(err.into());
-    }
+    inner.write_active_frames(&active, base_len, bytes, false)?;
     let mut previous_len = base_len;
     for frame in frames {
         note_active_append(
