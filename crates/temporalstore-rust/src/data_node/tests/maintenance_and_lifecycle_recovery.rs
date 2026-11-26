@@ -3105,6 +3105,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     // The predicate SELECTS a cycle; it does not stand in for the assertions. It looks at two
     // fields, and the block below verifies the whole snapshot.
     let mut churn = 0u64;
+    let mut selected_round = None;
     wait_until(Duration::from_secs(15), || {
         churn += 1;
         runtime.execute(ExecuteRequest {
@@ -3115,15 +3116,19 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
             },
         });
         let report = manager.report();
-        report.rounds_submitted >= 2
+        let ready = report.rounds_submitted >= 2
             && runtime.stats().storage_manager_runs >= 2
             && report.last_completed_cycle.is_some()
             && report.last_pressure_snapshot.as_ref().is_some_and(|pressure| {
                 pressure.dirty_bucket_count >= 1
                     && pressure.follower_cursor_retention_blockers >= 1
-            })
+            });
+        if ready {
+            selected_round = Some(report);
+        }
+        ready
     });
-    let running = manager.report();
+    let running = selected_round.expect("selected completed cycle");
     assert!(running.running);
     assert!(!running.paused);
     assert!(!running.stopped);
@@ -3161,7 +3166,18 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(pressure.total_pressure_score >= pressure.wal_bytes);
     assert!(running.last_pressure_before >= running.last_pressure_after);
     assert!(!running.last_selected_buckets.is_empty());
-    assert!(running.last_bytes_reclaimed >= pressure.cache_disk_bytes);
+    let cycle = running.last_completed_cycle.as_ref().expect("selected cycle");
+    assert_eq!(pressure.cache_disk_bytes, cycle.pressure_snapshot.disk_cache_bytes);
+    let charged_bytes = cycle.stages.iter().fold(0u64, |bytes, stage| {
+        bytes
+            .saturating_add(stage.bytes_reclaimed)
+            .saturating_add(stage.block_bytes_reclaimed)
+            .saturating_add(stage.cache_disk_bytes_removed)
+            .saturating_add(stage.before_bytes.saturating_sub(stage.after_bytes))
+    });
+    assert_eq!(running.last_bytes_reclaimed, charged_bytes);
+    let evict = cycle.stages.iter().find(|stage| stage.stage == "evict").expect("evict stage");
+    assert_eq!(evict.cache_disk_bytes_removed, 0, "index eviction keeps cached pages");
     // This scenario configures a follower pinned at sequence 1 and a raft snapshot at sequence 1.
     // What a retention cursor imposes is a BOUND on how far reclaim may go, not a refusal; the
     // note below the binding says why, and what is asserted instead.
