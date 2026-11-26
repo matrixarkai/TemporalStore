@@ -7,7 +7,8 @@ use super::*;
 fn frame_reuse_retains_useful_capacity_but_releases_excess_compression_space() {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalWriteAheadLogStore::new(dir.path());
-    let mut inner = store.inner.lock().unwrap();
+    let shard_writer = store.shard_writer(1);
+    let mut inner = shard_writer.lock_inner_raw();
     for (capacity, length, retain) in [(65_536, 128, true), (4 * 1024 * 1024, 128, false),
         (3 * 1024 * 1024, 2 * 1024 * 1024, true), (4 * 1024 * 1024, 0, false)] {
         let mut bytes = Vec::with_capacity(capacity);
@@ -36,7 +37,7 @@ fn compressed_append_releases_a_large_reservation_and_reopens_with_its_payload()
         Command::StringSet { key: "large-frame".into(), value: Vec::new() }, true,
         vec![StagedBlock { object_id: 42, element_name: None, bytes: payload.clone() }],
     ).unwrap();
-    assert_eq!(store.inner.lock().unwrap().encode_scratch.capacity(), 0);
+    assert_eq!(store.shard_writer(1).lock_inner_raw().encode_scratch.capacity(), 0);
     drop(store);
     let reopened = LocalWriteAheadLogStore::new(dir.path());
     let frame = reopened.read_frame_at_log_id(1, log_id).unwrap().unwrap();
