@@ -189,3 +189,32 @@ fn reclaim_gate_is_not_opened_by_dead_bytes_in_the_current_slab() {
     assert!(!gate.due, "fully live frozen space must keep the gate closed: {gate:?}");
     assert_eq!((gate.live_bytes, gate.logical_bytes), (frozen, frozen));
 }
+
+#[test]
+fn live_slab_tally_snapshots_preserve_old_values_and_latest_publication() {
+    let (_dir, store) = store_with_stale_slabs(2);
+    assert_eq!(store.published_live_block_bytes(), None);
+    store.publish_live_block_bytes(BTreeMap::new());
+    assert_eq!(store.published_live_block_bytes(), Some(BTreeMap::new()));
+    let empty = store.inner.lock().unwrap().live_block_bytes.clone().unwrap();
+
+    let first = BTreeMap::from([(0, BlockStoreSlabLive {
+        live_block_refs: 1, live_bytes: 8,
+    })]);
+    store.publish_live_block_bytes(first.clone());
+    let captured = store.inner.lock().unwrap().live_block_bytes.clone().unwrap();
+    let second = BTreeMap::from([(1, BlockStoreSlabLive {
+        live_block_refs: 2, live_bytes: 16,
+    })]);
+    store.publish_live_block_bytes(second.clone());
+    assert!(empty.is_empty());
+    assert_eq!(captured.as_ref(), &first);
+    assert_eq!(store.published_live_block_bytes(), Some(second.clone()));
+    let mut owned = store.published_live_block_bytes().unwrap();
+    owned.clear();
+    assert_eq!(store.published_live_block_bytes(), Some(second));
+
+    store.publish_live_block_bytes(BTreeMap::new());
+    assert_eq!(store.published_live_block_bytes(), Some(BTreeMap::new()));
+    assert_eq!(captured.as_ref(), &first);
+}
