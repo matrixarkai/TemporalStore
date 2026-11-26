@@ -79,6 +79,17 @@ pub fn reset_index_load_path_counts() {
     INDEX_LOADS_UNDECODABLE.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[cfg(test)]
+thread_local! {
+    // Report an ambiguous error after the real durable writer has already published.
+    static FAIL_CLOSED_INSTALL_AFTER_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) fn fail_closed_install_after_rename_for_test() {
+    FAIL_CLOSED_INSTALL_AFTER_RENAME.with(|fail| fail.set(true));
+}
+
 impl TemporalEngine {
     /// Raft state images move materialized state into a fresh engine-WAL namespace.
     /// The source engine's sequence does not identify any record in that new log.
@@ -1265,7 +1276,12 @@ impl TemporalEngine {
                 "checkpoint publication changed during shard install"));
         }
         fs::create_dir_all(&self.index_dir)?;
-        atomic_write_bytes(&self.index_path(drained.shard_id()), bytes)
+        atomic_write_bytes(&self.index_path(drained.shard_id()), bytes)?;
+        #[cfg(test)]
+        if FAIL_CLOSED_INSTALL_AFTER_RENAME.with(|fail| fail.replace(false)) {
+            return Err(std::io::Error::other("injected failure after served index rename"));
+        }
+        Ok(())
     }
 
     pub(super) fn validate_load_version(

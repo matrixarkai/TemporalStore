@@ -423,3 +423,163 @@ fn periodic_page_log_declines_a_proven_pin_and_retries_after_dump() {
         }
     }
 }
+
+#[test]
+fn wal_reclaim_refuses_a_plan_from_before_a_durable_base_replacement() {
+    let root = tempfile::tempdir().unwrap();
+    let open = || TemporalEngine::with_local_dirs(
+        16 << 20, root.path().join("cache"), root.path().join("blocks"), root.path().join("indexes"),
+    );
+    let engine = open();
+    engine.load_shard(1);
+    let write = |key: &str, value: u8| {
+        let response = engine.execute_durable(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: key.into(), value: vec![value; 4096] },
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+    };
+    write("base", 1);
+    engine.materialize_synthetic_blocks(1);
+    engine.flush_shard_index(1);
+    let index_path = engine.index_path(1);
+    let old_bytes = std::fs::read(&index_path).unwrap();
+    let old_anchor = base_checkpoint_anchor::read(&index_path);
+    assert!(old_anchor > 0);
+    for (key, value) in [("tail-a", 2), ("tail-b", 3), ("tail-c", 4)] {
+        write(key, value);
+    }
+    engine.materialize_synthetic_blocks(1);
+    engine.flush_shard_index(1);
+    let newer_anchor = base_checkpoint_anchor::read(&index_path);
+    assert!(newer_anchor >= old_anchor + 3);
+    assert_eq!(engine.synthetic_address_count_for_test(1), 0);
+
+    let current = engine.create_bucket_dump_manifest(1, []).unwrap();
+    assert_eq!(current.wal_sequence, newer_anchor);
+    engine.clear_dumped_bucket_dirty_state(1, &current);
+    assert!(engine.storage_lifecycle_plan(StorageLifecycleRequest {
+        shard_id: 1, ..Default::default()
+    }).dirty_buckets.is_empty());
+    // Remove the redundant manifest from this fixture while the durable base
+    // still covers the same records, leaving that base as the sole replay image.
+    std::fs::remove_file(bucket_dump_manifest_path(&engine.index_dir, 1, &current.manifest_id)).unwrap();
+    assert!(engine.list_bucket_dump_manifests(1).is_empty());
+    let stale = engine.storage_wal_reclaim_plan(1, [], []);
+    assert!(stale.safe_to_reclaim, "{stale:?}");
+    assert_eq!(stale.current_wal_sequence, newer_anchor);
+    assert_eq!(stale.durable_bucket_generation_frontier_wal_sequence, newer_anchor);
+    assert_eq!(stale.retain_from_wal_sequence, newer_anchor + 1);
+    engine.install_index_bytes(1, &old_bytes,
+        crate::engine::routing_range_stamp::RoutingRangeStamp {
+            start_routing_bucket: 0, end_routing_bucket: u32::MAX,
+        },
+    ).unwrap();
+    assert_eq!(std::fs::read(&index_path).unwrap(), old_bytes);
+    assert_eq!(base_checkpoint_anchor::read(&index_path), old_anchor);
+
+    let collected = engine.apply_storage_wal_reclaim(stale);
+    assert!(!collected.applied, "{collected:?}");
+    assert!(collected.plan.blocker_reasons.iter().any(|reason| reason == "reclaim_replay_anchor_changed"));
+    assert_eq!(collected.wal_records_removed, 0);
+    drop(engine);
+    let reopened = open();
+    reopened.load_shard(1);
+    for (key, value) in [("base", 1), ("tail-a", 2), ("tail-b", 3), ("tail-c", 4)] {
+        let response = reopened.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key: key.into() },
+        });
+        assert!(response.status.ok, "{key}: {:?}", response.status);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![value; 4096]) });
+    }
+}
+thread_local! {
+    static BEFORE_WAL_RECLAIM_TRUNCATE: std::cell::RefCell<Option<Box<dyn FnOnce()>>>
+        = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn before_wal_reclaim_truncate() {
+    let hook = BEFORE_WAL_RECLAIM_TRUNCATE.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[test]
+fn manifest_install_drains_admitted_wal_reclaim_without_blocking_peer_publication() {
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+
+    let timeout = Duration::from_secs(10);
+    let root = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 << 20, root.path().join("cache"), root.path().join("blocks"), root.path().join("indexes"),
+    );
+    for id in [1, 2] {
+        engine.load_shard(id);
+    }
+    let write = |id, key: &str| engine.execute_durable(ExecuteRequest {
+        shard_id: id,
+        command: Command::StringSet { key: key.into(), value: vec![7; 4096] },
+    });
+    assert!(write(1, "base").status.ok);
+    engine.materialize_synthetic_blocks(1);
+    engine.flush_shard_index(1);
+    let manifest = engine.create_bucket_dump_manifest(1, []).unwrap();
+    engine.clear_dumped_bucket_dirty_state(1, &manifest);
+    assert!(engine.bucket_dump_install_preflight_report(&manifest).install_safe);
+    let plan = engine.storage_wal_reclaim_plan(1, [], []);
+    assert!(plan.safe_to_reclaim && plan.retain_from_wal_sequence > 1, "{plan:?}");
+
+    let before = engine.checkpoint_publications.capture(1);
+    assert_eq!(engine.checkpoint_publications.publish(&before, || Ok(())).unwrap(), Some(()));
+    let old_base = std::fs::read(engine.index_path(1)).unwrap();
+    std::thread::scope(|scope| {
+        let (proven_tx, proven_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let collecting = &engine;
+        let collector = scope.spawn(move || {
+            BEFORE_WAL_RECLAIM_TRUNCATE.with(|slot| *slot.borrow_mut() = Some(Box::new(move || {
+                proven_tx.send(()).unwrap();
+                release_rx.recv_timeout(timeout).unwrap();
+            })));
+            collecting.apply_storage_wal_reclaim(plan)
+        });
+        proven_rx.recv_timeout(timeout).unwrap();
+        let install = scope.spawn(|| engine.install_bucket_dump_manifest(&manifest));
+        let deadline = Instant::now() + timeout;
+        while engine.checkpoint_publications.is_current_after_publish(&before) {
+            assert!(Instant::now() < deadline, "install never marked the publication closing");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(engine.pass_slot(1).try_lock().is_err());
+        let markers = engine.interrupted_bucket_dump_installs(1);
+        assert!(markers.iter().any(|marker| marker.phase == "prepare"));
+        assert!(!markers.iter().any(|marker| marker.phase == "install"));
+        assert_eq!(std::fs::read(engine.index_path(1)).unwrap(), old_base);
+
+        let (peer_tx, peer_rx) = channel();
+        let peer_engine = &engine;
+        let peer_write = &write;
+        let peer = scope.spawn(move || {
+            let result = peer_write(2, "peer");
+            peer_engine.flush_shard_index(2);
+            peer_tx.send((result, base_checkpoint_anchor::read(&peer_engine.index_path(2)))).unwrap();
+        });
+        let progress = peer_rx.recv_timeout(timeout);
+        release_tx.send(()).unwrap();
+        peer.join().unwrap();
+        let (response, anchor) = progress.expect("peer append or publication waited for shard 1");
+        assert!(response.status.ok);
+        assert!(anchor > 0);
+        assert!(collector.join().unwrap().applied);
+        install.join().unwrap().unwrap();
+    });
+    for (id, key) in [(1, "base"), (2, "peer")] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: id, command: Command::StringGet { key: key.into() },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![7; 4096]) });
+    }
+}

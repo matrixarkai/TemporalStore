@@ -466,3 +466,114 @@ fn streamed_bucket_facts_match_collected_facts_with_deletes_and_released_buckets
         });
     }
 }
+
+#[test]
+fn loaded_manifest_install_failure_after_rename_keeps_tail_recoverable() {
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+
+    let timeout = Duration::from_secs(10);
+    let root = tempfile::tempdir().unwrap();
+    let engine = engine_at(root.path());
+    engine.load_shard(2);
+    let set = |shard_id, key: &str, bytes: &[u8]| ExecuteRequest {
+        shard_id,
+        command: Command::StringSet { key: key.into(), value: bytes.to_vec() },
+    };
+    let get = |shard_id, key: &str| ExecuteRequest {
+        shard_id, command: Command::StringGet { key: key.into() },
+    };
+    let exact = |engine: &TemporalEngine, request, bytes: &[u8]| {
+        let response = engine.execute(request);
+        assert!(response.status.ok, "{:?}", response.status);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(bytes.to_vec()) });
+    };
+    assert!(engine.execute_durable(set(1, "base", b"manifest")).status.ok);
+    engine.materialize_synthetic_blocks(1);
+    engine.flush_shard_index(1);
+    let manifest = engine.create_bucket_dump_manifest(1, []).unwrap();
+    assert!(manifest.wal_sequence > 0);
+    assert!(!manifest.block_slab_ids.is_empty());
+    assert!(manifest.block_slab_ids.iter().all(|id| !crate::wal_record::is_wal_resident(*id)));
+    assert!(engine.bucket_dump_install_preflight_report(&manifest).install_safe);
+    engine.clear_dumped_bucket_dirty_state(1, &manifest);
+
+    let previous_owner = engine.shards.handle(1).unwrap();
+    let before = engine.checkpoint_publications.capture(1);
+    std::thread::scope(|scope| {
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let publisher = scope.spawn(|| {
+            engine.checkpoint_publications.publish(&before, move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv_timeout(timeout).unwrap();
+                Ok(())
+            })
+        });
+        entered_rx.recv_timeout(timeout).unwrap();
+        assert!(engine.checkpoint_publications.is_current_after_publish(&before));
+
+        let installer = scope.spawn(|| {
+            super::super::engine_persistence::fail_closed_install_after_rename_for_test();
+            engine.install_bucket_dump_manifest(&manifest)
+        });
+        // While this publisher remains admitted, only closing invalidates its revision.
+        let limit = Instant::now() + timeout;
+        while engine.checkpoint_publications.is_current_after_publish(&before) {
+            assert!(Instant::now() < limit, "install never reached publication drain");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(engine.pass_slot(1).try_lock().is_err());
+
+        let (wrote_tx, wrote_rx) = channel();
+        let writer_engine = &engine;
+        let writer = scope.spawn(move || {
+            let peer = writer_engine.execute_durable(set(2, "peer", b"peer committed"));
+            let tail = writer_engine.execute_durable(set(1, "tail", b"drain committed"));
+            wrote_tx.send((peer, tail)).unwrap();
+        });
+        let writes = wrote_rx.recv_timeout(timeout);
+        release_tx.send(()).unwrap();
+        assert_eq!(publisher.join().unwrap().unwrap(), Some(()));
+        writer.join().unwrap();
+        let failure = installer.join().unwrap().unwrap_err();
+        assert_eq!(failure.code, "slot_dump_install_failed");
+        assert!(failure.message.contains("injected failure after served index rename"), "{failure:?}");
+        let (peer, tail) = writes.expect("writes waited for the publication drain");
+        assert!(peer.status.ok && tail.status.ok, "{peer:?}, {tail:?}");
+    });
+
+    assert!(previous_owner.same_incarnation(&engine.shards.handle(1).unwrap()));
+    assert!(!engine.get_info(1).info.unwrap().recovering);
+    assert!(engine.pass_slot(1).try_lock().is_ok());
+    exact(&engine, get(1, "base"), b"manifest");
+    exact(&engine, get(1, "tail"), b"drain committed");
+    exact(&engine, get(2, "peer"), b"peer committed");
+    let on_disk = std::fs::read(engine.index_path(1)).unwrap();
+    assert_eq!(decode_index_bytes(&on_disk).unwrap().applied_wal_sequence, Some(manifest.wal_sequence));
+    assert!(engine.shards.with_state(1, |state| {
+        state.unwrap().applied_wal_sequence.is_some_and(|sequence| sequence > manifest.wal_sequence)
+    }));
+    assert!(engine.interrupted_bucket_dump_installs(1).iter().any(|marker| {
+        marker.manifest_id == manifest.manifest_id && marker.phase == "prepare"
+    }));
+
+    // Use live collection entry points. The reopened engine must replay from the
+    // installed base even though the old, still-serving owner has a higher anchor.
+    let plan = engine.storage_wal_reclaim_plan(1, [], []);
+    assert!(plan.retain_from_wal_sequence <= manifest.wal_sequence + 1, "{plan:?}");
+    engine.apply_storage_wal_reclaim(plan);
+    engine.apply_periodic_index_gc(StorageLifecycleRequest { shard_id: 1, ..Default::default() }, None, 1024);
+    assert_eq!(std::fs::read(engine.index_path(1)).unwrap(), on_disk);
+    // Drop without an unload or checkpoint, so the old live state cannot repair the base.
+    drop((previous_owner, before, engine));
+
+    let reopened = TemporalEngine::with_local_dirs(
+        16 << 20, root.path().join("reopen-cache"), root.path().join("blocks"), root.path().join("indexes"),
+    );
+    reopened.load_shard(1);
+    reopened.load_shard(2);
+    exact(&reopened, get(1, "base"), b"manifest");
+    exact(&reopened, get(1, "tail"), b"drain committed");
+    exact(&reopened, get(2, "peer"), b"peer committed");
+}

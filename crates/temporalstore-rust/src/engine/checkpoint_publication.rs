@@ -160,6 +160,19 @@ impl CheckpointPublications {
         write()
     }
 
+    /// Keep recovery-image replacement out of the WAL proof and truncation window.
+    /// The callback reads durable state and must not acquire a shard state guard.
+    pub(super) fn with_wal_reclaim_publication<T>(
+        &self, shard_id: ShardId, reclaim: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let state = self.state(shard_id);
+        let active = state.active.lock().expect("checkpoint publication lock poisoned");
+        if !*active || state.is_closing() {
+            return None;
+        }
+        Some(reclaim())
+    }
+
     /// Check a completed publication without waiting for another publisher's I/O.
     pub(super) fn is_current_after_publish(&self, captured: &CheckpointPublication) -> bool {
         let Some(revision) = captured.revision.checked_add(1) else { return false; };

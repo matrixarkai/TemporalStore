@@ -53,6 +53,12 @@ fn facts(path: &Path) -> Facts {
     facts
 }
 
+/// Replay anchor and resident-block floor observed from the same image bytes.
+pub(super) fn recovery_bounds(path: &Path) -> (u64, Option<u64>) {
+    let facts = facts(path);
+    (facts.anchor, facts.wal_floor)
+}
+
 pub(super) fn read(path: &Path) -> u64 {
     facts(path).anchor
 }

@@ -2015,7 +2015,7 @@ impl TemporalEngine {
 
     pub fn apply_storage_wal_reclaim(
         &self,
-        mut plan: StorageWalReclaimPlan,
+        plan: StorageWalReclaimPlan,
     ) -> StorageWalReclaimReport {
         if !plan.safe_to_reclaim {
             return StorageWalReclaimReport {
@@ -2024,19 +2024,23 @@ impl TemporalEngine {
                 ..StorageWalReclaimReport::default()
             };
         }
-        // The plan reached `safe_to_reclaim` by finding a durable bucket-dump manifest for
-        // every live generation and taking the LOWEST wal sequence among them, so the durable
-        // index reflects everything at or below that frontier.
-        //
-        // This stays the DURABLE frontier, not the cursor-clamped one. The anchor is an upper
-        // bound on what may be dropped; `retain_from_wal_sequence` may sit below it because a
-        // retention cursor clamped it, and dropping less than the anchor permits is safe. Passing
-        // the clamped value here would prove less durability than has actually been established
-        // and would be the wrong number for a different reason.
-        let durable_index = crate::wal::DurableIndexAnchor::proven_durable_through(
-            plan.shard_id,
-            plan.durable_bucket_generation_frontier_wal_sequence,
-        );
+        let shard_id = plan.shard_id;
+        let mut pending = Some(plan);
+        self.checkpoint_publications.with_wal_reclaim_publication(shard_id, || {
+            self.apply_storage_wal_reclaim_under_publication(
+                pending.take().expect("reclaim plan consumed once"),
+            )
+        }).unwrap_or_else(|| {
+            let mut plan = pending.expect("closed publication did not consume the plan");
+            plan.safe_to_reclaim = false;
+            plan.blocker_reasons.push("reclaim_publication_unavailable".into());
+            StorageWalReclaimReport { plan, applied: false, ..StorageWalReclaimReport::default() }
+        })
+    }
+
+    fn apply_storage_wal_reclaim_under_publication(
+        &self, mut plan: StorageWalReclaimPlan,
+    ) -> StorageWalReclaimReport {
         let manifests = match list_bucket_dump_manifests_shared_at(&self.index_dir, plan.shard_id) {
             Ok(manifests) => manifests,
             Err(_) => {
@@ -2074,7 +2078,23 @@ impl TemporalEngine {
         // The same reading a load makes -- the file as it is, no delta folded -- and the same answer
         // a manifest gives. An image that is absent names nothing; one that will not decode is not
         // what a load would use either (it falls back to the log), so neither narrows the floor.
-        let base_floor = base_checkpoint_anchor::wal_floor(&self.index_path(plan.shard_id));
+        let (base_anchor, base_floor) =
+            base_checkpoint_anchor::recovery_bounds(&self.index_path(plan.shard_id));
+        // The listing above has validated every installable image. Use the same
+        // highest WAL sequence as recovery, even when the base was replaced
+        // after the plan was captured.
+        let manifest_anchor = manifests.iter().map(|manifest| manifest.wal_sequence)
+            .max().unwrap_or(0);
+        let replay_anchor = base_anchor.max(manifest_anchor);
+        if replay_anchor < plan.durable_bucket_generation_frontier_wal_sequence {
+            plan.safe_to_reclaim = false;
+            plan.blocker_reasons.push("reclaim_replay_anchor_changed".into());
+            return StorageWalReclaimReport { plan, applied: false, ..StorageWalReclaimReport::default() };
+        }
+        let durable_index = crate::wal::DurableIndexAnchor::proven_durable_through(
+            plan.shard_id,
+            plan.durable_bucket_generation_frontier_wal_sequence,
+        );
         if let Some(sequence) = base_floor {
             manifest_floor = Some(manifest_floor.map_or(sequence, |old: u64| old.min(sequence)));
         }
@@ -2087,6 +2107,8 @@ impl TemporalEngine {
             Some(sequence) => self.wal_store.set_block_retention_floor(plan.shard_id, sequence),
             None => self.wal_store.clear_block_retention_floor(plan.shard_id),
         }
+        #[cfg(test)]
+        planning_order_tests::before_wal_reclaim_truncate();
         let wal_gc = self
             .write_ahead_log_store()
             .gc_before_sequence(plan.shard_id, plan.retain_from_wal_sequence, &durable_index)
