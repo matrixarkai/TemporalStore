@@ -7,7 +7,8 @@ use super::*;
 fn acquiring_and_releasing_a_read_lease_does_not_wait_for_wal_io() {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalWriteAheadLogStore::new(dir.path());
-    let held = store.inner.lock().unwrap();
+    let shard_writer = store.shard_writer(1);
+    let held = shard_writer.lock_inner_raw();
     let (sender, receiver) = std::sync::mpsc::channel();
     let reader = store.clone();
     let started = Arc::new(std::sync::Barrier::new(2));
