@@ -28,6 +28,7 @@ struct CountingStore {
     inner: FileObjectStore,
     ledger: Mutex<Ledger>,
     refuse_appends: AtomicUsize,
+    refuse_key: Mutex<Option<String>>,
 }
 
 impl CountingStore {
@@ -36,6 +37,7 @@ impl CountingStore {
             inner: FileObjectStore::new(root.join("objects")),
             ledger: Mutex::new(Ledger::default()),
             refuse_appends: AtomicUsize::new(0),
+            refuse_key: Mutex::new(None),
         })
     }
     fn read(&self, key: &str) {
@@ -71,6 +73,11 @@ impl ObjectStore for CountingStore {
         key: &str,
         bytes: Bytes,
     ) -> Result<AppendBlobReceipt, ObjectStoreError> {
+        if self.refuse_key.lock().unwrap().as_deref() == Some(key) {
+            return Err(ObjectStoreError::Io(std::io::Error::other(
+                "append refused for this key",
+            )));
+        }
         if self
             .refuse_appends
             .fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::SeqCst, |left| {
@@ -232,6 +239,110 @@ async fn the_segment_names_the_quota_and_the_builder_floor_are_pinned() {
     let floor = replicator(&store, 0);
     write(&floor, 1, 3).await;
     assert_eq!(firsts(&floor.wal_segments(SHARD).await.unwrap()), vec![1, 2, 3]);
+}
+
+#[tokio::test]
+async fn rolls_log_objects_before_an_encoded_append_crosses_the_byte_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CountingStore::new(dir.path());
+    let first = encode_wal_proto_frame(&entry(1), WAL_FRAME_FORMAT_DEFAULT).unwrap();
+    let second = encode_wal_proto_frame(&entry(2), WAL_FRAME_FORMAT_DEFAULT).unwrap();
+    let limit = (first.len() + second.len()) as u64;
+    let r = replicator(&store, 256).with_wal_segment_max_bytes(limit);
+
+    let writer = r.clone();
+    for i in 1..=3 {
+        writer.publish_wal_entry(entry(i)).await.unwrap();
+    }
+    let segments = r.wal_segments(SHARD).await.unwrap();
+    assert_eq!(firsts(&segments), vec![1, 3]);
+    assert_eq!(store.appends()[&log_key(&r, 1)], 2);
+    assert_eq!(store.appends()[&log_key(&r, 3)], 1);
+    assert_eq!(store.get(&log_key(&r, 1)).await.unwrap().len() as u64, limit);
+    let follower = engine(dir.path(), "rollover");
+    assert_eq!(r.replay_wal(SHARD, 0, &follower).await.unwrap().applied, 3);
+    for i in 1..=3 {
+        assert_eq!(value_of(&follower, i), Some(format!("value-{i:04}").into_bytes()));
+    }
+}
+
+#[tokio::test]
+async fn divides_oversized_wal_batches_before_they_reach_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CountingStore::new(dir.path());
+    let frame_size = encode_wal_proto_frame(&entry(1), WAL_FRAME_FORMAT_DEFAULT).unwrap().len();
+    let r = replicator(&store, 256).with_wal_segment_max_bytes(frame_size as u64);
+    let entries = [entry(1), entry(2), entry(3), entry(4)];
+    let reports = r.publish_wal_entries_batch(&entries).await.unwrap();
+    assert_eq!(reports.iter().map(|report| report.wal_index).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+    for segment in r.wal_segments(SHARD).await.unwrap() {
+        assert!(store.get(&log_key(&r, segment.first_wal_index)).await.unwrap().len() <= frame_size);
+    }
+    let follower = engine(dir.path(), "split");
+    assert_eq!(r.replay_wal(SHARD, 0, &follower).await.unwrap().applied, 4);
+}
+
+#[tokio::test]
+async fn split_group_commit_reports_only_the_suffix_as_unpublished() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CountingStore::new(dir.path());
+    let limit = encode_wal_proto_frame(&entry(1), WAL_FRAME_FORMAT_DEFAULT).unwrap().len() as u64;
+    let r = Arc::new(replicator(&store, 256)
+        .with_wal_segment_max_bytes(limit)
+        .with_publish_retry(1, Duration::ZERO));
+    *store.refuse_key.lock().unwrap() = Some(log_key(&r, 2));
+    let writer = r.storage_writer(SharedStoreStorageMode::Sync, 1)
+        .with_group_commit(true, Duration::from_millis(5));
+    let (first, second, third) = tokio::join!(
+        writer.write(SHARD, entry(1).command.unwrap()),
+        writer.write(SHARD, entry(2).command.unwrap()),
+        writer.write(SHARD, entry(3).command.unwrap()),
+    );
+    assert_eq!(first.unwrap().wal_index, 1);
+    assert!(second.is_err() && third.is_err());
+    assert_eq!(writer.unresolved_hole(), Some((2, 3)));
+    assert_eq!(r.latest_persisted_wal_index(SHARD).await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn split_async_flush_retries_only_the_unpublished_suffix() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CountingStore::new(dir.path());
+    let limit = encode_wal_proto_frame(&entry(1), WAL_FRAME_FORMAT_DEFAULT).unwrap().len() as u64;
+    let r = Arc::new(replicator(&store, 256)
+        .with_wal_segment_max_bytes(limit)
+        .with_publish_retry(1, Duration::ZERO));
+    let writer = r.storage_writer(SharedStoreStorageMode::Async, 1);
+    for index in 1..=3 {
+        assert!(writer.write(SHARD, entry(index).command.unwrap()).await.unwrap().queued);
+    }
+    *store.refuse_key.lock().unwrap() = Some(log_key(&r, 2));
+    assert!(writer.flush_pending(3).await.is_err());
+    assert_eq!(writer.queued_len(), 2);
+    *store.refuse_key.lock().unwrap() = None;
+    assert_eq!(writer.flush_pending(3).await.unwrap().flushed, 2);
+    assert_eq!(store.appends()[&log_key(&r, 1)], 1);
+    let follower = engine(dir.path(), "partial-retry");
+    assert_eq!(r.replay_wal(SHARD, 0, &follower).await.unwrap().applied, 3);
+}
+
+#[tokio::test]
+async fn sync_request_batch_uses_one_log_and_index_append() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CountingStore::new(dir.path());
+    let r = replicator(&store, 256);
+    let writer = r.storage_writer(SharedStoreStorageMode::Sync, 1);
+    let commands = (1..=3).map(|index| entry(index).command.unwrap()).collect();
+    writer.write_sync_batch(SHARD, commands).await.unwrap();
+
+    assert_eq!(store.appends()[&log_key(&r, 1)], 1);
+    assert_eq!(store.appends()[&index_key(&r, 1)], 1);
+    assert_eq!(writer.unresolved_hole(), None);
+    let follower = engine(dir.path(), "request-batch");
+    assert_eq!(r.replay_wal(SHARD, 0, &follower).await.unwrap().applied, 3);
+    for index in 1..=3 {
+        assert_eq!(value_of(&follower, index), Some(format!("value-{index:04}").into_bytes()));
+    }
 }
 
 /// Every interruption point of a rollover, each asserting the index the writer resumes at and what
