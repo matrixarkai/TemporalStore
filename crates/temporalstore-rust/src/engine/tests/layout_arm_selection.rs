@@ -241,48 +241,49 @@ struct Population {
 }
 
 fn population(engine: &TemporalEngine) -> Population {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut out = Population::default();
-    for arm in EVERY_ARM {
-        out.arms.insert(arm, (0, 0));
-    }
-    for node in shard.bucket_index.bucket_map.values() {
-        let blocks = node.block_index.len();
-        let objects = node.object_index.object_count();
-        let slot = out
-            .arms
-            .entry(arm_name(classify_bucket_layout(objects, blocks)))
-            .or_default();
-        slot.0 += 1;
-        slot.1 += blocks;
-        out.total_buckets += 1;
-        out.total_blocks += blocks;
-        if blocks > 0 {
-            out.blocks_per_bucket.push(blocks);
-            out.objects_per_bucket.push(objects);
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut out = Population::default();
+        for arm in EVERY_ARM {
+            out.arms.insert(arm, (0, 0));
         }
-        for (handle, entry) in &node.block_index {
-            let object_key = named.at(node.routing_bucket, *handle);
-            // DERIVED, not read off the address. `blocks_without_object_id` is therefore structurally
-            // zero and is left at zero rather than removed from the shape: every block can name its
-            // object now, which is the fact that used to be worth counting.
-            let id = entry.object_id(1, object_key);
-            *out.by_object_id.entry(id).or_default() += 1;
-            // EVERY block is element-name-free now -- an entry has no element name -- so this control
-            // group is the whole population rather than a subset of it. Kept because the CONTROL
-            // it feeds still has a subject: it compares grouping by the engine's object id against
-            // grouping by (kind, key), and those two can still disagree.
-            *out.element_name_free_by_object_id.entry(id).or_default() += 1;
-            let kind_key = format!("{:?}\u{1}{}", entry.model_id(), object_key);
-            *out.by_kind_key.entry(kind_key.clone()).or_default() += 1;
-            *out.element_name_free_by_kind_key.entry(kind_key).or_default() += 1;
+        for node in shard.bucket_index.bucket_map.values() {
+            let blocks = node.block_index.len();
+            let objects = node.object_index.object_count();
+            let slot = out
+                .arms
+                .entry(arm_name(classify_bucket_layout(objects, blocks)))
+                .or_default();
+            slot.0 += 1;
+            slot.1 += blocks;
+            out.total_buckets += 1;
+            out.total_blocks += blocks;
+            if blocks > 0 {
+                out.blocks_per_bucket.push(blocks);
+                out.objects_per_bucket.push(objects);
+            }
+            for (handle, entry) in &node.block_index {
+                let object_key = named.at(node.routing_bucket, *handle);
+                // DERIVED, not read off the address. `blocks_without_object_id` is therefore structurally
+                // zero and is left at zero rather than removed from the shape: every block can name its
+                // object now, which is the fact that used to be worth counting.
+                let id = entry.object_id(1, object_key);
+                *out.by_object_id.entry(id).or_default() += 1;
+                // EVERY block is element-name-free now -- an entry has no element name -- so this control
+                // group is the whole population rather than a subset of it. Kept because the CONTROL
+                // it feeds still has a subject: it compares grouping by the engine's object id against
+                // grouping by (kind, key), and those two can still disagree.
+                *out.element_name_free_by_object_id.entry(id).or_default() += 1;
+                let kind_key = format!("{:?}\u{1}{}", entry.model_id(), object_key);
+                *out.by_kind_key.entry(kind_key.clone()).or_default() += 1;
+                *out.element_name_free_by_kind_key.entry(kind_key).or_default() += 1;
+            }
         }
-    }
-    out.blocks_per_bucket.sort_unstable();
-    out.objects_per_bucket.sort_unstable();
-    out
+        out.blocks_per_bucket.sort_unstable();
+        out.objects_per_bucket.sort_unstable();
+        out
+    })
 }
 
 fn report_group(label: &str, groups: &BTreeMap<impl Ord, usize>) -> (usize, usize) {
@@ -313,27 +314,28 @@ fn report_group(label: &str, groups: &BTreeMap<impl Ord, usize>) -> (usize, usiz
 /// This is the breakdown a per-bucket dispatch would have to be uniform over, and the reason it
 /// cannot be: the object list's win or loss is decided PER KEY and the layout state is PER BUCKET.
 fn bucket_key_breakdown(engine: &TemporalEngine) -> Vec<Vec<usize>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut out: Vec<Vec<usize>> = Vec::new();
-    for node in shard.bucket_index.bucket_map.values() {
-        if node.block_index.len() == 0 {
-            continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut out: Vec<Vec<usize>> = Vec::new();
+        for node in shard.bucket_index.bucket_map.values() {
+            if node.block_index.len() == 0 {
+                continue;
+            }
+            let mut per_key: BTreeMap<String, usize> = BTreeMap::new();
+            for (handle, entry) in &node.block_index {
+                *per_key
+                    .entry(format!(
+                        "{:?}\u{1}{}",
+                        entry.model_id(),
+                        named.at(node.routing_bucket, *handle)
+                    ))
+                    .or_default() += 1;
+            }
+            out.push(per_key.into_values().collect());
         }
-        let mut per_key: BTreeMap<String, usize> = BTreeMap::new();
-        for (handle, entry) in &node.block_index {
-            *per_key
-                .entry(format!(
-                    "{:?}\u{1}{}",
-                    entry.model_id(),
-                    named.at(node.routing_bucket, *handle)
-                ))
-                .or_default() += 1;
-        }
-        out.push(per_key.into_values().collect());
-    }
-    out
+        out
+    })
 }
 
 /// THE WIDTH A BLOCK ENTRY SPENDS ON A NAME POINTER -- ZERO, AND IT IS READ OFF THE TYPE NOW.
@@ -796,14 +798,15 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
         seed_mixed(&engine, records);
 
         let stored_rows: usize = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
-            shard
-                .bucket_index
-                .bucket_map
-                .values()
-                .map(|node| node.object_index.object_count())
-                .sum()
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard is loaded");
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .values()
+                    .map(|node| node.object_index.object_count())
+                    .sum()
+            })
         };
         let pop = population(&engine);
         let distinct_keys = pop.by_kind_key.len();

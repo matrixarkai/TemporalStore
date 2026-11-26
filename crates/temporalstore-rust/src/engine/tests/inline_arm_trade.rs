@@ -275,16 +275,17 @@ impl ArmCensus {
 }
 
 fn arm_census(engine: &TemporalEngine) -> ArmCensus {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut census = ArmCensus {
-        held: BTreeMap::new(),
-        declared_buckets: shard.bucket_index.bucket_map.len(),
-    };
-    for bucket in shard.bucket_index.bucket_map.values() {
-        *census.held.entry(bucket.block_index.len()).or_default() += 1;
-    }
-    census
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let mut census = ArmCensus {
+            held: BTreeMap::new(),
+            declared_buckets: shard.bucket_index.bucket_map.len(),
+        };
+        for bucket in shard.bucket_index.bucket_map.values() {
+            *census.held.entry(bucket.block_index.len()).or_default() += 1;
+        }
+        census
+    })
 }
 
 /// One real block entry, cloned out of a seeded store. The shapes below hold REAL entries rather
@@ -304,14 +305,15 @@ fn one_real_block_free_standing() -> BlockIndex {
 }
 
 fn one_real_block(engine: &TemporalEngine) -> BlockIndex {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for block in bucket.block_index.values() {
-            return block.clone();
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for block in bucket.block_index.values() {
+                return block.clone();
+            }
         }
-    }
-    panic!("a seeded store holds a block");
+        panic!("a seeded store holds a block");
+    })
 }
 
 // =============================================================================================
@@ -1313,11 +1315,10 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
     let before = read_back_count(&engine, &keys);
     assert_eq!(keys.len(), before, "the fixture must read back before it is released");
 
-    let candidates: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let candidates: Vec<u32> = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         shard.bucket_index.bucket_map.keys().copied().collect()
-    };
+    });
     assert!(!candidates.is_empty(), "the fixture holds no buckets to release");
 
     // THE DUMP IS NOT OPTIONAL HERE, AND THAT IS THE POINT THIS TEST NEARLY MISSED.
@@ -1343,9 +1344,8 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
 
     // The released buckets really are in the empty state, and their object index really was kept --
     // which is the pair that distinguishes a released bucket from one holding nothing.
-    let (empty_indexes, kept_object_indexes) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let (empty_indexes, kept_object_indexes) = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let mut empty = 0usize;
         let mut kept = 0usize;
         for routing_bucket in &shard.bucket_index.released_buckets {
@@ -1359,7 +1359,7 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
             }
         }
         (empty, kept)
-    };
+    });
     assert_eq!(
         released, empty_indexes,
         "{released} buckets were released but {empty_indexes} hold an empty block index; the empty \

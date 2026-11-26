@@ -331,18 +331,19 @@ impl TemporalEngine {
     /// Each dirty bucket's first undumped write sequence, for the test that pins it.
     #[cfg(test)]
     pub(crate) fn first_dirty_sequences_for_test(&self, shard_id: ShardId) -> Vec<(u32, u64)> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return Vec::new();
-        };
-        let mut out = shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.first_dirty_wal_sequence))
-            .collect::<Vec<_>>();
-        out.sort();
-        out
+        self.shards.with_state(shard_id, |shard| {
+            let Some(shard) = shard else {
+                return Vec::new();
+            };
+            let mut out = shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.first_dirty_wal_sequence))
+                .collect::<Vec<_>>();
+            out.sort();
+            out
+        })
     }
 
     /// The per-slab live/stale tally the reclaim planner reads, without the whole-store scan.
@@ -372,107 +373,106 @@ impl TemporalEngine {
         // fields: `storage_reclaim_candidates_from_slab_reports` does not read it, and
         // `the_reclaim_planner_sees_the_same_candidates` is what holds that true.
         let block_slab_counts = self.block_store.slab_block_counts().unwrap_or_default();
-        let shards = self.shards.read().expect("engine lock poisoned");
-        // THE MAINTAINED TALLY FIRST, AND THE WALK ONLY IF THERE ISN'T ONE.
-        //
-        // Everything below builds a per-slab live/stale view out of `live_page_refs` and
-        // `live_physical_bytes`, and those two are exactly what the shard now keeps a running
-        // total of. Taking them from the tally makes this round cost the number of SLABS; walking
-        // for them costs the number of live BLOCKS, on a loop that ticks every thirty seconds per
-        // shard for the life of the process.
-        //
-        // The fallback is not decoration. A shard whose tally has never been derived reports
-        // `is_ready() == false`, and an empty tally is indistinguishable from a shard holding no
-        // live blocks at all -- which would make every slab look like pure garbage. So an
-        // underived tally costs the old cost rather than producing a confident wrong answer.
-        //
-        // `live_object_count` and `live_routing_bucket_count` are left at zero on the maintained
-        // path, joining the read-dependent fields already documented above:
-        // `storage_reclaim_candidates_from_slab_reports` reads neither, and
-        // `the_reclaim_planner_sees_the_same_candidates` is what holds that true.
-        let maintained = shards
-            .get(&shard_id)
-            .filter(|shard| shard.bucket_index.block_slab_live.is_ready())
-            .map(|shard| shard.bucket_index.block_slab_live.iter().collect::<Vec<_>>());
-        // ENTRIES, NOT ADDRESSES, AND THAT IS NOT A NEW COST. `collect_live_block_addresses` is
-        // `collect_live_block_entries(..).map(|entry| entry.address)`, so the entries were already
-        // being materialized and thrown away; keeping them drops a second `Vec` rather than adding
-        // work. What the key buys is `live_routing_bucket_count`, which the address alone can no
-        // longer answer.
-        let live_entries = match maintained {
-            Some(_) => Vec::new(),
-            None => shards
-                .get(&shard_id)
-                .map(collect_live_block_entries)
-                .unwrap_or_default(),
-        };
-        let mut reports = block_slab_counts
-            .iter()
-            .map(|(block_slab_id, physical_bytes, block_count)| {
-                (
-                    *block_slab_id,
+        self.shards.with_state(shard_id, |shard| {
+            // THE MAINTAINED TALLY FIRST, AND THE WALK ONLY IF THERE ISN'T ONE.
+            //
+            // Everything below builds a per-slab live/stale view out of `live_page_refs` and
+            // `live_physical_bytes`, and those two are exactly what the shard now keeps a running
+            // total of. Taking them from the tally makes this round cost the number of SLABS; walking
+            // for them costs the number of live BLOCKS, on a loop that ticks every thirty seconds per
+            // shard for the life of the process.
+            //
+            // The fallback is not decoration. A shard whose tally has never been derived reports
+            // `is_ready() == false`, and an empty tally is indistinguishable from a shard holding no
+            // live blocks at all -- which would make every slab look like pure garbage. So an
+            // underived tally costs the old cost rather than producing a confident wrong answer.
+            //
+            // `live_object_count` and `live_routing_bucket_count` are left at zero on the maintained
+            // path, joining the read-dependent fields already documented above:
+            // `storage_reclaim_candidates_from_slab_reports` reads neither, and
+            // `the_reclaim_planner_sees_the_same_candidates` is what holds that true.
+            let maintained = shard
+                .filter(|shard| shard.bucket_index.block_slab_live.is_ready())
+                .map(|shard| shard.bucket_index.block_slab_live.iter().collect::<Vec<_>>());
+            // ENTRIES, NOT ADDRESSES, AND THAT IS NOT A NEW COST. `collect_live_block_addresses` is
+            // `collect_live_block_entries(..).map(|entry| entry.address)`, so the entries were already
+            // being materialized and thrown away; keeping them drops a second `Vec` rather than adding
+            // work. What the key buys is `live_routing_bucket_count`, which the address alone can no
+            // longer answer.
+            let live_entries = match maintained {
+                Some(_) => Vec::new(),
+                None => shard
+                    .map(collect_live_block_entries)
+                    .unwrap_or_default(),
+            };
+            let mut reports = block_slab_counts
+                .iter()
+                .map(|(block_slab_id, physical_bytes, block_count)| {
+                    (
+                        *block_slab_id,
+                        StorageRecoverySlabLiveReport {
+                            block_slab_id: *block_slab_id,
+                            physical_bytes: *physical_bytes,
+                            block_count: *block_count,
+                            ..StorageRecoverySlabLiveReport::default()
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            if let Some(maintained) = maintained {
+                for (block_slab_id, tally) in maintained {
+                    let slab_report =
+                        reports
+                            .entry(block_slab_id)
+                            .or_insert(StorageRecoverySlabLiveReport {
+                                block_slab_id,
+                                ..StorageRecoverySlabLiveReport::default()
+                            });
+                    slab_report.live_block_refs = tally.block_refs;
+                    slab_report.live_physical_bytes = tally.bytes;
+                }
+            }
+            let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
+            let mut live_routing_buckets = BTreeMap::<u64, BTreeSet<u32>>::new();
+            for live_entry in &live_entries {
+                let address = &live_entry.address;
+                let slab_report = reports.entry(address.block_slab_id()).or_insert(
                     StorageRecoverySlabLiveReport {
-                        block_slab_id: *block_slab_id,
-                        physical_bytes: *physical_bytes,
-                        block_count: *block_count,
+                        block_slab_id: address.block_slab_id(),
                         ..StorageRecoverySlabLiveReport::default()
                     },
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        if let Some(maintained) = maintained {
-            for (block_slab_id, tally) in maintained {
-                let slab_report =
-                    reports
-                        .entry(block_slab_id)
-                        .or_insert(StorageRecoverySlabLiveReport {
-                            block_slab_id,
-                            ..StorageRecoverySlabLiveReport::default()
-                        });
-                slab_report.live_block_refs = tally.block_refs;
-                slab_report.live_physical_bytes = tally.bytes;
+                );
+                slab_report.live_block_refs = slab_report.live_block_refs.saturating_add(1);
+                slab_report.live_physical_bytes = slab_report
+                    .live_physical_bytes
+                    .saturating_add(address.length());
+                {
+                    let objects = live_object_ids.entry(address.block_slab_id()).or_default();
+                    objects.insert(expected_live_block_object_id(shard_id, live_entry));
+                    slab_report.live_object_count = objects.len() as u64;
+                }
+                if let Some(routing_bucket) = live_entry.filed_bucket() {
+                    let buckets = live_routing_buckets
+                        .entry(address.block_slab_id())
+                        .or_default();
+                    buckets.insert(routing_bucket);
+                    slab_report.live_routing_bucket_count = buckets.len() as u64;
+                }
             }
-        }
-        let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
-        let mut live_routing_buckets = BTreeMap::<u64, BTreeSet<u32>>::new();
-        for live_entry in &live_entries {
-            let address = &live_entry.address;
-            let slab_report = reports.entry(address.block_slab_id()).or_insert(
-                StorageRecoverySlabLiveReport {
-                    block_slab_id: address.block_slab_id(),
-                    ..StorageRecoverySlabLiveReport::default()
-                },
-            );
-            slab_report.live_block_refs = slab_report.live_block_refs.saturating_add(1);
-            slab_report.live_physical_bytes = slab_report
-                .live_physical_bytes
-                .saturating_add(address.length());
-            {
-                let objects = live_object_ids.entry(address.block_slab_id()).or_default();
-                objects.insert(expected_live_block_object_id(shard_id, live_entry));
-                slab_report.live_object_count = objects.len() as u64;
-            }
-            if let Some(routing_bucket) = live_entry.filed_bucket() {
-                let buckets = live_routing_buckets
-                    .entry(address.block_slab_id())
-                    .or_default();
-                buckets.insert(routing_bucket);
-                slab_report.live_routing_bucket_count = buckets.len() as u64;
-            }
-        }
-        reports
-            .into_values()
-            .map(|mut report| {
-                report.stale_block_estimate =
-                    report.block_count.saturating_sub(report.live_block_refs);
-                report.live_ref_density_basis_points = if report.block_count == 0 {
-                    0
-                } else {
-                    report.live_block_refs.saturating_mul(10_000) / report.block_count
-                };
-                report
-            })
-            .collect()
+            reports
+                .into_values()
+                .map(|mut report| {
+                    report.stale_block_estimate =
+                        report.block_count.saturating_sub(report.live_block_refs);
+                    report.live_ref_density_basis_points = if report.block_count == 0 {
+                        0
+                    } else {
+                        report.live_block_refs.saturating_mul(10_000) / report.block_count
+                    };
+                    report
+                })
+                .collect()
+        })
     }
 
     /// The object-lifecycle view on its own, without the whole-store scan around it.
@@ -503,37 +503,38 @@ impl TemporalEngine {
 
     #[cfg(test)]
     pub(crate) fn live_block_count_for_test(&self, shard_id: ShardId) -> usize {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&shard_id)
-            .map(|shard| collect_live_block_addresses(shard).len())
-            .unwrap_or_default()
+        self.shards.with_state(shard_id, |shard| {
+            shard
+                .map(|shard| collect_live_block_addresses(shard).len())
+                .unwrap_or_default()
+        })
     }
 
     pub(super) fn storage_object_lifecycle_snapshot(
         &self,
         shard_id: ShardId,
     ) -> StorageObjectLifecycleReport {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return StorageObjectLifecycleReport::default();
-        };
-        // ONE walk, three consumers.
-        //
-        // This used to walk the shard THREE times over identical, immutable state: once inside
-        // `validate_shard_block_ownership`, once inside `storage_object_lifecycle_report`, and once
-        // in `collect_live_block_addresses`. Each call to `collect_live_block_entries` materializes
-        // every live block in the shard into a fresh Vec, and measured at 4,000 objects this single
-        // function accounted for 3.0x the shard -- the largest piece of `apply_storage_lifecycle`,
-        // itself 12.0x (`what_each_plan_call_walks`).
-        //
-        // Hoisting is safe HERE in a way it is not across a maintenance round: the read lock is
-        // held for all three, `&ShardState` is immutable throughout, and nothing between them can
-        // change what a walk would find. Elsewhere in the round the stages genuinely mutate
-        // between calls, which is why this is a hoist and not a cache.
-        //
-        let entries = collect_live_block_entries(shard);
-        self.storage_object_lifecycle_snapshot_from_entries(shard_id, shard, &entries)
+        self.shards.with_state(shard_id, |shard| {
+            let Some(shard) = shard else {
+                return StorageObjectLifecycleReport::default();
+            };
+            // ONE walk, three consumers.
+            //
+            // This used to walk the shard THREE times over identical, immutable state: once inside
+            // `validate_shard_block_ownership`, once inside `storage_object_lifecycle_report`, and once
+            // in `collect_live_block_addresses`. Each call to `collect_live_block_entries` materializes
+            // every live block in the shard into a fresh Vec, and measured at 4,000 objects this single
+            // function accounted for 3.0x the shard -- the largest piece of `apply_storage_lifecycle`,
+            // itself 12.0x (`what_each_plan_call_walks`).
+            //
+            // Hoisting is safe HERE in a way it is not across a maintenance round: the read lock is
+            // held for all three, `&ShardState` is immutable throughout, and nothing between them can
+            // change what a walk would find. Elsewhere in the round the stages genuinely mutate
+            // between calls, which is why this is a hoist and not a cache.
+            //
+            let entries = collect_live_block_entries(shard);
+            self.storage_object_lifecycle_snapshot_from_entries(shard_id, shard, &entries)
+        })
     }
 
     /// The snapshot over a listing the caller already took under its own read of the shard, so the
@@ -652,270 +653,271 @@ impl TemporalEngine {
         let slab_descriptors = self.block_store.slab_descriptors();
         let slab_summary = self.block_store.slab_summary();
         let block_slab_reports = self.block_store.slab_reports().unwrap_or_default();
-        let shards = self.shards_read_marked();
-        // ONE walk, three consumers, under the guard that is already held.
-        //
-        // This function walked the whole live-block set THREE times: here for the addresses it
-        // probes, again inside `validate_shard_block_ownership`, again inside
-        // `storage_object_lifecycle_report`. `a_round_walks_the_live_block_set_a_constant_number_of_times`
-        // counts all three, and they were three of the whole-store passes one periodic
-        // round makes.
-        //
-        // Safe for the same reason the hoist in `storage_object_lifecycle_snapshot` above is, and
-        // NOT for the reason a round-scoped memo would need: the `shards` read guard taken on the
-        // line above is held across all three, so `&ShardState` cannot change between them and a
-        // second walk could only rebuild what the first one already holds. Nothing here is cached
-        // past the guard, so there is no invalidation question to get wrong.
-        //
-        // The addresses vector is GONE rather than moved: the probe loop below reads
-        // `entry.address` straight out of the entries it now has, so the second `Vec` this
-        // function used to keep alive beside them is not allocated at all.
-        // Called directly rather than through `.map`, so `#[track_caller]` attributes the walk
-        // to this file and `live_block_scan_sites_snapshot` keeps naming a real site.
-        let live_entries = match shards.get(&shard_id) {
-            Some(shard) => collect_live_block_entries(shard),
-            None => Vec::new(),
-        };
-        let total_block_refs = live_entries.len();
-        // WHERE this call reads, not just how much.
-        //
-        // A bounded call used to read `addresses[0 .. limit]` and nothing else, every round. The
-        // budget made the cost constant; starting from the front every time made the COVERAGE
-        // constant too, so a live block at an index past the budget was never read by the
-        // periodic loop at all. The doc above promises corruption is "still found, over rounds
-        // rather than all in one", and that promise needs the window to MOVE.
-        //
-        // So a bounded call resumes where the last one stopped and wraps at the end. Unbounded
-        // calls (`readable_probe_limit == 0`) read everything, so they start at 0 and leave the
-        // stored position untouched -- a diagnostic call must not shift the loop's window.
-        //
-        // The position is clamped rather than trusted: the live-block vector is rebuilt each
-        // round and can shrink (compaction, eviction, expiry), and a stale index past its end
-        // would otherwise skip the whole round.
-        let probe_window_start = if readable_probe_limit > 0 && total_block_refs > 0 {
-            self.recovery_probe_cursors
-                .read()
-                .expect("recovery probe cursor lock poisoned")
-                .get(&shard_id)
-                .copied()
-                .filter(|start| *start < total_block_refs)
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        let probe_window_len = if readable_probe_limit == 0 {
-            total_block_refs
-        } else {
-            readable_probe_limit.min(total_block_refs)
-        };
-        // Whether index `position` falls in the window `[start, start + len)` taken modulo the
-        // live-block count. Written as a distance from the start so the wrap needs no second
-        // range and no branch on whether the window crosses the end.
-        let in_probe_window = |position: usize| -> bool {
-            if probe_window_len == 0 {
-                return false;
-            }
-            if probe_window_len >= total_block_refs {
-                return true;
-            }
-            let distance = if position >= probe_window_start {
-                position - probe_window_start
-            } else {
-                position + total_block_refs - probe_window_start
-            };
-            distance < probe_window_len
-        };
-        let mut readable_block_refs = 0usize;
-        let mut probed_block_refs = 0usize;
-        let mut unreadable_block_refs = Vec::new();
-        let mut owner_mismatch_block_refs = Vec::new();
-        let mut missing_owner_block_refs = 0usize;
-        let mut object_lifecycle = StorageObjectLifecycleReport::default();
-        let mut feature_block_layout = StorageFeatureBlockLayoutReport::default();
-        let mut block_slab_live_reports = block_slab_reports
-            .iter()
-            .map(|report| {
-                (
-                    report.block_slab_id,
-                    StorageRecoverySlabLiveReport {
-                        block_slab_id: report.block_slab_id,
-                        physical_bytes: report.physical_bytes,
-                        logical_bytes: report.logical_bytes,
-                        block_count: report.block_count,
-                        ..StorageRecoverySlabLiveReport::default()
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
-        let mut live_routing_buckets = BTreeMap::<u64, BTreeSet<u32>>::new();
-        for (position, live_entry) in live_entries.iter().enumerate() {
-            let address = &live_entry.address;
-            let slab_report = block_slab_live_reports
-                .entry(address.block_slab_id())
-                .or_insert(StorageRecoverySlabLiveReport {
-                    block_slab_id: address.block_slab_id(),
-                    ..StorageRecoverySlabLiveReport::default()
-                });
-            slab_report.live_block_refs = slab_report.live_block_refs.saturating_add(1);
-            slab_report.live_physical_bytes = slab_report
-                .live_physical_bytes
-                .saturating_add(address.length());
-            {
-                let objects = live_object_ids.entry(address.block_slab_id()).or_default();
-                objects.insert(expected_live_block_object_id(shard_id, live_entry));
-                slab_report.live_object_count = objects.len() as u64;
-            }
-            if let Some(routing_bucket) = live_entry.filed_bucket() {
-                let buckets = live_routing_buckets
-                    .entry(address.block_slab_id())
-                    .or_default();
-                buckets.insert(routing_bucket);
-                slab_report.live_routing_bucket_count = buckets.len() as u64;
-            }
-            // Outside this call's window it stops READING, and keeps everything above that does
-            // not need a read -- the per-slab live tallies are what the reclaim planner and the
-            // object-lifecycle report are built from, and they must stay complete whatever the
-            // window is. Only the reads below are sampled.
+        self.shards.with_state(shard_id, |shard| {
+            // ONE walk, three consumers, under the guard that is already held.
             //
-            // This used to test `probed_page_refs >= readable_probe_limit`, which is the same
-            // budget but anchored at the front: it always admitted the first `limit` entries and
-            // never any other. The window test admits `limit` entries too -- so the per-round
-            // cost is unchanged -- but a different `limit` of them each round.
-            if !in_probe_window(position) {
-                continue;
-            }
-            probed_block_refs += 1;
-            // Counted against the shard-table guard. This probe DOES read under the read guard,
-            // and unlike the warm-up it is bounded -- `readable_probe_limit` stops the reads
-            // while the per-slab tallies above keep going. Routed through the counter so the
-            // measurement covers both of the engine's maintenance block readers and a claim about
-            // one of them is made against a total that includes the other.
-            match self.read_block_counted(address) {
-                Ok(bytes) => {
-                    readable_block_refs += 1;
-                    slab_report.readable_live_block_refs =
-                        slab_report.readable_live_block_refs.saturating_add(1);
-                    slab_report.live_logical_bytes = slab_report
-                        .live_logical_bytes
-                        .saturating_add(bytes.len() as u64);
+            // This function walked the whole live-block set THREE times: here for the addresses it
+            // probes, again inside `validate_shard_block_ownership`, again inside
+            // `storage_object_lifecycle_report`. `a_round_walks_the_live_block_set_a_constant_number_of_times`
+            // counts all three, and they were three of the whole-store passes one periodic
+            // round makes.
+            //
+            // Safe for the same reason the hoist in `storage_object_lifecycle_snapshot` above is, and
+            // NOT for the reason a round-scoped memo would need: the `shards` read guard taken on the
+            // line above is held across all three, so `&ShardState` cannot change between them and a
+            // second walk could only rebuild what the first one already holds. Nothing here is cached
+            // past the guard, so there is no invalidation question to get wrong.
+            //
+            // The addresses vector is GONE rather than moved: the probe loop below reads
+            // `entry.address` straight out of the entries it now has, so the second `Vec` this
+            // function used to keep alive beside them is not allocated at all.
+            // Called directly rather than through `.map`, so `#[track_caller]` attributes the walk
+            // to this file and `live_block_scan_sites_snapshot` keeps naming a real site.
+            let live_entries = match shard {
+                Some(shard) => collect_live_block_entries(shard),
+                None => Vec::new(),
+            };
+            let total_block_refs = live_entries.len();
+            // WHERE this call reads, not just how much.
+            //
+            // A bounded call used to read `addresses[0 .. limit]` and nothing else, every round. The
+            // budget made the cost constant; starting from the front every time made the COVERAGE
+            // constant too, so a live block at an index past the budget was never read by the
+            // periodic loop at all. The doc above promises corruption is "still found, over rounds
+            // rather than all in one", and that promise needs the window to MOVE.
+            //
+            // So a bounded call resumes where the last one stopped and wraps at the end. Unbounded
+            // calls (`readable_probe_limit == 0`) read everything, so they start at 0 and leave the
+            // stored position untouched -- a diagnostic call must not shift the loop's window.
+            //
+            // The position is clamped rather than trusted: the live-block vector is rebuilt each
+            // round and can shrink (compaction, eviction, expiry), and a stale index past its end
+            // would otherwise skip the whole round.
+            let probe_window_start = if readable_probe_limit > 0 && total_block_refs > 0 {
+                self.recovery_probe_cursors
+                    .read()
+                    .expect("recovery probe cursor lock poisoned")
+                    .get(&shard_id)
+                    .copied()
+                    .filter(|start| *start < total_block_refs)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let probe_window_len = if readable_probe_limit == 0 {
+                total_block_refs
+            } else {
+                readable_probe_limit.min(total_block_refs)
+            };
+            // Whether index `position` falls in the window `[start, start + len)` taken modulo the
+            // live-block count. Written as a distance from the start so the wrap needs no second
+            // range and no branch on whether the window crosses the end.
+            let in_probe_window = |position: usize| -> bool {
+                if probe_window_len == 0 {
+                    return false;
                 }
-                Err(err) => {
-                    slab_report.unreadable_live_block_refs =
-                        slab_report.unreadable_live_block_refs.saturating_add(1);
-                    unreadable_block_refs.push(StorageRecoveryBlockError {
-                        block_slab_id: address.block_slab_id(),
-                        offset: address.offset(),
-                        length: address.length(),
-                        error: err.to_string(),
-                    });
+                if probe_window_len >= total_block_refs {
+                    return true;
                 }
-            }
-        }
-        // Derived BEFORE the report below consumes the entries. Same set, same order, same
-        // answer as the address vector this used to be built from.
-        let mut live_block_slab_ids = live_entries
-            .iter()
-            .map(|entry| entry.address.block_slab_id())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        live_block_slab_ids.sort_unstable();
-        if let Some(shard) = shards.get(&shard_id) {
-            // `validate_shard_block_ownership` reads the routing range and then walks; the range
-            // is read here and the walk it would have made is the one already in hand.
-            let (start_routing_bucket, end_routing_bucket) = self
-                .infos
-                .read()
-                .expect("info lock poisoned")
-                .get(&shard_id)
-                .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
-                .unwrap_or((0, u32::MAX));
-            let ownership = validate_bucket_ownership_index_from_entries(
-                shard_id,
-                shard,
-                &live_entries,
-                start_routing_bucket,
-                end_routing_bucket,
-            );
-            owner_mismatch_block_refs = ownership.mismatches;
-            missing_owner_block_refs = ownership.missing_owner_block_refs;
-            // `storage_object_lifecycle_report` is this call with an empty bucket selection and a
-            // routing function it never reaches -- see `storage_object_lifecycle_report_for_buckets`.
-            object_lifecycle = object_lifecycle_report_from_entries(
-                shard_id,
-                shard,
-                live_entries,
-                &BTreeSet::new(),
-                |_| 0,
-            );
-            object_lifecycle.owner_mismatch_block_refs = owner_mismatch_block_refs.len() as u64;
-            object_lifecycle.missing_owner_block_refs = missing_owner_block_refs as u64;
-            feature_block_layout = storage_feature_block_layout_report(&self.block_store, shard);
-        }
-        let block_slab_live_reports = block_slab_live_reports
-            .into_values()
-            .map(|mut report| {
-                report.stale_block_estimate =
-                    report.block_count.saturating_sub(report.live_block_refs);
-                report.live_ref_density_basis_points = if report.block_count == 0 {
-                    0
+                let distance = if position >= probe_window_start {
+                    position - probe_window_start
                 } else {
-                    report.live_block_refs.saturating_mul(10_000) / report.block_count
+                    position + total_block_refs - probe_window_start
                 };
-                report
-            })
-            .collect::<Vec<_>>();
-        object_lifecycle.stale_object_ids = block_slab_live_reports
-            .iter()
-            .map(|report| report.stale_block_estimate)
-            .sum();
+                distance < probe_window_len
+            };
+            let mut readable_block_refs = 0usize;
+            let mut probed_block_refs = 0usize;
+            let mut unreadable_block_refs = Vec::new();
+            let mut owner_mismatch_block_refs = Vec::new();
+            let mut missing_owner_block_refs = 0usize;
+            let mut object_lifecycle = StorageObjectLifecycleReport::default();
+            let mut feature_block_layout = StorageFeatureBlockLayoutReport::default();
+            let mut block_slab_live_reports = block_slab_reports
+                .iter()
+                .map(|report| {
+                    (
+                        report.block_slab_id,
+                        StorageRecoverySlabLiveReport {
+                            block_slab_id: report.block_slab_id,
+                            physical_bytes: report.physical_bytes,
+                            logical_bytes: report.logical_bytes,
+                            block_count: report.block_count,
+                            ..StorageRecoverySlabLiveReport::default()
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
+            let mut live_routing_buckets = BTreeMap::<u64, BTreeSet<u32>>::new();
+            for (position, live_entry) in live_entries.iter().enumerate() {
+                let address = &live_entry.address;
+                let slab_report = block_slab_live_reports
+                    .entry(address.block_slab_id())
+                    .or_insert(StorageRecoverySlabLiveReport {
+                        block_slab_id: address.block_slab_id(),
+                        ..StorageRecoverySlabLiveReport::default()
+                    });
+                slab_report.live_block_refs = slab_report.live_block_refs.saturating_add(1);
+                slab_report.live_physical_bytes = slab_report
+                    .live_physical_bytes
+                    .saturating_add(address.length());
+                {
+                    let objects = live_object_ids.entry(address.block_slab_id()).or_default();
+                    objects.insert(expected_live_block_object_id(shard_id, live_entry));
+                    slab_report.live_object_count = objects.len() as u64;
+                }
+                if let Some(routing_bucket) = live_entry.filed_bucket() {
+                    let buckets = live_routing_buckets
+                        .entry(address.block_slab_id())
+                        .or_default();
+                    buckets.insert(routing_bucket);
+                    slab_report.live_routing_bucket_count = buckets.len() as u64;
+                }
+                // Outside this call's window it stops READING, and keeps everything above that does
+                // not need a read -- the per-slab live tallies are what the reclaim planner and the
+                // object-lifecycle report are built from, and they must stay complete whatever the
+                // window is. Only the reads below are sampled.
+                //
+                // This used to test `probed_page_refs >= readable_probe_limit`, which is the same
+                // budget but anchored at the front: it always admitted the first `limit` entries and
+                // never any other. The window test admits `limit` entries too -- so the per-round
+                // cost is unchanged -- but a different `limit` of them each round.
+                if !in_probe_window(position) {
+                    continue;
+                }
+                probed_block_refs += 1;
+                // Counted against the shard-table guard. This probe DOES read under the read guard,
+                // and unlike the warm-up it is bounded -- `readable_probe_limit` stops the reads
+                // while the per-slab tallies above keep going. Routed through the counter so the
+                // measurement covers both of the engine's maintenance block readers and a claim about
+                // one of them is made against a total that includes the other.
+                match self.read_block_counted(address) {
+                    Ok(bytes) => {
+                        readable_block_refs += 1;
+                        slab_report.readable_live_block_refs =
+                            slab_report.readable_live_block_refs.saturating_add(1);
+                        slab_report.live_logical_bytes = slab_report
+                            .live_logical_bytes
+                            .saturating_add(bytes.len() as u64);
+                    }
+                    Err(err) => {
+                        slab_report.unreadable_live_block_refs =
+                            slab_report.unreadable_live_block_refs.saturating_add(1);
+                        unreadable_block_refs.push(StorageRecoveryBlockError {
+                            block_slab_id: address.block_slab_id(),
+                            offset: address.offset(),
+                            length: address.length(),
+                            error: err.to_string(),
+                        });
+                    }
+                }
+            }
+            // Derived BEFORE the report below consumes the entries. Same set, same order, same
+            // answer as the address vector this used to be built from.
+            let mut live_block_slab_ids = live_entries
+                .iter()
+                .map(|entry| entry.address.block_slab_id())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            live_block_slab_ids.sort_unstable();
+            if let Some(shard) = shard {
+                // `validate_shard_block_ownership` reads the routing range and then walks; the range
+                // is read here and the walk it would have made is the one already in hand.
+                let (start_routing_bucket, end_routing_bucket) = self
+                    .infos
+                    .read()
+                    .expect("info lock poisoned")
+                    .get(&shard_id)
+                    .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
+                    .unwrap_or((0, u32::MAX));
+                let ownership = validate_bucket_ownership_index_from_entries(
+                    shard_id,
+                    shard,
+                    &live_entries,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                );
+                owner_mismatch_block_refs = ownership.mismatches;
+                missing_owner_block_refs = ownership.missing_owner_block_refs;
+                // `storage_object_lifecycle_report` is this call with an empty bucket selection and a
+                // routing function it never reaches -- see `storage_object_lifecycle_report_for_buckets`.
+                object_lifecycle = object_lifecycle_report_from_entries(
+                    shard_id,
+                    shard,
+                    live_entries,
+                    &BTreeSet::new(),
+                    |_| 0,
+                );
+                object_lifecycle.owner_mismatch_block_refs = owner_mismatch_block_refs.len() as u64;
+                object_lifecycle.missing_owner_block_refs = missing_owner_block_refs as u64;
+                feature_block_layout = storage_feature_block_layout_report(&self.block_store, shard);
+            }
+            let block_slab_live_reports = block_slab_live_reports
+                .into_values()
+                .map(|mut report| {
+                    report.stale_block_estimate =
+                        report.block_count.saturating_sub(report.live_block_refs);
+                    report.live_ref_density_basis_points = if report.block_count == 0 {
+                        0
+                    } else {
+                        report.live_block_refs.saturating_mul(10_000) / report.block_count
+                    };
+                    report
+                })
+                .collect::<Vec<_>>();
+            object_lifecycle.stale_object_ids = block_slab_live_reports
+                .iter()
+                .map(|report| report.stale_block_estimate)
+                .sum();
 
-        // Hand the next round the position after this window, wrapping at the end.
-        //
-        // Advanced by the window LENGTH rather than by `probed_page_refs` so a round that found
-        // fewer readable blocks than it looked at still moves on. Those are the same number today
-        // -- every entry in the window is probed -- but tying the advance to a success count is
-        // how a sampler gets stuck re-reading the region it is failing on.
-        //
-        // Only bounded callers write it, for the reason on the field itself: an unbounded call
-        // has already read the whole shard, and moving the position would make the periodic
-        // loop skip a window it had not covered.
-        if readable_probe_limit > 0 && total_block_refs > 0 {
-            let next = (probe_window_start + probe_window_len) % total_block_refs;
-            self.recovery_probe_cursors
-                .write()
-                .expect("recovery probe cursor lock poisoned")
-                .insert(shard_id, next);
-        }
-        StorageRecoveryReport {
-            shard_id,
-            index_bytes,
-            index_write_atomic: true,
-            wal_records,
-            index_log_records,
-            active_block_slab_ids,
-            live_block_slab_ids,
-            slab_descriptors,
-            slab_summary,
-            block_slab_reports,
-            block_slab_live_reports,
-            total_block_refs,
-            readable_block_refs,
-            probed_block_refs,
-            readable_probe_cursor: probe_window_start,
-            unreadable_block_refs,
-            owner_mismatch_block_refs,
-            missing_owner_block_refs,
-            object_lifecycle,
-            // Against what was PROBED, not against every live block. With a sample budget the
-            // two differ, and reading it as "every block is readable" when only some were tried
-            // is exactly the false assurance this field exists to avoid.
-            all_live_blocks_readable: probed_block_refs == readable_block_refs,
-            boundary: StorageRecoveryBoundaryReport::default(),
-            slab_integrity: StorageSlabIntegrityReport::default(),
-            feature_block_layout,
-        }
+            // Hand the next round the position after this window, wrapping at the end.
+            //
+            // Advanced by the window LENGTH rather than by `probed_page_refs` so a round that found
+            // fewer readable blocks than it looked at still moves on. Those are the same number today
+            // -- every entry in the window is probed -- but tying the advance to a success count is
+            // how a sampler gets stuck re-reading the region it is failing on.
+            //
+            // Only bounded callers write it, for the reason on the field itself: an unbounded call
+            // has already read the whole shard, and moving the position would make the periodic
+            // loop skip a window it had not covered.
+            if readable_probe_limit > 0 && total_block_refs > 0 {
+                let next = (probe_window_start + probe_window_len) % total_block_refs;
+                self.recovery_probe_cursors
+                    .write()
+                    .expect("recovery probe cursor lock poisoned")
+                    .insert(shard_id, next);
+            }
+            StorageRecoveryReport {
+                shard_id,
+                index_bytes,
+                index_write_atomic: true,
+                wal_records,
+                index_log_records,
+                active_block_slab_ids,
+                live_block_slab_ids,
+                slab_descriptors,
+                slab_summary,
+                block_slab_reports,
+                block_slab_live_reports,
+                total_block_refs,
+                readable_block_refs,
+                probed_block_refs,
+                readable_probe_cursor: probe_window_start,
+                unreadable_block_refs,
+                owner_mismatch_block_refs,
+                missing_owner_block_refs,
+                object_lifecycle,
+                // Against what was PROBED, not against every live block. With a sample budget the
+                // two differ, and reading it as "every block is readable" when only some were tried
+                // is exactly the false assurance this field exists to avoid.
+                all_live_blocks_readable: probed_block_refs == readable_block_refs,
+                boundary: StorageRecoveryBoundaryReport::default(),
+                slab_integrity: StorageSlabIntegrityReport::default(),
+                feature_block_layout,
+            }
+        })
     }
 
     /// Hand the block store the per-slab live tally this engine's shards maintain.
@@ -930,27 +932,32 @@ impl TemporalEngine {
     ///
     /// Costs SLABS, not blocks -- which is the whole point of maintaining the tally.
     pub fn publish_block_slab_live_bytes(&self) -> usize {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        if shards.is_empty() {
-            return 0;
-        }
-        let mut live: BTreeMap<u64, BlockStoreSlabLive> = BTreeMap::new();
-        let mut ready_shards = 0_usize;
-        for shard in shards.values() {
-            if !shard.bucket_index.block_slab_live.is_ready() {
-                continue;
+        let published = self.shards.with_all_states(|shards| {
+            if shards.is_empty() {
+                return Err(0);
             }
-            ready_shards = ready_shards.saturating_add(1);
-            for (block_slab_id, tally) in shard.bucket_index.block_slab_live.iter() {
-                let entry = live.entry(block_slab_id).or_default();
-                entry.live_block_refs = entry.live_block_refs.saturating_add(tally.block_refs);
-                entry.live_bytes = entry.live_bytes.saturating_add(tally.bytes);
+            let mut live: BTreeMap<u64, BlockStoreSlabLive> = BTreeMap::new();
+            let mut ready_shards = 0_usize;
+            for shard in shards.values() {
+                if !shard.bucket_index.block_slab_live.is_ready() {
+                    continue;
+                }
+                ready_shards = ready_shards.saturating_add(1);
+                for (block_slab_id, tally) in shard.bucket_index.block_slab_live.iter() {
+                    let entry = live.entry(block_slab_id).or_default();
+                    entry.live_block_refs = entry.live_block_refs.saturating_add(tally.block_refs);
+                    entry.live_bytes = entry.live_bytes.saturating_add(tally.bytes);
+                }
             }
-        }
-        if ready_shards != shards.len() {
-            return ready_shards;
-        }
-        drop(shards);
+            if ready_shards != shards.len() {
+                return Err(ready_shards);
+            }
+            Ok((live, ready_shards))
+        });
+        let (live, ready_shards) = match published {
+            Ok(tallies) => tallies,
+            Err(ready_shards) => return ready_shards,
+        };
         self.block_store.publish_live_block_bytes(live);
         ready_shards
     }
@@ -962,17 +969,18 @@ impl TemporalEngine {
     /// shard's total is the sum of its own charges. `ready` is false when any shard has not
     /// derived its tally; a caller must then treat the figure as unknown, never as zero.
     pub fn block_slab_live_total(&self) -> (u64, bool) {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let mut total = 0_u64;
-        let mut ready = true;
-        for shard in shards.values() {
-            if !shard.bucket_index.block_slab_live.is_ready() {
-                ready = false;
-                continue;
+        self.shards.with_all_states(|shards| {
+            let mut total = 0_u64;
+            let mut ready = true;
+            for shard in shards.values() {
+                if !shard.bucket_index.block_slab_live.is_ready() {
+                    ready = false;
+                    continue;
+                }
+                total = total.saturating_add(shard.bucket_index.block_slab_live.total_live_bytes());
             }
-            total = total.saturating_add(shard.bucket_index.block_slab_live.total_live_bytes());
-        }
-        (total, ready)
+            (total, ready)
+        })
     }
 
     /// FORGET THE RECORDED STALE RANGES FOR SLABS THE COLLECTOR HAS TAKEN. The prune.
@@ -1000,20 +1008,21 @@ impl TemporalEngine {
         if block_slab_ids.is_empty() {
             return 0;
         }
-        let mut shards = self.shards_write_marked();
-        let mut dropped = 0_usize;
-        for shard in shards.values_mut() {
-            let before = shard.bucket_index.block_slab_live.stale_slab_count();
-            shard
-                .bucket_index
-                .block_slab_live
-                .discard_stale_slabs(block_slab_ids.iter().copied());
-            dropped = dropped
-                .saturating_add(before.saturating_sub(
-                    shard.bucket_index.block_slab_live.stale_slab_count(),
-                ));
-        }
-        dropped
+        self.shards.with_all_states_mut(|shards| {
+            let mut dropped = 0_usize;
+            for shard in shards.values_mut() {
+                let before = shard.bucket_index.block_slab_live.stale_slab_count();
+                shard
+                    .bucket_index
+                    .block_slab_live
+                    .discard_stale_slabs(block_slab_ids.iter().copied());
+                dropped = dropped
+                    .saturating_add(before.saturating_sub(
+                        shard.bucket_index.block_slab_live.stale_slab_count(),
+                    ));
+            }
+            dropped
+        })
     }
 
     /// The recorded stale summary as one shard holds it, for the reports and the measurements.
@@ -1025,10 +1034,10 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> Option<crate::engine::state::SlabStaleSummary> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&shard_id)
-            .map(|shard| shard.bucket_index.block_slab_live.stale_summary())
+        self.shards.with_state(shard_id, |shard| {
+            shard
+                .map(|shard| shard.bucket_index.block_slab_live.stale_summary())
+        })
     }
 
     /// Withhold this shard's maintained tally, so the next consumer takes its walk fallback.
@@ -1036,10 +1045,11 @@ impl TemporalEngine {
     /// For the A arm of the measurement only. Nothing repairs it except a reconcile or a seed.
     #[cfg(test)]
     pub(crate) fn forget_block_slab_live_for_test(&self, shard_id: ShardId) {
-        let mut shards = self.shards_write_marked();
-        if let Some(shard) = shards.get_mut(&shard_id) {
-            shard.bucket_index.block_slab_live.forget_for_test();
-        }
+        self.shards.with_state_mut(shard_id, |shard| {
+            if let Some(shard) = shard {
+                shard.bucket_index.block_slab_live.forget_for_test();
+            }
+        })
     }
 
     /// The per-slab live/stale tally the reclaim planner reads, exposed for the measurement.
@@ -1056,11 +1066,12 @@ impl TemporalEngine {
     /// The guard's entry point, and an operator's. Running it costs the walk it exists to
     /// replace, so nothing on the serving path calls it; the wholesale-rebuild paths seed instead.
     pub fn block_slab_live_drift_check(&self, shard_id: ShardId) -> BlockSlabLiveDriftReport {
-        let mut shards = self.shards_write_marked();
-        match shards.get_mut(&shard_id) {
-            Some(shard) => crate::engine::storage_bucket_internals::reconcile_block_slab_live(shard),
-            None => BlockSlabLiveDriftReport::default(),
-        }
+        self.shards.with_state_mut(shard_id, |shard| {
+            match shard {
+                Some(shard) => crate::engine::storage_bucket_internals::reconcile_block_slab_live(shard),
+                None => BlockSlabLiveDriftReport::default(),
+            }
+        })
     }
 
     /// The maintained tally as this shard holds it: `(block_slab_id, live block refs, live bytes)`.
@@ -1069,19 +1080,20 @@ impl TemporalEngine {
     /// never been derived -- the second is not the same as "no live pages" and must not read as
     /// it.
     pub fn block_slab_live_tallies(&self, shard_id: ShardId) -> Option<Vec<(u64, u64, u64)>> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&shard_id)?;
-        if !shard.bucket_index.block_slab_live.is_ready() {
-            return None;
-        }
-        Some(
-            shard
-                .bucket_index
-                .block_slab_live
-                .iter()
-                .map(|(block_slab_id, tally)| (block_slab_id, tally.block_refs, tally.bytes))
-                .collect(),
-        )
+        self.shards.with_state(shard_id, |shard| {
+            let shard = shard?;
+            if !shard.bucket_index.block_slab_live.is_ready() {
+                return None;
+            }
+            Some(
+                shard
+                    .bucket_index
+                    .block_slab_live
+                    .iter()
+                    .map(|(block_slab_id, tally)| (block_slab_id, tally.block_refs, tally.bytes))
+                    .collect(),
+            )
+        })
     }
 
     /// The slabs holding a live block according to the MAINTAINED tally, across every loaded shard
@@ -1095,49 +1107,51 @@ impl TemporalEngine {
     /// decide that nothing is collectable, where a wrong answer costs a skipped round; it must
     /// not use it to decide that something is, which the walk has to confirm.
     pub(crate) fn live_block_slab_ids_from_tally(&self) -> Option<Vec<u64>> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let mut ids = std::collections::BTreeSet::new();
-        for shard in shards.values() {
-            if !shard.bucket_index.block_slab_live.is_ready() {
-                return None;
+        self.shards.with_all_states(|shards| {
+            let mut ids = std::collections::BTreeSet::new();
+            for shard in shards.values() {
+                if !shard.bucket_index.block_slab_live.is_ready() {
+                    return None;
+                }
+                ids.extend(shard.bucket_index.block_slab_live.live_slab_ids());
             }
-            ids.extend(shard.bucket_index.block_slab_live.live_slab_ids());
-        }
-        for pinned in self
-            .unpublished_compaction_slabs
-            .read()
-            .expect("unpublished compaction lock poisoned")
-            .values()
-        {
-            ids.extend(pinned.iter().copied());
-        }
-        Some(ids.into_iter().collect())
+            for pinned in self
+                .unpublished_compaction_slabs
+                .read()
+                .expect("unpublished compaction lock poisoned")
+                .values()
+            {
+                ids.extend(pinned.iter().copied());
+            }
+            Some(ids.into_iter().collect())
+        })
     }
 
     /// Make one shard's tally forget a slab, for the guard that needs it wrong.
     #[cfg(test)]
     pub(crate) fn forget_tally_slab_for_test(&self, shard_id: ShardId, block_slab_id: u64) {
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        if let Some(shard) = shards.get_mut(&shard_id) {
-            shard
-                .bucket_index
-                .block_slab_live
-                .drop_slab_for_test(block_slab_id);
-        }
+        self.shards.with_state_mut(shard_id, |shard| {
+            if let Some(shard) = shard {
+                shard
+                    .bucket_index
+                    .block_slab_live
+                    .drop_slab_for_test(block_slab_id);
+            }
+        })
     }
 
     pub fn live_block_slab_ids(&self, shard_id: ShardId) -> Vec<u64> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let mut ids = shards
-            .get(&shard_id)
-            .map(collect_live_block_slab_ids)
-            .unwrap_or_default();
-        if let Some(pinned) = self.unpublished_compaction_slabs
-            .read().expect("unpublished compaction lock poisoned").get(&shard_id)
-        {
-            ids.extend(pinned.iter().copied());
-        }
-        ids.into_iter().collect()
+        self.shards.with_state(shard_id, |shard| {
+            let mut ids = shard
+                .map(collect_live_block_slab_ids)
+                .unwrap_or_default();
+            if let Some(pinned) = self.unpublished_compaction_slabs
+                .read().expect("unpublished compaction lock poisoned").get(&shard_id)
+            {
+                ids.extend(pinned.iter().copied());
+            }
+            ids.into_iter().collect()
+        })
     }
 
     /// Union of live block-slab ids across EVERY shard currently loaded into this engine.
@@ -1152,17 +1166,18 @@ impl TemporalEngine {
     /// For a single loaded shard this equals `live_block_slab_ids(that_shard)`, so single-shard
     /// callers are unaffected.
     pub fn live_block_slab_ids_all_shards(&self) -> Vec<u64> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let mut ids = shards
-            .values()
-            .flat_map(collect_live_block_slab_ids)
-            .collect::<std::collections::BTreeSet<_>>();
-        for pinned in self.unpublished_compaction_slabs
-            .read().expect("unpublished compaction lock poisoned").values()
-        {
-            ids.extend(pinned.iter().copied());
-        }
-        ids.into_iter().collect()
+        self.shards.with_all_states(|shards| {
+            let mut ids = shards
+                .values()
+                .flat_map(|shard| collect_live_block_slab_ids(shard))
+                .collect::<std::collections::BTreeSet<_>>();
+            for pinned in self.unpublished_compaction_slabs
+                .read().expect("unpublished compaction lock poisoned").values()
+            {
+                ids.extend(pinned.iter().copied());
+            }
+            ids.into_iter().collect()
+        })
     }
 
     /// [`Self::live_block_slab_ids_all_shards`] read off the maintained per-slab tally instead of
@@ -1173,21 +1188,22 @@ impl TemporalEngine {
     /// cannot destroy on the strength of it: a purge whose quarantine is too young to age out can only
     /// restore, and a name this set misses delays a restore rather than losing a slab.
     pub(crate) fn live_block_slab_ids_all_shards_from_tally(&self) -> Option<Vec<u64>> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let mut ids = std::collections::BTreeSet::new();
-        for shard in shards.values() {
-            let tally = &shard.bucket_index.block_slab_live;
-            if !tally.is_ready() {
-                return None;
+        self.shards.with_all_states(|shards| {
+            let mut ids = std::collections::BTreeSet::new();
+            for shard in shards.values() {
+                let tally = &shard.bucket_index.block_slab_live;
+                if !tally.is_ready() {
+                    return None;
+                }
+                ids.extend(tally.iter().map(|(block_slab_id, _)| block_slab_id));
             }
-            ids.extend(tally.iter().map(|(block_slab_id, _)| block_slab_id));
-        }
-        for pinned in self.unpublished_compaction_slabs
-            .read().expect("unpublished compaction lock poisoned").values()
-        {
-            ids.extend(pinned.iter().copied());
-        }
-        Some(ids.into_iter().collect())
+            for pinned in self.unpublished_compaction_slabs
+                .read().expect("unpublished compaction lock poisoned").values()
+            {
+                ids.extend(pinned.iter().copied());
+            }
+            Some(ids.into_iter().collect())
+        })
     }
 
 /// How far a round may walk to fill its window.
@@ -1257,7 +1273,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         if zero_disables && request.max_hot_buckets_per_round == 0
             && request.max_cold_buckets_per_round == 0
         {
-            if !self.shards.read().expect("engine lock poisoned").contains_key(&request.shard_id) {
+            if self.shards.handle(request.shard_id).is_none() {
                 return Err(Status::error("shard_not_loaded", "shard is not loaded"));
             }
             return Ok(ShardExpirySweepReport {
@@ -1266,57 +1282,42 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 ..ShardExpirySweepReport::default()
             });
         }
-        let mut shards = self.shards_write_marked();
-        // Started AFTER the guard is acquired, so this is the HOLD and not the wait for it.
-        let guard_held = std::time::Instant::now();
-        let Some(shard) = shards.get_mut(&request.shard_id) else {
-            return Err(Status::error("shard_not_loaded", "shard is not loaded"));
-        };
-        let now = now_ms();
-        let hot_limit = request.max_hot_buckets_per_round;
-        let cold_limit = request.max_cold_buckets_per_round;
-        let scan_budget = Self::expiry_scan_budget(hot_limit.max(cold_limit));
-        let phase = std::time::Instant::now();
-        crate::engine::ensure_expiry_order(shard);
-        let select = |class: usize, limit, hot| {
-            let keep = |key: &str| expiry_record_is_hot(shard, key) == hot;
-            if !zero_disables {
-                return (crate::engine::due_window(shard, now, limit, scan_budget, keep), None);
-            }
-            if limit == 0 {
-                return (Vec::new(), None);
-            }
-            crate::engine::due_window_after(
-                shard, now, limit, scan_budget, shard.expiry_scan_positions[class].as_ref(), keep,
-            )
-        };
-        let (hot_selected, next_hot) = select(0, hot_limit, true);
-        let (cold_selected, next_cold) = select(1, cold_limit, false);
-        EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.select, phase);
-        let mut expired_records_removed = 0;
-        let mut skipped_records = 0usize;
-        // Both paths delete from retained metadata; neither reloads payloads or bucket indexes.
-        let loaded_for_expire = 0usize;
-        let mut expired_keys: Vec<String> = Vec::new();
-        let mut deletions = Vec::new();
-        let mut pending_index_flush: Option<ExpiryIndexCheckpoint> = None;
-        for (key, expires_at) in hot_selected.iter() {
-            if *expires_at <= now {
-                let phase = std::time::Instant::now();
-                let removed = super::maintenance_log::MaintenanceDeletion::capture_exact(shard, key);
-                EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
-                if let Some(deletion) = removed {
-                    deletions.push(deletion);
-                    expired_records_removed += 1;
-                    expired_keys.push(key.clone());
+        let (report, pending_index_flush) = self.shards.with_state_mut(request.shard_id, |shard| {
+            // Started AFTER the guard is acquired, so this is the HOLD and not the wait for it.
+            let guard_held = std::time::Instant::now();
+            let Some(shard) = shard else {
+                return Err(Status::error("shard_not_loaded", "shard is not loaded"));
+            };
+            let now = now_ms();
+            let hot_limit = request.max_hot_buckets_per_round;
+            let cold_limit = request.max_cold_buckets_per_round;
+            let scan_budget = Self::expiry_scan_budget(hot_limit.max(cold_limit));
+            let phase = std::time::Instant::now();
+            crate::engine::ensure_expiry_order(shard);
+            let select = |class: usize, limit, hot| {
+                let keep = |key: &str| expiry_record_is_hot(shard, key) == hot;
+                if !zero_disables {
+                    return (crate::engine::due_window(shard, now, limit, scan_budget, keep), None);
                 }
-            } else {
-                skipped_records = skipped_records.saturating_add(1);
-            }
-        }
-        for (key, expires_at) in cold_selected.iter() {
-            if *expires_at <= now {
-                if request.load_cold_buckets {
+                if limit == 0 {
+                    return (Vec::new(), None);
+                }
+                crate::engine::due_window_after(
+                    shard, now, limit, scan_budget, shard.expiry_scan_positions[class].as_ref(), keep,
+                )
+            };
+            let (hot_selected, next_hot) = select(0, hot_limit, true);
+            let (cold_selected, next_cold) = select(1, cold_limit, false);
+            EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.select, phase);
+            let mut expired_records_removed = 0;
+            let mut skipped_records = 0usize;
+            // Both paths delete from retained metadata; neither reloads payloads or bucket indexes.
+            let loaded_for_expire = 0usize;
+            let mut expired_keys: Vec<String> = Vec::new();
+            let mut deletions = Vec::new();
+            let mut pending_index_flush: Option<ExpiryIndexCheckpoint> = None;
+            for (key, expires_at) in hot_selected.iter() {
+                if *expires_at <= now {
                     let phase = std::time::Instant::now();
                     let removed = super::maintenance_log::MaintenanceDeletion::capture_exact(shard, key);
                     EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
@@ -1324,221 +1325,238 @@ fn expiry_scan_budget(limit: usize) -> usize {
                         deletions.push(deletion);
                         expired_records_removed += 1;
                         expired_keys.push(key.clone());
-                    } else {
-                        crate::engine::clear_expiry(shard, key);
                     }
                 } else {
                     skipped_records = skipped_records.saturating_add(1);
                 }
-            } else {
-                skipped_records = skipped_records.saturating_add(1);
             }
-        }
-        // ONE PASS OVER THE RECORD CACHE FOR THE WHOLE ROUND, and STILL INSIDE THIS GUARD.
-        //
-        // This was `invalidate_record_all` per expired key, in both loops above. Each of those
-        // makes two `MultiLayerCache::invalidate_record` calls, and each of THOSE chains the key
-        // sets of all three cache tiers and filters them -- so a round expiring N keys stepped
-        // over the whole cache 2N times, inside the one guard that excludes every reader and
-        // every writer on the shard.
-        //
-        // MEASURED ON THIS PATH, not inherited from the sibling one.
-        // `what_an_expiry_rounds_cache_sweep_walks_cold_and_warm` on the per-key shape:
-        // 704,548 cache-entry visits for a 250-key round on a warm 500-object store and
-        // 44,134,298 for a 2,000-key round on a warm 4,000-object store -- 2,818 and 22,067 PER
-        // EXPIRED KEY. The per-key figure moves 7.83x over an eightfold corpus, because each key
-        // walks two whole cache lengths: the cost of expiring one key is a property of the STORE,
-        // not of the round.
-        //
-        // The swept namespaces do not vary by key, so the walk does not have to be repeated:
-        // `invalidate_records_all_batched` lists the shard's cache ONCE and tests each entry
-        // against this round's expired-key set. It removes exactly the same entries --
-        // `one_expiry_pass_walks_the_cache_once_instead_of_twice_per_expired_key` proves that as a
-        // whole-listing set equality against the per-key arm on matched fixtures, and asserts that
-        // a key the round did NOT expire keeps exactly the entry count it had.
-        //
-        // NOT DEFERRED PAST THE GUARD, and that door stays closed. `cached_response` is
-        // cache-first and a record `CacheKey` carries no generation, sequence or version stamp, so
-        // a reader in the window is answered with a value the shard has already deleted. The pass
-        // moved; the guard did not.
-        // `a_key_the_expiry_round_has_removed_is_never_still_answered_out_of_the_cache` is what
-        // holds that, and it is the only test in the suite that does.
-        {
-            let phase = std::time::Instant::now();
-            invalidate_records_all_batched(
-                &self.cache,
-                request.shard_id,
-                &expired_keys,
-                &CACHE_SWEEP_COUNTS,
-            );
-            EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.invalidate, phase);
-        }
-        if expired_records_removed > 0 {
-            // Capture the logged deletion set before applying it. Absent family names have no
-            // tombstone to describe and must not inflate checkpoint sorting or state capture.
-            let phase = std::time::Instant::now();
-            let delta_keys: Vec<String> = deletions
-                .iter()
-                .flat_map(|deletion| deletion.records().iter().cloned())
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.checkpoint, phase);
-            // Expiry IS a logged,
-            // replicated delete. Batch exact-record tombstones into buffered, unfsynced
-            // WAL frames, preserving the fire-and-forget commit, so followers and WAL
-            // replay observe the deletion instead of relying on each node running its own
-            // sweep with its own clock/enable_expire. Then anchor the served snapshot past
-            // the tombstones so a restart does not resurrect the key by replaying the
-            // earlier SET/EXPIRE records.
-            if !replaying_wal() {
-                // ONE mirror lookup for the whole run, taken before the loop.
-                //
-                // The per-key form takes the mirror lock and bumps an Arc refcount for every
-                // tombstone, and this loop runs inside the shard-table WRITE guard -- the one
-                // lock that excludes every reader and writer on the shard -- so a round removing
-                // N keys took N of them in the worst place to take a lock. One lookup also gives
-                // the whole run ONE destination, where a sink swapped mid-loop would split a
-                // single round's tombstones across two mirrors and leave neither complete.
-                let phase = std::time::Instant::now();
-                let result = self.append_maintenance_deletions(request.shard_id, shard, deletions, || {});
-                EXPIRY_GUARD_NANOS.delete.fetch_add(result.apply_ns, std::sync::atomic::Ordering::Relaxed);
-                EXPIRY_GUARD_NANOS.wal_append.fetch_add(
-                    (phase.elapsed().as_nanos() as u64).saturating_sub(result.apply_ns),
-                    std::sync::atomic::Ordering::Relaxed);
-                if let Some(error) = result.error { return Err(error); }
-                expired_records_removed = result.removed_keys;
-            } else {
-                let phase = std::time::Instant::now();
-                expired_records_removed = 0;
-                for deletion in deletions {
-                    let mut removed = false;
-                    for record in deletion.records() { removed |= delete_record_exact(shard, record); }
-                    expired_records_removed += usize::from(removed);
-                }
-                EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
-            }
-            let phase = std::time::Instant::now();
-            // The checkpoint is BUILT under this lock and WRITTEN after it drops. The lock is
-            // needed for the deletes and for anchoring `applied_wal_sequence`; it is not needed
-            // for the write, and the write used to be the expensive part of the round -- the
-            // shard's whole index through serde and then zstd, then two file writes, all of it
-            // scaling with the STORE while the round's own work is bounded by
-            // `expiry_scan_budget`. Moving it out came first; making it proportional to the
-            // round came second, and both are still claims worth holding, so both have arms in
-            // `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop`.
-            //
-            // WHY THIS ONE IS SAFE TO MOVE AND THE COMPACTOR'S IS NOT. Between the guard
-            // dropping and the write landing there is a window in which this checkpoint is
-            // stale: a concurrent writer can publish a newer one that this then follows, and a
-            // concurrent storage cycle can see blocks these deletes freed, call their slabs
-            // stale and reclaim them while the durable index still names them. Both are
-            // recoverable HERE and only here, because an expiry IS a logged delete: every key
-            // above has an exact-record result in the WAL before this point, so a checkpoint that
-            // lands stale (or never lands at all) leaves an anchor BEHIND the tombstones, and
-            // replay re-derives exactly the deletions it describes. Landing behind a newer
-            // checkpoint rewinds the anchor, which holds more log than needed and never less.
-            // Compaction's relocations are in no log -- see the note at its own flush.
-            shard.index_format_version = super::SHARD_INDEX_FORMAT_VERSION;
-            // WHAT THE ROUND WRITES IS WHAT THE ROUND CHANGED.
-            //
-            // This used to clone the whole shard and hand it to an encode of the ENTIRE served
-            // index. The round's own work is bounded -- `due_window` looks at the due set, ten
-            // records whether the shard holds two thousand live keys or a hundred thousand --
-            // but the checkpoint that followed it was not: measured, ten due keys cost 109 ms at
-            // 2,000 live and 922 ms at 20,000, the same ten records looked at both times. The
-            // cost tracked LIVE KEYS. Moving that encode off the write guard (#1620) changed who
-            // waited for it, not how much of it there was.
-            //
-            // The index log already carries the record shape this wants: a DELTA naming the keys
-            // a write touched, which `fold_index_log_deltas` folds onto the base on load. The
-            // ordinary delete path has written exactly this shape for every `CommonDelete` it
-            // applies; expiry IS a logged delete, so it writes the same one. Each expired key
-            // contributes one key-state blob carrying NO map fields, which the fold reads as "this
-            // key is in none of these maps" -- a tombstone in all thirteen, `expires_at_ms`
-            // included -- and `delta_record_covered_keys` reads the covered set from those blobs,
-            // so the block wipe reaches the keys even though they contribute no block items.
-            //
-            // SAFETY, AND IT IS THE SAME ARGUMENT #1620 MADE. The anchor must never move AHEAD of
-            // the tombstones. The delta carries `applied_wal_sequence` -- the sequence anchored
-            // just above, after every `CommonDelete` this round appended -- so the anchor and the
-            // description of the deletions move TOGETHER in one record: a reader that folds the
-            // anchor has folded the deletions. A delta that lands late or never leaves the anchor
-            // BEHIND the tombstones, and WAL replay re-derives exactly these deletions. Neither
-            // direction can leave a key resurrected.
-            pending_index_flush = shard.checkpoint_wal_sequence().map(|_| {
-                if self
-                    .expiry_index_flush_whole
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    ExpiryIndexCheckpoint::Whole(Box::new(shard.clone()))
+            for (key, expires_at) in cold_selected.iter() {
+                if *expires_at <= now {
+                    if request.load_cold_buckets {
+                        let phase = std::time::Instant::now();
+                        let removed = super::maintenance_log::MaintenanceDeletion::capture_exact(shard, key);
+                        EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
+                        if let Some(deletion) = removed {
+                            deletions.push(deletion);
+                            expired_records_removed += 1;
+                            expired_keys.push(key.clone());
+                        } else {
+                            crate::engine::clear_expiry(shard, key);
+                        }
+                    } else {
+                        skipped_records = skipped_records.saturating_add(1);
+                    }
                 } else {
-                    // Existing related records are already included in the captured deletion
-                    // groups. Use that exact set rather than generating absent family names.
-                    ExpiryIndexCheckpoint::Delta(Box::new(ExpiryIndexDelta {
-                        // NO BLOCK ITEMS, and that is the whole content of the record's block half.
-                        //
-                        // `mark_bucket_index_object_deleted` has already run for each of these
-                        // keys, and it retains every block carrying the key OUT of every bucket
-                        // that holds one -- the buckets come from `object_block_refs` across every
-                        // model kind, or from the whole bucket map when the lookup is not
-                        // established. So by the time this record is built there is no block left
-                        // to describe, and an empty item list against a covered key is exactly
-                        // how the fold spells a removal: `fold_delta_block_items` wipes every page
-                        // of every covered key and then restores the items carried, which is
-                        // none.
-                        //
-                        // This was `collect_command_index_items_for`, collecting rather than
-                        // asserting -- and it cost: that helper walks the ENTIRE block index of
-                        // every bucket the keys hash into, so a round clearing 8,000 due keys
-                        // walked a large part of the shard to build a list that is empty by
-                        // construction. Measured, it took the per-key cost of a round from
-                        // linear in the due set to 3.11x between 1,000 and 8,000 due keys.
-                        //
-                        // The invariant is not assumed silently: `the_expiry_delta_names_what_
-                        // the_round_removed_and_anchors_no_further` asserts the record carries no
-                        // items, so a delete that starts leaving blocks behind fails there rather
-                        // than quietly wiping them on the next fold.
-                        items: Vec::new(),
-                        key_states: super::capture_key_states(shard, &delta_keys),
-                        applied_wal_sequence: shard.applied_wal_sequence,
-                    }))
+                    skipped_records = skipped_records.saturating_add(1);
                 }
-            });
-            EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.checkpoint, phase);
-        }
-        // An append error leaves the previous positions intact so unlogged work can retry.
-        // Policy-disabled cold scans still report skipped work, without advancing cold expiry.
-        if zero_disables {
-            shard.expiry_scan_positions[0] = next_hot;
-            shard.expiry_scan_positions[1] = if request.load_cold_buckets { next_cold } else { None };
-        }
-        // The control arm of `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop` keeps the
-        // flush inside the region, so the guard has a positive control to compare against.
-        if self
-            .expiry_index_flush_under_lock
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            if let Some(checkpoint) = pending_index_flush.take() {
-                self.flush_expiry_index(request.shard_id, checkpoint)?;
             }
-        }
-        EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.total, guard_held);
-        drop(shards);
+            // ONE PASS OVER THE RECORD CACHE FOR THE WHOLE ROUND, and STILL INSIDE THIS GUARD.
+            //
+            // This was `invalidate_record_all` per expired key, in both loops above. Each of those
+            // makes two `MultiLayerCache::invalidate_record` calls, and each of THOSE chains the key
+            // sets of all three cache tiers and filters them -- so a round expiring N keys stepped
+            // over the whole cache 2N times, inside the one guard that excludes every reader and
+            // every writer on the shard.
+            //
+            // MEASURED ON THIS PATH, not inherited from the sibling one.
+            // `what_an_expiry_rounds_cache_sweep_walks_cold_and_warm` on the per-key shape:
+            // 704,548 cache-entry visits for a 250-key round on a warm 500-object store and
+            // 44,134,298 for a 2,000-key round on a warm 4,000-object store -- 2,818 and 22,067 PER
+            // EXPIRED KEY. The per-key figure moves 7.83x over an eightfold corpus, because each key
+            // walks two whole cache lengths: the cost of expiring one key is a property of the STORE,
+            // not of the round.
+            //
+            // The swept namespaces do not vary by key, so the walk does not have to be repeated:
+            // `invalidate_records_all_batched` lists the shard's cache ONCE and tests each entry
+            // against this round's expired-key set. It removes exactly the same entries --
+            // `one_expiry_pass_walks_the_cache_once_instead_of_twice_per_expired_key` proves that as a
+            // whole-listing set equality against the per-key arm on matched fixtures, and asserts that
+            // a key the round did NOT expire keeps exactly the entry count it had.
+            //
+            // NOT DEFERRED PAST THE GUARD, and that door stays closed. `cached_response` is
+            // cache-first and a record `CacheKey` carries no generation, sequence or version stamp, so
+            // a reader in the window is answered with a value the shard has already deleted. The pass
+            // moved; the guard did not.
+            // `a_key_the_expiry_round_has_removed_is_never_still_answered_out_of_the_cache` is what
+            // holds that, and it is the only test in the suite that does.
+            {
+                let phase = std::time::Instant::now();
+                invalidate_records_all_batched(
+                    &self.cache,
+                    request.shard_id,
+                    &expired_keys,
+                    &CACHE_SWEEP_COUNTS,
+                );
+                EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.invalidate, phase);
+            }
+            if expired_records_removed > 0 {
+                // Capture the logged deletion set before applying it. Absent family names have no
+                // tombstone to describe and must not inflate checkpoint sorting or state capture.
+                let phase = std::time::Instant::now();
+                let delta_keys: Vec<String> = deletions
+                    .iter()
+                    .flat_map(|deletion| deletion.records().iter().cloned())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.checkpoint, phase);
+                // Expiry IS a logged,
+                // replicated delete. Batch exact-record tombstones into buffered, unfsynced
+                // WAL frames, preserving the fire-and-forget commit, so followers and WAL
+                // replay observe the deletion instead of relying on each node running its own
+                // sweep with its own clock/enable_expire. Then anchor the served snapshot past
+                // the tombstones so a restart does not resurrect the key by replaying the
+                // earlier SET/EXPIRE records.
+                if !replaying_wal() {
+                    // ONE mirror lookup for the whole run, taken before the loop.
+                    //
+                    // The per-key form takes the mirror lock and bumps an Arc refcount for every
+                    // tombstone, and this loop runs inside the shard-table WRITE guard -- the one
+                    // lock that excludes every reader and writer on the shard -- so a round removing
+                    // N keys took N of them in the worst place to take a lock. One lookup also gives
+                    // the whole run ONE destination, where a sink swapped mid-loop would split a
+                    // single round's tombstones across two mirrors and leave neither complete.
+                    let phase = std::time::Instant::now();
+                    let result = self.append_maintenance_deletions(request.shard_id, shard, deletions, || {});
+                    EXPIRY_GUARD_NANOS.delete.fetch_add(result.apply_ns, std::sync::atomic::Ordering::Relaxed);
+                    EXPIRY_GUARD_NANOS.wal_append.fetch_add(
+                        (phase.elapsed().as_nanos() as u64).saturating_sub(result.apply_ns),
+                        std::sync::atomic::Ordering::Relaxed);
+                    if let Some(error) = result.error { return Err(error); }
+                    expired_records_removed = result.removed_keys;
+                } else {
+                    let phase = std::time::Instant::now();
+                    expired_records_removed = 0;
+                    for deletion in deletions {
+                        let mut removed = false;
+                        for record in deletion.records() { removed |= delete_record_exact(shard, record); }
+                        expired_records_removed += usize::from(removed);
+                    }
+                    EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
+                }
+                let phase = std::time::Instant::now();
+                // The checkpoint is BUILT under this lock and WRITTEN after it drops. The lock is
+                // needed for the deletes and for anchoring `applied_wal_sequence`; it is not needed
+                // for the write, and the write used to be the expensive part of the round -- the
+                // shard's whole index through serde and then zstd, then two file writes, all of it
+                // scaling with the STORE while the round's own work is bounded by
+                // `expiry_scan_budget`. Moving it out came first; making it proportional to the
+                // round came second, and both are still claims worth holding, so both have arms in
+                // `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop`.
+                //
+                // WHY THIS ONE IS SAFE TO MOVE AND THE COMPACTOR'S IS NOT. Between the guard
+                // dropping and the write landing there is a window in which this checkpoint is
+                // stale: a concurrent writer can publish a newer one that this then follows, and a
+                // concurrent storage cycle can see blocks these deletes freed, call their slabs
+                // stale and reclaim them while the durable index still names them. Both are
+                // recoverable HERE and only here, because an expiry IS a logged delete: every key
+                // above has an exact-record result in the WAL before this point, so a checkpoint that
+                // lands stale (or never lands at all) leaves an anchor BEHIND the tombstones, and
+                // replay re-derives exactly the deletions it describes. Landing behind a newer
+                // checkpoint rewinds the anchor, which holds more log than needed and never less.
+                // Compaction's relocations are in no log -- see the note at its own flush.
+                shard.index_format_version = super::SHARD_INDEX_FORMAT_VERSION;
+                // WHAT THE ROUND WRITES IS WHAT THE ROUND CHANGED.
+                //
+                // This used to clone the whole shard and hand it to an encode of the ENTIRE served
+                // index. The round's own work is bounded -- `due_window` looks at the due set, ten
+                // records whether the shard holds two thousand live keys or a hundred thousand --
+                // but the checkpoint that followed it was not: measured, ten due keys cost 109 ms at
+                // 2,000 live and 922 ms at 20,000, the same ten records looked at both times. The
+                // cost tracked LIVE KEYS. Moving that encode off the write guard (#1620) changed who
+                // waited for it, not how much of it there was.
+                //
+                // The index log already carries the record shape this wants: a DELTA naming the keys
+                // a write touched, which `fold_index_log_deltas` folds onto the base on load. The
+                // ordinary delete path has written exactly this shape for every `CommonDelete` it
+                // applies; expiry IS a logged delete, so it writes the same one. Each expired key
+                // contributes one key-state blob carrying NO map fields, which the fold reads as "this
+                // key is in none of these maps" -- a tombstone in all thirteen, `expires_at_ms`
+                // included -- and `delta_record_covered_keys` reads the covered set from those blobs,
+                // so the block wipe reaches the keys even though they contribute no block items.
+                //
+                // SAFETY, AND IT IS THE SAME ARGUMENT #1620 MADE. The anchor must never move AHEAD of
+                // the tombstones. The delta carries `applied_wal_sequence` -- the sequence anchored
+                // just above, after every `CommonDelete` this round appended -- so the anchor and the
+                // description of the deletions move TOGETHER in one record: a reader that folds the
+                // anchor has folded the deletions. A delta that lands late or never leaves the anchor
+                // BEHIND the tombstones, and WAL replay re-derives exactly these deletions. Neither
+                // direction can leave a key resurrected.
+                pending_index_flush = shard.checkpoint_wal_sequence().map(|_| {
+                    if self
+                        .expiry_index_flush_whole
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        ExpiryIndexCheckpoint::Whole(Box::new(shard.clone()))
+                    } else {
+                        // Existing related records are already included in the captured deletion
+                        // groups. Use that exact set rather than generating absent family names.
+                        ExpiryIndexCheckpoint::Delta(Box::new(ExpiryIndexDelta {
+                            // NO BLOCK ITEMS, and that is the whole content of the record's block half.
+                            //
+                            // `mark_bucket_index_object_deleted` has already run for each of these
+                            // keys, and it retains every block carrying the key OUT of every bucket
+                            // that holds one -- the buckets come from `object_block_refs` across every
+                            // model kind, or from the whole bucket map when the lookup is not
+                            // established. So by the time this record is built there is no block left
+                            // to describe, and an empty item list against a covered key is exactly
+                            // how the fold spells a removal: `fold_delta_block_items` wipes every page
+                            // of every covered key and then restores the items carried, which is
+                            // none.
+                            //
+                            // This was `collect_command_index_items_for`, collecting rather than
+                            // asserting -- and it cost: that helper walks the ENTIRE block index of
+                            // every bucket the keys hash into, so a round clearing 8,000 due keys
+                            // walked a large part of the shard to build a list that is empty by
+                            // construction. Measured, it took the per-key cost of a round from
+                            // linear in the due set to 3.11x between 1,000 and 8,000 due keys.
+                            //
+                            // The invariant is not assumed silently: `the_expiry_delta_names_what_
+                            // the_round_removed_and_anchors_no_further` asserts the record carries no
+                            // items, so a delete that starts leaving blocks behind fails there rather
+                            // than quietly wiping them on the next fold.
+                            items: Vec::new(),
+                            key_states: super::capture_key_states(shard, &delta_keys),
+                            applied_wal_sequence: shard.applied_wal_sequence,
+                        }))
+                    }
+                });
+                EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.checkpoint, phase);
+            }
+            // An append error leaves the previous positions intact so unlogged work can retry.
+            // Policy-disabled cold scans still report skipped work, without advancing cold expiry.
+            if zero_disables {
+                shard.expiry_scan_positions[0] = next_hot;
+                shard.expiry_scan_positions[1] = if request.load_cold_buckets { next_cold } else { None };
+            }
+            // The control arm of `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop` keeps the
+            // flush inside the region, so the guard has a positive control to compare against.
+            if self
+                .expiry_index_flush_under_lock
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                if let Some(checkpoint) = pending_index_flush.take() {
+                    self.flush_expiry_index(request.shard_id, checkpoint)?;
+                }
+            }
+            EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.total, guard_held);
+            let report = ShardExpirySweepReport {
+                shard_id: request.shard_id,
+                expired_records_removed,
+                hot_buckets_scanned: hot_selected.len(),
+                cold_buckets_scanned: cold_selected.len(),
+                scanned_records: hot_selected.len().saturating_add(cold_selected.len()),
+                skipped_records,
+                loaded_for_expire,
+                round_limit: hot_limit.saturating_add(cold_limit),
+                load_on_expire_only_when_needed: true,
+            };
+            Ok((report, pending_index_flush))
+        })?;
         if let Some(checkpoint) = pending_index_flush {
             self.flush_expiry_index(request.shard_id, checkpoint)?;
         }
-        Ok(ShardExpirySweepReport {
-            shard_id: request.shard_id,
-            expired_records_removed,
-            hot_buckets_scanned: hot_selected.len(),
-            cold_buckets_scanned: cold_selected.len(),
-            scanned_records: hot_selected.len().saturating_add(cold_selected.len()),
-            skipped_records,
-            loaded_for_expire,
-            round_limit: hot_limit.saturating_add(cold_limit),
-            load_on_expire_only_when_needed: true,
-        })
+        Ok(report)
     }
 
     /// Write the expiry sweep's served-index checkpoint.
@@ -1597,17 +1615,17 @@ fn expiry_scan_budget(limit: usize) -> usize {
         use std::ops::Bound::{Excluded, Unbounded};
         let now = now_ms();
         let first_future = (now.saturating_add(1), std::sync::Arc::<str>::from(""));
-        self.shards
-            .read()
-            .expect("engine lock poisoned")
-            .values()
-            .map(|shard| {
-                shard
-                    .expiry_by_deadline
-                    .range((Unbounded, Excluded(first_future.clone())))
-                    .count() as u64
-            })
-            .sum()
+        self.shards.with_all_states(|shards| {
+            shards
+                .values()
+                .map(|shard| {
+                    shard
+                        .expiry_by_deadline
+                        .range((Unbounded, Excluded(first_future.clone())))
+                        .count() as u64
+                })
+                .sum()
+        })
     }
 
     /// Test-only: sweeps every loaded shard, unbounded.
@@ -1646,14 +1664,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
         shard_id: ShardId,
         reclaim_candidates: &[StorageReclaimCandidate],
     ) -> ShardCompactionRelocationHint {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return ShardCompactionRelocationHint {
-                shard_id,
-                ..ShardCompactionRelocationHint::default()
+        self.shards.with_state(shard_id, |shard| {
+            let Some(shard) = shard else {
+                return ShardCompactionRelocationHint {
+                    shard_id,
+                    ..ShardCompactionRelocationHint::default()
+                };
             };
-        };
-        compaction_relocation_hint_per_object(shard_id, shard, reclaim_candidates)
+            compaction_relocation_hint_per_object(shard_id, shard, reclaim_candidates)
+        })
     }
 
     pub fn compact_shard_blocks(&self, shard_id: ShardId) -> Result<ShardCompactionReport, Status> {
@@ -2235,170 +2254,263 @@ fn expiry_scan_budget(limit: usize) -> usize {
             .get(&shard_id)
             .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
             .unwrap_or((0, u32::MAX));
-        let mut shards = self.shards_write_marked();
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            return Err(Status::error("shard_not_loaded", "shard is not loaded"));
-        };
-        // Ownership validation is mandatory, including for timers that need no diagnostics.
-        // Detailed callers share its entries with the utility report before relocation.
-        let entries = collect_live_block_entries(shard);
-        let ownership = validate_bucket_ownership_index_from_entries(
-            shard_id,
-            shard,
-            &entries,
-            start_routing_bucket,
-            end_routing_bucket,
-        );
-        if !ownership.mismatches.is_empty() {
-            return Err(Status::error(
-                "block_compaction_owner_mismatch",
-                format!(
-                    "refusing compaction because {} live block refs disagree with object/block/slot ownership",
-                    ownership.mismatches.len()
-                ),
-            ));
-        }
-        let diagnostics_before = detailed_report.then(|| (
-            collect_live_block_slab_ids(shard),
-            compaction_utility_report_from_entries(&self.block_store, shard, &entries),
-            compaction_model_layout_reports(&self.block_store, shard),
-            storage_reporting::storage_delete_marked_object_count(shard),
-        ));
-        // Every slab the DURABLE index may name: what this round vacates in memory is only safe to
-        // reclaim once the new index is on disk. See `unpublished_compaction_slabs`.
-        let pre_round_slabs = entries
-            .iter()
-            .map(|entry| entry.address.block_slab_id())
-            .collect::<BTreeSet<u64>>();
-        // WHICH OBJECTS HAVE A BLOCK ON A SLAB THIS ROUND WANTS EMPTIED. The arms below used to
-        // visit every key of five models and let `should_relocate` decline each block, which is
-        // O(shard) work for a round whose drain set names a handful of slabs. The entries above are
-        // the same refs the arms would see (ownership validation refused the round otherwise), so
-        // the keys that own a block on a drain slab are read off them here, and the other keys are
-        // skipped. A key with ANY block on a drain slab is still visited whole, so the order and
-        // the budget charged to the blocks that do move are unchanged. The blocks of skipped keys
-        // are counted per slab so `blocks_left_off_drain_set` still reports them.
-        let mut drain_object_keys: Option<std::collections::HashSet<crate::engine::state::ModelKey>> = None;
-        let mut skipped_key_blocks_by_slab: BTreeMap<u64, usize> = BTreeMap::new();
-        if let Some(drain) = drain_block_slab_ids.as_ref() {
-            let skippable = |kind: StoredModelKind| matches!(
-                kind,
-                StoredModelKind::String | StoredModelKind::Hash | StoredModelKind::Set
-                    | StoredModelKind::Zset | StoredModelKind::List
+        self.shards.with_state_mut(shard_id, |shard| {
+            let Some(shard) = shard else {
+                return Err(Status::error("shard_not_loaded", "shard is not loaded"));
+            };
+            // Ownership validation is mandatory, including for timers that need no diagnostics.
+            // Detailed callers share its entries with the utility report before relocation.
+            let entries = collect_live_block_entries(shard);
+            let ownership = validate_bucket_ownership_index_from_entries(
+                shard_id,
+                shard,
+                &entries,
+                start_routing_bucket,
+                end_routing_bucket,
             );
-            let keys = entries
+            if !ownership.mismatches.is_empty() {
+                return Err(Status::error(
+                    "block_compaction_owner_mismatch",
+                    format!(
+                        "refusing compaction because {} live block refs disagree with object/block/slot ownership",
+                        ownership.mismatches.len()
+                    ),
+                ));
+            }
+            let diagnostics_before = detailed_report.then(|| (
+                collect_live_block_slab_ids(shard),
+                compaction_utility_report_from_entries(&self.block_store, shard, &entries),
+                compaction_model_layout_reports(&self.block_store, shard),
+                storage_reporting::storage_delete_marked_object_count(shard),
+            ));
+            // Every slab the DURABLE index may name: what this round vacates in memory is only safe to
+            // reclaim once the new index is on disk. See `unpublished_compaction_slabs`.
+            let pre_round_slabs = entries
                 .iter()
-                .filter(|entry| skippable(entry.kind) && drain.contains(&entry.address.block_slab_id()))
-                .map(|entry| entry.object_key.clone())
-                .collect::<std::collections::HashSet<_>>();
-            for entry in entries.iter().filter(|entry| skippable(entry.kind)) {
-                if !keys.contains(&entry.object_key) {
-                    *skipped_key_blocks_by_slab.entry(entry.address.block_slab_id()).or_default() += 1;
+                .map(|entry| entry.address.block_slab_id())
+                .collect::<BTreeSet<u64>>();
+            // WHICH OBJECTS HAVE A BLOCK ON A SLAB THIS ROUND WANTS EMPTIED. The arms below used to
+            // visit every key of five models and let `should_relocate` decline each block, which is
+            // O(shard) work for a round whose drain set names a handful of slabs. The entries above are
+            // the same refs the arms would see (ownership validation refused the round otherwise), so
+            // the keys that own a block on a drain slab are read off them here, and the other keys are
+            // skipped. A key with ANY block on a drain slab is still visited whole, so the order and
+            // the budget charged to the blocks that do move are unchanged. The blocks of skipped keys
+            // are counted per slab so `blocks_left_off_drain_set` still reports them.
+            let mut drain_object_keys: Option<std::collections::HashSet<crate::engine::state::ModelKey>> = None;
+            let mut skipped_key_blocks_by_slab: BTreeMap<u64, usize> = BTreeMap::new();
+            if let Some(drain) = drain_block_slab_ids.as_ref() {
+                let skippable = |kind: StoredModelKind| matches!(
+                    kind,
+                    StoredModelKind::String | StoredModelKind::Hash | StoredModelKind::Set
+                        | StoredModelKind::Zset | StoredModelKind::List
+                );
+                let keys = entries
+                    .iter()
+                    .filter(|entry| skippable(entry.kind) && drain.contains(&entry.address.block_slab_id()))
+                    .map(|entry| entry.object_key.clone())
+                    .collect::<std::collections::HashSet<_>>();
+                for entry in entries.iter().filter(|entry| skippable(entry.kind)) {
+                    if !keys.contains(&entry.object_key) {
+                        *skipped_key_blocks_by_slab.entry(entry.address.block_slab_id()).or_default() += 1;
+                    }
+                }
+                drain_object_keys = Some(keys);
+            }
+            drop(entries);
+            // Start a round, or continue the one a budget cut short.
+            //
+            // A round rolls a fresh slab and relocates live blocks onto it. Rolling AGAIN while a
+            // round is unfinished would re-move everything the last round moved -- the blocks it just
+            // relocated would no longer be on the newest slab -- so a bounded round would shuffle
+            // rather than progress. Continuing to fill the same slab is what makes each round move
+            // blocks that have not moved yet.
+            let resumed = self
+                .compaction_rounds
+                .read()
+                .expect("compaction round lock poisoned")
+                .get(&shard_id)
+                .copied();
+            let (previous_block_slab_id, target_block_slab_id) = match resumed {
+                Some(round) => round,
+                None => {
+                    let roll = self
+                        .block_store
+                        .roll_slab_for_shard(shard_id)
+                        .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
+                    (roll.previous_block_slab_id, roll.new_block_slab_id)
+                }
+            };
+            let mut rewrite_stats = match drain_block_slab_ids {
+                Some(drain_block_slab_ids) => CompactionRewriteStats::for_drain_round(
+                    target_block_slab_id,
+                    budget_bytes,
+                    budget_block_refs,
+                    drain_block_slab_ids,
+                ),
+                None => CompactionRewriteStats::for_round(
+                    target_block_slab_id,
+                    budget_bytes,
+                    budget_block_refs,
+                ),
+            };
+
+            // The blocks of skipped keys, counted as `should_relocate` would have counted them: off the
+            // drain set, and not already on the slab this round fills.
+            rewrite_stats.skipped_off_drain_set = rewrite_stats.skipped_off_drain_set.saturating_add(
+                skipped_key_blocks_by_slab
+                    .iter()
+                    .filter(|(slab, _)| **slab != target_block_slab_id)
+                    .map(|(_, count)| *count)
+                    .sum::<usize>(),
+            );
+            // THE BUCKET INDEX MUST NAME EVERY LIVE BLOCK BEFORE ANY BLOCK MOVES. The update after the
+            // arms replaces the entry of each block a round moved, so an entry the index never held has
+            // nothing to replace and would stay missing from the image the round publishes. The whole
+            // rebuild this update replaced filed every block from the model maps and so completed an
+            // index that was behind them; the engine's own repair for that state is this call, which is
+            // a walk that asks and rebuilds only when something is missing, and it has to run before
+            // the arms because afterwards every moved block reads as missing.
+            storage_bucket_internals::promote_model_maps_to_bucket_index_authority(
+                shard_id, shard, start_routing_bucket, end_routing_bucket,
+            );
+            // Relocate every model's live blocks onto the freshly rolled slab. A mid-way failure
+            // (append ENOSPC / an unreadable torn block) is caught below so we can durably commit the
+            // consistent partial state instead of leaving the volatile index half-advanced but
+            // unpersisted -- see the `if let Err(err)` handler after this block for why.
+            let relocation_result: Result<(), Status> = (|| {
+                self.relocate_keyed_blocks(
+                    shard_id, shard, start_routing_bucket, end_routing_bucket, drain_object_keys.as_ref(),
+                    &mut rewrite_stats,
+                )?;
+                self.relocate_unkeyed_blocks(
+                    shard_id, shard, start_routing_bucket, end_routing_bucket, None, &mut rewrite_stats,
+                )?;
+                Self::unreadable_blocks_failure(&rewrite_stats)
+            })();
+            if let Err(err) = relocation_result {
+                // A relocation failed partway. The in-memory index is now a CONSISTENT partial
+                // snapshot -- blocks already moved point at the fresh durable slab, the rest still point
+                // at their old slabs -- but it has DIVERGED from the on-disk index, which still
+                // references the now-vacated old slabs. Returning here without persisting (the old
+                // behavior) let the independent next-cycle reclaim trust this volatile index, see a
+                // fully-vacated old slab as stale, quarantine+purge it, and a later reload of the STALE
+                // on-disk index would then dangle at the deleted slab -> silent durable data loss.
+                // A compactor that leaves the index untouched on failure and commits the rewrite
+                // atomically avoids the desync structurally. We instead
+                // durably commit the consistent partial: rebuild the secondary views so the serialized
+                // index is internally consistent, fsync the relocated bytes so the index never names a
+                // non-durable block, then persist -- leaving volatile == durable so reclaim is safe --
+                // and propagate the original error so the caller knows compaction did not fully
+                // complete (a later run retries the not-yet-moved blocks).
+                update_compacted_bucket_views(
+                    shard_id, shard, start_routing_bucket, end_routing_bucket, &rewrite_stats.moved,
+                    CompactionIndexRefresh::Complete,
+                );
+                if let Err(barrier) = self.compaction_barrier() {
+                    self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
+                    return Err(Status::error(
+                        "block_compaction_failed",
+                        format!(
+                            "durability barrier failed while committing a partial compaction: {barrier}"
+                        ),
+                    ));
+                }
+                rewrite_stats.note_relocated_wal_blocks(shard_id, shard);
+                let partial_index_bytes = match self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id) {
+                    Ok(bytes) => bytes,
+                    Err(publish) => {
+                        self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
+                        return Err(publish);
+                    }
+                };
+                self.clear_unpublished_compaction(shard_id);
+                let _ = self.index_log_store.append_index_bytes(shard_id, &partial_index_bytes);
+                // Keep the round OPEN. A relocation that failed partway left work behind by
+                // definition -- the blocks it had not reached yet are still on their old slabs -- and
+                // this used to return without recording the anchor, so the next round read
+                // `resumed = None`, rolled a SECOND fresh slab, and re-moved every block this one had
+                // already moved. That is exactly the shuffle the note above the resume read exists to
+                // rule out, and the failure path was the one way into it. It costs repeated work and
+                // one extra slab per failure rather than data loss, which is why it survived.
+                //
+                // Recorded UNCONDITIONALLY here, not under `left_work_behind()`: that flag is
+                // `skipped_by_budget > 0`, which a failed READ never sets, so gating on it would
+                // leave the anchor unwritten in precisely the case this handler exists for.
+                self.compaction_rounds
+                    .write()
+                    .expect("compaction round lock poisoned")
+                    .insert(shard_id, (previous_block_slab_id, target_block_slab_id));
+                return Err(err);
+            }
+
+            // A round that spent its budget stays open, so the next one fills the same slab instead
+            // of rolling a new one and re-moving what this one moved. A round that relocated
+            // everything closes, and the next starts fresh.
+            {
+                let mut rounds = self
+                    .compaction_rounds
+                    .write()
+                    .expect("compaction round lock poisoned");
+                if rewrite_stats.left_work_behind() {
+                    rounds.insert(shard_id, (previous_block_slab_id, target_block_slab_id));
+                } else {
+                    rounds.remove(&shard_id);
                 }
             }
-            drain_object_keys = Some(keys);
-        }
-        drop(entries);
-        // Start a round, or continue the one a budget cut short.
-        //
-        // A round rolls a fresh slab and relocates live blocks onto it. Rolling AGAIN while a
-        // round is unfinished would re-move everything the last round moved -- the blocks it just
-        // relocated would no longer be on the newest slab -- so a bounded round would shuffle
-        // rather than progress. Continuing to fill the same slab is what makes each round move
-        // blocks that have not moved yet.
-        let resumed = self
-            .compaction_rounds
-            .read()
-            .expect("compaction round lock poisoned")
-            .get(&shard_id)
-            .copied();
-        let (previous_block_slab_id, target_block_slab_id) = match resumed {
-            Some(round) => round,
-            None => {
-                let roll = self
-                    .block_store
-                    .roll_slab_for_shard(shard_id)
-                    .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
-                (roll.previous_block_slab_id, roll.new_block_slab_id)
-            }
-        };
-        let mut rewrite_stats = match drain_block_slab_ids {
-            Some(drain_block_slab_ids) => CompactionRewriteStats::for_drain_round(
-                target_block_slab_id,
-                budget_bytes,
-                budget_block_refs,
-                drain_block_slab_ids,
-            ),
-            None => CompactionRewriteStats::for_round(
-                target_block_slab_id,
-                budget_bytes,
-                budget_block_refs,
-            ),
-        };
-
-        // The blocks of skipped keys, counted as `should_relocate` would have counted them: off the
-        // drain set, and not already on the slab this round fills.
-        rewrite_stats.skipped_off_drain_set = rewrite_stats.skipped_off_drain_set.saturating_add(
-            skipped_key_blocks_by_slab
-                .iter()
-                .filter(|(slab, _)| **slab != target_block_slab_id)
-                .map(|(_, count)| *count)
-                .sum::<usize>(),
-        );
-        // THE BUCKET INDEX MUST NAME EVERY LIVE BLOCK BEFORE ANY BLOCK MOVES. The update after the
-        // arms replaces the entry of each block a round moved, so an entry the index never held has
-        // nothing to replace and would stay missing from the image the round publishes. The whole
-        // rebuild this update replaced filed every block from the model maps and so completed an
-        // index that was behind them; the engine's own repair for that state is this call, which is
-        // a walk that asks and rebuilds only when something is missing, and it has to run before
-        // the arms because afterwards every moved block reads as missing.
-        storage_bucket_internals::promote_model_maps_to_bucket_index_authority(
-            shard_id, shard, start_routing_bucket, end_routing_bucket,
-        );
-        // Relocate every model's live blocks onto the freshly rolled slab. A mid-way failure
-        // (append ENOSPC / an unreadable torn block) is caught below so we can durably commit the
-        // consistent partial state instead of leaving the volatile index half-advanced but
-        // unpersisted -- see the `if let Err(err)` handler after this block for why.
-        let relocation_result: Result<(), Status> = (|| {
-            self.relocate_keyed_blocks(
-                shard_id, shard, start_routing_bucket, end_routing_bucket, drain_object_keys.as_ref(),
-                &mut rewrite_stats,
-            )?;
-            self.relocate_unkeyed_blocks(
-                shard_id, shard, start_routing_bucket, end_routing_bucket, None, &mut rewrite_stats,
-            )?;
-            Self::unreadable_blocks_failure(&rewrite_stats)
-        })();
-        if let Err(err) = relocation_result {
-            // A relocation failed partway. The in-memory index is now a CONSISTENT partial
-            // snapshot -- blocks already moved point at the fresh durable slab, the rest still point
-            // at their old slabs -- but it has DIVERGED from the on-disk index, which still
-            // references the now-vacated old slabs. Returning here without persisting (the old
-            // behavior) let the independent next-cycle reclaim trust this volatile index, see a
-            // fully-vacated old slab as stale, quarantine+purge it, and a later reload of the STALE
-            // on-disk index would then dangle at the deleted slab -> silent durable data loss.
-            // A compactor that leaves the index untouched on failure and commits the rewrite
-            // atomically avoids the desync structurally. We instead
-            // durably commit the consistent partial: rebuild the secondary views so the serialized
-            // index is internally consistent, fsync the relocated bytes so the index never names a
-            // non-durable block, then persist -- leaving volatile == durable so reclaim is safe --
-            // and propagate the original error so the caller knows compaction did not fully
-            // complete (a later run retries the not-yet-moved blocks).
             update_compacted_bucket_views(
                 shard_id, shard, start_routing_bucket, end_routing_bucket, &rewrite_stats.moved,
                 CompactionIndexRefresh::Complete,
             );
+            // Durability barrier BEFORE publishing the base index that names the relocated blocks.
+            // Under deferred-fsync modes (bulk / block_wal_single_barrier -> append.rs
+            // defer_data_sync) compaction relocates blocks fsync-deferred, so the moved
+            // bytes may still be in the page cache. Persisting a base index that references them
+            // and crashing before the next barrier would leave dangling references at an un-synced
+            // slab (compaction does not advance applied_wal_sequence, so WAL replay does not
+            // re-derive them) = permanent silent loss. The partial-failure path above already
+            // syncs here; the success path must too. Unconditional, matching that path.
             if let Err(barrier) = self.compaction_barrier() {
                 self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
                 return Err(Status::error(
                     "block_compaction_failed",
                     format!(
-                        "durability barrier failed while committing a partial compaction: {barrier}"
+                        "durability barrier failed before publishing the compacted base index: {barrier}"
                     ),
                 ));
             }
+            // THIS FLUSH STAYS UNDER THE WRITE GUARD. DO NOT GIVE IT THE EVICTION/EXPIRY
+            // TREATMENT.
+            //
+            // It is the same shape as the two flushes that were moved out -- encode the whole index,
+            // write two files -- and `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop`
+            // measures it still running inside the region, so it looks like the next one to move.
+            // It is not, and the difference is not about this function: it is that the work it is
+            // publishing exists NOWHERE ELSE.
+            //
+            // An expiry sweep and a delete_drop eviction both write a WAL tombstone per key before
+            // they flush, so a flush that lands late, lands stale, or never lands is re-derived by
+            // replay. Compaction deliberately does not advance `applied_wal_sequence` and emits no
+            // record: relocating a block changes only the volatile index and this file. From the
+            // moment the guard drops, `storage_lifecycle_plan` can take its own read lock, derive
+            // stale slabs as `page_store.slab_ids()` minus the volatile live set -- which now
+            // excludes the slabs this round just vacated -- and reclaim them. Crash in that window
+            // and the durable index is the PRE-compaction one, still naming slabs that have been
+            // destroyed, with no log to replay them back. That is the silent durable loss the
+            // partial-failure handler above exists to avoid, reached by a different route.
+            //
+            // Holding the guard across the encode is what makes that window not exist: no other
+            // thread can observe the vacated volatile index until the durable one names the new
+            // slab. The cost is real and measured; it buys the invariant.
+            // The PUBLISH, not just the encode, is what has to happen inside the region. See
+            // `FLUSH_PUBLISHED_UNDER_GUARD`.
+            #[cfg(test)]
+            {
+                note_compaction_flush_publish();
+                LAST_ROUND_DECISIONS.with(|cell| cell.set(rewrite_stats.decisions));
+            }
             rewrite_stats.note_relocated_wal_blocks(shard_id, shard);
-            let partial_index_bytes = match self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id) {
+            let index_bytes = match self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id) {
                 Ok(bytes) => bytes,
                 Err(publish) => {
                     self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
@@ -2406,198 +2518,106 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 }
             };
             self.clear_unpublished_compaction(shard_id);
-            let _ = self.index_log_store.append_index_bytes(shard_id, &partial_index_bytes);
-            // Keep the round OPEN. A relocation that failed partway left work behind by
-            // definition -- the blocks it had not reached yet are still on their old slabs -- and
-            // this used to return without recording the anchor, so the next round read
-            // `resumed = None`, rolled a SECOND fresh slab, and re-moved every block this one had
-            // already moved. That is exactly the shuffle the note above the resume read exists to
-            // rule out, and the failure path was the one way into it. It costs repeated work and
-            // one extra slab per failure rather than data loss, which is why it survived.
-            //
-            // Recorded UNCONDITIONALLY here, not under `left_work_behind()`: that flag is
-            // `skipped_by_budget > 0`, which a failed READ never sets, so gating on it would
-            // leave the anchor unwritten in precisely the case this handler exists for.
-            self.compaction_rounds
-                .write()
-                .expect("compaction round lock poisoned")
-                .insert(shard_id, (previous_block_slab_id, target_block_slab_id));
-            return Err(err);
-        }
-
-        // A round that spent its budget stays open, so the next one fills the same slab instead
-        // of rolling a new one and re-moving what this one moved. A round that relocated
-        // everything closes, and the next starts fresh.
-        {
-            let mut rounds = self
-                .compaction_rounds
-                .write()
-                .expect("compaction round lock poisoned");
-            if rewrite_stats.left_work_behind() {
-                rounds.insert(shard_id, (previous_block_slab_id, target_block_slab_id));
-            } else {
-                rounds.remove(&shard_id);
+            let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
+            let rewritten_object_blocks = rewrite_stats.rewritten_block_refs;
+            // Only actual relocation opens a write-amplification window. A budgeted/drained
+            // round covers a partial consolidation; the diagnostic report retains that limitation.
+            if rewritten_object_blocks > 0 {
+                self.block_store
+                    .mark_write_window_at_compaction(bytes_written_before_relocation);
             }
-        }
-        update_compacted_bucket_views(
-            shard_id, shard, start_routing_bucket, end_routing_bucket, &rewrite_stats.moved,
-            CompactionIndexRefresh::Complete,
-        );
-        // Durability barrier BEFORE publishing the base index that names the relocated blocks.
-        // Under deferred-fsync modes (bulk / block_wal_single_barrier -> append.rs
-        // defer_data_sync) compaction relocates blocks fsync-deferred, so the moved
-        // bytes may still be in the page cache. Persisting a base index that references them
-        // and crashing before the next barrier would leave dangling references at an un-synced
-        // slab (compaction does not advance applied_wal_sequence, so WAL replay does not
-        // re-derive them) = permanent silent loss. The partial-failure path above already
-        // syncs here; the success path must too. Unconditional, matching that path.
-        if let Err(barrier) = self.compaction_barrier() {
-            self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
-            return Err(Status::error(
-                "block_compaction_failed",
-                format!(
-                    "durability barrier failed before publishing the compacted base index: {barrier}"
-                ),
-            ));
-        }
-        // THIS FLUSH STAYS UNDER THE WRITE GUARD. DO NOT GIVE IT THE EVICTION/EXPIRY
-        // TREATMENT.
-        //
-        // It is the same shape as the two flushes that were moved out -- encode the whole index,
-        // write two files -- and `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop`
-        // measures it still running inside the region, so it looks like the next one to move.
-        // It is not, and the difference is not about this function: it is that the work it is
-        // publishing exists NOWHERE ELSE.
-        //
-        // An expiry sweep and a delete_drop eviction both write a WAL tombstone per key before
-        // they flush, so a flush that lands late, lands stale, or never lands is re-derived by
-        // replay. Compaction deliberately does not advance `applied_wal_sequence` and emits no
-        // record: relocating a block changes only the volatile index and this file. From the
-        // moment the guard drops, `storage_lifecycle_plan` can take its own read lock, derive
-        // stale slabs as `page_store.slab_ids()` minus the volatile live set -- which now
-        // excludes the slabs this round just vacated -- and reclaim them. Crash in that window
-        // and the durable index is the PRE-compaction one, still naming slabs that have been
-        // destroyed, with no log to replay them back. That is the silent durable loss the
-        // partial-failure handler above exists to avoid, reached by a different route.
-        //
-        // Holding the guard across the encode is what makes that window not exist: no other
-        // thread can observe the vacated volatile index until the durable one names the new
-        // slab. The cost is real and measured; it buys the invariant.
-        // The PUBLISH, not just the encode, is what has to happen inside the region. See
-        // `FLUSH_PUBLISHED_UNDER_GUARD`.
-        #[cfg(test)]
-        {
-            note_compaction_flush_publish();
-            LAST_ROUND_DECISIONS.with(|cell| cell.set(rewrite_stats.decisions));
-        }
-        rewrite_stats.note_relocated_wal_blocks(shard_id, shard);
-        let index_bytes = match self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id) {
-            Ok(bytes) => bytes,
-            Err(publish) => {
-                self.pin_unpublished_compaction(shard_id, &pre_round_slabs);
-                return Err(publish);
+            // No report escapes the timer path: it still completed the same durable publication.
+            let Some((before_slabs, before, model_layouts_before, delete_marked_object_ids_before)) = diagnostics_before else {
+                return Ok(None);
+            };
+            let after_slabs = collect_live_block_slab_ids(shard);
+            let after = compaction_utility_report(&self.block_store, shard);
+            let delete_marked_object_ids_after =
+                storage_reporting::storage_delete_marked_object_count(shard);
+            let bucket_layout_transition_count_before = 0u64;
+            let bucket_layout_transition_count_after = 0u64;
+            let bucket_layout_states_after = compaction_bucket_layout_states(shard);
+            let stale_block_slab_ids = before_slabs.difference(&after_slabs).copied().collect::<Vec<_>>();
+            let reclaimable_stale_block_slab_count = stale_block_slab_ids.len();
+            let model_policy_family_count = before.model_policies.len();
+            let delete_marker_policy_model_count = before.model_policies.iter()
+                .filter(|policy| policy.delete_marker_compaction_triggered).count();
+            let stale_density_policy_model_count = before.model_policies.iter()
+                .filter(|policy| policy.stale_density_triggered).count();
+            let layout_aware_policy_model_count = before.model_policies.iter()
+                .filter(|policy| policy.layout_aware_rewrite_required).count();
+            let bucket_layout_transition_count =
+                bucket_layout_transition_count_after.saturating_sub(bucket_layout_transition_count_before);
+            let has_model_layouts = !model_layouts_before.is_empty();
+            let preserves_delete_markers = delete_marked_object_ids_after >= delete_marked_object_ids_before;
+            let improves_density =
+                before.live_ref_density_basis_points <= after.live_ref_density_basis_points;
+            let has_layout_transitions = bucket_layout_transition_count > 0
+                || bucket_layout_states_after
+                    .iter()
+                    .any(|state| state.object_count > 0);
+            let mut model_layout_compaction_blockers = Vec::new();
+            if rewritten_object_blocks == 0 {
+                model_layout_compaction_blockers.push("no live block refs were rewritten".to_string());
             }
-        };
-        self.clear_unpublished_compaction(shard_id);
-        let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
-        let rewritten_object_blocks = rewrite_stats.rewritten_block_refs;
-        // Only actual relocation opens a write-amplification window. A budgeted/drained
-        // round covers a partial consolidation; the diagnostic report retains that limitation.
-        if rewritten_object_blocks > 0 {
-            self.block_store
-                .mark_write_window_at_compaction(bytes_written_before_relocation);
-        }
-        // No report escapes the timer path: it still completed the same durable publication.
-        let Some((before_slabs, before, model_layouts_before, delete_marked_object_ids_before)) = diagnostics_before else {
-            return Ok(None);
-        };
-        let after_slabs = collect_live_block_slab_ids(shard);
-        let after = compaction_utility_report(&self.block_store, shard);
-        let delete_marked_object_ids_after =
-            storage_reporting::storage_delete_marked_object_count(shard);
-        let bucket_layout_transition_count_before = 0u64;
-        let bucket_layout_transition_count_after = 0u64;
-        let bucket_layout_states_after = compaction_bucket_layout_states(shard);
-        let stale_block_slab_ids = before_slabs.difference(&after_slabs).copied().collect::<Vec<_>>();
-        let reclaimable_stale_block_slab_count = stale_block_slab_ids.len();
-        let model_policy_family_count = before.model_policies.len();
-        let delete_marker_policy_model_count = before.model_policies.iter()
-            .filter(|policy| policy.delete_marker_compaction_triggered).count();
-        let stale_density_policy_model_count = before.model_policies.iter()
-            .filter(|policy| policy.stale_density_triggered).count();
-        let layout_aware_policy_model_count = before.model_policies.iter()
-            .filter(|policy| policy.layout_aware_rewrite_required).count();
-        let bucket_layout_transition_count =
-            bucket_layout_transition_count_after.saturating_sub(bucket_layout_transition_count_before);
-        let has_model_layouts = !model_layouts_before.is_empty();
-        let preserves_delete_markers = delete_marked_object_ids_after >= delete_marked_object_ids_before;
-        let improves_density =
-            before.live_ref_density_basis_points <= after.live_ref_density_basis_points;
-        let has_layout_transitions = bucket_layout_transition_count > 0
-            || bucket_layout_states_after
-                .iter()
-                .any(|state| state.object_count > 0);
-        let mut model_layout_compaction_blockers = Vec::new();
-        if rewritten_object_blocks == 0 {
-            model_layout_compaction_blockers.push("no live block refs were rewritten".to_string());
-        }
-        if !has_model_layouts {
-            model_layout_compaction_blockers.push("model layout report is empty".to_string());
-        }
-        if !preserves_delete_markers {
-            model_layout_compaction_blockers
-                .push("tombstone object count decreased during compaction".to_string());
-        }
-        if !improves_density {
-            model_layout_compaction_blockers
-                .push("live-ref density did not improve or remain stable".to_string());
-        }
-        if !has_layout_transitions {
-            model_layout_compaction_blockers
-                .push("slot layout transition evidence is missing".to_string());
-        }
-        Ok(Some(ShardCompactionReport {
-            shard_id,
-            model_layout_compaction_ready: model_layout_compaction_blockers.is_empty(),
-            model_layout_compaction_evidence: vec![
-                "compaction rewrites live refs by model layout".to_string(),
-                "packed timestamped model layouts preserve shared block refs".to_string(),
-                "tombstone object ids are preserved across compaction".to_string(),
-                "stale block density is removed from the compacted live set".to_string(),
-                "slot layout transition counts and states are reported after compaction"
-                    .to_string(),
-                "per-model policies expose tombstone density, stale-block density, object-block packing, and cold-block rewrite eligibility".to_string(),
-                "stale segments left behind by moved indexes are reported as reclaimable".to_string(),
-            ],
-            model_layout_compaction_blockers,
-            previous_block_slab_id,
-            compacted_block_slab_id: target_block_slab_id,
-            blocks_left_by_budget: rewrite_stats.skipped_by_budget,
-            bytes_left_by_budget: rewrite_stats.skipped_by_budget_bytes,
-            blocks_left_off_drain_set: rewrite_stats.skipped_off_drain_set,            rewritten_block_refs: rewrite_stats.rewritten_block_refs,
-            relocated_bytes: rewrite_stats.relocated_bytes,
-            cold_block_rewrite_refs: rewrite_stats.cold_block_rewrite_refs,
-            object_block_pack_group_count: before
-                .model_policies
-                .iter()
-                .map(|policy| policy.object_block_pack_group_count as usize)
-                .sum(),
-            stale_block_slab_ids,
-            reclaimable_stale_block_slab_count,
-            model_policy_family_count,
-            delete_marker_policy_model_count,
-            stale_density_policy_model_count,
-            layout_aware_policy_model_count,
-            model_rewrite_policies: rewrite_stats.into_reports(&before),
-            rewritten_object_blocks,
-            bucket_layout_transition_count,
-            bucket_layout_states_after,
-            delete_marked_object_ids_before,
-            delete_marked_object_ids_after,
-            model_layouts: model_layouts_before,
-            before,
-            after,
-        }))
+            if !has_model_layouts {
+                model_layout_compaction_blockers.push("model layout report is empty".to_string());
+            }
+            if !preserves_delete_markers {
+                model_layout_compaction_blockers
+                    .push("tombstone object count decreased during compaction".to_string());
+            }
+            if !improves_density {
+                model_layout_compaction_blockers
+                    .push("live-ref density did not improve or remain stable".to_string());
+            }
+            if !has_layout_transitions {
+                model_layout_compaction_blockers
+                    .push("slot layout transition evidence is missing".to_string());
+            }
+            Ok(Some(ShardCompactionReport {
+                shard_id,
+                model_layout_compaction_ready: model_layout_compaction_blockers.is_empty(),
+                model_layout_compaction_evidence: vec![
+                    "compaction rewrites live refs by model layout".to_string(),
+                    "packed timestamped model layouts preserve shared block refs".to_string(),
+                    "tombstone object ids are preserved across compaction".to_string(),
+                    "stale block density is removed from the compacted live set".to_string(),
+                    "slot layout transition counts and states are reported after compaction"
+                        .to_string(),
+                    "per-model policies expose tombstone density, stale-block density, object-block packing, and cold-block rewrite eligibility".to_string(),
+                    "stale segments left behind by moved indexes are reported as reclaimable".to_string(),
+                ],
+                model_layout_compaction_blockers,
+                previous_block_slab_id,
+                compacted_block_slab_id: target_block_slab_id,
+                blocks_left_by_budget: rewrite_stats.skipped_by_budget,
+                bytes_left_by_budget: rewrite_stats.skipped_by_budget_bytes,
+                blocks_left_off_drain_set: rewrite_stats.skipped_off_drain_set,            rewritten_block_refs: rewrite_stats.rewritten_block_refs,
+                relocated_bytes: rewrite_stats.relocated_bytes,
+                cold_block_rewrite_refs: rewrite_stats.cold_block_rewrite_refs,
+                object_block_pack_group_count: before
+                    .model_policies
+                    .iter()
+                    .map(|policy| policy.object_block_pack_group_count as usize)
+                    .sum(),
+                stale_block_slab_ids,
+                reclaimable_stale_block_slab_count,
+                model_policy_family_count,
+                delete_marker_policy_model_count,
+                stale_density_policy_model_count,
+                layout_aware_policy_model_count,
+                model_rewrite_policies: rewrite_stats.into_reports(&before),
+                rewritten_object_blocks,
+                bucket_layout_transition_count,
+                bucket_layout_states_after,
+                delete_marked_object_ids_before,
+                delete_marked_object_ids_after,
+                model_layouts: model_layouts_before,
+                before,
+                after,
+            }))
+        })
     }
 }
 

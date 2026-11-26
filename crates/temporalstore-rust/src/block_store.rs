@@ -2019,7 +2019,7 @@ struct BlockStoreInner {
     /// computed fresh at the call. So a stale tally that overstates live bytes costs a round of
     /// collection, and one that understates them cannot reach anything the live-set test would
     /// have retained.
-    live_block_bytes: Option<BTreeMap<u64, BlockStoreSlabLive>>,
+    live_block_bytes: Option<Arc<BTreeMap<u64, BlockStoreSlabLive>>>,
     stats: BlockStoreStats,
     /// The earliest moment any slab now in quarantine was set aside -- when this process KNOWS it.
     ///
