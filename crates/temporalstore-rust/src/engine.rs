@@ -111,6 +111,12 @@ pub use self::bucket_dump_io::{
 };
 mod command_validation;
 pub mod resource_blobs;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_FAST_READ_OWNER: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
 #[path = "engine/engine_quota.rs"]
 pub mod quota;
 pub(crate) mod eviction_sampler;
@@ -164,6 +170,7 @@ pub use shard_write_guard::{
 };
 #[path = "engine/shard_guard.rs"]
 pub mod shard_guard;
+mod shard_state_registry;
 #[path = "engine/engine_compaction.rs"]
 mod compaction;
 // The maintenance round in `data_node` asks this before compacting; see the function's doc.
@@ -575,10 +582,8 @@ impl TemporalEngine {
             .get(&shard_id)
             .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
             .unwrap_or((0, u32::MAX));
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            return;
-        };
+        self.shards.with_state_mut(shard_id, |state| {
+        let Some(shard) = state else { return; };
         storage_bucket_internals::rebuild_bucket_first_index(
             shard_id,
             shard,
@@ -590,24 +595,9 @@ impl TemporalEngine {
         // source, with nothing in between that could change the answer -- so the flags refresh,
         // and the duplicate scan does not.
         storage_bucket_internals::refresh_bucket_runtime_flags_after_reconstruct(shard);
+        });
     }
 
-    /// Take the shard table's write lock, marking the region for the lock-hold measurement.
-    ///
-    /// Identical to `self.shards.write()` in every observable way except that the served-index
-    /// encode can tell whether it is running inside the region. Maintenance paths take this one
-    /// so a guard can state what they do while holding it.
-    fn shards_write_marked(&self) -> MarkedShardWriteGuard<'_> {
-        MarkedShardWriteGuard::new(self.shards.write().expect("engine lock poisoned"))
-    }
-
-    /// Take the shard table's read lock, marking the region for the lock-hold measurement.
-    ///
-    /// Identical to `self.shards.read()` in every observable way except that the block-read
-    /// counter can tell whether it is running inside the region.
-    fn shards_read_marked(&self) -> MarkedShardReadGuard<'_> {
-        MarkedShardReadGuard::new(self.shards.read().expect("engine lock poisoned"))
-    }
 
     /// Read one live block off the block store, counted against the shard-table guard.
     ///
@@ -1060,15 +1050,39 @@ impl TemporalEngine {
             }
             std::mem::take(&mut *stamps)
         };
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        for ((shard_id, routing_bucket), stamped_ms) in pending {
-            if let Some(shard) = shards.get_mut(&shard_id) {
-                let slot = shard.bucket_recency.entry(routing_bucket).or_insert(0);
-                if *slot < stamped_ms {
-                    *slot = stamped_ms;
+        let mut pending: Vec<_> = pending.into_iter().collect();
+        pending.sort_unstable_by_key(|((shard_id, _), _)| *shard_id);
+        let mut pending = pending.into_iter().peekable();
+        while let Some(&((shard_id, _), _)) = pending.peek() {
+            self.shards.with_state_mut(shard_id, |mut state| {
+                while pending.peek().is_some_and(|((id, _), _)| *id == shard_id) {
+                    let ((_, routing_bucket), stamped_ms) = pending.next().expect("pending stamp");
+                    if let Some(shard) = state.as_deref_mut() {
+                        let slot = shard.bucket_recency.entry(routing_bucket).or_insert(0);
+                        *slot = (*slot).max(stamped_ms);
+                    }
+                }
+            });
+        }
+    }
+
+    pub(crate) fn fold_fast_read_recency_for_shard(&self, shard_id: ShardId) {
+        let Some(owner) = self.shards.handle(shard_id) else { return; };
+        let pending: Vec<_> = {
+            let mut stamps = self.fast_read_recency.lock().expect("fast read recency lock poisoned");
+            stamps.extract_if(|(id, _), _| *id == shard_id)
+                .map(|((_, bucket), stamp)| (bucket, stamp)).collect()
+        };
+        if pending.is_empty() { return; }
+        // A delayed fold must not look up the ID again and mutate a replacement.
+        self.shards.with_handle_state_mut(&owner, |state| {
+            if let Some(shard) = state {
+                for (bucket, stamp) in pending {
+                    let slot = shard.bucket_recency.entry(bucket).or_insert(0);
+                    *slot = (*slot).max(stamp);
                 }
             }
-        }
+        });
     }
 
     fn execute_with_storage_override(
@@ -1125,12 +1139,13 @@ impl TemporalEngine {
                 return response;
             }
         }
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&request.shard_id) else {
-            return ExecuteResponse {
+        let shard_id = request.shard_id;
+        let mutation = self.shards.with_state_mut(shard_id, |state| {
+        let Some(shard) = state else {
+            return Err(ExecuteResponse {
                 status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
                 response: CommandResponse::Empty,
-            };
+            });
         };
         let command = request.command;
         let write_command = is_write_command(&command);
@@ -1180,19 +1195,19 @@ impl TemporalEngine {
         // would regress the WAL anchor and double-apply on the next restart. The replay
         // thread re-drives records under replaying_wal(), which bypasses this gate.
         if !replaying_wal() && !shared_wal_replay && info.recovering {
-            return ExecuteResponse {
+            return Err(ExecuteResponse {
                 status: Status::error(
                     "shard_not_loaded",
                     "shard is recovering (WAL replay in progress)",
                 ),
                 response: CommandResponse::Empty,
-            };
+            });
         }
         if info.readonly && write_command {
-            return ExecuteResponse {
+            return Err(ExecuteResponse {
                 status: Status::error("readonly_shard", "readonly shard rejects write command"),
                 response: CommandResponse::Empty,
-            };
+            });
         }
         let start_routing_bucket = info.start_routing_bucket;
         let end_routing_bucket = info.end_routing_bucket;
@@ -1246,10 +1261,10 @@ impl TemporalEngine {
                 info.table_name.as_deref(),
             )
             {
-                return ExecuteResponse {
+                return Err(ExecuteResponse {
                     status,
                     response: CommandResponse::Empty,
-                };
+                });
             }
         }
         // Exempt under raft apply and under replay, with the admission limits just above. The
@@ -1271,13 +1286,13 @@ impl TemporalEngine {
                 .map(|limit| self.block_store.slab_summary().total_known_physical_bytes >= limit)
                 .unwrap_or(false)
         {
-            return ExecuteResponse {
+            return Err(ExecuteResponse {
                 status: Status::error(
                     "storage_quota_exceeded",
                     "shard maxmemory_bytes limit has been reached",
                 ),
                 response: CommandResponse::Empty,
-            };
+            });
         }
         // Command preconditions are a LEADER-time gate: a command only reaches the WAL after
         // passing them on the leader. WAL replay re-applies already-committed effects (like
@@ -1294,10 +1309,10 @@ impl TemporalEngine {
                 shard,
                 &command,
             ) {
-                return ExecuteResponse {
+                return Err(ExecuteResponse {
                     status,
                     response: CommandResponse::Empty,
-                };
+                });
             }
         }
         // Start this write with nothing staged, so a block put aside by a command that never
@@ -1750,13 +1765,13 @@ impl TemporalEngine {
                         // a fire-and-forget commit, so its append errors stay best-effort and do
                         // not fail the command.) We also skip the index anchor + persist below, so
                         // durable state never advances past a write the WAL did not accept.
-                        return ExecuteResponse {
+                        return Err(ExecuteResponse {
                             status: Status::error(
                                 "wal_commit_failed",
                                 format!("durable WAL commit failed: {err}"),
                             ),
                             response: CommandResponse::Empty,
-                        };
+                        });
                     } else {
                         // Async / bulk mode is a fire-and-forget commit, so an append error does
                         // NOT fail the command (the ack path is intentionally best-effort here).
@@ -1896,7 +1911,15 @@ impl TemporalEngine {
                 }
             }
         }
-        // Release the `shards` write lock BEFORE the durable barrier. A concurrent same-shard
+        Ok((pending_barrier_seq,
+            writes_string_block, context_embedding_command, outcome.response))
+        });
+        let (pending_barrier_seq,
+            writes_string_block, context_embedding_command, response) = match mutation {
+            Ok(deferred) => deferred,
+            Err(response) => return response,
+        };
+        // Release the shard owner before the durable barrier. A concurrent same-shard
         // writer can now acquire it, mutate + reserve its own WAL sequence, and enter the
         // group-commit queue WHILE this writer's fdatasync is in flight -- the coalescing window
         // that makes group commit engage (fewer fsyncs than writes). The in-memory mutation and
@@ -1904,7 +1927,6 @@ impl TemporalEngine {
         // order holds regardless of how the (order-independent) barriers interleave. When the
         // concurrent-commit gate is OFF, `pending_barrier_seq` is None and the barrier below is a
         // no-op, so this is byte-identical to the prior in-lock append_with_sync path.
-        drop(shards);
         if let Some(barrier_seq) = pending_barrier_seq {
             if coalesced_apply_batch_active() {
                 // Defer to the single coalesced barrier issued for the whole batch by
@@ -1946,7 +1968,7 @@ impl TemporalEngine {
         }
         ExecuteResponse {
             status: Status::ok(),
-            response: outcome.response,
+            response,
         }
     }
 
@@ -2011,39 +2033,36 @@ impl TemporalEngine {
         if !read_command {
             return None;
         }
-        // A shard replaying its WAL on load is present but not yet serving (keeps it in
-        // PartitionLoadStage::LOADING). The durable / replicated read routes reach this fast
-        // path BEFORE execute_with_storage_override's recovering gate, so without this a read
-        // would be served from half-reconstructed state (and skip admission). Decline the fast
-        // path while recovering so the slow path rejects uniformly with a retryable
-        // shard_not_loaded. The replay thread reads under replaying_wal(), which bypasses this.
-        if !replaying_wal()
-            && self
-                .infos
-                .read()
-                .expect("info lock poisoned")
-                .get(&request.shard_id)
-                .map(|info| info.recovering)
-                .unwrap_or(false)
-        {
-            return None;
-        }
         // The addresses come from the shard index and the BYTES come from the block store, so
         // the guard covers the lookup only. A read guard admits other readers and excludes every
         // WRITER, and this path held it across one block-store read PER FIELD -- so a wide hash
         // stopped all writes on the shard for as many reads as the value had fields. See
         // `FastPathRead` for why releasing first is safe and what the one scope still buys.
         let hold_guard_across_reads = shard_write_guard::serving_holds_guard_across_reads();
-        let (plan, _held_across_reads, _wal_snapshot, _slab_snapshot) = {
-            let shards = self.shards_read_marked();
-            let Some(shard) = shards.get(&request.shard_id) else {
-                return Some(ExecuteResponse {
+        // The error arm is a final fast-path outcome, including a diagnostic read
+        // served with the owner held or a command that must fall back.
+        #[cfg(test)]
+        if let Some(before_owner) = BEFORE_FAST_READ_OWNER.with(|slot| slot.borrow_mut().take()) {
+            before_owner();
+        }
+        let captured = self.shards.with_state(request.shard_id, |shard| {
+            let Some(shard) = shard else {
+                return Err(Some(ExecuteResponse {
                     status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
                     response: CommandResponse::Empty,
-                });
+                }));
             };
+            // Check readiness while holding the owner. Unload publishes recovering
+            // under that owner before dropping it to drain publication. Replay keeps
+            // its bypass, while other recovering reads fall through to the slow gate.
+            if !replaying_wal()
+                && self.infos.read().expect("info lock poisoned")
+                    .get(&request.shard_id).is_some_and(|info| info.recovering)
+            {
+                return Err(None);
+            }
             if shard.bucket_index.bucket_map.is_empty() && shard_has_model_entries(shard) {
-                return None;
+                return Err(None);
             }
             let plan = match &request.command {
                 Command::StringGet { key } => {
@@ -2053,7 +2072,7 @@ impl TemporalEngine {
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::String {
@@ -2073,7 +2092,7 @@ impl TemporalEngine {
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::Hash {
@@ -2102,7 +2121,7 @@ impl TemporalEngine {
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::StringShared {
@@ -2126,7 +2145,7 @@ impl TemporalEngine {
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::HashField {
@@ -2152,7 +2171,7 @@ impl TemporalEngine {
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     let bound = self.feature_read_bound(request.shard_id);
@@ -2185,7 +2204,7 @@ impl TemporalEngine {
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     let bound = self.feature_read_bound(request.shard_id);
@@ -2218,7 +2237,7 @@ impl TemporalEngine {
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::FeatureRange {
@@ -2250,12 +2269,12 @@ impl TemporalEngine {
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
-                        return None;
+                        return Err(None);
                     }
                     // A spec admission would refuse is answered by the ordinary path, with its
                     // status; this one only serves what the ordinary path would have served.
                     if crate::engine::window_reduce_rank::validate_spec(spec).is_err() {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     let now_ms = resolve_now_ms();
@@ -2284,11 +2303,11 @@ impl TemporalEngine {
                             .map(|expires_at| *expires_at <= now_ms)
                             .unwrap_or(false)
                     }) {
-                        return None;
+                        return Err(None);
                     }
                     // A batch admission would refuse is answered by the ordinary path, with its status.
                     if window_reduce_fan_in::validate_batch(queries).is_err() {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::WindowReduceRankBatch {
@@ -2317,12 +2336,12 @@ impl TemporalEngine {
                             .map(|expires_at| *expires_at <= now_ms)
                             .unwrap_or(false)
                     }) {
-                        return None;
+                        return Err(None);
                     }
                     if window_reduce_fan_in::validate_keys(keys).is_err()
                         || crate::engine::window_reduce_rank::validate_spec(spec).is_err()
                     {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::WindowReduceFanIn {
@@ -2341,7 +2360,7 @@ impl TemporalEngine {
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     let fields = shard.bucket_index.hashes.get(key);
@@ -2375,14 +2394,14 @@ impl TemporalEngine {
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     // ANSWERED UNDER THE GUARD: each of these is a lookup or a bounded walk of a
                     // resident map, with no block to read afterwards, so there is nothing to pin.
                     // A key the map does not name, or a set read the map is not allowed to serve,
                     // is left to the ordinary path, which knows the fallbacks.
-                    let response = index_only_read(shard, &request.command)?;
+                    let response = index_only_read(shard, &request.command).ok_or(None)?;
                     FastPathRead::Response {
                         response,
                         routing_bucket: block_routing_bucket(
@@ -2400,7 +2419,7 @@ impl TemporalEngine {
                 Command::ControlStateCount { key, start_ms, end_ms }
                 | Command::ControlStateQuery { key, start_ms, end_ms, .. } => {
                     if control_key_lapsed(shard, key) || self.control_rollup_on(request.shard_id) {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     let value = match &request.command {
@@ -2435,7 +2454,7 @@ impl TemporalEngine {
                 }
                 Command::SeenCard { key } => {
                     if control_key_lapsed(shard, key) {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::Answer {
@@ -2452,7 +2471,7 @@ impl TemporalEngine {
                 }
                 Command::ControlStateSelectionQuery { key } => {
                     if control_key_lapsed(shard, key) {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::Value {
@@ -2467,21 +2486,27 @@ impl TemporalEngine {
                         ),
                     }
                 }
-                _ => return None,
+                _ => return Err(None),
             };
             let wal_snapshot = plan.pin_log_locations(&self.block_store, request.shard_id);
             let slab_snapshot = plan.pin_feature_slabs(&self.block_store);
-            // The measurement's control arm carries the guard out of this block so the reads
-            // below still happen inside the region. `None` in every shipped build, which is what
-            // makes the guard drop here.
-            let held = if hold_guard_across_reads {
-                Some(shards)
-            } else {
-                None
-            };
-            (plan, held, wal_snapshot, slab_snapshot)
+            if hold_guard_across_reads {
+                return Err(self.serve_fast_path_read(request, plan));
+            }
+            Ok((plan, wal_snapshot, slab_snapshot))
+        });
+        let (plan, _wal_snapshot, _slab_snapshot) = match captured {
+            Ok(capture) => capture,
+            Err(response) => return response,
         };
+        self.serve_fast_path_read(request, plan)
+    }
 
+    fn serve_fast_path_read(
+        &self,
+        request: &ExecuteRequest,
+        plan: FastPathRead<'_>,
+    ) -> Option<ExecuteResponse> {
         #[cfg(test)]
         if let Some(after) = AFTER_FAST_READ_PLAN.with(|slot| slot.borrow_mut().take()) {
             after();
@@ -3130,8 +3155,8 @@ impl TemporalEngine {
 
     #[doc(hidden)]
     pub fn string_block_cache_key_for_test(&self, shard_id: ShardId, key: &str) -> Option<CacheKey> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&shard_id)?;
+        self.shards.with_state(shard_id, |state| {
+        let shard = state?;
         let address = shard.strings().get(key)?;
         let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
         Some(CacheKey::page_with_slot(
@@ -3140,15 +3165,14 @@ impl TemporalEngine {
             address.offset(),
             address.length(),
             Some(block_routing_bucket(key, start_routing_bucket, end_routing_bucket))))
+        })
     }
 
     #[doc(hidden)]
     pub fn clear_string_model_view_for_test(&self, shard_id: ShardId, key: &str) -> bool {
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        shards
-            .get_mut(&shard_id)
+        self.shards.with_state_mut(shard_id, |state| state
             .and_then(|shard| shard.remove_string_row(key))
-            .is_some()
+            .is_some())
     }
 
     pub fn loaded_shard_stats(&self) -> Vec<ShardStats> {
@@ -3159,15 +3183,7 @@ impl TemporalEngine {
     }
 
     pub fn loaded_shard_ids(&self) -> Vec<ShardId> {
-        let mut shard_ids = self
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        shard_ids.sort_unstable();
-        shard_ids
+        self.shards.shard_ids()
     }
 
     pub fn bucket_storage_summaries(&self, shard_id: ShardId) -> Vec<BucketStorageSummary> {
@@ -3185,30 +3201,31 @@ impl TemporalEngine {
         Vec<BucketStorageSummary>,
         BTreeMap<u32, BucketFingerprintDigest>,
     ) {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
+        let Some((listing, start, end)) = self.shards.with_state(shard_id, |shard| {
+            let shard = shard?;
+            let info = self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&shard_id)
+                .cloned();
+            let start = info
+                .as_ref()
+                .map(|info| info.start_routing_bucket)
+                .unwrap_or_default();
+            let end = info
+                .as_ref()
+                .map(|info| info.end_routing_bucket)
+                .unwrap_or(u32::MAX);
+            // ONLY THE COPY OUT OF THE SHARD RUNS UNDER ITS READ GUARD. Every writer takes the write
+            // guard for its whole command, so for as long as this guard is held no write is
+            // acknowledged. Building the summaries and the digests reads nothing of the shard, so it
+            // runs after the guard is released, and so does reading the latest manifest off disk.
+            let listing = capture_live_listing(shard);
+            Some((listing, start, end))
+        }) else {
             return (Vec::new(), BTreeMap::new());
         };
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        let start = info
-            .as_ref()
-            .map(|info| info.start_routing_bucket)
-            .unwrap_or_default();
-        let end = info
-            .as_ref()
-            .map(|info| info.end_routing_bucket)
-            .unwrap_or(u32::MAX);
-        // ONLY THE COPY OUT OF THE SHARD RUNS UNDER ITS READ GUARD. Every writer takes the write
-        // guard for its whole command, so for as long as this guard is held no write is
-        // acknowledged. Building the summaries and the digests reads nothing of the shard, so it
-        // runs after the guard is released, and so does reading the latest manifest off disk.
-        let listing = capture_live_listing(shard);
-        drop(shards);
         #[cfg(test)]
         storage_reporting::run_listing_released_hook();
         let (summaries, digests) =
@@ -3227,18 +3244,19 @@ impl TemporalEngine {
     /// the shard has. The copy under the guard is O(dirty buckets); the rest of the shard is not
     /// listed.
     pub(crate) fn dirty_bucket_plan_inputs(&self, shard_id: ShardId) -> DirtyBucketPlanInputs {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
+        let Some((claims, listing, start, end, bucket_node_count)) = self.shards.with_state(shard_id, |shard| {
+            let shard = shard?;
+            let info = self.infos.read().expect("info lock poisoned").get(&shard_id).cloned();
+            let start = info.as_ref().map(|info| info.start_routing_bucket).unwrap_or_default();
+            let end = info.as_ref().map(|info| info.end_routing_bucket).unwrap_or(u32::MAX);
+            let claims = storage_reporting::dirty_bucket_claims(shard);
+            let dirty: BTreeSet<u32> = claims.keys().copied().collect();
+            let listing = storage_reporting::capture_live_listing_for(shard, &dirty);
+            let bucket_node_count = shard.bucket_index.bucket_map.len();
+            Some((claims, listing, start, end, bucket_node_count))
+        }) else {
             return DirtyBucketPlanInputs::default();
         };
-        let info = self.infos.read().expect("info lock poisoned").get(&shard_id).cloned();
-        let start = info.as_ref().map(|info| info.start_routing_bucket).unwrap_or_default();
-        let end = info.as_ref().map(|info| info.end_routing_bucket).unwrap_or(u32::MAX);
-        let claims = storage_reporting::dirty_bucket_claims(shard);
-        let dirty: BTreeSet<u32> = claims.keys().copied().collect();
-        let listing = storage_reporting::capture_live_listing_for(shard, &dirty);
-        let bucket_node_count = shard.bucket_index.bucket_map.len();
-        drop(shards);
         let (summaries, digests) = storage_reporting::build_summaries_and_digests(shard_id, listing, start, end, true);
         let summaries =
             if let Some(manifest) = latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id) {
@@ -3250,92 +3268,96 @@ impl TemporalEngine {
     }
 
     pub fn storage_physical_index_report(&self, shard_id: ShardId) -> StoragePhysicalIndexReport {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return StoragePhysicalIndexReport {
-                shard_id,
-                bucket_first: true,
-                ..StoragePhysicalIndexReport::default()
-            };
+        let empty = || StoragePhysicalIndexReport {
+            shard_id,
+            bucket_first: true,
+            ..StoragePhysicalIndexReport::default()
         };
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        let start = info
-            .as_ref()
-            .map(|info| info.start_routing_bucket)
-            .unwrap_or_default();
-        let end = info
-            .as_ref()
-            .map(|info| info.end_routing_bucket)
-            .unwrap_or(u32::MAX);
-        let summaries = bucket_storage_summaries(shard, start, end);
-        let summaries =
-            if let Some(manifest) = latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id) {
-                merge_last_dump_sequence(summaries, &manifest)
-            } else {
-                summaries
-            };
-        storage_physical_index_report(shard_id, shard, summaries)
+        let Some(owner) = self.shards.handle(shard_id) else { return empty() };
+        let manifest = latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id);
+        self.shards.with_handle_state(&owner, |shard| {
+            let Some(shard) = shard else { return empty() };
+            let info = self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&shard_id)
+                .cloned();
+            let start = info
+                .as_ref()
+                .map(|info| info.start_routing_bucket)
+                .unwrap_or_default();
+            let end = info
+                .as_ref()
+                .map(|info| info.end_routing_bucket)
+                .unwrap_or(u32::MAX);
+            let summaries = bucket_storage_summaries(shard, start, end);
+            let summaries =
+                if let Some(manifest) = manifest {
+                    merge_last_dump_sequence(summaries, &manifest)
+                } else {
+                    summaries
+                };
+            storage_physical_index_report(shard_id, shard, summaries)
+        })
     }
 
     pub fn bucket_object_block_ownership_report(
         &self,
         shard_id: ShardId,
     ) -> BucketObjectBlockOwnershipReport {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return BucketObjectBlockOwnershipReport {
-                shard_id,
-                ..BucketObjectBlockOwnershipReport::default()
+        self.shards.with_state(shard_id, |shard| {
+            let Some(shard) = shard else {
+                return BucketObjectBlockOwnershipReport {
+                    shard_id,
+                    ..BucketObjectBlockOwnershipReport::default()
+                };
             };
-        };
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        bucket_object_block_ownership_report(
-            shard_id,
-            shard,
-            info.as_ref()
-                .map(|info| info.start_routing_bucket)
-                .unwrap_or_default(),
-            info.as_ref()
-                .map(|info| info.end_routing_bucket)
-                .unwrap_or(u32::MAX),
-        )
+            let info = self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&shard_id)
+                .cloned();
+            bucket_object_block_ownership_report(
+                shard_id,
+                shard,
+                info.as_ref()
+                    .map(|info| info.start_routing_bucket)
+                    .unwrap_or_default(),
+                info.as_ref()
+                    .map(|info| info.end_routing_bucket)
+                    .unwrap_or(u32::MAX),
+            )
+        })
     }
 
     pub fn object_manager_runtime_report(&self, shard_id: ShardId) -> ObjectManagerRuntimeReport {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return ObjectManagerRuntimeReport {
-                shard_id,
-                blockers: vec!["shard is not loaded".to_string()],
-                ..ObjectManagerRuntimeReport::default()
+        self.shards.with_state(shard_id, |shard| {
+            let Some(shard) = shard else {
+                return ObjectManagerRuntimeReport {
+                    shard_id,
+                    blockers: vec!["shard is not loaded".to_string()],
+                    ..ObjectManagerRuntimeReport::default()
+                };
             };
-        };
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        object_manager_runtime_report(
-            shard_id,
-            shard,
-            info.as_ref()
-                .map(|info| info.start_routing_bucket)
-                .unwrap_or_default(),
-            info.as_ref()
-                .map(|info| info.end_routing_bucket)
-                .unwrap_or(u32::MAX),
-        )
+            let info = self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&shard_id)
+                .cloned();
+            object_manager_runtime_report(
+                shard_id,
+                shard,
+                info.as_ref()
+                    .map(|info| info.start_routing_bucket)
+                    .unwrap_or_default(),
+                info.as_ref()
+                    .map(|info| info.end_routing_bucket)
+                    .unwrap_or(u32::MAX),
+            )
+        })
     }
 
     pub fn storage_data_structure_api_parity_report(
@@ -3589,10 +3611,7 @@ impl TemporalEngine {
         // `ensure_expiry_order` stays at its call sites as the repair for an emptied mirror.
         ensure_expiry_order(&mut state);
         state.expiry_scan_positions = [None, None];
-        self.shards
-            .write()
-            .expect("engine lock poisoned")
-            .insert(shard_id, state);
+        drop(self.shards.install(shard_id, state));
     }
 
     /// What the resident bucket index costs on this shard: one node per bucket, plus one entry
@@ -3627,11 +3646,14 @@ impl TemporalEngine {
         shard_id: ShardId,
         buckets: Vec<u32>,
     ) -> (usize, usize, usize) {
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            return (0, 0, 0);
-        };
-        let outcome = crate::engine::storage_bucket_internals::release_bucket_blocks(shard, &buckets);
+        let mut retired = storage_bucket_internals::RetiredBucketIndexes::with_capacity(buckets.len());
+        let outcome = self.shards.with_state_mut(shard_id, |shard| {
+            shard.map(|shard| storage_bucket_internals::detach_bucket_blocks(
+                shard, &buckets, false, &mut retired,
+            ))
+        });
+        drop(retired);
+        let Some(outcome) = outcome else { return (0, 0, 0) };
         (
             outcome.released_buckets.len(),
             outcome.released_blocks,
@@ -3644,13 +3666,10 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> (usize, usize, usize) {
-        let candidates = {
-            let shards = self.shards.read().expect("engine lock poisoned");
-            shards
-                .get(&shard_id)
-                .map(|shard| shard.bucket_index.bucket_map.keys().copied().collect::<Vec<_>>())
+        let candidates = self.shards.with_state(shard_id, |shard| {
+            shard.map(|shard| shard.bucket_index.bucket_map.keys().copied().collect::<Vec<_>>())
                 .unwrap_or_default()
-        };
+        });
         self.release_bucket_index_blocks(shard_id, candidates)
     }
 
@@ -3660,31 +3679,27 @@ impl TemporalEngine {
         shard_id: ShardId,
         routing_bucket: u32,
     ) -> bool {
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            return false;
-        };
-        crate::engine::storage_bucket_internals::reload_released_bucket(
-            shard,
-            shard_id,
-            routing_bucket,
-        )
+        self.shards.with_state_mut(shard_id, |shard| {
+            shard.is_some_and(|shard| {
+                storage_bucket_internals::reload_released_bucket(shard, shard_id, routing_bucket)
+            })
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn match_eviction_test_recency(&self, shard_id: ShardId) {
+        self.fold_fast_read_recency_for_shard(shard_id);
+        self.shards.with_state_mut(shard_id, |state| {
+            state.expect("fixture shard").bucket_recency.clear();
+        });
     }
 
     /// The buckets currently released on this shard, in routing order.
     pub fn released_bucket_index_buckets(&self, shard_id: ShardId) -> Vec<u32> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&shard_id)
-            .map(|shard| {
-                shard
-                    .bucket_index
-                    .released_buckets
-                    .iter()
-                    .copied()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
+        self.shards.with_state(shard_id, |shard| {
+            shard.map(|shard| shard.bucket_index.released_buckets.iter().copied().collect())
+                .unwrap_or_default()
+        })
     }
 
 }
@@ -4631,75 +4646,6 @@ pub mod shard_write_guard {
     }
 }
 
-/// The shard table's write guard, with the region it covers marked for measurement.
-///
-/// Marking at the ACQUISITION rather than around each expensive call is what makes the counter
-/// hard to blind: a call that moves into the region starts being counted because it is in the
-/// region, not because someone remembered to wrap it, and a call that moves out stops for the
-/// same reason. The mark is released by the same `Drop` that releases the lock, so an early
-/// `drop(guard)` shortens the measured region exactly as much as it shortens the real one.
-struct MarkedShardWriteGuard<'a> {
-    guard: shard_guard::ShardsWriteGuard<'a>,
-}
-
-impl<'a> MarkedShardWriteGuard<'a> {
-    fn new(guard: shard_guard::ShardsWriteGuard<'a>) -> Self {
-        shard_write_guard::entered();
-        Self { guard }
-    }
-}
-
-impl std::ops::Deref for MarkedShardWriteGuard<'_> {
-    type Target = HashMap<ShardId, ShardState>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.guard
-    }
-}
-
-impl std::ops::DerefMut for MarkedShardWriteGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.guard
-    }
-}
-
-impl Drop for MarkedShardWriteGuard<'_> {
-    fn drop(&mut self) {
-        shard_write_guard::left();
-    }
-}
-
-/// The shard table's READ guard, with the region it covers marked the same way.
-///
-/// A read guard looks harmless and is not: it admits other readers but excludes every writer, so
-/// a maintenance stage holding one across per-block I/O stops all writes on the shard for as long
-/// as the I/O takes. Marked at the acquisition for the same reason the write guard is -- work
-/// moving out of the region stops being counted because of WHERE IT IS, not because a wrapper
-/// was remembered.
-struct MarkedShardReadGuard<'a> {
-    guard: shard_guard::ShardsReadGuard<'a>,
-}
-
-impl<'a> MarkedShardReadGuard<'a> {
-    fn new(guard: shard_guard::ShardsReadGuard<'a>) -> Self {
-        shard_write_guard::entered_read();
-        Self { guard }
-    }
-}
-
-impl std::ops::Deref for MarkedShardReadGuard<'_> {
-    type Target = HashMap<ShardId, ShardState>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.guard
-    }
-}
-
-impl Drop for MarkedShardReadGuard<'_> {
-    fn drop(&mut self) {
-        shard_write_guard::left_read();
-    }
-}
 
 /// Stamp the shard with the current format version and serialize it.
 ///
@@ -11108,4 +11054,47 @@ pub(crate) struct DirtyBucketPlanInputs {
     pub(crate) summaries: Vec<BucketStorageSummary>,
     pub(crate) digests: BTreeMap<u32, BucketFingerprintDigest>,
     pub(crate) bucket_node_count: usize,
+}
+
+#[cfg(test)]
+#[test]
+fn a_durable_direct_write_does_not_wait_for_another_shards_state_owner() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 << 20, dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.load_shard(2);
+    let held_engine = engine.clone();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        held_engine.shards.with_state_mut(1, |state| {
+            assert!(state.is_some());
+            ready_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        });
+    });
+    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let writer_engine = engine.clone();
+    let (done_tx, done_rx) = mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let response = writer_engine.execute_durable(ExecuteRequest {
+            shard_id: 2,
+            command: Command::StringSet { key: "independent-owner".into(), value: vec![2, 4, 8] },
+        });
+        done_tx.send(response).unwrap();
+    });
+    let response = done_rx.recv_timeout(Duration::from_secs(5));
+    // Release even on failure, so a global-lock regression does not strand a worker.
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    writer.join().unwrap();
+    assert!(response.expect("peer write waited for the held owner").status.ok);
+    assert!(matches!(engine.execute(ExecuteRequest {
+        shard_id: 2, command: Command::StringGet { key: "independent-owner".into() },
+    }).response, CommandResponse::Bytes { value: Some(bytes) } if bytes == [2, 4, 8]));
 }

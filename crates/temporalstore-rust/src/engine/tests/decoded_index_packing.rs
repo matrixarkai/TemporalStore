@@ -121,13 +121,14 @@ fn encoded_index(
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = packing_engine(dir.path());
     packing_seed(&engine, strings_n, series_keys, series_points);
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("shard is loaded");
-    let points: usize = shard.features().values().map(|series| series.len()).sum();
-    let list_entries: usize = shard.bucket_index.lists.values().map(|list| list.len()).sum();
-    let container = crate::engine::encode_index_bytes(shard);
-    let plain = crate::engine::encode_index_bytes_as_plain_json(shard);
-    (container, plain, points, list_entries)
+    engine.shards.with_state(SHARD, |shard_state| {
+        let shard = shard_state.expect("shard is loaded");
+        let points: usize = shard.features().values().map(|series| series.len()).sum();
+        let list_entries: usize = shard.bucket_index.lists.values().map(|list| list.len()).sum();
+        let container = crate::engine::encode_index_bytes(shard);
+        let plain = crate::engine::encode_index_bytes_as_plain_json(shard);
+        (container, plain, points, list_entries)
+    })
 }
 
 /// The same entries, packed in one go: `collect` into a `BTreeMap` sorts and bulk-builds, so every
@@ -180,114 +181,115 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
     let engine = packing_engine(dir.path());
     packing_seed(&engine, 200, 3, 400);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("shard is loaded");
+    engine.shards.with_state(SHARD, |shard_state| {
+        let shard = shard_state.expect("shard is loaded");
 
-    // DENOMINATORS, before any comparison: an empty map compares equal to an empty map.
-    assert_eq!(3, shard.features().len(), "denominator: three series seeded");
-    let points: usize = shard.features().values().map(|series| series.len()).sum();
-    assert_eq!(1_200, points, "denominator: 400 points in each of three series");
-    let list_entries: usize = shard.bucket_index.lists.values().map(|list| list.len()).sum();
-    assert_eq!(64, list_entries, "denominator: 64 list entries seeded");
-    assert!(
-        !shard.strings().is_empty(),
-        "denominator: the string map must hold keys"
-    );
+        // DENOMINATORS, before any comparison: an empty map compares equal to an empty map.
+        assert_eq!(3, shard.features().len(), "denominator: three series seeded");
+        let points: usize = shard.features().values().map(|series| series.len()).sum();
+        assert_eq!(1_200, points, "denominator: 400 points in each of three series");
+        let list_entries: usize = shard.bucket_index.lists.values().map(|list| list.len()).sum();
+        assert_eq!(64, list_entries, "denominator: 64 list entries seeded");
+        assert!(
+            !shard.strings().is_empty(),
+            "denominator: the string map must hold keys"
+        );
 
-    // The container is the only shape the decode reads; plain JSON is refused, and
-    // `served_index_container_round_trips_and_refuses_plain_json` asserts that.
-    for (label, bytes) in [("container", crate::engine::encode_index_bytes(shard))] {
-        let decoded = crate::engine::decode_index_bytes(&bytes)
-            .unwrap_or_else(|error| panic!("{label} index must decode: {error}"));
-        assert_eq!(
-            shard.features(), decoded.features(),
-            "{label}: the feature series must come back entry for entry"
-        );
-        assert_eq!(
-            shard.bucket_index.lists, decoded.bucket_index.lists,
-            "{label}: the list series must come back entry for entry"
-        );
-        assert_eq!(
-            shard.control_state(), decoded.control_state(),
-            "{label}: the control-state series must come back entry for entry"
-        );
-        assert_eq!(
-            shard.expires_at_ms(), decoded.expires_at_ms(),
-            "{label}: the expiry map must come back entry for entry"
-        );
-        assert_eq!(
-            shard.bucket_index.sets, decoded.bucket_index.sets,
-            "{label}: the set members must come back entry for entry"
-        );
-        assert_eq!(
-            shard.bucket_index.zsets, decoded.bucket_index.zsets,
-            "{label}: the zset members must come back entry for entry"
-        );
-        // THE STORED BYTES DO NOT MOVE, as bytes rather than as a sentence. A repack changes
-        // which node an entry sits in; an encode walks the entries in key order, which is the
-        // same order either way. Re-encoding what came back must reproduce the input exactly --
-        // that is what says this carries no index-format stamp.
-        // THE STORED BYTES DO NOT MOVE -- proven on ONE state, which is the only way it can be
-        // proven here.
-        //
-        // The obvious test, "re-encode what came back and compare against the input", cannot
-        // decide this: an index's `strings` map is a `HashMap`, which serializes in TABLE order,
-        // and two `HashMap`s carrying identical entries iterate differently because each instance
-        // seeds its own hasher. Two decodes of the SAME bytes therefore re-encode to two different
-        // byte strings of the same length, before any change of ours. (Measured: 184,645 bytes
-        // either way, first differing at byte 83, inside `strings`, which this pass does not
-        // touch.) An assertion against the input bytes would have failed on a property of the
-        // encoder and been read as this change moving the stored form.
-        //
-        // So the subject is a SINGLE state, encoded before and after the repack. Its `HashMap`
-        // tables are untouched -- the repack reaches values through `values_mut` and never
-        // reinserts a key -- so table order is held fixed and the only thing that could differ is
-        // what the repack does. It does nothing: a `BTreeMap` serializes in KEY order, and the
-        // repack changes which node an entry sits in, never which key it is under.
-        if label == "container" {
-            let mut subject = crate::engine::decode_index_bytes_inner(&bytes)
-                .expect("the container index decodes without the repack");
-            let before = crate::engine::encode_index_bytes(&subject);
-            crate::engine::state::repack_decoded_btrees(&mut subject);
-            let after = crate::engine::encode_index_bytes(&subject);
+        // The container is the only shape the decode reads; plain JSON is refused, and
+        // `served_index_container_round_trips_and_refuses_plain_json` asserts that.
+        for (label, bytes) in [("container", crate::engine::encode_index_bytes(shard))] {
+            let decoded = crate::engine::decode_index_bytes(&bytes)
+                .unwrap_or_else(|error| panic!("{label} index must decode: {error}"));
             assert_eq!(
-                before, after,
-                "{label}: repacking one state changed the bytes it encodes to, so the stored form \
-                 moved and this needs an index-format stamp"
+                shard.features(), decoded.features(),
+                "{label}: the feature series must come back entry for entry"
             );
-            // And again, to say the pass is idempotent: a second decode of a repacked store, or a
-            // repack reached twice down two paths, must not keep changing the answer.
-            crate::engine::state::repack_decoded_btrees(&mut subject);
             assert_eq!(
-                before,
-                crate::engine::encode_index_bytes(&subject),
-                "{label}: repacking twice is not the same as repacking once"
+                shard.bucket_index.lists, decoded.bucket_index.lists,
+                "{label}: the list series must come back entry for entry"
+            );
+            assert_eq!(
+                shard.control_state(), decoded.control_state(),
+                "{label}: the control-state series must come back entry for entry"
+            );
+            assert_eq!(
+                shard.expires_at_ms(), decoded.expires_at_ms(),
+                "{label}: the expiry map must come back entry for entry"
+            );
+            assert_eq!(
+                shard.bucket_index.sets, decoded.bucket_index.sets,
+                "{label}: the set members must come back entry for entry"
+            );
+            assert_eq!(
+                shard.bucket_index.zsets, decoded.bucket_index.zsets,
+                "{label}: the zset members must come back entry for entry"
+            );
+            // THE STORED BYTES DO NOT MOVE, as bytes rather than as a sentence. A repack changes
+            // which node an entry sits in; an encode walks the entries in key order, which is the
+            // same order either way. Re-encoding what came back must reproduce the input exactly --
+            // that is what says this carries no index-format stamp.
+            // THE STORED BYTES DO NOT MOVE -- proven on ONE state, which is the only way it can be
+            // proven here.
+            //
+            // The obvious test, "re-encode what came back and compare against the input", cannot
+            // decide this: an index's `strings` map is a `HashMap`, which serializes in TABLE order,
+            // and two `HashMap`s carrying identical entries iterate differently because each instance
+            // seeds its own hasher. Two decodes of the SAME bytes therefore re-encode to two different
+            // byte strings of the same length, before any change of ours. (Measured: 184,645 bytes
+            // either way, first differing at byte 83, inside `strings`, which this pass does not
+            // touch.) An assertion against the input bytes would have failed on a property of the
+            // encoder and been read as this change moving the stored form.
+            //
+            // So the subject is a SINGLE state, encoded before and after the repack. Its `HashMap`
+            // tables are untouched -- the repack reaches values through `values_mut` and never
+            // reinserts a key -- so table order is held fixed and the only thing that could differ is
+            // what the repack does. It does nothing: a `BTreeMap` serializes in KEY order, and the
+            // repack changes which node an entry sits in, never which key it is under.
+            if label == "container" {
+                let mut subject = crate::engine::decode_index_bytes_inner(&bytes)
+                    .expect("the container index decodes without the repack");
+                let before = crate::engine::encode_index_bytes(&subject);
+                crate::engine::state::repack_decoded_btrees(&mut subject);
+                let after = crate::engine::encode_index_bytes(&subject);
+                assert_eq!(
+                    before, after,
+                    "{label}: repacking one state changed the bytes it encodes to, so the stored form \
+                     moved and this needs an index-format stamp"
+                );
+                // And again, to say the pass is idempotent: a second decode of a repacked store, or a
+                // repack reached twice down two paths, must not keep changing the answer.
+                crate::engine::state::repack_decoded_btrees(&mut subject);
+                assert_eq!(
+                    before,
+                    crate::engine::encode_index_bytes(&subject),
+                    "{label}: repacking twice is not the same as repacking once"
+                );
+            }
+            // And the ORDER, not only the contents: a repack that sorted differently would still
+            // compare equal as a map while handing every range read a different answer.
+            let encoded_order: Vec<u64> = shard
+                .features()
+                .get("f0")
+                .expect("the first series is seeded")
+                // `points()` rather than a key view: the trait has none, and the ORDER this test
+                // asserts is exactly what `points()` promises, so it is the correct method here and
+                // not merely the available one.
+                .points()
+                .map(|(at, _)| at)
+                .collect();
+            let decoded_order: Vec<u64> = decoded
+                .features()
+                .get("f0")
+                .expect("the first series decodes")
+                .points()
+                .map(|(at, _)| at)
+                .collect();
+            assert_eq!(
+                encoded_order, decoded_order,
+                "{label}: the series must iterate in the same order it was written in"
             );
         }
-        // And the ORDER, not only the contents: a repack that sorted differently would still
-        // compare equal as a map while handing every range read a different answer.
-        let encoded_order: Vec<u64> = shard
-            .features()
-            .get("f0")
-            .expect("the first series is seeded")
-            // `points()` rather than a key view: the trait has none, and the ORDER this test
-            // asserts is exactly what `points()` promises, so it is the correct method here and
-            // not merely the available one.
-            .points()
-            .map(|(at, _)| at)
-            .collect();
-        let decoded_order: Vec<u64> = decoded
-            .features()
-            .get("f0")
-            .expect("the first series decodes")
-            .points()
-            .map(|(at, _)| at)
-            .collect();
-        assert_eq!(
-            encoded_order, decoded_order,
-            "{label}: the series must iterate in the same order it was written in"
-        );
-    }
+    })
 }
 
 // =================================================================================================

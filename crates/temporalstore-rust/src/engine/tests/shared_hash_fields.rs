@@ -111,28 +111,29 @@ fn verify_rows(engine: &TemporalEngine, fields: &[(&str, u8)], block_count: usiz
             .map(|(field, generation)| (field.to_string(), payload(row, field, *generation))).collect();
         assert_eq!(values, expected);
     }
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).unwrap();
-    for row in 0..8 {
-        let key = format!("projection-row-{row}");
-        let addresses: std::collections::BTreeSet<_> = shard.bucket_index.hashes.get(&key).unwrap()
-            .values().map(crate::engine::live_block_key).collect();
-        assert_eq!(addresses.len(), block_count);
-        let filed: Vec<_> = shard.bucket_index.object_block_refs("hash", &key).unwrap().iter()
-            .filter_map(|block_ref| {
-                let bucket = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket).unwrap();
-                let block = bucket.block_index.get(&block_ref.block_ref_key).unwrap();
-                (!block.deleted()).then(|| crate::engine::live_block_key(&block.address))
-            }).collect();
-        assert_eq!(filed.len(), block_count);
-        assert_eq!(filed.into_iter().collect::<std::collections::BTreeSet<_>>(), addresses);
-        let (start, end) = shard.routing_range();
-        let bucket = shard.bucket_index.bucket_map.get(
-            &crate::engine::hashing::block_routing_bucket(&key, start, end)).unwrap();
-        let kind = crate::engine::storage_bucket_internals::stored_model_kind("hash");
-        assert_eq!(bucket.tombstone_element_block(&key, kind, "c").is_some(), fields.len() == 2);
-        assert!(bucket.tombstone_element_block(&key, kind, "b").is_none());
-    }
+    engine.shards.with_state(1, |state| {
+        let shard = state.unwrap();
+        for row in 0..8 {
+            let key = format!("projection-row-{row}");
+            let addresses: std::collections::BTreeSet<_> = shard.bucket_index.hashes.get(&key).unwrap()
+                .values().map(crate::engine::live_block_key).collect();
+            assert_eq!(addresses.len(), block_count);
+            let filed: Vec<_> = shard.bucket_index.object_block_refs("hash", &key).unwrap().iter()
+                .filter_map(|block_ref| {
+                    let bucket = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket).unwrap();
+                    let block = bucket.block_index.get(&block_ref.block_ref_key).unwrap();
+                    (!block.deleted()).then(|| crate::engine::live_block_key(&block.address))
+                }).collect();
+            assert_eq!(filed.len(), block_count);
+            assert_eq!(filed.into_iter().collect::<std::collections::BTreeSet<_>>(), addresses);
+            let (start, end) = shard.routing_range();
+            let bucket = shard.bucket_index.bucket_map.get(
+                &crate::engine::hashing::block_routing_bucket(&key, start, end)).unwrap();
+            let kind = crate::engine::storage_bucket_internals::stored_model_kind("hash");
+            assert_eq!(bucket.tombstone_element_block(&key, kind, "c").is_some(), fields.len() == 2);
+            assert!(bucket.tombstone_element_block(&key, kind, "b").is_none());
+        }
+    })
 }
 
 #[test]
@@ -184,29 +185,30 @@ fn shared_hash_fields_complete_overwrites_avoid_per_field_searches() {
                 entries: fields.iter().map(|name| (name.clone(), vec![7; 48])).collect() } }).status.ok);
         let shared = SharedHashFields::new(fields.iter().map(String::as_str)).unwrap();
         let mismatched = SharedHashFields::new(["not-a-field"].into_iter()).unwrap();
-        let mut shards = engine.shards.write().unwrap();
-        let shard = shards.get_mut(&1).unwrap();
-        let existing = shard.bucket_index.hashes.get(key).unwrap();
-        let address = existing.values().next().unwrap().clone();
-        let handles: Vec<_> = existing.keys().cloned().collect();
-        let (start, end) = shard.routing_range();
-        let bucket = crate::engine::hashing::block_routing_bucket(key, start, end);
-        let object = crate::engine::stable_block_object_id(1, "hash", key);
-        for (hint, expected_searches) in [(Some(&shared), 0), (None, 2 * width),
-            (Some(&mismatched), 2 * width)] {
-            reset_binary_search_count_for_test();
-            install_packed_hash_block_at_bucket(&engine.cache, shard, 1, bucket, object, key,
-                fields.iter().map(String::as_str), address.clone(), hint);
-            assert_eq!(binary_search_count_for_test(), expected_searches as u64,
-                "width {width}; exact full coverage must avoid searches, fallback is the control");
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.unwrap();
             let existing = shard.bucket_index.hashes.get(key).unwrap();
-            assert_eq!(existing.len(), width);
-            for (before, after) in handles.iter().zip(existing.keys()) {
-                assert!(std::sync::Arc::ptr_eq(before, after), "canonical handles must be retained");
+            let address = existing.values().next().unwrap().clone();
+            let handles: Vec<_> = existing.keys().cloned().collect();
+            let (start, end) = shard.routing_range();
+            let bucket = crate::engine::hashing::block_routing_bucket(key, start, end);
+            let object = crate::engine::stable_block_object_id(1, "hash", key);
+            for (hint, expected_searches) in [(Some(&shared), 0), (None, 2 * width),
+                (Some(&mismatched), 2 * width)] {
+                reset_binary_search_count_for_test();
+                install_packed_hash_block_at_bucket(&engine.cache, shard, 1, bucket, object, key,
+                    fields.iter().map(String::as_str), address.clone(), hint);
+                assert_eq!(binary_search_count_for_test(), expected_searches as u64,
+                    "width {width}; exact full coverage must avoid searches, fallback is the control");
+                let existing = shard.bucket_index.hashes.get(key).unwrap();
+                assert_eq!(existing.len(), width);
+                for (before, after) in handles.iter().zip(existing.keys()) {
+                    assert!(std::sync::Arc::ptr_eq(before, after), "canonical handles must be retained");
+                }
+                assert!(existing.values().all(|held| crate::engine::live_block_key(held)
+                    == crate::engine::live_block_key(&address)));
             }
-            assert!(existing.values().all(|held| crate::engine::live_block_key(held)
-                == crate::engine::live_block_key(&address)));
-        }
+        })
     }
 }
 
@@ -262,12 +264,14 @@ fn shared_hash_fields_new_rows_are_exact_sized_and_survive_reload() {
         assert_eq!(result.applied, 32);
         assert_eq!(keys.len(), 32);
         {
-            let shards = engine.shards.read().unwrap();
-            for row in 0..32 {
-                let held = shards[&1].bucket_index.hashes.get(&format!("new-row-{row}")).unwrap();
-                assert_eq!(held.len(), 21);
-                assert_eq!(held.capacity_for_test(), 21);
-            }
+            engine.shards.with_state(1, |state| {
+                let shard = state.unwrap();
+                for row in 0..32 {
+                    let held = shard.bucket_index.hashes.get(&format!("new-row-{row}")).unwrap();
+                    assert_eq!(held.len(), 21);
+                    assert_eq!(held.capacity_for_test(), 21);
+                }
+            })
         }
         let verify = |source: &TemporalEngine| {
             source.cache().invalidate_shard(1).unwrap();

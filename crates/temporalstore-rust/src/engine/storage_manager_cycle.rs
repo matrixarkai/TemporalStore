@@ -250,20 +250,19 @@ impl TemporalEngine {
             .filter(|candidate| candidate.reason == "delayed_destroy")
             .map(|candidate| candidate.physical_bytes)
             .sum::<u64>();
-        let expired_bucket_object_scan_debt = self
-            .shards
-            .read()
-            .expect("shards lock poisoned")
-            .get(&request.shard_id)
-            .map(|shard| shard.expires_at_ms().len())
-            .unwrap_or_default();
-        let compaction_utility = self
-            .shards
-            .read()
-            .expect("shards lock poisoned")
-            .get(&request.shard_id)
-            .map(|shard| compaction_utility_report(&self.block_store, shard))
-            .unwrap_or_default();
+        let (expired_bucket_object_scan_debt, compaction_utility) =
+            self.shards.handle(request.shard_id).map(|handle| {
+                let counts = super::compaction::slab_block_counts_by_slab(&self.block_store);
+                self.shards.with_handle_state(&handle, |shard| match shard {
+                    Some(shard) => (
+                        shard.expires_at_ms().len(),
+                        super::compaction::compaction_utility_report_from_counts(
+                            shard, &collect_live_block_entries(shard), &counts,
+                        ),
+                    ),
+                    None => (0, ShardCompactionUtilityReport::default()),
+                })
+            }).unwrap_or_default();
         let compaction_debt_model_count = compaction_utility
             .model_policies
             .iter()

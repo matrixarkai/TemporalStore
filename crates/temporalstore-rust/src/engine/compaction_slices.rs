@@ -195,7 +195,7 @@ pub(crate) fn set_slice_boundary_for_test(hook: Option<Box<dyn FnMut(&TemporalEn
 }
 
 impl TemporalEngine {
-    fn pass_slot(&self, shard_id: ShardId) -> PassSlot {
+    pub(in crate::engine) fn pass_slot(&self, shard_id: ShardId) -> PassSlot {
         Arc::clone(
             self.compaction_passes
                 .lock()
@@ -279,74 +279,75 @@ impl TemporalEngine {
                 self.flush_relocation_records(shard_id, pass, true);
             }
         }
-        let mut shards = self.shards_write_marked();
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            *slot = None;
-            return Err(Status::error("shard_not_loaded", "shard is not loaded"));
-        };
-        if slot.is_none() {
-            let started = std::time::Instant::now();
-            let begun = self.begin_pass(
+        self.shards.with_state_mut(shard_id, |shard| {
+            let Some(shard) = shard else {
+                *slot = None;
+                return Err(Status::error("shard_not_loaded", "shard is not loaded"));
+            };
+            if slot.is_none() {
+                let started = std::time::Instant::now();
+                let begun = self.begin_pass(
+                    shard_id,
+                    shard,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    drain_block_slab_ids,
+                )?;
+                phase_timing("setup", shard_id, started);
+                match begun {
+                    Some(pass) => *slot = Some(pass),
+                    None => return Ok(SliceProgress::Done),
+                }
+            }
+            let slice_started = std::time::Instant::now();
+            let pass = slot.as_mut().expect("a pass was just begun");
+            let mut stats = CompactionRewriteStats::for_drain_round(
+                pass.target_block_slab_id,
+                u64::MAX,
+                usize::MAX,
+                pass.drain_block_slab_ids.clone(),
+            );
+            let moved = self.run_slice(
                 shard_id,
                 shard,
                 start_routing_bucket,
                 end_routing_bucket,
-                drain_block_slab_ids,
-            )?;
-            phase_timing("setup", shard_id, started);
-            match begun {
-                Some(pass) => *slot = Some(pass),
-                None => return Ok(SliceProgress::Done),
+                pass,
+                keys_per_slice,
+                &mut stats,
+            );
+            // The index is brought up to date for what the slice moved even when it failed part way:
+            // the blocks it did move are where the maps say, and the index must say the same.
+            update_compacted_bucket_views(
+                shard_id, shard, start_routing_bucket, end_routing_bucket, &stats.moved,
+                CompactionIndexRefresh::ChangedBuckets,
+            );
+            pass.note_slice(shard_id, shard, stats, start_routing_bucket, end_routing_bucket);
+            phase_timing("slice", shard_id, slice_started);
+            let pass_ended = moved.is_err()
+                || if pass.by_bucket {
+                    pass.buckets_exhausted
+                } else {
+                    pass.remaining_keys.is_empty()
+                };
+            if !pass_ended {
+                return Ok(SliceProgress::More);
             }
-        }
-        let slice_started = std::time::Instant::now();
-        let pass = slot.as_mut().expect("a pass was just begun");
-        let mut stats = CompactionRewriteStats::for_drain_round(
-            pass.target_block_slab_id,
-            u64::MAX,
-            usize::MAX,
-            pass.drain_block_slab_ids.clone(),
-        );
-        let moved = self.run_slice(
-            shard_id,
-            shard,
-            start_routing_bucket,
-            end_routing_bucket,
-            pass,
-            keys_per_slice,
-            &mut stats,
-        );
-        // The index is brought up to date for what the slice moved even when it failed part way:
-        // the blocks it did move are where the maps say, and the index must say the same.
-        update_compacted_bucket_views(
-            shard_id, shard, start_routing_bucket, end_routing_bucket, &stats.moved,
-            CompactionIndexRefresh::ChangedBuckets,
-        );
-        pass.note_slice(shard_id, shard, stats, start_routing_bucket, end_routing_bucket);
-        phase_timing("slice", shard_id, slice_started);
-        let pass_ended = moved.is_err()
-            || if pass.by_bucket {
-                pass.buckets_exhausted
-            } else {
-                pass.remaining_keys.is_empty()
+            let mut pass = slot.take().expect("the pass is in flight");
+            let result = match moved {
+                Err(err) => Err(self.fail_pass(shard_id, shard, &mut pass, err)),
+                Ok(()) => {
+                    let started = std::time::Instant::now();
+                    let finished = self
+                        .finish_pass(shard_id, shard, &mut pass, start_routing_bucket, end_routing_bucket)
+                        .map(|()| SliceProgress::Done);
+                    phase_timing("finish", shard_id, started);
+                    finished
+                }
             };
-        if !pass_ended {
-            return Ok(SliceProgress::More);
-        }
-        let mut pass = slot.take().expect("the pass is in flight");
-        let result = match moved {
-            Err(err) => Err(self.fail_pass(shard_id, shard, &mut pass, err)),
-            Ok(()) => {
-                let started = std::time::Instant::now();
-                let finished = self
-                    .finish_pass(shard_id, shard, &mut pass, start_routing_bucket, end_routing_bucket)
-                    .map(|()| SliceProgress::Done);
-                phase_timing("finish", shard_id, started);
-                finished
-            }
-        };
-        pass_summary(shard_id, &pass, result.is_ok());
-        result
+            pass_summary(shard_id, &pass, result.is_ok());
+            result
+        })
     }
 
     /// Validate, name the keys, roll or resume the slab, pin. `None` when no block sits on a drain

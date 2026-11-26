@@ -259,29 +259,30 @@ fn with_seeded_shard<R>(
         });
         assert!(response.status.ok, "the seed must ack at {ordinal}: {response:?}");
     }
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("shard is loaded");
-    assert_eq!(
-        keys,
-        shard.strings().len(),
-        "[CLAUSE seed-landed] the fixture acked {keys} string object(s) and the index holds {}, so \
-         the denominator every figure below is taken against is not the corpus",
-        shard.strings().len()
-    );
-    let buckets = shard.bucket_index.bucket_map.len();
-    let blocks: usize = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .map(|node| node.block_index.len())
-        .sum();
-    assert_eq!(
-        blocks, keys,
-        "[CLAUSE one-block-an-object] the fixture holds {blocks} block(s) for {keys} object(s), so a \
-         per-object figure taken off it is not a per-block figure and the two classes cannot be \
-         separated"
-    );
-    f(shard, Regime { objects: keys, blocks, buckets })
+    engine.shards.with_state(SHARD, |shard_state| {
+        let shard = shard_state.expect("shard is loaded");
+        assert_eq!(
+            keys,
+            shard.strings().len(),
+            "[CLAUSE seed-landed] the fixture acked {keys} string object(s) and the index holds {}, so \
+             the denominator every figure below is taken against is not the corpus",
+            shard.strings().len()
+        );
+        let buckets = shard.bucket_index.bucket_map.len();
+        let blocks: usize = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|node| node.block_index.len())
+            .sum();
+        assert_eq!(
+            blocks, keys,
+            "[CLAUSE one-block-an-object] the fixture holds {blocks} block(s) for {keys} object(s), so a \
+             per-object figure taken off it is not a per-block figure and the two classes cannot be \
+             separated"
+        );
+        f(shard, Regime { objects: keys, blocks, buckets })
+    })
 }
 
 /// Bytes per object, to three places, as a DIVISION at this corpus size.
@@ -567,9 +568,8 @@ fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
     let engine = engine_on(dir.path());
     load_on(&engine);
 
-    let candidates: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&SHARD).expect("shard is loaded");
+    let candidates: Vec<u32> = engine.shards.with_state(SHARD, |shard_state| {
+        let shard = shard_state.expect("shard is loaded");
         shard
             .bucket_index
             .bucket_map
@@ -577,14 +577,13 @@ fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
             .filter(|(_, node)| !node.block_index.is_empty())
             .map(|(routing_bucket, _)| *routing_bucket)
             .collect()
-    };
+    });
     assert!(!candidates.is_empty(), "the reopened store holds no bucket with a block");
 
-    let outcome = {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&SHARD).expect("shard is loaded");
+    let outcome = engine.shards.with_state_mut(SHARD, |shard_state| {
+        let shard = shard_state.expect("shard is loaded");
         crate::engine::storage_bucket_internals::release_bucket_blocks(shard, &candidates)
-    };
+    });
     println!(
         "  release: {} of {} candidate bucket(s) released, {} block(s) dropped, {} refused",
         outcome.released_buckets.len(),
@@ -603,41 +602,42 @@ fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
     );
 
     // THE TWO HALVES, ON THE SAME BUCKETS.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("shard is loaded");
-    let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-    let mut unnameable: BTreeMap<u32, (usize, usize)> = BTreeMap::new();
-    for routing_bucket in outcome.released_buckets.iter().copied() {
-        let node = shard
-            .bucket_index
-            .bucket_map
-            .get(&routing_bucket)
-            .expect("a released bucket keeps its node");
-        let written = node.object_index.object_count();
-        let named = crate::engine::state::block_identities_in(node, &identities);
-        unnameable.insert(routing_bucket, (written, named.len()));
-    }
-    let total_written: usize = unnameable.values().map(|(written, _)| *written).sum();
-    let total_named: usize = unnameable.values().map(|(_, named)| *named).sum();
-    println!(
-        "  across {} released bucket(s): {total_written} object id(s) WRITTEN, {total_named} \
-         block(s) beside them to name one",
-        unnameable.len()
-    );
-    assert!(
-        total_written > 0,
-        "[CLAUSE written-non-empty] the released buckets carry no object id at all, so there is \
-         nothing a rebuild could lose and this is a finding about an empty set"
-    );
-    assert_eq!(
-        total_named, 0,
-        "[CLAUSE no-block-names-it] the released buckets still hold {total_named} block(s), so the \
-         release did not empty the block list and the derivation below is not over nothing"
-    );
-    println!(
-        "\n  SO `node/object_index` IS NOT REBUILDABLE FROM THE BLOCKS OF ITS BUCKET. A decoder that\n  \
-         derived it would load each of these {} bucket(s) as holding no objects, which is exactly\n  \
-         the distinction a release depends on. The term is floor.",
-        unnameable.len()
-    );
+    engine.shards.with_state(SHARD, |shard_state| {
+        let shard = shard_state.expect("shard is loaded");
+        let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+        let mut unnameable: BTreeMap<u32, (usize, usize)> = BTreeMap::new();
+        for routing_bucket in outcome.released_buckets.iter().copied() {
+            let node = shard
+                .bucket_index
+                .bucket_map
+                .get(&routing_bucket)
+                .expect("a released bucket keeps its node");
+            let written = node.object_index.object_count();
+            let named = crate::engine::state::block_identities_in(node, &identities);
+            unnameable.insert(routing_bucket, (written, named.len()));
+        }
+        let total_written: usize = unnameable.values().map(|(written, _)| *written).sum();
+        let total_named: usize = unnameable.values().map(|(_, named)| *named).sum();
+        println!(
+            "  across {} released bucket(s): {total_written} object id(s) WRITTEN, {total_named} \
+             block(s) beside them to name one",
+            unnameable.len()
+        );
+        assert!(
+            total_written > 0,
+            "[CLAUSE written-non-empty] the released buckets carry no object id at all, so there is \
+             nothing a rebuild could lose and this is a finding about an empty set"
+        );
+        assert_eq!(
+            total_named, 0,
+            "[CLAUSE no-block-names-it] the released buckets still hold {total_named} block(s), so the \
+             release did not empty the block list and the derivation below is not over nothing"
+        );
+        println!(
+            "\n  SO `node/object_index` IS NOT REBUILDABLE FROM THE BLOCKS OF ITS BUCKET. A decoder that\n  \
+             derived it would load each of these {} bucket(s) as holding no objects, which is exactly\n  \
+             the distinction a release depends on. The term is floor.",
+            unnameable.len()
+        );
+    })
 }

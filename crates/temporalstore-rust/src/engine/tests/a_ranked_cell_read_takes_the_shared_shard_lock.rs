@@ -47,31 +47,33 @@ fn a_ranked_cell_read_is_answered_while_another_reader_holds_the_shard_table() {
     let key = stored_key(1);
     seed_samples(&engine, &key, 8, 16);
 
-    let guard = engine.shards.read().expect("engine lock poisoned");
+    let write_handle = engine.shards.with_state(1, |owner| {
+        assert!(owner.is_some());
 
-    let (answer, handle) = answered_within(&engine, rank_command(&key, rank_spec()), Duration::from_secs(5));
-    let answer = answer.expect("a ranked read was not answered while a reader held the shard table");
-    assert!(answer.status.ok, "{:?}", answer.status);
-    match &answer.response {
-        CommandResponse::WindowReduceRanking { ranked } => {
-            assert!(ranked.refused.is_empty(), "refused: {}", ranked.refused);
-            assert!(!ranked.rows.is_empty(), "the read ranked nothing, so it proves nothing");
+        let (answer, handle) = answered_within(&engine, rank_command(&key, rank_spec()), Duration::from_secs(5));
+        let answer = answer.expect("a ranked read was not answered while a reader held the shard table");
+        assert!(answer.status.ok, "{:?}", answer.status);
+        match &answer.response {
+            CommandResponse::WindowReduceRanking { ranked } => {
+                assert!(ranked.refused.is_empty(), "refused: {}", ranked.refused);
+                assert!(!ranked.rows.is_empty(), "the read ranked nothing, so it proves nothing");
+            }
+            other => panic!("not a ranking: {other:?}"),
         }
-        other => panic!("not a ranking: {other:?}"),
-    }
-    handle.join().unwrap();
+        handle.join().unwrap();
 
-    // THE CONTROL: a write needs the exclusive lock, so the same wait must expire.
-    let write = Command::FeatureAppend {
-        key: key.clone(),
-        points: vec![FeaturePoint { timestamp_ms: 9_000, value: vec![0] }],
-    };
-    let (blocked, write_handle) = answered_within(&engine, write, Duration::from_millis(500));
-    assert!(
-        blocked.is_none(),
-        "a write was answered while a reader held the shard table, so this test cannot tell a shared read from an exclusive one"
-    );
-    drop(guard);
+        // THE CONTROL: a write needs the exclusive lock, so the same wait must expire.
+        let write = Command::FeatureAppend {
+            key: key.clone(),
+            points: vec![FeaturePoint { timestamp_ms: 9_000, value: vec![0] }],
+        };
+        let (blocked, write_handle) = answered_within(&engine, write, Duration::from_millis(500));
+        assert!(
+            blocked.is_none(),
+            "a write was answered while a reader held the shard table, so this test cannot tell a shared read from an exclusive one"
+        );
+        write_handle
+    });
     write_handle.join().unwrap();
 }
 
@@ -95,22 +97,23 @@ fn a_ranked_cell_read_answers_what_the_serving_function_answers() {
         let CommandResponse::WindowReduceRanking { ranked } = through_execute.response else {
             panic!("not a ranking")
         };
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard");
-        let (start, end) = shard.routing_range();
-        let direct = crate::engine::window_reduce_rank_read::serve(
-            &engine.cache,
-            &engine.block_store,
-            1,
-            shard,
-            &key,
-            &spec,
-            start,
-            end,
-            crate::engine::resolve_now_ms(),
-        );
-        assert!(!ranked.rows.is_empty());
-        assert_eq!(format!("{ranked:?}"), format!("{direct:?}"));
+        engine.shards.with_state(1, |owner| {
+            let shard = owner.expect("shard");
+            let (start, end) = shard.routing_range();
+            let direct = crate::engine::window_reduce_rank_read::serve(
+                &engine.cache,
+                &engine.block_store,
+                1,
+                shard,
+                &key,
+                &spec,
+                start,
+                end,
+                crate::engine::resolve_now_ms(),
+            );
+            assert!(!ranked.rows.is_empty());
+            assert_eq!(format!("{ranked:?}"), format!("{direct:?}"));
+        });
     }
 }
 

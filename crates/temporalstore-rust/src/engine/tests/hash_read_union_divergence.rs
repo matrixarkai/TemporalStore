@@ -219,9 +219,8 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
     // three. Marking all of them is the stronger plant anyway -- it leaves the container answering
     // with no help from the index at all -- and the count below pins it to exactly the three above
     // rather than to whatever the walk happened to find.
-    let marked = {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
+    let marked = engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         // THE HANDLES FIRST, THEN THE MARK. `BlockIndexMap` has no `values_mut` -- it is an enum
         // over an inline entry and a sorted vector -- so the matching handles are collected under
         // the read side of the walk and marked through `get_mut` one at a time.
@@ -257,7 +256,7 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
             }
         }
         marked
-    };
+    });
     assert_eq!(
         live_before, marked,
         "the plant marked {marked} of {live_before} live entries; a partial plant leaves the index \
@@ -303,21 +302,22 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
 
 /// The live hash block entries this object holds.
 fn live_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut live = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if !block.deleted()
-                && block.model_id().as_str() == "hash"
-                && &**named.at(bucket.routing_bucket, *handle) == key
-            {
-                live += 1;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut live = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if !block.deleted()
+                    && block.model_id().as_str() == "hash"
+                    && &**named.at(bucket.routing_bucket, *handle) == key
+                {
+                    live += 1;
+                }
             }
         }
-    }
-    live
+        live
+    })
 }
 
 /// Holds the one-entry-a-block gate OFF and puts back whatever was there -- on a normal drop AND
@@ -362,9 +362,8 @@ fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable()
     // counter asserted to zero -- is gone, because an entry has no field name to count and the
     // zero could only ever pass. What is left is the denominator it was a denominator FOR, kept
     // because the serving assertions below are about an index that holds something.
-    let live = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let live = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let named = super::BlockObjects::of(&shard.bucket_index);
         let mut live = 0usize;
         for bucket in shard.bucket_index.bucket_map.values() {
@@ -379,7 +378,7 @@ fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable()
             }
         }
         live
-    };
+    });
     assert!(
         live > 0,
         "the index holds no live hash entry for this object, so a zero below says nothing about \
@@ -390,9 +389,8 @@ fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable()
     // something for this object -- and it is kept.
 
     const PLANTED_FIELD: &str = "beta";
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let fields_of = shard
             .bucket_index.hashes
             .elements_mut_for_test(PLANTED_KEY)
@@ -401,7 +399,7 @@ fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable()
             fields_of.remove(PLANTED_FIELD).is_some(),
             "the container did not hold `{PLANTED_FIELD}`, so this test plants nothing"
         );
-    }
+    });
 
     let before = divergences(&engine);
     let served_after = served(&engine, PLANTED_KEY);

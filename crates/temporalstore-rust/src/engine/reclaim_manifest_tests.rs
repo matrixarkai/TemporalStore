@@ -42,7 +42,7 @@ fn reclaim_restores_a_slab_owned_by_an_unloaded_shards_dump() {
             .unwrap();
     }
     let engine = open(dir.path());
-    assert!(!engine.shards.read().unwrap().contains_key(&2));
+    assert!(!engine.shards.with_state(2, |owner| owner.is_some()));
     let report = engine.purge_storage_delayed_destroy(&StorageLifecycleRequest {
         shard_id: 1,
         purge_delayed_destroy: true,
@@ -198,7 +198,7 @@ fn borrowed_wal_floor_preserves_index_model_and_missing_placement_cases() {
     ] {
         assert!(engine.execute(ExecuteRequest { shard_id: 1, command }).status.ok);
     }
-    let mut snapshot = engine.shards.read().unwrap()[&1].clone();
+    let mut snapshot = engine.shards.with_state(1, |owner| owner.unwrap().clone());
     assert!(wal_floor_of_index_image(&snapshot).is_some());
     assert_eq!(wal_floor_of_index_image(&snapshot), owned_inventory_wal_floor(&snapshot));
     for mut bucket in snapshot.bucket_index.bucket_map.values_mut() {
@@ -211,13 +211,13 @@ fn borrowed_wal_floor_preserves_index_model_and_missing_placement_cases() {
     assert_eq!(wal_floor_of_index_image(&snapshot), owned_inventory_wal_floor(&snapshot));
 
     let mut stale = ShardState::default();
-    stale.wal_resident_blocks = engine.shards.read().unwrap()[&1].wal_resident_blocks.clone();
+    stale.wal_resident_blocks = engine.shards.with_state(1, |owner| owner.unwrap().wal_resident_blocks.clone());
     assert!(!stale.wal_resident_blocks.is_empty());
     assert_eq!(wal_floor_of_index_image(&stale), None, "stale locators alone retain nothing");
     assert_eq!(wal_floor_of_index_image(&stale), owned_inventory_wal_floor(&stale));
 
     let mut indexed_only = ShardState::default();
-    indexed_only.bucket_index.bucket_map = engine.shards.read().unwrap()[&1].bucket_index.bucket_map.clone();
+    indexed_only.bucket_index.bucket_map = engine.shards.with_state(1, |owner| owner.unwrap().bucket_index.bucket_map.clone());
     for mut bucket in indexed_only.bucket_index.bucket_map.values_mut() {
         let handles = bucket.block_index.iter().map(|(handle, _)| *handle).collect::<Vec<_>>();
         for handle in handles { bucket.block_index.get_mut(&handle).unwrap().set_deleted(true); }
@@ -247,7 +247,7 @@ fn the_floor_agrees_with_the_inventory_oracle_where_nothing_is_log_resident_and_
     assert!(engine.execute(ExecuteRequest { shard_id: 1,
         command: Command::HashSet { key: "hash".into(), field: "field".into(), value: b"value".to_vec() },
     }).status.ok);
-    let populated = engine.shards.read().unwrap()[&1].clone();
+    let populated = engine.shards.with_state(1, |owner| owner.unwrap().clone());
     // The counter is global: assert on the walk of THIS call, not on a ratio across tests.
     storage_bucket_internals::reset_live_block_scan_entries();
     let floor = wal_floor_of_index_image(&populated);
@@ -282,7 +282,7 @@ fn the_floor_retains_the_log_for_a_string_whose_value_lives_only_in_it() {
     assert!(engine.execute(ExecuteRequest { shard_id: 1,
         command: Command::StringSet { key: "only-in-the-log".into(), value: b"value".to_vec() },
     }).status.ok);
-    let mut snapshot = engine.shards.read().unwrap()[&1].clone();
+    let mut snapshot = engine.shards.with_state(1, |owner| owner.unwrap().clone());
     assert!(
         snapshot.strings().iter().any(|(_, slot)| crate::wal_record::is_wal_resident(slot.address().block_slab_id())),
         "the fixture must hold a string whose only copy is its log record"
@@ -309,7 +309,7 @@ fn generation_validation_populates_the_same_images_retention_floor() {
         }).status.ok);
     }
     engine.wal_store.flush(1).unwrap();
-    let mut snapshot = engine.shards.read().unwrap()[&1].clone();
+    let mut snapshot = engine.shards.with_state(1, |owner| owner.unwrap().clone());
     let summaries = engine.bucket_storage_summaries(1);
     let mut manifest = BucketDumpManifest {
         version: 1, shard_id: 1, manifest_id: "image-retention".into(),

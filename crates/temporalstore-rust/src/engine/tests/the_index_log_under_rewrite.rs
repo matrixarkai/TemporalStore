@@ -101,11 +101,10 @@ fn the_index_log_under_rewrite() {
 
     let snapshot = |label: String| -> (String, u64, u64, u64, u64) {
         let log = engine.index_log_store.stats(1);
-        let image = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
+        let image = engine.shards.with_state(1, |shard_state| {
+            let shard = shard_state.expect("shard is loaded");
             crate::engine::encode_index_bytes(shard).len() as u64
-        };
+        });
         let (index_bytes, wal_bytes) = index_and_wal_bytes(&index_dir);
         (label, log.bytes_written, image, index_bytes, wal_bytes)
     };
@@ -159,11 +158,10 @@ fn the_index_log_under_rewrite() {
     );
 
     // ---- THE CYCLE, with the index-gc stage on and the production threshold in effect.
-    let buckets: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let buckets: Vec<u32> = engine.shards.with_state(1, |shard_state| {
+        let shard = shard_state.expect("shard is loaded");
         shard.bucket_index.bucket_map.keys().copied().collect()
-    };
+    });
     let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
         shard_id: 1,
         enable_prepare: true,
