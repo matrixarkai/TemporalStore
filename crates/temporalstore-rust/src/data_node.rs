@@ -2216,7 +2216,7 @@ struct DataNodeRuntimeInner {
     queue_signal: Condvar,
     jobs: Mutex<HashMap<u64, DataNodeTaskStatus>>,
     canceled: Mutex<BTreeSet<u64>>,
-    dirty: Mutex<DirtyTracker>,
+    dirty: DirtyTracker,
     stats: Mutex<MutableRuntimeStats>,
     meta_heartbeat: Mutex<DataNodeMetaHeartbeatReport>,
     lifecycle: Mutex<HashMap<ShardId, DataNodeShardLifecycleState>>,
@@ -2512,14 +2512,6 @@ impl ShardTaskQueues {
     }
 }
 
-#[derive(Debug, Default)]
-struct DirtyTracker {
-    next_object_id: u64,
-    by_key: HashMap<(ShardId, String), DirtyObjectState>,
-    // Maintained with by_key under the same tracker lock.
-    by_shard: HashMap<ShardId, usize>,
-}
-
 #[derive(Debug)]
 struct DirtyObjectState {
     object_id: u64,
@@ -2559,7 +2551,7 @@ impl DataNodeRuntime {
             queue_signal: Condvar::new(),
             jobs: Mutex::default(),
             canceled: Mutex::default(),
-            dirty: Mutex::default(),
+            dirty: DirtyTracker::default(),
             stats: Mutex::default(),
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
@@ -2711,7 +2703,7 @@ impl DataNodeRuntime {
             queue_signal: Condvar::new(),
             jobs: Mutex::default(),
             canceled: Mutex::default(),
-            dirty: Mutex::default(),
+            dirty: DirtyTracker::default(),
             stats: Mutex::default(),
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
@@ -3522,19 +3514,7 @@ impl DataNodeRuntime {
     }
 
     pub fn dirty_objects(&self) -> Vec<DirtyObjectInfo> {
-        self.inner
-            .dirty
-            .lock()
-            .expect("dirty tracker lock poisoned")
-            .by_key
-            .iter()
-            .map(|((shard_id, key), state)| DirtyObjectInfo {
-                shard_id: *shard_id,
-                key: key.clone(),
-                object_id: state.object_id,
-                last_dirty_at_ms: state.last_dirty_at_ms,
-            })
-            .collect()
+        self.inner.dirty.objects()
     }
 
     pub fn dirty_shards(&self) -> Vec<ShardId> {
