@@ -192,6 +192,9 @@ impl EntriesVisited {
     }
 }
 
+pub use super::shard_state_registry::diagnostics::{
+    measure_shard_locks, ShardLockDiagnostics, ShardLockSite, ShardLockTimes,
+};
 use super::shard_state_registry::{ShardStateHandle, ShardStateRegistry};
 
 pub(super) type ShardHandle = ShardStateHandle<ShardState>;

@@ -254,6 +254,11 @@ pub(super) fn expiry_record_is_hot(shard: &ShardState, key: &str) -> bool {
     !shard.bucket_index.released_buckets.contains(&bucket) && record_exists_exact(shard, key)
 }
 
+#[cfg(test)]
+thread_local! {
+    static RECLAIM_REPORT_LIVE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl TemporalEngine {
     /// Install a shard index received from elsewhere -- a snapshot, a checkpoint, a restore.
     ///
@@ -373,6 +378,32 @@ impl TemporalEngine {
         // fields: `storage_reclaim_candidates_from_slab_reports` does not read it, and
         // `the_reclaim_planner_sees_the_same_candidates` is what holds that true.
         let block_slab_counts = self.block_store.slab_block_counts().unwrap_or_default();
+        self.storage_reclaim_slab_reports_from_counts(shard_id, &block_slab_counts)
+    }
+
+    pub(super) fn storage_reclaim_candidates_for_execution(
+        &self,
+        shard_id: ShardId,
+        fully_stale_slab_ids: &BTreeSet<u64>,
+    ) -> Vec<StorageReclaimCandidate> {
+        let counts = self.block_store.slab_block_counts();
+        // A successful empty header census has no physical work to rank.
+        // Logical-only rows have zero physical bytes and zero block count, so
+        // none can produce a candidate. On error retain the existing fallback.
+        if counts.as_ref().is_ok_and(Vec::is_empty) {
+            return Vec::new();
+        }
+        let reports = self.storage_reclaim_slab_reports_from_counts(
+            shard_id, &counts.unwrap_or_default(),
+        );
+        storage_reclaim_candidates_from_slab_reports(&reports, fully_stale_slab_ids)
+    }
+
+    fn storage_reclaim_slab_reports_from_counts(
+        &self,
+        shard_id: ShardId,
+        block_slab_counts: &[(u64, u64, u64)],
+    ) -> Vec<StorageRecoverySlabLiveReport> {
         self.shards.with_state(shard_id, |shard| {
             // THE MAINTAINED TALLY FIRST, AND THE WALK ONLY IF THERE ISN'T ONE.
             //
@@ -405,6 +436,8 @@ impl TemporalEngine {
                     .map(collect_live_block_entries)
                     .unwrap_or_default(),
             };
+            #[cfg(test)]
+            RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.set(visits.get() + live_entries.len()));
             let mut reports = block_slab_counts
                 .iter()
                 .map(|(block_slab_id, physical_bytes, block_count)| {
@@ -2694,4 +2727,90 @@ fn compaction_bucket_layout_states(shard: &ShardState) -> Vec<BucketLayoutStateC
             object_count,
         })
         .collect()
+}
+
+
+#[cfg(test)]
+mod physical_empty_reclaim_ranking_tests {
+    use super::*;
+
+    #[test]
+    fn empty_physical_ranking_matches_diagnostics_with_unready_wal_only_rows() {
+        for clean in [128, 4096] {
+            let dir = tempfile::tempdir().unwrap();
+            let engine = TemporalEngine::with_local_dirs(
+                64 << 20, dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"),
+            );
+            engine.load_shard(1);
+            assert!(engine.set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config { version: 2, async_storage: true, ..Default::default() },
+            }).ok);
+            let insert = |index| {
+                assert!(engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet { key: format!("rank-{index:06}"), value: vec![7; 64] },
+                }).status.ok);
+            };
+            for index in 0..clean { insert(index); }
+            let baseline = engine.apply_storage_lifecycle(StorageLifecycleRequest {
+                shard_id: 1,
+                ..Default::default()
+            });
+            let checkpoint = baseline.dump_manifest.expect("the clean corpus needs a durable checkpoint");
+            assert_eq!(engine.wal_resident_block_count(1), clean);
+            assert!(engine.storage_lifecycle_plan(StorageLifecycleRequest {
+                shard_id: 1,
+                ..Default::default()
+            }).dirty_buckets.is_empty());
+            for index in clean..clean+64 { insert(index); }
+            engine.wal_store.flush(1).unwrap();
+            assert_eq!(engine.wal_resident_block_count(1), clean + 64);
+            engine.forget_block_slab_live_for_test(1);
+            assert!(engine.block_store.slab_block_counts().unwrap().is_empty(), "WAL-only fixture");
+            let stale = BTreeSet::new();
+
+            RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.set(0));
+            let reports = engine.storage_reclaim_slab_reports(1);
+            assert_eq!(RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.replace(0)), clean + 64);
+            assert!(reports.iter().any(|row| row.block_count == 0 && row.live_block_refs > 0));
+            let expected = storage_reclaim_candidates_from_slab_reports(&reports, &stale);
+            assert!(expected.is_empty());
+            assert_eq!(engine.storage_reclaim_candidates_for_execution(1, &stale), expected);
+            assert_eq!(RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.replace(0)), 0);
+
+            // A non-directory at the owned temporary slab root produces a real
+            // inventory error, so it must still execute the legacy fallback.
+            let blocks = dir.path().join("blocks");
+            let saved = dir.path().join("blocks-saved");
+            std::fs::rename(&blocks, &saved).unwrap();
+            std::fs::write(&blocks, b"not a directory").unwrap();
+            let inventory_failed = engine.block_store.slab_block_counts().is_err();
+            let failed_rank = engine.storage_reclaim_candidates_for_execution(1, &stale);
+            let failure_visits = RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.replace(0));
+            std::fs::remove_file(&blocks).unwrap();
+            std::fs::rename(&saved, &blocks).unwrap();
+            assert!(inventory_failed);
+            assert_eq!(failed_rank, expected);
+            assert_eq!(failure_visits, clean + 64);
+
+            let resident = engine.wal_resident_block_count(1);
+            assert!(resident > 1, "the materialization control leaves some WAL rows");
+            assert_eq!(engine.materialize_oldest_resident_blocks(1, resident - 1), 1);
+            engine.block_store.sync_durable().unwrap();
+            assert!(!engine.block_store.slab_block_counts().unwrap().is_empty(), "mixed fixture");
+            engine.forget_block_slab_live_for_test(1);
+            let reports = engine.storage_reclaim_slab_reports(1);
+            assert!(reports.iter().any(|row| row.block_count > 0 && row.live_block_refs > 0));
+            assert!(reports.iter().any(|row| row.block_count == 0 && row.live_block_refs > 0));
+            let expected = storage_reclaim_candidates_from_slab_reports(&reports, &stale);
+            assert_eq!(RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.replace(0)), clean + 64);
+            assert_eq!(engine.storage_reclaim_candidates_for_execution(1, &stale), expected);
+            assert_eq!(RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.replace(0)), clean + 64);
+            let retained = engine.list_bucket_dump_manifests(1);
+            assert_eq!(retained.len(), 1);
+            assert_eq!(retained[0].manifest_id, checkpoint.manifest_id);
+            assert_eq!(retained[0].wal_sequence, checkpoint.wal_sequence);
+        }
+    }
 }

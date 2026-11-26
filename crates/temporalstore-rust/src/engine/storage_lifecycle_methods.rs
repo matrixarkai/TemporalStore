@@ -578,11 +578,18 @@ impl TemporalEngine {
             .into_iter()
             .filter(|id| !live_block_slab_set.contains(id))
             .collect::<Vec<_>>();
-        let reclaim_slab_reports = self.storage_reclaim_slab_reports(request.shard_id);
         let stale_block_slab_set = stale_block_slab_ids
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
+        let mut reclaim_candidates = if detailed_report {
+            storage_reclaim_candidates_from_slab_reports(
+                &self.storage_reclaim_slab_reports(request.shard_id),
+                &stale_block_slab_set,
+            )
+        } else {
+            self.storage_reclaim_candidates_for_execution(request.shard_id, &stale_block_slab_set)
+        };
         // REFRESH A DUMP THAT STILL NAMES A SLAB COMPACTION HAS EMPTIED.
         //
         // `run_gc_inner` and `storage_block_gc_dependency_plan` both hold back every slab a bucket
@@ -652,10 +659,6 @@ impl TemporalEngine {
                 .map(|summary| summary.routing_bucket)
                 .collect::<Vec<_>>();
         }
-        let mut reclaim_candidates = storage_reclaim_candidates_from_slab_reports(
-            &reclaim_slab_reports,
-            &stale_block_slab_set,
-        );
         let delayed_destroy_reports = self
             .block_store
             .delayed_destroy_slab_reports()
