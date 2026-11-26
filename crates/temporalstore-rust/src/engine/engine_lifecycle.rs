@@ -2802,6 +2802,26 @@ impl TemporalEngine {
         self.materialize_resident_blocks_with_before_publish(shard_id, wanted, |_| {})
     }
 
+    pub(super) fn capture_resident_string_blocks(
+        &self,
+        shard_id: ShardId,
+        wanted: impl Fn(u64) -> bool,
+    ) -> Option<(Vec<(std::sync::Arc<str>, crate::block_store::ElementEntry, u64)>, u32, u32)> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&shard_id)?;
+        let (start, end) = shard.routing_range();
+        // Select before retaining rows, then lend the existing key and carry its computed ID.
+        let addresses = shard.strings().iter().filter_map(|(key, slot)| {
+            let address = slot.address();
+            if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                return None;
+            }
+            let object_id = super::stable_block_object_id(shard_id, "string", key);
+            wanted(object_id).then(|| (key.clone(), address, object_id))
+        }).collect();
+        Some((addresses, start, end))
+    }
+
     pub(super) fn materialize_resident_blocks_with_before_publish(
         &self,
         shard_id: ShardId,
@@ -2810,35 +2830,13 @@ impl TemporalEngine {
     ) -> usize {
         // The range is read under the same guard as the addresses, so a block is read and
         // rewritten under the bucket the shard is actually loaded on.
-        let (addresses, start_routing_bucket, end_routing_bucket): (
-            Vec<(String, crate::block_store::ElementEntry)>,
-            u32,
-            u32,
-        ) = {
-            let shards = self.shards.read().expect("engine lock poisoned");
-            let Some(shard) = shards.get(&shard_id) else {
-                return 0;
-            };
-            let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-            (
-                shard
-                    .strings()
-                    .iter()
-                    .filter(|(_, address)| {
-                        crate::wal_record::is_wal_resident(address.block_slab_id())
-                    })
-                    .map(|(key, slot)| (key.to_string(), slot.address()))
-                    .collect(),
-                start_routing_bucket,
-                end_routing_bucket,
-            )
+        let Some((addresses, start_routing_bucket, end_routing_bucket)) =
+            self.capture_resident_string_blocks(shard_id, wanted)
+        else {
+            return 0;
         };
         let mut moved = 0usize;
-        for (key, address) in addresses {
-            let object_id = super::stable_block_object_id(shard_id, "string", &key);
-            if !wanted(object_id) {
-                continue;
-            }
+        for (key, address, object_id) in addresses {
             let routing_bucket = super::hashing::block_routing_bucket(
                 &key,
                 start_routing_bucket,
@@ -2882,8 +2880,8 @@ impl TemporalEngine {
                     }
                     let stored_key = shard
                         .bucket_index
-                        .any_shared_object_key(key.as_str())
-                        .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
+                        .any_shared_object_key(key.as_ref())
+                        .unwrap_or_else(|| key.clone());
                     shard.set_string_address(stored_key, &durable);
                     super::upsert_bucket_index_block(
                         shard,
