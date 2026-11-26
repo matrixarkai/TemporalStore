@@ -341,6 +341,41 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(adapter.report_status()["bytes_used"], 0)
         self.assertEqual(len(adapter._blob.values), 0)
 
+    def test_capacity_eviction_batches_small_blobs_and_preserves_locked_keys(self):
+        adapter = self.adapter
+        keys = [Key(str(index)) for index in range(4)]
+        task = adapter.submit_store_task(keys, [Memory(b"x") for _ in keys])
+        self.assertTrue(adapter._store_event.event.wait(2))
+        self.assertTrue(adapter.pop_completed_store_tasks()[task].success)
+        adapter._store_event.event.clear()
+
+        locked = keys[1]
+        task = adapter.submit_lookup_and_lock_task([locked], {})
+        self.assertTrue(adapter._lookup_event.event.wait(2))
+        self.assertTrue(adapter.query_lookup_and_lock_result(task).test(0))
+
+        removed = []
+        delete_many = adapter._blob.delete_many
+
+        def record(names):
+            removed.append(list(names))
+            return delete_many(names)
+
+        adapter._blob.delete_many = record
+        replacement = Key("large")
+        task = adapter.submit_store_task([replacement], [Memory(b"abc")])
+        self.assertTrue(adapter._store_event.event.wait(2))
+        self.assertTrue(adapter.pop_completed_store_tasks()[task].success)
+
+        self.assertEqual(removed, [[adapter._key_names(key)[0] for key in keys if key != locked]])
+        self.assertEqual(adapter._blob.values, {
+            adapter._key_names(locked)[0]: b"x",
+            adapter._key_names(replacement)[0]: b"abc",
+        })
+        self.assertEqual(adapter.report_status()["bytes_used"], 4)
+        self.assertEqual(adapter._evicting, set())
+        adapter.submit_unlock([locked])
+
     def test_lookup_reserves_key_during_metadata_read(self):
         adapter = self.adapter
         first, second = Key("first"), Key("second")
