@@ -10387,6 +10387,27 @@ fn adopt_canonical_key_allocations_in_hashed<V>(
     adopted
 }
 
+fn adopt_canonical_key_allocations_in_object_rows(
+    rows: &mut ObjectRows,
+    lookup: &ObjectBlockLookup,
+) -> usize {
+    // Collect only changed key handles before editing the row table.
+    let canonical_keys: Vec<_> = rows
+        .keys()
+        .filter_map(|held| {
+            lookup.any_shared_object_key(held)
+                .filter(|canonical| !Arc::ptr_eq(held, canonical))
+        })
+        .collect();
+    let mut adopted = 0;
+    for canonical in canonical_keys {
+        if rows.adopt_key(canonical.as_ref(), &canonical) {
+            adopted += 1;
+        }
+    }
+    adopted
+}
+
 fn adopt_canonical_key_allocations(
     expires_at_ms: &mut BTreeMap<Arc<str>, u64>,
     // THE WHOLE INDEX AND NOT THE LOOKUP, because the canonical holder moved. A string key lives
@@ -10568,7 +10589,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         .get_mut(&super::storage_bucket_internals::StoredModelKind::String)
     {
         _adopted_hashed +=
-            adopt_canonical_key_allocations_in_hashed(table, &bucket_index.object_block_lookup);
+            adopt_canonical_key_allocations_in_object_rows(table, &bucket_index.object_block_lookup);
     }
     // THE FEATURE SERIES ARE IN `objects` NOW, so the pass reaches them through the kind's
     // inner table rather than through a field. Dropping this term instead would have cost
@@ -10584,7 +10605,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         .get_mut(&super::storage_bucket_internals::StoredModelKind::Feature)
     {
         _adopted_hashed +=
-            adopt_canonical_key_allocations_in_hashed(table, &bucket_index.object_block_lookup);
+            adopt_canonical_key_allocations_in_object_rows(table, &bucket_index.object_block_lookup);
     }
     // THE CONTROL-STATE COUNTERS ARE IN `counter_series` NOW, so this pass reaches them
     // through the domain's table rather than through a field. Dropping the term would

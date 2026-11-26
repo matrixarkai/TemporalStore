@@ -78,11 +78,11 @@ fn metadata_replacement_and_remap_preserve_blocks_and_owned_elements() {
     let mut rows = FiledStringRows::default();
     let block = BlockLookupRef { routing_bucket: 6, block_ref_key: 42 };
     let mut original = ObjectSlot::from(BTreeMap::from([(10, crate::block_store::ElementEntry::default())]));
-    assert!(original.file_ref(block));
+    assert!(original.file_ref(block.clone()));
     let elements_pointer = original.owned_elements().unwrap().as_ptr();
     rows.insert(key("a"), 1, 4, original);
     rows.replace_record("a", 1, ObjectRecord::default()).unwrap();
-    assert!(!rows.get_mut("a", 1).unwrap().file_ref(block));
+    assert!(!rows.get_mut("a", 1).unwrap().file_ref(block.clone()));
     assert_eq!(rows.get("a", 1).unwrap().owned_elements().unwrap().as_ptr(), elements_pointer);
     rows.remap("a", 1, key("renamed"), 2, 5).unwrap();
     assert!(!rows.get_mut("renamed", 2).unwrap().file_ref(block));
