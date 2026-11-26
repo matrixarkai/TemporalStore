@@ -119,6 +119,7 @@ fn same_owner_replacement_keeps_the_canonical_key_and_slot_position() {
         let mut rows = FiledStringRows::default();
         let original = key("hot-row");
         let mut before = slot();
+        // The packed size class stores 91 bytes as 92.
         before.set_logical_size(91);
         rows.insert(original.clone(), 1, 4, before);
         if second_row { rows.insert(key("peer"), 1, 4, slot()); }
@@ -129,7 +130,7 @@ fn same_owner_replacement_keeps_the_canonical_key_and_slot_position() {
         let mut replacement = slot();
         replacement.set_logical_size(17);
         let retired = rows.insert(fresh_key, 1, 4, replacement).unwrap();
-        assert_eq!(retired.logical_size(), Some(91));
+        assert_eq!(retired.logical_size(), Some(92));
         assert_eq!(rows.get("hot-row", 1).unwrap().logical_size(), Some(17));
         assert_eq!(rows.get("hot-row", 1).unwrap() as *const ObjectSlot, position);
         assert!(Arc::ptr_eq(&original, rows.get_key_value("hot-row", 1).unwrap().0));

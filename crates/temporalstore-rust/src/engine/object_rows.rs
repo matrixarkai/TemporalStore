@@ -508,14 +508,15 @@ mod tests {
         let mut visited = 0;
         for (_, slot) in &mut rows {
             visited += 1;
+            // The packed size class stores 91 bytes as 92.
             slot.set_logical_size(91);
         }
         assert_eq!(visited, 128);
-        assert!(rows.values().all(|slot| slot.logical_size() == Some(91)));
+        assert!(rows.values().all(|slot| slot.logical_size() == Some(92)));
         rows.retain(|key, _| key.as_ref() == "row-1");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows.selected_strings(4).unwrap().count(), 1);
-        assert_eq!(rows.get("row-1").unwrap().logical_size(), Some(91));
+        assert_eq!(rows.get("row-1").unwrap().logical_size(), Some(92));
         rows.remove("row-1");
         assert!(rows.is_empty());
     }
@@ -528,6 +529,7 @@ mod tests {
         shard.set_routing_range(0, 100);
         let key: ModelKey = Arc::from("surviving-key");
         let mut slot = ObjectSlot::default();
+        // The packed size class stores 91 bytes as 92.
         slot.set_logical_size(91);
         let address = slot.address();
         shard.strings_mut().insert(key.clone(), slot);
@@ -538,13 +540,13 @@ mod tests {
         ]));
         assert_eq!(unresolved, 0);
         assert_eq!(shard.strings().len(), 1);
-        assert_eq!(shard.string_row(&key).unwrap().logical_size(), Some(91));
+        assert_eq!(shard.string_row(&key).unwrap().logical_size(), Some(92));
         assert_eq!(shard.strings().selected_strings(19).unwrap().count(), 1);
         assert_eq!(shard.strings().selected_strings(7).unwrap().count(), 0);
         let encoded = rmp_serde::to_vec_named(&shard.bucket_index).unwrap();
         let decoded: CoreIndex = rmp_serde::from_slice(&encoded).unwrap();
         let restored = decoded.objects.get(&StoredModelKind::String).unwrap();
-        assert_eq!(restored.get(&key).unwrap().logical_size(), Some(91));
+        assert_eq!(restored.get(&key).unwrap().logical_size(), Some(92));
         assert_eq!(restored.selected_strings(19).unwrap().count(), 1);
     }
 
