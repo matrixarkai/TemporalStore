@@ -4956,6 +4956,7 @@ mod owner_rows_checkpoint_tests {
         shard.index_format_version = 32;
         shard.applied_wal_sequence = Some(77);
         let mut slot = ObjectSlot::default();
+        // The packed size class stores 91 bytes as 92.
         slot.set_logical_size(91);
         let key: state::ModelKey = std::sync::Arc::from("legacy-checkpoint-row");
         shard.bucket_index.objects.insert(StoredModelKind::String,
@@ -4975,7 +4976,7 @@ mod owner_rows_checkpoint_tests {
         let decoded = decode_index_bytes_inner(&bytes).unwrap();
         assert_eq!(decoded.index_format_version, SHARD_INDEX_FORMAT_VERSION);
         assert_eq!(decoded.applied_wal_sequence, Some(77));
-        assert_eq!(decoded.string_row("legacy-checkpoint-row").unwrap().logical_size(), Some(91));
+        assert_eq!(decoded.string_row("legacy-checkpoint-row").unwrap().logical_size(), Some(92));
         assert!(decoded.strings().selected_strings(0).is_none());
         let current = encode_index_bytes(&decoded);
         let offset = INDEX_CONTAINER_MAGIC.len() + 1;

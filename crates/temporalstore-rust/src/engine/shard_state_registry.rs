@@ -2,7 +2,11 @@
 // Copyright 2026 MatrixArkAI
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock, TryLockError};
+use std::sync::{Arc, RwLock};
+
+#[path = "shard_lock_diagnostics.rs"]
+pub(super) mod diagnostics;
+use diagnostics::ShardLockSite::*;
 
 pub(super) struct ShardStateRegistry<T> {
     entries: RwLock<BTreeMap<u64, Arc<RwLock<Option<T>>>>>,
@@ -47,12 +51,12 @@ impl<T> ShardStateHandle<T> {
     }
 
     pub(super) fn with_read<R>(&self, read: impl FnOnce(Option<&T>) -> R) -> R {
-        let state = self.state.read().expect("shard state lock poisoned");
+        let state = diagnostics::read(&self.state, OwnerAccess);
         read(state.as_ref())
     }
 
     pub(super) fn with_write<R>(&self, write: impl FnOnce(Option<&mut T>) -> R) -> R {
-        let mut state = self.state.write().expect("shard state lock poisoned");
+        let mut state = diagnostics::write(&self.state, OwnerAccess);
         write(state.as_mut())
     }
 }
@@ -65,7 +69,7 @@ impl<T> Default for ShardStateRegistry<T> {
 
 impl<T> ShardStateRegistry<T> {
     pub(super) fn handle(&self, shard_id: u64) -> Option<ShardStateHandle<T>> {
-        let entries = self.entries.read().expect("shard registry lock poisoned");
+        let entries = diagnostics::read(&self.entries, RegistryLookup);
         entries.get(&shard_id).map(|state| ShardStateHandle {
             shard_id,
             state: Arc::clone(state),
@@ -73,7 +77,7 @@ impl<T> ShardStateRegistry<T> {
     }
 
     pub(super) fn shard_ids(&self) -> Vec<u64> {
-        self.entries.read().expect("shard registry lock poisoned").keys().copied().collect()
+        diagnostics::read(&self.entries, RegistryLookup).keys().copied().collect()
     }
 
     pub(super) fn with_shard<R>(&self, shard_id: u64, read: impl FnOnce(Option<&T>) -> R) -> R {
@@ -100,15 +104,15 @@ impl<T> ShardStateRegistry<T> {
         let replacement = Arc::new(RwLock::new(Some(state)));
         loop {
             let Some(previous) = self.handle(shard_id) else {
-                let mut entries = self.entries.write().expect("shard registry lock poisoned");
+                let mut entries = diagnostics::write(&self.entries, RegistryLifecycle);
                 if entries.contains_key(&shard_id) {
                     continue;
                 }
                 entries.insert(shard_id, replacement);
                 return None;
             };
-            let mut old = previous.state.write().expect("shard state lock poisoned");
-            let mut entries = self.entries.write().expect("shard registry lock poisoned");
+            let mut old = diagnostics::write(&previous.state, OwnerLifecycle);
+            let mut entries = diagnostics::write(&self.entries, RegistryLifecycle);
             if !entries.get(&shard_id).is_some_and(|current| Arc::ptr_eq(current, &previous.state)) {
                 continue;
             }
@@ -119,8 +123,8 @@ impl<T> ShardStateRegistry<T> {
     }
 
     pub(super) fn retire_if_current(&self, expected: &ShardStateHandle<T>) -> Option<T> {
-        let mut state = expected.state.write().expect("shard state lock poisoned");
-        let mut entries = self.entries.write().expect("shard registry lock poisoned");
+        let mut state = diagnostics::write(&expected.state, OwnerLifecycle);
+        let mut entries = diagnostics::write(&self.entries, RegistryLifecycle);
         if !entries.get(&expected.shard_id).is_some_and(|current| Arc::ptr_eq(current, &expected.state)) {
             return None;
         }
@@ -130,7 +134,7 @@ impl<T> ShardStateRegistry<T> {
     }
 
     fn snapshot(&self) -> Vec<ShardStateHandle<T>> {
-        self.entries.read().expect("shard registry lock poisoned").iter()
+        diagnostics::read(&self.entries, CoherentRegistry).iter()
             .map(|(&shard_id, state)| ShardStateHandle { shard_id, state: Arc::clone(state) })
             .collect()
     }
@@ -154,22 +158,25 @@ impl<T> ShardStateRegistry<T> {
     ) -> R {
         'capture: loop {
             let handles = self.snapshot();
+            #[cfg(test)]
+            tests::notify_captured_membership();
             let mut states = Vec::with_capacity(handles.len());
             for handle in &handles {
-                match handle.state.try_read() {
-                    Ok(state) => states.push(state),
-                    Err(TryLockError::WouldBlock) => {
+                match diagnostics::try_read(&handle.state) {
+                    Some(state) => states.push(state),
+                    None => {
                         drop(states);
+                        diagnostics::retry(true);
                         #[cfg(test)]
                         tests::notify_capture_wait(handle.shard_id);
-                        drop(handle.state.read().expect("shard state lock poisoned"));
+                        drop(diagnostics::read(&handle.state, CoherentWait));
                         continue 'capture;
                     }
-                    Err(TryLockError::Poisoned(_)) => panic!("shard state lock poisoned"),
                 }
             }
-            let entries = self.entries.read().expect("shard registry lock poisoned");
+            let entries = diagnostics::read(&self.entries, CoherentRegistry);
             if !Self::same_membership(&entries, &handles) {
+                diagnostics::retry(false);
                 continue;
             }
             let view = handles.iter().zip(&states).map(|(handle, state)| {
@@ -185,22 +192,25 @@ impl<T> ShardStateRegistry<T> {
     ) -> R {
         'capture: loop {
             let handles = self.snapshot();
+            #[cfg(test)]
+            tests::notify_captured_membership();
             let mut states = Vec::with_capacity(handles.len());
             for handle in &handles {
-                match handle.state.try_write() {
-                    Ok(state) => states.push(state),
-                    Err(TryLockError::WouldBlock) => {
+                match diagnostics::try_write(&handle.state) {
+                    Some(state) => states.push(state),
+                    None => {
                         drop(states);
+                        diagnostics::retry(true);
                         #[cfg(test)]
                         tests::notify_capture_wait(handle.shard_id);
-                        drop(handle.state.write().expect("shard state lock poisoned"));
+                        drop(diagnostics::write(&handle.state, CoherentWait));
                         continue 'capture;
                     }
-                    Err(TryLockError::Poisoned(_)) => panic!("shard state lock poisoned"),
                 }
             }
-            let entries = self.entries.read().expect("shard registry lock poisoned");
+            let entries = diagnostics::read(&self.entries, CoherentRegistry);
             if !Self::same_membership(&entries, &handles) {
+                diagnostics::retry(false);
                 continue;
             }
             let mut view = handles.iter().zip(&mut states).map(|(handle, state)| {
@@ -220,6 +230,17 @@ mod tests {
     thread_local! {
         static CAPTURE_WAIT: std::cell::RefCell<Option<mpsc::Sender<u64>>> =
             const { std::cell::RefCell::new(None) };
+    }
+
+    thread_local! {
+        static CAPTURE_MEMBERSHIP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn notify_captured_membership() {
+        if let Some(notify) = CAPTURE_MEMBERSHIP.with(|slot| slot.borrow_mut().take()) {
+            notify();
+        }
     }
 
     pub(super) fn notify_capture_wait(shard_id: u64) {
@@ -244,7 +265,7 @@ mod tests {
         let capture_thread = std::thread::spawn(move || {
             CAPTURE_WAIT.with(|slot| *slot.borrow_mut() = Some(waiting));
             let mut calls = 0;
-            let view = if write {
+            let (view, measurements) = diagnostics::measure_shard_locks(|| if write {
                 capture.with_all_shards_mut(|all| {
                     calls += 1;
                     let view = all.iter().map(|(&id, value)| (id, **value)).collect::<Vec<_>>();
@@ -256,8 +277,8 @@ mod tests {
                     calls += 1;
                     all.iter().map(|(&id, value)| (id, **value)).collect::<Vec<_>>()
                 })
-            };
-            let _ = finished.send((calls, view));
+            });
+            let _ = finished.send((calls, view, measurements));
         });
 
         // The event comes from WouldBlock after the prefix is dropped. Keep
@@ -286,8 +307,51 @@ mod tests {
         }
         assert_eq!(waited_on.expect("capture never reached a busy shard"), 2);
         progressed.expect("peer mutation or registry insertion stalled behind the busy shard");
-        assert_eq!(completed.expect("capture did not finish"), (1, vec![(1, 11), (2, 22), (3, 30)]));
+        let (calls, view, measurements) = completed.expect("capture did not finish");
+        assert_eq!((calls, view), (1, vec![(1, 11), (2, 22), (3, 30)]));
+        assert_eq!(measurements.busy_retries, 1);
+        assert_eq!(measurements.membership_retries, 0);
+        let tries = measurements.times(CoherentTry, write);
+        assert_eq!((tries.acquired, tries.would_block), (4, 1));
+        assert_eq!(tries.hold_buckets.iter().sum::<u64>(), 4);
+        assert_eq!(tries.wait_buckets.iter().sum::<u64>(), 4);
+        let waited = measurements.times(CoherentWait, write);
+        assert_eq!(waited.acquired, 1);
+        assert_eq!(waited.hold_buckets.iter().sum::<u64>(), 1);
+        assert_eq!(waited.wait_buckets.iter().sum::<u64>(), 1);
+        assert_eq!(measurements.times(CoherentRegistry, false).acquired, 3);
         states.with_shard(1, |state| assert_eq!(state.copied(), Some(if write { 111 } else { 11 })));
+    }
+
+    #[test]
+    fn measurements_keep_released_guards_from_a_membership_retry() {
+        let registry = Arc::new(ShardStateRegistry::default());
+        registry.replace(1, 10_u64);
+        let (captured, ready) = mpsc::sync_channel(0);
+        let (resume, replaced) = mpsc::sync_channel(0);
+        let worker_registry = Arc::clone(&registry);
+        let worker = std::thread::spawn(move || {
+            CAPTURE_MEMBERSHIP.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    captured.send(()).unwrap();
+                    replaced.recv_timeout(Duration::from_secs(5)).unwrap();
+                }));
+            });
+            diagnostics::measure_shard_locks(|| {
+                worker_registry.with_all_shards_read(|all| *all[&1])
+            })
+        });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(registry.replace(1, 20), Some(10));
+        resume.send(()).unwrap();
+        let (value, measurements) = worker.join().unwrap();
+        assert_eq!(value, 20);
+        assert_eq!(measurements.membership_retries, 1);
+        assert_eq!(measurements.busy_retries, 0);
+        let acquired = measurements.times(CoherentTry, false);
+        assert_eq!(acquired.acquired, 2);
+        assert_eq!(acquired.hold_buckets.iter().sum::<u64>(), 2);
+        assert_eq!(measurements.times(CoherentRegistry, false).acquired, 4);
     }
 
     #[test]
@@ -317,14 +381,19 @@ mod tests {
         let (done, completed) = mpsc::channel();
         let peer = Arc::clone(&states);
         let second = std::thread::spawn(move || {
-            peer.with_shard_mut(2, |state| *state.unwrap() += 1);
-            done.send(()).unwrap();
+            let (_, measurements) = diagnostics::measure_shard_locks(|| {
+                peer.with_shard_mut(2, |state| *state.unwrap() += 1);
+            });
+            done.send(measurements).unwrap();
         });
         let progressed = completed.recv_timeout(Duration::from_secs(2));
         release.send(()).unwrap();
         first.join().unwrap();
         second.join().unwrap();
-        progressed.expect("peer blocked behind a different owner");
+        let measurements = progressed.expect("peer blocked behind a different owner");
+        assert_eq!(measurements.times(RegistryLookup, false).acquired, 1);
+        assert_eq!(measurements.times(OwnerAccess, true).acquired, 1);
+        assert_eq!(measurements.times(CoherentWait, true).acquired, 0);
         states.with_all_shards_read(|all| assert_eq!(**all.get(&2).unwrap(), 21));
     }
 
