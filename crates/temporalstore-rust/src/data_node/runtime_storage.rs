@@ -1419,15 +1419,15 @@ impl DataNodeRuntime {
                     });
                 super::task_execution::record_gc_phase(&self.inner, "purge", purge_started);
                 block_purge_report = Some(purge);
-                if !executed_stages.iter().any(|stage| stage == "reclaim_page") {
-                    executed_stages.push("reclaim_page".to_string());
-                    skipped_stages.retain(|stage| stage != "reclaim_page_no_pressure");
-                    self.inner.stats.lock().expect("runtime stats lock poisoned")
-                        .storage_manager_reclaim_block_runs += 1;
-                }
             }
         }
-        if page_log_reclaim.is_some()
+        let purged_or_restored = block_purge_report.as_ref().is_some_and(|purge| purge.processed_block_slabs > 0);
+        let retired_wal = page_log_reclaim.as_ref().is_some_and(|reclaim| {
+            reclaim.wal_records_removed > 0 || reclaim.wal_segments_dropped > 0
+        });
+        // Keep check and deferral evidence in the phase reports. An empty
+        // cleanup check is not a completed collection round.
+        if (purged_or_restored || retired_wal)
             && !executed_stages.iter().any(|stage| stage == "reclaim_page")
         {
             executed_stages.push("reclaim_page".to_string());
@@ -2001,11 +2001,7 @@ impl DataNodeRuntime {
         // Later index work may replace its lifecycle report. Attach physical purge work last.
         let cleanup_progress = if block_purge_report.as_ref().is_some_and(|purge| purge.budget_exhausted) {
             StageProgress::More
-        } else if block_purge_report.as_ref().is_some_and(|purge| purge.processed_block_slabs > 0)
-            || page_log_reclaim.as_ref().is_some_and(|reclaim| {
-                reclaim.wal_records_removed > 0 || reclaim.wal_segments_dropped > 0
-            })
-        {
+        } else if purged_or_restored || retired_wal {
             StageProgress::Done
         } else {
             StageProgress::Idle
@@ -3335,6 +3331,9 @@ mod page_gate_is_timed {
 
     #[test]
     fn a_closed_slab_gate_still_purges_mature_quarantine() {
+        use crate::types::{Command, CommandResponse, ExecuteRequest};
+
+        let _physical = crate::engine::value_once_in_test(false);
         let root = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024, root.path().join("cache"),
@@ -3352,9 +3351,28 @@ mod page_gate_is_timed {
             Some(std::collections::BTreeSet::from([victim])),
         ).unwrap();
         assert_eq!(quarantined.delayed_destroy_block_slab_ids, vec![victim]);
+
+        // Give the utility gate a real sealed serving slab. Quarantine can
+        // retain a descriptor in the denominator until final destruction.
+        let mut seed = 0x3d6f_819bu32;
+        let value: Vec<u8> = (0..4096).map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as u8
+        }).collect();
+        let written = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: "live".into(), value: value.clone() },
+        });
+        assert!(written.status.ok, "{:?}", written.status);
+        let survivor = store.roll_slab_for_shard(1).unwrap().previous_block_slab_id;
+        assert_ne!(survivor, victim);
+        assert!(engine.live_block_slab_ids(1).contains(&survivor));
+        assert!(!store.active_block_slab_ids().contains(&survivor));
         engine.publish_block_slab_live_bytes();
         let gate = store.reclaim_gate(crate::block_store::DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
-        assert!(!gate.due, "{gate:?}");
+        assert!(gate.ready && gate.logical_bytes > 0 && gate.live_bytes > 0 && !gate.due, "{gate:?}");
 
         let runtime = DataNodeRuntime::new_without_workers_with_options(
             engine.clone(),
@@ -3383,6 +3401,13 @@ mod page_gate_is_timed {
         assert!(report.executed_stages.iter().any(|name| name == "reclaim_page"));
         assert!(store.delayed_destroy_slab_ids().unwrap().is_empty());
         assert!(!store.slab_ids().unwrap().contains(&victim));
+        assert!(store.slab_ids().unwrap().contains(&survivor));
+        engine.cache().invalidate_shard(1).unwrap();
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key: "live".into() },
+        });
+        assert!(read.status.ok, "{:?}", read.status);
+        assert_eq!(read.response, CommandResponse::Bytes { value: Some(value) });
     }
 
 
