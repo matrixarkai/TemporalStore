@@ -2753,7 +2753,7 @@ struct IndexLogInner {
     /// This stream's numbered delta records awaiting write, in the order
     /// they were accepted. Written as one batch per shard by the loop flusher, or by whichever
     /// call needs the log to be complete first.
-    queued: Vec<QueuedDelta>,
+    queued: Vec<PendingDelta>,
     queued_pending: PendingIndexRecords,
     /// Batches whose write failed, already encoded, in order. They are written again, whole and
     /// before anything newer, so a transient error costs a delay and never a hole.
@@ -3599,7 +3599,8 @@ impl LocalIndexLogStore {
             // O(1) raw cache probe; ordinary writers reserve WAL order before
             // taking this Index gate. No WAL mutex is held over Index I/O.
             if applied_wal_sequence != Some(wal.cached_last_sequence(shard_id)) {
-                return Ok(0);
+                return Err(std::io::Error::new(std::io::ErrorKind::Interrupted,
+                    "expiry delta WAL cut changed before Index admission").into());
             }
         }
         inner.repair_failed_append()?;
@@ -3626,6 +3627,7 @@ impl LocalIndexLogStore {
                 applied_wal_sequence,
                 meta,
                 upsert,
+                expiry_wal.is_some(),
             );
         }
         // This record is written now, so whatever is still queued goes first and the log stays in
@@ -5119,6 +5121,22 @@ impl std::fmt::Debug for QueuedDelta {
     }
 }
 
+#[derive(Debug)]
+enum PendingDelta {
+    Deferred(QueuedDelta),
+    /// An expiry deletion must have a retryable frame before later anchors can pass it.
+    Framed { bytes: Vec<u8>, meta: FrameMeta },
+}
+
+impl QueuedDelta {
+    fn prepare(self) -> IndexDeltaRecord {
+        prepare_delta_record(
+            self.shard_id, self.sequence, self.items, self.key_states,
+            self.applied_wal_sequence, self.meta, self.upsert,
+        )
+    }
+}
+
 /// What the bookkeeping after a write needs to know about one framed record in the batch.
 #[derive(Debug, Clone, Copy)]
 struct FrameMeta {
@@ -5213,6 +5231,7 @@ thread_local! {
     /// Make the next batch write stop after this many bytes and then fail, once.
     static FAIL_PARTIAL_FRAME_WRITE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static FAIL_PENDING_INDEX_ENCODE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    static FAIL_EXPIRY_DELTA_PREPARE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_INDEX_TAIL_TRUNCATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_INDEX_APPEND_BARRIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static BEFORE_INDEX_APPEND_BARRIER: std::cell::RefCell<Option<IndexTestPause>> =
@@ -5234,6 +5253,16 @@ pub(crate) fn group_write_in_test(on: bool) -> impl Drop {
         }
     }
     Restore(GROUP_WRITE_IN_TEST.with(|cell| cell.replace(on)))
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_expiry_delta_prepare_for_test() {
+    FAIL_EXPIRY_DELTA_PREPARE.with(|fault| fault.set(true));
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_pending_index_write_for_test() {
+    FAIL_NEXT_FRAME_WRITE.with(|fault| fault.set(true));
 }
 
 #[cfg(test)]
@@ -5270,6 +5299,7 @@ impl LocalIndexLogStore {
         applied_wal_sequence: Option<u64>,
         meta: Option<MetaItem>,
         upsert: bool,
+        prepare_expiry: bool,
     ) -> Result<u64, IndexLogError> {
         if !inner.queued_pending.try_add() {
             flush_queued_locked(&mut inner)?;
@@ -5277,7 +5307,7 @@ impl LocalIndexLogStore {
                 return Err(IndexLogError::Io(std::io::Error::other("the index log queue is full")));
             }
         }
-        inner.queued.push(QueuedDelta {
+        let queued = QueuedDelta {
             shard_id,
             sequence: next_sequence,
             items,
@@ -5285,7 +5315,19 @@ impl LocalIndexLogStore {
             applied_wal_sequence,
             meta,
             upsert,
-        });
+        };
+        let pending = if prepare_expiry {
+            match frame_expiry_delta(queued.prepare()) {
+                Ok(pending) => pending,
+                Err(error) => {
+                    inner.queued_pending.discard(1);
+                    return Err(error);
+                }
+            }
+        } else {
+            PendingDelta::Deferred(queued)
+        };
+        inner.queued.push(pending);
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
         self.ensure_flusher(shard_id, stream, inner);
         Ok(next_sequence)
@@ -5318,6 +5360,31 @@ impl Drop for IndexLogInner {
     }
 }
 
+fn frame_expiry_delta(record: IndexDeltaRecord) -> Result<PendingDelta, IndexLogError> {
+    #[cfg(test)]
+    if FAIL_EXPIRY_DELTA_PREPARE.with(|fault| fault.replace(false)) {
+        return Err(IndexLogError::Encoding("injected expiry delta preparation error".into()));
+    }
+    let mut payload = Vec::new();
+    encode_pending_delta(&record, &mut payload)?;
+    let bytes = crate::log_framing::encode_record(&payload);
+    let meta = FrameMeta {
+        sequence: record.sequence,
+        applied_wal_sequence: record.applied_wal_sequence,
+        carries_content: delta_record_carries_content_of(&record),
+        len: bytes.len() as u64,
+    };
+    Ok(PendingDelta::Framed { bytes, meta })
+}
+
+fn encode_pending_delta(record: &IndexDeltaRecord, payload: &mut Vec<u8>) -> Result<(), IndexLogError> {
+    if index_log_protobuf_enabled() {
+        encode_delta_protobuf_into(record, payload)
+    } else {
+        encode_index_payload_into(record, INDEX_LOG_SHAPE_DELTA, payload)
+    }
+}
+
 /// Retry older frames before writing this stream's newly admitted records.
 fn flush_queued_locked(inner: &mut IndexLogInner) -> Result<(), IndexLogError> {
     inner.repair_failed_append()?;
@@ -5345,21 +5412,16 @@ fn flush_queued_locked(inner: &mut IndexLogInner) -> Result<(), IndexLogError> {
     let mut frames: Vec<FrameMeta> = Vec::with_capacity(records.len());
     let mut payload = std::mem::take(&mut inner.encode_scratch);
     let mut frame = std::mem::take(&mut inner.frame_scratch);
-    for queued in records {
-        let record = prepare_delta_record(
-            queued.shard_id,
-            queued.sequence,
-            queued.items,
-            queued.key_states,
-            queued.applied_wal_sequence,
-            queued.meta,
-            queued.upsert,
-        );
-        let encoded = if index_log_protobuf_enabled() {
-            encode_delta_protobuf_into(&record, &mut payload)
-        } else {
-            encode_index_payload_into(&record, INDEX_LOG_SHAPE_DELTA, &mut payload)
+    for pending in records {
+        let record = match pending {
+            PendingDelta::Deferred(queued) => queued.prepare(),
+            PendingDelta::Framed { bytes: framed, meta } => {
+                bytes.extend_from_slice(&framed);
+                frames.push(meta);
+                continue;
+            }
         };
+        let encoded = encode_pending_delta(&record, &mut payload);
         #[cfg(test)]
         let encoded = if FAIL_PENDING_INDEX_ENCODE.with(|fault| fault.get()) == Some(record.sequence) {
             FAIL_PENDING_INDEX_ENCODE.with(|fault| fault.set(None));
