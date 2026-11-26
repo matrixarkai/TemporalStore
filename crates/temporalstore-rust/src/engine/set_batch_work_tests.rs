@@ -41,16 +41,17 @@ fn counts() -> (u64, u64) {
 }
 
 fn assert_dirty(engine: &TemporalEngine, key: &str) {
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).unwrap();
-    let refs = shard.bucket_index.block_refs_for("set", key, None).unwrap();
-    assert!(!refs.is_empty());
-    assert!(refs.iter().all(|at| shard
-        .bucket_index
-        .bucket_map
-        .get(&at.routing_bucket)
-        .and_then(|bucket| bucket.block_index.get(&at.block_ref_key))
-        .is_some_and(|block| block.dirty())));
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.unwrap();
+        let refs = shard.bucket_index.block_refs_for("set", key, None).unwrap();
+        assert!(!refs.is_empty());
+        assert!(refs.iter().all(|at| shard
+            .bucket_index
+            .bucket_map
+            .get(&at.routing_bucket)
+            .and_then(|bucket| bucket.block_index.get(&at.block_ref_key))
+            .is_some_and(|block| block.dirty())));
+    });
 }
 
 #[test]
@@ -152,17 +153,16 @@ fn set_rewrites_and_readds_keep_one_live_copy_after_recovery() {
         );
         write(&engine, append(5, 1));
         assert_dirty(&engine, "order");
-        let shards = engine.shards.read().unwrap();
-        assert_eq!(
-            shards
-                .get(&1)
-                .unwrap()
-                .bucket_index
-                .block_refs_for("set", "order", None)
-                .unwrap()
-                .len(),
-            32
-        );
+        engine.shards.with_state(1, |owner| {
+            assert_eq!(
+                owner.unwrap()
+                    .bucket_index
+                    .block_refs_for("set", "order", None)
+                    .unwrap()
+                    .len(),
+                32
+            );
+        });
     }
     let recovered = open(dir.path());
     let response = recovered.execute(ExecuteRequest {
@@ -273,25 +273,26 @@ fn fresh_hash_batches_do_not_scan_preexisting_refs_per_field() {
         write(&engine, hash(2_048, 128));
         assert_eq!(counts(), (0, 0), "already-dirty blocks need no second walk");
         let block_marks = || {
-            let shards = engine.shards.read().unwrap();
-            let shard = &shards[&1];
-            shard
-                .bucket_index
-                .block_refs_for("hash", "catalog", None)
-                .unwrap()
-                .iter()
-                .map(|at| {
-                    shard
-                        .bucket_index
-                        .bucket_map
-                        .get(&at.routing_bucket)
-                        .unwrap()
-                        .block_index
-                        .get(&at.block_ref_key)
-                        .unwrap()
-                        .dirty()
-                })
-                .collect::<Vec<_>>()
+            engine.shards.with_state(1, |owner| {
+                let shard = owner.expect("shard 1");
+                shard
+                    .bucket_index
+                    .block_refs_for("hash", "catalog", None)
+                    .unwrap()
+                    .iter()
+                    .map(|at| {
+                        shard
+                            .bucket_index
+                            .bucket_map
+                            .get(&at.routing_bucket)
+                            .unwrap()
+                            .block_index
+                            .get(&at.block_ref_key)
+                            .unwrap()
+                            .dirty()
+                    })
+                    .collect::<Vec<_>>()
+            })
         };
         assert!(block_marks().iter().all(|dirty| *dirty));
         let response = engine.execute(ExecuteRequest {

@@ -260,23 +260,24 @@ fn round_request(min_undumped_wal_records: u64) -> StorageManagerCycleRequest {
 
 /// How many dirty objects the shard is holding, and in how many buckets.
 fn dirty_state(engine: &TemporalEngine) -> (usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    (
-        shard.dirty_objects.len(),
-        shard.dirty_objects.bucket_ids().count(),
-    )
+    engine.shards.with_state(1, |shard_state| {
+        let shard = shard_state.expect("shard 1");
+        (
+            shard.dirty_objects.len(),
+            shard.dirty_objects.bucket_ids().count(),
+        )
+    })
 }
 
 /// The buckets the engine says are dirty, read from the dirty index itself.
 fn dirty_bucket_set(engine: &TemporalEngine) -> BTreeSet<u32> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    shards
-        .get(&1)
-        .expect("shard 1")
-        .dirty_objects
-        .bucket_ids()
-        .collect()
+    engine.shards.with_state(1, |shard_state| {
+        shard_state
+            .expect("shard 1")
+            .dirty_objects
+            .bucket_ids()
+            .collect()
+    })
 }
 
 /// The shard's own routing range, which is what the witness below has to hash with.

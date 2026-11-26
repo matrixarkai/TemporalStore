@@ -184,46 +184,47 @@ fn seed_routed_strings(engine: &TemporalEngine) {
 /// identifies a block in both. `RecordedMap::block_an_element_vacates` asks this exact question on
 /// the write path, so this is not a fixture-only correspondence.
 fn live_blocks(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<String>)> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    // Address -> element name, for the kinds that have elements. `string` has none, which is what
-    // makes it this module's control.
-    let mut element_at: BTreeMap<(u64, u64, u64), String> = BTreeMap::new();
-    if kind == "hash" {
-        for (object_key, fields) in shard.bucket_index.hashes.iter() {
-            let _ = object_key;
-            for (field, address) in fields.iter() {
-                element_at.insert(
-                    (
-                        address.block_slab_id(),
-                        address.offset(),
-                        address.length(),
-                    ),
-                    field.to_string(),
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        // Address -> element name, for the kinds that have elements. `string` has none, which is what
+        // makes it this module's control.
+        let mut element_at: BTreeMap<(u64, u64, u64), String> = BTreeMap::new();
+        if kind == "hash" {
+            for (object_key, fields) in shard.bucket_index.hashes.iter() {
+                let _ = object_key;
+                for (field, address) in fields.iter() {
+                    element_at.insert(
+                        (
+                            address.block_slab_id(),
+                            address.offset(),
+                            address.length(),
+                        ),
+                        field.to_string(),
+                    );
+                }
+            }
+        }
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut held = Vec::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.deleted() || block.model_id().as_str() != kind {
+                    continue;
+                }
+                let at = (
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
                 );
+                held.push((
+                    named.at(bucket.routing_bucket, *handle).to_string(),
+                    element_at.get(&at).cloned(),
+                ));
             }
         }
-    }
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut held = Vec::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.deleted() || block.model_id().as_str() != kind {
-                continue;
-            }
-            let at = (
-                block.address.block_slab_id(),
-                block.address.offset(),
-                block.address.length(),
-            );
-            held.push((
-                named.at(bucket.routing_bucket, *handle).to_string(),
-                element_at.get(&at).cloned(),
-            ));
-        }
-    }
-    held.sort();
-    held
+        held.sort();
+        held
+    })
 }
 
 /// Percentiles of a sorted sample, by nearest-rank. A mean over this distribution says nothing --
@@ -617,9 +618,8 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
         }
     }
 
-    let (resident, with_ordinal, durable) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
+    let (resident, with_ordinal, durable) = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
         let mut resident = 0usize;
         let mut with_ordinal = 0usize;
         let mut durable = 0usize;
@@ -639,7 +639,7 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
             }
         }
         (resident, with_ordinal, durable)
-    };
+    });
 
     println!("\n=== can the READ side see a block ordinal? ===");
     println!("  hash blocks, WAL-resident            {resident}");
@@ -1156,9 +1156,8 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_an_element_name_f
     let mut total_recovered = 0usize;
     for k in 0..CONTAINER_KEYS {
         let key = format!("h{k}");
-        let (blocks, recovered) = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard 1 is loaded");
+        let (blocks, recovered) = engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
             let named = super::BlockObjects::of(&shard.bucket_index);
             let blocks = shard
                 .bucket_index
@@ -1182,7 +1181,7 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_an_element_name_f
                 .map(|fields| fields.keys().map(|name| name.to_string()).collect())
                 .unwrap_or_default();
             (blocks, recovered)
-        };
+        });
         println!("  {key:<10} {blocks:>5}  {:>15}", recovered.len());
         assert!(
             blocks > 0,

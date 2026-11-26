@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! EVERY SHARD-TABLE HOLD IS ATTRIBUTED TO THE LINE THAT TOOK IT.
+//! EVERY OWNER HOLD IS ATTRIBUTED TO THE LINE THAT TOOK IT.
 //!
 //! The probe is off by default and, when on, records each guard's hold under the `file:line` of the
-//! `read()`/`write()` call (`#[track_caller]`). This pins that it does so, that a poisoned lock still
+//! owner read/write call (`#[track_caller]`). This pins that it does so, that a poisoned lock still
 //! records the hold, and that the entries a `with_*` closure reports land on its own line.
 //! No time bound is asserted: a hold-time bound is a timing test.
 //!
@@ -25,6 +25,7 @@ fn engine_on(dir: &std::path::Path) -> Arc<TemporalEngine> {
         dir.join("indexes"),
     ));
     engine.load_shard(1);
+    engine.load_shard(2);
     engine
 }
 
@@ -38,16 +39,19 @@ fn a_hold_is_recorded_under_the_line_that_took_it() {
 
     shard_guard::set_hold_probe(false);
     shard_guard::reset_holds();
-    drop(engine.shards.read().expect("lock"));
+    engine.shards.with_state(1, |state| assert!(state.is_some()));
     assert!(shard_guard::hold_report().0.is_empty(), "the probe is off: nothing may be recorded");
 
     shard_guard::set_hold_probe(true);
     let write_line = line!() + 1;
-    drop(engine.shards.write().expect("lock"));
+    engine.shards.with_state_mut(1, |state| assert!(state.is_some()));
     let read_line = line!() + 1;
-    drop(engine.shards.read().expect("lock"));
+    engine.shards.with_state(1, |state| assert!(state.is_some()));
     let with_line = line!() + 1;
-    engine.shards.with_all_shards_read(|_, visited| visited.add(7));
+    engine.shards.with_shard(1, |state, visited| {
+        assert!(state.is_some());
+        visited.add(7);
+    });
     shard_guard::set_hold_probe(false);
 
     let (report, dropped) = shard_guard::hold_report();
@@ -64,22 +68,31 @@ fn a_hold_is_recorded_under_the_line_that_took_it() {
     assert_eq!((1, 7, 7), (with.count, with.entries_total, with.entries_max));
     assert_eq!(7, shard_guard::last_hold_entries());
 
-    // A poisoned lock still records the hold when its guard drops.
-    let poisoner = Arc::clone(&engine);
-    let _ = std::thread::spawn(move || {
-        let _guard = poisoner.shards.write().expect("lock");
-        panic!("poison the shard table");
-    })
-    .join();
-    shard_guard::set_hold_probe(true);
+    // The unwinding owner hold is reported. Poison stays on that owner,
+    // while the independently loaded peer remains readable.
     shard_guard::reset_holds();
-    let poisoned_line = line!() + 1;
-    let guard = engine.shards.read().unwrap_or_else(|poisoned| poisoned.into_inner());
-    drop(guard);
+    shard_guard::set_hold_probe(true);
+    let mut poisoned_line = 0;
+    let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        poisoned_line = line!() + 1;
+        engine.shards.with_state_mut(1, |state| {
+            assert!(state.is_some());
+            panic!("poison owner one");
+        });
+    }));
+    assert!(fault.is_err());
+    assert!(!crate::engine::shard_write_guard::any_shard_guard_held());
+    engine.shards.with_state(2, |state| assert!(state.is_some()));
+    let mut served = false;
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.shards.with_state(1, |_| served = true);
+    }));
+    assert!(refused.is_err() && !served);
     shard_guard::set_hold_probe(false);
     let (report, _) = shard_guard::hold_report();
     assert!(
-        report.iter().any(|site| site.line == poisoned_line && !site.write && site.count == 1),
-        "a poisoned read's hold was not recorded: {report:?}"
+        report.iter().any(|site| site.file.ends_with(THIS_FILE)
+            && site.line == poisoned_line && site.write && site.count == 1),
+        "the unwinding owner write was not recorded: {report:?}"
     );
 }

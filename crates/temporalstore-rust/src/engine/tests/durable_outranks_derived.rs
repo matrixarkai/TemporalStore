@@ -738,9 +738,8 @@ fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
     }
 
     // Drop one from the durable map only, leaving its block and its index entry.
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let removed = shard
             .bucket_index.zsets
             .elements_mut_for_test("fb-zset")
@@ -751,7 +750,7 @@ fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
             "the durable map did not hold fb-two, so this fixture cannot create the state it needs"
         );
         println!("[fallback] removed fb-two from the durable map, leaving its block entry");
-    }
+    });
 
     engine.unload_shard(1);
     load_on(&engine, OPERATOR_END);
@@ -793,9 +792,8 @@ fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
 
     // AND THE RESIDENT MAP HOLDS EXACTLY THE ONE ELEMENT, so the `None` above is the map's own
     // content rather than a read path that happens to miss.
-    {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let members = shard.bucket_index.zsets.get("fb-zset").expect("the zset is present");
         assert_eq!(
             1,
@@ -808,7 +806,7 @@ fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
             members.contains_key(b"fb-one".as_slice()),
             "the member the map kept is not the one that survived"
         );
-    }
+    });
     println!(
         "[fallback] so an element the durable map does not hold is gone, and the map is the sole \
          authority. The state this fixture planted by hand is one the fold cannot produce"
@@ -1049,9 +1047,8 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
     }
 
     // THE TWO DENOMINATORS, both read BEFORE the unload that writes the index.
-    {
-        let shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         assert_eq!(
             shard.bucket_index.hashes.get("un-hash").map(|fields| fields.len()),
             Some(2),
@@ -1090,52 +1087,53 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
         //
         // The `entries > 0` floor above STAYS and is doing the work now: it is what makes the
         // merge below a statement about a NAMELESS index rather than about an EMPTY one.
-    }
+    });
 
     // The unload writes the index -- nameless entries and the durable map together -- and the
     // reload runs the merge over them.
     engine.unload_shard(1);
     load_on(&engine, OPERATOR_END);
 
-    let shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    // DELIBERATELY NOT AN `expect` ON THE KEY. The regression this arm guards against -- the
-    // reconcile assigning the derived view WHOLESALE instead of merging the durable map into it --
-    // takes the whole KEY with it, not one field of it. An `expect` here reddens with "the hash key
-    // did not survive the reload", which reads as a broken fixture, and the mutation proving this
-    // arm non-vacuous did exactly that. An absent key IS zero fields, so it is folded into the
-    // field set and the assertion under test is the one that speaks.
-    let field_names: std::collections::BTreeSet<String> = shard
-        .bucket_index.hashes
-        .get("un-hash")
-        .map(|fields| fields.keys().map(|name| name.to_string()).collect())
-        .unwrap_or_default();
-    println!(
-        "[unnamed-hash] reloaded holding {} field(s): {:?}",
-        field_names.len(),
-        field_names
-    );
-    for field in ["field-0", "field-1"] {
-        assert!(
-            field_names.contains(field),
-            "{field} IS NOT SERVED after the reload; the key came back with {:?}. No block entry \
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        // DELIBERATELY NOT AN `expect` ON THE KEY. The regression this arm guards against -- the
+        // reconcile assigning the derived view WHOLESALE instead of merging the durable map into it --
+        // takes the whole KEY with it, not one field of it. An `expect` here reddens with "the hash key
+        // did not survive the reload", which reads as a broken fixture, and the mutation proving this
+        // arm non-vacuous did exactly that. An absent key IS zero fields, so it is folded into the
+        // field set and the assertion under test is the one that speaks.
+        let field_names: std::collections::BTreeSet<String> = shard
+            .bucket_index.hashes
+            .get("un-hash")
+            .map(|fields| fields.keys().map(|name| name.to_string()).collect())
+            .unwrap_or_default();
+        println!(
+            "[unnamed-hash] reloaded holding {} field(s): {:?}",
+            field_names.len(),
+            field_names
+        );
+        for field in ["field-0", "field-1"] {
+            assert!(
+                field_names.contains(field),
+                "{field} IS NOT SERVED after the reload; the key came back with {:?}. No block entry \
              names a field, so the derived view cannot produce either of them and the durable map \
              is the only thing that can. This reddens if `fill_absent_elements` stops filling -- \
              i.e. if the reconcile goes back to assigning the derived view wholesale.",
+                field_names
+            );
+        }
+        assert_eq!(
+            field_names.len(),
+            2,
+            "the hash came back with {} field(s) rather than 2: {:?}",
+            field_names.len(),
             field_names
         );
-    }
-    assert_eq!(
-        field_names.len(),
-        2,
-        "the hash came back with {} field(s) rather than 2: {:?}",
-        field_names.len(),
-        field_names
-    );
-    println!(
-        "[unnamed-hash] both fields came back from an index that names neither, so the durable map \
+        println!(
+            "[unnamed-hash] both fields came back from an index that names neither, so the durable map \
          supplied the whole field set rather than one field of it"
-    );
+        );
+    });
 }
 
 // =================================================================================================
@@ -1221,9 +1219,8 @@ fn an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape() {
 
     // THE DENOMINATOR, and the reachability claim. An empty member has to be accepted and durable,
     // or everything below is about a state no caller can reach.
-    let empty_element_name_len = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let empty_element_name_len = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let members = shard.bucket_index.zsets.get("mt-zset").expect("the zset is present");
         assert_eq!(
             members.len(),
@@ -1237,7 +1234,7 @@ fn an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape() {
             "the empty member is not in the durable map, so nothing here is about a live path"
         );
         zset_name(&empty).len()
-    };
+    });
     // ADJUSTED THIS TIME, AND THE FINDING IS STRONGER FOR IT. The element name used to be
     // `hex::encode(b"")`, which is the EMPTY STRING -- and a zero-length element name was exactly the
     // boundary two readers could disagree about, one treating "" as "no element name" and the other
@@ -1254,9 +1251,8 @@ fn an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape() {
     // THE BOUNDARY, RE-ATTRIBUTED TO THE BLOCKS. The blocks are where an element name still exists, and
     // the empty member must appear in their derivation as a zero-length key.
     {
-        let addresses = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
+        let addresses = engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard is loaded");
             let named = super::BlockObjects::of(&shard.bucket_index);
             let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
             for bucket in shard.bucket_index.bucket_map.values() {
@@ -1269,7 +1265,7 @@ fn an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape() {
                 }
             }
             addresses
-        };
+        });
         assert!(
             !addresses.is_empty(),
             "DENOMINATOR: the object holds no block entries, so the derivation below would be empty \
@@ -1321,9 +1317,8 @@ fn an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape() {
     }
 
     // The shape this fixture builds by hand: the durable map loses one element.
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let removed = shard
             .bucket_index.zsets
             .elements_mut_for_test("mt-zset")
@@ -1335,7 +1330,7 @@ fn an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape() {
              it is about"
         );
         println!("[empty-member] dropped the empty member from the durable map only");
-    }
+    });
 
     engine.unload_shard(1);
     load_on(&engine, OPERATOR_END);
@@ -1535,54 +1530,55 @@ fn a_key_state_blob_that_carries_no_elements_leaves_the_container_maps_untouched
         },
     );
 
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard is loaded");
-    let before = (
-        shard.bucket_index.sets.clone(),
-        shard.bucket_index.zsets.clone(),
-        shard.bucket_index.lists.clone(),
-        shard.bucket_index.hashes.clone(),
-    );
-    let populated: usize = before.0.len() + before.1.len() + before.2.len() + before.3.len();
-    assert_eq!(
-        populated, 4,
-        "DENOMINATOR: {populated} of the four container maps hold this key; with fewer than four \
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let before = (
+            shard.bucket_index.sets.clone(),
+            shard.bucket_index.zsets.clone(),
+            shard.bucket_index.lists.clone(),
+            shard.bucket_index.hashes.clone(),
+        );
+        let populated: usize = before.0.len() + before.1.len() + before.2.len() + before.3.len();
+        assert_eq!(
+            populated, 4,
+            "DENOMINATOR: {populated} of the four container maps hold this key; with fewer than four \
          an unchanged comparison below would be comparing empty maps"
-    );
+        );
 
-    // EXACTLY WHAT AN OLD RECORD'S BLOB IS: a key, and none of the fields that did not exist yet.
-    // Through BOTH halves of the fold, because an old log meets both.
-    let old_shape = vec![serde_json::json!({ "key": "old-log" })];
-    super::apply_key_states(shard, &old_shape);
-    super::fold_carried_container_elements(shard, &old_shape);
+        // EXACTLY WHAT AN OLD RECORD'S BLOB IS: a key, and none of the fields that did not exist yet.
+        // Through BOTH halves of the fold, because an old log meets both.
+        let old_shape = vec![serde_json::json!({ "key": "old-log" })];
+        super::apply_key_states(shard, &old_shape);
+        super::fold_carried_container_elements(shard, &old_shape);
 
-    let after = (
-        shard.bucket_index.sets.clone(),
-        shard.bucket_index.zsets.clone(),
-        shard.bucket_index.lists.clone(),
-        shard.bucket_index.hashes.clone(),
-    );
-    assert_eq!(
-        before.0, after.0,
-        "folding a blob with no carried elements changed `sets`"
-    );
-    assert_eq!(
-        before.1, after.1,
-        "folding a blob with no carried elements changed `zsets`"
-    );
-    assert_eq!(
-        before.2, after.2,
-        "folding a blob with no carried elements changed `lists`"
-    );
-    assert_eq!(
-        before.3, after.3,
-        "folding a blob with no carried elements changed `hashes`. An absent field must be a NO-OP \
+        let after = (
+            shard.bucket_index.sets.clone(),
+            shard.bucket_index.zsets.clone(),
+            shard.bucket_index.lists.clone(),
+            shard.bucket_index.hashes.clone(),
+        );
+        assert_eq!(
+            before.0, after.0,
+            "folding a blob with no carried elements changed `sets`"
+        );
+        assert_eq!(
+            before.1, after.1,
+            "folding a blob with no carried elements changed `zsets`"
+        );
+        assert_eq!(
+            before.2, after.2,
+            "folding a blob with no carried elements changed `lists`"
+        );
+        assert_eq!(
+            before.3, after.3,
+            "folding a blob with no carried elements changed `hashes`. An absent field must be a NO-OP \
          here and not a removal -- `apply_key_state_field`, which the other thirteen maps use, would \
          have deleted the whole collection."
-    );
-    println!(
-        "[old-log] all four container maps unchanged at 0.00% across a blob that names only its key"
-    );
+        );
+        println!(
+            "[old-log] all four container maps unchanged at 0.00% across a blob that names only its key"
+        );
+    });
 }
 
 /// THE FOLD RESTORES AN ELEMENT WHOSE ELEMENT NAME COULD NOT NAME IT.
@@ -1617,98 +1613,99 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_an_e
             member: b"seed-member".to_vec(),
         },
     );
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard is loaded");
-    let address = shard
-        .bucket_index.sets
-        .get("seed")
-        .and_then(|members| members.get(b"seed-member".as_slice()))
-        .cloned()
-        .expect("the seed member has an address");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let address = shard
+            .bucket_index.sets
+            .get("seed")
+            .and_then(|members| members.get(b"seed-member".as_slice()))
+            .cloned()
+            .expect("the seed member has an address");
 
-    // Bytes no element name on this revision would spell: an element name is hex, and these are not.
-    let member = b"identity-not-in-a-name".to_vec();
-    let score_bits = crate::engine::execute_on_shard::zset_score_bits(9.25);
-    let blob = vec![serde_json::json!({
-        "key": "folded",
-        "set_elements": [[ &member, &address ]],
-        "zset_elements": [[ &member, [score_bits, &address] ]],
-    }),
-    // THE CONTROL: one of the thirteen maps the fold already restored, through the unchanged path.
-    //
-    // A SEPARATE BLOB, because that is what a record actually carries. `capture_key_states` and
-    // `capture_container_element_states` each produce their own blobs and the two are never merged,
-    // and `apply_key_states` relies on exactly that: it SKIPS a blob carrying container fields,
-    // because reading a container carry as a per-key capture would clear the key's deadline and
-    // every series it holds (see `a_container_carry_does_not_clear_the_key_state_it_does_not_name`).
-    // This fixture put both in one object, which no writer emits, and so was testing a shape that
-    // cannot occur.
-    serde_json::json!({
-        "key": "folded",
-        "features": { "7": &address },
-    })];
+        // Bytes no element name on this revision would spell: an element name is hex, and these are not.
+        let member = b"identity-not-in-a-name".to_vec();
+        let score_bits = crate::engine::execute_on_shard::zset_score_bits(9.25);
+        let blob = vec![serde_json::json!({
+            "key": "folded",
+            "set_elements": [[ &member, &address ]],
+            "zset_elements": [[ &member, [score_bits, &address] ]],
+        }),
+        // THE CONTROL: one of the thirteen maps the fold already restored, through the unchanged path.
+        //
+        // A SEPARATE BLOB, because that is what a record actually carries. `capture_key_states` and
+        // `capture_container_element_states` each produce their own blobs and the two are never merged,
+        // and `apply_key_states` relies on exactly that: it SKIPS a blob carrying container fields,
+        // because reading a container carry as a per-key capture would clear the key's deadline and
+        // every series it holds (see `a_container_carry_does_not_clear_the_key_state_it_does_not_name`).
+        // This fixture put both in one object, which no writer emits, and so was testing a shape that
+        // cannot occur.
+        serde_json::json!({
+            "key": "folded",
+            "features": { "7": &address },
+        })];
 
-    assert!(
-        shard.bucket_index.sets.get("folded").is_none() && shard.bucket_index.zsets.get("folded").is_none(),
-        "DENOMINATOR: the shard already holds this key, so an element found after the fold would \
+        assert!(
+            shard.bucket_index.sets.get("folded").is_none() && shard.bucket_index.zsets.get("folded").is_none(),
+            "DENOMINATOR: the shard already holds this key, so an element found after the fold would \
          not have come from the fold"
-    );
+        );
 
-    // BOTH HALVES, because they do different jobs now: `apply_key_states` restores the thirteen
-    // per-key maps (the `features` control below), and `fold_carried_container_elements` restores
-    // the container elements -- the latter only where the block each one names is still there, which
-    // for this seeded address it is.
-    super::apply_key_states(shard, &blob);
-    super::fold_carried_container_elements(shard, &blob);
+        // BOTH HALVES, because they do different jobs now: `apply_key_states` restores the thirteen
+        // per-key maps (the `features` control below), and `fold_carried_container_elements` restores
+        // the container elements -- the latter only where the block each one names is still there, which
+        // for this seeded address it is.
+        super::apply_key_states(shard, &blob);
+        super::fold_carried_container_elements(shard, &blob);
 
-    let folded_set = shard
-        .bucket_index.sets
-        .get("folded")
-        .and_then(|members| members.get(member.as_slice()))
-        .cloned();
-    let folded_zset = shard
-        .bucket_index.zsets
-        .get("folded")
-        .and_then(|members| members.get(member.as_slice()))
-        .cloned();
-    println!(
-        "[carried] set={} zset={} for a member of {} bytes that no element name in the input spells",
-        folded_set.is_some(),
-        folded_zset.is_some(),
-        member.len()
-    );
+        let folded_set = shard
+            .bucket_index.sets
+            .get("folded")
+            .and_then(|members| members.get(member.as_slice()))
+            .cloned();
+        let folded_zset = shard
+            .bucket_index.zsets
+            .get("folded")
+            .and_then(|members| members.get(member.as_slice()))
+            .cloned();
+        println!(
+            "[carried] set={} zset={} for a member of {} bytes that no element name in the input spells",
+            folded_set.is_some(),
+            folded_zset.is_some(),
+            member.len()
+        );
 
-    assert!(
-        folded_set.is_some(),
-        "the fold did not restore the set element. There is no element name in this input, so if this \
+        assert!(
+            folded_set.is_some(),
+            "the fold did not restore the set element. There is no element name in this input, so if this \
          is red the carry is not being applied and a folded element is once again known only by the \
          name its block was filed under."
-    );
-    let (folded_score, _) = folded_zset.expect(
-        "the fold did not restore the zset element from its carried identity, so `shard.bucket_index.zsets` is \
+        );
+        let (folded_score, _) = folded_zset.expect(
+            "the fold did not restore the zset element from its carried identity, so `shard.bucket_index.zsets` is \
          still a map the fold cannot write",
-    );
-    assert_eq!(
-        folded_score, score_bits,
-        "the zset element came back at score bits {folded_score}, not the {score_bits} the record \
+        );
+        assert_eq!(
+            folded_score, score_bits,
+            "the zset element came back at score bits {folded_score}, not the {score_bits} the record \
          carried -- the score must come from the carried entry, not be re-derived"
-    );
+        );
 
-    // THE CONTROL, at the value it was given, through the path this change does not touch.
-    let control = shard
-        .features()
-        .get("folded")
-        .and_then(|series| series.get(7u64))
-        .cloned();
-    assert!(
-        control.is_some(),
-        "the `features` control did not arrive, so `apply_key_states` is not working at all and the \
+        // THE CONTROL, at the value it was given, through the path this change does not touch.
+        let control = shard
+            .features()
+            .get("folded")
+            .and_then(|series| series.get(7u64))
+            .cloned();
+        assert!(
+            control.is_some(),
+            "the `features` control did not arrive, so `apply_key_states` is not working at all and the \
          assertions above say nothing about the carry specifically"
-    );
-    println!(
-        "[carried] and the `features` control arrived through the unchanged per-key path, so the \
+        );
+        println!(
+            "[carried] and the `features` control arrived through the unchanged per-key path, so the \
          fold as a whole is working and the two results above are about the carry"
-    );
+        );
+    });
 }
 
 /// A CARRIED ELEMENT WHOSE BLOCK THE FOLD DID NOT LEAVE BEHIND IS NOT RESTORED.
@@ -1769,82 +1766,83 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
         },
     );
 
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard is loaded");
-    let live_address = shard
-        .bucket_index.sets
-        .get("res-seed")
-        .and_then(|members| members.get(b"res-seed-member".as_slice()))
-        .cloned()
-        .expect("the seed member has an address");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let live_address = shard
+            .bucket_index.sets
+            .get("res-seed")
+            .and_then(|members| members.get(b"res-seed-member".as_slice()))
+            .cloned()
+            .expect("the seed member has an address");
 
-    // An address no live block holds. Built by changing the length, which is part of what names a
-    // block in the live set, so it is a well-formed address that simply is not in the index -- which
-    // is what a removed block leaves behind in a carry.
-    let mut absent_address = live_address.clone();
-    absent_address.set_length(live_address.length() + 4_096);
+        // An address no live block holds. Built by changing the length, which is part of what names a
+        // block in the live set, so it is a well-formed address that simply is not in the index -- which
+        // is what a removed block leaves behind in a carry.
+        let mut absent_address = live_address.clone();
+        absent_address.set_length(live_address.length() + 4_096);
 
-    // THE DENOMINATOR: the two addresses must actually differ, or both arms measure the same thing.
-    assert_ne!(
-        live_address.length(),
-        absent_address.length(),
-        "the two addresses are identical, so this fixture cannot tell a live block from an absent one"
-    );
-    let live_blocks: usize = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .map(|bucket| bucket.block_index.values().filter(|block| !block.deleted()).count())
-        .sum();
-    assert!(
-        live_blocks >= 1,
-        "DENOMINATOR: {live_blocks} live blocks; with none, every carried element is skipped for the \
+        // THE DENOMINATOR: the two addresses must actually differ, or both arms measure the same thing.
+        assert_ne!(
+            live_address.length(),
+            absent_address.length(),
+            "the two addresses are identical, so this fixture cannot tell a live block from an absent one"
+        );
+        let live_blocks: usize = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|bucket| bucket.block_index.values().filter(|block| !block.deleted()).count())
+            .sum();
+        assert!(
+            live_blocks >= 1,
+            "DENOMINATOR: {live_blocks} live blocks; with none, every carried element is skipped for the \
          wrong reason and the finding below is vacuous"
-    );
+        );
 
-    let kept = b"kept-by-a-live-block".to_vec();
-    let gone = b"removed-block-leftover".to_vec();
-    let blob = vec![serde_json::json!({
-        "key": "res",
-        "set_elements": [
-            [ &kept, &live_address ],
-            [ &gone, &absent_address ],
-        ],
-    })];
+        let kept = b"kept-by-a-live-block".to_vec();
+        let gone = b"removed-block-leftover".to_vec();
+        let blob = vec![serde_json::json!({
+            "key": "res",
+            "set_elements": [
+                [ &kept, &live_address ],
+                [ &gone, &absent_address ],
+            ],
+        })];
 
-    super::fold_carried_container_elements(shard, &blob);
+        super::fold_carried_container_elements(shard, &blob);
 
-    let restored: Vec<Vec<u8>> = shard
-        .bucket_index.sets
-        .get("res")
-        .map(|members| members.keys().cloned().collect())
-        .unwrap_or_default();
-    println!(
-        "[resurrect] {live_blocks} live block(s); restored {} of 2 carried element(s)",
-        restored.len()
-    );
+        let restored: Vec<Vec<u8>> = shard
+            .bucket_index.sets
+            .get("res")
+            .map(|members| members.keys().cloned().collect())
+            .unwrap_or_default();
+        println!(
+            "[resurrect] {live_blocks} live block(s); restored {} of 2 carried element(s)",
+            restored.len()
+        );
 
-    // THE CONTROL.
-    assert!(
-        restored.contains(&kept),
-        "the element whose block IS live was not restored either, so the filter rejects everything \
+        // THE CONTROL.
+        assert!(
+            restored.contains(&kept),
+            "the element whose block IS live was not restored either, so the filter rejects everything \
          and says nothing about the absent one"
-    );
+        );
 
-    // THE FINDING.
-    assert!(
-        !restored.contains(&gone),
-        "an element naming a block the fold did not leave behind was restored anyway. That is how a \
+        // THE FINDING.
+        assert!(
+            !restored.contains(&gone),
+            "an element naming a block the fold did not leave behind was restored anyway. That is how a \
          removed element comes back: `fill_absent_elements` keeps every durable element the derived \
          view could not produce, and the derived view cannot produce this one because its block is \
          gone. It would then be served after being deleted. (That merge now asks this same \
          live-block question of its persisted input, so it would strip this element afterwards -- \
          but the fold must not hand it a known-dead one to strip.)"
-    );
-    println!(
-        "[resurrect] so the carry is applied against the FINISHED block index, and a removal needs \
+        );
+        println!(
+            "[resurrect] so the carry is applied against the FINISHED block index, and a removal needs \
          no tombstone to be honoured -- taking the block away is the whole answer"
-    );
+        );
+    });
 }
 
 /// A CONTAINER CARRY MUST NOT BE READ AS A PER-KEY STATE CAPTURE.
@@ -1883,89 +1881,90 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
         },
     );
 
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard is loaded");
-    let address = shard
-        .bucket_index.sets
-        .get("carry-ttl")
-        .and_then(|members| members.get(b"ttl-member".as_slice()))
-        .cloned()
-        .expect("the member has an address");
-
-    // State this key holds that a container carry says nothing about.
-    shard
-        .expires_at_ms_mut()
-        .insert(std::sync::Arc::from("carry-ttl"), 1_800_000_000_000u64);
-    shard
-        .features_mut()
-        .entry("carry-ttl".into())
-        .or_default()
-        .set(11u64, address.clone());
-
-    // THE DENOMINATOR: both must actually be there, or "unchanged" below is comparing absences.
-    assert!(
-        shard.expires_at_ms().contains_key("carry-ttl")
-            && shard.features().get("carry-ttl").is_some_and(|s| !s.is_empty()),
-        "the fixture did not establish a deadline and a series, so neither arm below means anything"
-    );
-
-    // ARM ONE: a container-only carry, exactly what a `SetAdd` now writes.
-    let carry = vec![serde_json::json!({
-        "key": "carry-ttl",
-        "set_elements": [[ b"another-member".to_vec(), &address ]],
-    })];
-    super::apply_key_states(shard, &carry);
-    super::fold_carried_container_elements(shard, &carry);
-
-    let deadline_after_carry = shard.expires_at_ms().get("carry-ttl").copied();
-    let series_after_carry = shard.features().get("carry-ttl").map(|s| s.len()).unwrap_or(0);
-    println!(
-        "[carry-ttl] after a container-only carry: deadline={deadline_after_carry:?} \
-         series_len={series_after_carry}"
-    );
-    assert_eq!(
-        deadline_after_carry,
-        Some(1_800_000_000_000u64),
-        "a container carry cleared this key's deadline. Read as a per-key capture it says the key \
-         has no deadline, so a plain SetAdd against a key with a TTL would drop the TTL on the next \
-         fold."
-    );
-    assert_eq!(
-        series_after_carry, 1,
-        "a container carry cleared this key's feature series for the same reason"
-    );
-    // And it did do its own job.
-    assert!(
-        shard
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let address = shard
             .bucket_index.sets
             .get("carry-ttl")
-            .is_some_and(|members| members.contains_key(b"another-member".as_slice())),
-        "the carry did not restore its own element, so arm one may be passing because nothing ran"
-    );
+            .and_then(|members| members.get(b"ttl-member".as_slice()))
+            .cloned()
+            .expect("the member has an address");
 
-    // ARM TWO, THE CONTROL: a genuine capture blob with those fields absent still removes them.
-    let capture = vec![serde_json::json!({ "key": "carry-ttl" })];
-    super::apply_key_states(shard, &capture);
-    let deadline_after_capture = shard.expires_at_ms().get("carry-ttl").copied();
-    let series_after_capture = shard.features().get("carry-ttl").map(|s| s.len()).unwrap_or(0);
-    println!(
-        "[carry-ttl] after a genuine capture that omits them: deadline={deadline_after_capture:?} \
+        // State this key holds that a container carry says nothing about.
+        shard
+            .expires_at_ms_mut()
+            .insert(std::sync::Arc::from("carry-ttl"), 1_800_000_000_000u64);
+        shard
+            .features_mut()
+            .entry("carry-ttl".into())
+            .or_default()
+            .set(11u64, address.clone());
+
+        // THE DENOMINATOR: both must actually be there, or "unchanged" below is comparing absences.
+        assert!(
+            shard.expires_at_ms().contains_key("carry-ttl")
+                && shard.features().get("carry-ttl").is_some_and(|s| !s.is_empty()),
+            "the fixture did not establish a deadline and a series, so neither arm below means anything"
+        );
+
+        // ARM ONE: a container-only carry, exactly what a `SetAdd` now writes.
+        let carry = vec![serde_json::json!({
+            "key": "carry-ttl",
+            "set_elements": [[ b"another-member".to_vec(), &address ]],
+        })];
+        super::apply_key_states(shard, &carry);
+        super::fold_carried_container_elements(shard, &carry);
+
+        let deadline_after_carry = shard.expires_at_ms().get("carry-ttl").copied();
+        let series_after_carry = shard.features().get("carry-ttl").map(|s| s.len()).unwrap_or(0);
+        println!(
+            "[carry-ttl] after a container-only carry: deadline={deadline_after_carry:?} \
+         series_len={series_after_carry}"
+        );
+        assert_eq!(
+            deadline_after_carry,
+            Some(1_800_000_000_000u64),
+            "a container carry cleared this key's deadline. Read as a per-key capture it says the key \
+         has no deadline, so a plain SetAdd against a key with a TTL would drop the TTL on the next \
+         fold."
+        );
+        assert_eq!(
+            series_after_carry, 1,
+            "a container carry cleared this key's feature series for the same reason"
+        );
+        // And it did do its own job.
+        assert!(
+            shard
+                .bucket_index.sets
+                .get("carry-ttl")
+                .is_some_and(|members| members.contains_key(b"another-member".as_slice())),
+            "the carry did not restore its own element, so arm one may be passing because nothing ran"
+        );
+
+        // ARM TWO, THE CONTROL: a genuine capture blob with those fields absent still removes them.
+        let capture = vec![serde_json::json!({ "key": "carry-ttl" })];
+        super::apply_key_states(shard, &capture);
+        let deadline_after_capture = shard.expires_at_ms().get("carry-ttl").copied();
+        let series_after_capture = shard.features().get("carry-ttl").map(|s| s.len()).unwrap_or(0);
+        println!(
+            "[carry-ttl] after a genuine capture that omits them: deadline={deadline_after_capture:?} \
          series_len={series_after_capture}"
-    );
-    assert_eq!(
-        deadline_after_capture, None,
-        "a real capture blob no longer removes an absent deadline. The skip is too broad -- it must \
+        );
+        assert_eq!(
+            deadline_after_capture, None,
+            "a real capture blob no longer removes an absent deadline. The skip is too broad -- it must \
          match only a container carry, or the thirteen maps stop being able to record a removal and \
          reconstruction resurrects what a write evicted."
-    );
-    assert_eq!(
-        series_after_capture, 0,
-        "a real capture blob no longer removes an absent series, for the same reason"
-    );
-    println!(
-        "[carry-ttl] so the two blob kinds are told apart: a carry adds and never removes, a \
+        );
+        assert_eq!(
+            series_after_capture, 0,
+            "a real capture blob no longer removes an absent series, for the same reason"
+        );
+        println!(
+            "[carry-ttl] so the two blob kinds are told apart: a carry adds and never removes, a \
          capture still removes what it does not name"
-    );
+        );
+    });
 }
 
 /// WHAT A STAGED HASH BLOCK SAYS ABOUT ITS OWN ELEMENT, AND WHAT REPLAY COSTS TO ASK IT.
@@ -2466,12 +2465,12 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
             local_node_id: Some(1),
         });
         let held = if response.status.ok {
-            let shards = fresh.shards.read().expect("engine lock poisoned");
-            shards
-                .get(&1)
-                .and_then(|shard| shard.bucket_index.hashes.get(KEY))
-                .map(|held| held.keys().map(|name| name.to_string()).collect())
-                .unwrap_or_default()
+            fresh.shards.with_state(1, |shard| {
+                shard
+                    .and_then(|shard| shard.bucket_index.hashes.get(KEY))
+                    .map(|held| held.keys().map(|name| name.to_string()).collect())
+                    .unwrap_or_default()
+            })
         } else {
             std::collections::BTreeSet::new()
         };
@@ -2628,14 +2627,12 @@ fn the_shared_install_pairs_carried_blocks_by_object_and_element_name() {
     let fresh = engine_on(into.path());
     load_on(&fresh, OPERATOR_END);
     let installed = fresh.install_shared_outcomes_with_blocks(1, &outcomes, &blocks);
-    let held: std::collections::BTreeSet<String> = {
-        let shards = fresh.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&1)
+    let held: std::collections::BTreeSet<String> = fresh.shards.with_state(1, |shard| {
+        shard
             .and_then(|shard| shard.bucket_index.hashes.get(KEY))
             .map(|held| held.keys().map(|name| name.to_string()).collect())
             .unwrap_or_default()
-    };
+    });
     assert!(installed);
     assert_eq!(held, fields.iter().map(|field| field.to_string()).collect());
     for field in fields {
@@ -2778,12 +2775,12 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
     let (from_block, from_element_name, disagreed) =
         crate::engine::lifecycle::outcome_element_name_sources();
     let held: std::collections::BTreeSet<String> = if response.status.ok {
-        let shards = fresh.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&1)
-            .and_then(|shard| shard.bucket_index.hashes.get(KEY))
-            .map(|fields| fields.keys().map(|name| name.to_string()).collect())
-            .unwrap_or_default()
+        fresh.shards.with_state(1, |shard| {
+            shard
+                .and_then(|shard| shard.bucket_index.hashes.get(KEY))
+                .map(|fields| fields.keys().map(|name| name.to_string()).collect())
+                .unwrap_or_default()
+        })
     } else {
         std::collections::BTreeSet::new()
     };

@@ -122,16 +122,15 @@ fn whether_a_dead_slab_can_be_reclaimed() {
         .map(|f| f.block_slab_id)
         .min()
         .expect("at least one slab exists");
-    let doomed: Vec<String> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let doomed: Vec<String> = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         shard
             .strings()
             .iter()
             .filter(|(_, slot)| slot.block_slab_id() == victim)
             .map(|(key, _)| key.to_string())
             .collect()
-    };
+    });
     println!(
         "  slab {victim} is the oldest and holds {} of the {written} keys",
         doomed.len()
@@ -192,11 +191,10 @@ fn whether_a_dead_slab_can_be_reclaimed() {
     let (total_after_kill, _, victim_after_kill) = describe("AFTER KILLING SLAB'S KEYS");
 
     // ---- PHASE ONE: COMPACTION, which is what quarantines a dead slab.
-    let buckets: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let buckets: Vec<u32> = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         shard.bucket_index.bucket_map.keys().copied().collect()
-    };
+    });
     let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
         shard_id: 1,
         enable_prepare: true,

@@ -71,7 +71,7 @@ fn fixture(rounds: usize, deleted_only: bool, readd: bool) -> ShardState {
         });
         apply(commands);
     }
-    let shard = engine.shards.read().unwrap().get(&1).unwrap().clone();
+    let shard = engine.shards.with_state(1, |state| state.unwrap().clone());
     shard
 }
 

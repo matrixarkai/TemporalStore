@@ -469,9 +469,8 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
         buckets_outliving_not_deleted,
         buckets_outliving_in_object_index,
         ids_unreachable,
-    ) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&TOMB_SHARD).expect("shard is loaded");
+    ) = engine.shards.with_state(TOMB_SHARD, |state| {
+        let shard = state.expect("shard is loaded");
         let named = super::BlockObjects::of(&shard.bucket_index);
         let mut target: Option<(u32, u64)> = None;
         let mut buckets_with_tombstone = 0usize;
@@ -544,7 +543,7 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
             in_object_index,
             ids_unreachable,
         )
-    };
+    });
 
     println!("\n=== the population of the state this refutation turns on ===");
     println!("  buckets in the map                                         {buckets_total}");
@@ -597,9 +596,8 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
     );
 
     // --- The state, asserted element by element on the chosen bucket. ---
-    {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&TOMB_SHARD).expect("shard is loaded");
+    engine.shards.with_state(TOMB_SHARD, |state| {
+        let shard = state.expect("shard is loaded");
         let named = super::BlockObjects::of(&shard.bucket_index);
         let bucket = shard
             .bucket_index
@@ -653,7 +651,7 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
             "bucket {routing_bucket} does not name object {object_id} in its tombstone set, so \
              there is nothing for the perturbation to remove"
         );
-    }
+    });
 
     // --- The control, taken FIRST on the same shard. ---
     let control = engine.object_manager_runtime_report(TOMB_SHARD);
@@ -669,9 +667,8 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
     );
 
     // --- The perturbation: take the tombstone for that ONE id away. ---
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&TOMB_SHARD).expect("shard is loaded");
+    engine.shards.with_state_mut(TOMB_SHARD, |state| {
+        let shard = state.expect("shard is loaded");
         let mut bucket = shard
             .bucket_index
             .bucket_map
@@ -681,7 +678,7 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
             bucket.deleted_object_index.remove(&object_id),
             "the tombstone for object {object_id} was not there to remove"
         );
-    }
+    });
 
     let perturbed = engine.object_manager_runtime_report(TOMB_SHARD);
     println!(

@@ -124,7 +124,7 @@ fn replay_case(records: usize, keys: usize, legacy: bool, window_bytes: u64) -> 
         .replay_wal_into_shard_windowed(SHARD, 0, window_bytes)
         .unwrap();
     let counts = COUNTS.with(|cell| cell.get());
-    assert_eq!(reader.shards.read().unwrap()[&SHARD].strings().len(), keys);
+    assert_eq!(reader.shards.with_state(SHARD, |state| state.unwrap().strings().len()), keys);
     assert_eq!(super::block_in_wal::staged_outcome_count(), 0);
     drop(reader);
 
@@ -219,7 +219,7 @@ fn missing_wal_is_refused_when_a_checkpoint_still_names_wal_blocks() {
             value: b"needs its log".to_vec(),
         },
     }.with_async_storage()).status.ok);
-    let state = writer.shards.read().unwrap()[&SHARD].clone();
+    let state = writer.shards.with_state(SHARD, |state| state.unwrap().clone());
     assert!(!state.wal_resident_blocks.is_empty());
     assert!(state.bucket_index.bucket_map.values().any(|bucket| {
         bucket.block_index.values().any(|block| {

@@ -45,17 +45,15 @@ fn round_trip(stamped: bool) {
     }
     let manifest = engine.create_bucket_dump_manifest(SHARD, Vec::<u32>::new()).unwrap();
     engine.clear_dumped_bucket_dirty_state(SHARD, &manifest);
-    {
-        let mut shards = engine.shards.write().unwrap();
-        let shard = shards.get_mut(&SHARD).unwrap();
+    engine.shards.with_state_mut(SHARD, |state| {
+        let shard = state.unwrap();
         let buckets: Vec<_> = shard.bucket_index.bucket_map.keys().copied().collect();
         let release = storage_bucket_internals::release_bucket_blocks(shard, &buckets);
         assert_eq!(release.released_blocks, KEYS, "the fixture must really release its blocks");
         assert_eq!(block_count(shard), 0);
-    }
-    let bytes = {
-        let shards = engine.shards.read().unwrap();
-        let shard = shards.get(&SHARD).unwrap();
+    });
+    let bytes = engine.shards.with_state(SHARD, |state| {
+        let shard = state.unwrap();
         // The raw encoder reproduces the incomplete image a checkpoint must not publish.
         let incomplete = decode_index_bytes(&encode_index_bytes(shard)).unwrap();
         assert_eq!(block_count(&incomplete), 0);
@@ -68,7 +66,7 @@ fn round_trip(stamped: bool) {
         assert_eq!(block_count(shard), 0, "serialization must not undo live eviction");
         assert_eq!(shard.bucket_index.released_buckets.len(), KEYS);
         bytes
-    };
+    });
     let complete = decode_index_bytes(&bytes).unwrap();
     assert_eq!(complete.strings().len(), KEYS);
     assert_eq!(block_count(&complete), KEYS);

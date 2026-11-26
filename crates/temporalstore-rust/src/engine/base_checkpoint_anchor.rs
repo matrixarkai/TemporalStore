@@ -125,7 +125,7 @@ mod tests {
                 .status
                 .ok
         );
-        let mut shard = engine.shards.read().unwrap()[&1].clone();
+        let mut shard = engine.shards.with_state(1, |state| state.unwrap().clone());
         let expected = super::super::storage_lifecycle_methods::wal_floor_of_index_image(&shard);
         assert!(expected.is_some_and(|floor| floor > 0));
         let path = dir.path().join("base");

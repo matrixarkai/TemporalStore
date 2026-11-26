@@ -287,16 +287,17 @@ impl BlocksPerBucket {
 }
 
 fn blocks_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut hist = BlocksPerBucket::default();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        if bucket.block_index.is_empty() {
-            continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut hist = BlocksPerBucket::default();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            if bucket.block_index.is_empty() {
+                continue;
+            }
+            *hist.counts.entry(bucket.block_index.len()).or_default() += 1;
         }
-        *hist.counts.entry(bucket.block_index.len()).or_default() += 1;
-    }
-    hist
+        hist
+    })
 }
 
 /// How many buckets sit in each arm of `BlockIndexMap`: (Empty, One, Many).
@@ -305,17 +306,18 @@ fn blocks_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
 /// node plus one allocation instead of the width of a whole entry. `inline_arm_trade.rs` is the
 /// measurement that moved it, and this range is the reason it moved.
 fn block_index_arms(engine: &TemporalEngine) -> (usize, usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut arms = (0usize, 0usize, 0usize);
-    for bucket in shard.bucket_index.bucket_map.values() {
-        match &bucket.block_index {
-            crate::engine::state::BlockIndexMap::Empty => arms.0 += 1,
-            crate::engine::state::BlockIndexMap::One(_, _) => arms.1 += 1,
-            crate::engine::state::BlockIndexMap::Many(_) => arms.2 += 1,
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut arms = (0usize, 0usize, 0usize);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            match &bucket.block_index {
+                crate::engine::state::BlockIndexMap::Empty => arms.0 += 1,
+                crate::engine::state::BlockIndexMap::One(_, _) => arms.1 += 1,
+                crate::engine::state::BlockIndexMap::Many(_) => arms.2 += 1,
+            }
         }
-    }
-    arms
+        arms
+    })
 }
 
 /// The store path length every arm is held at, asserted equal across arms because allocation
@@ -847,14 +849,15 @@ fn both_byte_columns_and_the_allocations_a_record_at_every_candidate_range() {
             let arms = block_index_arms(&engine);
 
             let (request_bytes, chunk_bytes, allocs) = {
-                let shards = engine.shards.read().expect("engine lock poisoned");
-                let shard = shards.get(&1).expect("shard 1");
-                let probe = Probe::start();
-                let copy = shard.bucket_index.bucket_map.clone();
-                let counts = probe.stop();
-                std::hint::black_box(&copy);
-                drop(copy);
-                (counts.alloc_bytes, counts.chunk_bytes, counts.allocs)
+                engine.shards.with_state(1, |state| {
+                    let shard = state.expect("shard 1");
+                    let probe = Probe::start();
+                    let copy = shard.bucket_index.bucket_map.clone();
+                    let counts = probe.stop();
+                    std::hint::black_box(&copy);
+                    drop(copy);
+                    (counts.alloc_bytes, counts.chunk_bytes, counts.allocs)
+                })
             };
             assert!(
                 request_bytes > 0 && allocs > 0,
@@ -1018,40 +1021,41 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_blocks_a_bucket_holds() {
             load_on(&engine, end_routing_bucket);
             let keys = seed_routed(&engine, LARGE);
             let hist = blocks_per_bucket(&engine);
-            let mut shards = engine.shards.write().expect("engine lock poisoned");
-            let shard = shards.get_mut(&1).expect("shard 1");
+            engine.shards.with_state_mut(1, |state| {
+                let shard = state.expect("shard 1");
 
-            // DENOMINATOR: a freshly written store has every key dirty. Without this the drain
-            // could drop nothing and report a clean zero for the wrong reason.
-            let dirty_buckets: Vec<(u32, u64)> = shard.dirty_objects.bucket_counts().collect();
-            let dirty_keys: usize = dirty_buckets.iter().map(|(_, count)| *count as usize).sum();
-            assert_eq!(
-                dirty_keys,
-                keys.len(),
-                "on 0..{end_routing_bucket} the dirty index holds {dirty_keys} keys after writing \
-                 {}",
-                keys.len()
-            );
+                // DENOMINATOR: a freshly written store has every key dirty. Without this the drain
+                // could drop nothing and report a clean zero for the wrong reason.
+                let dirty_buckets: Vec<(u32, u64)> = shard.dirty_objects.bucket_counts().collect();
+                let dirty_keys: usize = dirty_buckets.iter().map(|(_, count)| *count as usize).sum();
+                assert_eq!(
+                    dirty_keys,
+                    keys.len(),
+                    "on 0..{end_routing_bucket} the dirty index holds {dirty_keys} keys after writing \
+                     {}",
+                    keys.len()
+                );
 
-            // THE DUMP DRAIN, on the WIDEST dirty bucket -- the amplification an operator meets.
-            let widest_dirty = dirty_buckets
-                .iter()
-                .max_by_key(|(_, count)| *count)
-                .map(|(routing_bucket, _)| *routing_bucket)
-                .expect("a freshly written store has a dirty bucket");
-            let drained = shard.dirty_objects.drain_buckets(&[widest_dirty]);
-            assert!(
-                drained > 0,
-                "on 0..{end_routing_bucket} draining bucket {widest_dirty} dropped nothing, so \
-                 this arm measures the drain not running"
-            );
-            (
-                dirty_buckets.len(),
-                dirty_keys,
-                drained,
-                hist.percentile(0.50),
-                hist.max(),
-            )
+                // THE DUMP DRAIN, on the WIDEST dirty bucket -- the amplification an operator meets.
+                let widest_dirty = dirty_buckets
+                    .iter()
+                    .max_by_key(|(_, count)| *count)
+                    .map(|(routing_bucket, _)| *routing_bucket)
+                    .expect("a freshly written store has a dirty bucket");
+                let drained = shard.dirty_objects.drain_buckets(&[widest_dirty]);
+                assert!(
+                    drained > 0,
+                    "on 0..{end_routing_bucket} draining bucket {widest_dirty} dropped nothing, so \
+                     this arm measures the drain not running"
+                );
+                (
+                    dirty_buckets.len(),
+                    dirty_keys,
+                    drained,
+                    hist.percentile(0.50),
+                    hist.max(),
+                )
+            })
         };
 
         // THE RELEASE UNIT, on a store RELOADED so the pass is not refused.
@@ -1078,33 +1082,34 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_blocks_a_bucket_holds() {
             }
             let engine = engine_on(dir.path());
             load_on(&engine, end_routing_bucket);
-            let mut shards = engine.shards.write().expect("engine lock poisoned");
-            let shard = shards.get_mut(&1).expect("shard 1");
-            let widest_bucket = shard
-                .bucket_index
-                .bucket_map
-                .iter()
-                .max_by_key(|(_, bucket)| bucket.block_index.len())
-                .map(|(routing_bucket, _)| *routing_bucket)
-                .expect("a written store has a bucket");
-            let held = shard
-                .bucket_index
-                .bucket_map
-                .get(&widest_bucket)
-                .map(|bucket| bucket.block_index.len())
-                .unwrap_or_default();
-            let released = crate::engine::storage_bucket_internals::release_bucket_blocks(
-                shard,
-                &[widest_bucket],
-            );
-            assert_eq!(
-                0, released.refused_buckets,
-                "on 0..{end_routing_bucket} the release of bucket {widest_bucket} (holding \
-                 {held} blocks) was refused {} time(s): {:?}. A refused release frees zero blocks \
-                 at every range, which would read as the release unit not moving with the fill",
-                released.refused_buckets, released.refusals
-            );
-            released.released_blocks
+            engine.shards.with_state_mut(1, |state| {
+                let shard = state.expect("shard 1");
+                let widest_bucket = shard
+                    .bucket_index
+                    .bucket_map
+                    .iter()
+                    .max_by_key(|(_, bucket)| bucket.block_index.len())
+                    .map(|(routing_bucket, _)| *routing_bucket)
+                    .expect("a written store has a bucket");
+                let held = shard
+                    .bucket_index
+                    .bucket_map
+                    .get(&widest_bucket)
+                    .map(|bucket| bucket.block_index.len())
+                    .unwrap_or_default();
+                let released = crate::engine::storage_bucket_internals::release_bucket_blocks(
+                    shard,
+                    &[widest_bucket],
+                );
+                assert_eq!(
+                    0, released.refused_buckets,
+                    "on 0..{end_routing_bucket} the release of bucket {widest_bucket} (holding \
+                     {held} blocks) was refused {} time(s): {:?}. A refused release frees zero blocks \
+                     at every range, which would read as the release unit not moving with the fill",
+                    released.refused_buckets, released.refusals
+                );
+                released.released_blocks
+            })
         };
 
         let label = if end_routing_bucket == WIDE_END {
@@ -1297,17 +1302,18 @@ fn try_load_on(engine: &TemporalEngine, end_routing_bucket: u32) -> crate::types
 /// Every bucket that holds a block, with the block HANDLES it holds. A key set cannot see a lost
 /// element name; this can.
 fn bucket_handle_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<u64>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut contents: BTreeMap<u32, BTreeSet<u64>> = BTreeMap::new();
-    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        let handles: BTreeSet<u64> = bucket.block_index.iter().map(|(handle, _)| *handle).collect();
-        if handles.is_empty() {
-            continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut contents: BTreeMap<u32, BTreeSet<u64>> = BTreeMap::new();
+        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+            let handles: BTreeSet<u64> = bucket.block_index.iter().map(|(handle, _)| *handle).collect();
+            if handles.is_empty() {
+                continue;
+            }
+            contents.insert(*routing_bucket, handles);
         }
-        contents.insert(*routing_bucket, handles);
-    }
-    contents
+        contents
+    })
 }
 
 /// A STORE BUILT ON THE OLD DEFAULT IS REFUSED UNDER THE NEW ONE, LOUDLY AND BEFORE THE DECODE.
@@ -1399,11 +1405,7 @@ fn a_store_built_on_the_old_default_is_refused_under_the_new_default() {
         );
     }
     assert!(
-        !engine
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .contains_key(&1),
+        !engine.shards.with_state(1, |state| state.is_some()),
         "the load was refused and the shard is in the served map anyway, so the refusal is a \
          warning rather than a refusal"
     );
@@ -1599,11 +1601,7 @@ fn a_store_that_predates_the_stamp_is_refused_rather_than_adopted_onto_a_guessed
         status.message
     );
     assert!(
-        !engine
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .contains_key(&1),
+        !engine.shards.with_state(1, |state| state.is_some()),
         "the load was refused and the shard is in the served map anyway, so the refusal is a \
          warning wearing an error's clothes"
     );
@@ -1697,8 +1695,7 @@ fn the_convenience_load_is_deliberately_not_the_production_default() {
     let engine = engine_on(dir.path());
     engine.load_shard(1);
     let convenience = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        shards.get(&1).expect("shard 1 is loaded").routing_range()
+        engine.shards.with_state(1, |shard| shard.expect("shard 1 is loaded").routing_range())
     };
     println!(
         "  Engine::load_shard gives {convenience:?}; the production default end is {}",
@@ -1945,20 +1942,21 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
 fn what_the_narrower_address_is_worth_a_record_at_both_ranges_and_in_both_columns() {
     /// Every live address a record is resident in, counted rather than assumed to be two.
     fn resident_addresses(engine: &TemporalEngine) -> (usize, usize, usize) {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
-        let in_model_maps = shard.strings().len()
-            + shard.bucket_index.hashes.values().map(|fields| fields.len()).sum::<usize>()
-            + shard.features().values().map(|series| series.len()).sum::<usize>()
-            + shard.context_nodes().len()
-            + shard.control_state_blocks().len();
-        let in_bucket_index = shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .map(|bucket| bucket.block_index.len())
-            .sum::<usize>();
-        (in_model_maps, in_bucket_index, in_model_maps + in_bucket_index)
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1");
+            let in_model_maps = shard.strings().len()
+                + shard.bucket_index.hashes.values().map(|fields| fields.len()).sum::<usize>()
+                + shard.features().values().map(|series| series.len()).sum::<usize>()
+                + shard.context_nodes().len()
+                + shard.control_state_blocks().len();
+            let in_bucket_index = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|bucket| bucket.block_index.len())
+                .sum::<usize>();
+            (in_model_maps, in_bucket_index, in_model_maps + in_bucket_index)
+        })
     }
 
     const OLD_WIDTH: usize = 32;
@@ -1990,14 +1988,15 @@ fn what_the_narrower_address_is_worth_a_record_at_both_ranges_and_in_both_column
             );
 
             let (request_bytes, chunk_bytes, allocs) = {
-                let shards = engine.shards.read().expect("engine lock poisoned");
-                let shard = shards.get(&1).expect("shard 1");
-                let probe = Probe::start();
-                let copy = shard.bucket_index.bucket_map.clone();
-                let counts = probe.stop();
-                std::hint::black_box(&copy);
-                drop(copy);
-                (counts.alloc_bytes, counts.chunk_bytes, counts.allocs)
+                engine.shards.with_state(1, |state| {
+                    let shard = state.expect("shard 1");
+                    let probe = Probe::start();
+                    let copy = shard.bucket_index.bucket_map.clone();
+                    let counts = probe.stop();
+                    std::hint::black_box(&copy);
+                    drop(copy);
+                    (counts.alloc_bytes, counts.chunk_bytes, counts.allocs)
+                })
             };
             assert!(
                 request_bytes > 0 && chunk_bytes > 0 && allocs > 0,

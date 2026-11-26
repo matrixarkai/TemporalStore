@@ -310,22 +310,27 @@ impl TemporalEngine {
     ) -> Vec<u64> {
         if !detailed_report {
             if let Some(physical_slabs) = physical_slabs {
-                let shards = self.shards.read().expect("engine lock poisoned");
-                if let Some(shard) = shards.get(&shard_id)
-                    .filter(|shard| shard.bucket_index.block_slab_live.is_ready())
-                {
-                    let mut live = shard.bucket_index.block_slab_live.live_slab_ids()
-                        .collect::<BTreeSet<_>>();
-                    if let Some(pinned) = self.unpublished_compaction_slabs
-                        .read().expect("unpublished compaction lock poisoned").get(&shard_id)
+                let covered = self.shards.with_state(shard_id, |shard| {
+                    if let Some(shard) = shard
+                        .filter(|shard| shard.bucket_index.block_slab_live.is_ready())
                     {
-                        live.extend(pinned.iter().copied());
+                        let mut live = shard.bucket_index.block_slab_live.live_slab_ids()
+                            .collect::<BTreeSet<_>>();
+                        if let Some(pinned) = self.unpublished_compaction_slabs
+                            .read().expect("unpublished compaction lock poisoned").get(&shard_id)
+                        {
+                            live.extend(pinned.iter().copied());
+                        }
+                        // A positive tally may postpone collection, never authorize deletion.
+                        // Any physical slab it omits requires the authoritative address walk.
+                        if physical_slabs.iter().all(|id| live.contains(id)) {
+                            return Some(live.into_iter().collect());
+                        }
                     }
-                    // A positive tally may postpone collection, never authorize deletion.
-                    // Any physical slab it omits requires the authoritative address walk.
-                    if physical_slabs.iter().all(|id| live.contains(id)) {
-                        return live.into_iter().collect();
-                    }
+                    None
+                });
+                if let Some(live) = covered {
+                    return live;
                 }
             }
         }
@@ -400,11 +405,8 @@ impl TemporalEngine {
         // were materialised at all -- with no summaries the filter selects nothing either way.
         // THE ITEM COUNTS COME OUT OF THE SAME LOCK ACQUISITION as the dirty state. Taking a
         // second read lock to answer one ratio would be two acquisitions for one decision.
-        let (shard_has_dirty_objects, dirty_claims, durable_items, live_items, claims_are_summarized) = self
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .get(&request.shard_id)
+        let (shard_has_dirty_objects, dirty_claims, durable_items, live_items, claims_are_summarized) = self.shards.with_state(request.shard_id, |shard| {
+            shard
             .map(|shard| {
                 let (claims, all_marked_dirty) =
                     crate::engine::storage_reporting::dirty_bucket_claims_with_summary_state(shard);
@@ -417,7 +419,8 @@ impl TemporalEngine {
                     claims_are_summarized,
                 )
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+        });
         // THE CAP, WHICH IS OFF UNLESS A CALLER ASKS FOR IT.
         //
         // Guarded on the threshold itself and on a non-zero denominator: a shard with no live
@@ -1014,107 +1017,108 @@ impl TemporalEngine {
             .get(&shard_id)
             .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
             .unwrap_or((0, u32::MAX));
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            return;
-        };
-        // Per-bucket derived generation the manifest captured (base + dirty count) --
-        // exactly what the reclaim fingerprint compares.
-        let captured: std::collections::HashMap<u32, u64> = manifest
-            .bucket_summaries
-            .iter()
-            .map(|summary| (summary.routing_bucket, summary.dirty_generation))
-            .collect();
-        // Current derived generation BEFORE mutation: detects writes that landed after
-        // the dump snapshot (those buckets must stay dirty for the next dump).
-        //
-        // DO NOT HOIST THIS INTO A SHARED SNAPSHOT. `who_walks_the_shard` shows
-        // `bucket_storage_summaries` entered THREE times in one `apply_storage_lifecycle` -- here,
-        // in `storage_lifecycle_plan`, and in `create_bucket_dump_manifest` -- and three identical
-        // whole-shard walks in one operation look exactly like something to share. Two of them
-        // can be. This one cannot, and the reason is the line above rather than anything about
-        // locking.
-        //
-        // This walk exists to be FRESH. It is compared against the generation the manifest
-        // CAPTURED, and a bucket whose generation has moved since is skipped so it stays dirty for
-        // the next dump. Feed it a snapshot taken when the plan ran and both sides become equal by
-        // construction: a bucket written to between the dump and this clear compares equal, is
-        // cleared, stops being dirty, is never dumped, and reclaim is then free to advance past the
-        // records it still needed. That is silent data loss, discovered on a later restart.
-        //
-        // The test that would catch it is not obvious either: any fixture that does not write
-        // CONCURRENTLY with a dump will pass a hoisted version happily.
-        //
-        // STILL READ NOW, AND NO LONGER BY WALKING THE SHARD. The loop below consults this only for
-        // the buckets the manifest names, so only those are asked: a dirty node answers from its own
-        // generation and its dirty-object count, and anything else takes the walk -- see
-        // `dirty_generations_of`. Freshness is unchanged: it is read under this same write lock,
-        // after the dump, which is the property the paragraph above is about.
-        let current: std::collections::HashMap<u32, u64> = crate::engine::storage_reporting::dirty_generations_of(
-            shard,
-            &manifest.bucket_ids,
-            start_routing_bucket,
-            end_routing_bucket,
-        );
-        // Buckets this dump actually clears. Collected first so the dirty set is walked ONCE.
-        //
-        // The retain used to sit inside this loop, so every qualifying bucket walked every dirty
-        // object and re-hashed its key to recompute a routing bucket -- a bucket the caller
-        // already knew, and one that `mark_object_dirty` had computed on the line above the
-        // insert and thrown away. The work was |dirty objects| x |buckets|, to remove at most
-        // |dirty objects| entries: measured at 4 040 000 closure calls to clear 4 000 objects
-        // across 1 010 buckets, a 1010x amplification.
-        //
-        // Nothing in the per-bucket body depends on the dirty set having been cleared, and
-        // `current` was captured before any mutation, so hoisting the walk out is the same answer
-        // in one pass.
-        let mut cleared_buckets: Vec<u32> = Vec::new();
-        for bucket_id in manifest.bucket_ids.iter().copied() {
-            let Some(&captured_generation) = captured.get(&bucket_id) else {
-                continue;
+        self.shards.with_state_mut(shard_id, |shard| {
+            let Some(shard) = shard else {
+                return;
             };
-            if current.get(&bucket_id).copied().unwrap_or_default() != captured_generation {
-                continue;
-            }
-            cleared_buckets.push(bucket_id);
-            if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&bucket_id) {
-                // Hold the generation at the captured (derived) value so the reclaim
-                // fingerprint still matches once the dirty objects are cleared.
-                bucket.dirty_generation = bucket.dirty_generation.max(captured_generation);
-                // THE DUMPED-LOG SEQUENCE IS NOT RECORDED HERE ANY MORE, and the comment that was
-                // here said why it did not need to be: "informational; not part of the
-                // fingerprint". A per-bucket `last_dump_sequence` was written from
-                // `manifest.wal_sequence` at this one site, preserved across rebuild, and read
-                // into two reports -- never into a branch, a sort key or a comparison. The
-                // manifest that named this bucket is the thing that knows the figure, and the
-                // report reads it from there (`merge_last_dump_sequence`) exactly as
-                // `BucketStorageSummary` always did.
-                bucket.set_dirty(false);
-                // The dump captured everything this bucket had, so it holds no claim over the
-                // log until it is written to again.
-                bucket.first_dirty_wal_sequence = 0;
-                bucket.first_dirty_index_log_sequence = 0;
-                for block in bucket.block_index.blocks_mut_unaccounted() {
-                    block.set_dirty(false);
+            // Per-bucket derived generation the manifest captured (base + dirty count) --
+            // exactly what the reclaim fingerprint compares.
+            let captured: std::collections::HashMap<u32, u64> = manifest
+                .bucket_summaries
+                .iter()
+                .map(|summary| (summary.routing_bucket, summary.dirty_generation))
+                .collect();
+            // Current derived generation BEFORE mutation: detects writes that landed after
+            // the dump snapshot (those buckets must stay dirty for the next dump).
+            //
+            // DO NOT HOIST THIS INTO A SHARED SNAPSHOT. `who_walks_the_shard` shows
+            // `bucket_storage_summaries` entered THREE times in one `apply_storage_lifecycle` -- here,
+            // in `storage_lifecycle_plan`, and in `create_bucket_dump_manifest` -- and three identical
+            // whole-shard walks in one operation look exactly like something to share. Two of them
+            // can be. This one cannot, and the reason is the line above rather than anything about
+            // locking.
+            //
+            // This walk exists to be FRESH. It is compared against the generation the manifest
+            // CAPTURED, and a bucket whose generation has moved since is skipped so it stays dirty for
+            // the next dump. Feed it a snapshot taken when the plan ran and both sides become equal by
+            // construction: a bucket written to between the dump and this clear compares equal, is
+            // cleared, stops being dirty, is never dumped, and reclaim is then free to advance past the
+            // records it still needed. That is silent data loss, discovered on a later restart.
+            //
+            // The test that would catch it is not obvious either: any fixture that does not write
+            // CONCURRENTLY with a dump will pass a hoisted version happily.
+            //
+            // STILL READ NOW, AND NO LONGER BY WALKING THE SHARD. The loop below consults this only for
+            // the buckets the manifest names, so only those are asked: a dirty node answers from its own
+            // generation and its dirty-object count, and anything else takes the walk -- see
+            // `dirty_generations_of`. Freshness is unchanged: it is read under this same write lock,
+            // after the dump, which is the property the paragraph above is about.
+            let current: std::collections::HashMap<u32, u64> = crate::engine::storage_reporting::dirty_generations_of(
+                shard,
+                &manifest.bucket_ids,
+                start_routing_bucket,
+                end_routing_bucket,
+            );
+            // Buckets this dump actually clears. Collected first so the dirty set is walked ONCE.
+            //
+            // The retain used to sit inside this loop, so every qualifying bucket walked every dirty
+            // object and re-hashed its key to recompute a routing bucket -- a bucket the caller
+            // already knew, and one that `mark_object_dirty` had computed on the line above the
+            // insert and thrown away. The work was |dirty objects| x |buckets|, to remove at most
+            // |dirty objects| entries: measured at 4 040 000 closure calls to clear 4 000 objects
+            // across 1 010 buckets, a 1010x amplification.
+            //
+            // Nothing in the per-bucket body depends on the dirty set having been cleared, and
+            // `current` was captured before any mutation, so hoisting the walk out is the same answer
+            // in one pass.
+            let mut cleared_buckets: Vec<u32> = Vec::new();
+            for bucket_id in manifest.bucket_ids.iter().copied() {
+                let Some(&captured_generation) = captured.get(&bucket_id) else {
+                    continue;
+                };
+                if current.get(&bucket_id).copied().unwrap_or_default() != captured_generation {
+                    continue;
+                }
+                cleared_buckets.push(bucket_id);
+                if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&bucket_id) {
+                    // Hold the generation at the captured (derived) value so the reclaim
+                    // fingerprint still matches once the dirty objects are cleared.
+                    bucket.dirty_generation = bucket.dirty_generation.max(captured_generation);
+                    // THE DUMPED-LOG SEQUENCE IS NOT RECORDED HERE ANY MORE, and the comment that was
+                    // here said why it did not need to be: "informational; not part of the
+                    // fingerprint". A per-bucket `last_dump_sequence` was written from
+                    // `manifest.wal_sequence` at this one site, preserved across rebuild, and read
+                    // into two reports -- never into a branch, a sort key or a comparison. The
+                    // manifest that named this bucket is the thing that knows the figure, and the
+                    // report reads it from there (`merge_last_dump_sequence`) exactly as
+                    // `BucketStorageSummary` always did.
+                    bucket.set_dirty(false);
+                    // The dump captured everything this bucket had, so it holds no claim over the
+                    // log until it is written to again.
+                    bucket.first_dirty_wal_sequence = 0;
+                    bucket.first_dirty_index_log_sequence = 0;
+                    for block in bucket.block_index.blocks_mut_unaccounted() {
+                        block.set_dirty(false);
+                    }
                 }
             }
-        }
-        if !cleared_buckets.is_empty() {
-            storage_bucket_internals::clear_retained_inline_page_dirty_state(shard, &cleared_buckets);
-            // STRAIGHT TO THE CLEARED BUCKETS' KEYS.
-            //
-            // The retain this replaces walked the WHOLE dirty set and re-hashed every key to
-            // recompute a routing bucket, whether or not that key belonged to a bucket this dump
-            // cleared. A round that dumps a slice of the shard -- which is what
-            // `max_dump_buckets_per_round` asks for -- paid for the whole set to drop a slice of
-            // it. The dirty index is keyed by bucket, so the keys to drop are addressable and
-            // the rest are not touched.
-            //
-            // The counter still measures what the drain LOOKS AT, which is now exactly what it
-            // removes: it visits the cleared buckets' key sets and nothing else.
-            let dropped = shard.dirty_objects.drain_buckets(&cleared_buckets);
-            DIRTY_DRAIN_VISITS.fetch_add(dropped as u64, std::sync::atomic::Ordering::Relaxed);
-        }
+            if !cleared_buckets.is_empty() {
+                storage_bucket_internals::clear_retained_inline_page_dirty_state(shard, &cleared_buckets);
+                // STRAIGHT TO THE CLEARED BUCKETS' KEYS.
+                //
+                // The retain this replaces walked the WHOLE dirty set and re-hashed every key to
+                // recompute a routing bucket, whether or not that key belonged to a bucket this dump
+                // cleared. A round that dumps a slice of the shard -- which is what
+                // `max_dump_buckets_per_round` asks for -- paid for the whole set to drop a slice of
+                // it. The dirty index is keyed by bucket, so the keys to drop are addressable and
+                // the rest are not touched.
+                //
+                // The counter still measures what the drain LOOKS AT, which is now exactly what it
+                // removes: it visits the cleared buckets' key sets and nothing else.
+                let dropped = shard.dirty_objects.drain_buckets(&cleared_buckets);
+                DIRTY_DRAIN_VISITS.fetch_add(dropped as u64, std::sync::atomic::Ordering::Relaxed);
+            }
+        })
     }
 
     pub fn apply_storage_lifecycle(
@@ -1161,11 +1165,11 @@ impl TemporalEngine {
             // AND THE ITEM COUNT IS BACK TO THE LIVE SET. A dump re-serializes the live
             // objects, so every superseded record it replaced is gone from the durable form
             // -- which is what makes `item_space_amplification_ppm` a trigger.
-            if let Ok(mut shards) = self.shards.write() {
-                if let Some(shard) = shards.get_mut(&request.shard_id) {
+            self.shards.with_state_mut(request.shard_id, |shard| {
+                if let Some(shard) = shard {
                     shard.mark_items_dumped();
                 }
-            }
+            });
         }
         let (cache_entries_removed, cache_disk_bytes_removed) = if request.invalidate_cache {
             self.cache
@@ -1208,104 +1212,103 @@ impl TemporalEngine {
         // ONE listing of the live blocks for the object lifecycle and the four report samples below,
         // taken only for a detailed report. They were two listings under two reads of the shard,
         // taken a few statements apart.
-        let shards_guard;
-        let listing = if detailed_report {
-            shards_guard = self.shards.read().expect("shards lock poisoned");
-            shards_guard
-                .get(&request.shard_id)
-                .map(|shard| (shard, collect_live_block_entries(shard)))
-        } else {
-            None
-        };
-        let object_lifecycle = match &listing {
-            Some((shard, entries)) => {
-                self.storage_object_lifecycle_snapshot_from_entries(request.shard_id, shard, entries)
+        let build_report = |shard: Option<&ShardState>| {
+            let listing = shard.map(|shard| (shard, collect_live_block_entries(shard)));
+            let object_lifecycle = match &listing {
+                Some((shard, entries)) => {
+                    self.storage_object_lifecycle_snapshot_from_entries(request.shard_id, shard, entries)
+                }
+                None => StorageObjectLifecycleReport::default(),
+            };
+            let mut report = StorageLifecycleReport {
+                shard_id: request.shard_id,
+                public_storage_contract: Default::default(),
+                public_storage_feature_shapes: Default::default(),
+                effective_storage_tuning: effective_storage_tuning_from_env(),
+                storage_lifecycle_metrics: default_storage_lifecycle_metrics(),
+                storage_write_contract: default_storage_write_contract_empty(),
+                storage_read_contract: default_storage_read_contract_empty(),
+                storage_cold_scan_contract: default_storage_cold_scan_contract_empty(),
+                storage_manager_contract: default_storage_manager_contract_empty(),
+                storage_index_contract: default_storage_index_contract_empty(),
+                storage_cache_contract: default_storage_cache_contract_empty(),
+                storage_reclaim_contract: default_storage_reclaim_contract_empty(),
+                storage_safety_snapshot: Default::default(),
+                storage_watermark_snapshot: Default::default(),
+                storage_gc_snapshot: Default::default(),
+                storage_index_snapshot: Default::default(),
+                storage_topology_snapshot: Default::default(),
+                storage_write_sequence: default_storage_write_sequence(),
+                storage_read_sequence: default_storage_read_sequence(),
+                storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
+                storage_lifecycle_phases: default_storage_lifecycle_phases(),
+                storage_cache_layers: default_storage_cache_layers(),
+                storage_cache_semantics: default_storage_cache_semantics(),
+                storage_reclaim_semantics: default_storage_reclaim_semantics(),
+                storage_reclaim_scope: Default::default(),
+                plan,
+                dump_manifest,
+                cache_entries_removed,
+                cache_disk_bytes_removed,
+                cache_warmup_block_refs,
+                cache_warmup,
+                delayed_destroy_purged_slabs: purge_report.purged_block_slab_ids,
+                delayed_destroy_purged_bytes: purge_report.purged_physical_bytes,
+                delayed_destroy_restored_slabs: purge_report.restored_block_slab_ids,
+                delayed_destroy_restored_bytes: purge_report.restored_physical_bytes,
+                manifest_prune_plan,
+                manifest_prune_report,
+                install_roll_forward_reports,
+                object_lifecycle,
+            };
+            report.refresh_public_lifecycle_metrics();
+            if !detailed_report {
+                return report;
             }
-            None => StorageObjectLifecycleReport::default(),
-        };
-        let mut report = StorageLifecycleReport {
-            shard_id: request.shard_id,
-            public_storage_contract: Default::default(),
-            public_storage_feature_shapes: Default::default(),
-            effective_storage_tuning: effective_storage_tuning_from_env(),
-            storage_lifecycle_metrics: default_storage_lifecycle_metrics(),
-            storage_write_contract: default_storage_write_contract_empty(),
-            storage_read_contract: default_storage_read_contract_empty(),
-            storage_cold_scan_contract: default_storage_cold_scan_contract_empty(),
-            storage_manager_contract: default_storage_manager_contract_empty(),
-            storage_index_contract: default_storage_index_contract_empty(),
-            storage_cache_contract: default_storage_cache_contract_empty(),
-            storage_reclaim_contract: default_storage_reclaim_contract_empty(),
-            storage_safety_snapshot: Default::default(),
-            storage_watermark_snapshot: Default::default(),
-            storage_gc_snapshot: Default::default(),
-            storage_index_snapshot: Default::default(),
-            storage_topology_snapshot: Default::default(),
-            storage_write_sequence: default_storage_write_sequence(),
-            storage_read_sequence: default_storage_read_sequence(),
-            storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
-            storage_lifecycle_phases: default_storage_lifecycle_phases(),
-            storage_cache_layers: default_storage_cache_layers(),
-            storage_cache_semantics: default_storage_cache_semantics(),
-            storage_reclaim_semantics: default_storage_reclaim_semantics(),
-            storage_reclaim_scope: Default::default(),
-            plan,
-            dump_manifest,
-            cache_entries_removed,
-            cache_disk_bytes_removed,
-            cache_warmup_block_refs,
-            cache_warmup,
-            delayed_destroy_purged_slabs: purge_report.purged_block_slab_ids,
-            delayed_destroy_purged_bytes: purge_report.purged_physical_bytes,
-            delayed_destroy_restored_slabs: purge_report.restored_block_slab_ids,
-            delayed_destroy_restored_bytes: purge_report.restored_physical_bytes,
-            manifest_prune_plan,
-            manifest_prune_report,
-            install_roll_forward_reports,
-            object_lifecycle,
-        };
-        report.refresh_public_lifecycle_metrics();
-        if !detailed_report {
-            return report;
-        }
-        if let Some((shard, sampling_entries)) = &listing {
-            // ONE walk for all four sampling snapshots.
-            //
-            // Each of these built its own `collect_live_block_entries` -- a fresh Vec of every live
-            // block in the shard -- and then sorted all of it to take EIGHT samples. Four walks and
-            // four full sorts, for about thirty-two sample rows. `who_walks_the_shard` measured
-            // them at 1.0x the shard apiece, 4.0x of `apply_storage_lifecycle`'s 10.0x.
-            //
-            // Safe here in the way #1586 was and the dirty-state walk in #1607 was NOT: the read
-            // lock above covers all four, `&ShardState` is unchanged throughout, and these produce
-            // report SAMPLES rather than a decision. A shared snapshot cannot change what the
-            // system does; it only makes the four samples describe one moment instead of four.
-            report.storage_index_snapshot = storage_index_snapshot_with_samples_from_entries(
-                request.shard_id,
-                sampling_entries,
-                report.storage_index_snapshot,
-            );
-            report.storage_watermark_snapshot =
-                storage_watermark_snapshot_with_samples_from_entries(
+            if let Some((shard, sampling_entries)) = &listing {
+                // ONE walk for all four sampling snapshots.
+                //
+                // Each of these built its own `collect_live_block_entries` -- a fresh Vec of every live
+                // block in the shard -- and then sorted all of it to take EIGHT samples. Four walks and
+                // four full sorts, for about thirty-two sample rows. `who_walks_the_shard` measured
+                // them at 1.0x the shard apiece, 4.0x of `apply_storage_lifecycle`'s 10.0x.
+                //
+                // Safe here in the way #1586 was and the dirty-state walk in #1607 was NOT: the read
+                // lock above covers all four, `&ShardState` is unchanged throughout, and these produce
+                // report SAMPLES rather than a decision. A shared snapshot cannot change what the
+                // system does; it only makes the four samples describe one moment instead of four.
+                report.storage_index_snapshot = storage_index_snapshot_with_samples_from_entries(
+                    request.shard_id,
+                    sampling_entries,
+                    report.storage_index_snapshot,
+                );
+                report.storage_watermark_snapshot =
+                    storage_watermark_snapshot_with_samples_from_entries(
+                        request.shard_id,
+                        shard,
+                        sampling_entries,
+                        report.storage_watermark_snapshot,
+                    );
+                report.storage_gc_snapshot = storage_gc_snapshot_with_samples_from_entries(
                     request.shard_id,
                     shard,
                     sampling_entries,
-                    report.storage_watermark_snapshot,
+                    report.storage_gc_snapshot,
                 );
-            report.storage_gc_snapshot = storage_gc_snapshot_with_samples_from_entries(
-                request.shard_id,
-                shard,
-                sampling_entries,
-                report.storage_gc_snapshot,
-            );
-            report.storage_topology_snapshot = storage_topology_snapshot_with_samples_from_entries(
-                request.shard_id,
-                shard,
-                sampling_entries,
-                report.storage_topology_snapshot,
-            );
+                report.storage_topology_snapshot = storage_topology_snapshot_with_samples_from_entries(
+                    request.shard_id,
+                    shard,
+                    sampling_entries,
+                    report.storage_topology_snapshot,
+                );
+            }
+            report
+        };
+        if detailed_report {
+            self.shards.with_state(request.shard_id, build_report)
+        } else {
+            build_report(None)
         }
-        report
     }
 
     pub(crate) fn purge_storage_delayed_destroy(
@@ -1448,13 +1451,11 @@ impl TemporalEngine {
     /// claim older than the byte marks reach, falls back to the counter, which is the larger
     /// answer on a fresh process and so errs toward dumping.
     pub fn undumped_wal_bytes_above_oldest_dirty(&self, shard_id: ShardId) -> u64 {
-        let claims = self
-            .shards
-            .read()
-            .expect("shards lock poisoned")
-            .get(&shard_id)
+        let claims = self.shards.with_state(shard_id, |shard| {
+            shard
             .map(crate::engine::storage_reporting::dirty_bucket_claims)
-            .unwrap_or_default();
+            .unwrap_or_default()
+        });
         self.undumped_wal_bytes_from_claims(shard_id, &claims)
     }
 
@@ -1495,10 +1496,9 @@ impl TemporalEngine {
     /// A dirty generation absent from every dump cannot release its first or unknown log claim.
     /// This only declines a periodic attempt; a possible reclaim still needs the full plan.
     pub(crate) fn periodic_wal_reclaim_is_pinned(&self, shard_id: ShardId) -> bool {
-        let mut pins = {
-            let shards = self.shards.read().expect("shards lock poisoned");
-            let Some(shard) = shards.get(&shard_id) else {
-                return false;
+        let mut pins = self.shards.with_state(shard_id, |shard| {
+            let Some(shard) = shard else {
+                return BTreeSet::new();
             };
             let buckets = &shard.bucket_index.bucket_map;
             buckets.dirty_buckets().iter().filter_map(|id| {
@@ -1507,7 +1507,7 @@ impl TemporalEngine {
                 (node.dirty() && (node.first_dirty_wal_sequence <= 1
                     || node.first_dirty_index_log_sequence == 0)).then_some(*id)
             }).collect::<BTreeSet<_>>()
-        };
+        });
         if pins.is_empty() {
             return false;
         }
@@ -1581,13 +1581,11 @@ impl TemporalEngine {
             }
             ReclaimPlanScope::EveryBucket => {
                 let (summaries, digests) = self.bucket_storage_summaries_with_digests(shard_id, true);
-                let claims = self
-                    .shards
-                    .read()
-                    .expect("shards lock poisoned")
-                    .get(&shard_id)
+                let claims = self.shards.with_state(shard_id, |shard| {
+                    shard
                     .map(crate::engine::storage_reporting::dirty_bucket_claims)
-                    .unwrap_or_default();
+                    .unwrap_or_default()
+                });
                 let count = summaries.len();
                 (summaries, digests, claims, count)
             }
@@ -2479,72 +2477,73 @@ impl TemporalEngine {
         // it with the recency stamps `bucket_recency` carries, which are taken from the same
         // `now_ms()` on the write and read paths, so the two are the same scale by construction.
         let now = now_ms();
-        let mut shards = self.shards.write().expect("shards lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            return Vec::new();
-        };
-        // Take the sampler state out so the scan can borrow the bucket index immutably.
-        let mut sampler = std::mem::take(&mut shard.evict_sampler);
-        let selected = {
-            let source = IndexSource {
-                buckets: &shard.bucket_index.bucket_map,
-                recency: &shard.bucket_recency,
+        self.shards.with_state_mut(shard_id, |shard| {
+            let Some(shard) = shard else {
+                return Vec::new();
             };
-            // THE CLOCK IS AN ARGUMENT, not a call inside the sampler. The sampler decides
-            // whether a candidate has been used since the previous pass, which is a comparison
-            // against a stamp this engine produced; passing the stamp in is what lets the
-            // module's own fixtures state a recency history instead of racing a wall clock.
-            let outcome = select_victims(&mut sampler, config, batch_limit, source, now);
-            // CHARGED HERE, which is the only place the pass's own count exists: the outcome is
-            // consumed for its victims and nothing else survives this scope.
-            EVICTION_SAMPLER_BUCKETS_SCANNED
-                .fetch_add(outcome.scanned as u64, std::sync::atomic::Ordering::Relaxed);
-            outcome.victims
-        };
-        shard.evict_sampler = sampler;
+            // Take the sampler state out so the scan can borrow the bucket index immutably.
+            let mut sampler = std::mem::take(&mut shard.evict_sampler);
+            let selected = {
+                let source = IndexSource {
+                    buckets: &shard.bucket_index.bucket_map,
+                    recency: &shard.bucket_recency,
+                };
+                // THE CLOCK IS AN ARGUMENT, not a call inside the sampler. The sampler decides
+                // whether a candidate has been used since the previous pass, which is a comparison
+                // against a stamp this engine produced; passing the stamp in is what lets the
+                // module's own fixtures state a recency history instead of racing a wall clock.
+                let outcome = select_victims(&mut sampler, config, batch_limit, source, now);
+                // CHARGED HERE, which is the only place the pass's own count exists: the outcome is
+                // consumed for its victims and nothing else survives this scope.
+                EVICTION_SAMPLER_BUCKETS_SCANNED
+                    .fetch_add(outcome.scanned as u64, std::sync::atomic::Ordering::Relaxed);
+                outcome.victims
+            };
+            shard.evict_sampler = sampler;
 
-        // Byte totals for the chosen buckets only. Bounded by batch_limit, not by store size.
-        selected
-            .into_iter()
-            .filter_map(|routing_bucket| {
-                let bucket = shard.bucket_index.bucket_map.get(&routing_bucket)?;
-                let mut logical_bytes = 0u64;
-                let mut physical_bytes = 0u64;
-                let mut dirty_object_count = 0u64;
-                for block in bucket.block_index.values() {
-                    if block.deleted() {
-                        continue;
+            // Byte totals for the chosen buckets only. Bounded by batch_limit, not by store size.
+            selected
+                .into_iter()
+                .filter_map(|routing_bucket| {
+                    let bucket = shard.bucket_index.bucket_map.get(&routing_bucket)?;
+                    let mut logical_bytes = 0u64;
+                    let mut physical_bytes = 0u64;
+                    let mut dirty_object_count = 0u64;
+                    for block in bucket.block_index.values() {
+                        if block.deleted() {
+                            continue;
+                        }
+                        logical_bytes = logical_bytes.saturating_add(block.address.length());
+                        physical_bytes = physical_bytes.saturating_add(block.address.length());
+                        if block.dirty() {
+                            dirty_object_count = dirty_object_count.saturating_add(1);
+                        }
                     }
-                    logical_bytes = logical_bytes.saturating_add(block.address.length());
-                    physical_bytes = physical_bytes.saturating_add(block.address.length());
-                    if block.dirty() {
-                        dirty_object_count = dirty_object_count.saturating_add(1);
-                    }
-                }
-                let cache = cache_by_bucket.get(&routing_bucket);
-                let cache_memory_bytes = cache.map(|cache| cache.memory_bytes).unwrap_or_default();
-                let cache_disk_bytes = cache.map(|cache| cache.disk_bytes).unwrap_or_default();
-                Some(StorageEvictionVictim {
-                    routing_bucket,
-                    object_count: bucket.object_index.object_count() as u64,
-                    logical_bytes,
-                    physical_bytes,
-                    cache_memory_bytes,
-                    cache_disk_bytes,
-                    dirty_object_count,
-                    weight: cache_memory_bytes
-                        .saturating_mul(4)
-                        .saturating_add(cache_disk_bytes.saturating_mul(2))
-                        .saturating_add(physical_bytes)
-                        .saturating_add(dirty_object_count.saturating_mul(1024)),
-                    last_touched_ms: shard
-                        .bucket_recency
-                        .get(&routing_bucket)
-                        .copied()
-                        .unwrap_or(0),
+                    let cache = cache_by_bucket.get(&routing_bucket);
+                    let cache_memory_bytes = cache.map(|cache| cache.memory_bytes).unwrap_or_default();
+                    let cache_disk_bytes = cache.map(|cache| cache.disk_bytes).unwrap_or_default();
+                    Some(StorageEvictionVictim {
+                        routing_bucket,
+                        object_count: bucket.object_index.object_count() as u64,
+                        logical_bytes,
+                        physical_bytes,
+                        cache_memory_bytes,
+                        cache_disk_bytes,
+                        dirty_object_count,
+                        weight: cache_memory_bytes
+                            .saturating_mul(4)
+                            .saturating_add(cache_disk_bytes.saturating_mul(2))
+                            .saturating_add(physical_bytes)
+                            .saturating_add(dirty_object_count.saturating_mul(1024)),
+                        last_touched_ms: shard
+                            .bucket_recency
+                            .get(&routing_bucket)
+                            .copied()
+                            .unwrap_or(0),
+                    })
                 })
-            })
-            .collect()
+                .collect()
+        })
     }
 
     /// Dump and release a shard's resident block lists when THAT SHARD'S OWN index exceeds a bound.
@@ -2723,10 +2722,8 @@ impl TemporalEngine {
             // the sampled arm never touched it: a whole-store copy on the way into the one
             // selection path written to avoid whole-store work. `EVICTION_RECENCY_ENTRIES_CLONED`
             // is what says which arm pays it.
-            let recency_by_bucket = {
-                let shards = self.shards.read().expect("engine lock poisoned");
-                let recency = shards
-                    .get(&shard_id)
+            let recency_by_bucket = self.shards.with_state(shard_id, |shard| {
+                let recency = shard
                     .map(|shard| shard.bucket_recency.clone())
                     .unwrap_or_default();
                 EVICTION_RECENCY_ENTRIES_CLONED.fetch_add(
@@ -2734,7 +2731,7 @@ impl TemporalEngine {
                     std::sync::atomic::Ordering::Relaxed,
                 );
                 recency
-            };
+            });
             // THE SAME QUANTITY THE SAMPLED ARM USES, read in the same borrow as the recency above
             // rather than taken from the summary.
             //
@@ -2751,10 +2748,8 @@ impl TemporalEngine {
             // byte estimate added to `physical_bytes`, so it should track the bytes a dump would
             // write, which blocks do and distinct objects do not.
             // `the_two_eviction_arms_must_agree_on_what_the_dirty_count_means` is the gate.
-            let dirty_blocks_by_bucket: std::collections::HashMap<u32, u64> = {
-                let shards = self.shards.read().expect("engine lock poisoned");
-                shards
-                    .get(&shard_id)
+            let dirty_blocks_by_bucket: std::collections::HashMap<u32, u64> = self.shards.with_state(shard_id, |shard| {
+                shard
                     .map(|shard| {
                         shard
                             .bucket_index
@@ -2771,7 +2766,7 @@ impl TemporalEngine {
                             .collect()
                     })
                     .unwrap_or_default()
-            };
+            });
             let mut victims = self
                 .bucket_storage_summaries(shard_id)
                 .into_iter()
@@ -2825,12 +2820,13 @@ impl TemporalEngine {
         let mut release = crate::engine::storage_bucket_internals::BucketReleaseOutcome::default();
         if !delete_drop && !victims.is_empty() {
             let candidates = victims.iter().map(|victim| victim.routing_bucket).collect::<Vec<_>>();
-            let mut shards = self.shards.write().expect("shards lock poisoned");
-            if let Some(shard) = shards.get_mut(&shard_id) {
-                let retained = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(shard, &candidates);
-                release.released_buckets = retained.released_buckets;
-                release.released_blocks = retained.released_blocks;
-            }
+            self.shards.with_state_mut(shard_id, |shard| {
+                if let Some(shard) = shard {
+                    let retained = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(shard, &candidates);
+                    release.released_buckets = retained.released_buckets;
+                    release.released_blocks = retained.released_blocks;
+                }
+            });
         }
         let retained_inline = release.released_buckets.iter().copied().collect::<BTreeSet<_>>();
         let mut dump_manifest_ids = Vec::new();
@@ -2872,18 +2868,19 @@ impl TemporalEngine {
                 .collect::<Vec<_>>();
             #[cfg(test)]
             EVICTION_RELEASE_RETRY_LOCKS.with(|count| count.set(count.get() + 1));
-            let mut shards = self.shards.write().expect("shards lock poisoned");
-            if let Some(shard) = shards.get_mut(&shard_id) {
-                let remaining = crate::engine::storage_bucket_internals::release_bucket_blocks(
-                    shard,
-                    &candidates,
-                );
-                release.released_buckets.extend(remaining.released_buckets);
-                release.released_buckets.sort_unstable();
-                release.released_blocks += remaining.released_blocks;
-                release.refused_buckets = remaining.refused_buckets;
-                release.refusals = remaining.refusals;
-            }
+            self.shards.with_state_mut(shard_id, |shard| {
+                if let Some(shard) = shard {
+                    let remaining = crate::engine::storage_bucket_internals::release_bucket_blocks(
+                        shard,
+                        &candidates,
+                    );
+                    release.released_buckets.extend(remaining.released_buckets);
+                    release.released_buckets.sort_unstable();
+                    release.released_blocks += remaining.released_blocks;
+                    release.refused_buckets = remaining.refused_buckets;
+                    release.refusals = remaining.refusals;
+                }
+            });
         }
         let mut dropped_object_count = 0usize;
         let mut deletion_log_failed = false;
@@ -2924,157 +2921,158 @@ impl TemporalEngine {
             // mutations; a stamped CLONE (9 ms) carries the exact state out, and the encode and
             // the writes happen after the guard is dropped.
             let mut pending_index_flush = None;
-            let mut shards = self.shards.write().expect("shards lock poisoned");
-            // THE HOLD, by its own clock. Started after the guard is in hand and read after it is
-            // dropped, so it spans exactly the interval a serving read would queue behind -- and
-            // it is a SEPARATE clock from the phase rows below, which is what makes the residual
-            // between them mean something.
-            let guard_held = std::time::Instant::now();
-            if let Some(shard) = shards.get_mut(&shard_id) {
-                let phase = std::time::Instant::now();
-                let object_keys = collect_live_block_entries(shard)
-                    .into_iter()
-                    .filter_map(|entry| {
-                        let bucket = entry
-                            .filed_bucket()
-                            .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
-                        victim_buckets.contains(&bucket).then_some(entry.object_key)
-                    })
-                    .collect::<BTreeSet<_>>();
-                DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.collect, phase);
-                // Capture exact deletion groups here; apply them after their WAL frame lands.
-                // Both preparation and apply are charged to the deletion phase, separately
-                // from the cache pass, which does not mutate shard state.
-                let mut deleted_keys = Vec::new();
-                let mut deletions = Vec::new();
-                for key in object_keys {
+            let guard_held = self.shards.with_state_mut(shard_id, |shard| {
+                // THE HOLD, by its own clock. Started after the guard is in hand and read after it is
+                // dropped, so it spans exactly the interval a serving read would queue behind -- and
+                // it is a SEPARATE clock from the phase rows below, which is what makes the residual
+                // between them mean something.
+                let guard_held = std::time::Instant::now();
+                if let Some(shard) = shard {
                     let phase = std::time::Instant::now();
-                    let removed = super::maintenance_log::MaintenanceDeletion::capture(shard, &key);
-                    DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.delete, phase);
-                    if let Some(deletion) = removed {
-                        deletions.push(deletion);
-                        dropped_object_count = dropped_object_count.saturating_add(1);
-                        deleted_keys.push(key);
-                    }
-                }
-                // ONE PASS OVER THE CACHE FOR THE WHOLE ROUND, and STILL INSIDE THIS GUARD.
-                //
-                // This used to be `invalidate_record_all` per dropped key, and each of those
-                // made two `MultiLayerCache::invalidate_record` calls, each of which chains the
-                // key sets of all three cache tiers and filters -- so the loop above walked the
-                // whole cache twice per key. #1907 measured that at 15,996,000 cache-entry visits
-                // for one 4,000-key round on a warm store, inside this guard.
-                //
-                // The swept namespaces do not vary by key, so the walk does not have to be
-                // repeated: `invalidate_records_all_batched` lists the shard's cache once and
-                // tests each entry against this round's dropped-key set. It drops exactly the
-                // same entries -- `one_batched_pass_walks_the_cache_once_instead_of_twice_per_\
-                // dropped_key` proves that as a set equality against the per-key arm on a matched
-                // fixture.
-                //
-                // NOT DEFERRED PAST THE GUARD. #1907 priced that and refused it: `cached_response`
-                // is cache-first and a record `CacheKey` carries no generation, sequence or
-                // version stamp, so a reader in the window is answered with a value the shard has
-                // already deleted -- 8 of 533 reads, measured. The pass moved; the guard did not.
-                {
-                    let phase = std::time::Instant::now();
-                    invalidate_records_all_batched(
-                        &self.cache,
-                        shard_id,
-                        &deleted_keys,
-                        &CACHE_SWEEP_COUNTS,
-                    );
-                    DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.invalidate, phase);
-                }
-                if dropped_object_count > 0 {
-                    // A delete_drop eviction is a LOGICAL delete, so it must follow the same
-                    // durability discipline as the expiry sweep (recovery_sweep_compact.rs), which
-                    // is the codebase's other logged deletion. Emitting no WAL tombstone here left
-                    // the deletion (a) invisible to followers (never replicated), and (b) under
-                    // MATRIXARK_BULK_INGEST -- where persist_index_bytes is a no-op -- neither
-                    // persisted NOR recoverable from the WAL, so the key resurrected on reload when
-                    // replay reapplied the earlier SET. Emit bounded exact-record tombstone
-                    // batches (buffered/unfsynced, matching the expiry sweep) and anchor
-                    // applied_wal_sequence past them so replay observes the deletion instead of the
-                    // stale write. (eviction never deletes -- it only dumps and drops from cache -- so
-                    // there is no analog; this aligns the Rust-only delete_drop path with the
-                    // engine's own tombstone discipline.)
-                    if !replaying_wal() {
+                    let object_keys = collect_live_block_entries(shard)
+                        .into_iter()
+                        .filter_map(|entry| {
+                            let bucket = entry
+                                .filed_bucket()
+                                .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
+                            victim_buckets.contains(&bucket).then_some(entry.object_key)
+                        })
+                        .collect::<BTreeSet<_>>();
+                    DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.collect, phase);
+                    // Capture exact deletion groups here; apply them after their WAL frame lands.
+                    // Both preparation and apply are charged to the deletion phase, separately
+                    // from the cache pass, which does not mutate shard state.
+                    let mut deleted_keys = Vec::new();
+                    let mut deletions = Vec::new();
+                    for key in object_keys {
                         let phase = std::time::Instant::now();
-                        // ONE mirror lookup for the whole run -- same reasoning as the expiry
-                        // sweep, and this loop is inside the shard-table write guard too.
-                        let result = self.append_maintenance_deletions(shard_id, shard, deletions, || {
-                            EVICTION_DELETE_DROP_WAL_APPENDS_UNDER_GUARD
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        });
-                        dropped_object_count = result.removed_keys;
-                        DELETE_DROP_GUARD_NANOS.delete.fetch_add(result.apply_ns,
-                            std::sync::atomic::Ordering::Relaxed);
-                        DELETE_DROP_GUARD_NANOS.wal_append.fetch_add(
-                            (phase.elapsed().as_nanos() as u64).saturating_sub(result.apply_ns),
-                            std::sync::atomic::Ordering::Relaxed);
-                        if let Some(err) = result.error {
-                            tracing::error!(shard_id, error = %err.message,
-                                "delete eviction could not record its complete mutation set");
-                            deletion_log_failed = true;
-                        }
-                        let phase = std::time::Instant::now();
-                        // The receipts, not the current log tail, identify what this
-                        // guarded state includes.
-                        DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.anchor, phase);
-                    } else {
-                        let phase = std::time::Instant::now();
-                        dropped_object_count = 0;
-                        for deletion in deletions {
-                            let mut removed = false;
-                            for record in deletion.records() { removed |= delete_record_exact(shard, record); }
-                            dropped_object_count += usize::from(removed);
-                        }
+                        let removed = super::maintenance_log::MaintenanceDeletion::capture(shard, &key);
                         DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.delete, phase);
+                        if let Some(deletion) = removed {
+                            deletions.push(deletion);
+                            dropped_object_count = dropped_object_count.saturating_add(1);
+                            deleted_keys.push(key);
+                        }
                     }
-                    // Stamp here so the clone carries the current on-disk shape, then hand
-                    // the snapshot out; the encode and both writes happen below, unlocked.
-                    shard.index_format_version = super::SHARD_INDEX_FORMAT_VERSION;
-                    // THE CHECKPOINT IS DUE PER DELETED KEY, NOT PER ROUND.
+                    // ONE PASS OVER THE CACHE FOR THE WHOLE ROUND, and STILL INSIDE THIS GUARD.
                     //
-                    // Re-encoding the whole served index costs about 76 bytes per RESIDENT key --
-                    // 609,692 encoded bytes to drop 2 objects at 8,000 keys, measured by
-                    // `what_one_eviction_round_writes_grows_with_the_store_not_the_round` -- so a
-                    // flush per round charges the whole store to whatever the round happened to
-                    // drop. `index_flush_countdown` spends this round's deletions against the
-                    // engine's interval and only encodes when they run it out, which bounds the
-                    // index bytes ONE deletion can be charged instead of bounding nothing.
+                    // This used to be `invalidate_record_all` per dropped key, and each of those
+                    // made two `MultiLayerCache::invalidate_record` calls, each of which chains the
+                    // key sets of all three cache tiers and filters -- so the loop above walked the
+                    // whole cache twice per key. #1907 measured that at 15,996,000 cache-entry visits
+                    // for one 4,000-key round on a warm store, inside this guard.
                     //
-                    // SAFE BECAUSE THE DELETIONS ARE ALREADY DURABLE BY REPLAY, which is the same
-                    // ground the write path's deferred index sync stands on and the same sentence
-                    // the compaction flush beside this one states: "An expiry sweep and a
-                    // delete_drop eviction both write a WAL tombstone per key before they flush,
-                    // so a flush that lands late, lands stale, or never lands is re-derived by
-                    // replay." The exact-record tombstones went in above, under this guard, and
-                    // `applied_wal_sequence` is anchored past them, so a skipped checkpoint costs
-                    // a longer replayed WAL suffix and nothing else.
+                    // The swept namespaces do not vary by key, so the walk does not have to be
+                    // repeated: `invalidate_records_all_batched` lists the shard's cache once and
+                    // tests each entry against this round's dropped-key set. It drops exactly the
+                    // same entries -- `one_batched_pass_walks_the_cache_once_instead_of_twice_per_\
+                    // dropped_key` proves that as a set equality against the per-key arm on a matched
+                    // fixture.
                     //
-                    // THE COUNTDOWN IS SPENT WHETHER OR NOT THE ROUND IS DUE, and reloaded only on
-                    // a flush, so the rounds between two checkpoints sum to the interval rather
-                    // than resetting whenever a round happens to be small.
-                    shard.index_flush_countdown = shard
-                        .index_flush_countdown
-                        .saturating_sub(dropped_object_count as u64);
-                    if shard.index_flush_countdown == 0 && shard.checkpoint_wal_sequence().is_some() {
-                        shard.index_flush_countdown = self.logged_deletion_index_flush_interval();
+                    // NOT DEFERRED PAST THE GUARD. #1907 priced that and refused it: `cached_response`
+                    // is cache-first and a record `CacheKey` carries no generation, sequence or
+                    // version stamp, so a reader in the window is answered with a value the shard has
+                    // already deleted -- 8 of 533 reads, measured. The pass moved; the guard did not.
+                    {
                         let phase = std::time::Instant::now();
-                        // THE CLONE ONLY EXISTS FOR THE ENCODE. It is here so the encode and both
-                        // writes can happen after the guard drops, so a round that is not going
-                        // to encode has nothing to clone -- which is most of the saving on a
-                        // large shard, not an incidental extra.
-                        let publication = self.checkpoint_publications.capture(shard_id);
-                        pending_index_flush = Some((shard.clone(), publication));
-                        DELETE_DROP_GUARD_NANOS
-                            .add_since(&DELETE_DROP_GUARD_NANOS.snapshot, phase);
+                        invalidate_records_all_batched(
+                            &self.cache,
+                            shard_id,
+                            &deleted_keys,
+                            &CACHE_SWEEP_COUNTS,
+                        );
+                        DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.invalidate, phase);
+                    }
+                    if dropped_object_count > 0 {
+                        // A delete_drop eviction is a LOGICAL delete, so it must follow the same
+                        // durability discipline as the expiry sweep (recovery_sweep_compact.rs), which
+                        // is the codebase's other logged deletion. Emitting no WAL tombstone here left
+                        // the deletion (a) invisible to followers (never replicated), and (b) under
+                        // MATRIXARK_BULK_INGEST -- where persist_index_bytes is a no-op -- neither
+                        // persisted NOR recoverable from the WAL, so the key resurrected on reload when
+                        // replay reapplied the earlier SET. Emit bounded exact-record tombstone
+                        // batches (buffered/unfsynced, matching the expiry sweep) and anchor
+                        // applied_wal_sequence past them so replay observes the deletion instead of the
+                        // stale write. (eviction never deletes -- it only dumps and drops from cache -- so
+                        // there is no analog; this aligns the Rust-only delete_drop path with the
+                        // engine's own tombstone discipline.)
+                        if !replaying_wal() {
+                            let phase = std::time::Instant::now();
+                            // ONE mirror lookup for the whole run -- same reasoning as the expiry
+                            // sweep, and this loop is inside the shard-table write guard too.
+                            let result = self.append_maintenance_deletions(shard_id, shard, deletions, || {
+                                EVICTION_DELETE_DROP_WAL_APPENDS_UNDER_GUARD
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            });
+                            dropped_object_count = result.removed_keys;
+                            DELETE_DROP_GUARD_NANOS.delete.fetch_add(result.apply_ns,
+                                std::sync::atomic::Ordering::Relaxed);
+                            DELETE_DROP_GUARD_NANOS.wal_append.fetch_add(
+                                (phase.elapsed().as_nanos() as u64).saturating_sub(result.apply_ns),
+                                std::sync::atomic::Ordering::Relaxed);
+                            if let Some(err) = result.error {
+                                tracing::error!(shard_id, error = %err.message,
+                                    "delete eviction could not record its complete mutation set");
+                                deletion_log_failed = true;
+                            }
+                            let phase = std::time::Instant::now();
+                            // The receipts, not the current log tail, identify what this
+                            // guarded state includes.
+                            DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.anchor, phase);
+                        } else {
+                            let phase = std::time::Instant::now();
+                            dropped_object_count = 0;
+                            for deletion in deletions {
+                                let mut removed = false;
+                                for record in deletion.records() { removed |= delete_record_exact(shard, record); }
+                                dropped_object_count += usize::from(removed);
+                            }
+                            DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.delete, phase);
+                        }
+                        // Stamp here so the clone carries the current on-disk shape, then hand
+                        // the snapshot out; the encode and both writes happen below, unlocked.
+                        shard.index_format_version = super::SHARD_INDEX_FORMAT_VERSION;
+                        // THE CHECKPOINT IS DUE PER DELETED KEY, NOT PER ROUND.
+                        //
+                        // Re-encoding the whole served index costs about 76 bytes per RESIDENT key --
+                        // 609,692 encoded bytes to drop 2 objects at 8,000 keys, measured by
+                        // `what_one_eviction_round_writes_grows_with_the_store_not_the_round` -- so a
+                        // flush per round charges the whole store to whatever the round happened to
+                        // drop. `index_flush_countdown` spends this round's deletions against the
+                        // engine's interval and only encodes when they run it out, which bounds the
+                        // index bytes ONE deletion can be charged instead of bounding nothing.
+                        //
+                        // SAFE BECAUSE THE DELETIONS ARE ALREADY DURABLE BY REPLAY, which is the same
+                        // ground the write path's deferred index sync stands on and the same sentence
+                        // the compaction flush beside this one states: "An expiry sweep and a
+                        // delete_drop eviction both write a WAL tombstone per key before they flush,
+                        // so a flush that lands late, lands stale, or never lands is re-derived by
+                        // replay." The exact-record tombstones went in above, under this guard, and
+                        // `applied_wal_sequence` is anchored past them, so a skipped checkpoint costs
+                        // a longer replayed WAL suffix and nothing else.
+                        //
+                        // THE COUNTDOWN IS SPENT WHETHER OR NOT THE ROUND IS DUE, and reloaded only on
+                        // a flush, so the rounds between two checkpoints sum to the interval rather
+                        // than resetting whenever a round happens to be small.
+                        shard.index_flush_countdown = shard
+                            .index_flush_countdown
+                            .saturating_sub(dropped_object_count as u64);
+                        if shard.index_flush_countdown == 0 && shard.checkpoint_wal_sequence().is_some() {
+                            shard.index_flush_countdown = self.logged_deletion_index_flush_interval();
+                            let phase = std::time::Instant::now();
+                            // THE CLONE ONLY EXISTS FOR THE ENCODE. It is here so the encode and both
+                            // writes can happen after the guard drops, so a round that is not going
+                            // to encode has nothing to clone -- which is most of the saving on a
+                            // large shard, not an incidental extra.
+                            let publication = self.checkpoint_publications.capture(shard_id);
+                            pending_index_flush = Some((shard.clone(), publication));
+                            DELETE_DROP_GUARD_NANOS
+                                .add_since(&DELETE_DROP_GUARD_NANOS.snapshot, phase);
+                        }
                     }
                 }
-            }
-            drop(shards);
+                guard_held
+            });
             DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.total, guard_held);
             // `None` when this round's deletions did not run the countdown out -- see the
             // countdown above. The index-log anchor goes with the index and not without it: an
@@ -3340,13 +3338,14 @@ mod eviction_round_scale {
             let mut outcome = None;
             let release = crate::alloc_probe::Probe::start();
             {
-                let mut shards = engine.shards.write().expect("shards lock poisoned");
-                if let Some(shard) = shards.get_mut(&1) {
-                    outcome = Some(crate::engine::storage_bucket_internals::release_bucket_blocks(
-                        shard,
-                        &candidates,
-                    ));
-                }
+                engine.shards.with_state_mut(1, |shard| {
+                    if let Some(shard) = shard {
+                        outcome = Some(crate::engine::storage_bucket_internals::release_bucket_blocks(
+                            shard,
+                            &candidates,
+                        ));
+                    }
+                });
             }
             let release = release.stop().allocs;
             let outcome = outcome.expect("the shard must be present to release anything");
@@ -3902,12 +3901,10 @@ mod eviction_round_scale {
         );
         // And the anchor must actually name this round's own tombstones, in either arm. A
         // narrowing that reads a cheaper number is only equivalent if it is the SAME number.
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let anchored = shards
-            .get(&1)
-            .and_then(|shard| shard.checkpoint_wal_sequence())
+        let anchored = engine.shards.with_state(1, |shard| {
+            shard.and_then(|shard| shard.checkpoint_wal_sequence())
+        })
             .expect("the round must have anchored");
-        drop(shards);
         assert_eq!(
             anchored,
             engine.wal_store.stats(1).last_sequence,
@@ -3998,12 +3995,10 @@ mod eviction_round_scale {
              took {stats_scans} scans for {} expired keys",
             report.expired_records_removed,
         );
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let anchored = shards
-            .get(&1)
-            .and_then(|shard| shard.checkpoint_wal_sequence())
+        let anchored = engine.shards.with_state(1, |shard| {
+            shard.and_then(|shard| shard.checkpoint_wal_sequence())
+        })
             .expect("the sweep must have anchored");
-        drop(shards);
         assert_eq!(
             anchored,
             engine.wal_store.stats(1).last_sequence,
@@ -4536,16 +4531,14 @@ mod eviction_round_scale {
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     // Which keys the SHARD has already let go of, read under the shard lock.
-                    let live = {
-                        let shards = engine.shards.read().expect("engine lock poisoned");
-                        match shards.get(&1) {
-                            Some(shard) => collect_live_block_entries(shard)
+                    let Some(live) = engine.shards.with_state(1, |shard| {
+                        shard.map(|shard| {
+                            collect_live_block_entries(shard)
                                 .into_iter()
                                 .map(|entry| entry.object_key)
-                                .collect::<std::collections::BTreeSet<_>>(),
-                            None => break,
-                        }
-                    };
+                                .collect::<std::collections::BTreeSet<_>>()
+                        })
+                    }) else { break; };
                     for index in 0..OBJECTS {
                         if stop.load(Ordering::Relaxed) {
                             break;
@@ -4680,14 +4673,13 @@ mod eviction_round_scale {
         );
 
         let after = engine.cache.entries_for_shard(1);
-        let live_after = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("the shard must still be loaded");
+        let live_after = engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("the shard must still be loaded");
             collect_live_block_entries(shard)
                 .into_iter()
                 .map(|entry| entry.object_key)
                 .collect::<std::collections::BTreeSet<_>>()
-        };
+        });
         // Only keys the round actually dropped are covered by the claim. A marked key the round
         // left alone must KEEP its cache entries, and asserting emptiness for it would be
         // asserting the wrong thing.

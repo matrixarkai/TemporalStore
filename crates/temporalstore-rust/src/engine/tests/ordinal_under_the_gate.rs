@@ -64,65 +64,67 @@ fn load_on(engine: &TemporalEngine) {
 
 /// Distinct block addresses, and the block ids on them, for one set object.
 fn blocks_and_ordinals(engine: &TemporalEngine, object_key: &str) -> (usize, Vec<u64>) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-    let mut blocks = std::collections::BTreeSet::new();
-    let mut ordinals = std::collections::BTreeSet::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || !keys
-                    .live_identity(bucket.routing_bucket, *handle)
-                    .is_some_and(|(_, named)| &**named == object_key)
-                || block.deleted()
-            {
-                continue;
-            }
-            blocks.insert((
-                block.address.block_slab_id(),
-                block.address.offset(),
-                block.address.length(),
-            ));
-            if let Some(block_id) = block.address.block_id() {
-                ordinals.insert(block_id);
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+        let mut blocks = std::collections::BTreeSet::new();
+        let mut ordinals = std::collections::BTreeSet::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || !keys
+                        .live_identity(bucket.routing_bucket, *handle)
+                        .is_some_and(|(_, named)| &**named == object_key)
+                    || block.deleted()
+                {
+                    continue;
+                }
+                blocks.insert((
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                ));
+                if let Some(block_id) = block.address.block_id() {
+                    ordinals.insert(block_id);
+                }
             }
         }
-    }
-    (blocks.len(), ordinals.into_iter().collect())
+        (blocks.len(), ordinals.into_iter().collect())
+    })
 }
 
 /// Every live set entry of this object, as (element name, slab, offset, length, block_id), so a
 /// surprising entry count can be read rather than guessed at.
 fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    // `identity_of` RATHER THAN THE LIVE INVERSION, because this listing is the one that
-    // includes tombstones -- its rows print `deleted=` -- and a deleted block is named by the
-    // bucket's removal row instead of by the object lookup.
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-    let mut rows = Vec::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || !keys
-                    .identity_of(bucket, *handle, block)
-                    .is_some_and(|beside| &**beside.object_key == object_key)
-            {
-                continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        // `identity_of` RATHER THAN THE LIVE INVERSION, because this listing is the one that
+        // includes tombstones -- its rows print `deleted=` -- and a deleted block is named by the
+        // bucket's removal row instead of by the object lookup.
+        let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+        let mut rows = Vec::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || !keys
+                        .identity_of(bucket, *handle, block)
+                        .is_some_and(|beside| &**beside.object_key == object_key)
+                {
+                    continue;
+                }
+                rows.push(format!(
+                    "deleted={} element name=None slab={} off={} len={} block_id={:?}",
+                    block.deleted(),
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                    block.address.block_id()
+                ));
             }
-            rows.push(format!(
-                "deleted={} element name=None slab={} off={} len={} block_id={:?}",
-                block.deleted(),
-                block.address.block_slab_id(),
-                block.address.offset(),
-                block.address.length(),
-                block.address.block_id()
-            ));
         }
-    }
-    rows.sort();
-    rows
+        rows.sort();
+        rows
+    })
 }
 
 /// Rewrite ONE member `REWRITES` times under `gate_on`, and report what the index holds after.
@@ -151,9 +153,10 @@ fn rewrites_under(gate_on: bool) -> (usize, Vec<u64>, usize, Vec<String>) {
     // How many members the resident map holds, so a row cannot be read as correct because the
     // object vanished.
     let resident = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
-        shard.bucket_index.sets.get("ord/set").map(|m| m.len()).unwrap_or(0)
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            shard.bucket_index.sets.get("ord/set").map(|m| m.len()).unwrap_or(0)
+        })
     };
     let rows_detail = entry_rows(&engine, "ord/set");
     drop(engine);
@@ -292,48 +295,49 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
 
     // PLANT: one more live entry for the same object, over a block the resident map does not name.
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        let (start, end) = shard.routing_range();
-        let routing_bucket =
-            crate::engine::block_routing_bucket("heal/set", start, end);
-        let orphan = crate::block_store::ElementEntry::from_parts(
-            4_096, 8_192, 48, Some(7), None,
-        );
-        let planted_key: std::sync::Arc<str> = std::sync::Arc::from("heal/set");
-        let block = crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::stored_model_kind("set"), orphan, false, false);
-        // AND THE PLANT FILES THE OBJECT LOOKUP TOO, WHICH IT HAD TO START DOING.
-        //
-        // `BucketNode::insert_block` files the BUCKET's block index and nothing else -- it is handed
-        // a `BlockSlabLiveIndex` and never sees the `CoreIndex` -- so a plant that stopped there
-        // left a block the shard's object lookup does not name. While the entry carried its own
-        // copy of the identity that cost nothing: every walk read the key off the block. The walks
-        // read it from BESIDE the block now, so an unfiled block is one they cannot attribute, and
-        // `entry_rows` counted ONE where this test asserts two.
-        //
-        // IT IS THE PLANT THAT WAS WRONG, NOT THE WALK. The write path files both halves -- the
-        // obligation `fold_delta_block_items` carries a note about -- so a plant that files one is
-        // planting a state this engine does not produce, and the test would have been measuring
-        // that instead of the stale entry it is about.
-        let handle = crate::engine::state::block_index_handle(&planted_key, &block);
-        let mut bucket = shard
-            .bucket_index
-            .bucket_map
-            .get_mut(&routing_bucket)
-            .expect("the object's bucket exists after the writes above");
-        let assigned =
-            bucket.insert_block(&planted_key, block.clone(), &mut shard.bucket_index.block_slab_live);
-        assert_eq!(
-            handle, assigned,
-            "the handle the bucket filed the plant under is not the one composed from the \
-             identity beside it, so the lookup row below would name a position the block is not at"
-        );
-        // The guard reports the dirty flag when it is dropped, so its borrow of the bucket map ends
-        // here rather than at the last use.
-        drop(bucket);
-        shard
-            .bucket_index
-            .insert_object_block_lookup(routing_bucket, assigned, &planted_key, &block);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            let (start, end) = shard.routing_range();
+            let routing_bucket =
+                crate::engine::block_routing_bucket("heal/set", start, end);
+            let orphan = crate::block_store::ElementEntry::from_parts(
+                4_096, 8_192, 48, Some(7), None,
+            );
+            let planted_key: std::sync::Arc<str> = std::sync::Arc::from("heal/set");
+            let block = crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::stored_model_kind("set"), orphan, false, false);
+            // AND THE PLANT FILES THE OBJECT LOOKUP TOO, WHICH IT HAD TO START DOING.
+            //
+            // `BucketNode::insert_block` files the BUCKET's block index and nothing else -- it is handed
+            // a `BlockSlabLiveIndex` and never sees the `CoreIndex` -- so a plant that stopped there
+            // left a block the shard's object lookup does not name. While the entry carried its own
+            // copy of the identity that cost nothing: every walk read the key off the block. The walks
+            // read it from BESIDE the block now, so an unfiled block is one they cannot attribute, and
+            // `entry_rows` counted ONE where this test asserts two.
+            //
+            // IT IS THE PLANT THAT WAS WRONG, NOT THE WALK. The write path files both halves -- the
+            // obligation `fold_delta_block_items` carries a note about -- so a plant that files one is
+            // planting a state this engine does not produce, and the test would have been measuring
+            // that instead of the stale entry it is about.
+            let handle = crate::engine::state::block_index_handle(&planted_key, &block);
+            let mut bucket = shard
+                .bucket_index
+                .bucket_map
+                .get_mut(&routing_bucket)
+                .expect("the object's bucket exists after the writes above");
+            let assigned =
+                bucket.insert_block(&planted_key, block.clone(), &mut shard.bucket_index.block_slab_live);
+            assert_eq!(
+                handle, assigned,
+                "the handle the bucket filed the plant under is not the one composed from the \
+                 identity beside it, so the lookup row below would name a position the block is not at"
+            );
+            // The guard reports the dirty flag when it is dropped, so its borrow of the bucket map ends
+            // here rather than at the last use.
+            drop(bucket);
+            shard
+                .bucket_index
+                .insert_object_block_lookup(routing_bucket, assigned, &planted_key, &block);
+        })
     }
 
     let before = entry_rows(&engine, "heal/set");
@@ -348,10 +352,11 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
     );
 
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        let (start, end) = shard.routing_range();
-        crate::engine::storage_bucket_internals::rebuild_bucket_first_index(1, shard, start, end);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            let (start, end) = shard.routing_range();
+            crate::engine::storage_bucket_internals::rebuild_bucket_first_index(1, shard, start, end);
+        })
     }
 
     let after = entry_rows(&engine, "heal/set");
@@ -364,9 +369,10 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
     }
 
     let resident = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
-        shard.bucket_index.sets.get("heal/set").map(|m| m.len()).unwrap_or(0)
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            shard.bucket_index.sets.get("heal/set").map(|m| m.len()).unwrap_or(0)
+        })
     };
 
     assert_eq!(
@@ -435,26 +441,27 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
 /// object granularity rather than filtered to one field, so a planted entry the filing path failed
 /// to retire would show up as a second ordinal rather than being filtered out of sight.
 fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-    let mut ordinals = std::collections::BTreeSet::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "hash"
-                || !keys
-                    .live_identity(bucket.routing_bucket, *handle)
-                    .is_some_and(|(_, named)| &**named == object_key)
-                || block.deleted()
-            {
-                continue;
-            }
-            if let Some(block_id) = block.address.block_id() {
-                ordinals.insert(block_id);
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+        let mut ordinals = std::collections::BTreeSet::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "hash"
+                    || !keys
+                        .live_identity(bucket.routing_bucket, *handle)
+                        .is_some_and(|(_, named)| &**named == object_key)
+                    || block.deleted()
+                {
+                    continue;
+                }
+                if let Some(block_id) = block.address.block_id() {
+                    ordinals.insert(block_id);
+                }
             }
         }
-    }
-    ordinals.into_iter().collect()
+        ordinals.into_iter().collect()
+    })
 }
 
 
@@ -610,27 +617,28 @@ fn an_element_name_less_hash_entry_is_still_answered_correctly_by_get_len_and_in
     );
 
     let live_blocks = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
-        let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-        shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .flat_map(|bucket| {
-                bucket
-                    .block_index
-                    .iter()
-                    .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
-            })
-            .filter(|(routing_bucket, handle, block)| {
-                block.model_id().as_str() == "hash"
-                    && keys
-                        .live_identity(*routing_bucket, *handle)
-                        .is_some_and(|(_, named)| &**named == KEY)
-                    && !block.deleted()
-            })
-            .count()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+            shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .flat_map(|bucket| {
+                    bucket
+                        .block_index
+                        .iter()
+                        .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
+                })
+                .filter(|(routing_bucket, handle, block)| {
+                    block.model_id().as_str() == "hash"
+                        && keys
+                            .live_identity(*routing_bucket, *handle)
+                            .is_some_and(|(_, named)| &**named == KEY)
+                        && !block.deleted()
+                })
+                .count()
+        })
     };
     assert_eq!(
         2, live_blocks,
@@ -697,36 +705,37 @@ fn an_element_name_less_hash_entry_is_still_answered_correctly_by_get_len_and_in
 /// collapse the entry is nameless already, so the honest statement is a count of named ones -- and
 /// a count of zero over an object that HAS entries is a stronger claim than a plant that lands.
 fn named_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-    shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| {
-            bucket
-                .block_index
-                .iter()
-                .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
-        })
-        .filter(|(routing_bucket, handle, block)| {
-            // THE `element_name.is_some()` TERM IS GONE and this counter is structurally zero. An
-            // entry has no element name, so "how many hash entries name a field" has one answer
-            // for every fixture. It is left as a counter rather than deleted because the arms
-            // below PRINT it as a denominator beside the ordinal they are really about; each of
-            // those is restated at its own assertion.
-            //
-            // THE OBJECT TERM IS KEPT AND NOW ASKS THE LOOKUP, in the same shape as the three
-            // other walks in this file. It decides nothing while `false` stands beside it, and
-            // it is kept exactly so that this walk does not read as a different kind of walk
-            // from its siblings if the `false` ever comes out.
-            !block.deleted()
-                && block.model_id().as_str() == "hash"
-                && keys
-                    .live_identity(*routing_bucket, *handle)
-                    .is_some_and(|(_, named)| &**named == key)
-                && false
-        })
-        .count()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+        shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .flat_map(|bucket| {
+                bucket
+                    .block_index
+                    .iter()
+                    .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
+            })
+            .filter(|(routing_bucket, handle, block)| {
+                // THE `element_name.is_some()` TERM IS GONE and this counter is structurally zero. An
+                // entry has no element name, so "how many hash entries name a field" has one answer
+                // for every fixture. It is left as a counter rather than deleted because the arms
+                // below PRINT it as a denominator beside the ordinal they are really about; each of
+                // those is restated at its own assertion.
+                //
+                // THE OBJECT TERM IS KEPT AND NOW ASKS THE LOOKUP, in the same shape as the three
+                // other walks in this file. It decides nothing while `false` stands beside it, and
+                // it is kept exactly so that this walk does not read as a different kind of walk
+                // from its siblings if the `false` ever comes out.
+                !block.deleted()
+                    && block.model_id().as_str() == "hash"
+                    && keys
+                        .live_identity(*routing_bucket, *handle)
+                        .is_some_and(|(_, named)| &**named == key)
+                    && false
+            })
+            .count()
+    })
 }
