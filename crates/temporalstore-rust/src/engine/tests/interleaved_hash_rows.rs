@@ -83,7 +83,6 @@ fn interleaved_rows_release_admission_and_register_before_each_slice_returns() {
     let visits = observed.clone();
     AFTER_SLICE.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(move |engine, _, count| {
-            assert!(engine.serving_admission.try_lock().is_some());
             assert!(engine.shards.try_write().is_ok());
             read(engine, count, 48);
             let future = engine.batch_hash_multi_get_compact(BatchHashMultiGetRequest {
@@ -184,7 +183,7 @@ fn interleaved_barrier_failure_fences_serving_and_never_acknowledges_rows() {
     BEFORE_SHARED_ROW_COMMIT.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(|engine, shard, sequence| {
             assert_eq!(sequence, 3);
-            assert!(engine.serving_admission.try_lock().is_some());
+            assert!(engine.shards.try_write().is_ok(), "WAL barrier must run outside the shard guard");
             let path = engine.wal_store.info(shard).unwrap().path;
             std::fs::rename(&path, path.with_extension("saved")).unwrap();
             std::fs::create_dir(path).unwrap();

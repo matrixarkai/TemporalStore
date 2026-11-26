@@ -37,6 +37,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "=1.8.0", features = ["v4", "serde"] }
 zstd = "0.13"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "0.38.44", features = ["fs"] }
+
 [build-dependencies]
 protoc-bin-vendored = "3"
 tonic-build = "0.12"

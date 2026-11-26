@@ -237,7 +237,10 @@ impl RaftClusterInner {
                 .max(snapshot_floor.min(leader_commit_index));
             if let Some(snapshot) = leader_snapshot.clone() {
                 if node_last_log_or_snapshot_index(node) < snapshot.last_included_index {
-                    install_snapshot_state_for_role(node, snapshot);
+                    if let Err(error) = install_snapshot_state_for_role(node, snapshot) {
+                        tracing::error!(%error, "snapshot catch-up refused");
+                        continue;
+                    }
                 }
             }
             node.log = leader_log

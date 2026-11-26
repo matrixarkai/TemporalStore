@@ -357,13 +357,21 @@ impl TemporalEngine {
     }
 
     fn read_index_base(&self, shard_id: ShardId) -> Option<(ShardState, bool)> {
+        self.read_index_base_with(shard_id, crate::engine::decode_index_bytes)
+    }
+
+    fn read_index_base_with(
+        &self,
+        shard_id: ShardId,
+        decode: fn(&[u8]) -> Result<ShardState, String>,
+    ) -> Option<(ShardState, bool)> {
         let read = fs::read(self.index_path(shard_id));
         let base_present = read.is_ok();
         // The base snapshot is materialized only at compaction/unload, so a crash before the
         // first compaction leaves no base -- start empty and rebuild from the index-log
         // deltas below.
         let shard = match read {
-            Ok(bytes) => match crate::engine::decode_index_bytes(&bytes) {
+            Ok(bytes) => match decode(&bytes) {
                 Ok(shard) => {
                     note_index_load(IndexLoadPath::Accepted);
                     shard
@@ -452,16 +460,16 @@ impl TemporalEngine {
         shard_id: ShardId,
         warm_cache: bool,
     ) -> (Option<ShardState>, u64, Option<crate::index_log::MetaItem>) {
-        let base = self.read_index_base(shard_id);
+        let base = self.read_index_base_with(shard_id, crate::engine::decode_index_bytes_inner);
         let mut watermark = base.as_ref().and_then(|(state, _)| state.applied_wal_sequence).unwrap_or(0);
         let mut selected = base.map(|(state, present)| (state, present, false));
         // Use the highest durable WAL frontier, not the last manifest in index-log order:
         // WAL reclamation can already have removed records covered by an earlier manifest.
-        if let Some(manifest) = durable_recovery_bucket_dump_manifest_at(&self.index_dir, shard_id)
+        if let Some(manifest) = durable_recovery_bucket_dump_manifest_shared_at(&self.index_dir, shard_id)
             .filter(|manifest| manifest.wal_sequence > watermark)
         {
             match installable_image(&manifest).map_err(|error| error.to_string())
-                .and_then(crate::engine::decode_index_bytes)
+                .and_then(crate::engine::decode_index_bytes_inner)
             {
                 Ok(state) => {
                     watermark = manifest.wal_sequence;
@@ -474,6 +482,9 @@ impl TemporalEngine {
             let catalog = self.index_log_store.recover_delta_records(shard_id, |_| {}).ok().flatten();
             return (None, watermark, catalog);
         };
+        if present {
+            crate::engine::state::repack_decoded_btrees(&mut state);
+        }
         let catalog = self.fold_relocations_and_catalog(shard_id, &mut state);
         let loaded = if from_manifest {
             rebuild_unserialized_model_maps_from_bucket_index(&mut state);

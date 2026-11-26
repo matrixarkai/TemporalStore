@@ -159,6 +159,8 @@ fn inline_release_keeps_mixed_owners_resident_and_a_reload_restores_an_unnamed_e
 
 #[test]
 fn inline_string_eviction_does_not_publish_or_encode_a_checkpoint() {
+    use crate::engine::storage_lifecycle_methods::EVICTION_RELEASE_RETRY_LOCKS;
+
     for async_storage in [false, true] {
         for dump_fallback in [false, true] {
             let root = tempfile::tempdir().unwrap();
@@ -173,8 +175,22 @@ fn inline_string_eviction_does_not_publish_or_encode_a_checkpoint() {
                 .filter(|bucket| bucket.dirty()).count();
             crate::engine::reset_index_encode_counts();
             crate::engine::reset_bucket_dump_manifest_io_counts();
+            let retry_locks_before = EVICTION_RELEASE_RETRY_LOCKS.with(|count| count.get());
+            let heap_by_bucket = engine.shards.read().unwrap()[&1]
+                .bucket_index.bucket_map.iter()
+                .map(|(bucket, node)| (*bucket, node.block_index.resident_heap_bytes()))
+                .collect::<BTreeMap<_, _>>();
             let report = engine.apply_storage_eviction(1, 0, 1, dump_fallback, false);
             assert_eq!(report.bucket_index_buckets_released, 1, "{report:?}");
+            assert_eq!(EVICTION_RELEASE_RETRY_LOCKS.with(|count| count.get()), retry_locks_before);
+            let released = engine.released_bucket_index_buckets(1);
+            assert_eq!(released.len(), 1);
+            let released_heap = heap_by_bucket[&released[0]];
+            assert!(released_heap > 0);
+            assert_eq!(
+                report.bucket_index_bytes_before - report.bucket_index_bytes_after,
+                released_heap,
+            );
             assert!(report.dump_manifest_ids.is_empty(), "{report:?}");
             assert_eq!(report.dropped_object_count, 0);
             assert!(report.bucket_index_bytes_after < report.bucket_index_bytes_before);

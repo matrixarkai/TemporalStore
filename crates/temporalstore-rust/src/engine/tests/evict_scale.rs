@@ -78,6 +78,7 @@ const GUARD_LARGE: usize = 8_000;
 
 /// The shipped batch limit (`DEFAULT_EVICTION_BATCH_LIMIT`).
 const BATCH: usize = 16;
+const FIXTURE_SHARD_ID: u64 = 1;
 
 fn evict_engine(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
@@ -86,7 +87,7 @@ fn evict_engine(dir: &std::path::Path) -> TemporalEngine {
         dir.join("blocks"),
         dir.join("indexes"),
     );
-    engine.load_shard(1);
+    engine.load_shard(FIXTURE_SHARD_ID);
     engine.use_sampled_eviction_for_test();
     engine
 }
@@ -149,6 +150,7 @@ fn scale_key(ordinal: usize) -> String {
 fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
     const BATCH_SIZE: usize = 500;
     let mut index = from;
+    let mut next_batch_slab = None;
     while index < to {
         let end = (index + BATCH_SIZE).min(to);
         let mut commands = Vec::new();
@@ -161,7 +163,7 @@ fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
             cursor += 1;
         }
         let response = engine.batch_execute(crate::types::BatchExecuteRequest {
-            shard_id: 1,
+            shard_id: FIXTURE_SHARD_ID,
             commands,
         });
         assert!(
@@ -169,15 +171,34 @@ fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
             "seed write failed at {index}: {:?}",
             response.status
         );
+        let (first_slab, last_slab) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = &shards[&FIXTURE_SHARD_ID];
+            let slab_of = |ordinal| {
+                shard
+                    .string_address(&scale_key(ordinal))
+                    .expect("seeded string has a block address")
+                    .block_slab_id()
+            };
+            (slab_of(index), slab_of(end - 1))
+        };
+        assert_eq!(first_slab, last_slab, "seed batch {index}..{end} crossed slabs");
+        if let Some(expected) = next_batch_slab {
+            assert_eq!(first_slab, expected, "seed batch {index}..{end} missed its new slab");
+        }
         let rolled = engine
             .block_store
-            .prepare_next_slab_with_target(1)
+            .prepare_next_slab_for_shard(FIXTURE_SHARD_ID, 1)
             .expect("rolling the block slab between seed batches");
         assert!(
             rolled.is_some(),
             "the roll after the batch ending at {end} did not happen, so this batch and the next \
              share a slab and the layout the slab-span guard depends on is not the one described"
         );
+        let rolled = rolled.unwrap();
+        assert_eq!(rolled.previous_block_slab_id, last_slab);
+        assert_ne!(rolled.new_block_slab_id, last_slab);
+        next_batch_slab = Some(rolled.new_block_slab_id);
         index = end;
     }
 }

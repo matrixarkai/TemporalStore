@@ -56,6 +56,30 @@ fn reclaim_restores_a_slab_owned_by_an_unloaded_shards_dump() {
 }
 
 #[test]
+fn fallible_page_purge_keeps_mature_slab_when_manifest_listing_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    engine.block_store.install_slab(0, b"stale").unwrap();
+    engine.block_store.install_slab(1, b"active").unwrap();
+    engine.block_store.gc_slabs_before_with_live_refs_delayed_destroy(1, [1]).unwrap();
+    engine.block_store.age_quarantine_for_reclaim_test(1);
+    engine.persist_bucket_dump_manifest(&BucketDumpManifest {
+        shard_id: 2, manifest_id: "other-shard".into(), ..Default::default()
+    }).unwrap();
+    let broken = bucket_dump_manifest_dir(&engine.index_dir, 2).join("damaged.manifest");
+    fs::write(&broken, b"broken").unwrap();
+    let request = StorageLifecycleRequest {
+        shard_id: 1, purge_delayed_destroy: true, ..Default::default()
+    };
+    assert!(engine.try_purge_storage_delayed_destroy(&request).is_err());
+    assert_eq!(engine.block_store.delayed_destroy_slab_ids().unwrap(), vec![0]);
+    fs::remove_file(broken).unwrap();
+    let recovered = engine.try_purge_storage_delayed_destroy(&request).unwrap();
+    assert_eq!(recovered.purged_block_slab_ids, vec![0]);
+    assert!(engine.block_store.delayed_destroy_slab_ids().unwrap().is_empty());
+}
+
+#[test]
 fn reclaim_refuses_a_damaged_manifest_without_discarding_recovery_candidates() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path());

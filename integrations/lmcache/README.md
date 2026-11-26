@@ -41,6 +41,22 @@ does not itself remove blob files; use adapter deletion or eviction to reclaim
 their payloads. `ttl_seconds=0` keeps metadata until it is explicitly removed.
 
 
+## Ordinary KV values (experimental)
+
+Set `storage_backend` to `"kv"` and set `data_url` and `shard_id` to a
+dedicated, already loaded datanode shard. Leave `blob_url` and `namespace`
+out of this configuration. The adapter stores each chunk under LMCache's
+encoded key as one binary string value. It uses conditional writes to keep
+the first payload, `StringLen` for lookup, and `StringGet` for reads. Reads
+require an exact destination size. `ttl_seconds` applies to the value
+itself, and an existing value keeps its original expiry.
+
+This path requires the datanode's MessagePack batch route. Its capacity
+setting limits individual chunks, and its usage counters reflect entries
+written and tracked by that adapter. Configure a dedicated test shard and
+a TTL for bounded test runs. Metaserver table discovery, replica failover,
+and cluster-wide eviction are still in development.
+
 ## Distributed vLLM deployment
 
 Run an LMCache multiprocess server beside each vLLM worker host. The vLLM
