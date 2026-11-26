@@ -1369,6 +1369,8 @@ struct GroupCommitState {
 
 #[derive(Debug, Default)]
 struct GroupCommitCoordinator {
+    // Serializes staged buffered appends for this stream without blocking durability or retention.
+    buffered_append: Mutex<()>,
     state: Mutex<GroupCommitState>,
     // No barrier or append-lock wait under this mutex. The active rename
     // holds it only while publishing the new file name.
@@ -1912,45 +1914,75 @@ impl LocalWriteAheadLogStore {
         if !wal_group_write_enabled() {
             return self.append_for_group_commit_unbuffered(shard_id, command, outcomes, staged_blocks);
         }
-        let mut inner = self.lock_inner_raw();
-        let batch_open = inner
-            .pending_by_shard
-            .get(&shard_id)
-            .is_some_and(|pending| !pending.bytes.is_empty());
-        // The cross-process append lock and the on-disk probes establish where the log really
-        // ends, and they are needed ONCE per batch: while a batch is open this process already
-        // owns the tail, so the cached sequence and the logical end are authoritative and the
-        // `flock` pair, the two `stat`s and the one-byte probe are skipped. The lock is taken
-        // again, around the write, when the batch is flushed.
-        let _append_lock = if batch_open {
-            None
-        } else {
-            let lock = WalAppendLock::acquire(&mut inner, shard_id)?;
-            let known_len = ensure_active_wal_segment_len(&mut inner, shard_id)?;
-            let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append_known(
-                &mut inner,
-                shard_id,
-                self.flat_append(),
-                known_len,
-            )?;
-            inner.last_sequence_by_shard.insert(shard_id, last_sequence);
-            Some(lock)
-        };
-        let last_sequence = inner
-            .last_sequence_by_shard
-            .get(&shard_id)
-            .copied()
-            .unwrap_or_default();
-        let seq = last_sequence.saturating_add(1);
-        let rec = WriteAheadLogRecord {
+        let coordinator = self.group_commit_coordinator(shard_id);
+        let append = coordinator.buffered_append.lock().expect("WAL buffered append poisoned");
+        let mut rec = WriteAheadLogRecord {
             shard_id,
-            sequence: seq,
+            sequence: 0,
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command: record_command(command, &outcomes, !staged_blocks.is_empty()),
             staged_blocks,
             outcomes,
         };
-        let offset = match buffer_record_locked(&mut inner, &rec)? {
+        let mut inner = self.lock_inner_raw();
+        let mut frame = std::mem::take(&mut inner.encode_scratch);
+        let warm = buffered_append_position(&inner, shard_id);
+        let mut encoded = false;
+        let mut _append_lock = None;
+        if let Some((last, generation)) = warm {
+            rec.sequence = last.saturating_add(1);
+            drop(inner);
+            #[cfg(test)]
+            BEFORE_WARM_WAL_FRAME.with(|slot| {
+                if let Some(wait) = slot.borrow_mut().take() {
+                    wait();
+                }
+            });
+            let result = encode_buffered_record(&rec, &mut frame);
+            inner = self.lock_inner_raw();
+            if let Err(error) = result {
+                recycle_encode_scratch(&mut inner, frame);
+                return Err(error);
+            }
+            // A barrier may have drained the old pending bytes. The logical append
+            // still follows the same sequence if no writer or replacement advanced it.
+            encoded = inner.append_lock_by_shard.contains_key(&shard_id)
+                && inner.verified_len_by_shard.contains_key(&shard_id)
+                && inner.last_sequence_by_shard.get(&shard_id).copied() == Some(last)
+                && inner.gc_epoch_by_shard.get(&shard_id).copied() == generation;
+        }
+        if !encoded {
+            // Cold or invalidated capture. Reconcile using the existing owner path while
+            // serializing publication with other writers that do not use this scratch.
+            let last = match buffered_append_position(&inner, shard_id) {
+                Some((last, _)) => last,
+                None => {
+                    _append_lock = Some(WalAppendLock::acquire(&mut inner, shard_id)?);
+                    let known_len = ensure_active_wal_segment_len(&mut inner, shard_id)?;
+                    let (last, _) = resolve_last_sequence_for_append_known(
+                        &mut inner, shard_id, self.flat_append(), known_len,
+                    )?;
+                    inner.last_sequence_by_shard.insert(shard_id, last);
+                    #[cfg(all(test, unix))]
+                    AFTER_COLD_WAL_RECONCILE.with(|slot| {
+                        if let Some(check) = slot.borrow_mut().take() {
+                            check();
+                        }
+                    });
+                    last
+                }
+            };
+            rec.sequence = last.saturating_add(1);
+            if let Err(error) = encode_buffered_record(&rec, &mut frame) {
+                recycle_encode_scratch(&mut inner, frame);
+                return Err(error);
+            }
+        }
+        let seq = rec.sequence;
+        let buffered = buffer_record_locked(&mut inner, &rec, &frame);
+        recycle_encode_scratch(&mut inner, frame);
+        drop(append);
+        let offset = match buffered? {
             Some(offset) => offset,
             None => {
                 // The record crosses a block boundary, where a footer has to be written at a
@@ -5859,7 +5891,44 @@ fn append_record_locked(
     append_record_locked_on(inner, record, sync, known_offset, None)
 }
 
-/// Frame `record` and add it to the shard's write buffer. Returns the file offset it will occupy,
+#[cfg(test)]
+thread_local! {
+    static BEFORE_WARM_WAL_FRAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    static AFTER_COLD_WAL_RECONCILE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn buffered_append_position(inner: &WriteAheadLogInner, shard_id: ShardId) -> Option<(u64, Option<u64>)> {
+    if !inner.append_lock_by_shard.contains_key(&shard_id)
+        || !inner.verified_len_by_shard.contains_key(&shard_id)
+    {
+        return None;
+    }
+    inner.pending_by_shard.get(&shard_id).filter(|pending| !pending.bytes.is_empty())?;
+    Some((
+        inner.last_sequence_by_shard.get(&shard_id).copied()?,
+        inner.gc_epoch_by_shard.get(&shard_id).copied(),
+    ))
+}
+
+fn encode_buffered_record(record: &WriteAheadLogRecord, bytes: &mut Vec<u8>) -> Result<(), WriteAheadLogError> {
+    if crate::log_framing::binary_frame_enabled() {
+        crate::wal_proto::encode_binary_frame_into(record, bytes).map_err(|err| {
+            WriteAheadLogError::Corruption(format!("engine wal record encode failed: {err}"))
+        })?;
+    } else {
+        let payload = encode_wal_payload(record)?;
+        crate::log_framing::encode_record_into(&payload, bytes);
+    }
+    Ok(())
+}
+
+/// Add an encoded record to the shard's write buffer. Returns the file offset it will occupy,
 /// or `None` when it has to take the unbuffered path (it crosses a block boundary, where a footer
 /// is written at a computed offset, or the log's end is not known yet).
 ///
@@ -5869,6 +5938,7 @@ fn append_record_locked(
 fn buffer_record_locked(
     inner: &mut WriteAheadLogInner,
     record: &WriteAheadLogRecord,
+    bytes: &[u8],
 ) -> Result<Option<u64>, WriteAheadLogError> {
     let shard_id = record.shard_id;
     let Some(flushed_end) = inner.verified_len_by_shard.get(&shard_id).copied() else {
@@ -5880,18 +5950,6 @@ fn buffer_record_locked(
         .map_or(0, |pending| pending.bytes.len() as u64);
     let offset = flushed_end.saturating_add(pending_len);
     let path = active_wal_path(inner, shard_id);
-    let mut bytes = std::mem::take(&mut inner.encode_scratch);
-    if crate::log_framing::binary_frame_enabled() {
-        if let Err(err) = crate::wal_proto::encode_binary_frame_into(record, &mut bytes) {
-            recycle_encode_scratch(inner, bytes);
-            return Err(WriteAheadLogError::Corruption(format!(
-                "engine wal record encode failed: {err}"
-            )));
-        }
-    } else {
-        let payload = encode_wal_payload(record)?;
-        crate::log_framing::encode_record_into(&payload, &mut bytes);
-    }
     let uses_blocks = shard_uses_blocks(inner, shard_id, &path)?;
     if uses_blocks {
         let (_, header_len) = cached_wal_base(inner, shard_id)?;
@@ -5899,7 +5957,6 @@ fn buffer_record_locked(
             let relative = offset - header_len;
             let data_end = block_data_end(block_of(relative));
             if relative + bytes.len() as u64 > data_end && relative <= data_end {
-                recycle_encode_scratch(inner, bytes);
                 return Ok(None);
             }
         }
@@ -5909,7 +5966,7 @@ fn buffer_record_locked(
     if pending.bytes.is_empty() {
         pending.start = flushed_end;
     }
-    pending.bytes.extend_from_slice(&bytes);
+    pending.bytes.extend_from_slice(bytes);
     inner.pending_total += size;
     if inner.block_mode_by_shard.get(&shard_id).copied().unwrap_or(false) {
         inner
@@ -5922,7 +5979,6 @@ fn buffer_record_locked(
     note_appended_bytes(inner, shard_id, record.sequence, size as u64);
     *inner.undumped_objects_by_shard.entry(shard_id).or_default() +=
         record.outcomes.len().max(1) as u64;
-    recycle_encode_scratch(inner, bytes);
     Ok(Some(offset))
 }
 
@@ -15135,6 +15191,107 @@ mod selected_flush_tests {
             assert_eq!(LocalWriteAheadLogStore::new(root.path())
                 .scan(1, 0, u64::MAX, u64::MAX).unwrap().len(), 1);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cold_buffered_append_keeps_process_ownership_through_adoption() {
+        const CHILD_ROOT: &str = "TS_TEST_WAL_COLD_APPEND_CHILD_ROOT";
+        const CHILD_OUTCOME: &str = "TS_TEST_WAL_COLD_APPEND_CHILD_OUTCOME";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let store = LocalWriteAheadLogStore::new(std::path::PathBuf::from(root));
+            let result = store.append_with_sync(1, command(2), false);
+            if std::env::var(CHILD_OUTCOME).as_deref() == Ok("refused") {
+                let Err(WriteAheadLogError::Io(error)) = result else {
+                    panic!("second process did not get the WAL ownership error: {result:?}");
+                };
+                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+                assert_eq!(error.to_string(), WAL_DIRECTORY_OWNED_BY_ANOTHER_PROCESS);
+            } else {
+                assert_eq!(result.unwrap().sequence, 2);
+                assert_eq!(store.flush(1).unwrap().last_sequence, 2);
+            }
+            return;
+        }
+
+        let _case = ReplacementCase::new();
+
+        let root = tempfile::tempdir().unwrap();
+        let child_root = root.path().to_path_buf();
+        let run_child = move |outcome: &str| {
+            let name = concat!(module_path!(), "::cold_buffered_append_keeps_process_ownership_through_adoption");
+            let filter = name.split_once("::").unwrap().1;
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([filter, "--exact", "--test-threads=1"])
+                .env(CHILD_ROOT, &child_root)
+                .env(CHILD_OUTCOME, outcome)
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stdout));
+            assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+        };
+        let during_adoption = run_child.clone();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        AFTER_COLD_WAL_RECONCILE.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || during_adoption("refused")));
+        });
+        let previous = GROUP_WRITE_OVERRIDE.with(|mode| mode.replace(Some(true)));
+        let result = store.append_for_group_commit(1, command(1), vec![], vec![]);
+        GROUP_WRITE_OVERRIDE.with(|mode| mode.set(previous));
+        assert_eq!(result.unwrap().sequence, 1);
+        AFTER_COLD_WAL_RECONCILE.with(|slot| assert!(slot.borrow().is_none()));
+        assert_eq!(store.flush(1).unwrap().last_sequence, 1);
+        drop(store);
+        run_child("admitted");
+        let reopened = LocalWriteAheadLogStore::new(root.path());
+        assert_eq!(reopened_sequences(&reopened), vec![1, 2]);
+    }
+
+    #[test]
+    fn warm_buffer_encoding_allows_peer_append_and_revalidates_same_stream() {
+        let _case = ReplacementCase::new();
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        let append = |store: &LocalWriteAheadLogStore, shard, value| {
+            store.append_for_group_commit(shard, command(value), vec![], vec![]).unwrap().sequence
+        };
+        assert_eq!(append(&store, 1, 1), 1);
+        let worker = store.clone();
+        let (waiting, parked) = std::sync::mpsc::channel();
+        let (resume, wait) = std::sync::mpsc::channel();
+        let writing = std::thread::spawn(move || {
+            let _case = ReplacementCase::new();
+            BEFORE_WARM_WAL_FRAME.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    waiting.send(()).unwrap();
+                    wait.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+                }));
+            });
+            append(&worker, 1, 3)
+        });
+        parked.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let peer = store.clone();
+        let (finished, peer_result) = std::sync::mpsc::channel();
+        let peer_worker = std::thread::spawn(move || {
+            let _case = ReplacementCase::new();
+            assert_eq!(append(&peer, 2, 1), 1);
+            peer.flush(2).unwrap();
+            assert_eq!(peer.append_with_sync(1, command(2), false).unwrap().sequence, 2);
+            finished.send(()).unwrap();
+        });
+        let progress = peer_result.recv_timeout(std::time::Duration::from_secs(10));
+        let _ = resume.send(());
+        peer_worker.join().unwrap();
+        progress.expect("peer append and same-stream intervening write must progress during encoding");
+        assert_eq!(writing.join().unwrap(), 3);
+        store.flush(1).unwrap();
+        drop(store);
+        let reopened = LocalWriteAheadLogStore::new(root.path());
+        assert_eq!(reopened_sequences(&reopened), vec![1, 2, 3]);
+        let (peer_rows, truncated) = reopened.scan_decoded(2, 0, u64::MAX, u64::MAX).unwrap();
+        assert!(!truncated);
+        assert_eq!(peer_rows.len(), 1);
+        assert_eq!(peer_rows[0].1.sequence, 1);
     }
 
     #[test]
