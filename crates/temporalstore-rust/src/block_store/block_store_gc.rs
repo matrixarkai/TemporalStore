@@ -15,21 +15,21 @@ impl BlockStore {
     /// Idempotent, and the last publish wins. Cheap: one map, once per maintenance round, sized
     /// by SLABS rather than by blocks.
     pub fn publish_live_block_bytes(&self, live: BTreeMap<u64, BlockStoreSlabLive>) {
+        let live = Arc::new(live);
         let retired = {
             let mut inner = self.inner.lock().expect("block store lock poisoned");
             inner.live_block_bytes.replace(live)
         };
-        // Destroy the previous snapshot after releasing the catalog guard.
         drop(retired);
     }
 
     /// What was last published, or `None` if nothing ever was.
     pub fn published_live_block_bytes(&self) -> Option<BTreeMap<u64, BlockStoreSlabLive>> {
-        self.inner
-            .lock()
-            .expect("block store lock poisoned")
-            .live_block_bytes
-            .clone()
+        let snapshot = {
+            let inner = self.inner.lock().expect("block store lock poisoned");
+            inner.live_block_bytes.clone()
+        };
+        snapshot.map(|live| (*live).clone())
     }
 
     /// Whether the collector is worth running now: the live fraction over noncurrent slabs
@@ -69,7 +69,7 @@ impl BlockStore {
     /// stand, so a caller can tell "no live pages" from "no tally".
     pub fn slab_live_fractions(&self) -> Result<Vec<BlockStoreSlabLiveFraction>, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        let published = inner.live_block_bytes.clone().unwrap_or_default();
+        let published = inner.live_block_bytes.as_deref();
         let mut out = Vec::new();
         for block_slab_id in slab_ids_at(&inner.root)? {
             let physical_bytes = slab_path(&inner.root, block_slab_id)
@@ -82,7 +82,7 @@ impl BlockStore {
                 .map(|slab| slab.logical_bytes)
                 .filter(|bytes| *bytes > 0)
                 .unwrap_or(physical_bytes);
-            let live = published.get(&block_slab_id).copied().unwrap_or_default();
+            let live = published.and_then(|tally| tally.get(&block_slab_id)).copied().unwrap_or_default();
             // Capped at the denominator. A live block can be counted at its logical length while
             // the slab total was written before that block was rewritten in place, and a fraction
             // above 1 is never a useful reading.

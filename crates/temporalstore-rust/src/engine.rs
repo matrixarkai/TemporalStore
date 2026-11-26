@@ -3686,6 +3686,14 @@ impl TemporalEngine {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn match_eviction_test_recency(&self, shard_id: ShardId) {
+        self.fold_fast_read_recency_for_shard(shard_id);
+        self.shards.with_state_mut(shard_id, |state| {
+            state.expect("fixture shard").bucket_recency.clear();
+        });
+    }
+
     /// The buckets currently released on this shard, in routing order.
     pub fn released_bucket_index_buckets(&self, shard_id: ShardId) -> Vec<u32> {
         self.shards.with_state(shard_id, |shard| {
