@@ -195,7 +195,7 @@ pub(crate) fn set_slice_boundary_for_test(hook: Option<Box<dyn FnMut(&TemporalEn
 }
 
 impl TemporalEngine {
-    pub(super) fn pass_slot(&self, shard_id: ShardId) -> PassSlot {
+    pub(in crate::engine) fn pass_slot(&self, shard_id: ShardId) -> PassSlot {
         Arc::clone(
             self.compaction_passes
                 .lock()
