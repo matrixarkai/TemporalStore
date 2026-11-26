@@ -570,26 +570,56 @@ fn terminal_receipt_case(keys: usize, fail_tail: bool) -> (String, Vec<usize>) {
         .map(|(key, value)| Command::StringSet { key: key.clone(), value: value.clone() })
         .collect();
     assert!(engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands }).status.ok);
-    let drain = engine.block_store.slab_ids().unwrap().into_iter().collect();
+    let drain: BTreeSet<u64> = engine.block_store.slab_ids().unwrap().into_iter().collect();
     engine.block_store.roll_slab_for_shard(1).unwrap();
 
     PASS_SUMMARY.with(|receipt| receipt.take());
     FAIL_FINAL_RELOCATION_APPEND.with(|fail| fail.set(fail_tail));
-    engine.compact_shard_blocks_draining_sliced(1, drain, 32).unwrap();
+    engine.compact_shard_blocks_draining_sliced(1, drain.clone(), 32).unwrap();
     assert!(!FAIL_FINAL_RELOCATION_APPEND.with(|fail| fail.replace(false)),
         "the final relocation append was never reached");
     let receipt = PASS_SUMMARY.with(|receipt| receipt.take()).expect("terminal receipt");
     let mut batches = Vec::new();
+    let mut destinations = BTreeSet::new();
     engine.index_log_store.for_each_delta_record_above_anchor(1, 0, 0, |record| {
         if !record.relocated_from.is_empty() {
             assert_eq!(record.relocated_from.len(), record.items.len());
             batches.push(record.items.len());
+            for item in &record.items {
+                let address = item.entry.as_ref().expect("relocation names a destination");
+                assert!(destinations.insert((address.block_slab_id(), address.offset(), address.length())),
+                    "each selected string has a distinct recorded destination");
+            }
         }
     }).unwrap();
     drop(engine);
     let reopened = open(dir.path());
-    assert_every_key_reads(&reopened, &expected, "after terminal receipt");
+    for (key, value) in &expected {
+        assert_eq!(read(&reopened, key).as_ref(), Some(value), "after terminal receipt: {key}");
+    }
     assert_index_agrees(&reopened, "after terminal receipt");
+    {
+        let shards = reopened.shards.read().unwrap();
+        let shard = shards.get(&1).expect("reopened shard");
+        let indexed: BTreeSet<_> = collect_live_block_entries(shard).into_iter()
+            .filter(|entry| !entry.deleted)
+            .map(|entry| (entry.object_key.to_string(), entry.address.block_slab_id(),
+                          entry.address.offset(), entry.address.length()))
+            .collect();
+        let served: BTreeSet<_> = expected.keys().map(|key| {
+            let address = shard.string_address(key).expect("reopened string address");
+            assert!(!drain.contains(&address.block_slab_id()), "{key} still names a source slab");
+            let extent = (address.block_slab_id(), address.offset(), address.length());
+            if !fail_tail {
+                assert!(destinations.contains(&extent), "{key} has no durable relocation record");
+            }
+            (key.clone(), extent.0, extent.1, extent.2)
+        }).collect();
+        assert_eq!(indexed, served, "the reopened index must name every relocated string exactly");
+    }
+    if fail_tail {
+        assert!(destinations.is_empty(), "the final append failure should use the published image");
+    }
     (receipt, batches)
 }
 
