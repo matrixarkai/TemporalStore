@@ -951,7 +951,7 @@ impl From<ObjectSlotWire> for ObjectSlot {
 /// THE ONE-BYTE SIZE CLASS: a four-bit exponent and a four-bit mantissa, rounded to nearest.
 ///
 /// Code 0 means "no class recorded". Otherwise the value is `(16 + m) << e` for `e` in 0..16 and
-/// `m` in 0..16, which spans 16 B to 1,015,808 B in steps of one sixteenth -- a worst-case 3.1%
+/// `m` in 0..16, which spans 16 B to 983,040 B in steps of one sixteenth -- a worst-case 3.1%
 /// per object, and less in a sum because the roundings go both ways. Measured at 1.5% on a corpus
 /// of lengths chosen to fall between classes.
 ///
@@ -963,22 +963,18 @@ impl From<ObjectSlotWire> for ObjectSlot {
 /// Lengths above the top class SATURATE there. Stated rather than hidden: the exponent would widen
 /// if the corpus needed it, and `logical_size_saturates_at_the_top_class` holds the boundary.
 fn classify_logical_size(len: u64) -> u8 {
+    const MAX_SIZE: u64 = 30 << 15;
     if len == 0 {
         return 0;
     }
-    let mut best_code: u8 = 1;
-    let mut best_error = u64::MAX;
-    for code in 1u16..=255 {
-        let exponent = (code - 1) >> 4;
-        let mantissa = (code - 1) & 15;
-        let value = (16u64 + mantissa as u64) << exponent;
-        let error = value.abs_diff(len);
-        if error < best_error {
-            best_error = error;
-            best_code = code as u8;
-        }
-    }
-    best_code
+    let clamped = len.clamp(16, MAX_SIZE);
+    let exponent = clamped.ilog2() - 4;
+    let step = 1_u64 << exponent;
+    let lower = clamped >> exponent;
+    // The lower code wins an exact tie. Rounding 31 up advances to the
+    // first code of the next exponent.
+    let rounded = lower + u64::from((clamped % step) > step / 2);
+    (1 + 16 * u64::from(exponent) + rounded - 16) as u8
 }
 
 /// The inverse of [`classify_logical_size`]. `None` for code 0, which means "no class recorded".
@@ -2014,6 +2010,21 @@ mod what_moving_one_kinds_refs_onto_its_record_would_cost {
         // so the number is recorded and a later shape change has to re-run it rather than inherit
         // a claim.
         assert!(pair > 0 && layout_inline > 0, "the shapes have a size");
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn logical_size_classes_keep_midpoints_and_saturation() {
+    assert_eq!(classify_logical_size(0), 0);
+    assert_eq!(classify_logical_size(1), 1);
+    assert_eq!(classify_logical_size(u64::MAX), 255);
+    for code in 1..255_u8 {
+        let lower = declass_logical_size(code).unwrap();
+        let upper = declass_logical_size(code + 1).unwrap();
+        let midpoint = lower + (upper - lower) / 2;
+        assert_eq!(classify_logical_size(midpoint), code);
+        assert_eq!(classify_logical_size(midpoint + 1), code + 1);
     }
 }
 

@@ -113,10 +113,15 @@ impl SingleNodeMeta {
             }
             _ => {}
         }
-        if request.old_topology_version >= table.info.topology_version {
+        let mut table_info = table.info.clone();
+        let last = table_info.first_shard_id.saturating_add(table_info.shard_count.saturating_sub(1));
+        if state.data_raft_reporters.range(table_info.first_shard_id..=last).next().is_some() {
+            table_info.topology_version = state.topology_version;
+        }
+        if request.old_topology_version >= table_info.topology_version {
             return TableTopologyResponse {
                 status: Status::ok(),
-                table: Some(table.info.clone()),
+                table: Some(table_info),
                 shards: Vec::new(),
                 unchanged: true,
             };
@@ -136,7 +141,7 @@ impl SingleNodeMeta {
         self.metrics.record_placement(short);
         TableTopologyResponse {
             status: Status::ok(),
-            table: Some(table.info.clone()),
+            table: Some(table_info),
             shards,
             unchanged: false,
         }
