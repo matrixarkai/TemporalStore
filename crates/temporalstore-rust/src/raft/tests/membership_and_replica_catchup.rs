@@ -91,6 +91,104 @@ fn raft_chunks_large_sequence_add_under_default_entry_limit() {
     );
 }
 
+fn partial_chunk_window_fixture() -> (
+    RaftCluster, AppendEntriesRequest, Command, Vec<SequenceFeatureRow>,
+) {
+    let config = RaftConfig::default();
+    let limit = config.max_memory_replicate_log_bytes;
+    assert_eq!(limit, 32_768);
+    let cluster = RaftCluster::new_single_shard_with_config(1, [1, 2, 3], config).unwrap();
+    let mut chunks = split_command_for_raft_limit(Command::SequenceAdd {
+        key: "distributed-long-sequence".to_string(),
+        rows: long_sequence_rows(5_000),
+    }, limit).unwrap().into_iter();
+    let seed = chunks.next().unwrap();
+    let next = chunks.next().expect("the real corpus must require multiple entries");
+    let mut expected = match &seed {
+        Command::SequenceAdd { rows, .. } => rows.clone(),
+        _ => unreachable!(),
+    };
+    match &next {
+        Command::SequenceAdd { rows, .. } => expected.extend(rows.iter().cloned()),
+        _ => unreachable!(),
+    }
+    let seed_bytes = command_size_bytes(&seed);
+    let next_bytes = command_size_bytes(&next);
+    assert!(seed_bytes > 0 && seed_bytes < limit);
+    assert!(next_bytes <= limit && seed_bytes + next_bytes > limit);
+
+    // Commit the first real chunk to 1+3, then reserve its catch-up request to 2.
+    // Hold that request, rather than sleeping or inventing pipeline counters.
+    cluster.set_alive(2, false).unwrap();
+    cluster.propose(seed).unwrap();
+    cluster.set_alive(2, true).unwrap();
+    let held = cluster.build_append_entries_request(2).unwrap();
+    assert_eq!(held.entries.len(), 1);
+    assert_eq!(command_size_bytes(&held.entries[0].command), seed_bytes);
+    assert_eq!(cluster.commit_index(1).unwrap(), 1);
+    assert_eq!(cluster.commit_index(2).unwrap(), 0);
+    assert_eq!(cluster.commit_index(3).unwrap(), 1);
+    // Admission really is closed to another near-limit request for this peer.
+    // The correction must preserve this refusal, not lower the payload or raise limits.
+    match cluster.build_append_entries_request(2).unwrap_err() {
+        RaftError::AppendBackpressure {
+            node_id, inflight_entries, inflight_bytes, entry_bytes, byte_limit, ..
+        } => {
+            assert_eq!((node_id, inflight_entries, inflight_bytes), (2, 1, seed_bytes));
+            assert_eq!(byte_limit, limit);
+            assert!(inflight_bytes < byte_limit);
+            assert!(inflight_bytes + entry_bytes > byte_limit);
+        }
+        other => panic!("expected a partial-window byte refusal, got {other:?}"),
+    }
+    (cluster, held, next, expected)
+}
+
+#[test]
+fn distributed_chunk_progresses_with_one_partially_charged_peer() {
+    let (cluster, held, next, expected) = partial_chunk_window_fixture();
+    cluster.propose_distributed(next, &cluster).unwrap();
+    assert_eq!(cluster.commit_index(1).unwrap(), 2);
+    assert_eq!(cluster.commit_index(3).unwrap(), 2);
+    // No new request was admitted to 2 while its previous one occupied the window.
+    assert_eq!(cluster.commit_index(2).unwrap(), 0);
+    let response = cluster.receive_append_entries(held).unwrap();
+    assert!(response.success);
+    cluster.record_append_entries_response(2, &response).unwrap();
+    cluster.catch_up(2).unwrap();
+    for node_id in [1, 2, 3] {
+        assert_eq!(cluster.commit_index(node_id).unwrap(), 2);
+        assert_eq!(cluster.read_from_replica(node_id, Command::SequenceQuery {
+            key: "distributed-long-sequence".to_string(),
+            start_ms: 1_700_000_000_000,
+            end_ms: 1_700_000_999_999,
+            count: 5_000,
+            filters: vec![],
+        }).unwrap(), CommandResponse::SequenceRows { rows: expected.clone() });
+    }
+    let inner = cluster.inner.read().unwrap();
+    assert_eq!(inner.config.max_memory_replicate_log_bytes, 32_768);
+    assert_eq!(inner.config.max_inflights_replicate, 128);
+    for node in inner.nodes.values() {
+        assert_eq!(node.log.len(), 2, "a retry appended the chunk more than once");
+        assert!(node.log.iter().all(|entry| command_size_bytes(&entry.command) <= 32_768));
+    }
+}
+
+#[test]
+fn distributed_chunk_pressure_does_not_count_as_a_quorum_ack() {
+    let (cluster, _held, next, _expected) = partial_chunk_window_fixture();
+    let transport = OneFailedFollowerTransport {
+        cluster: cluster.clone(), failed_target: 3,
+        snapshot_attempts: Arc::new(Mutex::new(0)),
+    };
+    assert_eq!(cluster.propose_distributed(next, &transport),
+        Err(RaftError::NoMajority { live: 1, required: 2 }));
+    assert_eq!(cluster.commit_index(1).unwrap(), 1);
+    assert_eq!(cluster.commit_index(2).unwrap(), 0);
+    assert_eq!(cluster.inner.read().unwrap().config.max_memory_replicate_log_bytes, 32_768);
+}
+
 #[test]
 fn distributed_raft_chunks_large_sequence_add_under_default_entry_limit() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
