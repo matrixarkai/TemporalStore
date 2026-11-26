@@ -175,10 +175,9 @@ fn the_stamp_a_reader_sees_is_the_header_and_not_the_field_inside_the_payload() 
     );
     assert_ne!(decoded.index_format_version, 7);
 
-    // THE GATE IS UNCHANGED, and this says so: a header that is not this binary's version is still
-    // refused at the decode, before a byte of the payload is read.
-    let mut older = bytes.clone();
-    older[7..11].copy_from_slice(&(SHARD_INDEX_FORMAT_VERSION - 1).to_be_bytes());
-    let refused = decode_index_bytes(&older).expect_err("an older header is refused");
+    // An unsupported header is refused before a byte of the payload is read.
+    let mut unsupported = bytes.clone();
+    unsupported[7..11].copy_from_slice(&31u32.to_be_bytes());
+    let refused = decode_index_bytes(&unsupported).expect_err("version 31 is refused");
     assert!(refused.contains("struct version"), "unhelpful refusal: {refused}");
 }

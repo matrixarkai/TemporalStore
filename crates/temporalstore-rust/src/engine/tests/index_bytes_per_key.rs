@@ -831,7 +831,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
                 shard.dirty_objects.bucket_ids().count()
             );
             let rows: Vec<(String, u64)> = vec![
-                ("strings HashMap<ModelKey, ElementEntry>".to_string(), strings_bytes),
+                ("strings ObjectRows".to_string(), strings_bytes),
                 ("features HashMap<String, BTreeMap<..>>".to_string(), features_bytes),
                 ("other model maps (hashes/sets/zsets/..)".to_string(), other_model_bytes),
                 ("context maps (nine of them)".to_string(), context_bytes),
@@ -1340,7 +1340,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
                 "  distinct shared strings: bucket index {arc_count}, dirty index {dirty_arc_count}"
             );
             let rows: [(&str, u64); 11] = [
-                ("strings HashMap<ModelKey, ElementEntry>", strings_bytes),
+                ("strings ObjectRows", strings_bytes),
                 ("features HashMap<String, BTreeMap<..>>", features_bytes),
                 ("bucket_index.bucket_map", bucket_map_bytes),
                 ("bucket_index.object_block_lookup", lookup_bytes),
@@ -10226,30 +10226,13 @@ fn what_a_dump_round_takes_out_of_the_resident_index() {
     );
 }
 
-/// THE AMPLIFICATION SET AT TWO ARMS EXACTLY 4.0x APART, AT A MATCHED TABLE PHASE.
+/// Measure resident and encoded index bytes at two corpus sizes exactly 4x apart.
 ///
-/// `the_amplification_set_in_the_published_format` reports the index's space-in-memory quadrant at
-/// one corpus. One corpus cannot say whether the figure is a property of the index or of the
-/// corpus, and `the_per_key_index_figure_is_a_sawtooth` is why two corpora usually cannot either:
-/// a hashbrown table's cost per key is a step function of n, so two arms in different phases differ
-/// by up to 2x with no constant term to give it away.
-///
-/// SO THE TWO ARMS ARE CHOSEN TO SIT AT THE SAME PHASE. 1,792 and 7,168 are both exactly 7/8 of a
-/// power of two -- the most a 2,048- and an 8,192-bucket table hold -- so both tables are at 100%
-/// usable load, and they are exactly 4.0x apart, which is the arm spacing this campaign uses. Both
-/// facts are asserted rather than arranged and trusted: if hashbrown's growth policy moves, the
-/// capacity assertion fails and says the phase match is gone.
-///
-/// AND IT IS THE STEADY STATE, NOT THE FIXTURE STATE. Measured on the shipped `0..1023` routing
-/// range rather than `load_shard`'s whole keyspace, and after a full dump round, because
-/// `what_a_dump_round_takes_out_of_the_resident_index` showed 30.6% of the published figure is the
-/// dirty index a dump empties. The shared `Arc<str>` key characters are added back in, because
-/// `deep_heap_bytes` is a clone and `Arc::clone` bumps a refcount rather than copying.
-///
-/// WHAT IT IS FOR: the asymptote. Per-bucket terms saturate at 1,024 buckets on this range, so the
-/// ratio falls with corpus size and a single reading overstates it. The two slopes -- resident
-/// bytes per key and encoded bytes per key -- give the figure a large corpus converges on, which is
-/// the number any footprint target has to be set against.
+/// Use the shipped routing range 0..1023 and weigh after a full Dump drains the
+/// dirty index. Check each canonical String owner against the seeded key set.
+/// Clone accounting excludes shared Arc key characters, which are counted
+/// separately. The two-point marginal figures describe these corpora, which
+/// can occupy different numbers of owners and different ordered tree nodes.
 ///
 /// rust-internal: measures this crate's own counters, no product behaviour
 ///
@@ -10261,9 +10244,7 @@ fn the_amplification_set_at_two_arms_four_times_apart() {
     use crate::types::{Command, ExecuteRequest};
     const VALUE: usize = 256;
     const SHIPPED_END: u32 = 1023;
-    /// 7/8 of 2,048 -- the most a 2,048-bucket table holds, so the table is exactly full.
     const ONE_X: usize = 1_792;
-    /// 7/8 of 8,192, and exactly 4.0x `ONE_X`.
     const FOUR_X: usize = 7_168;
     const TARGET: f64 = 4.0;
 
@@ -10274,7 +10255,7 @@ fn the_amplification_set_at_two_arms_four_times_apart() {
         clone_resident: u64,
         arc_bytes: u64,
         buckets: usize,
-        capacity: usize,
+        string_owners: usize,
     }
 
     let weigh = |keys: usize| -> Arm {
@@ -10304,11 +10285,30 @@ fn the_amplification_set_at_two_arms_four_times_apart() {
                 max_dump_buckets_per_round: candidates.len(),
                 ..Default::default()
             });
-        std::hint::black_box(&lifecycle);
+        let dump = lifecycle.dump_manifest.expect("the full Dump must publish a manifest");
+        assert_eq!(dump.bucket_ids, candidates, "the Dump must cover all candidate buckets");
+        let resolve = engine.routing_bucket_resolver(1);
+        let mut expected_owners = std::collections::BTreeMap::new();
+        for index in 0..keys {
+            let key = format!("amp-{index:06}");
+            expected_owners.entry(resolve(&key)).or_insert_with(Vec::new).push(key);
+        }
+        drop(resolve);
 
-        engine.shards.with_state(1, |shard_state| {
+        let arm = engine.shards.with_state(1, |shard_state| {
             let shard = shard_state.expect("shard is loaded");
-            assert_eq!(keys, shard.strings().len(), "denominator: the map must hold every key");
+            let strings = shard.strings();
+            assert_eq!(keys, strings.len(), "every seeded key must have one String row");
+            assert_eq!(keys, strings.iter().count(), "stored cardinality must match iteration");
+            for (&owner, expected) in &expected_owners {
+                let mut rows = strings.selected_strings(owner).expect("canonical String owner");
+                for key in expected {
+                    let (filed, slot) = rows.next().expect("seeded key is missing from its owner");
+                    assert_eq!(filed.as_ref(), key.as_str(), "wrong owner or key order in {owner}");
+                    assert!(std::ptr::eq(slot, strings.get(key).expect("missing key lookup")));
+                }
+                assert!(rows.next().is_none(), "unexpected rows in owner {owner}");
+            }
             assert_eq!(
                 0,
                 shard.dirty_objects.len(),
@@ -10322,26 +10322,32 @@ fn the_amplification_set_at_two_arms_four_times_apart() {
                 clone_resident: deep_heap_bytes(shard),
                 arc_bytes,
                 buckets: shard.bucket_index.bucket_map.len(),
-                capacity: shard.strings().capacity(),
+                string_owners: expected_owners.len(),
             }
-        })
+        });
+
+        drop(dump);
+        drop(engine);
+        let reopened = probe_engine_on(dir.path(), SHIPPED_END);
+        for index in 0..keys {
+            let response = reopened.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: format!("amp-{index:06}") },
+            });
+            assert!(response.status.ok, "reopen read {index}: {:?}", response.status);
+            assert_eq!(response.response, crate::types::CommandResponse::Bytes {
+                value: Some(vec![b'v'; VALUE]),
+            }, "reopen value {index}");
+        }
+        arm
     };
 
     let one = weigh(ONE_X);
     let four = weigh(FOUR_X);
 
-    // --- THE PHASE MATCH, ASSERTED. This is the premise the whole comparison rests on: a table
-    // --- holding exactly 7/8 of its buckets is at the cheapest point of the sawtooth, and both
-    // --- arms must be at it or their per-key figures are not comparable.
     for arm in [&one, &four] {
-        assert_eq!(
-            arm.keys, arm.capacity,
-            "the {}-key arm's string table reports capacity {} for {} entries. The arm sizes are \
-             chosen so that a full table holds exactly the corpus -- if hashbrown's growth policy \
-             moved, these two arms are in different phases of the sawtooth and every per-key \
-             figure below is a comparison of phases rather than of corpora.",
-            arm.keys, arm.capacity, arm.keys
-        );
+        assert!(arm.string_owners > 1 && arm.string_owners < arm.keys);
+        assert!(arm.string_owners <= SHIPPED_END as usize + 1);
     }
     assert_eq!(4 * ONE_X, FOUR_X, "the arms must be exactly 4.0x apart");
 
@@ -10350,7 +10356,7 @@ fn the_amplification_set_at_two_arms_four_times_apart() {
     let span = (FOUR_X - ONE_X) as f64;
 
     println!();
-    println!("  THE INDEX SPACE-IN-MEMORY QUADRANT, TWO ARMS 4.0x APART, BOTH TABLES EXACTLY FULL");
+    println!("  THE INDEX SPACE-IN-MEMORY QUADRANT, TWO ORDERED STRING CORPORA 4.0x APART");
     println!("  (shipped range 0..1023, after a full dump round, key characters counted)");
     println!();
     println!("    {:<40} {:>11} {:>11} {:>10}", "row", "1x (1,792)", "4x (7,168)", "slope B/k");
@@ -10361,7 +10367,8 @@ fn the_amplification_set_at_two_arms_four_times_apart() {
         println!("    {:<40} {:>11} {:>11} {:>10.1}", name, one_bytes, four_bytes, slope);
     }
     println!();
-    println!("    {:<40} {:>11} {:>11}", "buckets", one.buckets, four.buckets);
+    println!("    {:<40} {:>11} {:>11}", "routing buckets", one.buckets, four.buckets);
+    println!("    {:<40} {:>11} {:>11}", "filed String owners", one.string_owners, four.string_owners);
     println!("    {:<40} {:>11} {:>11}", "encoded image", one.image, four.image);
     println!("    {:<40} {:>11} {:>11}", "clone resident", one.clone_resident, four.clone_resident);
     println!("    {:<40} {:>11} {:>11}", "Arc<str> key characters", one.arc_bytes, four.arc_bytes);
@@ -10376,21 +10383,20 @@ fn the_amplification_set_at_two_arms_four_times_apart() {
     );
     println!("    amplification    {one_ratio:>8.3}x{four_ratio:>10.3}x");
 
-    // --- THE ASYMPTOTE, from the two slopes. Per-bucket terms are capped at 1,024 buckets on this
-    // --- range, so they stop contributing and the ratio converges on the ratio of the slopes.
+    // Report the observed marginal ratio between these two measured corpora.
     let resident_slope = (four_true - one_true) as f64 / span;
     let image_slope = (four.image - one.image) as f64 / span;
     assert!(
         image_slope > 0.0 && resident_slope > 0.0,
         "a slope came out non-positive ({resident_slope:.1} resident, {image_slope:.1} image), so \
-         the asymptote below is not a ratio of growth rates"
+         the marginal ratio is undefined"
     );
-    let asymptote = resident_slope / image_slope;
+    let marginal_ratio = resident_slope / image_slope;
     println!();
     println!(
         "    marginal: {resident_slope:.1} B/key resident over {image_slope:.1} B/key encoded"
     );
-    println!("    ASYMPTOTE: a large corpus on this structure converges on {asymptote:.2}x");
+    println!("    MARGINAL AMPLIFICATION FOR THESE CORPORA: {marginal_ratio:.2}x");
     println!();
 
     // --- WHAT REACHING 4.0x WOULD TAKE, as a number rather than an aspiration.
@@ -10429,19 +10435,17 @@ fn the_amplification_set_at_two_arms_four_times_apart() {
         one.image,
         four.image
     );
-    // --- AND THE RATIO MUST FALL BETWEEN THEM, which is the finding that makes a single reading
-    // --- of this quadrant an overstatement. If it ever rises, the per-bucket terms stopped
-    // --- saturating and the asymptote argument above does not hold.
+    // Keep the observed ratio regression check for the fixed two arms.
     assert!(
         four_ratio < one_ratio,
-        "the amplification rose from {one_ratio:.3}x at {ONE_X} keys to {four_ratio:.3}x at {FOUR_X}. It was expected to FALL, because the per-bucket rows are capped at 1,024 buckets and stop contributing as keys grow -- if it rises, something per-key grew superlinearly and the asymptote is not a bound."
+        "the measured amplification did not fall from {one_ratio:.3}x at {ONE_X} keys to {four_ratio:.3}x at {FOUR_X} keys"
     );
     // --- AND THE TARGET IS NOT ALREADY MET, so this arm says what is left to do rather than
-    // --- quietly passing. If a change ever brings the asymptote under 4.0x, this fails and says
+    // --- quietly passing. If a change ever brings the measured marginal ratio under 4.0x, this fails and says
     // --- the target is reached, which is the point at which the note above should be rewritten.
     assert!(
-        asymptote > TARGET,
-        "the asymptote is {asymptote:.2}x, at or below the {TARGET:.1}x target. That is the goal reached -- update this arm to pin the new figure and rewrite the note, rather than loosening this assertion."
+        marginal_ratio > TARGET,
+        "the measured marginal ratio is {marginal_ratio:.2}x, at or below the {TARGET:.1}x target. That is the goal reached -- update this arm to pin the new figure and rewrite the note, rather than loosening this assertion."
     );
 }
 
@@ -10455,8 +10459,8 @@ fn the_amplification_set_at_two_arms_four_times_apart() {
 ///
 /// It is **not** closed by TRIGGER, and those two had been collapsed into one claim.
 /// `the_amplification_set_at_two_arms_four_times_apart` is the authoritative figure -- resident
-/// bytes per key over the index's own ENCODED bytes per key, on two corpora at the same hashbrown
-/// phase, asserting `asymptote > 4.0` so that reaching the target turns that arm red rather than
+/// bytes per key over the index's own ENCODED bytes per key, on two ordered String corpora,
+/// asserting that the measured marginal ratio exceeds 4.0 so that reaching the target turns that arm red rather than
 /// passing quietly. **It already measures the steady state after a full dump round**, so the dump
 /// is counted in it. A RELEASE is not. That is the lever this arm drives.
 ///

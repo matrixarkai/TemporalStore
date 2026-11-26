@@ -150,8 +150,8 @@ fn a_stale_stamped_base_index_does_not_deliver_a_context_node_entry() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_at(dir.path());
     write_and_flush(&engine);
-    plant_in_base_index(dir.path(), crate::engine::SHARD_INDEX_FORMAT_VERSION - 1);
-    assert_refused_on_the_header(dir.path(), crate::engine::SHARD_INDEX_FORMAT_VERSION - 1);
+    plant_in_base_index(dir.path(), 31u32);
+    assert_refused_on_the_header(dir.path(), 31u32);
     drop(engine);
 
     reset_index_load_path_counts();
@@ -164,7 +164,7 @@ fn a_stale_stamped_base_index_does_not_deliver_a_context_node_entry() {
         decode_n > 0,
         "an index stamped {} against a current {} must be REFUSED and counted as undecodable; got \
          decode {decode_n} absent {absent_n} accepted {accepted_n}",
-        crate::engine::SHARD_INDEX_FORMAT_VERSION - 1,
+        31u32,
         crate::engine::SHARD_INDEX_FORMAT_VERSION
     );
     assert!(
@@ -245,11 +245,11 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
         "denominator: the exported image must carry the planted entry, or the install below \
          proves nothing"
     );
-    // The same payload behind a header that names the PREVIOUS struct version: the reader takes
-    // the stamp from the header, so this is what "an image an older build wrote" is.
+    // The same payload behind a header marked with unsupported version 31. The reader takes
+    // the stamp from the header, so the test isolates the refusal from payload parsing.
     manifest.index_bytes = crate::engine::encode_index_bytes_at_version(
         &image,
-        crate::engine::SHARD_INDEX_FORMAT_VERSION - 1,
+        31u32,
     );
     manifest.index_sha256 = super::super::sha256_hex_bytes(&manifest.index_bytes);
     // AND THE GENERATION ID, WHICH THE PRODUCER DERIVES FROM THE INDEX CHECKSUM, in the producer's
@@ -282,7 +282,7 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
              `decode_index_bytes`, and the header's struct version is the only comparison it \
              makes, so without it a pre-stamp image installs and its `context_nodes` entries \
              become live state. Do not relax this assertion.",
-            crate::engine::SHARD_INDEX_FORMAT_VERSION - 1,
+            31u32,
             crate::engine::SHARD_INDEX_FORMAT_VERSION
         )
     });
@@ -306,7 +306,7 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
     // stops describing the code at the next bump, and a red that means nothing is worse than no
     // guard at all -- the next real red reads as the same noise.
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
-    let stored = current - 1;
+    let stored = 31u32;
     assert!(
         refusal.message.contains("struct version")
             && refusal.message.contains(&stored.to_string())
