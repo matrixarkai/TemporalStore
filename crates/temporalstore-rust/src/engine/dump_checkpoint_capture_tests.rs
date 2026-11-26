@@ -514,7 +514,7 @@ fn loaded_manifest_install_failure_after_rename_keeps_tail_recoverable() {
         assert!(engine.checkpoint_publications.is_current_after_publish(&before));
 
         let installer = scope.spawn(|| {
-            super::super::engine_persistence::fail_closed_install_after_rename_for_test();
+            super::super::persistence::fail_closed_install_after_rename_for_test();
             engine.install_bucket_dump_manifest(&manifest)
         });
         // While this publisher remains admitted, only closing invalidates its revision.
