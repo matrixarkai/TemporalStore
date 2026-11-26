@@ -5129,7 +5129,7 @@ enum PendingDelta {
 }
 
 impl QueuedDelta {
-    fn prepare(self) -> IndexDeltaRecord {
+    fn prepare(self) -> IndexDeltaRecord<KeyState> {
         prepare_delta_record(
             self.shard_id, self.sequence, self.items, self.key_states,
             self.applied_wal_sequence, self.meta, self.upsert,
@@ -5360,7 +5360,7 @@ impl Drop for IndexLogInner {
     }
 }
 
-fn frame_expiry_delta(record: IndexDeltaRecord) -> Result<PendingDelta, IndexLogError> {
+fn frame_expiry_delta(record: IndexDeltaRecord<KeyState>) -> Result<PendingDelta, IndexLogError> {
     #[cfg(test)]
     if FAIL_EXPIRY_DELTA_PREPARE.with(|fault| fault.replace(false)) {
         return Err(IndexLogError::Encoding("injected expiry delta preparation error".into()));
@@ -5377,7 +5377,7 @@ fn frame_expiry_delta(record: IndexDeltaRecord) -> Result<PendingDelta, IndexLog
     Ok(PendingDelta::Framed { bytes, meta })
 }
 
-fn encode_pending_delta(record: &IndexDeltaRecord, payload: &mut Vec<u8>) -> Result<(), IndexLogError> {
+fn encode_pending_delta(record: &IndexDeltaRecord<KeyState>, payload: &mut Vec<u8>) -> Result<(), IndexLogError> {
     if index_log_protobuf_enabled() {
         encode_delta_protobuf_into(record, payload)
     } else {
@@ -5412,8 +5412,8 @@ fn flush_queued_locked(inner: &mut IndexLogInner) -> Result<(), IndexLogError> {
     let mut frames: Vec<FrameMeta> = Vec::with_capacity(records.len());
     let mut payload = std::mem::take(&mut inner.encode_scratch);
     let mut frame = std::mem::take(&mut inner.frame_scratch);
-    for pending in records {
-        let record = match pending {
+    for queued in records {
+        let record = match queued {
             PendingDelta::Deferred(queued) => queued.prepare(),
             PendingDelta::Framed { bytes: framed, meta } => {
                 bytes.extend_from_slice(&framed);
