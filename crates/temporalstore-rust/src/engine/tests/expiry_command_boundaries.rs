@@ -53,54 +53,59 @@ fn resp(engine: &TemporalEngine, args: &[&str]) -> RespValue {
 /// instead; sleeping past a short deadline would make the test a race. This writes the
 /// deadline straight into the shard, which is what the clock would have produced anyway.
 fn backdate(engine: &TemporalEngine, key: &str) {
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-    let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
-    crate::engine::set_expiry(shard, key.to_string(), past);
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
+        crate::engine::set_expiry(shard, key.to_string(), past);
+    })
 }
 
 /// How many live blocks the shard's index accounts for, and whether a given key's routing
 /// bucket is still one of them.
 fn index_state(engine: &TemporalEngine, key: &str) -> (usize, bool) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let bucket = crate::engine::block_routing_bucket(key, 0, u32::MAX);
-    (
-        // BOTH HOMES. An object's refs live in its slot row where it has one, so counting the
-        // lookup alone reads ZERO for a shard of strings -- which is what this helper did, and the
-        // denominator below went to 0 while the writes were registering perfectly well.
-        shard.bucket_index.objects_naming_blocks(),
-        shard.bucket_index.bucket_map.contains_key(&bucket),
-    )
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        let bucket = crate::engine::block_routing_bucket(key, 0, u32::MAX);
+        (
+            // BOTH HOMES. An object's refs live in its slot row where it has one, so counting the
+            // lookup alone reads ZERO for a shard of strings -- which is what this helper did, and the
+            // denominator below went to 0 while the writes were registering perfectly well.
+            shard.bucket_index.objects_naming_blocks(),
+            shard.bucket_index.bucket_map.contains_key(&bucket),
+        )
+    })
 }
 
 /// What the SHARD holds for a key: (the record is still there, a deadline is still recorded).
 fn shard_state(engine: &TemporalEngine, key: &str) -> (bool, bool) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    (
-        shard.strings().contains_key(key),
-        shard.expires_at_ms().contains_key(key),
-    )
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        (
+            shard.strings().contains_key(key),
+            shard.expires_at_ms().contains_key(key),
+        )
+    })
 }
 
 /// Forget which objects are waiting to be written out, so the next command's marking is the
 /// only thing the count below can be measuring. A dump does exactly this when it completes.
 fn forget_pending_writes(engine: &TemporalEngine) -> usize {
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-    shard.dirty_objects.clear();
-    shard.dirty_objects.len()
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        shard.dirty_objects.clear();
+        shard.dirty_objects.len()
+    })
 }
 
 /// How many objects are marked as needing a write, and whether this key is one of them.
 fn pending_writes(engine: &TemporalEngine, key: &str) -> (usize, bool) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    (
-        shard.dirty_objects.len(),
-        shard.dirty_objects.contains(key),
-    )
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        (
+            shard.dirty_objects.len(),
+            shard.dirty_objects.contains(key),
+        )
+    })
 }
 
 // =====================================================================================
@@ -491,15 +496,14 @@ fn expire_on_a_key_whose_deadline_is_exactly_now_is_refused() {
     }
 
     // One instant, used for the deadlines AND for the comparison, so it is exact.
-    let instant = {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    let instant = engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
         let instant = crate::engine::resolve_now_ms();
         crate::engine::set_expiry(shard, "validate:past".to_string(), instant - 1);
         crate::engine::set_expiry(shard, "validate:equal".to_string(), instant);
         crate::engine::set_expiry(shard, "validate:future".to_string(), instant + 60_000);
         instant
-    };
+    });
 
     // Frozen across all three commands below.
     let _clock = crate::engine::ReplayClockGuard::enter(Some(instant));

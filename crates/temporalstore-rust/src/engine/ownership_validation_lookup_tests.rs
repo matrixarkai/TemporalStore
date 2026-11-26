@@ -90,81 +90,83 @@ fn assert_same(shard: &ShardState, entries: &[LiveBlockEntry], start: u32, end: 
 fn ownership_validation_indexes_a_wide_bucket_once() {
     for count in [1, 128, 512] {
         let (_dir, engine) = fixture(count);
-        let shards = engine.shards.read().unwrap();
-        let shard = shards.get(&1).unwrap();
-        let entries = collect_live_block_entries(shard);
-        assert_eq!(entries.len(), count);
-        OWNERSHIP_INDEX_BLOCK_VISITS.with(|visits| visits.set(0));
-        let actual = validate_bucket_ownership_index_from_entries(1, shard, &entries, 0, u32::MAX);
-        let indexed = OWNERSHIP_INDEX_BLOCK_VISITS.with(|visits| visits.get());
-        let (expected, scanned) = scan_validation(shard, &entries, 0, u32::MAX);
-        assert_eq!(actual.missing_owner_block_refs, 0);
-        assert_eq!(actual.mismatches, expected.mismatches);
-        assert_eq!(indexed, count);
-        assert_eq!(scanned, count * (count + 1) / 2);
-        println!("ownership blocks={count} indexed_visits={indexed} scan_visits={scanned}");
+        engine.shards.with_state(1, |owner| {
+            let shard = owner.unwrap();
+            let entries = collect_live_block_entries(shard);
+            assert_eq!(entries.len(), count);
+            OWNERSHIP_INDEX_BLOCK_VISITS.with(|visits| visits.set(0));
+            let actual = validate_bucket_ownership_index_from_entries(1, shard, &entries, 0, u32::MAX);
+            let indexed = OWNERSHIP_INDEX_BLOCK_VISITS.with(|visits| visits.get());
+            let (expected, scanned) = scan_validation(shard, &entries, 0, u32::MAX);
+            assert_eq!(actual.missing_owner_block_refs, 0);
+            assert_eq!(actual.mismatches, expected.mismatches);
+            assert_eq!(indexed, count);
+            assert_eq!(scanned, count * (count + 1) / 2);
+            println!("ownership blocks={count} indexed_visits={indexed} scan_visits={scanned}");
+        });
     }
 }
 
 #[test]
 fn ownership_validation_preserves_missing_and_misfiled_reports() {
     let (_dir, engine) = fixture(32);
-    let mut shards = engine.shards.write().unwrap();
-    let shard = shards.get_mut(&1).unwrap();
-    let mut entries = collect_live_block_entries(shard);
-    entries[0].filing_is_known = false;
-    entries[1].filed_routing_bucket = entries[1].filed_routing_bucket.wrapping_add(1);
-    let held = entries[2].address.clone();
-    for address in [
-        ElementEntry::from_parts(
-            held.block_slab_id() + 1,
-            held.offset(),
-            held.length(),
-            held.block_id(),
-            None,
-        ),
-        ElementEntry::from_parts(
-            held.block_slab_id(),
-            held.offset() + 1,
-            held.length(),
-            held.block_id(),
-            None,
-        ),
-        ElementEntry::from_parts(
-            held.block_slab_id(),
-            held.offset(),
-            held.length() + 1,
-            held.block_id(),
-            None,
-        ),
-        ElementEntry::from_parts(
-            held.block_slab_id(),
-            held.offset(),
-            held.length(),
-            None,
-            None,
-        ),
-    ] {
-        let mut absent = entries[2].clone();
-        absent.address = address;
-        entries.push(absent);
-    }
-    let mut wrong_kind = entries[2].clone();
-    wrong_kind.kind = stored_model_kind("string");
-    entries.push(wrong_kind);
-    assert_same(shard, &entries, 0, u32::MAX);
-    assert_same(shard, &entries, 0, 31);
-    let owner = expected_live_block_object_id(1, &entries[2]);
-    let bucket_id = entries[2].filed_bucket().unwrap();
-    shard
-        .bucket_index
-        .bucket_map
-        .get_mut(&bucket_id)
-        .unwrap()
-        .object_index
-        .remove(&owner);
-    assert_same(shard, &entries, 0, u32::MAX);
-    OWNERSHIP_INDEX_BLOCK_VISITS.with(|visits| visits.set(0));
-    assert_same(shard, &[], 0, u32::MAX);
-    assert_eq!(OWNERSHIP_INDEX_BLOCK_VISITS.with(|visits| visits.get()), 0);
+    engine.shards.with_state_mut(1, |owner| {
+        let shard = owner.unwrap();
+        let mut entries = collect_live_block_entries(shard);
+        entries[0].filing_is_known = false;
+        entries[1].filed_routing_bucket = entries[1].filed_routing_bucket.wrapping_add(1);
+        let held = entries[2].address.clone();
+        for address in [
+            ElementEntry::from_parts(
+                held.block_slab_id() + 1,
+                held.offset(),
+                held.length(),
+                held.block_id(),
+                None,
+            ),
+            ElementEntry::from_parts(
+                held.block_slab_id(),
+                held.offset() + 1,
+                held.length(),
+                held.block_id(),
+                None,
+            ),
+            ElementEntry::from_parts(
+                held.block_slab_id(),
+                held.offset(),
+                held.length() + 1,
+                held.block_id(),
+                None,
+            ),
+            ElementEntry::from_parts(
+                held.block_slab_id(),
+                held.offset(),
+                held.length(),
+                None,
+                None,
+            ),
+        ] {
+            let mut absent = entries[2].clone();
+            absent.address = address;
+            entries.push(absent);
+        }
+        let mut wrong_kind = entries[2].clone();
+        wrong_kind.kind = stored_model_kind("string");
+        entries.push(wrong_kind);
+        assert_same(shard, &entries, 0, u32::MAX);
+        assert_same(shard, &entries, 0, 31);
+        let owner = expected_live_block_object_id(1, &entries[2]);
+        let bucket_id = entries[2].filed_bucket().unwrap();
+        shard
+            .bucket_index
+            .bucket_map
+            .get_mut(&bucket_id)
+            .unwrap()
+            .object_index
+            .remove(&owner);
+        assert_same(shard, &entries, 0, u32::MAX);
+        OWNERSHIP_INDEX_BLOCK_VISITS.with(|visits| visits.set(0));
+        assert_same(shard, &[], 0, u32::MAX);
+        assert_eq!(OWNERSHIP_INDEX_BLOCK_VISITS.with(|visits| visits.get()), 0);
+    });
 }

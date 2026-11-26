@@ -47,14 +47,14 @@ fn must(engine: &TemporalEngine, what: &str, command: Command) {
 /// the tally, so it must come last or it would hide a disagreement from the set comparison).
 fn agree(engine: &TemporalEngine, model: &str, stage: &str) -> Vec<u64> {
     let walked = engine.live_block_slab_ids_all_shards();
-    let tombstones: BTreeSet<_> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        crate::engine::storage_bucket_internals::collect_live_block_entries(&shards[&1])
+    let tombstones: BTreeSet<_> = engine.shards.with_state(1, |state| {
+        let shard = state.expect("fixture shard is loaded");
+        crate::engine::storage_bucket_internals::collect_live_block_entries(shard)
             .into_iter()
             .filter(|entry| entry.deleted)
             .map(|entry| entry.address.block_slab_id())
             .collect()
-    };
+    });
     let expected: Vec<_> = walked.iter().copied()
         .chain(tombstones.iter().copied())
         .collect::<BTreeSet<_>>()
@@ -406,25 +406,23 @@ fn reclaim_keeps_a_removal_block_after_compaction_and_restart() {
     must(&engine, "remove field", Command::HashDelete {
         key: "owner".into(), field: "removed".into(),
     });
-    let removal = {
-        let shards = engine.shards.read().unwrap();
-        let mut markers = collect_live_block_entries(shards.get(&1).unwrap()).into_iter()
+    let removal = engine.shards.with_state(1, |state| {
+        let mut markers = collect_live_block_entries(state.unwrap()).into_iter()
             .filter(|entry| entry.deleted
                 && entry.kind == crate::engine::storage_bucket_internals::StoredModelKind::Hash
                 && entry.object_key.as_ref() == "owner");
         let marker = markers.next().expect("the removal must leave a physical marker");
         assert!(markers.next().is_none(), "the fixture must hold exactly one removal marker");
         marker.address
-    };
+    });
     let payload = engine.block_store.read(&removal).unwrap();
     assert!(!payload.is_empty(), "the marker must contain a removal payload");
     engine.compact_shard_blocks(1).expect("compaction must finish");
-    {
-        let shards = engine.shards.read().unwrap();
-        assert!(collect_model_live_block_entries(shards.get(&1).unwrap()).iter()
+    engine.shards.with_state(1, |state| {
+        assert!(collect_model_live_block_entries(state.unwrap()).iter()
             .all(|entry| entry.address.block_slab_id() != removal.block_slab_id()),
             "the marker must occupy a slab no serving-map entry retains");
-    }
+    });
     let retained = engine.live_block_slab_ids_all_shards();
     assert!(retained.contains(&removal.block_slab_id()), "GC must retain the removal-only slab");
     assert_eq!(engine.live_block_slab_ids_all_shards_from_tally(), Some(retained.clone()));
@@ -474,15 +472,9 @@ fn a_tally_that_kept_a_dead_slab_is_seen() {
     agree(&engine, "plant", "before the fault");
     engine.block_store().roll_slab().unwrap();
     let orphan = engine.block_store().append(&[9; 64]).unwrap();
-    engine
-        .shards
-        .write()
-        .unwrap()
-        .get_mut(&1)
-        .unwrap()
-        .bucket_index
-        .block_slab_live
-        .add_address(&orphan);
+    engine.shards.with_state_mut(1, |state| {
+        state.unwrap().bucket_index.block_slab_live.add_address(&orphan);
+    });
     let walked = engine.live_block_slab_ids_all_shards();
     let tallied = engine.live_block_slab_ids_all_shards_from_tally();
     assert_ne!(tallied.as_ref(), Some(&walked), "the differential did not see an extra slab");

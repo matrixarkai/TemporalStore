@@ -453,12 +453,11 @@ fn an_absent_key_and_an_expired_key_roll_nothing_up() {
 
     seed(&engine, &key);
     assert_eq!(receipt(&rollup_response(&engine, &key, roll(0, 100, None)))[..2], [12, 12], "CONTROL: a cutoff of 0 rolls nothing");
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
         let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
         crate::engine::set_expiry(shard, key.clone(), past);
-    }
+    });
     assert_eq!(receipt(&rollup_response(&engine, &key, roll(10_000, 100, None))), [0; 5]);
 }
 

@@ -155,45 +155,46 @@ fn a_clean_view_rebuild_reports_zero_unreadable_blocks_over_a_store_that_has_som
     seed_series(&engine, "clean");
 
     crate::engine::storage_bucket_internals::reset_view_rebuild_block_failure_counts();
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard is loaded");
-    let blocks = live_blocks(shard);
-    assert!(
-        blocks > 0,
-        "DENOMINATOR: {blocks} live blocks, so this control is a zero because nothing was read"
-    );
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let blocks = live_blocks(shard);
+        assert!(
+            blocks > 0,
+            "DENOMINATOR: {blocks} live blocks, so this control is a zero because nothing was read"
+        );
 
-    // What a `skip_serializing` map always looks like on load: empty. So the rebuild below is the
-    // only source of the series, which is what makes the fault arm in the next test a loss.
-    shard.features_mut().clear();
+        // What a `skip_serializing` map always looks like on load: empty. So the rebuild below is the
+        // only source of the series, which is what makes the fault arm in the next test a loss.
+        shard.features_mut().clear();
 
-    crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
-        &engine.block_store,
-        shard,
-        None,
-    );
+        crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
+            &engine.block_store,
+            shard,
+            None,
+        );
 
-    let (read_failures, decode_failures) =
-        crate::engine::storage_bucket_internals::view_rebuild_block_failure_counts();
-    let rebuilt = rebuilt_points(shard, "clean");
-    println!("=== a clean view rebuild ===");
-    println!(
-        "  {blocks} live blocks, {rebuilt} of {POINTS} points rebuilt, \
-         {read_failures} unreadable, {decode_failures} undecodable"
-    );
-    assert_eq!(
-        0, read_failures,
-        "a clean load reported {read_failures} unreadable blocks"
-    );
-    assert_eq!(
-        0, decode_failures,
-        "a clean load reported {decode_failures} undecodable blocks"
-    );
-    assert_eq!(
-        POINTS as usize, rebuilt,
-        "the rebuild recovered {rebuilt} of {POINTS} points, so the fault arm would be comparing \
-         against a broken control"
-    );
+        let (read_failures, decode_failures) =
+            crate::engine::storage_bucket_internals::view_rebuild_block_failure_counts();
+        let rebuilt = rebuilt_points(shard, "clean");
+        println!("=== a clean view rebuild ===");
+        println!(
+            "  {blocks} live blocks, {rebuilt} of {POINTS} points rebuilt, \
+             {read_failures} unreadable, {decode_failures} undecodable"
+        );
+        assert_eq!(
+            0, read_failures,
+            "a clean load reported {read_failures} unreadable blocks"
+        );
+        assert_eq!(
+            0, decode_failures,
+            "a clean load reported {decode_failures} undecodable blocks"
+        );
+        assert_eq!(
+            POINTS as usize, rebuilt,
+            "the rebuild recovered {rebuilt} of {POINTS} points, so the fault arm would be comparing \
+             against a broken control"
+        );
+    })
 }
 
 /// rust-internal: drives the engine's own command surface
@@ -204,72 +205,73 @@ fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
     load_on(&engine);
     seed_series(&engine, "torn");
 
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard is loaded");
-    let blocks = live_blocks(shard);
-    assert!(blocks > 0, "DENOMINATOR: {blocks} live blocks");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let blocks = live_blocks(shard);
+        assert!(blocks > 0, "DENOMINATOR: {blocks} live blocks");
 
-    // ARM A -- the same store, read cleanly. This is what the fault arm is compared against, and it
-    // is the SAME fixture rather than a second one that might differ for another reason.
-    crate::engine::storage_bucket_internals::reset_view_rebuild_block_failure_counts();
-    shard.features_mut().clear();
-    crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
-        &engine.block_store,
-        shard,
-        None,
-    );
-    let (clean_failures, _) =
-        crate::engine::storage_bucket_internals::view_rebuild_block_failure_counts();
-    let clean_points = rebuilt_points(shard, "torn");
+        // ARM A -- the same store, read cleanly. This is what the fault arm is compared against, and it
+        // is the SAME fixture rather than a second one that might differ for another reason.
+        crate::engine::storage_bucket_internals::reset_view_rebuild_block_failure_counts();
+        shard.features_mut().clear();
+        crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
+            &engine.block_store,
+            shard,
+            None,
+        );
+        let (clean_failures, _) =
+            crate::engine::storage_bucket_internals::view_rebuild_block_failure_counts();
+        let clean_points = rebuilt_points(shard, "torn");
 
-    // ARM B -- tear the slab files and rebuild from the same index.
-    let torn = tear_the_blocks(dir.path());
-    assert!(
-        torn > 0,
-        "DENOMINATOR: {torn} block files torn, so arm B read a healthy store and is arm A again"
-    );
-    crate::engine::storage_bucket_internals::reset_view_rebuild_block_failure_counts();
-    shard.features_mut().clear();
-    crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
-        &engine.block_store,
-        shard,
-        None,
-    );
-    let (torn_failures, torn_decode_failures) =
-        crate::engine::storage_bucket_internals::view_rebuild_block_failure_counts();
-    let torn_points = rebuilt_points(shard, "torn");
-    let key_present = shard.features().contains_key("torn");
+        // ARM B -- tear the slab files and rebuild from the same index.
+        let torn = tear_the_blocks(dir.path());
+        assert!(
+            torn > 0,
+            "DENOMINATOR: {torn} block files torn, so arm B read a healthy store and is arm A again"
+        );
+        crate::engine::storage_bucket_internals::reset_view_rebuild_block_failure_counts();
+        shard.features_mut().clear();
+        crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
+            &engine.block_store,
+            shard,
+            None,
+        );
+        let (torn_failures, torn_decode_failures) =
+            crate::engine::storage_bucket_internals::view_rebuild_block_failure_counts();
+        let torn_points = rebuilt_points(shard, "torn");
+        let key_present = shard.features().contains_key("torn");
 
-    println!("=== the same store, read cleanly and then torn ===");
-    println!("  clean: {clean_points} of {POINTS} points, {clean_failures} unreadable");
-    println!(
-        "  torn:  {torn_points} points, {torn_failures} unreadable, \
-         {torn_decode_failures} undecodable, over {torn} torn files; key present = {key_present}"
-    );
+        println!("=== the same store, read cleanly and then torn ===");
+        println!("  clean: {clean_points} of {POINTS} points, {clean_failures} unreadable");
+        println!(
+            "  torn:  {torn_points} points, {torn_failures} unreadable, \
+             {torn_decode_failures} undecodable, over {torn} torn files; key present = {key_present}"
+        );
 
-    assert_eq!(0, clean_failures, "arm A reported failures on a healthy store");
-    assert_eq!(
-        POINTS as usize, clean_points,
-        "arm A recovered {clean_points} of {POINTS}"
-    );
-    // THE FAILURE HAPPENED, asserted before anything downstream is read. A fault arm whose fault
-    // never fired leaves every assertion below passing for the wrong reason.
-    assert!(
-        torn_failures > 0,
-        "the torn store reported {torn_failures} read failures, so the tearing did nothing and the \
-         two arms are one arm"
-    );
-    // AND THE KEY IS NOT PRESENT-AND-EMPTY. `record_exists_exact` reads `contains_key` on this map,
-    // so an empty series under a live key is an EXISTS of 1 over nothing -- #2017's shape by reload.
-    let phantom = key_present && torn_points == 0;
-    assert!(
-        !phantom,
-        "the key is present holding an EMPTY series, which is the defect this guard exists for"
-    );
-    // The two arms must DIFFER, or the fault proved nothing.
-    assert!(
-        torn_points < clean_points,
-        "the torn arm recovered {torn_points} points and the clean arm {clean_points}, so tearing \
-         the blocks changed nothing and this comparison is empty"
-    );
+        assert_eq!(0, clean_failures, "arm A reported failures on a healthy store");
+        assert_eq!(
+            POINTS as usize, clean_points,
+            "arm A recovered {clean_points} of {POINTS}"
+        );
+        // THE FAILURE HAPPENED, asserted before anything downstream is read. A fault arm whose fault
+        // never fired leaves every assertion below passing for the wrong reason.
+        assert!(
+            torn_failures > 0,
+            "the torn store reported {torn_failures} read failures, so the tearing did nothing and the \
+             two arms are one arm"
+        );
+        // AND THE KEY IS NOT PRESENT-AND-EMPTY. `record_exists_exact` reads `contains_key` on this map,
+        // so an empty series under a live key is an EXISTS of 1 over nothing -- #2017's shape by reload.
+        let phantom = key_present && torn_points == 0;
+        assert!(
+            !phantom,
+            "the key is present holding an EMPTY series, which is the defect this guard exists for"
+        );
+        // The two arms must DIFFER, or the fault proved nothing.
+        assert!(
+            torn_points < clean_points,
+            "the torn arm recovered {torn_points} points and the clean arm {clean_points}, so tearing \
+             the blocks changed nothing and this comparison is empty"
+        );
+    })
 }

@@ -123,9 +123,10 @@ fn the_priced_holder_walk_cannot_see_the_slot_row_that_owns_the_key() {
     }
 
     let candidates: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        shard.bucket_index.bucket_map.keys().copied().collect()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            shard.bucket_index.bucket_map.keys().copied().collect()
+        })
     };
     assert!(!candidates.is_empty(), "{KEYS} keys produced no bucket to dump");
     let lifecycle =
@@ -137,149 +138,150 @@ fn the_priced_holder_walk_cannot_see_the_slot_row_that_owns_the_key() {
         });
     std::hint::black_box(&lifecycle);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    assert_eq!(
-        0,
-        shard.dirty_objects.len(),
-        "the dump left the shard dirty, so this is not the steady state the published row is taken \
-         at and the dirty index would count as a holder it is not at rest"
-    );
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        assert_eq!(
+            0,
+            shard.dirty_objects.len(),
+            "the dump left the shard dirty, so this is not the steady state the published row is taken \
+             at and the dirty index would count as a holder it is not at rest"
+        );
 
-    // --- (1) THE FIXTURE FLOOR.
-    assert_eq!(
-        KEYS,
-        shard.strings().len(),
-        "the string map holds {} of {KEYS} keys, so every count below is about a corpus this arm \
-         did not seed",
-        shard.strings().len()
-    );
+        // --- (1) THE FIXTURE FLOOR.
+        assert_eq!(
+            KEYS,
+            shard.strings().len(),
+            "the string map holds {} of {KEYS} keys, so every count below is about a corpus this arm \
+             did not seed",
+            shard.strings().len()
+        );
 
-    // --- (2) THE SLOT ROW'S POPULATION, per kind, reported rather than assumed.
-    let mut slot_rows: Vec<(&'static str, usize)> = Vec::new();
-    for (kind, table) in &shard.bucket_index.objects {
-        slot_rows.push((kind.as_str(), table.len()));
-    }
-    slot_rows.sort_unstable();
-    let slot_row_keys: usize = slot_rows.iter().map(|(_, n)| *n).sum();
-
-    // --- THE TWO WALKS. `blind` is exactly the structure list the priced arm uses; `complete`
-    // --- adds the canonical holder. Both dedupe by DATA POINTER, the identity `arc_str_bytes`
-    // --- uses, so "the same allocation" means here what it means in the published row.
-    let mut blind: Counter<usize, Vec<&'static str>> = Counter::new();
-    let mut complete: Counter<usize, Vec<&'static str>> = Counter::new();
-    for (_model_id, object_key, _refs) in shard.bucket_index.object_block_lookup.iter() {
-        blind.entry(object_key.as_ptr() as usize).or_default().push("object_block_lookup");
-        complete.entry(object_key.as_ptr() as usize).or_default().push("object_block_lookup");
-    }
-    for key in shard.strings().keys() {
-        blind.entry(key.as_ptr() as usize).or_default().push("strings");
-        complete.entry(key.as_ptr() as usize).or_default().push("strings");
-    }
-    for key in shard.dirty_objects.iter() {
-        blind.entry(key.as_ptr() as usize).or_default().push("dirty_objects");
-        complete.entry(key.as_ptr() as usize).or_default().push("dirty_objects");
-    }
-    // The one structure the priced walk omits, and the one `any_shared_object_key` reads first.
-    for table in shard.bucket_index.objects.values() {
-        for key in table.keys() {
-            complete.entry(key.as_ptr() as usize).or_default().push("bucket_index.objects");
+        // --- (2) THE SLOT ROW'S POPULATION, per kind, reported rather than assumed.
+        let mut slot_rows: Vec<(&'static str, usize)> = Vec::new();
+        for (kind, table) in &shard.bucket_index.objects {
+            slot_rows.push((kind.as_str(), table.len()));
         }
-    }
+        slot_rows.sort_unstable();
+        let slot_row_keys: usize = slot_rows.iter().map(|(_, n)| *n).sum();
 
-    let spread = |walk: &Counter<usize, Vec<&'static str>>| -> Vec<(usize, usize)> {
-        let mut by_count: Counter<usize, usize> = Counter::new();
-        for who in walk.values() {
-            *by_count.entry(who.len()).or_insert(0) += 1;
+        // --- THE TWO WALKS. `blind` is exactly the structure list the priced arm uses; `complete`
+        // --- adds the canonical holder. Both dedupe by DATA POINTER, the identity `arc_str_bytes`
+        // --- uses, so "the same allocation" means here what it means in the published row.
+        let mut blind: Counter<usize, Vec<&'static str>> = Counter::new();
+        let mut complete: Counter<usize, Vec<&'static str>> = Counter::new();
+        for (_model_id, object_key, _refs) in shard.bucket_index.object_block_lookup.iter() {
+            blind.entry(object_key.as_ptr() as usize).or_default().push("object_block_lookup");
+            complete.entry(object_key.as_ptr() as usize).or_default().push("object_block_lookup");
         }
-        let mut out: Vec<(usize, usize)> = by_count.into_iter().collect();
-        out.sort_unstable();
-        out
-    };
-    let blind_spread = spread(&blind);
-    let complete_spread = spread(&complete);
-
-    // --- (3) THE SLOT ROW SHARES THE ALLOCATION, by pointer. Contents cannot tell a shared
-    // --- allocation from a second equal copy; pointers can.
-    let string_ptrs: std::collections::HashSet<usize> =
-        shard.strings().keys().map(|k| k.as_ptr() as usize).collect();
-    let mut slot_ptrs_shared_with_strings = 0usize;
-    let mut slot_ptrs_own = 0usize;
-    for table in shard.bucket_index.objects.values() {
-        for key in table.keys() {
-            if string_ptrs.contains(&(key.as_ptr() as usize)) {
-                slot_ptrs_shared_with_strings += 1;
-            } else {
-                slot_ptrs_own += 1;
+        for key in shard.strings().keys() {
+            blind.entry(key.as_ptr() as usize).or_default().push("strings");
+            complete.entry(key.as_ptr() as usize).or_default().push("strings");
+        }
+        for key in shard.dirty_objects.iter() {
+            blind.entry(key.as_ptr() as usize).or_default().push("dirty_objects");
+            complete.entry(key.as_ptr() as usize).or_default().push("dirty_objects");
+        }
+        // The one structure the priced walk omits, and the one `any_shared_object_key` reads first.
+        for table in shard.bucket_index.objects.values() {
+            for key in table.keys() {
+                complete.entry(key.as_ptr() as usize).or_default().push("bucket_index.objects");
             }
         }
-    }
 
-    println!();
-    println!("  {KEYS} keys at the steady state, counted two ways");
-    println!();
-    println!("    slot rows in bucket_index.objects, by kind");
-    for (kind, len) in &slot_rows {
-        println!("      {kind:<28} {len:>6} keys");
-    }
-    println!("      {:<28} {slot_row_keys:>6} keys", "TOTAL");
-    println!();
-    println!("    the walk the priced arm uses (object_block_lookup + strings + dirty_objects)");
-    for (count, allocations) in &blind_spread {
-        println!("      {count} holder(s)   {allocations:>7} allocations");
-    }
-    println!("      distinct key allocations {}", blind.len());
-    println!();
-    println!("    the same corpus, walking bucket_index.objects as well");
-    for (count, allocations) in &complete_spread {
-        println!("      {count} holder(s)   {allocations:>7} allocations");
-    }
-    println!("      distinct key allocations {}", complete.len());
-    println!();
-    println!(
-        "    slot-row keys sharing the string map's allocation {slot_ptrs_shared_with_strings}, \
-         holding their own {slot_ptrs_own}"
-    );
-    println!();
-    println!("  WHAT THIS DECIDES. At TWO holders one shared allocation replaces two owned ones,");
-    println!("  so the refcount header is exactly paid for on the published model and the");
-    println!("  allocator charges 16 B/key MORE for the header-free shape. The `Box<str>` lever");
-    println!("  is CLOSED, not expired.");
-    println!();
+        let spread = |walk: &Counter<usize, Vec<&'static str>>| -> Vec<(usize, usize)> {
+            let mut by_count: Counter<usize, usize> = Counter::new();
+            for who in walk.values() {
+                *by_count.entry(who.len()).or_insert(0) += 1;
+            }
+            let mut out: Vec<(usize, usize)> = by_count.into_iter().collect();
+            out.sort_unstable();
+            out
+        };
+        let blind_spread = spread(&blind);
+        let complete_spread = spread(&complete);
 
-    assert!(
-        slot_row_keys > 0,
-        "bucket_index.objects holds no key at all, so this arm's second walk is NOT EXERCISED \
-         rather than measuring one holder. An empty structure contributes no holders and lowers \
-         the count in the direction that flatters the header-free lever"
-    );
-    assert_eq!(
-        KEYS, slot_ptrs_shared_with_strings,
-        "{slot_ptrs_shared_with_strings} of {KEYS} slot-row keys are the same allocation as the \
-         string map's, and {slot_ptrs_own} hold their own copy. The slot row is where \
-         `any_shared_object_key` reads the canonical handle, so every other map should have \
-         adopted it -- if these are separate allocations the sharing invariant has regressed and \
-         `which_resident_maps_hold_their_own_key_characters` should have caught it first"
-    );
-    assert_eq!(
-        vec![(PRICED_FOR, KEYS)],
-        blind_spread,
-        "the blind walk no longer reproduces the priced arm's spread of `{PRICED_FOR} holder for \
-         every one of {KEYS} allocations`. This arm exists to correct that figure, so it must \
-         first MEASURE it here rather than quote it from another file -- if the blind walk has \
-         moved, re-read what the priced arm now reports before trusting the correction below"
-    );
-    assert_eq!(
-        vec![(2usize, KEYS)],
-        complete_spread,
-        "walking the slot row as well gives a spread of {complete_spread:?} rather than `2 \
-         holders for every one of {KEYS} allocations`. TWO is what makes the sixteen-byte \
-         refcount header paid for: one shared allocation replaces two owned ones, a wash on the \
-         published model and a 16 B/key LOSS on what the allocator sets aside. If this reads ONE, \
-         the slot row has genuinely stopped holding the key and the header-free lever is open \
-         again -- re-price it and say so. If it reads more, the header is better than paid for. \
-         Either way re-price rather than loosening this assertion"
-    );
+        // --- (3) THE SLOT ROW SHARES THE ALLOCATION, by pointer. Contents cannot tell a shared
+        // --- allocation from a second equal copy; pointers can.
+        let string_ptrs: std::collections::HashSet<usize> =
+            shard.strings().keys().map(|k| k.as_ptr() as usize).collect();
+        let mut slot_ptrs_shared_with_strings = 0usize;
+        let mut slot_ptrs_own = 0usize;
+        for table in shard.bucket_index.objects.values() {
+            for key in table.keys() {
+                if string_ptrs.contains(&(key.as_ptr() as usize)) {
+                    slot_ptrs_shared_with_strings += 1;
+                } else {
+                    slot_ptrs_own += 1;
+                }
+            }
+        }
+
+        println!();
+        println!("  {KEYS} keys at the steady state, counted two ways");
+        println!();
+        println!("    slot rows in bucket_index.objects, by kind");
+        for (kind, len) in &slot_rows {
+            println!("      {kind:<28} {len:>6} keys");
+        }
+        println!("      {:<28} {slot_row_keys:>6} keys", "TOTAL");
+        println!();
+        println!("    the walk the priced arm uses (object_block_lookup + strings + dirty_objects)");
+        for (count, allocations) in &blind_spread {
+            println!("      {count} holder(s)   {allocations:>7} allocations");
+        }
+        println!("      distinct key allocations {}", blind.len());
+        println!();
+        println!("    the same corpus, walking bucket_index.objects as well");
+        for (count, allocations) in &complete_spread {
+            println!("      {count} holder(s)   {allocations:>7} allocations");
+        }
+        println!("      distinct key allocations {}", complete.len());
+        println!();
+        println!(
+            "    slot-row keys sharing the string map's allocation {slot_ptrs_shared_with_strings}, \
+             holding their own {slot_ptrs_own}"
+        );
+        println!();
+        println!("  WHAT THIS DECIDES. At TWO holders one shared allocation replaces two owned ones,");
+        println!("  so the refcount header is exactly paid for on the published model and the");
+        println!("  allocator charges 16 B/key MORE for the header-free shape. The `Box<str>` lever");
+        println!("  is CLOSED, not expired.");
+        println!();
+
+        assert!(
+            slot_row_keys > 0,
+            "bucket_index.objects holds no key at all, so this arm's second walk is NOT EXERCISED \
+             rather than measuring one holder. An empty structure contributes no holders and lowers \
+             the count in the direction that flatters the header-free lever"
+        );
+        assert_eq!(
+            KEYS, slot_ptrs_shared_with_strings,
+            "{slot_ptrs_shared_with_strings} of {KEYS} slot-row keys are the same allocation as the \
+             string map's, and {slot_ptrs_own} hold their own copy. The slot row is where \
+             `any_shared_object_key` reads the canonical handle, so every other map should have \
+             adopted it -- if these are separate allocations the sharing invariant has regressed and \
+             `which_resident_maps_hold_their_own_key_characters` should have caught it first"
+        );
+        assert_eq!(
+            vec![(PRICED_FOR, KEYS)],
+            blind_spread,
+            "the blind walk no longer reproduces the priced arm's spread of `{PRICED_FOR} holder for \
+             every one of {KEYS} allocations`. This arm exists to correct that figure, so it must \
+             first MEASURE it here rather than quote it from another file -- if the blind walk has \
+             moved, re-read what the priced arm now reports before trusting the correction below"
+        );
+        assert_eq!(
+            vec![(2usize, KEYS)],
+            complete_spread,
+            "walking the slot row as well gives a spread of {complete_spread:?} rather than `2 \
+             holders for every one of {KEYS} allocations`. TWO is what makes the sixteen-byte \
+             refcount header paid for: one shared allocation replaces two owned ones, a wash on the \
+             published model and a 16 B/key LOSS on what the allocator sets aside. If this reads ONE, \
+             the slot row has genuinely stopped holding the key and the header-free lever is open \
+             again -- re-price it and say so. If it reads more, the header is better than paid for. \
+             Either way re-price rather than loosening this assertion"
+        );
+    })
 }
 
 /// AN ORDER-BOUND LEDGER ADOPTS THE KEY ALLOCATION, AND A SPAN CANNOT ORDER.
@@ -489,9 +491,10 @@ fn a_key_with_a_deadline_is_held_by_two_ordered_maps() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
     let candidates: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        shard.bucket_index.bucket_map.keys().copied().collect()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            shard.bucket_index.bucket_map.keys().copied().collect()
+        })
     };
     assert!(!candidates.is_empty(), "{KEYS} keys produced no bucket to dump");
     let lifecycle =
@@ -503,107 +506,108 @@ fn a_key_with_a_deadline_is_held_by_two_ordered_maps() {
         });
     std::hint::black_box(&lifecycle);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
 
-    // --- THE FIXTURE FLOORS. A structure that was never populated contributes no holders, which
-    // --- is the direction that flatters the arena, so each ordered map is asserted POPULATED.
-    assert_eq!(KEYS, shard.strings().len(), "the string map does not hold the seeded corpus");
-    assert_eq!(
-        KEYS,
-        shard.expires_at_ms().len(),
-        "expires_at_ms holds {} of {KEYS} keys, so the deadline never armed and every ordered \
-         holder below is NOT EXERCISED rather than empty",
-        shard.expires_at_ms().len()
-    );
-    assert_eq!(
-        KEYS,
-        shard.expiry_by_deadline.len(),
-        "expiry_by_deadline holds {} of {KEYS} entries, so its holder row below is unexercised",
-        shard.expiry_by_deadline.len()
-    );
-
-    let mut holders: Counter<usize, Vec<&'static str>> = Counter::new();
-    for table in shard.bucket_index.objects.values() {
-        for key in table.keys() {
-            holders.entry(key.as_ptr() as usize).or_default().push("bucket_index.objects");
-        }
-    }
-    for key in shard.strings().keys() {
-        holders.entry(key.as_ptr() as usize).or_default().push("strings");
-    }
-    for key in shard.expires_at_ms().keys() {
-        holders.entry(key.as_ptr() as usize).or_default().push("expires_at_ms");
-    }
-    for (_deadline, key) in shard.expiry_by_deadline.keys() {
-        holders.entry(key.as_ptr() as usize).or_default().push("expiry_by_deadline");
-    }
-    for key in shard.control_state_uuid().keys() {
-        holders.entry(key.as_ptr() as usize).or_default().push("control_state_uuid");
-    }
-    for key in shard.context_compression_watermark().keys() {
-        holders.entry(key.as_ptr() as usize).or_default().push("context_compression_watermark");
-    }
-
-    let mut by_shape: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    for who in holders.values() {
-        let mut names = who.clone();
-        names.sort_unstable();
-        *by_shape.entry(names.join(" + ")).or_insert(0) += 1;
-    }
-
-    println!();
-    println!("  {KEYS} keys written with a deadline, at the steady state");
-    println!();
-    println!("    {:<86} {:>12}", "which structures hold the allocation", "allocations");
-    for (shape, count) in &by_shape {
-        println!("    {shape:<86} {count:>12}");
-    }
-    println!();
-    println!("    distinct key allocations {}", holders.len());
-    println!(
-        "    strings {} / objects {} / expires_at_ms {} / expiry_by_deadline {}",
-        shard.strings().len(),
-        shard.bucket_index.objects.values().map(|t| t.len()).sum::<usize>(),
-        shard.expires_at_ms().len(),
-        shard.expiry_by_deadline.len()
-    );
-    println!("  MEASURED: one allocation, four holders, two of them ordered. A span cannot order,");
-    println!("  so a key given a deadline keeps its `Arc` for as long as either ordered map holds it,");
-    println!("  and the arena would hold a second copy of its characters instead of replacing them.");
-    println!();
-
-    // --- THE SHAPE, ASSERTED AS ITS PREMISES.
-    // One allocation per key: a deadline does not mint a copy of the key in either ordered map.
-    // If this read 2 per key, the ordered maps would own their own text and a span could replace
-    // the shared one -- the arena's gate would be a different gate.
-    assert_eq!(
-        KEYS,
-        holders.len(),
-        "{KEYS} keys with a deadline produced {} distinct key allocations. One each is the premise: \
-         `set_expiry` takes the handle the block index already holds, so the ordered maps share it. \
-         More means a deadline now mints its own copy of the key",
-        holders.len()
-    );
-    let expected: Vec<&str> =
-        vec!["bucket_index.objects", "expires_at_ms", "expiry_by_deadline", "strings"];
-    for who in holders.values() {
-        let mut names = who.clone();
-        names.sort_unstable();
+        // --- THE FIXTURE FLOORS. A structure that was never populated contributes no holders, which
+        // --- is the direction that flatters the arena, so each ordered map is asserted POPULATED.
+        assert_eq!(KEYS, shard.strings().len(), "the string map does not hold the seeded corpus");
         assert_eq!(
-            expected, names,
-            "a key allocation is held by {names:?}, not by exactly {expected:?}. The two ordered \
-             maps are what stop a span replacing the allocation: if either has stopped holding \
-             it, a deadline key is no longer order-bound on that side and the arena's gate has \
-             moved -- re-price it rather than loosening this assertion"
+            KEYS,
+            shard.expires_at_ms().len(),
+            "expires_at_ms holds {} of {KEYS} keys, so the deadline never armed and every ordered \
+             holder below is NOT EXERCISED rather than empty",
+            shard.expires_at_ms().len()
         );
-    }
-    // Neither adopting ledger is armed by this corpus, so they read empty here. That is stated
-    // rather than assumed: an empty ordered ledger is not evidence a key cannot be in one.
-    assert_eq!(0, shard.control_state_uuid().len(), "control_state_uuid is armed by this corpus");
-    assert_eq!(
-        0,
-        shard.context_compression_watermark().len(),
-        "context_compression_watermark is armed by this corpus"
-    );
+        assert_eq!(
+            KEYS,
+            shard.expiry_by_deadline.len(),
+            "expiry_by_deadline holds {} of {KEYS} entries, so its holder row below is unexercised",
+            shard.expiry_by_deadline.len()
+        );
+
+        let mut holders: Counter<usize, Vec<&'static str>> = Counter::new();
+        for table in shard.bucket_index.objects.values() {
+            for key in table.keys() {
+                holders.entry(key.as_ptr() as usize).or_default().push("bucket_index.objects");
+            }
+        }
+        for key in shard.strings().keys() {
+            holders.entry(key.as_ptr() as usize).or_default().push("strings");
+        }
+        for key in shard.expires_at_ms().keys() {
+            holders.entry(key.as_ptr() as usize).or_default().push("expires_at_ms");
+        }
+        for (_deadline, key) in shard.expiry_by_deadline.keys() {
+            holders.entry(key.as_ptr() as usize).or_default().push("expiry_by_deadline");
+        }
+        for key in shard.control_state_uuid().keys() {
+            holders.entry(key.as_ptr() as usize).or_default().push("control_state_uuid");
+        }
+        for key in shard.context_compression_watermark().keys() {
+            holders.entry(key.as_ptr() as usize).or_default().push("context_compression_watermark");
+        }
+
+        let mut by_shape: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for who in holders.values() {
+            let mut names = who.clone();
+            names.sort_unstable();
+            *by_shape.entry(names.join(" + ")).or_insert(0) += 1;
+        }
+
+        println!();
+        println!("  {KEYS} keys written with a deadline, at the steady state");
+        println!();
+        println!("    {:<86} {:>12}", "which structures hold the allocation", "allocations");
+        for (shape, count) in &by_shape {
+            println!("    {shape:<86} {count:>12}");
+        }
+        println!();
+        println!("    distinct key allocations {}", holders.len());
+        println!(
+            "    strings {} / objects {} / expires_at_ms {} / expiry_by_deadline {}",
+            shard.strings().len(),
+            shard.bucket_index.objects.values().map(|t| t.len()).sum::<usize>(),
+            shard.expires_at_ms().len(),
+            shard.expiry_by_deadline.len()
+        );
+        println!("  MEASURED: one allocation, four holders, two of them ordered. A span cannot order,");
+        println!("  so a key given a deadline keeps its `Arc` for as long as either ordered map holds it,");
+        println!("  and the arena would hold a second copy of its characters instead of replacing them.");
+        println!();
+
+        // --- THE SHAPE, ASSERTED AS ITS PREMISES.
+        // One allocation per key: a deadline does not mint a copy of the key in either ordered map.
+        // If this read 2 per key, the ordered maps would own their own text and a span could replace
+        // the shared one -- the arena's gate would be a different gate.
+        assert_eq!(
+            KEYS,
+            holders.len(),
+            "{KEYS} keys with a deadline produced {} distinct key allocations. One each is the premise: \
+             `set_expiry` takes the handle the block index already holds, so the ordered maps share it. \
+             More means a deadline now mints its own copy of the key",
+            holders.len()
+        );
+        let expected: Vec<&str> =
+            vec!["bucket_index.objects", "expires_at_ms", "expiry_by_deadline", "strings"];
+        for who in holders.values() {
+            let mut names = who.clone();
+            names.sort_unstable();
+            assert_eq!(
+                expected, names,
+                "a key allocation is held by {names:?}, not by exactly {expected:?}. The two ordered \
+                 maps are what stop a span replacing the allocation: if either has stopped holding \
+                 it, a deadline key is no longer order-bound on that side and the arena's gate has \
+                 moved -- re-price it rather than loosening this assertion"
+            );
+        }
+        // Neither adopting ledger is armed by this corpus, so they read empty here. That is stated
+        // rather than assumed: an empty ordered ledger is not evidence a key cannot be in one.
+        assert_eq!(0, shard.control_state_uuid().len(), "control_state_uuid is armed by this corpus");
+        assert_eq!(
+            0,
+            shard.context_compression_watermark().len(),
+            "context_compression_watermark is armed by this corpus"
+        );
+    })
 }

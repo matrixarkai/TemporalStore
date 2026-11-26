@@ -403,14 +403,15 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
         let folds = crate::engine::bucket_visit_sites::flag_folds();
 
         let blocks_in_bucket: usize = {
-            let shards = engine.shards.read().expect("shards lock poisoned");
-            let shard = shards.get(&1).expect("shard 1 loaded");
-            shard
-                .bucket_index
-                .bucket_map
-                .values()
-                .map(|bucket| bucket.block_index.len())
-                .sum()
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard 1 loaded");
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .values()
+                    .map(|bucket| bucket.block_index.len())
+                    .sum()
+            })
         };
 
         println!(
@@ -512,9 +513,10 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     }
     crate::engine::bucket_visit_sites::reset();
     {
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        refresh_bucket_runtime_flags(shard);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            refresh_bucket_runtime_flags(shard);
+        })
     }
     let control_folds = crate::engine::bucket_visit_sites::flag_folds();
     println!(
