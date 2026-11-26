@@ -483,6 +483,46 @@ fn the_shard_id_field_changes_no_serialized_byte() {
 // 5. THE GUARD: THE ONE WAY IN STAMPS THE ID IT INSERTS UNDER
 // =================================================================================================
 
+fn owner_install_body(source: &str, method: &str) -> String {
+    let signature = format!(" fn {method}(");
+    let (_, method) = source.split_once(signature.as_str()).expect("owner install method");
+    let (_, body) = method.split_once('{').expect("owner install method body");
+    let (body, _) = body.split_once("\n    }").expect("owner install method end");
+    body.lines()
+        .flat_map(|line| {
+            line.split("//").next().unwrap_or_default().chars().filter(|c| !c.is_whitespace())
+        })
+        .collect()
+}
+
+fn owner_install_identity(installer: &str, facade: &str, registry: &str) -> Result<(), &'static str> {
+    let publish = "drop(self.shards.install(shard_id,state));";
+    let Some(publication) = installer.find(publish) else {
+        return Err("engine must publish once through the owner facade");
+    };
+    if installer.matches("self.shards.install(").count() != 1 {
+        return Err("engine must publish once through the owner facade");
+    }
+    let stamp = "state.set_shard_id(shard_id);";
+    if installer.matches("state.set_shard_id(").count() != 1
+        || !installer.find(stamp).is_some_and(|position| position < publication)
+    {
+        return Err("engine must stamp the same shard ID before publication");
+    }
+    if facade != "self.owners.replace(shard_id,state)" {
+        return Err("facade must forward the stamped state and shard ID");
+    }
+    let store = "entries.insert(shard_id,replacement);";
+    let replacement = "letreplacement=Arc::new(RwLock::new(Some(state)));";
+    if registry.matches("entries.insert(").count() != 2
+        || registry.matches(store).count() != 2
+        || !registry.find(replacement).zip(registry.find(store)).is_some_and(|(build, write)| build < write)
+    {
+        return Err("registry must publish the replacement at the same shard ID on both paths");
+    }
+    Ok(())
+}
+
 /// `install_shard_state` STAMPS THE ID, AND NO OTHER PRODUCTION SITE STAMPS ONE.
 ///
 /// `every_shard_the_engine_installs_carries_its_routing_range` already holds, as an equality-compared
@@ -498,25 +538,44 @@ fn the_only_production_site_that_installs_a_shard_stamps_the_id_it_inserts_under
     use std::path::Path;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let installer = std::fs::read_to_string(root.join("engine.rs")).expect("engine.rs");
-    assert!(
-        installer.len() > 100_000,
-        "engine.rs read back as {} bytes; below 100,000 this is not the file and the containment \
-         checks below pass or fail for the wrong reason",
-        installer.len()
+    let engine = std::fs::read_to_string(root.join("engine.rs")).expect("engine.rs");
+    let facade = std::fs::read_to_string(root.join("engine/shard_guard.rs")).expect("shard facade");
+    let registry = std::fs::read_to_string(root.join("engine/shard_state_registry.rs"))
+        .expect("shard registry");
+    let installer = owner_install_body(&engine, "install_shard_state");
+    let facade = owner_install_body(&facade, "install");
+    let registry = owner_install_body(&registry, "replace");
+    assert_eq!(owner_install_identity(&installer, &facade, &registry), Ok(()));
+
+    // These controls use the actual method bodies, changing only the link
+    // whose absence, incorrect key or ordering the oracle must detect.
+    let bypass = installer.replace(
+        "drop(self.shards.install(shard_id,state));",
+        "self.shards.insert(shard_id,state);",
     );
-    assert!(
-        installer.contains("state.set_shard_id(shard_id);"),
-        "`install_shard_state` no longer stamps the id it inserts under. Every served shard would \
-         answer None, and the four functions named in this module's header go back to being unable \
-         to derive an object id."
+    assert_eq!(
+        owner_install_identity(&bypass, &facade, &registry),
+        Err("engine must publish once through the owner facade"),
     );
-    // It stamps the ARGUMENT it inserts under, not something re-derived: the insert is keyed on the
-    // same name.
-    assert!(
-        installer.contains(".insert(shard_id, state);"),
-        "`install_shard_state` no longer inserts under `shard_id`, so stamping `shard_id` is no \
-         longer the same number the served map routes by"
+    let late_stamp = installer.replace("state.set_shard_id(shard_id);", "").replace(
+        "drop(self.shards.install(shard_id,state));",
+        "drop(self.shards.install(shard_id,state));state.set_shard_id(shard_id);",
+    );
+    assert_eq!(
+        owner_install_identity(&late_stamp, &facade, &registry),
+        Err("engine must stamp the same shard ID before publication"),
+    );
+    assert_eq!(
+        owner_install_identity(
+            &installer, &facade.replace("replace(shard_id,", "replace(other_id,"), &registry,
+        ),
+        Err("facade must forward the stamped state and shard ID"),
+    );
+    assert_eq!(
+        owner_install_identity(
+            &installer, &facade, &registry.replacen("entries.insert(shard_id,", "entries.insert(other_id,", 1),
+        ),
+        Err("registry must publish the replacement at the same shard ID on both paths"),
     );
 
     // No other production file stamps an id. A second setter call site could stamp a shard with
