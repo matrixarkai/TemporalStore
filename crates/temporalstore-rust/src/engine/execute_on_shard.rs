@@ -4740,7 +4740,7 @@ pub(crate) fn execute_on_shard(
                 "feature",
                 &key,
             );
-            let series = slot_for_write(shard.features_mut(), &key);
+            let series = object_slot_for_write(shard.features_mut(), &key);
             // PROTOBUF ONLY: the same wire form `FeatureAppend` rows hold, so both read paths decode
             // it. There is no JSON encode path here; see `sequence_row_value`.
             let points = rows

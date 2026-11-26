@@ -136,7 +136,7 @@ fn encoded_index(
 // other kinds still hold B-trees -- and this control is about the PACKING of the map it returns,
 // not about which representation the series arrived in. `points()` promises ascending order, so
 // the rebuilt B-tree is identical either way.
-fn packed_like<K, S>(map: &HashMap<K, S>) -> HashMap<String, BTreeMap<u64, ElementEntry>>
+fn packed_like<K, S>(map: &BTreeMap<K, S>) -> BTreeMap<String, BTreeMap<u64, ElementEntry>>
 where
     K: std::fmt::Display,
     S: crate::engine::timestamped_series::TimestampedSeries,

@@ -4540,7 +4540,7 @@ pub(super) fn visit_model_live_blocks(
 /// `context_entities` COMPOSES its key from the collection key and the entity hash, so the key it
 /// emits exists nowhere to be borrowed from.
 fn visit_timestamped_series<S>(
-    map: &HashMap<ModelKey, S>,
+    map: &BTreeMap<ModelKey, S>,
     kind: ModelKind,
     accept: &impl Fn(&str, &ElementEntry) -> bool,
     emit: &mut impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
@@ -7853,10 +7853,10 @@ mod bucket_rebuild_finalize_tests;
 /// transcription of it. The arm that no longer exists in the tree has to be transcribed there;
 /// this one does not, and a fixture that copied it could drift from it silently.
 pub(super) fn reconcile_timestamped_series_membership_in_place<K, S>(
-    target: &mut HashMap<K, S>,
-    block_derived: HashMap<K, S>,
+    target: &mut BTreeMap<K, S>,
+    block_derived: impl IntoIterator<Item = (K, S)>,
 ) where
-    K: std::hash::Hash + Eq,
+    K: Ord,
     S: super::timestamped_series::TimestampedSeries,
 {
     for (key, block_series) in block_derived {
@@ -8527,7 +8527,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         // E0615 reported this site the same way it reports a read, because an
         // assignment target does "take the value of" the field -- so the door pass
         // gave it the read accessor and rustc rejected the left-hand side.
-        *shard.context_entities_mut() = context_entities;
+        *shard.context_entities_mut() = context_entities.into_iter().collect();
     }
     if saw_context_children {
         reconcile_timestamped_series_membership_in_place(

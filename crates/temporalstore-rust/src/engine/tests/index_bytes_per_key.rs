@@ -498,7 +498,7 @@ impl Occupancy {
 // event series map is keyed by `ModelKey` and the rest by `String`. The body only walks
 // values, so the key needs no bound at all.
 fn series_occupancy<K, S: crate::engine::timestamped_series::TimestampedSeries>(
-    map: &std::collections::HashMap<K, S>,
+    map: &std::collections::BTreeMap<K, S>,
 ) -> Occupancy {
     let mut occ = Occupancy::default();
     for series in map.values() {
@@ -7178,7 +7178,7 @@ fn which_series_maps_the_grouped_shape_would_help() {
     // is simply measured against its new resident form.
     fn weigh<S>(
         label: &str,
-        map: &std::collections::HashMap<std::sync::Arc<str>, S>,
+        map: &std::collections::BTreeMap<std::sync::Arc<str>, S>,
     ) -> (Occupancy, u64, u64)
     where
         S: crate::engine::timestamped_series::TimestampedSeries + Clone,
@@ -7607,14 +7607,14 @@ fn what_the_four_converted_context_maps_cost() {
     // four separate calls.
     fn weigh<S>(
         label: &str,
-        map: &HashMap<std::sync::Arc<str>, S>,
+        map: &BTreeMap<std::sync::Arc<str>, S>,
     ) -> (Occupancy, u64, u64, usize)
     where
         S: crate::engine::timestamped_series::TimestampedSeries + Clone,
     {
         let mut occ = Occupancy::default();
-        let mut rebuilt: HashMap<std::sync::Arc<str>, BTreeMap<u64, crate::block_store::ElementEntry>> =
-            HashMap::with_capacity(map.len());
+        let mut rebuilt: BTreeMap<std::sync::Arc<str>, BTreeMap<u64, crate::block_store::ElementEntry>> =
+            BTreeMap::new();
         for (key, series) in map.iter() {
             occ.observe(series.len());
             // THROUGH THE TRAIT, not an inherent `to_btree`: a generic function cannot call one,
@@ -9940,16 +9940,14 @@ fn what_the_per_key_maps_pay_for_table_slack() {
             as u64;
         let measured = deep_heap_bytes(strings);
         let len = strings.len() as u64;
-        let capacity = strings.capacity() as u64;
         println!(
-            "  strings            len {len:>6}  capacity {capacity:>6}  load {:>4.0}%   {measured:>9} B  = {:>6.1} B/key  ({:.2}x the {} B entry)",
-            100.0 * len as f64 / capacity as f64,
+            "  strings BTreeMap   len {len:>6}   {measured:>9} B  = {:>6.1} B/key  ({:.2}x the {} B entry)",
             measured as f64 / len as f64,
             measured as f64 / (len * entry_width) as f64,
             entry_width
         );
         println!(
-            "    the entries' own width is {} B; {} B is table slack and control bytes = {:.1} B/key",
+            "    the entries' own width is {} B; {} B is tree node overhead = {:.1} B/key",
             len * entry_width,
             measured.saturating_sub(len * entry_width),
             measured.saturating_sub(len * entry_width) as f64 / len as f64
@@ -9968,23 +9966,24 @@ fn what_the_per_key_maps_pay_for_table_slack() {
         );
 
         assert_eq!(keys as u64, len, "denominator: the string map must hold every key");
-        assert!(capacity >= len, "a table cannot hold more than it has room for");
+        assert!(measured >= len * entry_width, "tree storage must include every entry");
     }
     println!();
 }
 
-/// THE PER-KEY RESIDENT INDEX FIGURE IS A SAWTOOTH, AND 2,000 KEYS SITS NEAR ITS WORST PHASE.
+/// The hashed control has growth steps; the shipped ordered object table must not share them.
 ///
 /// A hashbrown table's bucket count is a POWER OF TWO and it grows when it passes 7/8 load, so the
-/// table behind every per-key map costs `next_pow2(ceil(n / (7/8))) * (entry + 1)` bytes -- a
+/// hashed control costs `next_pow2(ceil(n / (7/8))) * (entry + 1)` bytes -- a
 /// STEP function of n. Divided by n that is a sawtooth: it falls as a corpus fills a table and
 /// doubles the moment the table does. The low teeth and the high teeth differ by 2x.
 ///
 /// So "the index costs X B/key" is not a property of the index unless the phase is stated with it.
-/// The published amplification arm seeds 2,000 keys. 2,000 is just past 1,792 -- the most a
+/// The hashed control at 2,000 keys is just past 1,792 -- the most a
 /// 2,048-bucket table holds -- so its table has 4,096 buckets at 48.8% load, which is within one
 /// step of the worst phase there is. This sweep is what makes that a measurement rather than
-/// arithmetic about hashbrown.
+/// arithmetic about hashbrown. It is a control, not the shipped object-table representation.
+/// Both hold the same rows; the engine's ordered table is measured separately below.
 ///
 /// WHY THIS IS IN THE SUITE RATHER THAN IN A COMMENT. The campaign's instruction is not to quote a
 /// per-key figure without checking it holds at two key counts. Two counts catch a constant
@@ -10003,14 +10002,15 @@ fn the_per_key_index_figure_is_a_sawtooth() {
     const SHIPPED_END: u32 = 1023;
 
     println!();
-    println!("  RESIDENT INDEX PER KEY ACROSS TWO TABLE DOUBLINGS (shipped range 0..1023)");
+    println!("  HASHED CONTROL AND ORDERED OBJECT TABLE ACROSS TWO GROWTH BOUNDARIES");
     println!();
     println!(
-        "    {:>6} {:>9} {:>6} {:>11} {:>9} {:>11} {:>9}",
-        "keys", "capacity", "load", "strings B", "B/key", "resident B", "B/key"
+        "    {:>6} {:>9} {:>6} {:>11} {:>9} {:>11} {:>9} {:>11}",
+        "keys", "hash cap", "load", "hash B", "hash B/key", "resident B", "B/key", "tree B/key"
     );
 
     let mut teeth: Vec<(usize, f64, f64)> = Vec::new();
+    let mut ordered_per_key = BTreeMap::new();
     for keys in [1_700usize, 1_792, 1_800, 2_000, 3_500, 3_584, 3_600, 4_000] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = probe_engine_on(dir.path(), SHIPPED_END);
@@ -10028,21 +10028,29 @@ fn the_per_key_index_figure_is_a_sawtooth() {
         let shard = shards.get(&1).expect("shard is loaded");
         let strings = shard.strings();
         assert_eq!(keys, strings.len(), "denominator: the string map must hold every key");
-        let capacity = strings.capacity();
         let string_bytes = deep_heap_bytes(strings);
+        let hashed: HashMap<_, _> = strings.iter()
+            .map(|(key, slot)| (key.clone(), slot.clone())).collect();
+        assert_eq!(strings.len(), hashed.len(), "control holds every row");
+        let capacity = hashed.capacity();
+        let hash_bytes = deep_heap_bytes(&hashed);
         let resident = deep_heap_bytes(shard);
-        let per_key = string_bytes as f64 / keys as f64;
+        let per_key = hash_bytes as f64 / keys as f64;
+        ordered_per_key.insert(keys, string_bytes as f64 / keys as f64);
         println!(
-            "    {:>6} {:>9} {:>5.0}% {:>11} {:>9.1} {:>11} {:>9.1}",
+            "    {:>6} {:>9} {:>5.0}% {:>11} {:>9.1} {:>11} {:>9.1} {:>11.1}",
             keys,
             capacity,
             100.0 * keys as f64 / capacity as f64,
-            string_bytes,
+            hash_bytes,
             per_key,
             resident,
-            resident as f64 / keys as f64
+            resident as f64 / keys as f64,
+            ordered_per_key[&keys],
         );
-        teeth.push((keys, per_key, resident as f64 / keys as f64));
+        // A modeled whole-index hash-table control; the actual resident bytes remain above.
+        let modeled_hash_resident = resident - string_bytes + hash_bytes;
+        teeth.push((keys, per_key, modeled_hash_resident as f64 / keys as f64));
     }
     println!();
 
@@ -10056,7 +10064,7 @@ fn the_per_key_index_figure_is_a_sawtooth() {
     let full = at(1_792);
     let just_over = at(1_800);
     println!(
-        "    the string table costs {full:.1} B/key at 1,792 keys and {just_over:.1} B/key at \
+        "    the hash control costs {full:.1} B/key at 1,792 keys and {just_over:.1} B/key at \
          1,800 -- {:.2}x for 8 more keys",
         just_over / full
     );
@@ -10091,19 +10099,23 @@ fn the_per_key_index_figure_is_a_sawtooth() {
     // effect is smaller than claimed" look identical in a test that passes.
     let whole_step = resident_at(1_800) / resident_at(1_792);
     println!(
-        "    and the WHOLE resident index steps {:.1} -> {:.1} B/key ({whole_step:.3}x) -- diluted",
+        "    the modeled hash-control resident index steps {:.1} -> {:.1} B/key ({whole_step:.3}x)",
         resident_at(1_792),
         resident_at(1_800)
     );
-    println!("    from the string table's 1.99x by the per-bucket rows that do not move");
+    println!("    actual engine resident bytes are reported independently above");
     assert!(
         whole_step > 1.05,
-        "the whole resident index went {:.1} -> {:.1} B/key ({whole_step:.3}x) across the \
+        "the modeled hash-control resident index went {:.1} -> {:.1} B/key ({whole_step:.3}x) across the \
          doubling. Below 1.05 the step no longer reaches the published headline, so the caution \
          this arm exists to raise would apply to one map and not to the figure anyone reads.",
         resident_at(1_792),
         resident_at(1_800)
     );
+    for (before, after) in [(1_792, 1_800), (3_584, 3_600)] {
+        assert!(ordered_per_key[&after] <= ordered_per_key[&before] * 1.25,
+            "the ordered object table must not double at a hash growth boundary");
+    }
 }
 
 /// WHAT A DUMP ROUND TAKES OUT OF THE RESIDENT INDEX -- i.e. how much of the headline is transient.
@@ -10333,7 +10345,9 @@ fn the_amplification_set_at_two_arms_four_times_apart() {
             clone_resident: deep_heap_bytes(shard),
             arc_bytes,
             buckets: shard.bucket_index.bucket_map.len(),
-            capacity: shard.strings().capacity(),
+            // The string table is an ordered tree now and has no bucket capacity, so the phase
+            // match below holds by construction: a tree has no growth sawtooth to be in phase with.
+            capacity: shard.strings().len(),
         }
     };
 

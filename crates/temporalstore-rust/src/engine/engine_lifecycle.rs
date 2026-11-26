@@ -3973,7 +3973,7 @@ mod batch_truncation_tests {
 /// Generic over the KEY so that maps keyed by `ModelKey` and maps keyed by `String` can both be
 /// rendered by one body. They used to ride in an array literal, which forces a single element type
 /// and so would have required converting every map in the list the moment one of them changed.
-fn append_series_shape<K, S>(out: &mut String, kind: &str, series: &std::collections::HashMap<K, S>)
+fn append_series_shape<K, S>(out: &mut String, kind: &str, series: &std::collections::BTreeMap<K, S>)
 where
     K: Ord + std::fmt::Display,
     S: super::timestamped_series::TimestampedSeries,

@@ -5,10 +5,30 @@
 use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::*;
 
-fn visit_compaction_objects<V, H: std::hash::BuildHasher>(
-    objects: &mut std::collections::HashMap<crate::engine::state::ModelKey, V, H>,
+fn visit_compaction_objects<V>(
+    objects: &mut std::collections::BTreeMap<crate::engine::state::ModelKey, V>,
     selected: Option<&std::collections::HashSet<crate::engine::state::ModelKey>>,
     mut visit: impl FnMut(&str, &mut V) -> Result<(), Status>,
+) -> Result<(), Status> {
+    if let Some(keys) = selected {
+        for key in keys {
+            if let Some(value) = objects.get_mut(&**key) {
+                visit(key, value)?;
+            }
+        }
+    } else {
+        for (key, value) in objects {
+            visit(key, value)?;
+        }
+    }
+    Ok(())
+}
+
+// Context-node addresses occupy a side table, not the consolidated object tables.
+fn visit_compaction_addresses(
+    objects: &mut std::collections::HashMap<crate::engine::state::ModelKey, ElementEntry>,
+    selected: Option<&std::collections::HashSet<crate::engine::state::ModelKey>>,
+    mut visit: impl FnMut(&str, &mut ElementEntry) -> Result<(), Status>,
 ) -> Result<(), Status> {
     if let Some(keys) = selected {
         for key in keys {
@@ -2040,7 +2060,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 record.set_address(address);
             });
         }
-        visit_compaction_objects(shard.context_nodes_mut(), selected_keys, |key, address| {
+        visit_compaction_addresses(shard.context_nodes_mut(), selected_keys, |key, address| {
             compact_block_addresses(
                 &self.block_store,
                 &self.cache,
