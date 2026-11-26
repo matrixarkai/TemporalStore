@@ -296,15 +296,6 @@ pub struct TemporalEngine {
     index_scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
-    /// When a read served under the SHARED shard lock last touched each routing bucket.
-    ///
-    /// The ordinary read path stamps `ShardState::bucket_recency` after it executes, which needs
-    /// the shard WRITE lock; the read-only fast path holds only the shared lock and cannot. A read
-    /// that left no stamp would make a bucket read all day look idle to eviction, so the fast path
-    /// leaves it here instead and an eviction round folds it into each shard's `bucket_recency`
-    /// (`fold_fast_read_recency`) before it ranks buckets. Bounded by shards x buckets, the same
-    /// bound as the map it feeds. Not durable, like `bucket_recency`.
-    fast_read_recency: Arc<std::sync::Mutex<HashMap<(ShardId, u32), u64>>>,
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
     context_embedding_indexes: Arc<RwLock<crate::llm_context::EmbeddingIndexRegistry>>,
     /// Per-shard read and write rate limits. Empty and inert unless something sets a limit, or the
@@ -1021,18 +1012,6 @@ impl TemporalEngine {
             .unwrap_or(false)
     }
 
-    /// Record that a read served under the shared shard lock touched `routing_bucket`.
-    ///
-    /// One short mutex hold and one map insert; see `fast_read_recency` for why the stamp cannot go
-    /// into the shard directly.
-    fn note_fast_read_recency(&self, shard_id: ShardId, routing_bucket: u32) {
-        let now = now_ms();
-        self.fast_read_recency
-            .lock()
-            .expect("fast read recency lock poisoned")
-            .insert((shard_id, routing_bucket), now);
-    }
-
     /// Move the stamps the read fast path left into each shard's `bucket_recency`, keeping the
     /// later of the two for a bucket both have touched.
     ///
@@ -1040,49 +1019,28 @@ impl TemporalEngine {
     /// shard write lock only when a stamp is waiting, and eviction rounds are periodic, not on the
     /// serving path.
     pub(crate) fn fold_fast_read_recency(&self) {
-        let pending = {
-            let mut stamps = self
-                .fast_read_recency
-                .lock()
-                .expect("fast read recency lock poisoned");
-            if stamps.is_empty() {
-                return;
-            }
-            std::mem::take(&mut *stamps)
-        };
-        let mut pending: Vec<_> = pending.into_iter().collect();
-        pending.sort_unstable_by_key(|((shard_id, _), _)| *shard_id);
-        let mut pending = pending.into_iter().peekable();
-        while let Some(&((shard_id, _), _)) = pending.peek() {
-            self.shards.with_state_mut(shard_id, |mut state| {
-                while pending.peek().is_some_and(|((id, _), _)| *id == shard_id) {
-                    let ((_, routing_bucket), stamped_ms) = pending.next().expect("pending stamp");
-                    if let Some(shard) = state.as_deref_mut() {
-                        let slot = shard.bucket_recency.entry(routing_bucket).or_insert(0);
-                        *slot = (*slot).max(stamped_ms);
-                    }
-                }
-            });
+        for shard_id in self.shards.shard_ids() {
+            self.fold_fast_read_recency_for_shard(shard_id);
         }
     }
 
     pub(crate) fn fold_fast_read_recency_for_shard(&self, shard_id: ShardId) {
         let Some(owner) = self.shards.handle(shard_id) else { return; };
-        let pending: Vec<_> = {
-            let mut stamps = self.fast_read_recency.lock().expect("fast read recency lock poisoned");
-            stamps.extract_if(|(id, _), _| *id == shard_id)
-                .map(|((_, bucket), stamp)| (bucket, stamp)).collect()
-        };
+        // Detach only this incarnation's ordered map, then release its stamp
+        // mutex before waiting for its shard guard. No peer payload is scanned.
+        let pending = owner.take_fast_read_recency();
         if pending.is_empty() { return; }
         // A delayed fold must not look up the ID again and mutate a replacement.
         self.shards.with_handle_state_mut(&owner, |state| {
             if let Some(shard) = state {
-                for (bucket, stamp) in pending {
+                for (&bucket, &stamp) in &pending {
                     let slot = shard.bucket_recency.entry(bucket).or_insert(0);
                     *slot = (*slot).max(stamp);
                 }
             }
         });
+        // Map nodes are destroyed after the owner guard, never under registry metadata.
+        drop(pending);
     }
 
     fn execute_with_storage_override(
@@ -2045,7 +2003,13 @@ impl TemporalEngine {
         if let Some(before_owner) = BEFORE_FAST_READ_OWNER.with(|slot| slot.borrow_mut().take()) {
             before_owner();
         }
-        let captured = self.shards.with_state(request.shard_id, |shard| {
+        let Some(owner) = self.shards.handle(request.shard_id) else {
+            return Some(ExecuteResponse {
+                status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
+                response: CommandResponse::Empty,
+            });
+        };
+        let captured = self.shards.with_handle_state(&owner, |shard| {
             let Some(shard) = shard else {
                 return Err(Some(ExecuteResponse {
                     status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
@@ -2491,7 +2455,7 @@ impl TemporalEngine {
             let wal_snapshot = plan.pin_log_locations(&self.block_store, request.shard_id);
             let slab_snapshot = plan.pin_feature_slabs(&self.block_store);
             if hold_guard_across_reads {
-                return Err(self.serve_fast_path_read(request, plan));
+                return Err(self.serve_fast_path_read(request, plan, &owner));
             }
             Ok((plan, wal_snapshot, slab_snapshot))
         });
@@ -2499,13 +2463,14 @@ impl TemporalEngine {
             Ok(capture) => capture,
             Err(response) => return response,
         };
-        self.serve_fast_path_read(request, plan)
+        self.serve_fast_path_read(request, plan, &owner)
     }
 
     fn serve_fast_path_read(
         &self,
         request: &ExecuteRequest,
         plan: FastPathRead<'_>,
+        owner: &shard_guard::ShardHandle,
     ) -> Option<ExecuteResponse> {
         #[cfg(test)]
         if let Some(after) = AFTER_FAST_READ_PLAN.with(|slot| slot.borrow_mut().take()) {
@@ -2521,7 +2486,7 @@ impl TemporalEngine {
                 // The ordinary read path stamps the bucket's recency; this one cannot reach the
                 // shard's map under the shared lock, so it leaves the stamp for eviction to fold.
                 // Stamped before the absent-key answer below, as the ordinary path does.
-                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                owner.note_fast_read_recency(routing_bucket, now_ms());
                 // THE SHARD HAS ALREADY SAID NO, SO NOTHING BELOW IT IS ASKED.
                 //
                 // `address` comes from the string row or its named primary bucket locator,
@@ -2595,7 +2560,7 @@ impl TemporalEngine {
                 filters,
                 rows,
             } => {
-                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                owner.note_fast_read_recency(routing_bucket, now_ms());
                 if rows {
                     // A SEQUENCE READ: each row is decoded where it sits in the block, and the rows
                     // every filter holds for are answered. The window is capped before the filters,
@@ -2682,9 +2647,9 @@ impl TemporalEngine {
                 end_routing_bucket,
                 now_ms,
             } => {
-                self.note_fast_read_recency(
-                    request.shard_id,
+                owner.note_fast_read_recency(
                     block_routing_bucket(key, start_routing_bucket, end_routing_bucket),
+                    crate::engine::now_ms(),
                 );
                 let ranked = window_reduce_rank_read::serve_snapshot(
                     &self.cache,
@@ -2706,7 +2671,7 @@ impl TemporalEngine {
                 response,
                 routing_bucket,
             } => {
-                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                owner.note_fast_read_recency(routing_bucket, now_ms());
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response,
@@ -2721,9 +2686,9 @@ impl TemporalEngine {
             } => {
                 let mut rankings = Vec::with_capacity(queries.len());
                 for (query, taken) in queries.iter().zip(held) {
-                    self.note_fast_read_recency(
-                        request.shard_id,
+                    owner.note_fast_read_recency(
                         block_routing_bucket(&query.key, start_routing_bucket, end_routing_bucket),
+                        crate::engine::now_ms(),
                     );
                     rankings.push(window_reduce_rank_read::serve_snapshot(
                         &self.cache,
@@ -2751,9 +2716,9 @@ impl TemporalEngine {
                 now_ms,
             } => {
                 for key in keys {
-                    self.note_fast_read_recency(
-                        request.shard_id,
+                    owner.note_fast_read_recency(
                         block_routing_bucket(key, start_routing_bucket, end_routing_bucket),
+                        crate::engine::now_ms(),
                     );
                 }
                 let ranked = window_reduce_rank_read::serve_many_snapshots(
@@ -2776,7 +2741,7 @@ impl TemporalEngine {
                 value,
                 routing_bucket,
             } => {
-                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                owner.note_fast_read_recency(routing_bucket, now_ms());
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::Integer { value },
@@ -2786,7 +2751,7 @@ impl TemporalEngine {
                 value,
                 routing_bucket,
             } => {
-                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                owner.note_fast_read_recency(routing_bucket, now_ms());
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::Bytes { value },
@@ -2798,7 +2763,7 @@ impl TemporalEngine {
                 routing_bucket,
                 range,
             } => {
-                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                owner.note_fast_read_recency(routing_bucket, now_ms());
                 // The shard has already said whether the key is there; an absent key reads nothing.
                 let bytes = match address {
                     Some(address) => Some(read_block_shared(
@@ -2833,7 +2798,7 @@ impl TemporalEngine {
                 address,
                 routing_bucket,
             } => {
-                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                owner.note_fast_read_recency(routing_bucket, now_ms());
                 let value = match address {
                     Some(address) => Some(read_block_bytes(
                         &self.cache,
@@ -2855,7 +2820,7 @@ impl TemporalEngine {
                 fields,
                 routing_bucket,
             } => {
-                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                owner.note_fast_read_recency(routing_bucket, now_ms());
                 // THE FIELDS OF ONE HASH SIT IN FEW SLABS, so the block keys of a whole-hash read
                 // share their record key: building each from scratch spent three allocations a
                 // field, two of them spelling the same slab name again.

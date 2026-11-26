@@ -2,19 +2,26 @@
 // Copyright 2026 MatrixArkAI
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 #[path = "shard_lock_diagnostics.rs"]
 pub(super) mod diagnostics;
 use diagnostics::ShardLockSite::*;
 
 pub(super) struct ShardStateRegistry<T> {
-    entries: RwLock<BTreeMap<u64, Arc<RwLock<Option<T>>>>>,
+    entries: RwLock<BTreeMap<u64, Arc<ShardStateOwner<T>>>>,
+}
+
+// Transient recency belongs to the allocation, not the reusable shard ID or a
+// cloned payload. Retired plans retain only their own incarnation's stamps.
+struct ShardStateOwner<T> {
+    value: RwLock<Option<T>>,
+    fast_read_recency: Mutex<BTreeMap<u32, u64>>,
 }
 
 pub(super) struct ShardStateHandle<T> {
     shard_id: u64,
-    state: Arc<RwLock<Option<T>>>,
+    state: Arc<ShardStateOwner<T>>,
 }
 
 impl<T> Clone for ShardStateHandle<T> {
@@ -24,6 +31,25 @@ impl<T> Clone for ShardStateHandle<T> {
 }
 
 impl<T> ShardStateHandle<T> {
+    pub(super) fn note_fast_read_recency(&self, bucket: u32, stamp: u64) {
+        let mut stamps = self.state.fast_read_recency.lock().expect("fast read recency lock poisoned");
+        let slot = stamps.entry(bucket).or_insert(0);
+        *slot = (*slot).max(stamp);
+    }
+
+    pub(super) fn take_fast_read_recency(&self) -> BTreeMap<u32, u64> {
+        let mut stamps = self.state.fast_read_recency.lock().expect("fast read recency lock poisoned");
+        std::mem::take(&mut *stamps)
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_fast_read_recency_for_test<R>(
+        &self, read: impl FnOnce(&BTreeMap<u32, u64>) -> R,
+    ) -> R {
+        let stamps = self.state.fast_read_recency.lock().unwrap();
+        read(&stamps)
+    }
+
     pub(super) fn shard_id(&self) -> u64 {
         self.shard_id
     }
@@ -34,7 +60,7 @@ impl<T> ShardStateHandle<T> {
 
     #[cfg(test)]
     pub(super) fn try_read_loaded_for_test(&self) -> Result<bool, std::sync::TryLockError<()>> {
-        match self.state.try_read() {
+        match self.state.value.try_read() {
             Ok(state) => Ok(state.is_some()),
             Err(std::sync::TryLockError::WouldBlock) => Err(std::sync::TryLockError::WouldBlock),
             Err(std::sync::TryLockError::Poisoned(_)) => panic!("shard state lock poisoned"),
@@ -43,7 +69,7 @@ impl<T> ShardStateHandle<T> {
 
     #[cfg(test)]
     pub(super) fn try_write_loaded_for_test(&self) -> Result<bool, std::sync::TryLockError<()>> {
-        match self.state.try_write() {
+        match self.state.value.try_write() {
             Ok(state) => Ok(state.is_some()),
             Err(std::sync::TryLockError::WouldBlock) => Err(std::sync::TryLockError::WouldBlock),
             Err(std::sync::TryLockError::Poisoned(_)) => panic!("shard state lock poisoned"),
@@ -51,12 +77,12 @@ impl<T> ShardStateHandle<T> {
     }
 
     pub(super) fn with_read<R>(&self, read: impl FnOnce(Option<&T>) -> R) -> R {
-        let state = diagnostics::read(&self.state, OwnerAccess);
+        let state = diagnostics::read(&self.state.value, OwnerAccess);
         read(state.as_ref())
     }
 
     pub(super) fn with_write<R>(&self, write: impl FnOnce(Option<&mut T>) -> R) -> R {
-        let mut state = diagnostics::write(&self.state, OwnerAccess);
+        let mut state = diagnostics::write(&self.state.value, OwnerAccess);
         write(state.as_mut())
     }
 }
@@ -101,7 +127,10 @@ impl<T> ShardStateRegistry<T> {
     // Lifecycle callers must reserve the shard ID through side-resource cleanup.
     // The old state is returned so its destruction occurs outside registry guards.
     pub(super) fn replace(&self, shard_id: u64, state: T) -> Option<T> {
-        let replacement = Arc::new(RwLock::new(Some(state)));
+        let replacement = Arc::new(ShardStateOwner {
+            value: RwLock::new(Some(state)),
+            fast_read_recency: Mutex::new(BTreeMap::new()),
+        });
         loop {
             let Some(previous) = self.handle(shard_id) else {
                 let mut entries = diagnostics::write(&self.entries, RegistryLifecycle);
@@ -111,7 +140,7 @@ impl<T> ShardStateRegistry<T> {
                 entries.insert(shard_id, replacement);
                 return None;
             };
-            let mut old = diagnostics::write(&previous.state, OwnerLifecycle);
+            let mut old = diagnostics::write(&previous.state.value, OwnerLifecycle);
             let mut entries = diagnostics::write(&self.entries, RegistryLifecycle);
             if !entries.get(&shard_id).is_some_and(|current| Arc::ptr_eq(current, &previous.state)) {
                 continue;
@@ -123,7 +152,7 @@ impl<T> ShardStateRegistry<T> {
     }
 
     pub(super) fn retire_if_current(&self, expected: &ShardStateHandle<T>) -> Option<T> {
-        let mut state = diagnostics::write(&expected.state, OwnerLifecycle);
+        let mut state = diagnostics::write(&expected.state.value, OwnerLifecycle);
         let mut entries = diagnostics::write(&self.entries, RegistryLifecycle);
         if !entries.get(&expected.shard_id).is_some_and(|current| Arc::ptr_eq(current, &expected.state)) {
             return None;
@@ -140,7 +169,7 @@ impl<T> ShardStateRegistry<T> {
     }
 
     fn same_membership(
-        entries: &BTreeMap<u64, Arc<RwLock<Option<T>>>>,
+        entries: &BTreeMap<u64, Arc<ShardStateOwner<T>>>,
         handles: &[ShardStateHandle<T>],
     ) -> bool {
         entries.len() == handles.len() && handles.iter().all(|handle| {
@@ -162,14 +191,14 @@ impl<T> ShardStateRegistry<T> {
             tests::notify_captured_membership();
             let mut states = Vec::with_capacity(handles.len());
             for handle in &handles {
-                match diagnostics::try_read(&handle.state) {
+                match diagnostics::try_read(&handle.state.value) {
                     Some(state) => states.push(state),
                     None => {
                         drop(states);
                         diagnostics::retry(true);
                         #[cfg(test)]
                         tests::notify_capture_wait(handle.shard_id);
-                        drop(diagnostics::read(&handle.state, CoherentWait));
+                        drop(diagnostics::read(&handle.state.value, CoherentWait));
                         continue 'capture;
                     }
                 }
@@ -196,14 +225,14 @@ impl<T> ShardStateRegistry<T> {
             tests::notify_captured_membership();
             let mut states = Vec::with_capacity(handles.len());
             for handle in &handles {
-                match diagnostics::try_write(&handle.state) {
+                match diagnostics::try_write(&handle.state.value) {
                     Some(state) => states.push(state),
                     None => {
                         drop(states);
                         diagnostics::retry(true);
                         #[cfg(test)]
                         tests::notify_capture_wait(handle.shard_id);
-                        drop(diagnostics::write(&handle.state, CoherentWait));
+                        drop(diagnostics::write(&handle.state.value, CoherentWait));
                         continue 'capture;
                     }
                 }
@@ -257,7 +286,7 @@ mod tests {
         states.replace(1, 10_u64);
         states.replace(2, 20);
         let busy = states.handle(2).unwrap();
-        let mut busy_state = busy.state.write().unwrap();
+        let mut busy_state = busy.state.value.write().unwrap();
 
         let (waiting, wait_observed) = mpsc::channel();
         let (finished, finish_observed) = mpsc::channel();
@@ -409,6 +438,30 @@ mod tests {
         assert_eq!(states.retire_if_current(&old), None);
         current.with_read(|state| assert_eq!(state, Some(&20)));
         assert_eq!(states.retire_if_current(&current), Some(20));
+        assert!(states.shard_ids().is_empty());
+    }
+
+    #[test]
+    fn retired_stamp_storage_is_reclaimed_with_the_last_captured_handle() {
+        let states = ShardStateRegistry::default();
+        states.replace(1, 0_u64);
+        for generation in 1..100 {
+            let old = states.handle(1).unwrap();
+            old.note_fast_read_recency(7, generation);
+            let weak = Arc::downgrade(&old.state);
+            states.replace(1, generation);
+            let current = states.handle(1).unwrap();
+            current.with_fast_read_recency_for_test(|stamps| assert!(stamps.is_empty()));
+            old.with_read(|state| assert!(state.is_none()));
+            assert!(weak.upgrade().is_some());
+            drop(old);
+            assert!(weak.upgrade().is_none(), "registry retained a retired stamp map");
+        }
+        let last = states.handle(1).unwrap();
+        let weak = Arc::downgrade(&last.state);
+        assert!(states.retire_if_current(&last).is_some());
+        drop(last);
+        assert!(weak.upgrade().is_none());
         assert!(states.shard_ids().is_empty());
     }
 
