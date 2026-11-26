@@ -150,6 +150,22 @@ pub enum WriteAheadLogError {
     Corruption(String),
 }
 
+#[derive(Debug, Error)]
+#[error("WAL piece changed during group sync")]
+struct WalPieceChanged;
+
+impl WalPieceChanged {
+    fn io_error() -> WriteAheadLogError {
+        std::io::Error::new(std::io::ErrorKind::Interrupted, Self).into()
+    }
+
+    fn matches(error: &WriteAheadLogError) -> bool {
+        matches!(error, WriteAheadLogError::Io(error)
+            if error.get_ref().is_some_and(|cause| cause.is::<Self>()))
+    }
+}
+
+
 impl From<crate::log_framing::FramingError> for WriteAheadLogError {
     fn from(err: crate::log_framing::FramingError) -> Self {
         WriteAheadLogError::Corruption(err.0)
@@ -1165,6 +1181,7 @@ pub struct WriteAheadLogFlushReport {
     pub path: PathBuf,
     pub last_sequence: u64,
     pub persistent_bytes: u64,
+    /// The reported boundary is durable, including when an earlier barrier covered it.
     pub synced: bool,
 }
 
@@ -1352,6 +1369,8 @@ struct GroupCommitState {
 
 #[derive(Debug, Default)]
 struct GroupCommitCoordinator {
+    // Serializes staged buffered appends for this stream without blocking durability or retention.
+    buffered_append: Mutex<()>,
     state: Mutex<GroupCommitState>,
     // No barrier or append-lock wait under this mutex. The active rename
     // holds it only while publishing the new file name.
@@ -1573,6 +1592,9 @@ fn wal_group_loop_interval() -> std::time::Duration {
 #[cfg(test)]
 thread_local! {
     static GROUP_WRITE_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    static SELECTED_FLUSH_TAIL_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SELECTED_FLUSH_BEFORE_SYNC: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static BEFORE_GROUP_COMMIT_SYNC: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Test hook: forces the loop flusher's tick (ms); tests that inject write failures park the
@@ -1892,45 +1914,75 @@ impl LocalWriteAheadLogStore {
         if !wal_group_write_enabled() {
             return self.append_for_group_commit_unbuffered(shard_id, command, outcomes, staged_blocks);
         }
-        let mut inner = self.lock_inner_raw();
-        let batch_open = inner
-            .pending_by_shard
-            .get(&shard_id)
-            .is_some_and(|pending| !pending.bytes.is_empty());
-        // The cross-process append lock and the on-disk probes establish where the log really
-        // ends, and they are needed ONCE per batch: while a batch is open this process already
-        // owns the tail, so the cached sequence and the logical end are authoritative and the
-        // `flock` pair, the two `stat`s and the one-byte probe are skipped. The lock is taken
-        // again, around the write, when the batch is flushed.
-        let _append_lock = if batch_open {
-            None
-        } else {
-            let lock = WalAppendLock::acquire(&mut inner, shard_id)?;
-            let known_len = ensure_active_wal_segment_len(&mut inner, shard_id)?;
-            let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append_known(
-                &mut inner,
-                shard_id,
-                self.flat_append(),
-                known_len,
-            )?;
-            inner.last_sequence_by_shard.insert(shard_id, last_sequence);
-            Some(lock)
-        };
-        let last_sequence = inner
-            .last_sequence_by_shard
-            .get(&shard_id)
-            .copied()
-            .unwrap_or_default();
-        let seq = last_sequence.saturating_add(1);
-        let rec = WriteAheadLogRecord {
+        let coordinator = self.group_commit_coordinator(shard_id);
+        let append = coordinator.buffered_append.lock().expect("WAL buffered append poisoned");
+        let mut rec = WriteAheadLogRecord {
             shard_id,
-            sequence: seq,
+            sequence: 0,
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command: record_command(command, &outcomes, !staged_blocks.is_empty()),
             staged_blocks,
             outcomes,
         };
-        let offset = match buffer_record_locked(&mut inner, &rec)? {
+        let mut inner = self.lock_inner_raw();
+        let mut frame = std::mem::take(&mut inner.encode_scratch);
+        let warm = buffered_append_position(&inner, shard_id);
+        let mut encoded = false;
+        let mut _append_lock = None;
+        if let Some((last, generation)) = warm {
+            rec.sequence = last.saturating_add(1);
+            drop(inner);
+            #[cfg(test)]
+            BEFORE_WARM_WAL_FRAME.with(|slot| {
+                if let Some(wait) = slot.borrow_mut().take() {
+                    wait();
+                }
+            });
+            let result = encode_buffered_record(&rec, &mut frame);
+            inner = self.lock_inner_raw();
+            if let Err(error) = result {
+                recycle_encode_scratch(&mut inner, frame);
+                return Err(error);
+            }
+            // A barrier may have drained the old pending bytes. The logical append
+            // still follows the same sequence if no writer or replacement advanced it.
+            encoded = inner.append_lock_by_shard.contains_key(&shard_id)
+                && inner.verified_len_by_shard.contains_key(&shard_id)
+                && inner.last_sequence_by_shard.get(&shard_id).copied() == Some(last)
+                && inner.gc_epoch_by_shard.get(&shard_id).copied() == generation;
+        }
+        if !encoded {
+            // Cold or invalidated capture. Reconcile using the existing owner path while
+            // serializing publication with other writers that do not use this scratch.
+            let last = match buffered_append_position(&inner, shard_id) {
+                Some((last, _)) => last,
+                None => {
+                    _append_lock = Some(WalAppendLock::acquire(&mut inner, shard_id)?);
+                    let known_len = ensure_active_wal_segment_len(&mut inner, shard_id)?;
+                    let (last, _) = resolve_last_sequence_for_append_known(
+                        &mut inner, shard_id, self.flat_append(), known_len,
+                    )?;
+                    inner.last_sequence_by_shard.insert(shard_id, last);
+                    #[cfg(all(test, unix))]
+                    AFTER_COLD_WAL_RECONCILE.with(|slot| {
+                        if let Some(check) = slot.borrow_mut().take() {
+                            check();
+                        }
+                    });
+                    last
+                }
+            };
+            rec.sequence = last.saturating_add(1);
+            if let Err(error) = encode_buffered_record(&rec, &mut frame) {
+                recycle_encode_scratch(&mut inner, frame);
+                return Err(error);
+            }
+        }
+        let seq = rec.sequence;
+        let buffered = buffer_record_locked(&mut inner, &rec, &frame);
+        recycle_encode_scratch(&mut inner, frame);
+        drop(append);
+        let offset = match buffered? {
             Some(offset) => offset,
             None => {
                 // The record crosses a block boundary, where a footer has to be written at a
@@ -2203,7 +2255,7 @@ impl LocalWriteAheadLogStore {
             // address the sealed pieces already own. The single-record path has always done this;
             // the batch path did not, and nothing about a batch makes it safe to skip.
             ensure_active_wal_segment(&mut inner, shard_id)?;
-            let (disk_last_sequence, _) = last_wal_sequence_at(&inner.root, shard_id)?;
+            let (disk_last_sequence, _) = reconcile_owned_wal_tail(&mut inner, shard_id)?;
             let cached_last_sequence = inner
                 .last_sequence_by_shard
                 .get(&shard_id)
@@ -2315,15 +2367,23 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         required_sequence: u64,
     ) -> Result<(), WriteAheadLogError> {
-        if wal_group_write_enabled() {
-            return self.stream_commit(shard_id, required_sequence);
+        for attempt in 0..3 {
+            let result = if wal_group_write_enabled() {
+                self.stream_commit(shard_id, required_sequence)
+            } else {
+                self.group_commit_sync_with_policy(
+                    shard_id,
+                    required_sequence,
+                    group_commit_delay(),
+                    adaptive_group_commit_delay(),
+                )
+            };
+            match result {
+                Err(error) if attempt < 2 && WalPieceChanged::matches(&error) => continue,
+                result => return result,
+            }
         }
-        self.group_commit_sync_with_policy(
-            shard_id,
-            required_sequence,
-            group_commit_delay(),
-            adaptive_group_commit_delay(),
-        )
+        unreachable!("last WAL group sync attempt returns its result")
     }
 
     /// Group commit per shard: register as a waiter, try to start a write, and return when the
@@ -2423,9 +2483,6 @@ impl LocalWriteAheadLogStore {
             {
                 let mut st = coordinator.state.lock().expect("wal shard sync coordinator poisoned");
                 st.inflight = false;
-                if let Ok(snapshot) = &outcome {
-                    st.durable_seq = st.durable_seq.max(*snapshot);
-                }
                 coordinator.wake.notify_all();
                 again = outcome.is_ok() && {
                     let inner = self.lock_inner_raw();
@@ -2475,7 +2532,7 @@ impl LocalWriteAheadLogStore {
         coordinator: &GroupCommitCoordinator,
         required_sequence: u64,
     ) -> Result<u64, WriteAheadLogError> {
-        let (path, snapshot, record_end, generation, written) = {
+        let (path, snapshot, record_end, generation, file) = {
             let mut inner = self.lock_inner_raw();
             let written = flush_pending_locked_file(&mut inner, shard_id)?;
             let path = active_wal_path(&mut inner, shard_id);
@@ -2486,23 +2543,27 @@ impl LocalWriteAheadLogStore {
                 .unwrap_or(required_sequence)
                 .max(required_sequence);
             let record_end = inner.verified_len_by_shard.get(&shard_id).copied().unwrap_or(0);
-            let generation = inner.base_by_shard.get(&shard_id).copied();
-            (path, snapshot, record_end, generation, written)
-        };
-        // The handle this write went through when this call wrote; otherwise (a record was
-        // already written by an appender, or the loop tick) open the piece by its path as before.
-        let file = match written {
-            Some(file) => file,
-            None => {
-                #[cfg(test)]
-                WAL_BARRIER_REOPENS.with(|opens| opens.set(opens.get() + 1));
-                match OpenOptions::new().read(true).write(true).open(path.as_path()) {
-                    Ok(file) => file,
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(snapshot),
-                    Err(err) => return Err(err.into()),
+            let generation = inner.gc_epoch_by_shard.get(&shard_id).copied();
+            let file = match written {
+                Some(file) => file,
+                None => {
+                    #[cfg(test)]
+                    WAL_BARRIER_REOPENS.with(|opens| opens.set(opens.get() + 1));
+                    match OpenOptions::new().read(true).write(true).open(path.as_path()) {
+                        Ok(file) => file,
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound && snapshot == 0 => {
+                            return Ok(0);
+                        }
+                        Err(err) => return Err(err.into()),
+                    }
                 }
-            }
+            };
+            (path, snapshot, record_end, generation, file)
         };
+        #[cfg(test)]
+        BEFORE_GROUP_COMMIT_SYNC.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() { hook(); }
+        });
         crate::durability_metrics::record_barrier("engine_wal_group_commit");
         file.sync_data()?;
         #[cfg(test)]
@@ -2512,28 +2573,39 @@ impl LocalWriteAheadLogStore {
                 observer();
             }
         });
-        let owed = self.lock_inner_raw().dir_sync_owed_by_shard.contains(&shard_id);
-        let dir_synced = coordinator
-            .state
-            .lock()
-            .expect("wal shard sync coordinator poisoned")
-            .dir_synced;
+        let (owed, dir_synced) = {
+            let entry = coordinator.state.lock().expect("wal shard sync coordinator poisoned");
+            let inner = self.lock_inner_raw();
+            (inner.dir_sync_owed_by_shard.contains(&shard_id), entry.dir_synced)
+        };
         if !dir_synced || owed {
             sync_parent_dir(path.as_path())?;
-            coordinator.state.lock().expect("wal shard sync coordinator poisoned").dir_synced = true;
-            self.lock_inner_raw().dir_sync_owed_by_shard.remove(&shard_id);
         }
+        let mut entry = coordinator.state.lock().expect("wal shard sync coordinator poisoned");
         let mut inner = self.lock_inner_raw();
         inner.stats.flushes += 1;
         inner.stats.syncs += 1;
-        if snapshot > inner.stats.last_flushed_sequence {
-            inner.stats.last_flushed_sequence = snapshot;
+        if inner.gc_epoch_by_shard.get(&shard_id).copied() != generation {
+            // The obsolete descriptor cannot certify the current piece. A completed
+            // reclaim may already have published its own independent durability receipt.
+            if !inner.dir_sync_owed_by_shard.contains(&shard_id) {
+                if let Some(covered) = inner.durable_sequence_by_shard.get(&shard_id) {
+                    if *covered >= required_sequence {
+                        entry.durable_seq = entry.durable_seq.max(*covered);
+                        entry.dir_synced = true;
+                        return Ok(entry.durable_seq);
+                    }
+                }
+            }
+            return Err(WalPieceChanged::io_error());
         }
-        if inner.base_by_shard.get(&shard_id).copied() == generation {
-            note_durable_record_end(&mut inner, shard_id, record_end, true);
-        }
-        let sequence_entry = inner.durable_sequence_by_shard.entry(shard_id).or_default();
-        *sequence_entry = (*sequence_entry).max(snapshot);
+        inner.stats.last_flushed_sequence = inner.stats.last_flushed_sequence.max(snapshot);
+        inner.dir_sync_owed_by_shard.remove(&shard_id);
+        note_durable_record_end(&mut inner, shard_id, record_end, true);
+        let sequence = inner.durable_sequence_by_shard.entry(shard_id).or_default();
+        *sequence = (*sequence).max(snapshot);
+        entry.dir_synced = true;
+        entry.durable_seq = entry.durable_seq.max(snapshot);
         Ok(snapshot)
     }
 
@@ -2705,7 +2777,7 @@ impl LocalWriteAheadLogStore {
         } else if use_adaptive_window {
             std::thread::sleep(adaptive_window);
         }
-        let (path, snapshot, record_end, generation) = {
+        let (path, snapshot, record_end, generation, file) = {
             let mut inner = self.lock_inner_raw();
             // THE BATCH WRITE. Everything buffered since the previous barrier -- this caller's
             // record and every concurrent writer's that arrived while the previous write was in
@@ -2749,21 +2821,20 @@ impl LocalWriteAheadLogStore {
                 .get(&shard_id)
                 .copied()
                 .unwrap_or(0);
-            let generation = inner.base_by_shard.get(&shard_id).copied();
-            (path, snapshot, record_end, generation)
+            let generation = inner.gc_epoch_by_shard.get(&shard_id).copied();
+            let file = match OpenOptions::new().read(true).write(true).open(path.as_path()) {
+                Ok(file) => file,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound && snapshot == 0 => {
+                    return Ok(());
+                }
+                Err(err) => return Err(err.into()),
+            };
+            (path, snapshot, record_end, generation, file)
         };
-        // Asked by OPENING, not by an `exists()` before it. The open happens either way and
-        // answers the same question in the same syscall, with no window between two answers for
-        // the file to appear or vanish in. A shard with no file has nothing unsynced, which is
-        // what the early return says.
-        let file = match OpenOptions::new().read(true).write(true).open(path.as_path()) {
-            Ok(file) => file,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                entry.durable_seq = entry.durable_seq.max(snapshot);
-                return Ok(());
-            }
-            Err(err) => return Err(err.into()),
-        };
+        #[cfg(test)]
+        BEFORE_GROUP_COMMIT_SYNC.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().take() { hook(); }
+        });
         crate::durability_metrics::record_barrier("engine_wal_group_commit");
         file.sync_data()?;
         #[cfg(test)]
@@ -2773,40 +2844,36 @@ impl LocalWriteAheadLogStore {
                 observer();
             }
         });
-        let owed = {
-            let inner = self.lock_inner_raw();
-            inner.dir_sync_owed_by_shard.contains(&shard_id)
-        };
+        let owed = self.lock_inner_raw().dir_sync_owed_by_shard.contains(&shard_id);
         if !entry.dir_synced || owed {
-            // The first durable append for this shard this process lifetime makes the directory
-            // entry durable once, and afterwards nothing touches it -- until a roll creates a new
-            // file under the same name, which is what `owed` reports.
             sync_parent_dir(path.as_path())?;
-            entry.dir_synced = true;
-            self.inner
-                .lock()
-                .expect("write-ahead log lock poisoned")
-                .dir_sync_owed_by_shard
-                .remove(&shard_id);
         }
+        let mut inner = self.lock_inner_raw();
+        inner.stats.flushes += 1;
+        inner.stats.syncs += 1;
+        if inner.gc_epoch_by_shard.get(&shard_id).copied() != generation {
+            // The obsolete descriptor cannot certify the current piece. A completed
+            // reclaim may already have published its own independent durability receipt.
+            if !inner.dir_sync_owed_by_shard.contains(&shard_id) {
+                if let Some(covered) = inner.durable_sequence_by_shard.get(&shard_id) {
+                    if *covered >= required_sequence {
+                        entry.durable_seq = entry.durable_seq.max(*covered);
+                        entry.dir_synced = true;
+                        return Ok(());
+                    }
+                }
+            }
+            return Err(WalPieceChanged::io_error());
+        }
+        inner.stats.last_flushed_sequence = inner.stats.last_flushed_sequence.max(snapshot);
+        inner.dir_sync_owed_by_shard.remove(&shard_id);
+        note_durable_record_end(&mut inner, shard_id, record_end, true);
+        let sequence = inner.durable_sequence_by_shard.entry(shard_id).or_default();
+        *sequence = (*sequence).max(snapshot);
+        entry.dir_synced = true;
         entry.durable_seq = entry.durable_seq.max(snapshot);
         if coordinator.pending.load(AtomicOrdering::Acquire) > 1 {
             entry.contention_seen = true;
-        }
-        {
-            let mut inner = self.lock_inner_raw();
-            inner.stats.flushes += 1;
-            inner.stats.syncs += 1;
-            if snapshot > inner.stats.last_flushed_sequence {
-                inner.stats.last_flushed_sequence = snapshot;
-            }
-            // A roll or prefix rewrite owns the replacement file's durable boundary.
-            // It must not inherit the snapshotted file's byte offset after fsync.
-            if inner.base_by_shard.get(&shard_id).copied() == generation {
-                note_durable_record_end(&mut inner, shard_id, record_end, true);
-            }
-            let sequence_entry = inner.durable_sequence_by_shard.entry(shard_id).or_default();
-            *sequence_entry = (*sequence_entry).max(snapshot);
         }
         Ok(())
     }
@@ -2815,8 +2882,9 @@ impl LocalWriteAheadLogStore {
         &self,
         record: WriteAheadLogRecord,
     ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
-        let mut inner = self.lock_inner();
-        fs::create_dir_all(&inner.root)?;
+        let mut inner = self.lock_inner_raw();
+        WalAppendLock::acquire(&mut inner, record.shard_id)?;
+        flush_pending_locked(&mut inner, record.shard_id)?;
         // Start a piece if a crash left none, before anything reads where the log ends. Replay
         // writes a record whose sequence is already decided, so creating the file without a base
         // header here would give it an address the sealed pieces already own -- and a replayed
@@ -2827,7 +2895,7 @@ impl LocalWriteAheadLogStore {
         let last_sequence = match inner.last_sequence_by_shard.get(&record.shard_id).copied() {
             Some(sequence) => sequence,
             None => {
-                let (sequence, _) = last_wal_sequence_at(&inner.root, record.shard_id)?;
+                let (sequence, _) = reconcile_owned_wal_tail(&mut inner, record.shard_id)?;
                 inner
                     .last_sequence_by_shard
                     .insert(record.shard_id, sequence);
@@ -3051,13 +3119,13 @@ impl LocalWriteAheadLogStore {
             inner.stats.scans += 1;
             return Ok((Vec::new(), false, start_offset));
         }
-        // Finding the log's end also REPAIRS a torn tail, so it has to happen -- but it costs the
-        // whole file rather than the window, and a caller walking the log in pieces that repeated
-        // it per piece would trade a bounded read for a quadratic one. The first piece verifies;
-        // the continuations of that same walk do not.
-        if verify_tail {
-            let _ = last_wal_sequence_at(&inner.root, shard_id)?;
-        }
+        // Verification is read-only. Use the verified end to exclude a torn legacy
+        // tail from the initial scan without rewriting a file owned by another handle.
+        let verified_active_end = if verify_tail {
+            Some(last_wal_sequence_at(&inner.root, shard_id)?.1)
+        } else {
+            None
+        };
         let mut total = 0;
         let mut truncated = false;
         // Where a caller that ran out of budget resumes. Only meaningful when `truncated`.
@@ -3103,7 +3171,12 @@ impl LocalWriteAheadLogStore {
             // Also what skips a piece reclaimed since the listing above: an absent piece reads
             // as base zero with no length, so this says it ends before any window and the loop
             // moves on rather than opening a file that is gone. See `read_wal_base`.
-            let piece_len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
+            let physical_len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
+            let piece_len = if segments[index].starts_at.is_none() {
+                verified_active_end.map_or(physical_len, |end| end.min(physical_len))
+            } else {
+                physical_len
+            };
             if base.saturating_add(piece_len.saturating_sub(header_len)) <= start_offset {
                 continue;
             }
@@ -3263,6 +3336,7 @@ impl LocalWriteAheadLogStore {
         Ok(start)
     }
 
+    #[cfg(not(unix))]
     pub fn flush(&self, shard_id: ShardId) -> Result<WriteAheadLogFlushReport, WriteAheadLogError> {
         let mut inner = self.lock_inner();
         fs::create_dir_all(&inner.root)?;
@@ -3304,6 +3378,114 @@ impl LocalWriteAheadLogStore {
             persistent_bytes,
             synced: true,
         })
+    }
+
+    #[cfg(unix)]
+    pub fn flush(&self, shard_id: ShardId) -> Result<WriteAheadLogFlushReport, WriteAheadLogError> {
+        let coordinator = self.group_commit_coordinator(shard_id);
+        let mut sync = coordinator.state.lock().expect("wal shard sync coordinator poisoned");
+        while sync.inflight {
+            sync = coordinator.wake.wait(sync).expect("wal shard sync coordinator poisoned");
+        }
+        for _ in 0..3 {
+            let (path, file, owns_tail, generation, last_sequence, record_end, dir_owed, observer_metadata) = {
+                let mut inner = self.lock_inner_raw();
+                // Do not let a failed queue write certify its reserved sequence.
+                let pending_file = flush_pending_locked_file(&mut inner, shard_id)?;
+                let owns_tail = inner.append_lock_by_shard.contains_key(&shard_id);
+                if owns_tail && !inner.verified_len_by_shard.contains_key(&shard_id) {
+                    ensure_active_wal_segment_len(&mut inner, shard_id)?;
+                }
+                let path = active_wal_path(&mut inner, shard_id);
+                let generation = inner.gc_epoch_by_shard.get(&shard_id).copied();
+                let cached = owns_tail.then(|| {
+                    inner.base_by_shard.get(&shard_id)?;
+                    inner.last_sequence_by_shard.get(&shard_id).copied()
+                        .zip(inner.verified_len_by_shard.get(&shard_id).copied())
+                }).flatten();
+                let dir_owed = inner.dir_sync_owed_by_shard.contains(&shard_id);
+                if let Some((sequence, end)) = cached {
+                    if pending_file.is_none() && !dir_owed
+                        && inner.durable_sequence_by_shard.get(&shard_id) == Some(&sequence)
+                        && inner.durable_active_bytes_by_shard.get(&shard_id) == Some(&end)
+                    {
+                        return Ok(WriteAheadLogFlushReport {
+                            shard_id, path: path.as_ref().clone(), last_sequence: sequence,
+                            persistent_bytes: end, synced: true,
+                        });
+                    }
+                }
+                let observer_metadata = (!owns_tail).then(|| path.metadata().ok()).flatten();
+                let (last_sequence, record_end) = match cached {
+                    Some(pair) => pair,
+                    None if owns_tail => reconcile_owned_wal_tail(&mut inner, shard_id)?,
+                    None => last_wal_sequence_at(&inner.root, shard_id)?,
+                };
+                if owns_tail {
+                    let _ = cached_wal_base(&mut inner, shard_id)?;
+                }
+                // Pin this file descriptor before leaving the namespace lock.
+                let file = match pending_file {
+                    Some(file) => file,
+                    None => match OpenOptions::new().read(true).write(true).open(path.as_path()) {
+                        Ok(file) => file,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            return Ok(WriteAheadLogFlushReport {
+                                shard_id, path: path.as_ref().clone(), last_sequence,
+                                persistent_bytes: 0, synced: false,
+                            });
+                        }
+                        Err(error) => return Err(error.into()),
+                    },
+                };
+                if !owns_tail && !same_observed_wal_piece(observer_metadata.as_ref(), &file) {
+                    continue;
+                }
+                (path, file, owns_tail, generation, last_sequence, record_end, dir_owed, observer_metadata)
+            };
+
+            #[cfg(test)]
+            SELECTED_FLUSH_BEFORE_SYNC.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() { hook(); }
+            });
+            #[cfg(test)]
+            wal_replacement_error("selected_flush_sync")?;
+            crate::durability_metrics::record_barrier("engine_wal_flush");
+            file.sync_all()?;
+            if dir_owed || !owns_tail || !sync.dir_synced {
+                sync_parent_dir(&path)?;
+            }
+            if !owns_tail && !same_observed_wal_path(observer_metadata.as_ref(), &path) {
+                continue;
+            }
+            let mut inner = self.lock_inner_raw();
+            inner.stats.flushes += 1;
+            inner.stats.syncs += 1;
+            if inner.gc_epoch_by_shard.get(&shard_id).copied() != generation {
+                // A roll or reclaim may finish during sync. The old descriptor
+                // cannot certify the replacement file or retire its dir debt.
+                continue;
+            }
+            if owns_tail {
+                sync.dir_synced = true;
+                sync.durable_seq = sync.durable_seq.max(last_sequence);
+                inner.dir_sync_owed_by_shard.remove(&shard_id);
+                // An append can land while sync is in progress. Never put the
+                // append cache back at the earlier point that we synced.
+                inner.last_sequence_by_shard.entry(shard_id).or_insert(last_sequence);
+                inner.verified_len_by_shard.entry(shard_id).or_insert(record_end);
+                note_durable_record_end(&mut inner, shard_id, record_end, true);
+                let durable = inner.durable_sequence_by_shard.entry(shard_id).or_default();
+                *durable = (*durable).max(last_sequence);
+            }
+            inner.stats.last_flushed_sequence = inner.stats.last_flushed_sequence.max(last_sequence);
+            inner.stats.persistent_bytes = record_end;
+            return Ok(WriteAheadLogFlushReport {
+                shard_id, path: path.as_ref().clone(), last_sequence,
+                persistent_bytes: record_end, synced: true,
+            });
+        }
+        Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "WAL piece changed during flush").into())
     }
 
     /// Hold WAL reclaim at `sequence`: records at or above it may still be the only copy of a
@@ -3597,7 +3779,9 @@ impl LocalWriteAheadLogStore {
         };
         let mut tally = WalReadTally::start();
         let (plan, source) = {
-            let mut inner = self.lock_inner();
+            let mut inner = self.lock_inner_raw();
+            WalAppendLock::acquire(&mut inner, shard_id)?;
+            flush_pending_locked(&mut inner, shard_id)?;
             let floor = retained_block_floor(&inner, Some(&coordinator), shard_id);
             match plan_gc_locked(&mut inner, shard_id, retain_from_sequence, self.flat_append(), floor, &mut tally)? {
                 Some(planned) => planned,
@@ -3704,7 +3888,8 @@ impl LocalWriteAheadLogStore {
         temp.sync_all()?;
         gc_phase("scanned");
 
-        let mut inner = self.lock_inner();
+        let mut inner = self.lock_inner_raw();
+        flush_pending_locked(&mut inner, shard_id)?;
         inner.point_readers.clear_shard(shard_id);
         let epoch_now = inner.gc_epoch_by_shard.get(&shard_id).copied().unwrap_or(0);
         let floor_now = retained_block_floor(&inner, Some(&coordinator), shard_id)
@@ -3742,6 +3927,7 @@ impl LocalWriteAheadLogStore {
             let _ = fs::remove_file(&temp_path);
             return Ok(declined(false, true));
         }
+        let last_sequence = inner.last_sequence_by_shard.get(&shard_id).copied();
         let rename = || fs::rename(&temp_path, plan.path.as_path());
         #[cfg(test)]
         let replaced = injected.and_then(|()| rename());
@@ -3752,7 +3938,11 @@ impl LocalWriteAheadLogStore {
             let _ = fs::remove_file(&temp_path);
             return Err(error.into());
         }
+        invalidate_active_wal_piece(&mut inner, shard_id);
+        #[cfg(test)]
+        wal_replacement_error("reclaim_dirsync")?;
         sync_parent_dir(&plan.path)?;
+        inner.dir_sync_owed_by_shard.remove(&shard_id);
         // Reclaim is the only thing that moves the base, so refresh the cache here rather than
         // letting an append compute a log id against a stale one.
         let new_header_len = crate::log_framing::encode_base_header(new_base).len() as u64;
@@ -3781,7 +3971,14 @@ impl LocalWriteAheadLogStore {
         // would keep exactly the figure that is now wrong -- which is what the group-commit
         // barrier's `max` did with it until a `flush` happened to overwrite it.
         note_durable_record_end(&mut inner, shard_id, bytes_after, false);
-        inner.prealloc_physical_by_shard.remove(&shard_id);
+        if let Some(sequence) = last_sequence {
+            inner.last_sequence_by_shard.insert(shard_id, sequence);
+            // The copied suffix includes every complete record through this sequence.
+            // Publish its coverage only after the replacement and parent directory are durable.
+            let durable = inner.durable_sequence_by_shard.entry(shard_id).or_default();
+            *durable = (*durable).max(sequence);
+            inner.stats.last_flushed_sequence = inner.stats.last_flushed_sequence.max(sequence);
+        }
         Ok(WriteAheadLogGcReport {
             shard_id,
             retain_from_sequence,
@@ -4578,11 +4775,10 @@ fn ensure_active_wal_segment_len(
         return Ok(None);
     }
     let header = crate::log_framing::encode_base_header(start);
-    let mut file = File::create(path.as_path())?;
-    file.write_all(&header)?;
-    file.flush()?;
-    file.sync_all()?;
+    publish_active_wal_header(path.as_path(), &header, true, false)?;
+    inner.dir_sync_owed_by_shard.insert(shard_id);
     sync_parent_dir(&path)?;
+    inner.dir_sync_owed_by_shard.remove(&shard_id);
     inner
         .base_by_shard
         .insert(shard_id, (start, header.len() as u64));
@@ -4590,6 +4786,66 @@ fn ensure_active_wal_segment_len(
         .verified_len_by_shard
         .insert(shard_id, header.len() as u64);
     Ok(None)
+}
+
+// Call at the rename boundary under the store mutex and the lifetime append lock.
+// Restore the logical sequence cache only after replacement is complete.
+fn invalidate_active_wal_piece(inner: &mut WriteAheadLogInner, shard_id: ShardId) {
+    inner.verified_len_by_shard.remove(&shard_id);
+    inner.last_sequence_by_shard.remove(&shard_id);
+    inner.base_by_shard.remove(&shard_id);
+    inner.prealloc_physical_by_shard.remove(&shard_id);
+    inner.block_mode_by_shard.remove(&shard_id);
+    inner.block_last_record_by_shard.remove(&shard_id);
+    inner.durable_active_bytes_by_shard.remove(&shard_id);
+    inner.point_readers.clear_shard(shard_id);
+    inner.point_readers.clear_directory(shard_id);
+    inner.dir_sync_owed_by_shard.insert(shard_id);
+    *inner.gc_epoch_by_shard.entry(shard_id).or_default() += 1;
+}
+
+fn publish_active_wal_header(
+    path: &Path,
+    header: &[u8],
+    sync: bool,
+    rolling: bool,
+) -> std::io::Result<()> {
+    // Publish only a complete header. The lifetime append lock owns the temporary name.
+    if rolling {
+        File::create(path)?;
+        crate::fault::point("wal/roll/after_create");
+    }
+    let temp = path.with_extension("header.tmp");
+    let mut file = File::create(&temp)?;
+    if rolling {
+        #[cfg(test)]
+        if WAL_REPLACEMENT_ERROR.with(|fault| fault.get() == Some("roll_header")) {
+            file.write_all(&header[..header.len() / 2])?;
+            wal_replacement_error("roll_header")?;
+        }
+    }
+    file.write_all(header)?;
+    file.flush()?;
+    if sync {
+        file.sync_all()?;
+    }
+    fs::rename(&temp, path)
+}
+
+#[cfg(test)]
+thread_local! {
+    static WAL_TORN_TAIL_OBSERVED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static WAL_REPLACEMENT_ERROR: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn wal_replacement_error(phase: &'static str) -> std::io::Result<()> {
+    if WAL_REPLACEMENT_ERROR.with(|fault| fault.get() == Some(phase)) {
+        Err(std::io::Error::other(phase))
+    } else {
+        Ok(())
+    }
 }
 
 fn roll_wal_segment_if_due(
@@ -4652,65 +4908,23 @@ fn roll_wal_segment_if_due(
         crate::durability_metrics::record_barrier("wal_seal_outgoing_piece");
         file.sync_all()?;
     }
-    inner.prealloc_physical_by_shard.remove(&shard_id);
-
-    // Seal by rename: atomic, so the piece is either being written or sealed, never neither.
-    inner.point_readers.clear_directory(shard_id);
     let sealed = sealed_wal_path(&inner.root, shard_id, base);
+    let last_sequence = inner.last_sequence_by_shard.get(&shard_id).copied();
     fs::rename(path.as_path(), &sealed)?;
-    *inner.gc_epoch_by_shard.entry(shard_id).or_default() += 1;
+    invalidate_active_wal_piece(inner, shard_id);
     sync_parent_dir(&sealed)?;
-    // Sealed, and nothing to append to yet. A crash here leaves a log whose pieces are all sealed,
-    // and an absent piece reads as starting at log id zero -- which those pieces already own.
     crate::fault::point("wal/roll/after_rename");
 
-    // Start the next piece where this one ended. If a crash lands before this, the next append
-    // derives the same starting point from the sealed pieces.
+    // The next piece starts where the sealed one ended. Its directory entry is
+    // covered by the next durable append or explicit flush.
     let next_base = base.saturating_add(holds);
-    let mut file = File::create(path.as_path())?;
-    // Created, no header yet. A crash here leaves a piece of zero length, which reads as starting
-    // at log id zero for the same reason.
-    crate::fault::point("wal/roll/after_create");
-    file.write_all(&crate::log_framing::encode_base_header(next_base))?;
-    file.flush()?;
-    // No barrier for the header, and none for the directory entry. The header rides the barrier
-    // that makes the first record in this piece durable -- same file, and fsync covers the inode
-    // rather than the handle -- and if no record ever lands here the header was worth nothing. The
-    // directory entry is owed until the next durable barrier, which is before any record in this
-    // piece can be acked.
-    inner.dir_sync_owed_by_shard.insert(shard_id);
-
-    let new_header_len = crate::log_framing::encode_base_header(next_base).len() as u64;
-    inner
-        .base_by_shard
-        .insert(shard_id, (next_base, new_header_len));
-    inner.verified_len_by_shard.insert(shard_id, new_header_len);
-    // Whether a log is written in blocks is a property of the PIECE, and this just replaced it.
-    // The decision is cached per shard because it is answered once per piece, not once per
-    // append -- but nothing invalidated it here, so a shard that latched "no blocks" over a
-    // piece that was already occupied when this process first appended to it kept that answer
-    // for every piece it rolled into afterwards, however empty they started. Measured on the
-    // serving store: the binary carries the footer writer, the log rolls steadily, and not one
-    // piece across the whole store carries a footer.
-    //
-    // Dropping the entry rather than setting it: the next append re-reads the new piece, which is
-    // the same question this asks, and there is only one place that answers it.
-    inner.block_mode_by_shard.remove(&shard_id);
-    // The offset and sequence a footer would record belong to the piece that just sealed.
-    inner.block_last_record_by_shard.remove(&shard_id);
-    // How many bytes of the ACTIVE piece a barrier has covered -- and the active piece is now a
-    // different, empty one. The piece just sealed is counted from the filesystem as a sealed
-    // piece from here on, so leaving its length here counts it twice, and
-    // `persistent_length_bytes` then reports more durable bytes than the log physically holds.
-    // That is the direction the field exists to rule out: understating is survivable, overstating
-    // says unsynced records are on disk to survive a crash.
-    //
-    // It could not correct itself either. One of the three writers takes a `.max()` rather than
-    // overwriting, so a stale high value survives every barrier that path serves.
-    //
-    // Removed rather than set: absent reads as zero, and zero is what a piece whose header has
-    // not been barriered yet has actually got durable.
-    inner.durable_active_bytes_by_shard.remove(&shard_id);
+    let header = crate::log_framing::encode_base_header(next_base);
+    publish_active_wal_header(path.as_path(), &header, false, true)?;
+    inner.base_by_shard.insert(shard_id, (next_base, header.len() as u64));
+    inner.verified_len_by_shard.insert(shard_id, header.len() as u64);
+    if let Some(sequence) = last_sequence {
+        inner.last_sequence_by_shard.insert(shard_id, sequence);
+    }
     Ok(true)
 }
 
@@ -5104,7 +5318,7 @@ fn resolve_last_sequence_for_append_known(
         }
     }
     inner.stats.append_full_scans = inner.stats.append_full_scans.saturating_add(1);
-    let (disk_last_sequence, active_record_end) = last_wal_sequence_at(&inner.root, shard_id)?;
+    let (disk_last_sequence, active_record_end) = reconcile_owned_wal_tail(inner, shard_id)?;
     // The scan may have truncated a torn tail, and under preallocation it reports where the
     // records stop rather than where the file ends -- the file may keep a zeros reservation
     // after them. The next append belongs at the record end; the fast path compares the file
@@ -5677,7 +5891,44 @@ fn append_record_locked(
     append_record_locked_on(inner, record, sync, known_offset, None)
 }
 
-/// Frame `record` and add it to the shard's write buffer. Returns the file offset it will occupy,
+#[cfg(test)]
+thread_local! {
+    static BEFORE_WARM_WAL_FRAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
+    static AFTER_COLD_WAL_RECONCILE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn buffered_append_position(inner: &WriteAheadLogInner, shard_id: ShardId) -> Option<(u64, Option<u64>)> {
+    if !inner.append_lock_by_shard.contains_key(&shard_id)
+        || !inner.verified_len_by_shard.contains_key(&shard_id)
+    {
+        return None;
+    }
+    inner.pending_by_shard.get(&shard_id).filter(|pending| !pending.bytes.is_empty())?;
+    Some((
+        inner.last_sequence_by_shard.get(&shard_id).copied()?,
+        inner.gc_epoch_by_shard.get(&shard_id).copied(),
+    ))
+}
+
+fn encode_buffered_record(record: &WriteAheadLogRecord, bytes: &mut Vec<u8>) -> Result<(), WriteAheadLogError> {
+    if crate::log_framing::binary_frame_enabled() {
+        crate::wal_proto::encode_binary_frame_into(record, bytes).map_err(|err| {
+            WriteAheadLogError::Corruption(format!("engine wal record encode failed: {err}"))
+        })?;
+    } else {
+        let payload = encode_wal_payload(record)?;
+        crate::log_framing::encode_record_into(&payload, bytes);
+    }
+    Ok(())
+}
+
+/// Add an encoded record to the shard's write buffer. Returns the file offset it will occupy,
 /// or `None` when it has to take the unbuffered path (it crosses a block boundary, where a footer
 /// is written at a computed offset, or the log's end is not known yet).
 ///
@@ -5687,6 +5938,7 @@ fn append_record_locked(
 fn buffer_record_locked(
     inner: &mut WriteAheadLogInner,
     record: &WriteAheadLogRecord,
+    bytes: &[u8],
 ) -> Result<Option<u64>, WriteAheadLogError> {
     let shard_id = record.shard_id;
     let Some(flushed_end) = inner.verified_len_by_shard.get(&shard_id).copied() else {
@@ -5698,18 +5950,6 @@ fn buffer_record_locked(
         .map_or(0, |pending| pending.bytes.len() as u64);
     let offset = flushed_end.saturating_add(pending_len);
     let path = active_wal_path(inner, shard_id);
-    let mut bytes = std::mem::take(&mut inner.encode_scratch);
-    if crate::log_framing::binary_frame_enabled() {
-        if let Err(err) = crate::wal_proto::encode_binary_frame_into(record, &mut bytes) {
-            recycle_encode_scratch(inner, bytes);
-            return Err(WriteAheadLogError::Corruption(format!(
-                "engine wal record encode failed: {err}"
-            )));
-        }
-    } else {
-        let payload = encode_wal_payload(record)?;
-        crate::log_framing::encode_record_into(&payload, &mut bytes);
-    }
     let uses_blocks = shard_uses_blocks(inner, shard_id, &path)?;
     if uses_blocks {
         let (_, header_len) = cached_wal_base(inner, shard_id)?;
@@ -5717,7 +5957,6 @@ fn buffer_record_locked(
             let relative = offset - header_len;
             let data_end = block_data_end(block_of(relative));
             if relative + bytes.len() as u64 > data_end && relative <= data_end {
-                recycle_encode_scratch(inner, bytes);
                 return Ok(None);
             }
         }
@@ -5727,7 +5966,7 @@ fn buffer_record_locked(
     if pending.bytes.is_empty() {
         pending.start = flushed_end;
     }
-    pending.bytes.extend_from_slice(&bytes);
+    pending.bytes.extend_from_slice(bytes);
     inner.pending_total += size;
     if inner.block_mode_by_shard.get(&shard_id).copied().unwrap_or(false) {
         inner
@@ -5740,7 +5979,6 @@ fn buffer_record_locked(
     note_appended_bytes(inner, shard_id, record.sequence, size as u64);
     *inner.undumped_objects_by_shard.entry(shard_id).or_default() +=
         record.outcomes.len().max(1) as u64;
-    recycle_encode_scratch(inner, bytes);
     Ok(Some(offset))
 }
 
@@ -5905,7 +6143,7 @@ fn append_record_locked_on(
                 if wal_preallocate_enabled() && path.exists() {
                     // Cold under the gate: the file may end in a reservation another process
                     // left, so ask the tail scan where the records stop.
-                    let (_, record_end) = last_wal_sequence_in(&path)?;
+                    let (_, record_end) = reconcile_owned_wal_tail(inner, record.shard_id)?;
                     record_end
                 } else {
                     path.metadata().map(|metadata| metadata.len()).unwrap_or(0)
@@ -6356,6 +6594,48 @@ pub(crate) fn wal_base_header_probe_bytes() -> usize {
 /// end is what an appender needs -- it is where the next record goes -- and under preallocation
 /// it is the one length the file's own size no longer answers.
 fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<(u64, u64), WriteAheadLogError> {
+    scan_wal_tail(root, shard_id, None)
+}
+
+// An observer never seeds the owning cache. On Unix also reject a path
+// replacement between its read-only scan, file open, and completion.
+fn same_observed_wal_piece(before: Option<&fs::Metadata>, file: &File) -> bool {
+    same_observed_wal_metadata(before, file.metadata().ok().as_ref())
+}
+
+fn same_observed_wal_path(before: Option<&fs::Metadata>, path: &Path) -> bool {
+    same_observed_wal_metadata(before, path.metadata().ok().as_ref())
+}
+
+#[cfg(unix)]
+fn same_observed_wal_metadata(before: Option<&fs::Metadata>, after: Option<&fs::Metadata>) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    before.zip(after).is_some_and(|(a, b)| a.dev() == b.dev() && a.ino() == b.ino())
+}
+
+#[cfg(not(unix))]
+fn same_observed_wal_metadata(before: Option<&fs::Metadata>, after: Option<&fs::Metadata>) -> bool {
+    before.is_some() && after.is_some()
+}
+
+fn reconcile_owned_wal_tail(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+) -> Result<(u64, u64), WriteAheadLogError> {
+    if !inner.append_lock_by_shard.contains_key(&shard_id) {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "WAL tail repair requires append ownership").into());
+    }
+    let active = active_wal_path(inner, shard_id);
+    scan_wal_tail(&inner.root, shard_id, Some(active.as_path()))
+}
+
+fn scan_wal_tail(
+    root: &Path,
+    shard_id: ShardId,
+    owned_active: Option<&Path>,
+) -> Result<(u64, u64), WriteAheadLogError> {
+    #[cfg(test)]
+    SELECTED_FLUSH_TAIL_SCANS.with(|count| count.set(count.get() + 1));
     // Newest first: the piece being written is empty right after a roll, and an empty piece is not
     // where the log ends. Only the piece being written can have a torn tail -- the sealed ones were
     // whole when they were renamed -- so this repairs that one and reads the rest.
@@ -6363,7 +6643,8 @@ fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<(u64, u64), Wr
     pieces.reverse();
     let mut active_record_end = None;
     for piece in pieces {
-        let (sequence, record_end) = last_wal_sequence_in(&piece)?;
+        let repair = owned_active == Some(piece.as_path());
+        let (sequence, record_end) = scan_wal_piece_tail(&piece, repair)?;
         let active_record_end = *active_record_end.get_or_insert(record_end);
         if sequence > 0 {
             return Ok((sequence, active_record_end));
@@ -6904,6 +7185,10 @@ pub fn last_wal_sequence_in_for_test(path: &Path) -> Result<(u64, u64), WriteAhe
 }
 
 fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
+    scan_wal_piece_tail(path, false)
+}
+
+fn scan_wal_piece_tail(path: &Path, repair_owned_active: bool) -> Result<(u64, u64), WriteAheadLogError> {
     if !path.exists() {
         return Ok((0, 0));
     }
@@ -6917,13 +7202,15 @@ fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
         return last_wal_sequence_forward(path);
     }
     let (_, header_len) = read_wal_base(path)?;
-    // Read-WRITE, because this branch repairs a torn tail in place -- but it is still one of the
-    // read side's opens of a piece, and counted as one, or the residual would stop seeing this
-    // branch the moment binary framing were turned off.
+    // Only an ownership-checked active reconciliation may open this scan for writing.
     #[cfg(test)]
     WAL_PIECE_TAIL_READS.with(|reads| reads.set(reads.get() + 1));
     let mut tally = WalReadTally::start();
-    let mut file = open_wal_repair(path, &mut tally)?;
+    let mut file = if repair_owned_active {
+        open_wal_repair(path, &mut tally)?
+    } else {
+        open_wal_read(path, &mut tally)?
+    };
     let len = file.metadata()?.len();
     if len <= header_len {
         return Ok((0, len.min(header_len)));
@@ -7000,9 +7287,19 @@ fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     };
 
     if good_offset < len && !tail_is_reservation {
-        file.set_len(good_offset)?;
-        file.sync_all()?;
-        sync_parent_dir(path)?;
+        #[cfg(test)]
+        WAL_TORN_TAIL_OBSERVED.with(|hook| {
+            if let Some(observed) = hook.borrow_mut().take() {
+                observed();
+            }
+        });
+        if repair_owned_active {
+            let sequence = line.as_ref().map(|bytes| decode_wal_line(bytes)).transpose()?;
+            file.set_len(good_offset)?;
+            file.sync_all()?;
+            sync_parent_dir(path)?;
+            return Ok((sequence.map_or(0, |record| record.sequence), good_offset));
+        }
     }
     let Some(line) = line else {
         return Ok((0, good_offset));
@@ -7048,10 +7345,13 @@ fn current_time_ms() -> u64 {
 
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        if let Ok(dir) = File::open(parent) {
-            crate::durability_metrics::record_barrier("engine_wal_dir");
-            dir.sync_all()?;
-        }
+        let opened = File::open(parent);
+        #[cfg(unix)]
+        let dir = opened?;
+        #[cfg(not(unix))]
+        let Ok(dir) = opened else { return Ok(()); };
+        crate::durability_metrics::record_barrier("engine_wal_dir");
+        dir.sync_all()?;
     }
     Ok(())
 }
@@ -11347,37 +11647,37 @@ mod tests {
             source.len()
         );
 
-        let naming: Vec<&str> = source
-            .lines()
-            .map(|line| line.trim())
-            .filter(|line| line.contains(&field))
-            .collect();
+        let lines: Vec<&str> = source.lines().map(str::trim).collect();
+        let naming: Vec<&str> = lines.iter().copied().filter(|line| line.contains(&field)).collect();
+        let mut writes = Vec::new();
+        let mut current_fn = "";
+        for (index, line) in lines.iter().enumerate() {
+            if let Some((_, signature)) = line.split_once("fn ") {
+                current_fn = signature.split(['(', '<']).next().unwrap_or("");
+            }
+            if let Some((_, suffix)) = line.split_once(&field) {
+                let access = if suffix.is_empty() { lines[index + 1] } else { suffix };
+                if !access.starts_with(':')
+                    && !access.starts_with(".get(")
+                    && !access.starts_with(".contains_key(")
+                {
+                    writes.push((current_fn, access));
+                }
+            }
+        }
         assert_eq!(
-            naming.len(),
-            7,
-            "the lines naming the field changed; every one of them is either the declaration, \
-             its initialiser, the single writer, the roll that clears it, or one of the three \
-             readers: {naming:#?}"
+            writes,
+            [
+                ("invalidate_active_wal_piece", ".remove(&shard_id);"),
+                (door.as_str(), ".entry(shard_id)"),
+            ],
+            "durable bytes may only be written through their record-end writer or cleared at replacement"
         );
 
-        // Mutation reaches it through one door and one clearing, and through nothing else.
-        let entries = naming.iter().filter(|line| line.contains(".entry(")).count();
-        let inserts = naming.iter().filter(|line| line.contains(".insert(")).count();
-        let removes = naming.iter().filter(|line| line.contains(".remove(")).count();
-        assert_eq!(
-            (entries, inserts, removes),
-            (0, 0, 1),
-            "the field is mutated somewhere other than its one writer and the roll's clear: \
-             {naming:#?}"
-        );
-
-        // And the door itself: one definition, three barrier paths.
         let calls = source.matches(&format!("{door}(")).count();
         assert_eq!(
-            calls, 6,
-            "one definition, four barrier paths (the stream write task is the fourth) and the reclaim call the single writer; found \
-             {calls} mentions. Another one is fine -- update this number and make sure it \
-             passes a record end, not a file length"
+            calls, 7,
+            "the definition and every durable record-end publication must be accounted for"
         );
 
         // No barrier path derives it from a length. The two that did are the whole defect.
@@ -14704,5 +15004,642 @@ mod byte_mark_tests {
         );
         let sequences: Vec<u64> = marks.iter().map(|(sequence, _)| *sequence).collect();
         assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]), "marks out of order");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod selected_flush_tests {
+    use super::*;
+
+    struct BufferedMode;
+    impl BufferedMode {
+        fn new() -> Self {
+            GROUP_WRITE_OVERRIDE.with(|mode| mode.set(Some(true)));
+            Self
+        }
+    }
+    impl Drop for BufferedMode {
+        fn drop(&mut self) {
+            GROUP_WRITE_OVERRIDE.with(|mode| mode.set(None));
+            set_torn_batch_write(-1);
+        }
+    }
+
+    fn command(value: u8) -> Command {
+        Command::StringSet { key: "key".into(), value: vec![value; 32] }
+    }
+
+    #[test]
+    fn warm_flush_uses_verified_record_end_without_a_tail_walk() {
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        store.flat_append.store(true, AtomicOrdering::Relaxed);
+        store.append_with_sync(1, command(1), false).unwrap();
+        store.append_with_sync(1, command(2), false).unwrap();
+        let expected = last_wal_sequence_at(root.path(), 1).unwrap();
+        assert!(store.flush(1).unwrap().synced);
+        let before = store.raw_stats(1);
+        SELECTED_FLUSH_TAIL_SCANS.with(|count| count.set(0));
+        for _ in 0..3 {
+            let flushed = store.flush(1).unwrap();
+            assert!(flushed.synced);
+            assert_eq!((flushed.last_sequence, flushed.persistent_bytes), expected);
+        }
+        assert_eq!(SELECTED_FLUSH_TAIL_SCANS.with(|count| count.get()), 0);
+        let after = store.raw_stats(1);
+        assert_eq!((after.reads, after.scans, after.flushes, after.syncs),
+                   (before.reads, before.scans, before.flushes, before.syncs));
+        drop(store);
+        let reopened = LocalWriteAheadLogStore::new(root.path());
+        assert_eq!(reopened.scan(1, 0, u64::MAX, u64::MAX).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn selected_flush_barrier_does_not_hold_the_wal_mutex_for_a_peer() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        store.append_with_sync(1, command(1), false).unwrap();
+        let (paused, ready) = mpsc::sync_channel(0);
+        let (resume, released) = mpsc::channel();
+        let first = store.clone();
+        let flushing = std::thread::spawn(move || {
+            SELECTED_FLUSH_BEFORE_SYNC.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    paused.send(()).unwrap();
+                    released.recv_timeout(Duration::from_secs(15)).unwrap();
+                }));
+            });
+            first.flush(1).unwrap()
+        });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (peer_done, peer_result) = mpsc::channel();
+        let peer = store.clone();
+        let writer = std::thread::spawn(move || {
+            peer.append_with_sync(2, command(2), false).unwrap();
+            peer_done.send(peer.flush(2).unwrap()).unwrap();
+        });
+        let result = peer_result.recv_timeout(Duration::from_secs(5));
+        resume.send(()).unwrap();
+        writer.join().unwrap();
+        assert_eq!(flushing.join().unwrap().last_sequence, 1);
+        let result = result.expect("peer append and actual durability must run during the parked flush");
+        assert!(result.synced && result.persistent_bytes > 0);
+        assert_eq!(result.last_sequence, 1);
+        drop(store);
+        let cold = LocalWriteAheadLogStore::new(root.path());
+        for shard in [1, 2] {
+            let (rows, truncated) = cold.scan_decoded(shard, 0, u64::MAX, u64::MAX).unwrap();
+            assert!(!truncated);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].1.sequence, 1);
+        }
+    }
+
+    #[test]
+    fn selected_flush_retries_on_a_new_piece_before_releasing_a_same_stream_waiter() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let _case = ReplacementCase::new();
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        store.append_with_sync(1, command(1), false).unwrap();
+        let (paused, ready) = mpsc::sync_channel(0);
+        let (resume, released) = mpsc::channel();
+        let first = store.clone();
+        let flushing = std::thread::spawn(move || {
+            SELECTED_FLUSH_BEFORE_SYNC.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    paused.send(()).unwrap();
+                    released.recv_timeout(Duration::from_secs(15)).unwrap();
+                }));
+            });
+            first.flush(1).unwrap()
+        });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        set_wal_segment_bytes_for_test(Some(1));
+        {
+            let mut inner = store.lock_inner_raw();
+            let end = inner.verified_len_by_shard[&1];
+            assert!(roll_wal_segment_if_due(&mut inner, 1, Some(end)).unwrap());
+        }
+        set_wal_segment_bytes_for_test(Some(0));
+        store.append_with_sync(1, command(2), false).unwrap();
+        let (started, waiting) = mpsc::sync_channel(0);
+        let (done, receipt) = mpsc::channel();
+        let second = store.clone();
+        let waiter = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            done.send(second.flush(1).unwrap()).unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        let early = receipt.recv_timeout(Duration::from_millis(100));
+        resume.send(()).unwrap();
+        let first = flushing.join().unwrap();
+        assert!(matches!(early, Err(mpsc::RecvTimeoutError::Timeout)));
+        let second = receipt.recv_timeout(Duration::from_secs(5)).unwrap();
+        waiter.join().unwrap();
+        assert!(first.synced && second.synced);
+        assert_eq!(first.last_sequence, 2);
+        assert_eq!(second.last_sequence, 2);
+        assert_eq!(first.persistent_bytes, second.persistent_bytes);
+        drop(store);
+        assert_eq!(reopened_sequences(&LocalWriteAheadLogStore::new(root.path())), vec![1, 2]);
+    }
+
+    #[test]
+    fn both_group_barriers_refuse_to_publish_old_incarnation_after_roll() {
+        for stream in [false, true] {
+            let _case = ReplacementCase::new();
+            let root = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(root.path());
+            store.append_with_sync(1, command(1), false).unwrap();
+            let mover = store.clone();
+            BEFORE_GROUP_COMMIT_SYNC.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    set_wal_segment_bytes_for_test(Some(1));
+                    let mut inner = mover.lock_inner_raw();
+                    let end = inner.verified_len_by_shard[&1];
+                    assert!(roll_wal_segment_if_due(&mut inner, 1, Some(end)).unwrap());
+                    set_wal_segment_bytes_for_test(Some(0));
+                }));
+            });
+            let zero = std::time::Duration::ZERO;
+            let sync = || {
+                if stream { store.stream_try_append(1, 1) }
+                else { store.group_commit_sync_with_policy(1, 1, zero, zero) }
+            };
+            assert!(sync().is_err());
+            {
+                let coord = store.group_commit_coordinator(1);
+                let state = coord.state.lock().unwrap();
+                assert_eq!(state.durable_seq, 0);
+                assert!(!state.dir_synced);
+            }
+            {
+                let inner = store.lock_inner_raw();
+                assert_ne!(inner.durable_sequence_by_shard.get(&1), Some(&1));
+                assert!(!inner.durable_active_bytes_by_shard.contains_key(&1));
+                assert!(inner.dir_sync_owed_by_shard.contains(&1));
+            }
+            sync().unwrap();
+            assert_eq!(store.flush(1).unwrap().last_sequence, 1);
+            drop(store);
+            assert_eq!(LocalWriteAheadLogStore::new(root.path())
+                .scan(1, 0, u64::MAX, u64::MAX).unwrap().len(), 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cold_buffered_append_keeps_process_ownership_through_adoption() {
+        const CHILD_ROOT: &str = "TS_TEST_WAL_COLD_APPEND_CHILD_ROOT";
+        const CHILD_OUTCOME: &str = "TS_TEST_WAL_COLD_APPEND_CHILD_OUTCOME";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let store = LocalWriteAheadLogStore::new(std::path::PathBuf::from(root));
+            let result = store.append_with_sync(1, command(2), false);
+            if std::env::var(CHILD_OUTCOME).as_deref() == Ok("refused") {
+                let Err(WriteAheadLogError::Io(error)) = result else {
+                    panic!("second process did not get the WAL ownership error: {result:?}");
+                };
+                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+                assert_eq!(error.to_string(), WAL_DIRECTORY_OWNED_BY_ANOTHER_PROCESS);
+            } else {
+                assert_eq!(result.unwrap().sequence, 2);
+                assert_eq!(store.flush(1).unwrap().last_sequence, 2);
+            }
+            return;
+        }
+
+        let _case = ReplacementCase::new();
+
+        let root = tempfile::tempdir().unwrap();
+        let child_root = root.path().to_path_buf();
+        let run_child = move |outcome: &str| {
+            let name = concat!(module_path!(), "::cold_buffered_append_keeps_process_ownership_through_adoption");
+            let filter = name.split_once("::").unwrap().1;
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([filter, "--exact", "--test-threads=1"])
+                .env(CHILD_ROOT, &child_root)
+                .env(CHILD_OUTCOME, outcome)
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stdout));
+            assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+        };
+        let during_adoption = run_child.clone();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        AFTER_COLD_WAL_RECONCILE.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || during_adoption("refused")));
+        });
+        let previous = GROUP_WRITE_OVERRIDE.with(|mode| mode.replace(Some(true)));
+        let result = store.append_for_group_commit(1, command(1), vec![], vec![]);
+        GROUP_WRITE_OVERRIDE.with(|mode| mode.set(previous));
+        assert_eq!(result.unwrap().sequence, 1);
+        AFTER_COLD_WAL_RECONCILE.with(|slot| assert!(slot.borrow().is_none()));
+        assert_eq!(store.flush(1).unwrap().last_sequence, 1);
+        drop(store);
+        run_child("admitted");
+        let reopened = LocalWriteAheadLogStore::new(root.path());
+        assert_eq!(reopened_sequences(&reopened), vec![1, 2]);
+    }
+
+    #[test]
+    fn warm_buffer_encoding_allows_peer_append_and_revalidates_same_stream() {
+        let _case = ReplacementCase::new();
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        let append = |store: &LocalWriteAheadLogStore, shard, value| {
+            store.append_for_group_commit(shard, command(value), vec![], vec![]).unwrap().sequence
+        };
+        assert_eq!(append(&store, 1, 1), 1);
+        let worker = store.clone();
+        let (waiting, parked) = std::sync::mpsc::channel();
+        let (resume, wait) = std::sync::mpsc::channel();
+        let writing = std::thread::spawn(move || {
+            let _case = ReplacementCase::new();
+            BEFORE_WARM_WAL_FRAME.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    waiting.send(()).unwrap();
+                    wait.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+                }));
+            });
+            append(&worker, 1, 3)
+        });
+        parked.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let peer = store.clone();
+        let (finished, peer_result) = std::sync::mpsc::channel();
+        let peer_worker = std::thread::spawn(move || {
+            let _case = ReplacementCase::new();
+            assert_eq!(append(&peer, 2, 1), 1);
+            peer.flush(2).unwrap();
+            assert_eq!(peer.append_with_sync(1, command(2), false).unwrap().sequence, 2);
+            finished.send(()).unwrap();
+        });
+        let progress = peer_result.recv_timeout(std::time::Duration::from_secs(10));
+        let _ = resume.send(());
+        peer_worker.join().unwrap();
+        progress.expect("peer append and same-stream intervening write must progress during encoding");
+        assert_eq!(writing.join().unwrap(), 3);
+        store.flush(1).unwrap();
+        drop(store);
+        let reopened = LocalWriteAheadLogStore::new(root.path());
+        assert_eq!(reopened_sequences(&reopened), vec![1, 2, 3]);
+        let (peer_rows, truncated) = reopened.scan_decoded(2, 0, u64::MAX, u64::MAX).unwrap();
+        assert!(!truncated);
+        assert_eq!(peer_rows.len(), 1);
+        assert_eq!(peer_rows[0].1.sequence, 1);
+    }
+
+    #[test]
+    fn commit_barrier_recaptures_after_a_roll() {
+        let _case = ReplacementCase::new();
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        store.append_with_sync(1, command(1), false).unwrap();
+        let mover = store.clone();
+        BEFORE_GROUP_COMMIT_SYNC.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                set_wal_segment_bytes_for_test(Some(1));
+                let mut inner = mover.lock_inner_raw();
+                let end = inner.verified_len_by_shard[&1];
+                assert!(roll_wal_segment_if_due(&mut inner, 1, Some(end)).unwrap());
+                set_wal_segment_bytes_for_test(Some(0));
+            }));
+        });
+        store.commit_barrier(1, 1).unwrap();
+        assert_eq!(store.info(1).unwrap().last_flushed_sequence, 1);
+        assert!(!store.lock_inner_raw().dir_sync_owed_by_shard.contains(&1));
+        drop(store);
+        assert_eq!(reopened_sequences(&LocalWriteAheadLogStore::new(root.path())), vec![1]);
+    }
+
+    #[test]
+    fn selected_barrier_failure_keeps_the_prior_durability_and_retries() {
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        store.append_with_sync(1, command(1), true).unwrap();
+        assert!(store.flush(1).unwrap().synced);
+        store.append_with_sync(1, command(2), false).unwrap();
+        WAL_REPLACEMENT_ERROR.with(|fault| fault.set(Some("selected_flush_sync")));
+        let failed = store.flush(1);
+        WAL_REPLACEMENT_ERROR.with(|fault| fault.set(None));
+        assert!(failed.is_err());
+        assert_eq!(store.lock_inner_raw().durable_sequence_by_shard.get(&1), Some(&1));
+        assert_eq!(store.flush(1).unwrap().last_sequence, 2);
+        drop(store);
+        let reopened = LocalWriteAheadLogStore::new(root.path());
+        assert_eq!(reopened.scan(1, 0, u64::MAX, u64::MAX).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn unowned_flush_reconciles_without_seeding_the_append_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        store.append_with_sync(1, command(7), false).unwrap();
+        let expected = last_wal_sequence_at(root.path(), 1).unwrap();
+        drop(store);
+        let reopened = LocalWriteAheadLogStore::new(root.path());
+        reopened.flat_append.store(true, AtomicOrdering::Relaxed);
+        SELECTED_FLUSH_TAIL_SCANS.with(|count| count.set(0));
+        for _ in 0..2 {
+            let flushed = reopened.flush(1).unwrap();
+            assert_eq!((flushed.last_sequence, flushed.persistent_bytes), expected);
+            assert!(flushed.persistent_bytes <= write_ahead_log_path(root.path(), 1).metadata().unwrap().len());
+        }
+        assert_eq!(SELECTED_FLUSH_TAIL_SCANS.with(|count| count.get()), 2);
+        let inner = reopened.lock_inner_raw();
+        assert!(!inner.append_lock_by_shard.contains_key(&1));
+        assert!(!inner.verified_len_by_shard.contains_key(&1));
+    }
+
+    #[test]
+    fn nonowner_flush_observes_another_writer_and_cannot_poison_a_later_append() {
+        let root = tempfile::tempdir().unwrap();
+        let writer = LocalWriteAheadLogStore::new(root.path());
+        writer.append_with_sync(1, command(1), false).unwrap();
+        let reader = LocalWriteAheadLogStore::new(root.path());
+        reader.flat_append.store(true, AtomicOrdering::Relaxed);
+        assert_eq!(reader.flush(1).unwrap().last_sequence, 1);
+        writer.append_with_sync(1, command(2), false).unwrap();
+        assert_eq!(reader.flush(1).unwrap().last_sequence, 2);
+        drop(writer);
+        assert_eq!(reader.append_with_sync(1, command(3), false).unwrap().sequence, 3);
+        assert_eq!(reader.flush(1).unwrap().last_sequence, 3);
+        drop(reader);
+        let reopened = LocalWriteAheadLogStore::new(root.path());
+        assert_eq!(reopened.scan(1, 0, u64::MAX, u64::MAX).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn selected_flush_leaves_another_shards_buffer_pending() {
+        let _mode = BufferedMode::new();
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        store.append_for_group_commit_with_location(1, command(1), vec![], vec![]).unwrap();
+        store.append_for_group_commit_with_location(2, command(2), vec![], vec![]).unwrap();
+        let before = store.lock_inner_raw().pending_by_shard[&2].bytes.len();
+        assert!(before > 0);
+        assert_eq!(store.flush(1).unwrap().last_sequence, 1);
+        assert_eq!(store.lock_inner_raw().pending_by_shard[&2].bytes.len(), before);
+        assert_eq!(store.flush(2).unwrap().last_sequence, 1);
+        drop(store);
+        let reopened = LocalWriteAheadLogStore::new(root.path());
+        for shard in [1, 2] {
+            let records = reopened.scan(shard, 0, u64::MAX, u64::MAX).unwrap();
+            assert_eq!(records.len(), 1);
+        }
+    }
+
+    #[test]
+    fn failed_selected_drain_cannot_advance_durability_and_can_retry() {
+        let _mode = BufferedMode::new();
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        store.append_for_group_commit_with_location(1, command(3), vec![], vec![]).unwrap();
+        let before = {
+            let inner = store.lock_inner_raw();
+            (inner.pending_by_shard[&1].bytes.len(),
+             inner.durable_sequence_by_shard.get(&1).copied(),
+             inner.durable_active_bytes_by_shard.get(&1).copied())
+        };
+        assert!(before.0 > 0);
+        set_torn_batch_write(1);
+        let failed = store.flush(1);
+        set_torn_batch_write(-1);
+        assert!(failed.is_err());
+        let after = {
+            let inner = store.lock_inner_raw();
+            (inner.pending_by_shard[&1].bytes.len(),
+             inner.durable_sequence_by_shard.get(&1).copied(),
+             inner.durable_active_bytes_by_shard.get(&1).copied())
+        };
+        assert_eq!(after, before);
+        let retried = store.flush(1).unwrap();
+        assert_eq!(retried.last_sequence, 1);
+        drop(store);
+        let reopened = LocalWriteAheadLogStore::new(root.path());
+        let records = reopened.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(records.len(), 1);
+    }
+
+    struct ReplacementCase;
+    impl ReplacementCase {
+        fn new() -> Self {
+            set_wal_segment_bytes_for_test(Some(0));
+            Self
+        }
+    }
+    impl Drop for ReplacementCase {
+        fn drop(&mut self) {
+            set_wal_segment_bytes_for_test(None);
+            WAL_REPLACEMENT_ERROR.with(|fault| fault.set(None));
+        }
+    }
+
+    fn reopened_sequences(store: &LocalWriteAheadLogStore) -> Vec<u64> {
+        let (records, truncated) = store.scan_decoded(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert!(!truncated);
+        records.into_iter().map(|(_, record)| record.sequence).collect()
+    }
+    fn seed_replacement(store: &LocalWriteAheadLogStore) {
+        store.flat_append.store(true, AtomicOrdering::Relaxed);
+        for n in 1..=4 {
+            assert_eq!(store.append_with_sync(1, command(n), false).unwrap().sequence, n as u64);
+        }
+        store.flush(1).unwrap();
+    }
+
+    fn check_warm_replacement_flush(store: &LocalWriteAheadLogStore, root: &Path) {
+        let expected = last_wal_sequence_at(root, 1).unwrap();
+        SELECTED_FLUSH_TAIL_SCANS.with(|count| count.set(0));
+        let flush = store.flush(1).unwrap();
+        assert!(flush.synced);
+        assert_eq!((flush.last_sequence, flush.persistent_bytes), expected);
+        assert_eq!(SELECTED_FLUSH_TAIL_SCANS.with(|count| count.get()), 0);
+    }
+
+    #[test]
+    fn roll_header_failure_cannot_reuse_the_old_piece_end() {
+        let _case = ReplacementCase::new();
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        seed_replacement(&store);
+        set_wal_segment_bytes_for_test(Some(1));
+        WAL_REPLACEMENT_ERROR.with(|fault| fault.set(Some("roll_header")));
+        {
+            assert!(store.append_with_sync(1, command(5), false).is_err());
+            let inner = store.lock_inner_raw();
+            assert!(!inner.last_sequence_by_shard.contains_key(&1));
+            assert!(!inner.verified_len_by_shard.contains_key(&1));
+            assert!(!inner.base_by_shard.contains_key(&1));
+            assert!(!inner.durable_active_bytes_by_shard.contains_key(&1));
+        }
+        WAL_REPLACEMENT_ERROR.with(|fault| fault.set(None));
+        set_wal_segment_bytes_for_test(Some(0));
+        let flush = store.flush(1).unwrap();
+        assert!(flush.synced);
+        assert_eq!(flush.last_sequence, 5);
+        assert_eq!(flush.persistent_bytes, std::fs::metadata(&flush.path).unwrap().len());
+        check_warm_replacement_flush(&store, root.path());
+        assert_eq!(store.append_with_sync(1, command(6), false).unwrap().sequence, 6);
+        store.flush(1).unwrap();
+        drop(store);
+        let reopened = LocalWriteAheadLogStore::new(root.path());
+        assert_eq!(reopened_sequences(&reopened), vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn reclaim_directory_sync_failure_cannot_reuse_the_old_piece_end() {
+        let _case = ReplacementCase::new();
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        seed_replacement(&store);
+        let old = store.lock_inner_raw().verified_len_by_shard[&1];
+        WAL_REPLACEMENT_ERROR.with(|fault| fault.set(Some("reclaim_dirsync")));
+        let failed = store.gc_before_sequence_unchecked(1, 4);
+        assert!(failed.unwrap_err().to_string().contains("reclaim_dirsync"));
+        {
+            let inner = store.lock_inner_raw();
+            assert!(!inner.verified_len_by_shard.contains_key(&1));
+            assert!(!inner.base_by_shard.contains_key(&1));
+            assert!(!inner.durable_active_bytes_by_shard.contains_key(&1));
+            assert!(inner.dir_sync_owed_by_shard.contains(&1));
+        }
+        let coordinator = store.group_commit_coordinator(1);
+        assert!(!coordinator.read_retention.lock().unwrap().collecting);
+        WAL_REPLACEMENT_ERROR.with(|fault| fault.set(None));
+        let flush = store.flush(1).unwrap();
+        assert_eq!(flush.last_sequence, 4);
+        assert!(flush.persistent_bytes < old);
+        check_warm_replacement_flush(&store, root.path());
+        assert_eq!(store.append_with_sync(1, command(5), false).unwrap().sequence, 5);
+        store.flush(1).unwrap();
+        assert_eq!(reopened_sequences(&store), vec![4, 5]);
+        let retry = store.gc_before_sequence_unchecked(1, 5).unwrap();
+        assert!(!retry.skipped_raced);
+        assert_eq!(retry.records_removed, 1);
+        drop(store);
+        let reopened = LocalWriteAheadLogStore::new(root.path());
+        assert_eq!(reopened_sequences(&reopened), vec![5]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn second_handle_cannot_replace_an_owned_active_wal_piece() {
+        let _case = ReplacementCase::new();
+        let root = tempfile::tempdir().unwrap();
+        let writer = LocalWriteAheadLogStore::new(root.path());
+        seed_replacement(&writer);
+        let reader = LocalWriteAheadLogStore::new(root.path());
+        let path = write_ahead_log_path(root.path(), 1);
+        let before = std::fs::read(&path).unwrap();
+        assert!(reader.gc_before_sequence_unchecked(1, 4).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        check_warm_replacement_flush(&writer, root.path());
+        drop(writer);
+        assert_eq!(reader.gc_before_sequence_unchecked(1, 4).unwrap().records_removed, 3);
+    }
+
+    #[test]
+    fn successful_reclaim_and_roll_keep_a_coherent_warm_flush() {
+        let _case = ReplacementCase::new();
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        seed_replacement(&store);
+        assert_eq!(store.gc_before_sequence_unchecked(1, 3).unwrap().records_removed, 2);
+        check_warm_replacement_flush(&store, root.path());
+        set_wal_segment_bytes_for_test(Some(1));
+        {
+            let mut inner = store.lock_inner_raw();
+            let end = inner.verified_len_by_shard[&1];
+            assert!(roll_wal_segment_if_due(&mut inner, 1, Some(end)).unwrap());
+        }
+        check_warm_replacement_flush(&store, root.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn second_handle_cannot_import_into_an_owned_wal_piece() {
+        let _case = ReplacementCase::new();
+        let root = tempfile::tempdir().unwrap();
+        let writer = LocalWriteAheadLogStore::new(root.path());
+        let mut imported = writer.append_with_sync(1, command(1), false).unwrap();
+        imported.sequence = 2;
+        let restore = LocalWriteAheadLogStore::new(root.path());
+        assert!(restore.append_replayed_record(imported.clone()).is_err());
+        assert_eq!(writer.flush(1).unwrap().last_sequence, 1);
+        drop(writer);
+        assert!(restore.append_replayed_record(imported).unwrap().appended);
+        assert_eq!(restore.flush(1).unwrap().last_sequence, 2);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn nonowner_legacy_scan_cannot_truncate_an_overlapping_owned_append() {
+        const CHILD: &str = "TS_WAL_TAIL_REPAIR_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("nonowner_legacy_scan_cannot_truncate_an_overlapping_owned_append")
+                .args(["--nocapture", "--test-threads=1"])
+                .env(CHILD, "1")
+                .env("TS_WAL_BINARY_FRAME", "0")
+                .env("TS_WAL_PREALLOCATE", "1")
+                .output().unwrap();
+            assert!(result.status.success(), "{}\n{}", String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr));
+            assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+            return;
+        }
+
+        assert!(!crate::log_framing::binary_frame_enabled());
+        assert!(wal_preallocate_enabled());
+        let _case = ReplacementCase::new();
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(root.path());
+        seed_replacement(&store);
+        let path = write_ahead_log_path(root.path(), 1);
+        let add_torn = |offset| {
+            let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+            file.seek(SeekFrom::Start(offset)).unwrap();
+            file.write_all(b"torn").unwrap();
+        };
+        let before = store.lock_inner_raw().verified_len_by_shard[&1];
+        add_torn(before);
+        let reader = LocalWriteAheadLogStore::new(root.path());
+        let (observed, detect) = std::sync::mpsc::channel();
+        let (resume, wait) = std::sync::mpsc::channel();
+        let reading = std::thread::spawn(move || {
+            WAL_TORN_TAIL_OBSERVED.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    observed.send(()).unwrap();
+                    wait.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+                }));
+            });
+            reader.flush(1).unwrap()
+        });
+        detect.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert_eq!(store.append_with_sync(1, command(5), false).unwrap().sequence, 5);
+        let written = fs::read(&path).unwrap();
+        resume.send(()).unwrap();
+        let observed = reading.join().unwrap();
+        assert_eq!(observed.last_sequence, 4);
+        assert_eq!(observed.persistent_bytes, before);
+        assert_eq!(fs::read(&path).unwrap(), written);
+        check_warm_replacement_flush(&store, root.path());
+        let verified_end = store.lock_inner_raw().verified_len_by_shard[&1];
+        drop(store);
+
+        // A cold owner still repairs a bad tail on the same inode.
+        let owner = LocalWriteAheadLogStore::new(root.path());
+        {
+            let mut inner = owner.lock_inner_raw();
+            WalAppendLock::acquire(&mut inner, 1).unwrap();
+            add_torn(verified_end);
+        }
+        assert_eq!(owner.flush(1).unwrap().last_sequence, 5);
+        assert_eq!(fs::metadata(&path).unwrap().len(), verified_end);
+        assert_eq!(reopened_sequences(&owner), vec![1, 2, 3, 4, 5]);
     }
 }
