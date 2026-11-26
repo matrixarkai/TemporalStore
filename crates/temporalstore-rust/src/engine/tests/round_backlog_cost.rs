@@ -452,8 +452,15 @@ fn the_measured_fixture_never_dumps_so_the_buckets_it_calls_dirty_really_are_dir
     std::thread::sleep(std::time::Duration::from_millis(30));
     let drained_before = drained_total();
     let mut last = None;
-    for _ in 0..3 {
+    for round_index in 0..3 {
         let (report, _) = one_round(&engine, PUBLISHED_MIN_UNDUMPED_WAL_RECORDS);
+        assert!(
+            report.completed && report.errors.is_empty(),
+            "round {round_index} did not complete: errors={:?}, stages={:?}, install_roll_forward={:?}",
+            report.errors,
+            report.stage_boundary_order,
+            report.lifecycle_report.as_ref().map(|report| &report.install_roll_forward_reports),
+        );
         assert!(
             report.plan.selected_dump_buckets.is_empty(),
             "the published settings selected {} buckets to dump. This whole test rests on the \
@@ -487,6 +494,25 @@ fn the_measured_fixture_never_dumps_so_the_buckets_it_calls_dirty_really_are_dir
         "every one of the {RECORDS} seeded records should still be dirty under the published \
          settings, and {published_objects} are"
     );
+    if published.pressure_signals.dirty_bucket_count != published_buckets {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard 1");
+        let nodes = &shard.bucket_index.bucket_map;
+        let flagged = nodes.values().filter(|node| node.dirty()).count();
+        let cached = nodes.dirty_buckets().len();
+        let plan_summaries = published.plan.bucket_summaries.as_ref();
+        eprintln!(
+            "dirty report mismatch: plan_dirty={}, plan_summaries={:?}, plan_dirty_summaries={:?}, \
+             after_node_count={}, after_flagged={}, after_cached={}, install_roll_forward={:?}",
+            published.plan.dirty_buckets.len(),
+            plan_summaries.map(Vec::len),
+            plan_summaries.map(|summaries| summaries.iter().filter(|row| row.dirty_object_count > 0).count()),
+            nodes.len(),
+            flagged,
+            cached,
+            published.lifecycle_report.as_ref().map(|report| &report.install_roll_forward_reports),
+        );
+    }
     assert_eq!(
         published.pressure_signals.dirty_bucket_count, published_buckets,
         "the round reported {} dirty buckets and the shard is holding {published_buckets}. The \
@@ -501,6 +527,11 @@ fn the_measured_fixture_never_dumps_so_the_buckets_it_calls_dirty_really_are_dir
     std::thread::sleep(std::time::Duration::from_millis(30));
     let control_drained_before = drained_total();
     let (control_report, _) = one_round(&control, DUMPING_MIN_UNDUMPED_WAL_RECORDS);
+    assert!(
+        control_report.completed && control_report.errors.is_empty(),
+        "dump control round did not complete: {:?}",
+        control_report.errors,
+    );
     let control_drained = drained_total() - control_drained_before;
     let (control_objects, control_buckets) = dirty_state(&control);
     println!(
