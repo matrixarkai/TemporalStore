@@ -5987,6 +5987,21 @@ fn drop_reflected_index_segments(
     meta_sequence: u64,
     relocations: Option<&CapturedRelocations>,
 ) -> Result<(usize, u64, usize), IndexLogError> {
+    drop_reflected_index_segments_with(
+        root, shard_id, wal_anchor, meta_sequence, relocations,
+        |path| fs::remove_file(path), sync_parent_dir,
+    )
+}
+
+fn drop_reflected_index_segments_with(
+    root: &Path,
+    shard_id: ShardId,
+    wal_anchor: u64,
+    meta_sequence: u64,
+    relocations: Option<&CapturedRelocations>,
+    mut unlink: impl FnMut(&Path) -> std::io::Result<()>,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(usize, u64, usize), IndexLogError> {
     let active = index_log_path(root, shard_id);
     let mut dropped = 0usize;
     let mut freed = 0u64;
@@ -6004,14 +6019,24 @@ fn drop_reflected_index_segments(
         if span.end > meta_sequence || !reflected {
             break;
         }
-        freed = freed.saturating_add(path.metadata().map(|meta| meta.len()).unwrap_or(0));
+        let bytes = path.metadata().map(|meta| meta.len()).unwrap_or(0);
+        if let Err(error) = unlink(&path) {
+            // Complete the directory barrier for earlier unlinks before returning.
+            // Preserve the first unlink error if the barrier also fails.
+            if dropped > 0 {
+                if let Err(sync_error) = sync_parent(&active) {
+                    tracing::warn!(shard_id, %sync_error, "index prefix sync after unlink failure");
+                }
+            }
+            return Err(error.into());
+        }
+        freed = freed.saturating_add(bytes);
         // The upper bound, not the count. See `drop_covered_index_segments`.
         records = records.saturating_add(span.end.saturating_sub(span.start) as usize);
-        fs::remove_file(&path)?;
         dropped += 1;
     }
     if dropped > 0 {
-        sync_parent_dir(&active)?;
+        sync_parent(&active)?;
     }
     Ok((dropped, freed, records))
 }
@@ -7109,6 +7134,54 @@ mod tests {
             .append_delta(7, vec![block_item(1, "later", false)], Vec::new(), Some(6), None, false, true)
             .unwrap();
         assert_eq!(next, meta_sequence + 1);
+    }
+
+    #[test]
+    fn reflected_sealed_prefix_syncs_completed_unlinks_and_retries_only_the_suffix() {
+        let _rolling = roll_at(1);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        let append = |name, anchor| {
+            store.append_delta(
+                7, vec![block_item(1, name, false)], Vec::new(), Some(anchor),
+                None, false, true,
+            ).unwrap()
+        };
+        let first = append("first", 2);
+        let second = append("second", 2);
+        let pinned = append("pinned", 2);
+        let active = append("active", 3);
+        let active_path = index_log_path(dir.path(), 7);
+        let active_before = fs::read(&active_path).unwrap();
+        let mut attempts = 0;
+        let mut synced = false;
+        let result = drop_reflected_index_segments_with(
+            dir.path(), 7, 2, pinned, None,
+            |path| {
+                attempts += 1;
+                if attempts == 2 {
+                    return Err(std::io::Error::other("injected second unlink failure"));
+                }
+                fs::remove_file(path)
+            },
+            |path| {
+                synced = true;
+                sync_parent_dir(path)
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("injected second unlink failure"));
+        assert_eq!(attempts, 2);
+        assert!(synced);
+        assert_eq!(fs::read(&active_path).unwrap(), active_before);
+        drop(store);
+        let reopened = LocalIndexLogStore::new(dir.path());
+        let sequences = || reopened.read_delta_records(7, 0).unwrap()
+            .into_iter().map(|record| record.sequence).collect::<Vec<_>>();
+        assert_eq!(sequences(), vec![second, pinned, active]);
+        assert!(first < second);
+        assert_eq!(drop_reflected_index_segments(dir.path(), 7, 2, pinned, None).unwrap().0, 1);
+        assert_eq!(sequences(), vec![pinned, active]);
+        assert_eq!(fs::read(&active_path).unwrap(), active_before);
     }
 
     #[test]

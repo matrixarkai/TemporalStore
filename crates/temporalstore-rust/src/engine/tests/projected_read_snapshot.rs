@@ -199,9 +199,8 @@ fn slab_snapshot_survives_overwrite_delete_and_reclaim_before_payload_loading() 
         assert!(slot.borrow().is_none());
         *slot.borrow_mut() = Some(Box::new(move || {
             assert!(writer.shards.try_write().is_ok());
-            assert!(writer.serving_admission.try_lock().is_some());
             std::thread::spawn(move || {
-                writer.block_store.roll_slab().unwrap();
+                writer.block_store.roll_slab_for_shard(1).unwrap();
                 write(
                     &writer,
                     Command::HashMultiSet {
@@ -314,7 +313,6 @@ fn wal_snapshot_survives_overwrite_delete_and_reclaim_before_payload_loading() {
         assert!(slot.borrow().is_none());
         *slot.borrow_mut() = Some(Box::new(move || {
             assert!(writer.shards.try_write().is_ok());
-            assert!(writer.serving_admission.try_lock().is_some());
             let sequence = std::thread::spawn(move || {
                 set_row(&writer, "first", 9);
                 let sequence = writer.wal_store.stats(1).last_sequence;

@@ -748,7 +748,10 @@ impl DataNodeRuntime {
             // on the overwhelming majority of cycles. A failure is recorded and does not stop
             // the cycle: the inline roll in `append` remains the fallback, so the only
             // consequence is that the next append pays for the roll, exactly as it does today.
-            match self.inner.engine.block_store().prepare_next_slab() {
+            match self.inner.engine.block_store().prepare_next_slab_for_shard(
+                shard_id,
+                crate::storage_config::effective_block_slab_target_bytes(),
+            ) {
                 Ok(Some(roll)) => {
                     tracing::debug!(
                         previous_block_slab_id = roll.previous_block_slab_id,
@@ -2160,7 +2163,10 @@ impl DataNodeRuntime {
             return None;
         }
         if options.enable_prepare {
-            if let Err(error) = self.inner.engine.block_store().prepare_next_slab() {
+            if let Err(error) = self.inner.engine.block_store().prepare_next_slab_for_shard(
+                shard_id,
+                crate::storage_config::effective_block_slab_target_bytes(),
+            ) {
                 tracing::warn!(
                     %error,
                     "storage manager could not pre-allocate the next data slab; \

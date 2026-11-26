@@ -433,15 +433,24 @@ fn a_drain_round_asks_only_about_keys_that_hold_a_block_on_the_drain_slab() {
     }
     let response = engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands });
     assert!(response.status.ok, "{:?}", response.status);
-    // Everything above sits on the old slab. Roll, then write three keys: they are the only
-    // blocks on the new slab, which is the one the round is asked to drain.
-    let drain_slab = engine.block_store.roll_slab().unwrap().new_block_slab_id;
+    // Roll the same shard writer used by the seed and the three late writes.
+    let drain_slab = engine.block_store.roll_slab_for_shard(1).unwrap().new_block_slab_id;
     for i in 0..3 {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet { key: format!("late-{i}"), value: vec![9u8; 96] },
         });
         assert!(response.status.ok);
+    }
+    {
+        let shards = engine.shards.read().unwrap();
+        let mut drain_keys: Vec<_> = collect_live_block_entries(shards.get(&1).unwrap())
+            .into_iter()
+            .filter(|entry| entry.address.block_slab_id() == drain_slab)
+            .map(|entry| entry.object_key.to_string())
+            .collect();
+        drain_keys.sort_unstable();
+        assert_eq!(drain_keys, ["late-0", "late-1", "late-2"]);
     }
     let report = engine
         .compact_shard_blocks_relocating_inner(

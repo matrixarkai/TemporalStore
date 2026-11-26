@@ -2272,6 +2272,7 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
     // the resident live set. Deleting it makes the manifest uninstallable and loses data on
     // a lagging follower's replay / snapshot-install. The gated storage-manager cycle blocks
     // this via storage_block_gc_dependency_plan; the operator path must mirror the guard.
+    const SHARD: ShardId = 1;
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -2279,31 +2280,37 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
         dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
-    engine.load_shard(1);
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
+    engine.load_shard(SHARD);
+    let response = engine.execute(ExecuteRequest {
+        shard_id: SHARD,
         command: Command::StringSet {
             key: "gc-key".to_string(),
             value: b"v1".to_vec(),
         },
     });
-    // Dump: the manifest captures the slab (id 0) holding v1.
-    let manifest = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+    assert!(response.status.ok, "initial write failed: {response:?}");
+    let original_slabs = engine.live_block_slab_ids(SHARD);
+    assert_eq!(original_slabs.len(), 1, "v1 must have one owned slab");
+    // The manifest must capture the owned slab that actually holds v1.
+    let manifest = engine.create_bucket_dump_manifest(SHARD, Vec::new()).unwrap();
     assert!(
         !manifest.block_slab_ids.is_empty(),
         "dump manifest should reference the slab holding v1"
     );
-    // Roll to a new slab and overwrite: slab 0 becomes stale (not live) but is still named
-    // by the manifest.
-    engine.block_store().roll_slab().unwrap();
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
+    assert_eq!(manifest.block_slab_ids, original_slabs);
+    // Roll the same shard's writer before overwriting so the manifest alone pins v1.
+    let roll = engine.block_store().roll_slab_for_shard(SHARD).unwrap();
+    assert_eq!(roll.previous_block_slab_id, original_slabs[0]);
+    let response = engine.execute(ExecuteRequest {
+        shard_id: SHARD,
         command: Command::StringSet {
             key: "gc-key".to_string(),
             value: b"v2".to_vec(),
         },
     });
-    let live = engine.live_block_slab_ids(1);
+    assert!(response.status.ok, "overwrite failed: {response:?}");
+    let live = engine.live_block_slab_ids(SHARD);
+    assert_eq!(live, vec![roll.new_block_slab_id]);
     assert!(
         !manifest.block_slab_ids.iter().any(|s| live.contains(s)),
         "manifest slab must be stale (not live) to exercise the guard; live={live:?}"
@@ -2320,7 +2327,7 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
     // Aggressive operator sweep that would delete the stale manifest slab.
     let submitted = runtime.submit_gc(
         GcRequest {
-            shard_id: 1,
+            shard_id: SHARD,
             retain_wal_from_sequence: None,
             retain_index_log_from_sequence: None,
             retain_block_slabs_from_id: Some(u64::MAX),
@@ -10063,14 +10070,21 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
         .collect::<BTreeSet<_>>();
     // Roll, so the named bucket's blocks land somewhere else. This is what makes a slab holding
     // ONLY unnamed-bucket blocks exist at all.
-    engine.block_store().roll_slab().expect("roll a fresh slab");
+    let roll = engine
+        .block_store()
+        .roll_slab_for_shard(SHARD)
+        .expect("roll the shard's owned slab");
+    assert!(outside_slabs.contains(&roll.previous_block_slab_id));
     for key in named_keys.iter() {
         slabpin_write(&engine, SHARD, key);
     }
     let named_slabs = engine
-        .live_block_slab_ids(SHARD)
+        .bucket_storage_summaries(SHARD)
         .into_iter()
-        .filter(|slab| !outside_slabs.contains(slab))
+        .find(|summary| summary.routing_bucket == named_bucket)
+        .expect("named bucket must contain the written blocks")
+        .block_slab_ids
+        .into_iter()
         .collect::<BTreeSet<_>>();
 
     let manifest = engine
@@ -10100,10 +10114,18 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
          holds buckets {shard_buckets:?}, the dump named {named_bucket})"
     );
     assert!(
-        !outside_slabs.is_empty() && !named_slabs.is_empty(),
+        !outside_slabs.is_empty()
+            && !named_slabs.is_empty()
+            && outside_slabs.is_disjoint(&named_slabs),
         "the roll did not separate the two halves: the unnamed buckets sit on {outside_slabs:?} \
          and the named bucket on {named_slabs:?}. Sharing a slab makes the manifest name it and \
          the hazard cannot arise"
+    );
+
+    assert_eq!(named_slabs, BTreeSet::from([roll.new_block_slab_id]));
+    assert!(
+        outside_slabs.iter().all(|slab| manifest.block_slab_ids.contains(slab)),
+        "the durable manifest must pin every slab of its unnamed buckets"
     );
 
     // THE CONTROL, taken before anything is compacted or swept: the same manifest, installed into
@@ -10539,6 +10561,7 @@ cap {max_rounds}"
     let mut cumulative_purged = 0u64;
 
     for round in 0..max_rounds {
+        let quarantined_before = engine.block_store().delayed_destroy_slab_ids().unwrap();
         let report = runtime.run_storage_manager_once(1, options.clone());
         if report
             .executed_stages
@@ -10569,21 +10592,19 @@ cap {max_rounds}"
             .filter(|summary| summary.dirty_object_count > 0)
             .count() as u64;
         let manifests = engine.list_bucket_dump_manifests(1).len() as u64;
-        let quarantined = engine
+        let quarantined_ids = engine
             .block_store()
             .delayed_destroy_slab_ids()
-            .unwrap_or_default()
-            .len() as u64;
+            .unwrap();
+        let quarantined = quarantined_ids.len() as u64;
         cumulative_removed += report
             .gc_report
             .as_ref()
             .map(|gc| gc.block_slabs_removed as u64)
             .unwrap_or(0);
-        cumulative_purged += report
-            .lifecycle_report
-            .as_ref()
-            .map(|lifecycle| lifecycle.delayed_destroy_purged_slabs.len() as u64)
-            .unwrap_or(0);
+        cumulative_purged += quarantined_before.iter()
+            .filter(|id| !slab_ids.contains(id) && !quarantined_ids.contains(id))
+            .count() as u64;
 
         eprintln!(
             "  [longrun] {round:>5} {:>11} {:>8} {index_log_bytes:>9} {:>6} {slab_bytes:>11} \
@@ -10609,28 +10630,45 @@ cap {max_rounds}"
         purged_series.push(cumulative_purged);
     }
 
-    // THE HOUR. Quarantine enforces a one-hour minimum age, so every measurement shorter than an
-    // hour reports "purged 0" BY CONSTRUCTION and says nothing about the mechanism. Backdating the
-    // arrival stamp does NOT shorten the gate -- the purge below still demands the shipped hour --
-    // it makes the slab genuinely old by its own clock. That proves the MECHANISM. Proving the
-    // SCHEDULE is a different claim and needs a different run; see
-    // `a_quarantined_slab_is_purged_after_a_real_hour_of_wall_clock`.
+    // Cross the shipped one-day grace without changing its policy. Count actual file removal:
+    // a purge-only round does not build the optional full lifecycle report.
     let injected_age_purge = inject_age.then(|| {
+        let before = engine.block_store().delayed_destroy_slab_ids().unwrap()
+            .into_iter().collect::<std::collections::BTreeSet<_>>();
+        let live = engine.live_block_slab_ids(1);
+        assert!(before.iter().all(|id| !live.contains(id)),
+            "the purge fixture must not require a live slab to be destroyed");
+        assert!(engine.list_bucket_dump_manifests(1).iter()
+            .all(|manifest| manifest.block_slab_ids.iter().all(|id| !before.contains(id))),
+            "the purge fixture must not require a retained manifest's slab to be destroyed");
         let backdated = engine
             .block_store()
             .backdate_delayed_destroy_stamps_for_test(25 * 60 * 60 * 1_000)
             .expect("backdating the quarantine stamps");
-        let by_round = runtime
-            .run_storage_manager_once(1, options.clone())
-            .lifecycle_report
-            .as_ref()
-            .map(|lifecycle| lifecycle.delayed_destroy_purged_slabs.len())
-            .unwrap_or(0);
+        assert_eq!(backdated, before.len());
+        let aged_round = runtime.run_storage_manager_once(1, options.clone());
+        assert!(aged_round.status.ok);
+        let active_after = engine.block_store().slab_ids().unwrap();
+        let quarantined_after = engine.block_store().delayed_destroy_slab_ids().unwrap();
+        let by_round = before.iter()
+            .filter(|id| !active_after.contains(id) && !quarantined_after.contains(id))
+            .count();
         let directly = engine
             .block_store()
             .purge_delayed_destroy_slabs_with_report()
             .map(|report| report.purged_block_slab_ids.len())
             .unwrap_or(0);
+        engine.cache().invalidate_shard(1).unwrap();
+        for index in 0..records {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: format!("longrun-{index:07}") },
+            });
+            assert!(response.status.ok, "post-purge read {index}: {:?}", response.status);
+            let expected = if index < records / 3 { vec![b'w'; 192] } else { vec![b'v'; 128] };
+            assert_eq!(response.response, CommandResponse::Bytes { value: Some(expected) },
+                "post-purge value {index}");
+        }
         (backdated, by_round, directly)
     });
 
@@ -10757,8 +10795,8 @@ fn report_long_run_verdicts(run: &LongFootprintRun) {
     );
     if let Some((backdated, by_round, directly)) = run.injected_age_purge {
         eprintln!(
-            "  [longrun] INJECTED AGE: {backdated} quarantined slabs backdated two hours, then the \
-             shipped one-hour purge removed {by_round} in a scheduled round and {directly} on a \
+            "  [longrun] INJECTED AGE: {backdated} quarantined slabs backdated 25 hours, then the \
+             shipped one-day purge removed {by_round} in a scheduled round and {directly} on a \
              direct call",
         );
     }
@@ -10823,7 +10861,7 @@ fn the_footprint_stays_bounded_over_a_long_run() {
         );
         assert!(
             by_round + directly > 0,
-            "{backdated} slabs were two hours old and the shipped one-hour purge removed none of \
+            "{backdated} slabs were 25 hours old and the shipped one-day purge removed none of \
              them, by the scheduled round or directly",
         );
     }
@@ -11062,12 +11100,12 @@ fn the_footprint_columns_stay_bounded_on_an_idle_shard() {
     );
     assert_eq!(
         run.cumulative_purged_by_schedule, 0,
-        "slabs quarantined moments ago were purged over {} scheduled rounds: the one-hour minimum \
+        "slabs quarantined moments ago were purged over {} scheduled rounds: the one-day grace \
          age is not being enforced, and a reader holding a stale address dangles at a deleted slab",
         run.rounds_run,
     );
 
-    // DIRECTION TWO: the same slab, aged past the shipped hour, IS purged.
+    // DIRECTION TWO: the same slab, aged past the shipped day, IS purged by the round itself.
     let (backdated, by_round, directly) = run
         .injected_age_purge
         .expect("the injected-age arm ran, since it was requested");
@@ -11077,14 +11115,27 @@ fn the_footprint_columns_stay_bounded_on_an_idle_shard() {
         run.cumulative_removed,
     );
     assert!(
-        by_round + directly > 0,
-        "{backdated} slabs were two hours old and the shipped one-hour purge removed none",
+        by_round > 0,
+        "{backdated} slabs were 25 hours old and the scheduled one-day purge removed none \
+         (the direct fallback removed {directly})",
     );
     assert_eq!(
         run.quarantined_at_end, 0,
         "quarantine still holds slabs after the aged purge: {backdated} backdated, {by_round} \
          purged by the round, {directly} purged directly",
     );
+}
+
+#[test]
+#[ignore]
+fn aged_quarantine_purges_and_preserves_twenty_thousand_values() {
+    let run = drive_long_footprint_run(20_000, 4, true);
+    assert_long_run_denominators(&run);
+    let (backdated, by_round, directly) = run.injected_age_purge.unwrap();
+    assert!(backdated > 0);
+    assert!(by_round > 0, "the scheduled purge removed none; direct fallback removed {directly}");
+    assert_eq!(run.cumulative_purged_by_schedule, 0, "young slabs must remain quarantined");
+    assert_eq!(run.quarantined_at_end, 0);
 }
 
 /// The fixture the two rounds above and below are measured on: a shard spanning several slabs

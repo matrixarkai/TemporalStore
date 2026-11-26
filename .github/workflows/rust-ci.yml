@@ -1342,6 +1342,9 @@ jobs:
             engine::recovery_sweep_compact::compaction_slice_tests::a_pass_over_a_confirmed_index_runs_no_promote_scan \
             engine::recovery_sweep_compact::compaction_slice_tests::a_round_names_the_log_placements_of_the_blocks_it_moved \
             engine::recovery_sweep_compact::compaction_slice_tests::a_keyed_step_names_the_blocks_of_its_buckets_and_not_the_shards \
+            engine::recovery_sweep_compact::compaction_slice_tests::terminal_receipt_counts_a_small_final_batch \
+            engine::recovery_sweep_compact::compaction_slice_tests::terminal_receipt_counts_intermediate_batches_and_the_tail \
+            engine::recovery_sweep_compact::compaction_slice_tests::terminal_receipt_distinguishes_failed_tail_from_published_image \
             data_node::runtime_storage::maintenance_report_tests::the_draining_stage_always_runs_the_sliced_pass
           do
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/pin-compact.log

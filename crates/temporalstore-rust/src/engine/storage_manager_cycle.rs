@@ -400,7 +400,7 @@ impl TemporalEngine {
             };
             match self
                 .block_store()
-                .prepare_next_slab_with_target(slab_target_bytes)
+                .prepare_next_slab_for_shard(request.shard_id, slab_target_bytes)
             {
                 Ok(Some(roll)) => prepared_block_slab_id = Some(roll.new_block_slab_id),
                 Ok(None) => {}

@@ -60,7 +60,7 @@ fn seed(engine: &TemporalEngine, keys: usize) -> (BTreeMap<String, Vec<u8>>, BTr
         commands.push(Command::SetAdd { key: "order".into(), member: format!("m-{i}").into_bytes() });
     }
     assert!(engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands }).status.ok);
-    engine.block_store.roll_slab().unwrap();
+    engine.block_store.roll_slab_for_shard(1).unwrap();
     let mut commands = Vec::new();
     for i in (0..keys).filter(|i| middle(*i)) {
         commands.push(Command::StringSet { key: format!("key-{i}"), value: value_of(i, 0) });
@@ -68,7 +68,7 @@ fn seed(engine: &TemporalEngine, keys: usize) -> (BTreeMap<String, Vec<u8>>, BTr
     }
     if !commands.is_empty() {
         assert!(engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands }).status.ok);
-        engine.block_store.roll_slab().unwrap();
+        engine.block_store.roll_slab_for_shard(1).unwrap();
     }
     for i in 0..keys / 20 {
         write(engine, i, 1, &mut expected);
@@ -245,7 +245,7 @@ fn selected_entity_compaction_moves_only_the_named_point_and_keeps_its_bytes() {
     }
     let before = points.clone();
     shard.context_entities_mut().insert(Arc::from("collection:with:colons"), points.into());
-    let target = engine.block_store.roll_slab().unwrap().new_block_slab_id;
+    let target = engine.block_store.roll_slab_for_shard(1).unwrap().new_block_slab_id;
     let mut stats = CompactionRewriteStats::for_round(target, u64::MAX, usize::MAX);
     let keys = std::collections::HashSet::from([Arc::from("collection:with:colons:2")]);
     engine.relocate_unkeyed_blocks(1, &mut shard, 0, u32::MAX, Some(&keys), &mut stats).unwrap();
@@ -274,7 +274,7 @@ fn feature_slice_case(count: usize, cursor: bool, routing_end: u32) {
     }).collect();
     assert!(engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands }).status.ok);
     let drain = engine.block_store.slab_ids().unwrap().into_iter().collect::<BTreeSet<_>>();
-    engine.block_store.roll_slab().unwrap();
+    engine.block_store.roll_slab_for_shard(1).unwrap();
     if !cursor {
         let mut shards = engine.shards_write_marked();
         shards.get_mut(&1).unwrap().bucket_index.block_slab_live.forget_for_test();
@@ -555,6 +555,120 @@ fn a_pass_writes_a_durable_relocation_record_for_every_block_it_moved() {
     }).expect("the durable relocation log must decode completely");
     assert!(ordinary > 0, "the guard must distinguish relocation records from ordinary deltas");
     assert_eq!(recorded, expected, "the pass must record exactly every block it moved");
+}
+
+// One string per owner gives exactly one relocation pair per live input page.
+fn terminal_receipt_case(keys: usize, fail_tail: bool) -> (String, Vec<usize>) {
+    use super::compaction_slices::{FAIL_FINAL_RELOCATION_APPEND, PASS_SUMMARY};
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let expected: BTreeMap<_, _> = (0..keys)
+        .map(|i| (format!("receipt-{i}"), value_of(i, 0)))
+        .collect();
+    let commands = expected.iter()
+        .map(|(key, value)| Command::StringSet { key: key.clone(), value: value.clone() })
+        .collect();
+    assert!(engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands }).status.ok);
+    let drain: BTreeSet<u64> = engine.block_store.slab_ids().unwrap().into_iter().collect();
+    engine.block_store.roll_slab_for_shard(1).unwrap();
+
+    PASS_SUMMARY.with(|receipt| receipt.take());
+    FAIL_FINAL_RELOCATION_APPEND.with(|fail| fail.set(fail_tail));
+    engine.compact_shard_blocks_draining_sliced(1, drain.clone(), 32).unwrap();
+    assert!(!FAIL_FINAL_RELOCATION_APPEND.with(|fail| fail.replace(false)),
+        "the final relocation append was never reached");
+    let receipt = PASS_SUMMARY.with(|receipt| receipt.take()).expect("terminal receipt");
+    let mut batches = Vec::new();
+    let mut destinations = BTreeSet::new();
+    engine.index_log_store.for_each_delta_record_above_anchor(1, 0, 0, |record| {
+        if !record.relocated_from.is_empty() {
+            assert_eq!(record.relocated_from.len(), record.items.len());
+            batches.push(record.items.len());
+            for item in &record.items {
+                let address = item.entry.as_ref().expect("relocation names a destination");
+                assert!(destinations.insert((address.block_slab_id(), address.offset(), address.length())),
+                    "each selected string has a distinct recorded destination");
+            }
+        }
+    }).unwrap();
+    drop(engine);
+    let reopened = open(dir.path());
+    for (key, value) in &expected {
+        assert_eq!(read(&reopened, key).as_ref(), Some(value), "after terminal receipt: {key}");
+    }
+    assert_index_agrees(&reopened, "after terminal receipt");
+    {
+        let shards = reopened.shards.read().unwrap();
+        let shard = shards.get(&1).expect("reopened shard");
+        let indexed: BTreeSet<_> = collect_live_block_entries(shard).into_iter()
+            .filter(|entry| !entry.deleted)
+            .map(|entry| (entry.object_key.to_string(), entry.address.block_slab_id(),
+                          entry.address.offset(), entry.address.length()))
+            .collect();
+        let served: BTreeSet<_> = expected.keys().map(|key| {
+            let address = shard.string_address(key).expect("reopened string address");
+            assert!(!drain.contains(&address.block_slab_id()), "{key} still names a source slab");
+            let extent = (address.block_slab_id(), address.offset(), address.length());
+            if !fail_tail {
+                assert!(destinations.contains(&extent), "{key} has no durable relocation record");
+            }
+            (key.clone(), extent.0, extent.1, extent.2)
+        }).collect();
+        assert_eq!(indexed, served, "the reopened index must name every relocated string exactly");
+    }
+    if fail_tail {
+        assert!(destinations.is_empty(), "the final append failure should use the published image");
+    }
+    (receipt, batches)
+}
+
+fn assert_receipt_field(receipt: &str, field: &str, value: impl std::fmt::Display) {
+    let expected = format!("{field}={value}");
+    assert!(receipt.split_whitespace().any(|token| token == expected.as_str()),
+        "missing {expected} in {receipt}");
+}
+
+#[test]
+fn terminal_receipt_counts_a_small_final_batch() {
+    let (receipt, batches) = terminal_receipt_case(12, false);
+    assert_eq!(batches, vec![12]);
+    assert_receipt_field(&receipt, "moved_refs", 12);
+    assert_receipt_field(&receipt, "records", 12);
+    assert_receipt_field(&receipt, "records_complete", true);
+    assert_receipt_field(&receipt, "records_failed", 0);
+    assert_receipt_field(&receipt, "records_pending", 0);
+    assert_receipt_field(&receipt, "image_published", true);
+    assert_receipt_field(&receipt, "status", "ok");
+}
+
+#[test]
+fn terminal_receipt_counts_intermediate_batches_and_the_tail() {
+    let (receipt, batches) = terminal_receipt_case(1500, false);
+    assert!(batches.len() >= 2);
+    assert!(batches[0] >= 1024);
+    assert!((1..1024).contains(batches.last().unwrap()));
+    assert_eq!(batches.iter().sum::<usize>(), 1500);
+    assert_receipt_field(&receipt, "moved_refs", 1500);
+    assert_receipt_field(&receipt, "records", 1500);
+    assert_receipt_field(&receipt, "records_complete", true);
+    assert_receipt_field(&receipt, "records_failed", 0);
+    assert_receipt_field(&receipt, "records_pending", 0);
+    assert_receipt_field(&receipt, "image_published", true);
+    assert_receipt_field(&receipt, "status", "ok");
+}
+
+#[test]
+fn terminal_receipt_distinguishes_failed_tail_from_published_image() {
+    let (receipt, batches) = terminal_receipt_case(12, true);
+    assert!(batches.is_empty());
+    assert_receipt_field(&receipt, "moved_refs", 12);
+    assert_receipt_field(&receipt, "records", 0);
+    assert_receipt_field(&receipt, "records_complete", false);
+    assert_receipt_field(&receipt, "records_failed", 12);
+    assert_receipt_field(&receipt, "records_pending", 0);
+    assert_receipt_field(&receipt, "image_published", true);
+    assert_receipt_field(&receipt, "status", "ok");
 }
 
 /// A KEYED STEP NAMES THE BLOCKS OF ITS OWN BUCKETS, NOT THE SHARD'S. Naming a block's object needs an

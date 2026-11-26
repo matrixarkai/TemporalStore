@@ -79,6 +79,8 @@ mod wal_application;
 mod maintenance_log;
 #[path = "engine/portable_checkpoint.rs"]
 mod portable_checkpoint;
+pub(crate) use portable_checkpoint::{translate_portable_checkpoint_index, PortableCheckpointImage};
+pub(crate) use packed_blocks::decode_feature_block as decode_shared_wal_packed_block;
 mod storage_lifecycle_methods;
 pub(crate) use storage_lifecycle_methods::dump_gate_delays;
 pub use storage_lifecycle_methods::{
@@ -275,7 +277,6 @@ use crate::engine::timestamped_series::TimestampedSeries as _;
 #[derive(Debug, Clone)]
 pub struct TemporalEngine {
     shards: Arc<shard_guard::ShardsLock>,
-    serving_admission: Arc<parking_lot::FairMutex<()>>,
     cache: MultiLayerCache,
     block_store: BlockStore,
     wal_store: LocalWriteAheadLogStore,
@@ -789,7 +790,7 @@ impl TemporalEngine {
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
-        self.execute_with_storage_override(request, None, Vec::new())
+        self.execute_with_storage_override(request, None, Vec::new(), false)
     }
 
     /// Apply `request`, attaching `blocks` to its log record instead of whatever this node
@@ -807,11 +808,30 @@ impl TemporalEngine {
         request: ExecuteRequest,
         blocks: Vec<crate::wal::StagedBlock>,
     ) -> ExecuteResponse {
-        self.execute_with_storage_override(request, None, blocks)
+        self.execute_with_storage_override(request, None, blocks, false)
+    }
+
+    pub(crate) fn execute_shared_wal_command(
+        &self,
+        request: ExecuteRequest,
+        blocks: Vec<crate::wal::StagedBlock>,
+    ) -> ExecuteResponse {
+        self.execute_with_storage_override(request, None, blocks, true)
+    }
+
+    pub(crate) fn stage_shared_wal_command_for_file_restore(
+        &self,
+        request: ExecuteRequest,
+        blocks: Vec<crate::wal::StagedBlock>,
+    ) -> ExecuteResponse {
+        let _restoring = WalReplayGuard::enter();
+        // The remote WAL remains the recovery source until the entire tail has
+        // been installed and one complete local image has been committed.
+        self.execute_with_storage_override(request, Some(false), blocks, true)
     }
 
     pub fn execute_durable(&self, request: ExecuteRequest) -> ExecuteResponse {
-        self.execute_with_storage_override(request, Some(false), Vec::new())
+        self.execute_with_storage_override(request, Some(false), Vec::new(), false)
     }
 
     /// Apply a committed raft entry to the state machine, durably (fsync'd WAL) but with a
@@ -839,7 +859,7 @@ impl TemporalEngine {
     ) -> ExecuteResponse {
         let _guard = RaftApplyGuard::enter();
         let _clock = ReplayClockGuard::enter(leader_time_ms);
-        self.execute_with_storage_override(request, Some(false), Vec::new())
+        self.execute_with_storage_override(request, Some(false), Vec::new(), false)
     }
 
     /// Apply a batch of committed raft entries to the state machine. Under
@@ -884,7 +904,7 @@ impl TemporalEngine {
         let mut responses = Vec::with_capacity(requests.len());
         for (request, leader_time_ms) in requests {
             let _clock = ReplayClockGuard::enter(leader_time_ms);
-            responses.push(self.execute_with_storage_override(request, Some(false), Vec::new()));
+            responses.push(self.execute_with_storage_override(request, Some(false), Vec::new(), false));
         }
         let barrier = batch_guard.take_barrier();
         drop(batch_guard);
@@ -956,10 +976,10 @@ impl TemporalEngine {
         };
         match replication_mode {
             EventReplicationMode::SyncStorage => {
-                self.execute_with_storage_override(request, Some(false), Vec::new())
+                self.execute_with_storage_override(request, Some(false), Vec::new(), false)
             }
             EventReplicationMode::AsyncStorage => {
-                self.execute_with_storage_override(request, Some(true), Vec::new())
+                self.execute_with_storage_override(request, Some(true), Vec::new(), false)
             }
             EventReplicationMode::Raft | EventReplicationMode::Inherit => self.execute(request),
         }
@@ -1056,6 +1076,7 @@ impl TemporalEngine {
         request: ExecuteRequest,
         async_storage_override: Option<bool>,
         mut carried_blocks: Vec<crate::wal::StagedBlock>,
+        shared_wal_replay: bool,
     ) -> ExecuteResponse {
         // The flags every write asks about are read from the environment once for this operation:
         // see `env_flag::OperationEnv`.
@@ -1158,7 +1179,7 @@ impl TemporalEngine {
         // a retryable status so a concurrent write cannot interleave with replay -- which
         // would regress the WAL anchor and double-apply on the next restart. The replay
         // thread re-drives records under replaying_wal(), which bypasses this gate.
-        if !replaying_wal() && info.recovering {
+        if !replaying_wal() && !shared_wal_replay && info.recovering {
             return ExecuteResponse {
                 status: Status::error(
                     "shard_not_loaded",
@@ -3567,6 +3588,7 @@ impl TemporalEngine {
         // state is still private to this thread here, so the same pass excludes nobody.
         // `ensure_expiry_order` stays at its call sites as the repair for an emptied mirror.
         ensure_expiry_order(&mut state);
+        state.expiry_scan_positions = [None, None];
         self.shards
             .write()
             .expect("engine lock poisoned")
@@ -4920,8 +4942,6 @@ pub(super) fn encode_index_bytes_as_plain_json(shard: &ShardState) -> Vec<u8> {
 /// every leaf. It rides the load rather than a timer or a flag, because the load is the moment the
 /// whole structure is in hand and already paid for.
 pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
-    #[cfg(test)]
-    bucket_dump_manifest_methods::note_checkpoint_decode();
     // WRAPPED RATHER THAN EDITED PER ARM, so that a second payload added later is packed without
     // anyone having to remember to.
     let mut state = decode_index_bytes_inner(bytes)?;
@@ -4929,9 +4949,10 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
     Ok(state)
 }
 
-/// The codec arms themselves. Reached only through `decode_index_bytes` above, which packs what
-/// this fills -- so a second arm added here is covered without being told to be.
+/// Validate and decode the complete image. Recovery can defer packing until it selects an image.
 fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
+    #[cfg(test)]
+    bucket_dump_manifest_methods::note_checkpoint_decode();
     if !bytes.starts_with(INDEX_CONTAINER_MAGIC) {
         return Err("served index is not a container: it does not start with the container magic"
             .to_string());
@@ -6114,6 +6135,7 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         // that folds a delta onto a shard already in service would land exactly on the
         // never-repaired case.
         shard.expiry_by_deadline.clear();
+        shard.expiry_scan_positions = [None, None];
     }
 }
 
@@ -7979,35 +8001,39 @@ pub(in crate::engine) fn due_window<F>(
 where
     F: Fn(&str) -> bool,
 {
+    due_window_after(shard, now, limit, scan_budget, None, keep).0
+}
+
+pub(in crate::engine) fn due_window_after(
+    shard: &ShardState,
+    now: u64,
+    limit: usize,
+    scan_budget: usize,
+    after: Option<&(u64, std::sync::Arc<str>)>,
+    keep: impl Fn(&str) -> bool,
+) -> (Vec<(String, u64)>, Option<(u64, std::sync::Arc<str>)>) {
+    use std::ops::Bound::{Excluded, Unbounded};
+
     let mut selected = Vec::new();
+    let mut last_inspected: Option<&(u64, std::sync::Arc<str>)> = None;
     let mut walked = 0usize;
-    // A long run of due keys that `keep` rejects -- the other residency class, which a sweep that
-    // does not load cold buckets never removes -- sits at the FRONT of the view round after round.
-    // A walk capped at `scan_budget` ended inside that run and never reached an accepted key
-    // behind it, so one class could starve the other for as long as the run lasted. The walk gets
-    // a multiple of the budget instead: still bounded, and wide enough to step over a run the
-    // size of the budget many times over.
     let walk_cap = scan_budget.saturating_mul(16);
-    for ((expires_at, key), ()) in shard.expiry_by_deadline.iter() {
+    let lower = after.map_or(Unbounded, Excluded);
+    for (entry @ (expires_at, key), ()) in shard.expiry_by_deadline.range((lower, Unbounded)) {
         if *expires_at > now {
             break;
         }
-        if limit > 0 && selected.len() >= limit {
-            break;
+        if (limit > 0 && selected.len() >= limit) || (walk_cap > 0 && walked >= walk_cap) {
+            return (selected, last_inspected.cloned());
         }
-        if scan_budget > 0 && walked >= walk_cap {
-            break;
-        }
-        walked = walked.saturating_add(1);
-        // TRANSIENT, NOT RESIDENT. The returned `String`s leave this function and are dropped by
-        // the sweep that consumes them; the signature is left alone so no caller moves. This is
-        // one allocation per DUE key on a bounded round -- the same cost as the `String` clone it
-        // replaces -- and it is not one of the copies the footprint counts.
-        if keep(&**key) {
+        walked += 1;
+        last_inspected = Some(entry);
+        if keep(key) {
             selected.push((key.to_string(), *expires_at));
         }
     }
-    selected
+    // Reaching the end of the due range lets the next round begin at the front.
+    (selected, None)
 }
 
 fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
@@ -9153,7 +9179,8 @@ fn append_owned_value_of_object(
         });
     }
     let address = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
-        block_store.append_block_of_object(
+        block_store.append_block_of_object_for_shard(
+            shard_id,
             &bytes,
             Some(object_id),
             Some(routing_bucket),
@@ -9226,7 +9253,8 @@ fn append_value_inner(
         if let Some(object_id) = object_id {
             block_in_wal::stage(object_id, element_name, bytes);
         }
-        return block_store.append_block_of_object(
+        return block_store.append_block_of_object_for_shard(
+            shard_id,
             bytes,
             object_id,
             routing_bucket,

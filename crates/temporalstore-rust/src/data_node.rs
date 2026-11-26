@@ -2735,6 +2735,15 @@ impl DataNodeRuntime {
         load_shard_with_inner(&self.inner, request)
     }
 
+    /// Keep the shard off the serving path until its shared WAL tail is recovered.
+    pub fn load_shard_with_shared_tail(
+        &self,
+        request: LoadShardRequest,
+        replay_tail: impl FnOnce() -> Result<(), Status>,
+    ) -> LoadShardResponse {
+        shard_lifecycle::load_shard_with_shared_tail_inner(&self.inner, request, replay_tail)
+    }
+
     pub fn reload_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
         reload_shard_with_inner(&self.inner, request)
     }

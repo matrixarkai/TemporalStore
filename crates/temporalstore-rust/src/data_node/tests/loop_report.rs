@@ -847,17 +847,42 @@ fn the_cache_bound_stage_drops_the_cache_and_dumps_nothing() {
     let (before, _) = runtime.storage_manager_pressure_snapshot(1, &only_this_stage);
     assert!(before.dirty_bucket_count > 0, "the fixture has no dirty bucket, so a dump would show nothing");
     assert!(before.cache_memory_bytes > 0, "the fixture never warmed the cache");
+    let lifecycle_runs_before = runtime.stats().storage_lifecycle_runs;
     let report = runtime.run_storage_manager_once(1, only_this_stage.clone());
     assert!(
         report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
         "the stage did not run: {:?}",
         report.executed_stages
     );
+    let cache_span = report
+        .stage_spans
+        .iter()
+        .find(|span| span.stage == "reclaim_memory")
+        .expect("missing cache reclaim span");
+    assert!(cache_span.executed);
+    assert_eq!(
+        cache_span.walk,
+        Default::default(),
+        "cache reclaim walked or encoded the shard"
+    );
+    assert_eq!(
+        runtime.stats().storage_lifecycle_runs,
+        lifecycle_runs_before,
+        "cache reclaim ran a storage lifecycle request"
+    );
+    assert!(
+        report.lifecycle_report.is_none(),
+        "cache reclaim produced a lifecycle report"
+    );
     let (after, _) = runtime.storage_manager_pressure_snapshot(1, &only_this_stage);
     assert_eq!(after.cache_memory_bytes, 0, "the cache was not dropped");
     assert_eq!(
         after.dirty_bucket_count, before.dirty_bucket_count,
         "the cache-bound stage dumped dirty buckets"
+    );
+    assert_eq!(
+        after.undumped_wal_records, before.undumped_wal_records,
+        "cache reclaim changed the outstanding WAL work"
     );
 }
 

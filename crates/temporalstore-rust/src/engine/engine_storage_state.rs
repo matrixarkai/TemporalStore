@@ -302,6 +302,9 @@ pub(super) struct ShardState {
     /// `expires_at_ms` above: the ordering here is the whole point of this map and is untouched,
     /// but the characters it orders are the ones that map already holds.
     pub(super) expiry_by_deadline: BTreeMap<(u64, Arc<str>), ()>,
+    /// Last inspected deadlines for the bounded hot and cold maintenance scans.
+    #[serde(skip)]
+    pub(super) expiry_scan_positions: [Option<(u64, Arc<str>)>; 2],
     // ONE FIELD FOR BOTH ADDRESS MAPS NOW, keyed by `AddressMap`, behind `strings()` /
     // `_mut()` and `context_nodes()` / `_mut()`. `default`, because an index written before
     // this merge carries `strings` and no `address_maps` and must still DECODE -- the stamp
@@ -595,6 +598,9 @@ pub(super) struct ShardState {
     /// replay); a missing index file replays the whole retained WAL onto empty state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) applied_wal_sequence: Option<u64>,
+    /// The file-backed source and remote sequence already installed in this local image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) file_restore_frontier: Option<(String, u64)>,
     /// Relocation prefix folded into this image; not a WAL or load replay cursor.
     #[serde(default)]
     pub(super) captured_relocation_sequence: u64,
@@ -10393,7 +10399,19 @@ pub(super) static REPACK_ADOPTED_FIELDS: std::sync::atomic::AtomicUsize =
 pub(super) static REPACK_ADOPTED_HASHED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(test)]
+pub(super) fn thread_repack_calls() -> usize {
+    THREAD_REPACK_CALLS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static THREAD_REPACK_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
+    #[cfg(test)]
+    THREAD_REPACK_CALLS.with(|calls| calls.set(calls.get() + 1));
     let ShardState {
         // ----- Packed here. Deserialized, and filled one entry at a time. -----
         wal_resident_blocks,
@@ -10433,6 +10451,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // refill happens in the expiry path rather than here, and is left to it.
         buckets_pending_flag_refresh: _,
         expiry_by_deadline: _,
+        expiry_scan_positions: _,
         rollups: _,
         control_coalesce_persist: _,
         control_state_max_size: _,
@@ -10465,6 +10484,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         shard_id: _,
         shard_id_known: _,
         applied_wal_sequence: _,
+        file_restore_frontier: _,
         captured_relocation_sequence: _,
         wal_apply_discontinuous: _,
         index_format_version: _,
