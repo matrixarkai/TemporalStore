@@ -98,10 +98,12 @@ fn partial_chunk_window_fixture() -> (
     let limit = config.max_memory_replicate_log_bytes;
     assert_eq!(limit, 32_768);
     let cluster = RaftCluster::new_single_shard_with_config(1, [1, 2, 3], config).unwrap();
+    // Leave one encoded byte free so the held request is partial even when
+    // the splitter can otherwise fill the default window exactly.
     let mut chunks = split_command_for_raft_limit(Command::SequenceAdd {
         key: "distributed-long-sequence".to_string(),
         rows: long_sequence_rows(5_000),
-    }, limit).unwrap().into_iter();
+    }, limit - 1).unwrap().into_iter();
     let seed = chunks.next().unwrap();
     let next = chunks.next().expect("the real corpus must require multiple entries");
     let mut expected = match &seed {
@@ -115,6 +117,7 @@ fn partial_chunk_window_fixture() -> (
     let seed_bytes = command_size_bytes(&seed);
     let next_bytes = command_size_bytes(&next);
     assert!(seed_bytes > 0 && seed_bytes < limit);
+    assert!(seed_bytes > limit / 2 && next_bytes > limit / 2);
     assert!(next_bytes <= limit && seed_bytes + next_bytes > limit);
 
     // Commit the first real chunk to 1+3, then reserve its catch-up request to 2.
@@ -129,7 +132,7 @@ fn partial_chunk_window_fixture() -> (
     assert_eq!(cluster.commit_index(2).unwrap(), 0);
     assert_eq!(cluster.commit_index(3).unwrap(), 1);
     // Admission really is closed to another near-limit request for this peer.
-    // The correction must preserve this refusal, not lower the payload or raise limits.
+    // Both real chunks remain near-limit; the default window and refusal stay intact.
     match cluster.build_append_entries_request(2).unwrap_err() {
         RaftError::AppendBackpressure {
             node_id, inflight_entries, inflight_bytes, entry_bytes, byte_limit, ..
