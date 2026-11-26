@@ -3686,9 +3686,8 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
                 .ok
         );
     }
-    let target_block_key = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).unwrap();
+    let target_block_key = engine.shards.with_state(1, |state| {
+        let shard = state.unwrap();
         let address = shard.string_address("target").unwrap().clone();
         let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
@@ -3698,7 +3697,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
             address.length(),
             Some(crate::engine::hashing::block_routing_bucket("target", start, end)),
         )
-    };
+    });
 
     assert_eq!(
         engine
@@ -4397,32 +4396,32 @@ fn batch_bucket_maintenance_does_not_grow_with_the_store() {
         // Same equivalence requirement as the single-write path: sweeping afterwards must not
         // move anything the targeted refresh already settled.
         let snapshot = |engine: &TemporalEngine| {
-            let shards = engine.shards.read().expect("shards lock poisoned");
-            let shard = shards.get(&1).expect("shard 1 loaded");
-            shard
-                .bucket_index
-                .bucket_map
-                .iter()
-                .map(|(id, bucket)| {
-                    (
-                        *id,
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard 1 loaded");
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .iter()
+                    .map(|(id, bucket)| {
                         (
-                            bucket.in_memory(),
-                            bucket.deleted(),
-                            bucket.dirty(),
-                            format!("{:?}", bucket.layout),
-                            bucket.object_index.iter().copied().collect::<Vec<_>>(),
-                        ),
-                    )
-                })
-                .collect::<std::collections::BTreeMap<_, _>>()
+                            *id,
+                            (
+                                bucket.in_memory(),
+                                bucket.deleted(),
+                                bucket.dirty(),
+                                format!("{:?}", bucket.layout),
+                                bucket.object_index.iter().copied().collect::<Vec<_>>(),
+                            ),
+                        )
+                    })
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            })
         };
         let before_sweep = snapshot(&engine);
-        {
-            let mut shards = engine.shards.write().expect("shards lock poisoned");
-            let shard = shards.get_mut(&1).expect("shard 1 loaded");
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 loaded");
             crate::engine::storage_bucket_internals::refresh_bucket_runtime_flags(shard);
-        }
+        });
         let after_sweep = snapshot(&engine);
         assert_eq!(
             before_sweep, after_sweep,
@@ -4528,35 +4527,35 @@ fn bucket_runtime_flags_match_full_sweep() {
     }
 
     let capture = |engine: &TemporalEngine| -> std::collections::BTreeMap<u32, BucketFlags> {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
-        shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .map(|(routing_bucket, bucket)| {
-                (
-                    *routing_bucket,
-                    BucketFlags {
-                        in_memory: bucket.in_memory(),
-                        deleted: bucket.deleted(),
-                        dirty: bucket.dirty(),
-                        has_ttl: bucket.ttl_ms.is_some(),
-                        layout: format!("{:?}", bucket.layout),
-                        object_index: bucket.object_index.iter().copied().collect(),
-                        block_count: bucket.block_index.len(),
-                    },
-                )
-            })
-            .collect()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .map(|(routing_bucket, bucket)| {
+                    (
+                        *routing_bucket,
+                        BucketFlags {
+                            in_memory: bucket.in_memory(),
+                            deleted: bucket.deleted(),
+                            dirty: bucket.dirty(),
+                            has_ttl: bucket.ttl_ms.is_some(),
+                            layout: format!("{:?}", bucket.layout),
+                            object_index: bucket.object_index.iter().copied().collect(),
+                            block_count: bucket.block_index.len(),
+                        },
+                    )
+                })
+                .collect()
+        })
     };
 
     let after_targeted = capture(&engine);
-    {
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         crate::engine::storage_bucket_internals::refresh_bucket_runtime_flags(shard);
-    }
+    });
     let after_full_sweep = capture(&engine);
 
     assert!(
@@ -4675,57 +4674,58 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
         }
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
 
-    let blocks_marked_dirty: std::collections::BTreeSet<String> =
-        super::blocks_with_identity(&shard.bucket_index)
-            .into_iter()
-            .filter(|(_, _, _, block)| block.dirty())
-            .map(|(_, _, object_key, _)| object_key.to_string())
+        let blocks_marked_dirty: std::collections::BTreeSet<String> =
+            super::blocks_with_identity(&shard.bucket_index)
+                .into_iter()
+                .filter(|(_, _, _, block)| block.dirty())
+                .map(|(_, _, object_key, _)| object_key.to_string())
+                .collect();
+        let any_block_at_all: std::collections::BTreeSet<String> =
+            super::blocks_with_identity(&shard.bucket_index)
+                .into_iter()
+                .map(|(_, _, object_key, _)| object_key.to_string())
+                .collect();
+
+        let in_set_not_flagged: Vec<&str> = shard
+            .dirty_objects
+            .iter()
+            .filter(|k| !blocks_marked_dirty.contains(*k))
             .collect();
-    let any_block_at_all: std::collections::BTreeSet<String> =
-        super::blocks_with_identity(&shard.bucket_index)
-            .into_iter()
-            .map(|(_, _, object_key, _)| object_key.to_string())
+        let flagged_not_in_set: Vec<&String> = blocks_marked_dirty
+            .iter()
+            .filter(|k| !shard.dirty_objects.contains(*k))
             .collect();
+        let in_set_with_no_block: usize = shard
+            .dirty_objects
+            .iter()
+            .filter(|k| !any_block_at_all.contains(*k))
+            .count();
 
-    let in_set_not_flagged: Vec<&str> = shard
-        .dirty_objects
-        .iter()
-        .filter(|k| !blocks_marked_dirty.contains(*k))
-        .collect();
-    let flagged_not_in_set: Vec<&String> = blocks_marked_dirty
-        .iter()
-        .filter(|k| !shard.dirty_objects.contains(*k))
-        .collect();
-    let in_set_with_no_block: usize = shard
-        .dirty_objects
-        .iter()
-        .filter(|k| !any_block_at_all.contains(*k))
-        .count();
-
-    assert!(
-        !shard.dirty_objects.is_empty(),
+        assert!(
+            !shard.dirty_objects.is_empty(),
         "workload left nothing in dirty_objects to compare"
-    );
-    println!(
+        );
+        println!(
         "
   dirty_objects: {}
   blocks with dirty=true: {}
            in the set but no block flagged dirty: {}
            a block flagged dirty but not in the set: {}
            in the set with NO live block at all: {}
-",
-        shard.dirty_objects.len(),
-        blocks_marked_dirty.len(),
-        in_set_not_flagged.len(),
-        flagged_not_in_set.len(),
-        in_set_with_no_block,
-    );
-    if let Some(sample) = in_set_not_flagged.first() {
-        println!("  e.g. in the set, no dirty block: {sample}");
-    }
+    ",
+            shard.dirty_objects.len(),
+            blocks_marked_dirty.len(),
+            in_set_not_flagged.len(),
+            flagged_not_in_set.len(),
+            in_set_with_no_block,
+        );
+        if let Some(sample) = in_set_not_flagged.first() {
+            println!("  e.g. in the set, no dirty block: {sample}");
+        }
+    })
 }
 
 // `element_names_of_one_object_stay_separate` WAS HERE, AND IT WAS ALREADY RED BEFORE THIS COMMIT.
@@ -4792,39 +4792,40 @@ fn single_block_element_names_are_held_inline() {
         });
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut inline = 0usize;
-    let mut spilled = 0usize;
-    for entry in shard.bucket_index.object_block_lookup.values() {
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let mut inline = 0usize;
+        let mut spilled = 0usize;
+        for entry in shard.bucket_index.object_block_lookup.values() {
         // ONE SLOT PER OBJECT NOW, so this is a census of the object's own ref list rather than of
         // each element name's. `BlockRefs` is unchanged and the question is the same one: does a
         // single-block object spill its refs to a vector, or stay inline.
-        match entry {
-            BlockRefs::One(_) => inline += 1,
-            BlockRefs::Many(_) => spilled += 1,
+            match entry {
+                BlockRefs::One(_) => inline += 1,
+                BlockRefs::Many(_) => spilled += 1,
+            }
         }
-    }
-    assert!(inline + spilled > 0, "no object slots were recorded; nothing was measured");
-    assert_eq!(
-        spilled, 0,
-        "{spilled} of {} object slots allocated a vector for a single ref",
-        inline + spilled
-    );
+        assert!(inline + spilled > 0, "no object slots were recorded; nothing was measured");
+        assert_eq!(
+            spilled, 0,
+            "{spilled} of {} object slots allocated a vector for a single ref",
+            inline + spilled
+        );
 
-    // The spilled arm has to keep working: sorted, deduplicated, and reporting what it added.
-    let first = BlockLookupRef { routing_bucket: 7, block_ref_key: 2 };
-    let second = BlockLookupRef { routing_bucket: 7, block_ref_key: 1 };
-    let mut refs = BlockRefs::One(first.clone());
-    assert!(!refs.insert(first.clone()), "re-inserting the same ref adds nothing");
-    assert_eq!(refs.len(), 1);
-    assert!(refs.insert(second.clone()), "a second ref is an addition");
-    assert_eq!(refs.len(), 2);
-    assert_eq!(
-        refs.as_slice(),
-        &[second, first],
+        // The spilled arm has to keep working: sorted, deduplicated, and reporting what it added.
+        let first = BlockLookupRef { routing_bucket: 7, block_ref_key: 2 };
+        let second = BlockLookupRef { routing_bucket: 7, block_ref_key: 1 };
+        let mut refs = BlockRefs::One(first.clone());
+        assert!(!refs.insert(first.clone()), "re-inserting the same ref adds nothing");
+        assert_eq!(refs.len(), 1);
+        assert!(refs.insert(second.clone()), "a second ref is an addition");
+        assert_eq!(refs.len(), 2);
+        assert_eq!(
+            refs.as_slice(),
+            &[second, first],
         "promotion must land sorted -- removal binary-searches these"
-    );
+        );
+    })
 }
 
 /// The index on disk does not change shape.
@@ -4905,57 +4906,58 @@ fn blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling() {
         });
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
 
-    let mut first_of_kind: std::collections::HashMap<String, *const u8> =
-        std::collections::HashMap::new();
-    let mut blocks = 0usize;
-    let mut shared = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_ref_key, block) in bucket.block_index.iter() {
-            blocks += 1;
-            let spelling = block.model_id().as_str().as_ptr();
-            match first_of_kind.get(block.model_id().as_str()) {
-                None => {
-                    first_of_kind.insert(block.model_id().to_string(), spelling);
-                }
-                Some(first) => {
-                    if *first == spelling {
-                        shared += 1;
+        let mut first_of_kind: std::collections::HashMap<String, *const u8> =
+            std::collections::HashMap::new();
+        let mut blocks = 0usize;
+        let mut shared = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (_ref_key, block) in bucket.block_index.iter() {
+                blocks += 1;
+                let spelling = block.model_id().as_str().as_ptr();
+                match first_of_kind.get(block.model_id().as_str()) {
+                    None => {
+                        first_of_kind.insert(block.model_id().to_string(), spelling);
+                    }
+                    Some(first) => {
+                        if *first == spelling {
+                            shared += 1;
+                        }
                     }
                 }
             }
         }
-    }
-    // The width is half the claim and it is the half a pointer census cannot see.
-    assert_eq!(
-        1,
-        std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
-        "the entry's model spelling is supposed to be one byte",
-    );
+        // The width is half the claim and it is the half a pointer census cannot see.
+        assert_eq!(
+            1,
+            std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
+            "the entry's model spelling is supposed to be one byte",
+        );
 
-    // Anti-vacuity first: with no blocks, or one block per kind, "everything is shared" is true for
-    // free and proves nothing.
-    assert!(blocks > 0, "no blocks were recorded; nothing was measured");
-    assert!(
-        blocks > first_of_kind.len(),
-        "only {} blocks for {} kinds -- no kind repeats, so sharing is untested",
-        blocks,
-        first_of_kind.len()
-    );
-    assert_eq!(
-        shared,
-        blocks - first_of_kind.len(),
+        // Anti-vacuity first: with no blocks, or one block per kind, "everything is shared" is true for
+        // free and proves nothing.
+        assert!(blocks > 0, "no blocks were recorded; nothing was measured");
+        assert!(
+            blocks > first_of_kind.len(),
+            "only {} blocks for {} kinds -- no kind repeats, so sharing is untested",
+            blocks,
+            first_of_kind.len()
+        );
+        assert_eq!(
+            shared,
+            blocks - first_of_kind.len(),
         "every page after the first of its kind should read the same static spelling; \
-         {} kinds over {} blocks, {shared} shared",
-        first_of_kind.len(),
-        blocks
-    );
-    assert!(
-        first_of_kind.len() >= 2,
+             {} kinds over {} blocks, {shared} shared",
+            first_of_kind.len(),
+            blocks
+        );
+        assert!(
+            first_of_kind.len() >= 2,
         "corpus produced one kind; a second is needed to show the pool distinguishes them"
-    );
+        );
+    })
 }
 
 /// The observed range of every numeric field in a block address.
@@ -4997,27 +4999,27 @@ fn what_each_address_field_actually_ranges_over() {
         }
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut blocks = 0usize;
-    let (mut slab, mut offset, mut length) = (0u64, 0u64, 0u64);
-    let (mut block_id, mut object_id, mut generation, mut derived_slab) = (0u64, 0u64, 0u64, 0u64);
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_key, block) in bucket.block_index.iter() {
-            blocks += 1;
-            let a = &block.address;
-            slab = slab.max(a.block_slab_id());
-            offset = offset.max(a.offset());
-            length = length.max(a.length());
-            block_id = block_id.max(a.block_id().unwrap_or(0));
-            generation = generation.max(a.generation().unwrap_or(0));
-            derived_slab = derived_slab.max(a.slab_id().unwrap_or(0));
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let mut blocks = 0usize;
+        let (mut slab, mut offset, mut length) = (0u64, 0u64, 0u64);
+        let (mut block_id, mut object_id, mut generation, mut derived_slab) = (0u64, 0u64, 0u64, 0u64);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (_key, block) in bucket.block_index.iter() {
+                blocks += 1;
+                let a = &block.address;
+                slab = slab.max(a.block_slab_id());
+                offset = offset.max(a.offset());
+                length = length.max(a.length());
+                block_id = block_id.max(a.block_id().unwrap_or(0));
+                generation = generation.max(a.generation().unwrap_or(0));
+                derived_slab = derived_slab.max(a.slab_id().unwrap_or(0));
+            }
         }
-    }
-    assert!(blocks > 0, "no blocks were recorded; nothing was measured");
+        assert!(blocks > 0, "no blocks were recorded; nothing was measured");
 
-    let bits = |v: u64| if v == 0 { 0 } else { 64 - v.leading_zeros() };
-    println!(
+        let bits = |v: u64| if v == 0 { 0 } else { 64 - v.leading_zeros() };
+        println!(
         "
   address field ranges over {blocks} blocks (max observed, and bits to hold it):
     block_slab_id  {slab:>22}  {:>2} bits   bounded by slab count
@@ -5035,10 +5037,11 @@ fn what_each_address_field_actually_ranges_over() {
     a maximum observed here is NOT a bound: it says a field is a candidate,
     not that it is safe. Narrowing one needs the bound asserted where the
     value is produced, so a violation fails loudly instead of truncating.
-",
-        bits(slab), bits(offset), bits(length), bits(block_id),
-        bits(object_id), bits(generation), bits(derived_slab),
-    );
+    ",
+            bits(slab), bits(offset), bits(length), bits(block_id),
+            bits(object_id), bits(generation), bits(derived_slab),
+        );
+    })
 }
 
 /// How many separate allocations one object's key text occupies across the whole shard.
@@ -5069,77 +5072,77 @@ fn how_many_times_one_object_key_is_stored() {
         });
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
 
-    // Pick one object and find every place its text is stored, by pointer.
-    let sample = shard
-        .strings()
-        .keys()
-        .next()
-        .expect("the workload must produce at least one string object")
-        .clone();
+        // Pick one object and find every place its text is stored, by pointer.
+        let sample = shard
+            .strings()
+            .keys()
+            .next()
+            .expect("the workload must produce at least one string object")
+            .clone();
 
-    let mut allocations: HashSet<*const u8> = HashSet::new();
-    let mut holders = 0usize;
+        let mut allocations: HashSet<*const u8> = HashSet::new();
+        let mut holders = 0usize;
 
-    for key in shard.strings().keys() {
-        if *key == sample {
-            allocations.insert(key.as_ptr());
-            holders += 1;
+        for key in shard.strings().keys() {
+            if *key == sample {
+                allocations.insert(key.as_ptr());
+                holders += 1;
+            }
         }
-    }
-    for key in shard.expires_at_ms().keys() {
-        if **key == *sample {
-            allocations.insert(key.as_ptr());
-            holders += 1;
+        for key in shard.expires_at_ms().keys() {
+            if **key == *sample {
+                allocations.insert(key.as_ptr());
+                holders += 1;
+            }
         }
-    }
-    for (_model, object, _refs) in shard.bucket_index.object_block_lookup.iter() {
-        if object.as_ref() == &*sample {
-            allocations.insert(object.as_ptr());
-            holders += 1;
+        for (_model, object, _refs) in shard.bucket_index.object_block_lookup.iter() {
+            if object.as_ref() == &*sample {
+                allocations.insert(object.as_ptr());
+                holders += 1;
+            }
         }
-    }
-    // THE BLOCK INDEX IS NO LONGER A HOLDER, AND THAT IS THE FINDING RATHER THAN A GAP IN THE
-    // CENSUS. This walk added one holder and one allocation per BLOCK of the sampled object. A
-    // block entry has no key, so there is nothing to insert and nothing to count -- and the
-    // allocation those blocks pointed at was the lookup's, which is counted one loop above.
-    //
-    // IT IS REMOVED RATHER THAN LEFT COUNTING THE LOOKUP'S COPY THROUGH THE BLOCKS. Reaching the
-    // lookup's `Arc` by walking blocks and charging it once per block would report the cost as if
-    // nothing had changed, which is exactly the mistake the `model_id` comment in
-    // `blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling` names.
-    assert!(holders > 0, "the sampled key was found nowhere; nothing was measured");
-    // AND THE BLOCK INDEX IS NOT EMPTY, so the holder above being absent cannot be read as "this
-    // store has no blocks". Without this the removal above and an empty fixture look identical.
-    assert!(
-        shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .any(|bucket| !bucket.block_index.is_empty()),
+        // THE BLOCK INDEX IS NO LONGER A HOLDER, AND THAT IS THE FINDING RATHER THAN A GAP IN THE
+        // CENSUS. This walk added one holder and one allocation per BLOCK of the sampled object. A
+        // block entry has no key, so there is nothing to insert and nothing to count -- and the
+        // allocation those blocks pointed at was the lookup's, which is counted one loop above.
+        //
+        // IT IS REMOVED RATHER THAN LEFT COUNTING THE LOOKUP'S COPY THROUGH THE BLOCKS. Reaching the
+        // lookup's `Arc` by walking blocks and charging it once per block would report the cost as if
+        // nothing had changed, which is exactly the mistake the `model_id` comment in
+        // `blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling` names.
+        assert!(holders > 0, "the sampled key was found nowhere; nothing was measured");
+        // AND THE BLOCK INDEX IS NOT EMPTY, so the holder above being absent cannot be read as "this
+        // store has no blocks". Without this the removal above and an empty fixture look identical.
+        assert!(
+            shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .any(|bucket| !bucket.block_index.is_empty()),
         "the store holds no block at all, so the block index's absence from the holder list above          says nothing about where this key is held"
-    );
+        );
 
-    let key_bytes: usize = shard.strings().keys().map(|key| key.len()).sum();
-    // STRUCTURALLY ZERO, AND KEPT AS A ROW RATHER THAN DELETED. The block index held one `Arc<str>`
-    // per entry; it holds none, so its contribution to the key text of this store is nothing at
-    // all. The row stays in the table because the table is read as "where the key copies live",
-    // and a row that has gone to zero is the answer to that question rather than an absence from
-    // it. The per-object cost it used to duplicate is the `object_page_lookup keys` row below.
-    let block_key_bytes: usize = 0;
-    // No concatenation any more: what the lookup holds per object is the object key itself.
-    let lookup_key_bytes: usize = shard
-        .bucket_index
-        .object_block_lookup
-        .iter()
-        .map(|(_model, object, _refs)| object.len())
-        .sum();
-    let expiry_key_bytes: usize = shard.expires_at_ms().keys().map(|key| key.len()).sum();
-    let total = key_bytes + block_key_bytes + lookup_key_bytes + expiry_key_bytes;
+        let key_bytes: usize = shard.strings().keys().map(|key| key.len()).sum();
+        // STRUCTURALLY ZERO, AND KEPT AS A ROW RATHER THAN DELETED. The block index held one `Arc<str>`
+        // per entry; it holds none, so its contribution to the key text of this store is nothing at
+        // all. The row stays in the table because the table is read as "where the key copies live",
+        // and a row that has gone to zero is the answer to that question rather than an absence from
+        // it. The per-object cost it used to duplicate is the `object_page_lookup keys` row below.
+        let block_key_bytes: usize = 0;
+        // No concatenation any more: what the lookup holds per object is the object key itself.
+        let lookup_key_bytes: usize = shard
+            .bucket_index
+            .object_block_lookup
+            .iter()
+            .map(|(_model, object, _refs)| object.len())
+            .sum();
+        let expiry_key_bytes: usize = shard.expires_at_ms().keys().map(|key| key.len()).sum();
+        let total = key_bytes + block_key_bytes + lookup_key_bytes + expiry_key_bytes;
 
-    println!(
+        println!(
         "
   one object key ({} B of text), across the shard:
     structures holding it        {holders}
@@ -5151,11 +5154,12 @@ fn how_many_times_one_object_key_is_stored() {
     object_page_lookup keys   {lookup_key_bytes:>8} B   (its own allocation of the key)
     expires_at_ms keys        {expiry_key_bytes:>8} B
     TOTAL                     {total:>8} B  = {:.1} B per object
-",
-        sample.len(),
-        allocations.len(),
-        total as f64 / OBJECTS as f64,
-    );
+    ",
+            sample.len(),
+            allocations.len(),
+            total as f64 / OBJECTS as f64,
+        );
+    })
 }
 
 /// The lookup is nested in memory and flat on disk.
@@ -5182,30 +5186,31 @@ fn the_nested_lookup_still_serializes_as_the_flat_composite() {
         },
     });
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let lookup = &shard.bucket_index.object_block_lookup;
-    assert!(!lookup.is_empty(), "the write must produce a lookup entry");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let lookup = &shard.bucket_index.object_block_lookup;
+        assert!(!lookup.is_empty(), "the write must produce a lookup entry");
 
-    let json = serde_json::to_value(lookup).unwrap();
-    let object = json.as_object().expect("the wire form is a flat map");
+        let json = serde_json::to_value(lookup).unwrap();
+        let object = json.as_object().expect("the wire form is a flat map");
 
-    // Length-prefixed parts: model, then object key.
-    let expected = format!("{}:{}|{}:{}|", "string".len(), "string", "nested-key".len(), "nested-key");
-    assert!(
-        object.contains_key(&expected),
-        "the serialized key must be the flat composite {expected:?}, got {:?}",
-        object.keys().collect::<Vec<_>>()
-    );
+        // Length-prefixed parts: model, then object key.
+        let expected = format!("{}:{}|{}:{}|", "string".len(), "string", "nested-key".len(), "nested-key");
+        assert!(
+            object.contains_key(&expected),
+            "the serialized key must be the flat composite {expected:?}, got {:?}",
+            object.keys().collect::<Vec<_>>()
+        );
 
-    // And a document in that shape loads back into the nested form.
-    let restored: crate::engine::state::ObjectBlockLookup =
-        serde_json::from_value(json).unwrap();
-    assert!(
-        restored.get("string", "nested-key").is_some(),
+        // And a document in that shape loads back into the nested form.
+        let restored: crate::engine::state::ObjectBlockLookup =
+            serde_json::from_value(json).unwrap();
+        assert!(
+            restored.get("string", "nested-key").is_some(),
         "a flat document must load into the nested map"
-    );
-    assert_eq!(restored.len(), lookup.len());
+        );
+        assert_eq!(restored.len(), lookup.len());
+    })
 }
 
 /// The block entry and the lookup hold the SAME allocation of an object's key.
@@ -5234,50 +5239,51 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
         });
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
 
-    // THE CLAIM MOVED FROM THE ENTRY'S COPY TO THE ONE THE READ PATH HANDS OUT, and it is the
-    // same claim about the same allocation.
-    //
-    // WHAT IT ASSERTED: the `Arc` on the block and the `Arc` in the lookup are ONE allocation, not
-    // two copies of one string. The entry has no `Arc` now -- so taken literally the claim is
-    // true of nothing, and a test that asserted it would pass for free.
-    //
-    // WHAT IT ASSERTS INSTEAD: the identity a reader is HANDED for a block is the lookup's own
-    // allocation. Every production reader reaches a block's object through `BlockKeysByPosition`,
-    // which is built by inverting the lookup, and `block_identities_in` hands back
-    // `Arc::clone` of what it found. A clone shares the buffer, so `as_ptr` must equal
-    // `key_ptr`'s -- and if the inversion ever started copying the text instead, this reddens.
-    // That is a load-bearing property rather than a curiosity: forty walks in this module tree
-    // take a key per block that way, and a copy per block would put the duplication this change
-    // removed straight back, one level out.
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut checked = 0usize;
-    let mut shared = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (ref_key, block) in bucket.block_index.iter() {
-            let handed_out = named.at(bucket.routing_bucket, *ref_key);
-            let Some(refs) = shard
-                .bucket_index
-                .object_block_lookup
-                .key_ptr(block.model_id().as_str(), handed_out.as_ref())
-            else {
-                continue;
-            };
-            checked += 1;
-            if std::ptr::eq(refs, handed_out.as_ptr()) {
-                shared += 1;
+        // THE CLAIM MOVED FROM THE ENTRY'S COPY TO THE ONE THE READ PATH HANDS OUT, and it is the
+        // same claim about the same allocation.
+        //
+        // WHAT IT ASSERTED: the `Arc` on the block and the `Arc` in the lookup are ONE allocation, not
+        // two copies of one string. The entry has no `Arc` now -- so taken literally the claim is
+        // true of nothing, and a test that asserted it would pass for free.
+        //
+        // WHAT IT ASSERTS INSTEAD: the identity a reader is HANDED for a block is the lookup's own
+        // allocation. Every production reader reaches a block's object through `BlockKeysByPosition`,
+        // which is built by inverting the lookup, and `block_identities_in` hands back
+        // `Arc::clone` of what it found. A clone shares the buffer, so `as_ptr` must equal
+        // `key_ptr`'s -- and if the inversion ever started copying the text instead, this reddens.
+        // That is a load-bearing property rather than a curiosity: forty walks in this module tree
+        // take a key per block that way, and a copy per block would put the duplication this change
+        // removed straight back, one level out.
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut checked = 0usize;
+        let mut shared = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (ref_key, block) in bucket.block_index.iter() {
+                let handed_out = named.at(bucket.routing_bucket, *ref_key);
+                let Some(refs) = shard
+                    .bucket_index
+                    .object_block_lookup
+                    .key_ptr(block.model_id().as_str(), handed_out.as_ref())
+                else {
+                    continue;
+                };
+                checked += 1;
+                if std::ptr::eq(refs, handed_out.as_ptr()) {
+                    shared += 1;
+                }
             }
         }
-    }
 
-    // Anti-vacuity: with nothing checked, "all shared" is true for free.
-    assert!(checked > 0, "no block was matched to a lookup entry; nothing was measured");
-    assert_eq!(
-        shared, checked,
+        // Anti-vacuity: with nothing checked, "all shared" is true for free.
+        assert!(checked > 0, "no block was matched to a lookup entry; nothing was measured");
+        assert_eq!(
+            shared, checked,
         "{shared} of {checked} blocks are handed an object key that is the lookup's own          allocation; for the rest the read path made a COPY of the text, which is the duplication          this change removed reappearing one level out"
-    );
+        );
+    })
 }
 
 /// A block filed with an address that carries no object id still knows which object it belongs to.
@@ -5301,9 +5307,8 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
     );
     engine.load_shard(1);
 
-    {
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         // Deliberately no object id, and no routing slot either -- which is now EVERY address,
         // since the field is gone. What is under test is that the ENTRY still reports one.
         let address = ElementEntry::from_parts(0, 0, 16, Some(7), None);
@@ -5316,34 +5321,35 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
             address,
             false,
         );
-    }
+    });
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut seen = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (ref_key, block) in bucket.block_index.iter() {
-            let object_key = named.at(bucket.routing_bucket, *ref_key);
-            if object_key.as_ref() != "orphan-key" {
-                continue;
-            }
-            seen += 1;
-            assert_ne!(
-                block.object_id(1, object_key),
-                0,
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut seen = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (ref_key, block) in bucket.block_index.iter() {
+                let object_key = named.at(bucket.routing_bucket, *ref_key);
+                if object_key.as_ref() != "orphan-key" {
+                    continue;
+                }
+                seen += 1;
+                assert_ne!(
+                    block.object_id(1, object_key),
+                    0,
                 "a block filed from an address with no object id must still report the computed one"
-            );
+                );
             // Cross-checked against what the write path recorded, rather than by recomputing
             // the same function and comparing it with itself: the bucket's object index was
             // populated from the id the write path actually used.
-            assert!(
-                bucket.object_index.contains(&block.object_id(1, object_key)),
+                assert!(
+                    bucket.object_index.contains(&block.object_id(1, object_key)),
                 "the id the block reports must be the one the write path filed it under"
-            );
+                );
+            }
         }
-    }
-    assert_eq!(seen, 1, "the block must be in the index, or nothing was tested");
+        assert_eq!(seen, 1, "the block must be in the index, or nothing was tested");
+    })
 }
 
 /// Deleting an object costs a bounded number of allocations, not one per block examined.
@@ -5426,29 +5432,27 @@ fn rewriting_a_block_does_not_reuse_its_index_key() {
         shard_id: 1,
         command: Command::StringSet { key: key.to_string(), value: vec![b'a'; 64] },
     });
-    let after_first: Vec<String> = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    let after_first: Vec<String> = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .filter(|(_, _, object_key, _)| object_key.as_ref() == key)
             .map(|(_, handle, _, _)| handle.to_string())
             .collect()
-    };
+    });
 
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet { key: key.to_string(), value: vec![b'b'; 64] },
     });
-    let after_second: Vec<String> = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    let after_second: Vec<String> = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .filter(|(_, _, object_key, _)| object_key.as_ref() == key)
             .map(|(_, handle, _, _)| handle.to_string())
             .collect()
-    };
+    });
 
     assert_eq!(after_first.len(), 1, "the first write must produce exactly one entry");
     println!(
@@ -5543,21 +5547,22 @@ fn dumping_the_block_index_does_not_copy_it_first() {
                 },
             });
         }
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
-        let bucket = shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .find(|b| !b.block_index.is_empty())
-            .expect("the writes must produce blocks");
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            let bucket = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .find(|b| !b.block_index.is_empty())
+                .expect("the writes must produce blocks");
 
-        let probe = crate::alloc_probe::Probe::start();
-        let json = serde_json::to_string(&crate::engine::state::BlockIndexNamedBy(&bucket.block_index, &["dumped"]))
-            .expect("the index serializes");
-        let counts = probe.stop();
-        assert!(!json.is_empty());
-        counts.allocs
+            let probe = crate::alloc_probe::Probe::start();
+            let json = serde_json::to_string(&crate::engine::state::BlockIndexNamedBy(&bucket.block_index, &["dumped"]))
+                .expect("the index serializes");
+            let counts = probe.stop();
+            assert!(!json.is_empty());
+            counts.allocs
+        })
     };
 
     let small = dump_a_shard_of(20);
@@ -5605,65 +5610,66 @@ fn the_block_index_dump_is_ordered_by_its_written_key() {
         });
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let bucket = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .find(|b| b.block_index.len() > 4)
-        .expect("the writes must produce several blocks in one bucket");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .find(|b| b.block_index.len() > 4)
+            .expect("the writes must produce several blocks in one bucket");
 
-    let json = serde_json::to_string(&crate::engine::state::BlockIndexNamedBy(&bucket.block_index, &["ordered"]))
-        .expect("the index serializes");
-    let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
-    let keys: Vec<String> = value
-        .as_object()
-        .expect("a map of rendered keys")
-        .keys()
-        .cloned()
-        .collect();
+        let json = serde_json::to_string(&crate::engine::state::BlockIndexNamedBy(&bucket.block_index, &["ordered"]))
+            .expect("the index serializes");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let keys: Vec<String> = value
+            .as_object()
+            .expect("a map of rendered keys")
+            .keys()
+            .cloned()
+            .collect();
 
-    assert!(keys.len() > 4, "need several keys to see an order: {keys:?}");
+        assert!(keys.len() > 4, "need several keys to see an order: {keys:?}");
 
-    // THE ORDER IS READ OFF THE EMITTED BYTES, NOT OFF THE PARSED VALUE.
-    //
-    // `serde_json::Value` holds an object in a map that sorts its keys, so `.keys()` on a parsed
-    // value comes back in sorted order whatever the dump actually emitted. Comparing that against
-    // its own sorted copy is an identity: it passes for every possible dump order, including a
-    // reversed one. This test was written that way and could not fail; a mutation that reversed
-    // the sort inside `BlockIndexMap::serialize` survived it until the order was taken from the
-    // string. The parsed value is still used, but only for the SET of keys.
-    let mut placed: Vec<(usize, String)> = Vec::with_capacity(keys.len());
-    for key in &keys {
-        let needle = format!("\"{key}\":");
-        let at = json
-            .find(&needle)
-            .unwrap_or_else(|| panic!("the emitted dump does not contain the key {key:?}"));
-        placed.push((at, key.clone()));
-    }
-    assert_eq!(
-        keys.len(),
-        placed.len(),
+        // THE ORDER IS READ OFF THE EMITTED BYTES, NOT OFF THE PARSED VALUE.
+        //
+        // `serde_json::Value` holds an object in a map that sorts its keys, so `.keys()` on a parsed
+        // value comes back in sorted order whatever the dump actually emitted. Comparing that against
+        // its own sorted copy is an identity: it passes for every possible dump order, including a
+        // reversed one. This test was written that way and could not fail; a mutation that reversed
+        // the sort inside `BlockIndexMap::serialize` survived it until the order was taken from the
+        // string. The parsed value is still used, but only for the SET of keys.
+        let mut placed: Vec<(usize, String)> = Vec::with_capacity(keys.len());
+        for key in &keys {
+            let needle = format!("\"{key}\":");
+            let at = json
+                .find(&needle)
+                .unwrap_or_else(|| panic!("the emitted dump does not contain the key {key:?}"));
+            placed.push((at, key.clone()));
+        }
+        assert_eq!(
+            keys.len(),
+            placed.len(),
         "every key must have been located in the emitted bytes"
-    );
-    placed.sort_by_key(|(at, _)| *at);
-    let emitted: Vec<String> = placed.into_iter().map(|(_, key)| key).collect();
+        );
+        placed.sort_by_key(|(at, _)| *at);
+        let emitted: Vec<String> = placed.into_iter().map(|(_, key)| key).collect();
 
-    let mut sorted = keys.clone();
-    sorted.sort();
-    assert_eq!(
-        emitted, sorted,
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(
+            emitted, sorted,
         "the dump must be ordered by written key; it emitted {emitted:?}"
-    );
+        );
 
-    // AND THE CONTROL: the emitted order must be something this comparison could have found
-    // wrong. If the keys were already all equal, or there were one of them, the assertion above
-    // would hold for any implementation at all.
-    assert!(
-        emitted.first() != emitted.last(),
+        // AND THE CONTROL: the emitted order must be something this comparison could have found
+        // wrong. If the keys were already all equal, or there were one of them, the assertion above
+        // would hold for any implementation at all.
+        assert!(
+            emitted.first() != emitted.last(),
         "the emitted keys are not distinguishable, so the order assertion is vacuous"
-    );
+        );
+    })
 }
 
 /// A command does not allocate to discover that nothing has expired.
@@ -5735,45 +5741,46 @@ fn the_block_index_still_writes_string_keys() {
         command: Command::StringSet { key: "dumped".to_string(), value: vec![b'v'; 32] },
     });
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let bucket = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .find(|bucket| !bucket.block_index.is_empty())
-        .expect("the write must produce a block");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .find(|bucket| !bucket.block_index.is_empty())
+            .expect("the write must produce a block");
 
-    // In memory: a handle, not text.
-    let (handle, block) = bucket.block_index.iter().next().expect("one block");
-    assert!(*handle > 0, "the map assigns a handle");
+        // In memory: a handle, not text.
+        let (handle, block) = bucket.block_index.iter().next().expect("one block");
+        assert!(*handle > 0, "the map assigns a handle");
 
-    // On the wire: the same rendered key it always wrote, rebuilt from the block AND the identity
-    // beside it -- which is where the renderer takes it from now.
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let json = serde_json::to_value(&crate::engine::state::BlockIndexNamedBy(&bucket.block_index, &["dumped"])).unwrap();
-    let written = json.as_object().expect("the wire form is a map of string keys");
-    let expected = crate::engine::state::block_index_written_key(
-        named.at(bucket.routing_bucket, *handle),
-        block,
-    );
-    assert!(
-        written.contains_key(&expected),
-        "the dump must carry the rendered key {expected:?}, got {:?}",
-        written.keys().collect::<Vec<_>>()
-    );
-    assert!(
-        expected.contains("dumped"),
+        // On the wire: the same rendered key it always wrote, rebuilt from the block AND the identity
+        // beside it -- which is where the renderer takes it from now.
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let json = serde_json::to_value(&crate::engine::state::BlockIndexNamedBy(&bucket.block_index, &["dumped"])).unwrap();
+        let written = json.as_object().expect("the wire form is a map of string keys");
+        let expected = crate::engine::state::block_index_written_key(
+            named.at(bucket.routing_bucket, *handle),
+            block,
+        );
+        assert!(
+            written.contains_key(&expected),
+            "the dump must carry the rendered key {expected:?}, got {:?}",
+            written.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            expected.contains("dumped"),
         "and that key names the object: {expected}"
-    );
+        );
 
-    // And a document in that shape loads back, with handles assigned afresh.
-    let restored: crate::engine::state::BlockIndexMap = serde_json::from_value(json).unwrap();
-    assert_eq!(restored.len(), bucket.block_index.len());
-    assert!(
-        restored.iter().all(|(handle, _)| *handle > 0),
+        // And a document in that shape loads back, with handles assigned afresh.
+        let restored: crate::engine::state::BlockIndexMap = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.len(), bucket.block_index.len());
+        assert!(
+            restored.iter().all(|(handle, _)| *handle > 0),
         "every loaded block gets a handle"
-    );
+        );
+    })
 }
 
 // THREE ORACLE ARMS ARE RETIRED HERE, AND THE ORACLE IS WHAT THEY WERE.
@@ -5898,22 +5905,23 @@ fn how_many_blocks_does_a_wide_hash_hold() {
                 },
             });
         }
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
-        let blocks: usize = shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .map(|bucket| bucket.block_index.len())
-            .sum();
-        let buckets = shard.bucket_index.bucket_map.len();
-        let lookup_refs: usize = shard
-            .bucket_index
-            .object_block_lookup
-            .iter()
-            .map(|(_m, _o, refs)| refs.len())
-            .sum();
-        println!("fields {fields:5}  blocks {blocks:6}  buckets {buckets:4}  lookup refs {lookup_refs:6}");
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            let blocks: usize = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|bucket| bucket.block_index.len())
+                .sum();
+            let buckets = shard.bucket_index.bucket_map.len();
+            let lookup_refs: usize = shard
+                .bucket_index
+                .object_block_lookup
+                .iter()
+                .map(|(_m, _o, refs)| refs.len())
+                .sum();
+            println!("fields {fields:5}  blocks {blocks:6}  buckets {buckets:4}  lookup refs {lookup_refs:6}");
+        })
     }
 }
 
@@ -5955,41 +5963,42 @@ fn every_field_of_a_hash_is_filed_in_the_bucket_index() {
         });
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let fields = shard.bucket_index.hashes.get("wide").expect("the hash exists");
-    assert_eq!(fields.len(), 64, "all fields written");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let fields = shard.bucket_index.hashes.get("wide").expect("the hash exists");
+        assert_eq!(fields.len(), 64, "all fields written");
 
-    // THE LOOKUP TAKES NO ELEMENT NAME NOW, AND THE ADDRESS IS STILL WHAT IS CHECKED.
-    //
-    // This passed `Some(field.as_str())`. `contains_object_block_address` ends with
-    // `&& element_name.is_none()` -- the old `block.element_name.as_deref() == element_name` with the
-    // entry's own constant folded in -- so a `Some` can never match and every field read as
-    // UNFILED: "field f000 holds an address the bucket index does not have filed", for a field
-    // that was filed. The object's blocks are all under its single nameless row, and what is
-    // asserted is unchanged: each field's address is among them, including the overwritten ones
-    // whose old filing is stale.
-    for (field, address) in fields.iter() {
-        assert!(
-            shard
-                .bucket_index
-                .contains_object_block_address("hash", "wide", None, address),
+        // THE LOOKUP TAKES NO ELEMENT NAME NOW, AND THE ADDRESS IS STILL WHAT IS CHECKED.
+        //
+        // This passed `Some(field.as_str())`. `contains_object_block_address` ends with
+        // `&& element_name.is_none()` -- the old `block.element_name.as_deref() == element_name` with the
+        // entry's own constant folded in -- so a `Some` can never match and every field read as
+        // UNFILED: "field f000 holds an address the bucket index does not have filed", for a field
+        // that was filed. The object's blocks are all under its single nameless row, and what is
+        // asserted is unchanged: each field's address is among them, including the overwritten ones
+        // whose old filing is stale.
+        for (field, address) in fields.iter() {
+            assert!(
+                shard
+                    .bucket_index
+                    .contains_object_block_address("hash", "wide", None, address),
             "field {field} holds an address the bucket index does not have filed"
-        );
+            );
         // AND THE ELEMENT-NAME AXIS IS ASSERTED GONE, so the line above cannot quietly become
         // redundant. If the lookup starts answering by field name again, the name is back on the
         // stored entry and this arm says so rather than passing on the nameless row alone.
-        assert!(
-            !shard.bucket_index.contains_object_block_address(
-                "hash",
-                "wide",
-                Some(&field[..]),
-                address
-            ),
+            assert!(
+                !shard.bucket_index.contains_object_block_address(
+                    "hash",
+                    "wide",
+                    Some(&field[..]),
+                    address
+                ),
             "the lookup answered for field {field} BY NAME. An entry carries no element name, so \
              a named lookup must resolve nothing -- if it does, the name has returned to the entry"
-        );
-    }
+            );
+        }
+    })
 }
 
 /// Exploratory: which bucket-visiting site grows with a wide object?
@@ -6305,9 +6314,8 @@ fn what_the_lifecycle_plan_costs_alone() {
 
         // The four sample builders the apply runs unconditionally at the end, purely to fill in
         // REPORT fields. Timed under the same read lock the apply takes.
-        {
-            let shards = engine3.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard 1 is loaded");
+        engine3.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
 
             let started = std::time::Instant::now();
             let index_snapshot = crate::engine::storage_bucket_internals::
@@ -6337,7 +6345,7 @@ fn what_the_lifecycle_plan_costs_alone() {
                 "  [plan] {objects:>6}   SAMPLE BUILDERS: index {index_ms:>7.1} | watermark {watermark_ms:>7.1} | gc {gc_ms:>7.1} | topology {topology_ms:>7.1}  (sum {:>7.1} ms)",
                 index_ms + watermark_ms + gc_ms + topology_ms,
             );
-        }
+        });
     }
 }
 
@@ -6564,47 +6572,47 @@ fn the_index_wire_keys_are_what_they_were() {
         },
     });
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let value = serde_json::to_value(&shard.bucket_index).expect("the index serializes");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let value = serde_json::to_value(&shard.bucket_index).expect("the index serializes");
 
-    // Every object key that appears anywhere in the document, deduplicated.
-    fn collect(value: &serde_json::Value, into: &mut std::collections::BTreeSet<String>) {
-        match value {
-            serde_json::Value::Object(map) => {
-                for (key, child) in map {
-                    into.insert(key.clone());
-                    collect(child, into);
+        // Every object key that appears anywhere in the document, deduplicated.
+        fn collect(value: &serde_json::Value, into: &mut std::collections::BTreeSet<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, child) in map {
+                        into.insert(key.clone());
+                        collect(child, into);
+                    }
                 }
-            }
-            serde_json::Value::Array(items) => {
-                for item in items {
-                    collect(item, into);
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        collect(item, into);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
-    }
-    let mut keys = std::collections::BTreeSet::new();
-    collect(&value, &mut keys);
+        let mut keys = std::collections::BTreeSet::new();
+        collect(&value, &mut keys);
 
-    // The rendered block keys are data, not field names: they are built from the object's own
-    // identity, so they vary with the test's keys rather than with the format.
-    keys.retain(|key| !key.contains(':') && !key.chars().all(|c| c.is_ascii_digit()));
+        // The rendered block keys are data, not field names: they are built from the object's own
+        // identity, so they vary with the test's keys rather than with the format.
+        keys.retain(|key| !key.contains(':') && !key.chars().all(|c| c.is_ascii_digit()));
 
-    // The durable model tables and compact object rows are already in the index image.
-    // This recursive census includes their field names and this fixture's key/field names.
-    let listed: Vec<&str> = keys.iter().map(String::as_str).collect();
-    assert_eq!(
-        listed,
-        vec![
+        // The durable model tables and compact object rows are already in the index image.
+        // This recursive census includes their field names and this fixture's key/field names.
+        let listed: Vec<&str> = keys.iter().map(String::as_str).collect();
+        assert_eq!(
+            listed,
+            vec![
             // The MERGED ADDRESS WORD, which replaced "ps" and "o". One key where there were two:
             // the slab id is its high 32 bits and the offset its low 32. The old pair is NOT an
             // alias of this -- an index that spells them separately is refused at load, because
             // read as a word a slab id of 1 beside an offset of 2 is slab 0 offset 1, a well-formed
             // address for a different block.
-            "a",
-            "address",
+                "a",
+                "address",
             // "block_index" IS "page_index" MOVED, and the move is the writer flip: the bucket
             // node's block map was written by a hand-rolled `serialize_field` that no attribute
             // sweep could see. The reader has accepted the set `block_index` / `page_index` /
@@ -6612,15 +6620,15 @@ fn the_index_wire_keys_are_what_they_were() {
             // what the stamp bump beside it pays for is an older binary reading an image written
             // after it, which would drop the key it does not declare and load every bucket with
             // an EMPTY block map.
-            "block_index",
-            "bucket_map",
-            "context_audit",
-            "context_child",
-            "context_compression",
-            "context_entity",
-            "context_event",
-            "context_index",
-            "context_summary",
+                "block_index",
+                "bucket_map",
+                "context_audit",
+                "context_child",
+                "context_compression",
+                "context_entity",
+                "context_event",
+                "context_index",
+                "context_summary",
             // "b", the older grouping id, is gone: a slab IS the unit, so an address derives it from
             // the address word rather than carrying it. An index written before this still has the
             // key and still loads -- the wire struct does not deny unknown fields, so the stored
@@ -6643,18 +6651,18 @@ fn the_index_wire_keys_are_what_they_were() {
             // "ps", "b" and "last_dump_sequence" already get below. A key that simply disappeared
             // from this vector would leave the next reader unable to tell a removal from an
             // oversight, which is the whole job of the list.
-            "deleted",
-            "deleted_object_index",
-            "dirty",
-            "dirty_generation",
-            "f",
-            "feature",
+                "deleted",
+                "deleted_object_index",
+                "dirty",
+                "dirty_generation",
+                "f",
+                "feature",
             // "g" is the LAST optional slot on an address. It is written on every one of them,
             // because a row is read by position in the index log and a field that vanishes when
             // empty moves every field behind it -- and because its PRESENCE is the meaning:
             // `ADDRESS_HAS_GENERATION` comes from whether this key is there.
-            "g",
-            "hashes",
+                "g",
+                "hashes",
             // "h", the digest, is GONE, and so is "rs" further down. Both were written as nil for
             // the positional reason above, and neither was ever read. A key that carries no
             // meaning does not need the slot held open for it: `shorter_struct_against_an_existing_row`
@@ -6662,12 +6670,12 @@ fn the_index_wire_keys_are_what_they_were() {
             // than reinterpreted, so retiring a dead slot cannot shift anything silently.
             // An index already carrying "h" or "rs" still loads: the wire struct does not deny
             // unknown fields.
-            "in_memory",
-            "l",
+                "in_memory",
+                "l",
             // "last_dump_sequence" is gone on purpose: see this test's own note above.
-            "layout",
-            "lists",
-            "loading",
+                "layout",
+                "lists",
+                "loading",
             // "m", "n", "r" and "u" are GONE, and they are the four keys the positional object row
             // removes: a row is now `[record, elements?]` and a record `[address, block_size,
             // flags, model_id, size_class?]`, so there is no `r` wrapper and no name on a slot.
@@ -6683,7 +6691,7 @@ fn the_index_wire_keys_are_what_they_were() {
             // the named side. A resident entry is always a block, and the node already records its
             // own bucket. So neither appears in this list, and this list is what would have caught
             // them if they did.
-            "meta_loaded",
+                "meta_loaded",
             // "model_id" and "object_key" are GONE, and this list has been red since they went.
             // A block entry used to restate both as named fields; it now reads them back out of
             // the composite key it is filed under, which is the key's own second and first slots.
@@ -6694,25 +6702,26 @@ fn the_index_wire_keys_are_what_they_were() {
             // than guarding anything. Named here rather than quietly dropped, which is this
             // list's own rule.
             // "o" and "ps" are gone -- merged into "a" at the top of this list.
-            "object_index",
-            "objects",
-            "oi",
+                "object_index",
+                "objects",
+                "oi",
             // "page_index" is GONE from this list because the writer moved, not because the key
             // was retired: it is still ACCEPTED, and an index on disk that spells it still loads.
             // It is listed at the top under its canonical spelling.
-            "pi",
+                "pi",
             // "routing_slot" here is the BUCKET NODE's own key, not the address's retired "rs" --
             // two different things that read alike. The node still records which bucket it is.
-            "routing_slot",
-            "sets",
-            "string",
-            "ttl_ms",
-            "wire",
-            "wire-hash",
-            "zsets",
-        ],
+                "routing_slot",
+                "sets",
+                "string",
+                "ttl_ms",
+                "wire",
+                "wire-hash",
+                "zsets",
+            ],
         "the index writes different keys than it did; a rename or a serde attribute reached the format"
-    );
+        );
+    })
 }
 
 
@@ -6985,9 +6994,8 @@ fn a_bucket_holding_one_block_holds_no_node() {
             value: vec![b'v'; 32],
         },
     });
-    {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         let bucket = shard
             .bucket_index
             .bucket_map
@@ -7003,7 +7011,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
             "a bucket holding one block must take the single-block arm; it holds {} block(s)",
             bucket.block_index.len()
         );
-    }
+    });
 
     // Several element names of one object: a map, which is what a map is for.
     for field in ["a", "b", "c"] {
@@ -7016,9 +7024,8 @@ fn a_bucket_holding_one_block_holds_no_node() {
             },
         });
     }
-    {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         let bucket = shard
             .bucket_index
             .bucket_map
@@ -7029,7 +7036,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
             matches!(bucket.block_index, BlockIndexMap::Many(_)),
             "several blocks belong in a map"
         );
-    }
+    });
 
     // Down to one again: back to inline, not a map with one entry left in it.
     for field in ["a", "b"] {
@@ -7041,9 +7048,8 @@ fn a_bucket_holding_one_block_holds_no_node() {
             },
         });
     }
-    {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         let named = super::BlockObjects::of(&shard.bucket_index);
         let bucket = shard
             .bucket_index
@@ -7129,7 +7135,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
             matches!(bucket.block_index, BlockIndexMap::Many(_)),
             "a block index holding five entries must be in the multi-entry arm"
         );
-    }
+    });
 
     // AND THE COLLAPSE ITSELF STILL WORKS, driven where nothing defers it: writing the two fields
     // BACK clears their tombstones through the upsert's retain, and then removing them from a kind
@@ -7148,9 +7154,8 @@ fn a_bucket_holding_one_block_holds_no_node() {
             },
         });
     }
-    {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         let named = super::BlockObjects::of(&shard.bucket_index);
         let bucket = shard
             .bucket_index
@@ -7196,7 +7201,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
              which a re-add at a NEW address does not supersede. If this is 3 the retirement of a \
              vacated block's entry has landed, and this assertion is the one to come and restate"
         );
-    }
+    });
     // Now the whole object, through the path that keeps no tombstone, and the map must DRAIN.
     engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -7204,9 +7209,8 @@ fn a_bucket_holding_one_block_holds_no_node() {
             key: "wide".to_string(),
         },
     });
-    {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         let named = super::BlockObjects::of(&shard.bucket_index);
         let held: usize = shard
             .bucket_index
@@ -7228,7 +7232,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
              is no membership left to keep true once the object is gone, so an entry retained here \
              is leaked for the life of the store"
         );
-    }
+    });
 }
 
 
@@ -7677,38 +7681,38 @@ fn block_index_identity_string_cardinality() {
         }
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
 
-    let mut blocks = 0usize;
-    let mut distinct_models: HashSet<&str> = HashSet::new();
-    // Distinct ALLOCATIONS, not distinct values. Once the kind is shared, counting holders would
-    // report the cost as if nothing had changed -- every block still holds one, it just points at
-    // a string it does not own.
-    let mut model_allocations: HashSet<*const u8> = HashSet::new();
-    // THE OBJECT-KEY HALF IS COUNTED OVER THE LOOKUP AND ITS DENOMINATOR IS OBJECTS, NOT BLOCKS.
-    // It summed one `len` per BLOCK off the entry's own copy. The entry has none; the text lives
-    // once per (kind, object) in the lookup, so that is what is walked and `objects` is what it
-    // is divided by. Both denominators are named at the point each ratio is printed, because a
-    // per-block figure and a per-object figure over the same bytes differ by the blocks-per-object
-    // of whatever fixture is running.
-    let mut distinct_keys: HashSet<&str> = HashSet::new();
-    let mut objects = 0usize;
-    let mut model_bytes = 0usize;
-    let mut key_bytes = 0usize;
-    for (_model, object, _refs) in shard.bucket_index.object_block_lookup.iter() {
-        objects += 1;
-        distinct_keys.insert(object.as_ref());
-        key_bytes += object.len();
-    }
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_ref_key, block) in bucket.block_index.iter() {
-            blocks += 1;
-            distinct_models.insert(block.model_id().as_str());
+        let mut blocks = 0usize;
+        let mut distinct_models: HashSet<&str> = HashSet::new();
+        // Distinct ALLOCATIONS, not distinct values. Once the kind is shared, counting holders would
+        // report the cost as if nothing had changed -- every block still holds one, it just points at
+        // a string it does not own.
+        let mut model_allocations: HashSet<*const u8> = HashSet::new();
+        // THE OBJECT-KEY HALF IS COUNTED OVER THE LOOKUP AND ITS DENOMINATOR IS OBJECTS, NOT BLOCKS.
+        // It summed one `len` per BLOCK off the entry's own copy. The entry has none; the text lives
+        // once per (kind, object) in the lookup, so that is what is walked and `objects` is what it
+        // is divided by. Both denominators are named at the point each ratio is printed, because a
+        // per-block figure and a per-object figure over the same bytes differ by the blocks-per-object
+        // of whatever fixture is running.
+        let mut distinct_keys: HashSet<&str> = HashSet::new();
+        let mut objects = 0usize;
+        let mut model_bytes = 0usize;
+        let mut key_bytes = 0usize;
+        for (_model, object, _refs) in shard.bucket_index.object_block_lookup.iter() {
+            objects += 1;
+            distinct_keys.insert(object.as_ref());
+            key_bytes += object.len();
+        }
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (_ref_key, block) in bucket.block_index.iter() {
+                blocks += 1;
+                distinct_models.insert(block.model_id().as_str());
             // One address per spelling for the whole process, and not an allocation: the entry
             // holds one byte and reads the registry's `&'static str` through it.
-            model_allocations.insert(block.model_id().as_str().as_ptr());
-            model_bytes += block.model_id().as_str().len();
+                model_allocations.insert(block.model_id().as_str().as_ptr());
+                model_bytes += block.model_id().as_str().len();
             // THE ELEMENT NAME HALF OF THIS CENSUS HAS NO SUBJECT LEFT.
             //
             // It measured whether an entry's element name was a SHARED allocation -- distinct
@@ -7723,27 +7727,27 @@ fn block_index_identity_string_cardinality() {
             // keeping it and lowering it would have been the exact move its own comment forbids.
             // The two halves that still have a subject -- `model_id` sharing and `object_key`
             // copies -- are unchanged and still measured.
+            }
         }
-    }
 
-    // Anti-vacuity first: an empty index would make every ratio below true for free.
-    //
-    // THE SECOND FLOOR IS DELETED, NOT LOWERED. It read `element_names_present > 0` because "a corpus
-    // with no element names would decide the element name question by construction" -- and that is now
-    // true of every possible corpus, since an entry has no element name. A floor no fixture can
-    // satisfy is not a floor; lowering it to zero would have been the move its own comment forbids.
-    assert!(blocks > 0, "the block index is empty; nothing was measured");
-    // AND THE LOOKUP NAMES SOMETHING, or the object-key row below is a row of zeroes that reads
-    // as "no key text in this store" instead of "the lookup was not walked".
-    assert!(
-        objects > 0,
+        // Anti-vacuity first: an empty index would make every ratio below true for free.
+        //
+        // THE SECOND FLOOR IS DELETED, NOT LOWERED. It read `element_names_present > 0` because "a corpus
+        // with no element names would decide the element name question by construction" -- and that is now
+        // true of every possible corpus, since an entry has no element name. A floor no fixture can
+        // satisfy is not a floor; lowering it to zero would have been the move its own comment forbids.
+        assert!(blocks > 0, "the block index is empty; nothing was measured");
+        // AND THE LOOKUP NAMES SOMETHING, or the object-key row below is a row of zeroes that reads
+        // as "no key text in this store" instead of "the lookup was not walked".
+        assert!(
+            objects > 0,
         "the object lookup names no object, so the key row below measures nothing"
-    );
+        );
 
-    let share = |distinct: usize, copies: usize| {
-        if distinct == 0 { 0.0 } else { copies as f64 / distinct as f64 }
-    };
-    println!(
+        let share = |distinct: usize, copies: usize| {
+            if distinct == 0 { 0.0 } else { copies as f64 / distinct as f64 }
+        };
+        println!(
         "
   block index identity strings:
     over {blocks} BLOCKS
@@ -7752,12 +7756,13 @@ fn block_index_identity_string_cardinality() {
       object_key  {:>5} distinct, {:>6} slots   ({:>7.1} slots each, {:>6} B held)
 
     BlockIndex is {} B before its heap strings, and holds no key text at all
-",
-        distinct_models.len(), blocks, share(distinct_models.len(), blocks),
-        model_allocations.len(), model_bytes,
-        distinct_keys.len(), objects, share(distinct_keys.len(), objects), key_bytes,
-        std::mem::size_of::<crate::engine::state::BlockIndex>(),
-    );
+    ",
+            distinct_models.len(), blocks, share(distinct_models.len(), blocks),
+            model_allocations.len(), model_bytes,
+            distinct_keys.len(), objects, share(distinct_keys.len(), objects), key_bytes,
+            std::mem::size_of::<crate::engine::state::BlockIndex>(),
+        );
+    })
 }
 
 /// How many block refs an object's slot actually holds.
@@ -7816,71 +7821,71 @@ fn object_block_lookup_refs_per_object_census() {
         }
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    // BOTH HOMES, AND THIS ARM IS WHY THE DOOR FOR THAT EXISTS.
-    //
-    // It read `object_block_lookup` alone. The block-refs fold moved the string kinds' refs into
-    // their own slot rows and left the container kinds in the lookup, so a walk of the lookup sees
-    // only the hashes -- and this corpus is built as 2,000 strings at one ref and 200 hashes at
-    // eight precisely to be two-sided. Reading one home made it `0 single-ref, 200 multi-ref`, and
-    // the anti-vacuity gate below caught it, which is the only reason it was loud.
-    //
-    // The census is about the SHAPE of an object's ref set, which does not depend on which home
-    // holds it. `every_object_with_refs` is the walk that does not have to know there are two.
-    let mut single_ref_object = 0usize;
-    let mut multi_ref_object = 0usize;
-    let mut refs_total = 0usize;
-    let mut objects = 0usize;
-    for (_kind, _object_key, refs) in shard.bucket_index.every_object_with_refs() {
-        let held = refs.len();
-        if held == 1 {
-            single_ref_object += 1;
-        } else {
-            multi_ref_object += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        // BOTH HOMES, AND THIS ARM IS WHY THE DOOR FOR THAT EXISTS.
+        //
+        // It read `object_block_lookup` alone. The block-refs fold moved the string kinds' refs into
+        // their own slot rows and left the container kinds in the lookup, so a walk of the lookup sees
+        // only the hashes -- and this corpus is built as 2,000 strings at one ref and 200 hashes at
+        // eight precisely to be two-sided. Reading one home made it `0 single-ref, 200 multi-ref`, and
+        // the anti-vacuity gate below caught it, which is the only reason it was loud.
+        //
+        // The census is about the SHAPE of an object's ref set, which does not depend on which home
+        // holds it. `every_object_with_refs` is the walk that does not have to know there are two.
+        let mut single_ref_object = 0usize;
+        let mut multi_ref_object = 0usize;
+        let mut refs_total = 0usize;
+        let mut objects = 0usize;
+        for (_kind, _object_key, refs) in shard.bucket_index.every_object_with_refs() {
+            let held = refs.len();
+            if held == 1 {
+                single_ref_object += 1;
+            } else {
+                multi_ref_object += 1;
+            }
+            refs_total += held;
+            objects += 1;
         }
-        refs_total += held;
-        objects += 1;
-    }
 
-    // Anti-vacuity, asserted before any ratio is read: an empty or one-sided corpus would make
-    // every claim below true for free.
-    assert!(objects > 0, "the lookup is empty; nothing was measured");
-    assert!(refs_total > 0, "no refs were recorded; nothing was measured");
-    // THE TWO-SIDED GATE MOVED FROM THE ELEMENT NAME AXIS TO THE REFS AXIS, BECAUSE THE ELEMENT NAME
-    // AXIS COLLAPSED TO ONE SHAPE AND THEN THE AXIS ITSELF CAME OFF.
-    //
-    // It read `single_element_name > 0 && multi_element_name > 0` and refused with "corpus is one-sided
-    // (2200 single, 0 multi) -- the occupancy question would be decided by construction, not
-    // measurement". It was right to refuse: once a block entry carried no element name an object
-    // held exactly ONE nameless lookup row whatever its kind, and a mixed corpus could not
-    // produce a second shape on that axis.
-    //
-    // THE REPLACEMENT GATE THE ELEMENT-NAME BRANCH WROTE IS NOT CARRIED, AND THAT IS A MERGE
-    // DECISION RATHER THAN AN OMISSION. It asserted `objects == single_element_name` -- "every object
-    // must hold exactly one nameless row". That counts ROWS, and there is no row level left
-    // to count: `ObjectBlockRefs`, `ElementNameList` and `ElementNameBlocks` are deleted and the
-    // lookup's per-object value IS a `BlockRefs`. Rewritten onto this shape it would read
-    // `objects == objects` and pass for every corpus including an empty one. Its claim -- that a
-    // element name can no longer be filed under a row of its own -- is kept where it is still
-    // falsifiable: `a_named_element_name_resolves_nothing_while_the_unnamed_one_resolves_everything`
-    // in `engine_storage_state.rs` asserts `names_the_only_slot` in both directions in one arm.
-    //
-    // THE MULTIPLICITY DID NOT GO -- IT MOVED INSIDE THE SLOT. A hash of eight fields is one slot
-    // holding EIGHT refs, where it used to be eight rows of one. So the question this census
-    // exists for -- does the inline single-ref shape earn its place -- is asked of the refs
-    // vector, and that axis is genuinely two-sided in this corpus: 2,000 strings at one ref and
-    // 200 hashes at eight.
-    assert!(
-        single_ref_object > 0 && multi_ref_object > 0,
+        // Anti-vacuity, asserted before any ratio is read: an empty or one-sided corpus would make
+        // every claim below true for free.
+        assert!(objects > 0, "the lookup is empty; nothing was measured");
+        assert!(refs_total > 0, "no refs were recorded; nothing was measured");
+        // THE TWO-SIDED GATE MOVED FROM THE ELEMENT NAME AXIS TO THE REFS AXIS, BECAUSE THE ELEMENT NAME
+        // AXIS COLLAPSED TO ONE SHAPE AND THEN THE AXIS ITSELF CAME OFF.
+        //
+        // It read `single_element_name > 0 && multi_element_name > 0` and refused with "corpus is one-sided
+        // (2200 single, 0 multi) -- the occupancy question would be decided by construction, not
+        // measurement". It was right to refuse: once a block entry carried no element name an object
+        // held exactly ONE nameless lookup row whatever its kind, and a mixed corpus could not
+        // produce a second shape on that axis.
+        //
+        // THE REPLACEMENT GATE THE ELEMENT-NAME BRANCH WROTE IS NOT CARRIED, AND THAT IS A MERGE
+        // DECISION RATHER THAN AN OMISSION. It asserted `objects == single_element_name` -- "every object
+        // must hold exactly one nameless row". That counts ROWS, and there is no row level left
+        // to count: `ObjectBlockRefs`, `ElementNameList` and `ElementNameBlocks` are deleted and the
+        // lookup's per-object value IS a `BlockRefs`. Rewritten onto this shape it would read
+        // `objects == objects` and pass for every corpus including an empty one. Its claim -- that a
+        // element name can no longer be filed under a row of its own -- is kept where it is still
+        // falsifiable: `a_named_element_name_resolves_nothing_while_the_unnamed_one_resolves_everything`
+        // in `engine_storage_state.rs` asserts `names_the_only_slot` in both directions in one arm.
+        //
+        // THE MULTIPLICITY DID NOT GO -- IT MOVED INSIDE THE SLOT. A hash of eight fields is one slot
+        // holding EIGHT refs, where it used to be eight rows of one. So the question this census
+        // exists for -- does the inline single-ref shape earn its place -- is asked of the refs
+        // vector, and that axis is genuinely two-sided in this corpus: 2,000 strings at one ref and
+        // 200 hashes at eight.
+        assert!(
+            single_ref_object > 0 && multi_ref_object > 0,
         "corpus is one-sided ({single_ref_object} single-ref, {multi_ref_object} multi-ref) -- \
          the occupancy question would be decided by construction, not measurement. The \
          {STRING_OBJECTS} string objects are meant to supply the first and the {HASH_OBJECTS} \
          hash objects of {FIELDS_PER_HASH} fields the second"
-    );
+        );
 
-    let pct = |n: usize, d: usize| 100.0 * n as f64 / d as f64;
-    println!(
+        let pct = |n: usize, d: usize| 100.0 * n as f64 / d as f64;
+        println!(
         "
   object block lookup occupancy ({objects} objects, {refs_total} refs):
     objects whose slot holds one ref    {single_ref_object:>6}  ({:>5.1}%)
@@ -7889,13 +7894,14 @@ fn object_block_lookup_refs_per_object_census() {
     sizes: the lookup's per-object value is BlockRefs {:>3} B over BlockLookupRef {:>3} B
     a one-ref object is {:>3} B with the ref riding inside the value rather than in an
     allocation of its own, and the three wrappers that used to sit between them are gone
-",
-        pct(single_ref_object, objects),
-        pct(multi_ref_object, objects),
-        std::mem::size_of::<crate::engine::state::BlockRefs>(),
-        std::mem::size_of::<crate::engine::state::BlockLookupRef>(),
-        std::mem::size_of::<crate::engine::state::BlockRefs>(),
-    );
+    ",
+            pct(single_ref_object, objects),
+            pct(multi_ref_object, objects),
+            std::mem::size_of::<crate::engine::state::BlockRefs>(),
+            std::mem::size_of::<crate::engine::state::BlockLookupRef>(),
+            std::mem::size_of::<crate::engine::state::BlockRefs>(),
+        );
+    })
 }
 
 /// Which structures hold an entry per record, and how many.
@@ -7944,42 +7950,42 @@ fn per_record_structure_census() {
         });
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let buckets = shard.bucket_index.bucket_map.len();
-    let page_index_entries: usize = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .map(|bucket| bucket.block_index.len())
-        .sum();
-    let object_index_entries: usize = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .map(|bucket| bucket.object_index.object_count())
-        .sum();
-    // The map is keyed by object now, so its length is the object count and the per-element-name
-    // map it used to be compared against is gone. Both numbers are still reported, because the
-    // interesting quantity is entries PER RECORD and one of them stopped existing.
-    let block_lookup_keys = shard.bucket_index.object_block_lookup.len();
-    let block_lookup_refs: usize = shard
-        .bucket_index
-        .object_block_lookup
-        .values()
-        .map(crate::engine::state::BlockRefs::len)
-        .sum();
-    // `element_name_lookup_keys` WAS HERE AND IT WAS A SECOND COPY OF THE ROW ABOVE. It summed
-    // `by_element_name.len()` per object, which has been exactly 1 per object since the element name
-    // came off the block entry -- so it equalled `block_lookup_keys` by construction and printed
-    // 1.00/record beside it. The level it counted is gone; the row goes with it rather than being
-    // rewritten into a third spelling of the same number.
-    let strings = shard.strings().len();
-    let wal_resident = shard.wal_resident_blocks.len();
-    let dirty_objects = shard.dirty_objects.len();
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let buckets = shard.bucket_index.bucket_map.len();
+        let page_index_entries: usize = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|bucket| bucket.block_index.len())
+            .sum();
+        let object_index_entries: usize = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|bucket| bucket.object_index.object_count())
+            .sum();
+        // The map is keyed by object now, so its length is the object count and the per-element-name
+        // map it used to be compared against is gone. Both numbers are still reported, because the
+        // interesting quantity is entries PER RECORD and one of them stopped existing.
+        let block_lookup_keys = shard.bucket_index.object_block_lookup.len();
+        let block_lookup_refs: usize = shard
+            .bucket_index
+            .object_block_lookup
+            .values()
+            .map(crate::engine::state::BlockRefs::len)
+            .sum();
+        // `element_name_lookup_keys` WAS HERE AND IT WAS A SECOND COPY OF THE ROW ABOVE. It summed
+        // `by_element_name.len()` per object, which has been exactly 1 per object since the element name
+        // came off the block entry -- so it equalled `block_lookup_keys` by construction and printed
+        // 1.00/record beside it. The level it counted is gone; the row goes with it rather than being
+        // rewritten into a third spelling of the same number.
+        let strings = shard.strings().len();
+        let wal_resident = shard.wal_resident_blocks.len();
+        let dirty_objects = shard.dirty_objects.len();
 
-    let per = |n: usize| n as f64 / RECORDS as f64;
-    println!(
+        let per = |n: usize| n as f64 / RECORDS as f64;
+        println!(
         "
   per-record entries at {RECORDS} records, 1024 routing slots:
              strings                    {:>6.2}
@@ -7990,81 +7996,82 @@ fn per_record_structure_census() {
              dirty_objects              {:>6.2}
              wal_resident_pages         {:>6.2}
              (buckets: {buckets}, not per record)
-",
-        per(strings), per(page_index_entries), per(object_index_entries),
-        per(block_lookup_keys), per(block_lookup_refs),
-        per(dirty_objects), per(wal_resident),
-    );
+    ",
+            per(strings), per(page_index_entries), per(object_index_entries),
+            per(block_lookup_keys), per(block_lookup_refs),
+            per(dirty_objects), per(wal_resident),
+        );
 
-    // String bytes each structure actually holds. RSS is ~2.8 KB/record and a key byte costs
-    // 14.1 B of it, so knowing WHERE the key copies live says whether interning would pay and
-    // which structure to attack first.
-    let key_bytes: usize = shard.strings().keys().map(|key| key.len()).sum();
-    // ZERO, AND THE ROW IS KEPT BECAUSE THE TABLE IS A LIST OF PLACES. The block index held one
-    // `Arc<str>` of key text per entry. It holds none: no key, a one-byte kind spelled by a
-    // `&'static str`, and no element name. So this structure contributes no heap text, and the
-    // whole of its former contribution is the `block_lookup_bytes` row below -- once per object
-    // rather than once per block, which is the saving this change is.
-    //
-    // THE LOOKUP ROW IS FLOORED JUST BELOW, so a zero here cannot be read as "this fixture wrote
-    // no keys".
-    let block_index_bytes: usize = 0;
-    // Outer keys plus the block-ref key each entry holds.
-    let block_lookup_bytes: usize = shard
-        .bucket_index
-        .object_block_lookup
-        .iter()
-        .map(|(_model, object, entry)| {
+        // String bytes each structure actually holds. RSS is ~2.8 KB/record and a key byte costs
+        // 14.1 B of it, so knowing WHERE the key copies live says whether interning would pay and
+        // which structure to attack first.
+        let key_bytes: usize = shard.strings().keys().map(|key| key.len()).sum();
+        // ZERO, AND THE ROW IS KEPT BECAUSE THE TABLE IS A LIST OF PLACES. The block index held one
+        // `Arc<str>` of key text per entry. It holds none: no key, a one-byte kind spelled by a
+        // `&'static str`, and no element name. So this structure contributes no heap text, and the
+        // whole of its former contribution is the `block_lookup_bytes` row below -- once per object
+        // rather than once per block, which is the saving this change is.
+        //
+        // THE LOOKUP ROW IS FLOORED JUST BELOW, so a zero here cannot be read as "this fixture wrote
+        // no keys".
+        let block_index_bytes: usize = 0;
+        // Outer keys plus the block-ref key each entry holds.
+        let block_lookup_bytes: usize = shard
+            .bucket_index
+            .object_block_lookup
+            .iter()
+            .map(|(_model, object, entry)| {
             // The model is stored once for all its objects now, so only the object key is a
             // per-object cost here.
-            object.len()
-                + entry
-                    .iter()
-                    .map(|_block_ref| 0usize)
-                    .sum::<usize>()
-        })
-        .sum();
-    // `element_name_lookup_bytes` WAS HERE AND IT WAS IDENTICALLY ZERO. It summed the length of each
-    // entry's element name NAME, and every name had been `None` since the element name came off the
-    // block entry -- so the row printed 0.0 into a byte table that ends in "= {:.1}x the key". The
-    // name field is now deleted outright, so there is nothing left to sum. Leaving a hard zero in
-    // a measurement table is worse than removing the row.
-    let dirty_bytes: usize = shard.dirty_objects.iter().map(str::len).sum();
-    // THE FLOOR THE BLOCK-INDEX ROW NEEDS. That row is a structural zero now, and a structural
-    // zero beside an unfloored lookup row is indistinguishable from a fixture that wrote no keys
-    // at all -- the table would read "no key text anywhere" and both halves of that would be
-    // wrong. This says the text IS held, and says it of the structure that now holds it.
-    assert!(
-        block_lookup_bytes > 0,
+                object.len()
+                    + entry
+                        .iter()
+                        .map(|_block_ref| 0usize)
+                        .sum::<usize>()
+            })
+            .sum();
+        // `element_name_lookup_bytes` WAS HERE AND IT WAS IDENTICALLY ZERO. It summed the length of each
+        // entry's element name NAME, and every name had been `None` since the element name came off the
+        // block entry -- so the row printed 0.0 into a byte table that ends in "= {:.1}x the key". The
+        // name field is now deleted outright, so there is nothing left to sum. Leaving a hard zero in
+        // a measurement table is worse than removing the row.
+        let dirty_bytes: usize = shard.dirty_objects.iter().map(str::len).sum();
+        // THE FLOOR THE BLOCK-INDEX ROW NEEDS. That row is a structural zero now, and a structural
+        // zero beside an unfloored lookup row is indistinguishable from a fixture that wrote no keys
+        // at all -- the table would read "no key text anywhere" and both halves of that would be
+        // wrong. This says the text IS held, and says it of the structure that now holds it.
+        assert!(
+            block_lookup_bytes > 0,
         "the object lookup holds no key text over {RECORDS} records, so the zero in the block-index          row below cannot be read as a saving"
-    );
-    let total_string_bytes =
-        key_bytes + block_index_bytes + block_lookup_bytes + dirty_bytes;
-    let sample_key_len = shard.strings().keys().next().map_or(0, |name| name.len());
-    let perb = |n: usize| n as f64 / RECORDS as f64;
-    println!(
+        );
+        let total_string_bytes =
+            key_bytes + block_index_bytes + block_lookup_bytes + dirty_bytes;
+        let sample_key_len = shard.strings().keys().next().map_or(0, |name| name.len());
+        let perb = |n: usize| n as f64 / RECORDS as f64;
+        println!(
         "  string bytes held per record (sample key is {sample_key_len} B):
              strings keys               {:>7.1}
              bucket page_index          {:>7.1}
              object_page_lookup         {:>7.1}
              dirty_objects              {:>7.1}
              TOTAL                      {:>7.1}  = {:.1}x the key
-",
-        perb(key_bytes), perb(block_index_bytes), perb(block_lookup_bytes),
-        perb(dirty_bytes), perb(total_string_bytes),
-        perb(total_string_bytes) / sample_key_len.max(1) as f64,
-    );
+    ",
+            perb(key_bytes), perb(block_index_bytes), perb(block_lookup_bytes),
+            perb(dirty_bytes), perb(total_string_bytes),
+            perb(total_string_bytes) / sample_key_len.max(1) as f64,
+        );
 
-    // Only the invariants: every record must be reachable by key and by block.
-    assert_eq!(strings, RECORDS, "every record should have a string entry");
-    assert_eq!(
-        page_index_entries, RECORDS,
+        // Only the invariants: every record must be reachable by key and by block.
+        assert_eq!(strings, RECORDS, "every record should have a string entry");
+        assert_eq!(
+            page_index_entries, RECORDS,
         "every record should have exactly one live block ref"
-    );
-    assert!(
-        buckets <= 1024,
+        );
+        assert!(
+            buckets <= 1024,
         "routing range should cap the bucket count, got {buckets}"
-    );
+        );
+    })
 }
 
 /// The dirty-bucket count must equal the answer the unshortened scan would give.
@@ -8132,33 +8139,34 @@ fn dirty_bucket_count_matches_the_unshortened_scan() {
         .object_manager
         .dirty_bucket_count;
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    // The same computation with no early exit.
-    let mut expected: std::collections::BTreeSet<u32> = shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .filter_map(|(bucket_id, bucket)| bucket.dirty().then_some(*bucket_id))
-        .collect();
-    for object_key in shard.dirty_objects.iter() {
-        expected.extend(crate::engine::bucket_index_target_buckets_for_object_key(
-            shard, object_key,
-        ));
-    }
-    assert!(
-        !shard.bucket_index.bucket_map.is_empty(),
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        // The same computation with no early exit.
+        let mut expected: std::collections::BTreeSet<u32> = shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .filter_map(|(bucket_id, bucket)| bucket.dirty().then_some(*bucket_id))
+            .collect();
+        for object_key in shard.dirty_objects.iter() {
+            expected.extend(crate::engine::bucket_index_target_buckets_for_object_key(
+                shard, object_key,
+            ));
+        }
+        assert!(
+            !shard.bucket_index.bucket_map.is_empty(),
         "workload produced no buckets"
-    );
-    assert_eq!(
-        reported,
-        expected.len(),
-        "dirty bucket count diverged from the unshortened scan: {reported} vs {}",
-        expected.len()
-    );
-    println!("
+        );
+        assert_eq!(
+            reported,
+            expected.len(),
+            "dirty bucket count diverged from the unshortened scan: {reported} vs {}",
+            expected.len()
+        );
+        println!("
   dirty buckets: reported {reported} == unshortened {}
-", expected.len());
+    ", expected.len());
+    })
 }
 
 /// The maintained block-ref total must equal the walk it replaced.
@@ -8241,30 +8249,31 @@ fn maintained_element_name_block_ref_total_matches_the_walk() {
         }
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    // BOTH HOMES. The maintained total counts every ref the index holds; a walk of
-    // `object_block_lookup` alone counts only the kinds whose refs stayed there after the fold,
-    // which read 140 against a maintained 262 -- a 1.87x "drift" that was the walk being partial
-    // and not the tally being wrong. The comparison is only meaningful when both sides cover the
-    // same population.
-    let walked: usize = shard
-        .bucket_index
-        .every_object_with_refs()
-        .map(|(_kind, _object_key, refs)| refs.len())
-        .sum();
-    let maintained = shard
-        .bucket_index
-        .object_element_name_block_refs
-        .expect("the total should be established once the lookup has been built");
-    assert!(walked > 0, "workload produced no element name block refs to compare");
-    assert_eq!(
-        maintained, walked,
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        // BOTH HOMES. The maintained total counts every ref the index holds; a walk of
+        // `object_block_lookup` alone counts only the kinds whose refs stayed there after the fold,
+        // which read 140 against a maintained 262 -- a 1.87x "drift" that was the walk being partial
+        // and not the tally being wrong. The comparison is only meaningful when both sides cover the
+        // same population.
+        let walked: usize = shard
+            .bucket_index
+            .every_object_with_refs()
+            .map(|(_kind, _object_key, refs)| refs.len())
+            .sum();
+        let maintained = shard
+            .bucket_index
+            .object_element_name_block_refs
+            .expect("the total should be established once the lookup has been built");
+        assert!(walked > 0, "workload produced no element name block refs to compare");
+        assert_eq!(
+            maintained, walked,
         "maintained element name block-ref total drifted from the walk it replaces:          {maintained} vs {walked}"
-    );
-    println!("
+        );
+        println!("
   element name block refs: maintained {maintained} == walked {walked}
-");
+    ");
+    })
 }
 
 /// Every bucket's `object_index` must already equal a from-scratch recompute.
@@ -8352,109 +8361,110 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
         }
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut checked = 0usize;
-    let mut mismatches = Vec::new();
-    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
-        let recomputed: std::collections::BTreeSet<u64> = bucket
-            .block_index
-            .iter()
-            .filter(|(_, block)| !block.deleted())
-            .map(|(handle, block)| block.object_id(1, named.at(*routing_bucket, *handle)))
-            .collect();
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut checked = 0usize;
+        let mut mismatches = Vec::new();
+        for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+            let recomputed: std::collections::BTreeSet<u64> = bucket
+                .block_index
+                .iter()
+                .filter(|(_, block)| !block.deleted())
+                .map(|(handle, block)| block.object_id(1, named.at(*routing_bucket, *handle)))
+                .collect();
         // Mirrors update_bucket_layout: an empty live set over an empty block index leaves the
         // stored set untouched, so only compare where the rebuild would actually assign.
-        if recomputed.is_empty() && bucket.block_index.is_empty() {
-            continue;
-        }
-        checked += 1;
-        let expected: crate::engine::state::ObjectIndex = if recomputed.is_empty() {
-            crate::engine::state::ObjectIndex::default()
-        } else {
-            recomputed.into()
-        };
+            if recomputed.is_empty() && bucket.block_index.is_empty() {
+                continue;
+            }
+            checked += 1;
+            let expected: crate::engine::state::ObjectIndex = if recomputed.is_empty() {
+                crate::engine::state::ObjectIndex::default()
+            } else {
+                recomputed.into()
+            };
         // THE SET, not the slots. `ObjectIndex::Many` is a slot array, so `==` also compares
         // which slot each id sits in -- and the ids collected ascending above take different slots
         // from the ids this bucket filed as it was written. The claim under test is that the stored
         // SET equals a rebuild, which is what `sorted_ids` compares.
-        if bucket.object_index.sorted_ids() != expected.sorted_ids() {
-            mismatches.push(format!(
-                "  bucket {routing_bucket}: stored {:?} != recomputed {:?}",
-                bucket.object_index.sorted_ids(),
-                expected.sorted_ids()
-            ));
+            if bucket.object_index.sorted_ids() != expected.sorted_ids() {
+                mismatches.push(format!(
+                    "  bucket {routing_bucket}: stored {:?} != recomputed {:?}",
+                    bucket.object_index.sorted_ids(),
+                    expected.sorted_ids()
+                ));
+            }
         }
-    }
-    // --- AND THE PASS AN ID-SET EQUALITY CANNOT DO: THE REBUILD MUST NOT RENUMBER A SLOT. ---
-    //
-    // The comparison above is blind to exactly the failure that matters once a slot is stored. It
-    // compares `sorted_ids`, so a rebuild that kept every id and moved every one of them to a
-    // different slot passes it -- which is what the old whole-array assignment from a `BTreeSet`
-    // did on every call, eleven production callers deep.
-    //
-    // Driven on a CLONE, so the shard under test is not mutated and the before/after is exact, and
-    // compared slot for slot INCLUDING PLACEHOLDERS: `id_at` answers `None` for a hole, and a hole
-    // closing up is a renumber of everything above it.
-    let mut renumbered = Vec::new();
-    let mut slot_arrays_compared = 0usize;
-    let mut placeholders_seen = 0usize;
-    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
-        let slots_of = |index: &crate::engine::state::ObjectIndex| -> Vec<Option<u64>> {
-            (0..index.slot_count()).map(|slot| index.id_at(slot)).collect()
-        };
-        let before = slots_of(&bucket.object_index);
-        if before.is_empty() {
-            continue;
-        }
-        slot_arrays_compared += 1;
-        placeholders_seen += before.iter().filter(|slot| slot.is_none()).count();
-        let mut rebuilt = bucket.clone();
+        // --- AND THE PASS AN ID-SET EQUALITY CANNOT DO: THE REBUILD MUST NOT RENUMBER A SLOT. ---
+        //
+        // The comparison above is blind to exactly the failure that matters once a slot is stored. It
+        // compares `sorted_ids`, so a rebuild that kept every id and moved every one of them to a
+        // different slot passes it -- which is what the old whole-array assignment from a `BTreeSet`
+        // did on every call, eleven production callers deep.
+        //
+        // Driven on a CLONE, so the shard under test is not mutated and the before/after is exact, and
+        // compared slot for slot INCLUDING PLACEHOLDERS: `id_at` answers `None` for a hole, and a hole
+        // closing up is a renumber of everything above it.
+        let mut renumbered = Vec::new();
+        let mut slot_arrays_compared = 0usize;
+        let mut placeholders_seen = 0usize;
+        for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+            let slots_of = |index: &crate::engine::state::ObjectIndex| -> Vec<Option<u64>> {
+                (0..index.slot_count()).map(|slot| index.id_at(slot)).collect()
+            };
+            let before = slots_of(&bucket.object_index);
+            if before.is_empty() {
+                continue;
+            }
+            slot_arrays_compared += 1;
+            placeholders_seen += before.iter().filter(|slot| slot.is_none()).count();
+            let mut rebuilt = bucket.clone();
         // THE IDENTITIES COME FROM THE SHARD, because the rebuild no longer reads them off the
         // blocks. The bucket under test is a CLONE, so the shard is still only borrowed immutably
         // here and `block_identities` -- which borrows the whole index -- is available; the
         // production sweeps have to split the two field borrows by hand instead.
-        let block_keys = shard.bucket_index.block_identities();
-        crate::engine::storage_bucket_internals::update_bucket_layout(
-            1,
-            &mut rebuilt,
-            &block_keys,
-        );
-        let after = slots_of(&rebuilt.object_index);
-        if before != after {
-            renumbered.push(format!("  bucket {routing_bucket}: {before:?} -> {after:?}"));
+            let block_keys = shard.bucket_index.block_identities();
+            crate::engine::storage_bucket_internals::update_bucket_layout(
+                1,
+                &mut rebuilt,
+                &block_keys,
+            );
+            let after = slots_of(&rebuilt.object_index);
+            if before != after {
+                renumbered.push(format!("  bucket {routing_bucket}: {before:?} -> {after:?}"));
+            }
         }
-    }
 
-    assert!(checked > 0, "workload produced no buckets to check");
-    assert!(
-        slot_arrays_compared > 0,
+        assert!(checked > 0, "workload produced no buckets to check");
+        assert!(
+            slot_arrays_compared > 0,
         "no bucket carried a slot array, so the renumber pass examined nothing. A zero here reads \
          as agreement and would be the absence the comparison is satisfied by"
-    );
-    assert!(
-        renumbered.is_empty(),
+        );
+        assert!(
+            renumbered.is_empty(),
         "the layout rebuild RENUMBERED {} of {slot_arrays_compared} bucket(s). A stored slot names \
-         one object for life only if the rebuild leaves it where it is:\n{}",
-        renumbered.len(),
-        renumbered.join("\n")
-    );
-    println!(
+             one object for life only if the rebuild leaves it where it is:\n{}",
+            renumbered.len(),
+            renumbered.join("\n")
+        );
+        println!(
         "\n  {slot_arrays_compared} slot arrays survived a rebuild unmoved, {placeholders_seen} \
          placeholders among them"
-    );
-    assert!(
-        mismatches.is_empty(),
+        );
+        assert!(
+            mismatches.is_empty(),
         "object_index is NOT maintained incrementally by {} of {checked} bucket(s), so the          layout rebuild is load-bearing and cannot be dropped:
-{}",
-        mismatches.len(),
-        mismatches.join("
-")
-    );
-    println!("
+    {}",
+            mismatches.len(),
+            mismatches.join("
+    ")
+        );
+        println!("
   {checked} buckets: stored object_index matches a from-scratch recompute
-");
+    ");
+    })
 }
 
 /// Per-write cost must be flat at a NARROW routing range too, not only a wide one.
@@ -8849,10 +8859,8 @@ fn large_async_hash_values_remain_readable_after_cache_eviction() {
         });
         assert!(response.status.ok, "write {index} failed: {response:?}");
     }
-    {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let fields = shards
-            .get(&1)
+    engine.shards.with_state(1, |state| {
+        let fields = state
             .unwrap()
             .bucket_index.hashes
             .get("sequence/0")
@@ -8863,7 +8871,7 @@ fn large_async_hash_values_remain_readable_after_cache_eviction() {
         let mut addresses = fields.values();
         let first = addresses.next().unwrap();
         assert!(addresses.all(|address| address == first));
-    }
+    });
     engine.cache().invalidate_shard(1).unwrap();
     for index in 0..64u8 {
         let response = engine.execute(ExecuteRequest {
@@ -13486,88 +13494,89 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
         }
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let lookup = &shard.bucket_index.object_block_lookup;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let lookup = &shard.bucket_index.object_block_lookup;
 
-    // Held now: the (model, object) key once, and nothing else. The element name that used to sit on
-    // each nested entry is gone with the level that held it.
-    let mut nested_keys = 0usize;
-    let mut nested_map_entries = 0usize;
-    // What two flat maps WOULD have held: the (model, object) key as a whole key in one map, AND
-    // again as the head of every (model, object, element name) key in the other. The tail of that
-    // longer key is "0|" -- the no-element-name spelling, which is the only one the engine ever wrote
-    // once an entry stopped naming its element. It used to be computed from the entry's own name
-    // and is now the constant it had already become.
-    const FLAT_TAIL: usize = 2;
-    let mut flat_keys = 0usize;
-    let mut flat_map_entries = 0usize;
-    for (_model, object_key, _refs) in lookup.iter() {
-        nested_keys += object_key.len();
-        nested_map_entries += 1;
+        // Held now: the (model, object) key once, and nothing else. The element name that used to sit on
+        // each nested entry is gone with the level that held it.
+        let mut nested_keys = 0usize;
+        let mut nested_map_entries = 0usize;
+        // What two flat maps WOULD have held: the (model, object) key as a whole key in one map, AND
+        // again as the head of every (model, object, element name) key in the other. The tail of that
+        // longer key is "0|" -- the no-element-name spelling, which is the only one the engine ever wrote
+        // once an entry stopped naming its element. It used to be computed from the entry's own name
+        // and is now the constant it had already become.
+        const FLAT_TAIL: usize = 2;
+        let mut flat_keys = 0usize;
+        let mut flat_map_entries = 0usize;
+        for (_model, object_key, _refs) in lookup.iter() {
+            nested_keys += object_key.len();
+            nested_map_entries += 1;
         // The flat layout kept a whole B-tree entry per object in the second map...
-        flat_keys += object_key.len();
-        flat_map_entries += 1;
+            flat_keys += object_key.len();
+            flat_map_entries += 1;
         // ...and another per (object, element name) in the first. One object had one element name, so
         // this is one more entry per object and not a loop over a list.
-        flat_keys += object_key.len() + FLAT_TAIL;
-        flat_map_entries += 1;
-    }
+            flat_keys += object_key.len() + FLAT_TAIL;
+            flat_map_entries += 1;
+        }
 
-    let per = |n: usize| n as f64 / RECORDS as f64;
-    println!(
+        let per = |n: usize| n as f64 / RECORDS as f64;
+        println!(
         "
   block-lookup keys at {RECORDS} records, nested against the two flat maps it replaced:
              two flat maps                {:>8} B  ({:>6.1} B/record, {flat_map_entries} b-tree entries)
              nested                       {:>8} B  ({:>6.1} B/record, {nested_map_entries} b-tree entries)
              saved                        {:>8} B  ({:>6.1} B/record, {:>5.1}%)
-",
-        flat_keys,
-        per(flat_keys),
-        nested_keys,
-        per(nested_keys),
-        flat_keys - nested_keys,
-        per(flat_keys - nested_keys),
-        100.0 * (flat_keys - nested_keys) as f64 / flat_keys as f64,
-    );
+    ",
+            flat_keys,
+            per(flat_keys),
+            nested_keys,
+            per(nested_keys),
+            flat_keys - nested_keys,
+            per(flat_keys - nested_keys),
+            100.0 * (flat_keys - nested_keys) as f64 / flat_keys as f64,
+        );
 
-    assert!(flat_keys > 0 && !lookup.is_empty(), "the workload must populate the lookup");
-    // The measurement that justified the change was 50.5%. Assert well below it so ordinary
-    // changes in key length do not fail the build, but a REGRESSION -- the object key creeping
-    // back into the inner entries -- cannot pass.
-    let saved = 100.0 * (flat_keys - nested_keys) as f64 / flat_keys as f64;
-    assert!(
-        saved > 40.0,
+        assert!(flat_keys > 0 && !lookup.is_empty(), "the workload must populate the lookup");
+        // The measurement that justified the change was 50.5%. Assert well below it so ordinary
+        // changes in key length do not fail the build, but a REGRESSION -- the object key creeping
+        // back into the inner entries -- cannot pass.
+        let saved = 100.0 * (flat_keys - nested_keys) as f64 / flat_keys as f64;
+        assert!(
+            saved > 40.0,
         "nesting saved {saved:.1}% of the block-lookup key bytes; it measured 50.5% before it \
          shipped, and anything near zero means the object key is being stored twice again"
-    );
-    // ENTRY COUNT, STATED DIRECTLY RATHER THAN THROUGH AN ACCOUNTING IDENTITY.
-    //
-    // Two assertions stood here and BOTH were unfalsifiable. One was
-    // `nested_map_entries < flat_map_entries` and the other
-    // `nested_map_entries + nested_vec_elements == flat_map_entries`. With one element name per
-    // object -- the state since the element name came off the block entry -- `nested_map_entries`,
-    // `nested_vec_elements` and `objects` were all the same number and `flat_map_entries` was
-    // twice it, so the pair read `n < 2n` and `n + n == 2n`. Both held for every corpus including
-    // an empty one, and the second's message, "none lost", described a bookkeeping step that could
-    // not fail.
-    //
-    // What is actually claimed is that the flat layout kept TWO b-tree entries per object and the
-    // nested one keeps ONE. That is now said against the object count, which an empty corpus
-    // cannot satisfy, and the vector-slot term is gone because there are no vector slots.
-    let objects = lookup.len();
-    assert!(objects > 0, "the lookup holds no objects; nothing was counted");
-    assert_eq!(
-        nested_map_entries, objects,
+        );
+        // ENTRY COUNT, STATED DIRECTLY RATHER THAN THROUGH AN ACCOUNTING IDENTITY.
+        //
+        // Two assertions stood here and BOTH were unfalsifiable. One was
+        // `nested_map_entries < flat_map_entries` and the other
+        // `nested_map_entries + nested_vec_elements == flat_map_entries`. With one element name per
+        // object -- the state since the element name came off the block entry -- `nested_map_entries`,
+        // `nested_vec_elements` and `objects` were all the same number and `flat_map_entries` was
+        // twice it, so the pair read `n < 2n` and `n + n == 2n`. Both held for every corpus including
+        // an empty one, and the second's message, "none lost", described a bookkeeping step that could
+        // not fail.
+        //
+        // What is actually claimed is that the flat layout kept TWO b-tree entries per object and the
+        // nested one keeps ONE. That is now said against the object count, which an empty corpus
+        // cannot satisfy, and the vector-slot term is gone because there are no vector slots.
+        let objects = lookup.len();
+        assert!(objects > 0, "the lookup holds no objects; nothing was counted");
+        assert_eq!(
+            nested_map_entries, objects,
         "the nested layout should hold exactly one b-tree entry per object"
-    );
-    assert_eq!(
-        flat_map_entries,
-        2 * objects,
+        );
+        assert_eq!(
+            flat_map_entries,
+            2 * objects,
         "the flat layout it replaced held two b-tree entries per object -- one per (model, \
          object) and one per (model, object, element name) -- and that is the count this saving is \
          measured against"
-    );
+        );
+    })
 }
 
 /// What does refusing to reclaim, rather than clamping, actually hold?
@@ -13925,26 +13934,23 @@ fn the_dump_drain_looks_at_each_dirty_object_once() {
                 },
             });
         }
-        let (dirty_before, buckets) = {
-            let shards = engine.shards.read().expect("shards lock poisoned");
-            let shard = shards.get(&1).expect("shard 1 loaded");
+        let (dirty_before, buckets) = engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
             (shard.dirty_objects.len(), shard.bucket_index.bucket_map.len())
-        };
+        });
 
         // The drain runs from `apply_storage_lifecycle`, NOT from creating or installing a
         // manifest directly. The first version of this probe called those, measured a drain that
         // never ran, and passed -- which is why the assertion below insists it ran at all.
-        let selected: Vec<u32> = {
-            let shards = engine.shards.read().expect("shards lock poisoned");
-            shards
-                .get(&1)
+        let selected: Vec<u32> = engine.shards.with_state(1, |state| {
+            state
                 .expect("shard 1 loaded")
                 .bucket_index
                 .bucket_map
                 .keys()
                 .copied()
                 .collect()
-        };
+        });
         crate::engine::storage_lifecycle_methods::DIRTY_DRAIN_VISITS
             .store(0, std::sync::atomic::Ordering::Relaxed);
         engine.apply_storage_lifecycle(StorageLifecycleRequest {
@@ -14066,78 +14072,79 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
         });
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
 
-    let mut divergent = Vec::new();
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut checked = 0usize;
-    let mut live_total = 0usize;
-    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+        let mut divergent = Vec::new();
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut checked = 0usize;
+        let mut live_total = 0usize;
+        for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
         // What a rebuild would produce: the ids of the blocks that are not deleted.
-        let rebuilt: crate::engine::state::ObjectIndex = bucket
-            .block_index
-            .iter()
-            .filter(|(_, block)| !block.deleted())
-            .map(|(handle, block)| block.object_id(1, named.at(*routing_bucket, *handle)))
-            .collect();
-        checked += 1;
-        live_total += rebuilt.object_count();
+            let rebuilt: crate::engine::state::ObjectIndex = bucket
+                .block_index
+                .iter()
+                .filter(|(_, block)| !block.deleted())
+                .map(|(handle, block)| block.object_id(1, named.at(*routing_bucket, *handle)))
+                .collect();
+            checked += 1;
+            live_total += rebuilt.object_count();
         // THE SET, not the slots -- see the note in `object_index_is_maintained_incrementally`.
-        if bucket.object_index.sorted_ids() != rebuilt.sorted_ids() {
-            let held: Vec<u64> = bucket.object_index.difference(&rebuilt).copied().collect();
-            let missing: Vec<u64> = rebuilt.difference(&bucket.object_index).copied().collect();
-            divergent.push((*routing_bucket, held, missing));
+            if bucket.object_index.sorted_ids() != rebuilt.sorted_ids() {
+                let held: Vec<u64> = bucket.object_index.difference(&rebuilt).copied().collect();
+                let missing: Vec<u64> = rebuilt.difference(&bucket.object_index).copied().collect();
+                divergent.push((*routing_bucket, held, missing));
+            }
         }
-    }
 
-    println!(
+        println!(
         "
   buckets checked            {checked}
   live object ids (rebuilt)  {live_total}
   buckets where the held set differs from a rebuild  {}
-",
-        divergent.len()
-    );
-    for (bucket, held, missing) in divergent.iter().take(6) {
-        println!("    bucket {bucket}: holds-but-rebuild-drops {held:?}, rebuild-has-but-holds-not {missing:?}");
-    }
+    ",
+            divergent.len()
+        );
+        for (bucket, held, missing) in divergent.iter().take(6) {
+            println!("    bucket {bucket}: holds-but-rebuild-drops {held:?}, rebuild-has-but-holds-not {missing:?}");
+        }
 
-    // Anti-vacuity first: a comparison over an empty shard agrees about nothing.
-    assert!(
-        checked > 0 && live_total > 0,
-        "the workload must populate buckets, or the comparison below compares nothing"
-    );
-
-    // The finding, whichever way it goes. If this holds, the per-insert rebuild is recomputing
-    // what the insert already knew and can go. If it does not, the difference names exactly what
-    // the rebuild is for -- and the tombstone ids re-attached after it are the first suspect.
-    // The held set is a strict SUPERSET of a rebuild, and the extra ids are tombstones the object
-    // manager must keep reporting until GC reclaims the slot -- `rebuild_bucket_first_index`
-    // re-attaches them deliberately after recomputing the live set. Measured: 14 of 183 buckets
-    // hold exactly one extra id each, and NOTHING is ever missing in the other direction.
-    //
-    // So the invariant is containment plus a named exception, not equality. Asserting equality
-    // would fail on correct behaviour, and asserting nothing would miss a live id going astray.
-    for (bucket_id, held_extra, missing) in &divergent {
+        // Anti-vacuity first: a comparison over an empty shard agrees about nothing.
         assert!(
-            missing.is_empty(),
+            checked > 0 && live_total > 0,
+        "the workload must populate buckets, or the comparison below compares nothing"
+        );
+
+        // The finding, whichever way it goes. If this holds, the per-insert rebuild is recomputing
+        // what the insert already knew and can go. If it does not, the difference names exactly what
+        // the rebuild is for -- and the tombstone ids re-attached after it are the first suspect.
+        // The held set is a strict SUPERSET of a rebuild, and the extra ids are tombstones the object
+        // manager must keep reporting until GC reclaims the slot -- `rebuild_bucket_first_index`
+        // re-attaches them deliberately after recomputing the live set. Measured: 14 of 183 buckets
+        // hold exactly one extra id each, and NOTHING is ever missing in the other direction.
+        //
+        // So the invariant is containment plus a named exception, not equality. Asserting equality
+        // would fail on correct behaviour, and asserting nothing would miss a live id going astray.
+        for (bucket_id, held_extra, missing) in &divergent {
+            assert!(
+                missing.is_empty(),
             "bucket {bucket_id} is MISSING live object ids a rebuild would produce: {missing:?} -- \
              a live block exists whose id the index does not hold"
-        );
-        let bucket = shard
-            .bucket_index
-            .bucket_map
-            .get(bucket_id)
-            .expect("the divergent bucket was read from this map");
-        for object_id in held_extra {
-            assert!(
-                bucket.deleted_object_index.contains(object_id),
+            );
+            let bucket = shard
+                .bucket_index
+                .bucket_map
+                .get(bucket_id)
+                .expect("the divergent bucket was read from this map");
+            for object_id in held_extra {
+                assert!(
+                    bucket.deleted_object_index.contains(object_id),
                 "bucket {bucket_id} holds object id {object_id}, which is neither live nor a \
                  recorded delete_marker"
-            );
+                );
+            }
         }
-    }
+    })
 }
 /// Does a context node block end up in the bucket index, or not?
 ///
@@ -14196,47 +14203,48 @@ fn whether_a_context_block_reaches_the_bucket_index() {
     );
     assert!(ingest.status.ok, "the ingest must succeed: {:?}", ingest.status);
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
 
-    // Every kind the index holds a block for, and how many of each.
-    let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for block in bucket.block_index.values() {
-            *kinds.entry(block.model_id().clone().to_string()).or_insert(0) += 1;
+        // Every kind the index holds a block for, and how many of each.
+        let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for block in bucket.block_index.values() {
+                *kinds.entry(block.model_id().clone().to_string()).or_insert(0) += 1;
+            }
         }
-    }
-    // And the context keys the model map holds, so the two can be compared.
-    let context_keys_in_model = shard
-        .bucket_index.hashes
-        .keys()
-        .filter(|key| key.contains("ctx") || key.contains("context"))
-        .count();
-    let context_blocks_in_index: usize = super::blocks_with_identity(&shard.bucket_index)
-        .into_iter()
-        .filter(|(_, _, object_key, _)| {
-            object_key.contains("ctx") || object_key.contains("context")
-        })
-        .count();
+        // And the context keys the model map holds, so the two can be compared.
+        let context_keys_in_model = shard
+            .bucket_index.hashes
+            .keys()
+            .filter(|key| key.contains("ctx") || key.contains("context"))
+            .count();
+        let context_blocks_in_index: usize = super::blocks_with_identity(&shard.bucket_index)
+            .into_iter()
+            .filter(|(_, _, object_key, _)| {
+                object_key.contains("ctx") || object_key.contains("context")
+            })
+            .count();
 
-    println!(
+        println!(
         "
   block kinds held by the bucket index: {kinds:?}
   context-ish keys in the model map:   {context_keys_in_model}
   context-ish blocks in the bucket index: {context_blocks_in_index}
 "
-    );
+        );
 
-    assert!(
-        !kinds.is_empty(),
+        assert!(
+            !kinds.is_empty(),
         "the control write must put SOMETHING in the index, or this measures nothing"
-    );
-    // Report rather than assert a direction: the point is to learn which world this is, and a
-    // wrong guess baked into an assertion would just move the mistake into the test.
-    println!(
-        "  => context blocks {} the bucket index",
-        if context_blocks_in_index > 0 { "DO reach" } else { "do NOT reach" }
-    );
+        );
+        // Report rather than assert a direction: the point is to learn which world this is, and a
+        // wrong guess baked into an assertion would just move the mistake into the test.
+        println!(
+            "  => context blocks {} the bucket index",
+            if context_blocks_in_index > 0 { "DO reach" } else { "do NOT reach" }
+        );
+    })
 }
 
 /// What one block costs to index here, against the 17 bytes it costs in the design being followed.
@@ -14279,41 +14287,41 @@ fn what_one_block_costs_to_index() {
         });
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut entries = 0usize;
-    let mut heap = 0usize;
-    let mut ref_key_bytes = 0usize;
-    let mut object_key_bytes = 0usize;
-    let mut shared_bytes = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_handle, block) in bucket.block_index.iter() {
-            entries += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let mut entries = 0usize;
+        let mut heap = 0usize;
+        let mut ref_key_bytes = 0usize;
+        let mut object_key_bytes = 0usize;
+        let mut shared_bytes = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (_handle, block) in bucket.block_index.iter() {
+                entries += 1;
             // The map key is an inline number now, not a rendered string on the heap.
-            ref_key_bytes += 0;
+                ref_key_bytes += 0;
             // AND NEITHER IS THE OBJECT KEY. This read `block.object_key.len()` and called it
             // "shared with the lookup, so one allocation answers for both holders" -- which was
             // true of the allocation and wrong as a PER-ENTRY charge: it summed the same bytes
             // once for every block of the object. The entry holds no key now, so the charge is
             // zero here and the bytes are attributed once per object where they live, in
             // `the_key_text_lives_in_four_structures`'s lookup row.
-            object_key_bytes += 0;
+                object_key_bytes += 0;
             // One allocation across every block of that element name, not one per block. The kind
             // contributes nothing at all now: one byte inline, spelled by a `&'static str`.
             // An entry carries no element name, so it contributes no shared name bytes.
-                    shared_bytes += 0;
-            heap += 0;
-            let _ = block;
+                        shared_bytes += 0;
+                heap += 0;
+                let _ = block;
+            }
         }
-    }
-    assert!(entries > 0, "the workload must produce blocks, or this measures nothing");
+        assert!(entries > 0, "the workload must produce blocks, or this measures nothing");
 
-    let per_entry_heap = heap as f64 / entries as f64;
-    let map_key_b = ref_key_bytes as f64 / entries as f64;
-    let object_key_b = object_key_bytes as f64 / entries as f64;
-    let shared_b = shared_bytes as f64 / entries as f64;
-    let total = inline as f64 + per_entry_heap;
-    println!(
+        let per_entry_heap = heap as f64 / entries as f64;
+        let map_key_b = ref_key_bytes as f64 / entries as f64;
+        let object_key_b = object_key_bytes as f64 / entries as f64;
+        let shared_b = shared_bytes as f64 / entries as f64;
+        let total = inline as f64 + per_entry_heap;
+        println!(
         "
   one block's index entry
     inline struct                {inline:>5} B
@@ -14328,40 +14336,41 @@ fn what_one_block_costs_to_index() {
 
     the design being followed     17 B, packed, static_assert(sizeof == 17)
     ratio                        {:>7.1}x
-",
-        total / 17.0
-    );
+    ",
+            total / 17.0
+        );
 
-    // A report, not a threshold -- the point is the gap and where it comes from, and a bound here
-    // would fail on unrelated changes. What must hold is that the measurement happened.
-    //
-    // AND THE FLOOR HAD TO MOVE OFF THE ENTRY, BECAUSE THE ENTRY IS THE ZERO NOW. It read
-    // `per_entry_heap > 0.0`, with the reason "every entry owns at least an object key, so zero
-    // heap means the walk found nothing". The entry owns no object key: `per_entry_heap` is a
-    // STRUCTURAL zero, and the old floor turned the finding into a failure.
-    //
-    // THE SAME TABLE'S SIBLING WAS FLOORED AND THIS ONE WAS MISSED, which is what makes it worth
-    // the words. `the_key_text_lives_in_four_structures` has the identical shape -- a page-index
-    // row gone to zero -- and it asserts the LOOKUP row is non-zero so the zero cannot be read as
-    // "this fixture wrote no keys". This floor was left pointing at the row that went to zero, and
-    // only running it said so: a structural zero and an empty walk are indistinguishable from
-    // inside the row itself.
-    //
-    // SO IT ASKS THE TWO QUESTIONS SEPARATELY. That entries were walked at all is asserted above
-    // on `entries`, which is the "did the measurement happen" half. What this adds is that the key
-    // text is held SOMEWHERE in this store -- in the object lookup, which is where it moved -- so
-    // a run over a store that genuinely wrote no keys still fails.
-    let lookup_key_bytes: usize = shard
-        .bucket_index
-        .object_block_lookup
-        .iter()
-        .map(|(_model, object, _refs)| object.len())
-        .sum();
-    assert!(
-        lookup_key_bytes > 0,
+        // A report, not a threshold -- the point is the gap and where it comes from, and a bound here
+        // would fail on unrelated changes. What must hold is that the measurement happened.
+        //
+        // AND THE FLOOR HAD TO MOVE OFF THE ENTRY, BECAUSE THE ENTRY IS THE ZERO NOW. It read
+        // `per_entry_heap > 0.0`, with the reason "every entry owns at least an object key, so zero
+        // heap means the walk found nothing". The entry owns no object key: `per_entry_heap` is a
+        // STRUCTURAL zero, and the old floor turned the finding into a failure.
+        //
+        // THE SAME TABLE'S SIBLING WAS FLOORED AND THIS ONE WAS MISSED, which is what makes it worth
+        // the words. `the_key_text_lives_in_four_structures` has the identical shape -- a page-index
+        // row gone to zero -- and it asserts the LOOKUP row is non-zero so the zero cannot be read as
+        // "this fixture wrote no keys". This floor was left pointing at the row that went to zero, and
+        // only running it said so: a structural zero and an empty walk are indistinguishable from
+        // inside the row itself.
+        //
+        // SO IT ASKS THE TWO QUESTIONS SEPARATELY. That entries were walked at all is asserted above
+        // on `entries`, which is the "did the measurement happen" half. What this adds is that the key
+        // text is held SOMEWHERE in this store -- in the object lookup, which is where it moved -- so
+        // a run over a store that genuinely wrote no keys still fails.
+        let lookup_key_bytes: usize = shard
+            .bucket_index
+            .object_block_lookup
+            .iter()
+            .map(|(_model, object, _refs)| object.len())
+            .sum();
+        assert!(
+            lookup_key_bytes > 0,
         "the object lookup holds no key text, so the {per_entry_heap:.1} B of per-entry heap above \
          cannot be read as the entry having given its key up -- this store never had one"
-    );
+        );
+    })
 }
 
 /// Which of a block address's 120 bytes are actually carrying anything?
@@ -14416,27 +14425,27 @@ fn which_parts_of_a_block_address_are_populated() {
         }
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
 
-    let mut blocks = 0usize;
-    let (mut block_id, mut object_id) = (0usize, 0usize);
-    let (mut generation, mut slab_id, mut sha256) = (0usize, 0usize, 0usize);
-    let mut compactable = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for block in bucket.block_index.values() {
-            blocks += 1;
-            let a = &block.address;
-            block_id += usize::from(a.block_id().is_some());
-            generation += usize::from(a.generation().is_some());
-            slab_id += usize::from(a.slab_id().is_some());
-            compactable += usize::from(a.compact_slab_address().is_some());
+        let mut blocks = 0usize;
+        let (mut block_id, mut object_id) = (0usize, 0usize);
+        let (mut generation, mut slab_id, mut sha256) = (0usize, 0usize, 0usize);
+        let mut compactable = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for block in bucket.block_index.values() {
+                blocks += 1;
+                let a = &block.address;
+                block_id += usize::from(a.block_id().is_some());
+                generation += usize::from(a.generation().is_some());
+                slab_id += usize::from(a.slab_id().is_some());
+                compactable += usize::from(a.compact_slab_address().is_some());
+            }
         }
-    }
-    assert!(blocks > 0, "the workload must produce blocks, or this measures nothing");
+        assert!(blocks > 0, "the workload must produce blocks, or this measures nothing");
 
-    let pct = |n: usize| 100.0 * n as f64 / blocks as f64;
-    println!(
+        let pct = |n: usize| 100.0 * n as f64 / blocks as f64;
+        println!(
         "
   {blocks} blocks, which of the address's optional fields are set
 
@@ -14447,17 +14456,18 @@ fn which_parts_of_a_block_address_are_populated() {
     sha256           {sha256:>6}  {:>5.1}%   24 B inline + heap
 
     fit the compact (slab, offset) u64: {compactable:>6}  {:>5.1}%
-",
-        pct(block_id), pct(object_id),
-        pct(generation), pct(slab_id), pct(sha256), pct(compactable),
-    );
+    ",
+            pct(block_id), pct(object_id),
+            pct(generation), pct(slab_id), pct(sha256), pct(compactable),
+        );
 
-    // A report. What must hold is that the walk saw addresses at all -- a zero everywhere would
-    // read as "every field is dead" when it actually means the shard was empty.
-    assert!(
-        compactable > 0,
+        // A report. What must hold is that the walk saw addresses at all -- a zero everywhere would
+        // read as "every field is dead" when it actually means the shard was empty.
+        assert!(
+            compactable > 0,
         "no address fit the compact form, which means this walked nothing useful"
-    );
+        );
+    })
 }
 
 /// Which parts of a block address are recoverable from where the block already sits?
@@ -14502,34 +14512,34 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
         }
     }
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
 
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut blocks = 0usize;
-    let mut routing_matches_bucket = 0usize;
-    for (bucket_key, bucket) in shard.bucket_index.bucket_map.iter() {
-        for (handle, _block) in &bucket.block_index {
-            blocks += 1;
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut blocks = 0usize;
+        let mut routing_matches_bucket = 0usize;
+        for (bucket_key, bucket) in shard.bucket_index.bucket_map.iter() {
+            for (handle, _block) in &bucket.block_index {
+                blocks += 1;
             // WHERE THE BLOCK IS, against where its KEY routes. This used to compare the
             // address's own copy of its bucket against the bucket holding it -- a comparison
             // between a value and the expression that wrote it. The address carries no bucket, so
             // the comparison is now between the container and the derivation, which is the one
             // form of it that can disagree.
-            if block_routing_bucket(named.at(*bucket_key, *handle), 0, u32::MAX) == *bucket_key
-            {
-                routing_matches_bucket += 1;
-            }
+                if block_routing_bucket(named.at(*bucket_key, *handle), 0, u32::MAX) == *bucket_key
+                {
+                    routing_matches_bucket += 1;
+                }
             // `object_id_matches_entry` STOOD HERE and has gone with the field. It compared the
             // id an address CARRIED against the id the entry reports; the entry now derives that id
             // from its own terms and the address carries none, so both sides would be the same
             // expression. That is the shape the comment above rejects for the bucket.
+            }
         }
-    }
-    assert!(blocks > 0, "the workload must produce blocks, or this measures nothing");
+        assert!(blocks > 0, "the workload must produce blocks, or this measures nothing");
 
-    let pct = |n: usize| 100.0 * n as f64 / blocks as f64;
-    println!(
+        let pct = |n: usize| 100.0 * n as f64 / blocks as f64;
+        println!(
         "
   {blocks} blocks
 
@@ -14540,24 +14550,25 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
 
     recoverable if the object id holds: {} B per block, of 235.6 B measured
     (the routing bucket is already recovered -- it is not a field any more)
-",
-        pct(routing_matches_bucket),
-        8,
-    );
+    ",
+            pct(routing_matches_bucket),
+            8,
+        );
 
-    // Report, with one thing asserted: a field that DISAGREES with its surroundings is a defect,
-    // not an optimisation opportunity, and it would be silently averaged away by the percentages.
-    assert!(
-        routing_matches_bucket == 0 || routing_matches_bucket == blocks,
+        // Report, with one thing asserted: a field that DISAGREES with its surroundings is a defect,
+        // not an optimisation opportunity, and it would be silently averaged away by the percentages.
+        assert!(
+            routing_matches_bucket == 0 || routing_matches_bucket == blocks,
         "address.routing_slot agrees with its bucket on {routing_matches_bucket} of {blocks} blocks \
          -- a partial match means some block is filed somewhere its own address does not name"
-    );
-    // THE SECOND ASSERTION IS GONE RATHER THAN LEFT TO PASS. It read
-    // `object_id_matches_entry == 0 || == blocks` over a counter whose increment had already been
-    // removed with the field, so it was 0 on every run and the disjunction's first arm made it
-    // unfailable -- while the row above it printed 0.0%, which a reader would take to mean the ids
-    // never agree. They agree by construction now: there is one source for them. An assertion that
-    // cannot fail is indistinguishable from one that passes, so it does not get to stay.
+        );
+        // THE SECOND ASSERTION IS GONE RATHER THAN LEFT TO PASS. It read
+        // `object_id_matches_entry == 0 || == blocks` over a counter whose increment had already been
+        // removed with the field, so it was 0 on every run and the disjunction's first arm made it
+        // unfailable -- while the row above it printed 0.0%, which a reader would take to mean the ids
+        // never agree. They agree by construction now: there is one source for them. An assertion that
+        // cannot fail is indistinguishable from one that passes, so it does not get to stay.
+    })
 }
 
 /// Does maintaining the index during a context ingest give the same index as rebuilding it?
@@ -14609,9 +14620,8 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
     }
 
     // What the shard holds after the ingests.
-    let held: std::collections::BTreeMap<(u32, String), (String, String, Option<String>)> = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    let held: std::collections::BTreeMap<(u32, String), (String, String, Option<String>)> = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .map(|(bucket, handle, object_key, block)| {
@@ -14625,7 +14635,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                 )
             })
             .collect()
-    };
+    });
     assert!(
         !held.is_empty(),
         "the ingests must populate the index, or the comparison below compares nothing"
@@ -14639,9 +14649,8 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
 
     // And what a rebuild from the model maps would hold.
     engine.reconstruct_bucket_index_now(1);
-    let rebuilt: std::collections::BTreeMap<(u32, String), (String, String, Option<String>)> = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    let rebuilt: std::collections::BTreeMap<(u32, String), (String, String, Option<String>)> = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .map(|(bucket, handle, object_key, block)| {
@@ -14655,7 +14664,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                 )
             })
             .collect()
-    };
+    });
 
     let mut missing_after_ingest: Vec<&(u32, String)> = rebuilt
         .keys()
@@ -16286,16 +16295,17 @@ fn a_no_block_command_leaves_the_index_matching_a_rebuild() {
     }
 
     let snapshot = |engine: &TemporalEngine| -> Vec<String> {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
-        let mut rows: Vec<String> = super::blocks_with_identity(&shard.bucket_index)
-            .into_iter()
-            .map(|(routing_bucket, _handle, object_key, block)| {
-                format!("{routing_bucket}|{}|{}|{}", block.model_id(), object_key, "-")
-            })
-            .collect();
-        rows.sort();
-        rows
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            let mut rows: Vec<String> = super::blocks_with_identity(&shard.bucket_index)
+                .into_iter()
+                .map(|(routing_bucket, _handle, object_key, block)| {
+                    format!("{routing_bucket}|{}|{}|{}", block.model_id(), object_key, "-")
+                })
+                .collect();
+            rows.sort();
+            rows
+        })
     };
 
     let before = snapshot(&engine);
@@ -16397,16 +16407,17 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
 
     // What the index holds, so skipping the rebuild can be shown not to leave it stale.
     let block_rows = |engine: &TemporalEngine| -> Vec<String> {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
-        let mut rows: Vec<String> = super::blocks_with_identity(&shard.bucket_index)
-            .into_iter()
-            .map(|(routing_bucket, _handle, object_key, block)| {
-                format!("{routing_bucket}|{}|{}|{}", block.model_id(), object_key, "-")
-            })
-            .collect();
-        rows.sort();
-        rows
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            let mut rows: Vec<String> = super::blocks_with_identity(&shard.bucket_index)
+                .into_iter()
+                .map(|(routing_bucket, _handle, object_key, block)| {
+                    format!("{routing_bucket}|{}|{}|{}", block.model_id(), object_key, "-")
+                })
+                .collect();
+            rows.sort();
+            rows
+        })
     };
     let index_before = block_rows(&engine);
 
@@ -16431,14 +16442,13 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     // also what a counter that never fires reports. A command genuinely missing from
     // `command_updates_bucket_index_directly` still rebuilds, so this shows the counter is wired
     // up on the very path the batch assertion measures.
-    {
-        let mut shards = engine.shards.write().unwrap();
+    engine.shards.with_state_mut(1, |state| {
         crate::engine::set_expiry(
-            shards.get_mut(&1).unwrap(),
+            state.unwrap(),
             "unrelated-00000000".to_string(),
             crate::engine::resolve_now_ms().saturating_sub(60_000),
         );
-    }
+    });
     crate::engine::bucket_visit_sites::reset();
     let control = engine.batch_execute(BatchExecuteRequest {
         shard_id: 1,
@@ -16644,33 +16654,33 @@ fn a_wide_parent_keeps_its_newest_children_for_scoring() {
     let oldest = 2u64;
 
     let traverse = |target: u64| -> Vec<u64> {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
-        crate::engine::context::traverse_context_tree(
-            &engine.cache,
-            &engine.block_store,
-            1,
-            shard,
-            TENANT,
-            PARENT,
-            &axis(target - 1),
-            Some(1),
-            Some(CHILDREN as usize),
-            Some(CAP),
-            Some(CHILDREN as usize),
-            false,
-        )
-        .nodes
-        .into_iter()
-        .map(|node| node.node_hash)
-        .collect()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            crate::engine::context::traverse_context_tree(
+                &engine.cache,
+                &engine.block_store,
+                1,
+                shard,
+                TENANT,
+                PARENT,
+                &axis(target - 1),
+                Some(1),
+                Some(CHILDREN as usize),
+                Some(CAP),
+                Some(CHILDREN as usize),
+                false,
+            )
+            .nodes
+            .into_iter()
+            .map(|node| node.node_hash)
+            .collect()
+        })
     };
 
     // The per-call count, which is what a caller gets back. The process-wide
     // counter below cannot answer "was MY result cut" once two queries overlap.
-    let outcome_dropped = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    let outcome_dropped = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         crate::engine::context::traverse_context_tree(
             &engine.cache,
             &engine.block_store,
@@ -16686,7 +16696,7 @@ fn a_wide_parent_keeps_its_newest_children_for_scoring() {
             false,
         )
         .children_dropped_before_scoring
-    };
+    });
     assert_eq!(
         outcome_dropped,
         (CHILDREN as usize) - CAP,
@@ -17568,15 +17578,14 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
     });
     assert!(out.status.ok, "left push: {:?}", out.status);
 
-    let (head_seq, tail_seq) = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    let (head_seq, tail_seq) = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         let list = shard.bucket_index.lists.get("queue").expect("the list exists");
         (
             *list.keys().next().expect("a head"),
             *list.keys().next_back().expect("a tail"),
         )
-    };
+    });
     assert_ne!(head_seq, tail_seq, "the list must have both ends to tell them apart");
 
     let records = engine
@@ -18094,9 +18103,8 @@ fn what_one_entry_costs_in_each_structure() {
         // Live heap: what the inserts allocated and did NOT give back.
         let live = counts.alloc_bytes.saturating_sub(counts.free_bytes);
         // The structure really holds `count` entries, so the divisor is not a guess.
-        let held = {
-            let shards = engine.shards.read().expect("shards lock poisoned");
-            let shard = shards.get(&1).expect("shard 1 loaded");
+        let held = engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
             match kind {
                 "hash" => shard.bucket_index.hashes.values().map(|m| m.len()).sum::<usize>(),
                 "zset" => shard.bucket_index.zsets.values().map(|m| m.len()).sum::<usize>(),
@@ -18104,7 +18112,7 @@ fn what_one_entry_costs_in_each_structure() {
                 "list" => shard.bucket_index.lists.values().map(|m| m.len()).sum::<usize>(),
                 _ => 0,
             }
-        };
+        });
         assert_eq!(held, count, "{kind} holds {held} entries, expected {count}");
         live
     };
@@ -18329,9 +18337,10 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
         // The history really is this long, so a per-write figure is not divided by a fill that
         // silently failed.
         let held = if kind == "ContextWriteEvent" {
-            let shards = engine.shards.read().expect("shards lock poisoned");
-            let shard = shards.get(&1).expect("shard 1 loaded");
-            shard.context_events().values().map(|m| m.len()).sum::<usize>()
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard 1 loaded");
+                shard.context_events().values().map(|m| m.len()).sum::<usize>()
+            })
         } else {
             fill + REPS
         };
@@ -18672,9 +18681,8 @@ fn an_entity_upsert_does_not_report_its_block_uncovered() {
     // Without it, a tally that silently stopped recording would let the assertion below pass
     // while the defect it guards was fully present.
     let absent_key = "ctx:node:1:999999".to_string();
-    {
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         let covered = crate::engine::storage_bucket_internals::sync_context_blocks_for_object(
             shard,
             1,
@@ -18684,7 +18692,7 @@ fn an_entity_upsert_does_not_report_its_block_uncovered() {
             !covered,
             "a key the shard holds nothing for must report UNCOVERED, or the tally proves nothing"
         );
-    }
+    });
     assert!(
         crate::engine::uncovered_maintenance::snapshot()
             .iter()
@@ -19320,28 +19328,29 @@ fn what_a_packed_block_looks_like_in_the_index() {
     });
     assert!(response.status.ok, "append failed: {:?}", response.status);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard loaded");
-    let series = shard.features().get("packed:feature").expect("series present");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard loaded");
+        let series = shard.features().get("packed:feature").expect("series present");
 
-    eprintln!("  timestamps in the series: {}", series.len());
-    let mut distinct = std::collections::HashSet::new();
-    for (timestamp, address) in series.points() {
+        eprintln!("  timestamps in the series: {}", series.len());
+        let mut distinct = std::collections::HashSet::new();
+        for (timestamp, address) in series.points() {
+            eprintln!(
+                "    ts={timestamp} slab={} off={} len={} page_id={:?}",
+                address.block_slab_id(),
+                address.offset(),
+                address.length(),
+                address.block_id()
+            );
+            distinct.insert(address.clone());
+        }
+        eprintln!("  DISTINCT addresses: {}", distinct.len());
         eprintln!(
-            "    ts={timestamp} slab={} off={} len={} page_id={:?}",
-            address.block_slab_id(),
-            address.offset(),
-            address.length(),
-            address.block_id()
+            "  so the model-map derivation would count {} and the bucket index {}",
+            distinct.len(),
+            series.len()
         );
-        distinct.insert(address.clone());
-    }
-    eprintln!("  DISTINCT addresses: {}", distinct.len());
-    eprintln!(
-        "  so the model-map derivation would count {} and the bucket index {}",
-        distinct.len(),
-        series.len()
-    );
+    })
 }
 
 /// Does a DELETE leave its bucket able to place itself in both logs? Prints.
@@ -19735,17 +19744,15 @@ fn a_released_bucket_serves_every_key_it_held() {
 
     // CONTROL: the blocks really are gone from the index. Without this the test passes on a
     // release that reported a number and dropped nothing.
-    let resident_blocks: usize = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        shards
-            .get(&1)
+    let resident_blocks: usize = engine.shards.with_state(1, |state| {
+        state
             .expect("loaded shard")
             .bucket_index
             .bucket_map
             .values()
             .map(|bucket| bucket.block_index.len())
             .sum()
-    };
+    });
     assert_eq!(
         resident_blocks, 0,
         "{released_blocks} blocks were reported released but {resident_blocks} are still filed"
@@ -19760,29 +19767,30 @@ fn a_released_bucket_serves_every_key_it_held() {
     }
 
     // And the buckets are still routable: every node is where it was, holding its objects.
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("loaded shard");
-    assert_eq!(
-        shard.bucket_index.bucket_map.len(),
-        released_buckets,
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("loaded shard");
+        assert_eq!(
+            shard.bucket_index.bucket_map.len(),
+            released_buckets,
         "a released bucket must stay in the map -- a node that leaves is not reloadable"
-    );
-    assert!(
-        shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .all(|bucket| !bucket.in_memory() && bucket.meta_loaded() && !bucket.loading()),
+        );
+        assert!(
+            shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .all(|bucket| !bucket.in_memory() && bucket.meta_loaded() && !bucket.loading()),
         "the residency flags do not say released"
-    );
-    assert!(
-        shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .all(|bucket| !bucket.object_index.is_empty()),
+        );
+        assert!(
+            shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .all(|bucket| !bucket.object_index.is_empty()),
         "a released bucket kept no object index, so nothing can tell it from an empty one"
-    );
+        );
+    })
 }
 
 /// THE CORRECTNESS BAR, second half. Releasing REDUCES resident index memory, not cache bytes.
@@ -19862,25 +19870,26 @@ fn a_released_bucket_reloads_the_exact_block_list_it_released() {
     let (_dir, engine) = dumped_shard_with_keys(KEYS, 48);
 
     fn block_listing(engine: &TemporalEngine) -> Vec<(u32, String, String, Option<String>, u64, u64, u64)> {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let mut rows = super::blocks_with_identity(
-            &shards.get(&1).expect("loaded shard").bucket_index,
-        )
-        .into_iter()
-        .map(|(routing_bucket, _handle, object_key, block)| {
-            (
-                routing_bucket,
-                block.model_id().to_string(),
-                object_key.to_string(),
-                None::<String>,
-                block.address.block_slab_id(),
-                block.address.offset(),
-                block.address.length(),
+        engine.shards.with_state(1, |state| {
+            let mut rows = super::blocks_with_identity(
+                &state.expect("loaded shard").bucket_index,
             )
+            .into_iter()
+            .map(|(routing_bucket, _handle, object_key, block)| {
+                (
+                    routing_bucket,
+                    block.model_id().to_string(),
+                    object_key.to_string(),
+                    None::<String>,
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                )
+            })
+            .collect::<Vec<_>>();
+            rows.sort();
+            rows
         })
-        .collect::<Vec<_>>();
-        rows.sort();
-        rows
     }
 
     let before = block_listing(&engine);
@@ -19935,19 +19944,18 @@ fn a_write_into_a_released_bucket_loads_it_back_first() {
         !engine.released_bucket_index_buckets(1).contains(&target),
         "the bucket stayed registered as released after a write filed a block into it"
     );
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let bucket = shards
-        .get(&1)
-        .expect("loaded shard")
-        .bucket_index
-        .bucket_map
-        .get(&target)
-        .expect("the written bucket");
-    assert!(
-        bucket.in_memory() && !bucket.block_index.is_empty(),
-        "the bucket the write touched is neither resident nor released"
-    );
-    drop(shards);
+    engine.shards.with_state(1, |state| {
+        let bucket = state
+            .expect("loaded shard")
+            .bucket_index
+            .bucket_map
+            .get(&target)
+            .expect("the written bucket");
+        assert!(
+            bucket.in_memory() && !bucket.block_index.is_empty(),
+            "the bucket the write touched is neither resident nor released"
+        );
+    });
 
     // The overwritten key reads its new value, and a key that shared the reload reads its old one.
     assert_eq!(released_read(&engine, 7), Some(vec![b'z'; VALUE_LEN]));
@@ -19973,20 +19981,21 @@ fn released_object_id(index: usize) -> u64 {
 
 /// Every object id any bucket node still claims, across the whole shard.
 fn released_object_ids_claimed(engine: &TemporalEngine) -> std::collections::BTreeSet<u64> {
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    shards
-        .get(&1)
-        .expect("loaded shard")
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.object_index.iter().copied())
-        .collect()
+    engine.shards.with_state(1, |state| {
+        state
+            .expect("loaded shard")
+            .bucket_index
+            .bucket_map
+            .values()
+            .flat_map(|bucket| bucket.object_index.iter().copied())
+            .collect()
+    })
 }
 
 fn released_bucket_store_report(engine: &TemporalEngine) -> crate::engine::bucket_store::BucketStoreRuntimeReport {
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    crate::engine::bucket_store::runtime_report(shards.get(&1).expect("loaded shard"))
+    engine.shards.with_state(1, |state| {
+        crate::engine::bucket_store::runtime_report(state.expect("loaded shard"))
+    })
 }
 
 fn released_delete(engine: &TemporalEngine, index: usize) {
@@ -20216,15 +20225,15 @@ fn released_bucket_object_ids(
     engine: &TemporalEngine,
     routing_bucket: u32,
 ) -> std::collections::BTreeSet<u64> {
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    shards
-        .get(&1)
-        .expect("loaded shard")
-        .bucket_index
-        .bucket_map
-        .get(&routing_bucket)
-        .map(|bucket| bucket.object_index.iter().copied().collect())
-        .unwrap_or_default()
+    engine.shards.with_state(1, |state| {
+        state
+            .expect("loaded shard")
+            .bucket_index
+            .bucket_map
+            .get(&routing_bucket)
+            .map(|bucket| bucket.object_index.iter().copied().collect())
+            .unwrap_or_default()
+    })
 }
 
 /// The same settling, asked of a bucket that holds MORE THAN ONE object.
@@ -21794,78 +21803,79 @@ fn a_block_with_no_routing_bucket_is_summarised_inside_the_shards_own_range() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 loaded");
 
-    // DENOMINATOR ONE: the shard holds blocks at all.
-    let blocks_before: usize = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .map(|bucket| bucket.block_index.len())
-        .sum();
-    assert!(blocks_before > 0, "fixture stored no blocks, so this measures nothing");
+        // DENOMINATOR ONE: the shard holds blocks at all.
+        let blocks_before: usize = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|bucket| bucket.block_index.len())
+            .sum();
+        assert!(blocks_before > 0, "fixture stored no blocks, so this measures nothing");
 
-    // NO STRIP, BECAUSE THERE IS NOTHING TO STRIP. This used to clear the routing bucket off every
-    // block's address so the summary walk would take its fallback; an address carries no bucket, so
-    // the fallback is the only branch and the production state is the state under test.
-    //
-    // DENOMINATOR TWO, in the form that survived: every live block reports which bucket it is filed
-    // in, which is what the summary walk credits it to. An entry that did not would be credited by
-    // a hash over the whole keyspace instead.
-    let filed = crate::engine::storage_bucket_internals::collect_live_block_entries(shard)
-        .iter()
-        .filter(|entry| entry.filed_bucket().is_some())
-        .count();
-    assert_eq!(
-        filed, blocks_before,
+        // NO STRIP, BECAUSE THERE IS NOTHING TO STRIP. This used to clear the routing bucket off every
+        // block's address so the summary walk would take its fallback; an address carries no bucket, so
+        // the fallback is the only branch and the production state is the state under test.
+        //
+        // DENOMINATOR TWO, in the form that survived: every live block reports which bucket it is filed
+        // in, which is what the summary walk credits it to. An entry that did not would be credited by
+        // a hash over the whole keyspace instead.
+        let filed = crate::engine::storage_bucket_internals::collect_live_block_entries(shard)
+            .iter()
+            .filter(|entry| entry.filed_bucket().is_some())
+            .count();
+        assert_eq!(
+            filed, blocks_before,
         "{filed} of {blocks_before} live blocks report a filing; the walk under test credits a block \
-that does not to a bucket derived over the WHOLE keyspace, which this shard does not hold",
-    );
+    that does not to a bucket derived over the WHOLE keyspace, which this shard does not hold",
+        );
 
-    let bucket_ids: BTreeSet<u32> = shard.bucket_index.bucket_map.keys().copied().collect();
-    let summaries =
-        crate::engine::storage_reporting::bucket_storage_summaries(shard, 0, END_ROUTING_BUCKET);
+        let bucket_ids: BTreeSet<u32> = shard.bucket_index.bucket_map.keys().copied().collect();
+        let summaries =
+            crate::engine::storage_reporting::bucket_storage_summaries(shard, 0, END_ROUTING_BUCKET);
 
-    // HALF ONE: nothing is filed outside the range the shard was loaded with.
-    let outside_range: Vec<u32> = summaries
-        .iter()
-        .map(|summary| summary.routing_bucket)
-        .filter(|routing_bucket| *routing_bucket > END_ROUTING_BUCKET)
-        .collect();
-    assert!(
-        outside_range.is_empty(),
+        // HALF ONE: nothing is filed outside the range the shard was loaded with.
+        let outside_range: Vec<u32> = summaries
+            .iter()
+            .map(|summary| summary.routing_bucket)
+            .filter(|routing_bucket| *routing_bucket > END_ROUTING_BUCKET)
+            .collect();
+        assert!(
+            outside_range.is_empty(),
         "{} of {} summaries name a bucket above the shard's end ({END_ROUTING_BUCKET}); the \
 first few are {:?}. A summary for a bucket outside the shard's own range belongs to no bucket \
-the index holds.",
-        outside_range.len(),
-        summaries.len(),
-        &outside_range[..outside_range.len().min(5)],
-    );
+    the index holds.",
+            outside_range.len(),
+            summaries.len(),
+            &outside_range[..outside_range.len().min(5)],
+        );
 
-    // HALF TWO: and the placement agrees with the index, asserted separately -- a run that
-    // stayed inside the range but still disagreed with `bucket_map` would pass the half above.
-    let absent_from_map: Vec<u32> = summaries
-        .iter()
-        .map(|summary| summary.routing_bucket)
-        .filter(|routing_bucket| !bucket_ids.contains(routing_bucket))
-        .collect();
-    assert!(
-        absent_from_map.is_empty(),
+        // HALF TWO: and the placement agrees with the index, asserted separately -- a run that
+        // stayed inside the range but still disagreed with `bucket_map` would pass the half above.
+        let absent_from_map: Vec<u32> = summaries
+            .iter()
+            .map(|summary| summary.routing_bucket)
+            .filter(|routing_bucket| !bucket_ids.contains(routing_bucket))
+            .collect();
+        assert!(
+            absent_from_map.is_empty(),
         "{} of {} summaries name a bucket `bucket_map` does not hold; the first few are {:?}. \
 The live-block loop must place a block where `rebuild_bucket_first_index` places it, or a dump \
-naming the real bucket carries none of its blocks.",
-        absent_from_map.len(),
-        summaries.len(),
-        &absent_from_map[..absent_from_map.len().min(5)],
-    );
+    naming the real bucket carries none of its blocks.",
+            absent_from_map.len(),
+            summaries.len(),
+            &absent_from_map[..absent_from_map.len().min(5)],
+        );
 
-    // And the block count survived the re-placement: every block is still summarised somewhere.
-    let summarised_blocks: u64 = summaries.iter().map(|summary| summary.block_ref_count).sum();
-    assert_eq!(
-        summarised_blocks, blocks_before as u64,
-        "{blocks_before} blocks went in and {summarised_blocks} came out of the summaries",
-    );
+        // And the block count survived the re-placement: every block is still summarised somewhere.
+        let summarised_blocks: u64 = summaries.iter().map(|summary| summary.block_ref_count).sum();
+        assert_eq!(
+            summarised_blocks, blocks_before as u64,
+            "{blocks_before} blocks went in and {summarised_blocks} came out of the summaries",
+        );
+    })
 }
 
 /// A shard with `records` string keys, on a 1024-bucket routing range.
@@ -21930,57 +21940,58 @@ fn the_dirty_half_of_the_summaries_visits_one_entry_per_dirty_bucket() {
     for records in [8_000usize] {
         let dir = tempfile::tempdir().unwrap();
         let engine = dirty_index_fixture(dir.path(), records);
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
 
-        let dirty_objects = shard.dirty_objects.len();
-        let dirty_buckets = shard.dirty_objects.bucket_ids().count();
+            let dirty_objects = shard.dirty_objects.len();
+            let dirty_buckets = shard.dirty_objects.bucket_ids().count();
 
-        // DENOMINATOR ONE: there is a dirty set to fold at all.
-        assert!(
-            dirty_objects > 0,
-            "at {records} records the fixture left nothing dirty, so this measures nothing",
-        );
-        // DENOMINATOR TWO, and the one that matters: the two counts must be FAR APART. If every
-        // dirty object had its own bucket, "one visit per bucket" and "one visit per object"
-        // would be the same assertion and this test could not tell them apart.
-        assert!(
-            dirty_objects >= dirty_buckets.saturating_mul(4),
+            // DENOMINATOR ONE: there is a dirty set to fold at all.
+            assert!(
+                dirty_objects > 0,
+                "at {records} records the fixture left nothing dirty, so this measures nothing",
+            );
+            // DENOMINATOR TWO, and the one that matters: the two counts must be FAR APART. If every
+            // dirty object had its own bucket, "one visit per bucket" and "one visit per object"
+            // would be the same assertion and this test could not tell them apart.
+            assert!(
+                dirty_objects >= dirty_buckets.saturating_mul(4),
             "at {records} records there are {dirty_objects} dirty objects across {dirty_buckets} \
 dirty buckets; the two counts are too close for this test to distinguish per-bucket work from \
-per-object work",
-        );
+    per-object work",
+            );
 
-        crate::engine::storage_reporting::DIRTY_SUMMARY_VISITS
-            .store(0, std::sync::atomic::Ordering::Relaxed);
-        let summaries =
-            crate::engine::storage_reporting::bucket_storage_summaries(shard, 0, 1023);
-        let visits = crate::engine::storage_reporting::DIRTY_SUMMARY_VISITS
-            .load(std::sync::atomic::Ordering::Relaxed);
+            crate::engine::storage_reporting::DIRTY_SUMMARY_VISITS
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+            let summaries =
+                crate::engine::storage_reporting::bucket_storage_summaries(shard, 0, 1023);
+            let visits = crate::engine::storage_reporting::DIRTY_SUMMARY_VISITS
+                .load(std::sync::atomic::Ordering::Relaxed);
 
-        // DENOMINATOR THREE: the half under test ran. A "no more than X" bound holds trivially
-        // at zero, and a summaries call that never reached the dirty loop would read zero.
-        assert!(
-            visits > 0,
+            // DENOMINATOR THREE: the half under test ran. A "no more than X" bound holds trivially
+            // at zero, and a summaries call that never reached the dirty loop would read zero.
+            assert!(
+                visits > 0,
             "the dirty half never ran over {dirty_objects} dirty objects, so the count below \
-measures nothing",
-        );
-        assert_eq!(
-            visits, dirty_buckets as u64,
+    measures nothing",
+            );
+            assert_eq!(
+                visits, dirty_buckets as u64,
             "at {records} records the dirty half looked at {visits} entries for {dirty_buckets} \
 dirty buckets and {dirty_objects} dirty objects. It must be bounded by the bucket count: a \
-number tracking the object count means the per-key hash is back.",
-        );
+    number tracking the object count means the per-key hash is back.",
+            );
 
-        // AND THE ANSWER IS UNCHANGED, asserted separately. A fold that visits fewer entries but
-        // reports different totals is not the same fold -- these counts anchor WAL and index
-        // reclaim through the dump manifest's generation fingerprint.
-        let summed: u64 = summaries.iter().map(|s| s.dirty_object_count).sum();
-        assert_eq!(
-            summed, dirty_objects as u64,
+            // AND THE ANSWER IS UNCHANGED, asserted separately. A fold that visits fewer entries but
+            // reports different totals is not the same fold -- these counts anchor WAL and index
+            // reclaim through the dump manifest's generation fingerprint.
+            let summed: u64 = summaries.iter().map(|s| s.dirty_object_count).sum();
+            assert_eq!(
+                summed, dirty_objects as u64,
             "at {records} records the summaries account for {summed} dirty objects out of \
-{dirty_objects}",
-        );
+    {dirty_objects}",
+            );
+        })
     }
 }
 
@@ -21993,33 +22004,34 @@ number tracking the object count means the per-key hash is back.",
 fn the_dirty_half_at_eighty_thousand() {
     let dir = tempfile::tempdir().unwrap();
     let engine = dirty_index_fixture(dir.path(), 80_000);
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
 
-    let dirty_objects = shard.dirty_objects.len();
-    let dirty_buckets = shard.dirty_objects.bucket_ids().count();
-    assert!(dirty_objects > 0, "fixture left nothing dirty");
-    assert!(
-        dirty_objects >= dirty_buckets.saturating_mul(4),
-        "{dirty_objects} dirty objects across {dirty_buckets} buckets is too close to measure",
-    );
+        let dirty_objects = shard.dirty_objects.len();
+        let dirty_buckets = shard.dirty_objects.bucket_ids().count();
+        assert!(dirty_objects > 0, "fixture left nothing dirty");
+        assert!(
+            dirty_objects >= dirty_buckets.saturating_mul(4),
+            "{dirty_objects} dirty objects across {dirty_buckets} buckets is too close to measure",
+        );
 
-    crate::engine::storage_reporting::DIRTY_SUMMARY_VISITS
-        .store(0, std::sync::atomic::Ordering::Relaxed);
-    let summaries = crate::engine::storage_reporting::bucket_storage_summaries(shard, 0, 1023);
-    let visits = crate::engine::storage_reporting::DIRTY_SUMMARY_VISITS
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let summed: u64 = summaries.iter().map(|s| s.dirty_object_count).sum();
+        crate::engine::storage_reporting::DIRTY_SUMMARY_VISITS
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        let summaries = crate::engine::storage_reporting::bucket_storage_summaries(shard, 0, 1023);
+        let visits = crate::engine::storage_reporting::DIRTY_SUMMARY_VISITS
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let summed: u64 = summaries.iter().map(|s| s.dirty_object_count).sum();
 
-    println!(
+        println!(
         "dirty objects   {dirty_objects}\n\
          dirty buckets   {dirty_buckets}\n\
          dirty visits    {visits}\n\
-         summed count    {summed}",
-    );
-    assert!(visits > 0, "the dirty half never ran");
-    assert_eq!(visits, dirty_buckets as u64);
-    assert_eq!(summed, dirty_objects as u64);
+             summed count    {summed}",
+        );
+        assert!(visits > 0, "the dirty half never ran");
+        assert_eq!(visits, dirty_buckets as u64);
+        assert_eq!(summed, dirty_objects as u64);
+    })
 }
 
 /// A PARTIAL DUMP DRAINS THE BUCKETS IT CLEARED, not the whole dirty set.
@@ -22038,9 +22050,8 @@ fn a_partial_dump_drains_only_the_buckets_it_cleared() {
     let dir = tempfile::tempdir().unwrap();
     let engine = dirty_index_fixture(dir.path(), RECORDS);
 
-    let (dirty_before, buckets_before, chosen, chosen_share) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    let (dirty_before, buckets_before, chosen, chosen_share) = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         let mut counts = shard.dirty_objects.bucket_counts().collect::<Vec<_>>();
         // The busiest bucket, so the share this dump drops is the LARGEST a single bucket can
         // offer -- a bound that holds for it holds for any other.
@@ -22052,7 +22063,7 @@ fn a_partial_dump_drains_only_the_buckets_it_cleared() {
             chosen,
             chosen_share,
         )
-    };
+    });
 
     // DENOMINATORS: something is dirty, it is spread over many buckets, and the one bucket this
     // dump names holds a small share of it. Without the last of these "drained only its own
@@ -22092,18 +22103,19 @@ walking the whole set again to find one bucket's keys.",
 
     // HALF THREE, asserted separately: the right keys went. A drain that visited the right
     // NUMBER of keys but removed the wrong ones would pass both halves above.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    assert_eq!(
-        shard.dirty_objects.len() as u64,
-        dirty_before as u64 - chosen_share,
-        "{dirty_before} dirty objects less bucket {chosen}'s {chosen_share} should leave {}",
-        dirty_before as u64 - chosen_share,
-    );
-    assert!(
-        !shard.dirty_objects.bucket_ids().any(|bucket| bucket == chosen),
-        "bucket {chosen} was dumped and cleared but still holds dirty objects",
-    );
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        assert_eq!(
+            shard.dirty_objects.len() as u64,
+            dirty_before as u64 - chosen_share,
+            "{dirty_before} dirty objects less bucket {chosen}'s {chosen_share} should leave {}",
+            dirty_before as u64 - chosen_share,
+        );
+        assert!(
+            !shard.dirty_objects.bucket_ids().any(|bucket| bucket == chosen),
+            "bucket {chosen} was dumped and cleared but still holds dirty objects",
+        );
+    })
 }
 
 /// WHAT ACTUALLY GOVERNS THE RAFT-SNAPSHOT SLAB RETENTION: A LOG SEQUENCE, NOT A SLAB.

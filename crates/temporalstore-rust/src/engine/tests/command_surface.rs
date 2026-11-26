@@ -56,12 +56,13 @@ fn pttl(engine: &TemporalEngine, key: &str) -> i64 {
 /// clamped deadline is an entry in `expires_at_ms` with the record still sitting in `strings`,
 /// and a deletion is neither of those, whatever the clock has done in between.
 fn shard_state(engine: &TemporalEngine, key: &str) -> (bool, bool) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    (
-        shard.strings().contains_key(key),
-        shard.expires_at_ms().contains_key(key),
-    )
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        (
+            shard.strings().contains_key(key),
+            shard.expires_at_ms().contains_key(key),
+        )
+    })
 }
 
 fn get(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
@@ -600,9 +601,10 @@ fn a_deadline_already_in_the_past_removes_the_key_now() {
 /// none of them can be used to measure how faithfully a deadline was stored. This reads the
 /// map.
 fn stored_deadline_ms(engine: &TemporalEngine, key: &str) -> Option<u64> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    shard.expires_at_ms().get(key).copied()
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        shard.expires_at_ms().get(key).copied()
+    })
 }
 
 /// `SET key value KEEPTTL` replaces the value and leaves the deadline running.
@@ -894,56 +896,57 @@ fn a_deadline_equal_to_the_instant_has_already_passed() {
         );
     }
 
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
 
-    // One instant, used for the deadlines AND for the collector, so the comparison is exact.
-    let instant = crate::engine::resolve_now_ms();
-    crate::engine::set_expiry(shard, "boundary:past".to_string(), instant - 1);
-    crate::engine::set_expiry(shard, "boundary:equal".to_string(), instant);
-    crate::engine::set_expiry(shard, "boundary:future".to_string(), instant + 1);
+        // One instant, used for the deadlines AND for the collector, so the comparison is exact.
+        let instant = crate::engine::resolve_now_ms();
+        crate::engine::set_expiry(shard, "boundary:past".to_string(), instant - 1);
+        crate::engine::set_expiry(shard, "boundary:equal".to_string(), instant);
+        crate::engine::set_expiry(shard, "boundary:future".to_string(), instant + 1);
 
-    // Freeze the clock the collector reads. Held across all three calls below.
-    let _clock = crate::engine::ReplayClockGuard::enter(Some(instant));
+        // Freeze the clock the collector reads. Held across all three calls below.
+        let _clock = crate::engine::ReplayClockGuard::enter(Some(instant));
 
-    // ---- CONTROL: a deadline one millisecond BEHIND the instant is collected -----------
-    // Without this, a collector that had stopped collecting anything at all would satisfy the
-    // "future" claim below and look like a result.
-    assert!(
-        crate::engine::remove_if_expired(shard, "boundary:past"),
-        "CONTROL: a deadline one millisecond before the instant must be collected. It was not, \
+        // ---- CONTROL: a deadline one millisecond BEHIND the instant is collected -----------
+        // Without this, a collector that had stopped collecting anything at all would satisfy the
+        // "future" claim below and look like a result.
+        assert!(
+            crate::engine::remove_if_expired(shard, "boundary:past"),
+            "CONTROL: a deadline one millisecond before the instant must be collected. It was not, \
          so lazy expiry is not running here and nothing else below means anything.",
-    );
+        );
 
-    // ---- THE CLAIM: the instant itself counts as passed -------------------------------
-    assert!(
-        crate::engine::remove_if_expired(shard, "boundary:equal"),
-        "a deadline EQUAL to the instant has passed and the key must be collected. It was not, \
+        // ---- THE CLAIM: the instant itself counts as passed -------------------------------
+        assert!(
+            crate::engine::remove_if_expired(shard, "boundary:equal"),
+            "a deadline EQUAL to the instant has passed and the key must be collected. It was not, \
          so the comparison is `<` where it has to be `<=`, and a key whose deadline is exactly \
          now stays readable for the millisecond it was supposed to stop being readable.",
-    );
+        );
 
-    // ---- CONTROL: a deadline one millisecond AHEAD is NOT collected -------------------
-    // Without this, a collector that removed unconditionally would satisfy both claims above.
-    assert!(
-        !crate::engine::remove_if_expired(shard, "boundary:future"),
-        "CONTROL: a deadline one millisecond after the instant has NOT passed and the key must \
+        // ---- CONTROL: a deadline one millisecond AHEAD is NOT collected -------------------
+        // Without this, a collector that removed unconditionally would satisfy both claims above.
+        assert!(
+            !crate::engine::remove_if_expired(shard, "boundary:future"),
+            "CONTROL: a deadline one millisecond after the instant has NOT passed and the key must \
          stay. It did not, so the comparison collects keys that are still live.",
-    );
+        );
 
-    // ---- and the shard agrees with the answers -----------------------------------------
-    assert!(
-        !shard.strings().contains_key("boundary:past"),
-        "the collected key must leave `strings`, not just answer that it did",
-    );
-    assert!(
-        !shard.strings().contains_key("boundary:equal"),
-        "the key whose deadline equals the instant must leave `strings` too",
-    );
-    assert!(
-        shard.strings().contains_key("boundary:future"),
-        "the key that has not reached its deadline must still be in `strings`",
-    );
+        // ---- and the shard agrees with the answers -----------------------------------------
+        assert!(
+            !shard.strings().contains_key("boundary:past"),
+            "the collected key must leave `strings`, not just answer that it did",
+        );
+        assert!(
+            !shard.strings().contains_key("boundary:equal"),
+            "the key whose deadline equals the instant must leave `strings` too",
+        );
+        assert!(
+            shard.strings().contains_key("boundary:future"),
+            "the key that has not reached its deadline must still be in `strings`",
+        );
+    });
 }
 
 /// The read-only fast path hides a key whose deadline has passed.
@@ -971,10 +974,11 @@ fn the_read_only_fast_path_hides_a_key_whose_deadline_has_passed() {
     /// Arm a deadline well in the past WITHOUT letting any command collect the key first --
     /// going through `EXPIRE` would run the slow path and answer the question there instead.
     fn backdate(engine: &TemporalEngine, key: &str) {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-        let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
-        crate::engine::set_expiry(shard, key.to_string(), past);
+        engine.shards.with_state_mut(1, |shard| {
+            let shard = shard.expect("shard 1 is loaded");
+            let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
+            crate::engine::set_expiry(shard, key.to_string(), past);
+        });
     }
 
     fn durable(engine: &TemporalEngine, command: Command) -> CommandResponse {
@@ -1090,12 +1094,11 @@ fn the_hash_increment_validator_steps_aside_for_a_lapsed_deadline() {
     // ---- HALF TWO: the same field, once its deadline has passed ----------------------
     // Armed directly so that nothing collects the key on the way in -- the point is to reach
     // the validator with the stale bytes still in `hashes` and the deadline already behind.
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
         let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
         crate::engine::set_expiry(shard, "incr:lapsed".to_string(), past);
-    }
+    });
     assert_eq!(
         RespValue::Integer(1),
         resp(&engine, &["HINCRBY", "incr:lapsed", "f", "1"]),

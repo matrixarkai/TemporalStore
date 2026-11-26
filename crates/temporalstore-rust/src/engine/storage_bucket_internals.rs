@@ -2848,7 +2848,46 @@ pub(super) fn release_bucket_blocks(
     shard: &mut ShardState,
     candidates: &[u32],
 ) -> BucketReleaseOutcome {
-    release_bucket_blocks_inner(shard, candidates, false)
+    release_bucket_blocks_inner(shard, candidates, false, None)
+}
+
+/// Derived bucket indexes removed from serving state. Drop these after releasing the shard owner.
+pub(super) struct RetiredBucketIndexes(Vec<crate::engine::state::BlockIndexMap>);
+
+impl RetiredBucketIndexes {
+    pub(super) fn with_capacity(candidates: usize) -> Self {
+        Self(Vec::with_capacity(candidates))
+    }
+}
+
+#[cfg(test)]
+type BeforeRetiredBucketDrop = Box<dyn FnOnce(usize)>;
+
+#[cfg(test)]
+std::thread_local! {
+    static BEFORE_RETIRED_BUCKET_DROP: std::cell::RefCell<Option<BeforeRetiredBucketDrop>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+impl Drop for RetiredBucketIndexes {
+    fn drop(&mut self) {
+        if !self.0.is_empty() {
+            let hook = BEFORE_RETIRED_BUCKET_DROP.with(|hook| hook.borrow_mut().take());
+            if let Some(hook) = hook {
+                hook(self.0.len());
+            }
+        }
+    }
+}
+
+pub(super) fn detach_bucket_blocks(
+    shard: &mut ShardState,
+    candidates: &[u32],
+    preserve_inline_pages: bool,
+    retired: &mut RetiredBucketIndexes,
+) -> BucketReleaseOutcome {
+    release_bucket_blocks_inner(shard, candidates, preserve_inline_pages, Some(retired))
 }
 
 #[cfg(test)]
@@ -2860,7 +2899,7 @@ pub(super) fn release_bucket_blocks_preserving_inline_pages(
     shard: &mut ShardState,
     candidates: &[u32],
 ) -> BucketReleaseOutcome {
-    release_bucket_blocks_inner(shard, candidates, true)
+    release_bucket_blocks_inner(shard, candidates, true, None)
 }
 
 fn inline_string_pages(bucket: &BucketNode) -> bool {
@@ -2872,6 +2911,7 @@ fn release_bucket_blocks_inner(
     shard: &mut ShardState,
     candidates: &[u32],
     preserve_inline_pages: bool,
+    mut retired: Option<&mut RetiredBucketIndexes>,
 ) -> BucketReleaseOutcome {
     let mut outcome = BucketReleaseOutcome::default();
     if candidates.is_empty() {
@@ -3083,7 +3123,14 @@ fn release_bucket_blocks_inner(
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("bucket read immutably above");
-        bucket.block_index = crate::engine::state::BlockIndexMap::Empty;
+        if let Some(retired) = retired.as_deref_mut() {
+            retired.0.push(std::mem::replace(
+                &mut bucket.block_index,
+                crate::engine::state::BlockIndexMap::Empty,
+            ));
+        } else {
+            bucket.block_index = crate::engine::state::BlockIndexMap::Empty;
+        }
         bucket.set_meta_loaded(true);
         bucket.set_loading(false);
         bucket.set_in_memory(false);
@@ -10598,4 +10645,76 @@ pub(super) mod model_kind_registry_guards {
             assert_eq!(model_report_code(name), *code);
         }
     }
+}
+
+
+#[cfg(test)]
+#[test]
+fn detached_bucket_index_drops_off_owner_and_preserves_physical_gc_liveness() {
+    use crate::{Command, CommandResponse, ExecuteRequest, TemporalEngine};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let _physical = crate::engine::value_once_in_test(false);
+    let root = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20, root.path().join("cache"), root.path().join("blocks"), root.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.load_shard(2);
+    let key = "detached-physical-index";
+    assert!(engine.execute(ExecuteRequest {
+        shard_id: 1, command: Command::StringSet { key: key.into(), value: vec![7; 128] },
+    }).status.ok);
+    let bucket = engine.routing_bucket_for_key(1, key);
+    let slab = engine.shards.with_state(1, |state| {
+        let state = state.unwrap();
+        let address = state.strings().get(key).expect("serving address");
+        assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()));
+        address.block_slab_id()
+    });
+
+    BEFORE_RETIRED_BUCKET_DROP.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(|_| panic!("dirty release detached the index")));
+    });
+    assert_eq!(engine.release_bucket_index_blocks(1, vec![bucket]), (0, 0, 1));
+    assert!(BEFORE_RETIRED_BUCKET_DROP.with(|slot| slot.borrow_mut().take().is_some()));
+    engine.create_bucket_dump_manifest(1, [bucket]).expect("durable bucket image");
+    engine.shards.with_state_mut(1, |state| {
+        clear_published_object_dirty_state(state.unwrap(), key);
+    });
+
+    let peer = engine.clone();
+    BEFORE_RETIRED_BUCKET_DROP.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move |indexes| {
+            assert_eq!(indexes, 1);
+            let (send, receive) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                peer.shards.with_state(1, |state| {
+                    let state = state.unwrap();
+                    assert!(state.bucket_index.released_buckets.contains(&bucket));
+                    let node = state.bucket_index.bucket_map.get(&bucket).unwrap();
+                    assert!(!node.in_memory() && node.block_index.is_empty());
+                });
+                let gc = peer.storage_block_gc_dependency_plan(1, [slab], [], [], None, None, 0);
+                assert!(gc.live_block_slab_ids.contains(&slab));
+                assert!(gc.blocked_block_slab_ids.contains(&slab));
+                assert!(!gc.reclaimable_block_slab_ids.contains(&slab));
+                assert!(peer.execute(ExecuteRequest {
+                    shard_id: 2, command: Command::StringSet { key: "detach-peer".into(), value: vec![3; 64] },
+                }).status.ok);
+                send.send(()).unwrap();
+            });
+            receive.recv_timeout(Duration::from_secs(10)).expect("bucket drop retained the owner");
+            worker.join().unwrap();
+        }));
+    });
+    assert_eq!(engine.release_bucket_index_blocks(1, vec![bucket]), (1, 1, 0));
+    assert!(BEFORE_RETIRED_BUCKET_DROP.with(|slot| slot.borrow().is_none()));
+    engine.cache.invalidate_shard(1).unwrap();
+    assert_eq!(engine.execute(ExecuteRequest {
+        shard_id: 1, command: Command::StringGet { key: key.into() },
+    }).response, CommandResponse::Bytes { value: Some(vec![7; 128]) });
+    assert!(engine.reload_released_bucket_index_blocks(1, bucket));
+    assert!(engine.live_block_slab_ids(1).contains(&slab));
 }

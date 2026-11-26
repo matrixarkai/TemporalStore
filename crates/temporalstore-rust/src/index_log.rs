@@ -3507,6 +3507,27 @@ impl LocalIndexLogStore {
                 upsert,
                 durable,
                 Relocation::default(),
+                None,
+            )
+        })
+    }
+
+    /// A detached expiry delta is valid only at its current accepted WAL cut.
+    pub(crate) fn append_expiry_delta(
+        &self, shard_id: ShardId, items: Vec<IndexItem>, key_states: Vec<KeyState>,
+        cut: u64, durable: bool, wal: Option<&crate::wal::LocalWriteAheadLogStore>,
+    ) -> Result<u64, IndexLogError> {
+        crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::IndexLogDelta, || {
+            self.append_delta_inner(
+                shard_id,
+                items,
+                key_states,
+                Some(cut),
+                None,
+                false,
+                durable,
+                Relocation::default(),
+                wal,
             )
         })
     }
@@ -3550,6 +3571,7 @@ impl LocalIndexLogStore {
                 true,
                 true,
                 Relocation { from, elements },
+                None,
             )
         })
     }
@@ -3565,6 +3587,7 @@ impl LocalIndexLogStore {
         upsert: bool,
         durable: bool,
         relocation: Relocation,
+        expiry_wal: Option<&crate::wal::LocalWriteAheadLogStore>,
     ) -> Result<u64, IndexLogError> {
         if bulk_ingest_mode() || !indexlog_enabled() {
             return Ok(0);
@@ -3572,6 +3595,13 @@ impl LocalIndexLogStore {
         // NOT `lock_flushed`: this is the writer, and what is already queued stays queued.
         let stream = self.stream(shard_id);
         let mut inner = stream.lock().expect("index log lock poisoned");
+        if let Some(wal) = expiry_wal {
+            // O(1) raw cache probe; ordinary writers reserve WAL order before
+            // taking this Index gate. No WAL mutex is held over Index I/O.
+            if applied_wal_sequence != Some(wal.cached_last_sequence(shard_id)) {
+                return Ok(0);
+            }
+        }
         inner.repair_failed_append()?;
         inner.ensure_root()?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {

@@ -83,7 +83,7 @@ fn interleaved_rows_release_admission_and_register_before_each_slice_returns() {
     let visits = observed.clone();
     AFTER_SLICE.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(move |engine, _, count| {
-            assert!(engine.shards.try_write().is_ok());
+            assert!(matches!(engine.shards.handle(1).expect("shard is loaded").try_write_loaded_for_test(), Ok(true)));
             read(engine, count, 48);
             let future = engine.batch_hash_multi_get_compact(BatchHashMultiGetRequest {
                 shard_id: 1,
@@ -102,9 +102,8 @@ fn interleaved_rows_release_admission_and_register_before_each_slice_returns() {
     assert!(response.status.ok && response.errors.is_empty());
     assert_eq!((response.applied, response.skipped), (130, 0));
     assert_eq!(observed.load(Ordering::Relaxed), 3);
-    let names: std::collections::HashSet<_> = {
-        let shards = engine.shards.read().unwrap();
-        let shard = &shards[&1];
+    let names: std::collections::HashSet<_> = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
         let mut names = std::collections::HashSet::new();
         for row in 0..130 {
             let fields = shard
@@ -117,7 +116,7 @@ fn interleaved_rows_release_admission_and_register_before_each_slice_returns() {
             }
         }
         names
-    };
+    });
     assert_eq!(names.len(), 2, "field owners are shared across slices");
     let stats = engine.wal_store.stats_without_rescan(1);
     assert_eq!((stats.writes, stats.syncs), (3, 1));
@@ -183,7 +182,7 @@ fn interleaved_barrier_failure_fences_serving_and_never_acknowledges_rows() {
     BEFORE_SHARED_ROW_COMMIT.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(|engine, shard, sequence| {
             assert_eq!(sequence, 3);
-            assert!(engine.shards.try_write().is_ok(), "WAL barrier must run outside the shard guard");
+            assert!(matches!(engine.shards.handle(shard).expect("shard is loaded").try_write_loaded_for_test(), Ok(true)), "WAL barrier must run outside the shard guard");
             let path = engine.wal_store.info(shard).unwrap().path;
             std::fs::rename(&path, path.with_extension("saved")).unwrap();
             std::fs::create_dir(path).unwrap();

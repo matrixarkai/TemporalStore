@@ -53,7 +53,7 @@ fn serialization_releases_guard_and_preserves_owned_and_shared_snapshots() {
                 request(&["first", "second"], &["value", "neighbor"]),
                 |index, result| {
                     assert!(
-                        engine.shards.try_write().is_ok(),
+                        matches!(engine.shards.handle(1).expect("shard is loaded").try_write_loaded_for_test(), Ok(true)),
                         "encoding must not hold the shard guard"
                     );
                     let values = result.unwrap();
@@ -112,7 +112,7 @@ fn snapshot_preserves_missing_duplicate_and_empty_projections() {
         assert_eq!(bytes, rmp_serde::to_vec_named(&full).unwrap());
         engine
             .visit_batch_hash_multi_get(req, |_, values| {
-                assert!(engine.shards.try_write().is_ok());
+                assert!(matches!(engine.shards.handle(1).expect("shard is loaded").try_write_loaded_for_test(), Ok(true)));
                 assert_eq!(values.unwrap().len(), fields.len());
             })
             .unwrap();
@@ -136,7 +136,7 @@ fn oversized_projection_streams_after_releasing_the_guard() {
             request(&["missing", "large", "missing"], &["value"]),
             |index, row| {
                 assert!(
-                    engine.shards.try_write().is_ok(),
+                    matches!(engine.shards.handle(1).expect("shard is loaded").try_write_loaded_for_test(), Ok(true)),
                     "large payloads must not retain the shard guard"
                 );
                 let row = row.unwrap();
@@ -174,10 +174,10 @@ fn slab_snapshot_survives_overwrite_delete_and_reclaim_before_payload_loading() 
             },
         );
     }
-    let addresses = {
-        let shards = engine.shards.read().unwrap();
+    let addresses = engine.shards.with_state(1, |state| {
+        let shard = state.unwrap();
         ["first", "second"].map(|key| {
-            let address = shards[&1]
+            let address = shard
                 .bucket_index
                 .hashes
                 .get(key)
@@ -188,7 +188,7 @@ fn slab_snapshot_survives_overwrite_delete_and_reclaim_before_payload_loading() 
             assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()));
             address
         })
-    };
+    });
     let old_slabs = addresses
         .iter()
         .map(|address| address.block_slab_id())
@@ -198,7 +198,7 @@ fn slab_snapshot_survives_overwrite_delete_and_reclaim_before_payload_loading() 
     AFTER_PROJECTED_READ_PLAN.with(|slot| {
         assert!(slot.borrow().is_none());
         *slot.borrow_mut() = Some(Box::new(move || {
-            assert!(writer.shards.try_write().is_ok());
+            assert!(matches!(writer.shards.handle(1).expect("shard is loaded").try_write_loaded_for_test(), Ok(true)));
             std::thread::spawn(move || {
                 writer.block_store.roll_slab_for_shard(1).unwrap();
                 write(
@@ -292,10 +292,10 @@ fn wal_snapshot_survives_overwrite_delete_and_reclaim_before_payload_loading() {
     for (key, generation) in [("first", 7), ("second", 8)] {
         set_row(&engine, key, generation);
     }
-    {
-        let shards = engine.shards.read().unwrap();
+    engine.shards.with_state(1, |state| {
+        let shard = state.unwrap();
         for key in ["first", "second"] {
-            let address = shards[&1]
+            let address = shard
                 .bucket_index
                 .hashes
                 .get(key)
@@ -304,7 +304,7 @@ fn wal_snapshot_survives_overwrite_delete_and_reclaim_before_payload_loading() {
                 .unwrap();
             assert!(crate::wal_record::is_wal_resident(address.block_slab_id()));
         }
-    }
+    });
     engine.cache.invalidate_shard(1).unwrap();
     let reclaim_to = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let target = reclaim_to.clone();
@@ -312,7 +312,7 @@ fn wal_snapshot_survives_overwrite_delete_and_reclaim_before_payload_loading() {
     AFTER_PROJECTED_READ_PLAN.with(|slot| {
         assert!(slot.borrow().is_none());
         *slot.borrow_mut() = Some(Box::new(move || {
-            assert!(writer.shards.try_write().is_ok());
+            assert!(matches!(writer.shards.handle(1).expect("shard is loaded").try_write_loaded_for_test(), Ok(true)));
             let sequence = std::thread::spawn(move || {
                 set_row(&writer, "first", 9);
                 let sequence = writer.wal_store.stats(1).last_sequence;

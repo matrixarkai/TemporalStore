@@ -21,14 +21,14 @@
 //!
 //! # AND THE ANSWER IS THE SECOND ONE
 //!
-//! **Both paths leave the whole corpus pending — 64 of 64.** So the name describes the caller it
+//! **Both paths leave the whole corpus pending â€” 64 of 64.** So the name describes the caller it
 //! was first written for, not a condition: dirtying is unconditional, a synchronous write does not
 //! write through, and write-through has to be *built* rather than selected. The reasoning from the
 //! name was wrong and this arm is what says so.
 //!
 //! # WHAT MAKES THAT BUILD AFFORDABLE, AND WHERE IT WOULD NOT BE
 //!
-//! The same run shows **64 objects in 64 buckets — one per bucket**. That is not a property of the
+//! The same run shows **64 objects in 64 buckets â€” one per bucket**. That is not a property of the
 //! workload but of the default routing range: `load_shard` uses `0..u32::MAX`, where the placement
 //! modulus is the range width, so a key lands alone by construction.
 //!
@@ -60,12 +60,13 @@ fn engine(dir: &std::path::Path) -> crate::TemporalEngine {
 
 /// The write-back set's size for shard 1, read straight off the shard.
 fn pending(engine: &crate::TemporalEngine) -> (usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    (
-        shard.dirty_objects.len(),
-        shard.dirty_objects.bucket_counts().count(),
-    )
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        (
+            shard.dirty_objects.len(),
+            shard.dirty_objects.bucket_counts().count(),
+        )
+    })
 }
 
 #[test]

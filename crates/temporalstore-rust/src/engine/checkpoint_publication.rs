@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::types::ShardId;
@@ -12,10 +12,15 @@ use crate::types::ShardId;
 struct PublicationState {
     revision: AtomicU64,
     last_dump_time_ms: AtomicU64,
+    closing: AtomicBool,
     active: Mutex<bool>,
 }
 
 impl PublicationState {
+    fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::Acquire)
+    }
+
     fn advance(&self) -> io::Result<()> {
         let revision = self
             .revision
@@ -52,6 +57,30 @@ pub(super) struct CheckpointPublications {
     states: Mutex<HashMap<ShardId, Arc<PublicationState>>>,
 }
 
+pub(super) struct ClosingPublication {
+    shard_id: ShardId,
+    state: Arc<PublicationState>,
+}
+
+pub(super) struct DrainedPublication(ClosingPublication);
+
+impl DrainedPublication {
+    pub(super) fn shard_id(&self) -> ShardId {
+        self.0.shard_id
+    }
+}
+
+impl ClosingPublication {
+    /// Wait outside the engine shard guards. The returned token holds no mutex.
+    pub(super) fn drain(self) -> DrainedPublication {
+        {
+            let mut active = self.state.active.lock().expect("checkpoint publication lock poisoned");
+            *active = false;
+        }
+        DrainedPublication(self)
+    }
+}
+
 impl CheckpointPublications {
     fn state(&self, shard_id: ShardId) -> Arc<PublicationState> {
         self.states
@@ -62,6 +91,7 @@ impl CheckpointPublications {
                 Arc::new(PublicationState {
                     revision: AtomicU64::new(0),
                     last_dump_time_ms: AtomicU64::new(0),
+                    closing: AtomicBool::new(false),
                     active: Mutex::new(true),
                 })
             })
@@ -101,7 +131,7 @@ impl CheckpointPublications {
             .active
             .lock()
             .expect("checkpoint publication lock poisoned");
-        if !*active || captured.state.revision.load(Ordering::Acquire) != captured.revision {
+        if !*active || captured.state.is_closing() || captured.state.revision.load(Ordering::Acquire) != captured.revision {
             return Ok(None);
         }
         // An I/O error may follow a successful rename. Invalidate older captures before
@@ -120,7 +150,7 @@ impl CheckpointPublications {
             .active
             .lock()
             .expect("checkpoint publication lock poisoned");
-        if !*active {
+        if !*active || publication.is_closing() {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "checkpoint generation is closed",
@@ -130,26 +160,67 @@ impl CheckpointPublications {
         write()
     }
 
+    /// Keep recovery-image replacement out of the WAL proof and truncation window.
+    /// The callback reads durable state and must not acquire a shard state guard.
+    pub(super) fn with_wal_reclaim_publication<T>(
+        &self, shard_id: ShardId, reclaim: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let state = self.state(shard_id);
+        let active = state.active.lock().expect("checkpoint publication lock poisoned");
+        if !*active || state.is_closing() {
+            return None;
+        }
+        Some(reclaim())
+    }
+
     /// Check a completed publication without waiting for another publisher's I/O.
     pub(super) fn is_current_after_publish(&self, captured: &CheckpointPublication) -> bool {
         let Some(revision) = captured.revision.checked_add(1) else { return false; };
         self.states.lock().expect("checkpoint map lock poisoned")
             .get(&captured.shard_id)
-            .is_some_and(|state| Arc::ptr_eq(state, &captured.state)
+            .is_some_and(|state| Arc::ptr_eq(state, &captured.state) && !state.is_closing()
                 && state.revision.load(Ordering::Acquire) == revision)
     }
 
+    /// Reserve close while the caller owns the shard's lifecycle reservation and state guard.
+    /// Keep the entry discoverable so ID-based lookups cannot allocate another generation.
+    pub(super) fn begin_close(&self, shard_id: ShardId) -> ClosingPublication {
+        let state = self.state(shard_id);
+        assert!(!state.closing.swap(true, Ordering::AcqRel), "publication already closing");
+        ClosingPublication { shard_id, state }
+    }
+
+    /// Check identity before detaching live state and clearing ID-based registrations.
+    pub(super) fn is_current_close(&self, drained: &DrainedPublication) -> bool {
+        let closing = &drained.0;
+        self.states.lock().expect("checkpoint map lock poisoned")
+            .get(&closing.shard_id)
+            .is_some_and(|state| Arc::ptr_eq(state, &closing.state) && state.is_closing())
+    }
+
+    /// Remove the closed entry only after the lifecycle reservation's side cleanup is complete.
+    pub(super) fn finish_close(&self, drained: DrainedPublication) -> bool {
+        let closing = drained.0;
+        let mut states = self.states.lock().expect("checkpoint map lock poisoned");
+        if !states.get(&closing.shard_id)
+            .is_some_and(|state| Arc::ptr_eq(state, &closing.state) && state.is_closing())
+        {
+            return false;
+        }
+        states.remove(&closing.shard_id);
+        true
+    }
+
     pub(super) fn forget(&self, shard_id: ShardId) {
-        let state = self
-            .states
-            .lock()
-            .expect("checkpoint map lock poisoned")
-            .remove(&shard_id);
+        let state = self.states.lock().expect("checkpoint map lock poisoned")
+            .get(&shard_id).cloned();
         if let Some(state) = state {
-            *state
-                .active
-                .lock()
-                .expect("checkpoint publication lock poisoned") = false;
+            let mut active = state.active.lock().expect("checkpoint publication lock poisoned");
+            let mut states = self.states.lock().expect("checkpoint map lock poisoned");
+            if states.get(&shard_id).is_some_and(|current| Arc::ptr_eq(current, &state) && !current.is_closing()) {
+                *active = false;
+                states.remove(&shard_id);
+            }
         }
     }
 
@@ -294,6 +365,65 @@ mod tests {
             .publish(&captured, || Ok(()))
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn closing_publication_keeps_its_identity_until_cleanup_finishes() {
+        let publications = CheckpointPublications::default();
+        let before = publications.capture(1);
+        let closing = publications.begin_close(1);
+        let during = publications.capture(1);
+        assert!(Arc::ptr_eq(&before.state, &during.state));
+        assert!(during.state.is_closing());
+        assert!(publications.publish(&during, || -> io::Result<()> {
+            panic!("closed capture published");
+        }).unwrap().is_none());
+        assert!(publications.publish_current(1, || -> io::Result<()> {
+            panic!("ID-only publisher entered a closing generation");
+        }).is_err());
+        let drained = closing.drain();
+        assert!(publications.is_current_close(&drained));
+        assert!(publications.finish_close(drained));
+        let replacement = publications.capture(1);
+        assert!(!Arc::ptr_eq(&during.state, &replacement.state));
+        assert!(publications.publish(&before, || Ok(())).unwrap().is_none());
+        assert!(publications.publish(&replacement, || Ok(())).unwrap().is_some());
+    }
+
+    #[test]
+    fn close_reservation_does_not_wait_for_a_failing_publisher() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let publications = Arc::new(CheckpointPublications::default());
+        let writer = Arc::clone(&publications);
+        let (started_tx, started_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let publishing = std::thread::spawn(move || {
+            writer.publish_current(1, || -> io::Result<()> {
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                Err(io::Error::other("publication failed"))
+            })
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        let closer = Arc::clone(&publications);
+        let (reserved_tx, reserved_rx) = channel();
+        let closing = std::thread::spawn(move || {
+            let reservation = closer.begin_close(1);
+            reserved_tx.send(()).unwrap();
+            reservation.drain()
+        });
+        let reserved = reserved_rx.recv_timeout(Duration::from_secs(5));
+        let peer = publications.publish_current(2, || Ok(()));
+        release_tx.send(()).unwrap();
+        assert!(publishing.join().unwrap().is_err());
+        let drained = closing.join().unwrap();
+        reserved.expect("close reservation waited for the publication");
+        peer.unwrap();
+        assert!(publications.is_current_close(&drained));
+        assert!(publications.finish_close(drained));
     }
 
     #[test]
