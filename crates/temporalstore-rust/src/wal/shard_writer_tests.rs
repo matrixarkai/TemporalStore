@@ -12,6 +12,15 @@ fn command(value: u64) -> Command {
     }
 }
 
+fn decoded_records(store: &LocalWriteAheadLogStore, shard: ShardId) -> Vec<WriteAheadLogRecord> {
+    let (rows, truncated) = store.scan_decoded(shard, 0, u64::MAX, u64::MAX).unwrap();
+    assert!(
+        !truncated,
+        "exact verification requires the complete WAL window"
+    );
+    rows.into_iter().map(|(_, record)| record).collect()
+}
+
 fn parked_owner_allows_peer(phase: &'static str, buffered: bool) {
     let directory = tempfile::tempdir().unwrap();
     // Leave real on-disk history for the cold path to reconcile, not an empty warm cache.
@@ -71,7 +80,7 @@ fn parked_owner_allows_peer(phase: &'static str, buffered: bool) {
     let peer = store.clone();
     let peer_thread = std::thread::spawn(move || {
         let record = peer.append_with_sync(2, command(42), true).unwrap();
-        let rows = peer.scan(2, 0, u64::MAX, u64::MAX).unwrap();
+        let rows = decoded_records(&peer, 2);
         let durable = peer.info(2).unwrap().last_flushed_sequence;
         done.send((record, rows, durable)).unwrap();
     });
@@ -87,7 +96,7 @@ fn parked_owner_allows_peer(phase: &'static str, buffered: bool) {
     assert_eq!(durable, 1);
     assert!(!Arc::ptr_eq(&one, &store.shard_writer(2)));
     assert!(store.same_log(&store.clone()));
-    let rows = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+    let rows = decoded_records(&store, 1);
     assert!(rows
         .windows(2)
         .all(|rows| rows[0].sequence + 1 == rows[1].sequence));
@@ -157,7 +166,7 @@ fn racing_first_touches_publish_one_owner_and_one_ordered_stream() {
     let mut sequences: Vec<_> = results.iter().map(|(_, row)| row.sequence).collect();
     sequences.sort_unstable();
     assert_eq!(sequences, (1..=8).collect::<Vec<_>>());
-    let rows = store.scan(17, 0, u64::MAX, u64::MAX).unwrap();
+    let rows = decoded_records(&store, 17);
     for (_, expected) in &results {
         assert_eq!(&rows[(expected.sequence - 1) as usize], expected);
     }
@@ -191,7 +200,7 @@ fn failed_buffered_write_is_local_and_preserves_order_and_read_lease() {
     assert!(failed.is_err());
     assert_eq!(owner.lock_inner_raw().pending_total, before);
     let peer = store.append_with_sync(2, command(30), false).unwrap();
-    assert_eq!(store.scan(2, 0, u64::MAX, u64::MAX).unwrap(), vec![peer]);
+    assert_eq!(decoded_records(&store, 2), vec![peer]);
     assert_eq!(store.flush(2).unwrap().last_sequence, 1);
     assert_eq!(
         owner.lock_inner_raw().pending_total,
@@ -201,7 +210,7 @@ fn failed_buffered_write_is_local_and_preserves_order_and_read_lease() {
     assert!(lease.same_log(&store));
     assert_eq!(store.flush(1).unwrap().last_sequence, 2);
     assert_eq!(owner.lock_inner_raw().pending_total, 0);
-    assert_eq!(store.scan(1, 0, u64::MAX, u64::MAX).unwrap()[1], second);
+    assert_eq!(decoded_records(&store, 1)[1], second);
     let retained = store.gc_before_sequence_unchecked(1, 2).unwrap();
     assert!(retained.clamped_by_block_retention);
     assert_eq!(retained.effective_retain_from_sequence, 1);
@@ -230,4 +239,23 @@ fn shard_owner_lifetime_and_log_identity_do_not_cycle() {
     let replacement = LocalWriteAheadLogStore::new(directory.path());
     assert!(!lease.same_log(&replacement));
     drop(lease);
+}
+
+#[test]
+fn registration_observers_do_not_create_a_cold_owner_or_ready_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalWriteAheadLogStore::new(directory.path());
+    assert_eq!(store.registered_block_floor(99, 7), None);
+    assert!(!store.registered_block_span_has_holes(99, 7));
+    assert!(store.inner.writers.lock().unwrap().is_empty());
+    assert!(store.inner.ready.lock().unwrap().is_empty());
+    store.replace_block_location(99, 7, 12, 1, None);
+    assert_eq!(store.registered_block_floor(99, 7), Some(12));
+    assert!(!store.registered_block_span_has_holes(99, 7));
+    assert_eq!(store.registered_block_floor(99, 8), None);
+    assert!(!store.registered_block_span_has_holes(99, 8));
+    assert_eq!(store.inner.writers.lock().unwrap().len(), 1);
+    assert!(store.inner.ready.lock().unwrap().is_empty());
+    store.remove_block_location(99, 7, 12, 1);
+    assert_eq!(store.registered_block_floor(99, 7), None);
 }

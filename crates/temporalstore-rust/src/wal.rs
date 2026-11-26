@@ -2853,6 +2853,13 @@ impl LocalWriteAheadLogStore {
         self.shard_writer(shard_id).coordinator.clone()
     }
 
+    fn existing_group_commit_coordinator(
+        &self,
+        shard_id: ShardId,
+    ) -> Option<Arc<GroupCommitCoordinator>> {
+        self.existing_shard_writer(shard_id).map(|writer| writer.coordinator.clone())
+    }
+
     /// Coalesced WAL durability barrier (group commit). Ensures every byte appended for
     /// `shard_id` up to at least `required_sequence` is `fdatasync`'d to disk before
     /// returning. Concurrent callers serialize on this shard's coordinator; the first to run fsyncs
