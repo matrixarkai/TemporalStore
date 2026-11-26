@@ -497,7 +497,7 @@ fn the_measured_fixture_never_dumps_so_the_buckets_it_calls_dirty_really_are_dir
     );
     if published.pressure_signals.dirty_bucket_count != published_buckets {
         let (node_count, flagged, cached) = engine.shards.with_state(1, |state| {
-            let nodes = &state.expect("shard 1").bucket_index.bucket_map;
+            let nodes = &state.expect("fixture shard").bucket_index.bucket_map;
             (
                 nodes.len(),
                 nodes.values().filter(|node| node.dirty()).count(),

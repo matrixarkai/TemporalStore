@@ -228,8 +228,21 @@ enum ExpiryIndexCheckpoint {
     Whole(Box<ShardState>),
 }
 
-/// The delta record an expiry round writes, built under the shard write guard and appended after
-/// it drops.
+#[cfg(test)]
+thread_local! {
+    static AFTER_EXPIRY_CAPTURE: std::cell::RefCell<Option<(
+        std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>,
+    )>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn pause_after_expiry_capture_for_test(
+    arrived: std::sync::mpsc::Sender<()>, resume: std::sync::mpsc::Receiver<()>,
+) {
+    AFTER_EXPIRY_CAPTURE.with(|pause| assert!(pause.borrow_mut().replace((arrived, resume)).is_none()));
+}
+
+/// One expiry delta, admitted in WAL order before releasing the shard owner.
 struct ExpiryIndexDelta {
     /// The block items the record carries. Always empty: the round's deletes leave no block for a
     /// covered key, and an empty list against a covered key is how the fold spells a removal.
@@ -252,6 +265,11 @@ pub(super) fn expiry_record_is_hot(shard: &ShardState, key: &str) -> bool {
     // Released buckets retain model locators, but related records have independent residency.
     let bucket = block_routing_bucket(key, start, end);
     !shard.bucket_index.released_buckets.contains(&bucket) && record_exists_exact(shard, key)
+}
+
+#[cfg(test)]
+thread_local! {
+    static RECLAIM_REPORT_LIVE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl TemporalEngine {
@@ -373,6 +391,32 @@ impl TemporalEngine {
         // fields: `storage_reclaim_candidates_from_slab_reports` does not read it, and
         // `the_reclaim_planner_sees_the_same_candidates` is what holds that true.
         let block_slab_counts = self.block_store.slab_block_counts().unwrap_or_default();
+        self.storage_reclaim_slab_reports_from_counts(shard_id, &block_slab_counts)
+    }
+
+    pub(super) fn storage_reclaim_candidates_for_execution(
+        &self,
+        shard_id: ShardId,
+        fully_stale_slab_ids: &BTreeSet<u64>,
+    ) -> Vec<StorageReclaimCandidate> {
+        let counts = self.block_store.slab_block_counts();
+        // A successful empty header census has no physical work to rank.
+        // Logical-only rows have zero physical bytes and zero block count, so
+        // none can produce a candidate. On error retain the existing fallback.
+        if counts.as_ref().is_ok_and(Vec::is_empty) {
+            return Vec::new();
+        }
+        let reports = self.storage_reclaim_slab_reports_from_counts(
+            shard_id, &counts.unwrap_or_default(),
+        );
+        storage_reclaim_candidates_from_slab_reports(&reports, fully_stale_slab_ids)
+    }
+
+    fn storage_reclaim_slab_reports_from_counts(
+        &self,
+        shard_id: ShardId,
+        block_slab_counts: &[(u64, u64, u64)],
+    ) -> Vec<StorageRecoverySlabLiveReport> {
         self.shards.with_state(shard_id, |shard| {
             // THE MAINTAINED TALLY FIRST, AND THE WALK ONLY IF THERE ISN'T ONE.
             //
@@ -405,6 +449,8 @@ impl TemporalEngine {
                     .map(collect_live_block_entries)
                     .unwrap_or_default(),
             };
+            #[cfg(test)]
+            RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.set(visits.get() + live_entries.len()));
             let mut reports = block_slab_counts
                 .iter()
                 .map(|(block_slab_id, physical_bytes, block_count)| {
@@ -1259,7 +1305,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             tracing::warn!(
                 shard_id,
                 error = %status.message,
-                "expiry sweep failed; due keys stay in place until a later sweep succeeds",
+                "expiry sweep failed",
             );
         }
         outcome
@@ -1435,26 +1481,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
                 }
                 let phase = std::time::Instant::now();
-                // The checkpoint is BUILT under this lock and WRITTEN after it drops. The lock is
-                // needed for the deletes and for anchoring `applied_wal_sequence`; it is not needed
-                // for the write, and the write used to be the expensive part of the round -- the
-                // shard's whole index through serde and then zstd, then two file writes, all of it
-                // scaling with the STORE while the round's own work is bounded by
-                // `expiry_scan_budget`. Moving it out came first; making it proportional to the
-                // round came second, and both are still claims worth holding, so both have arms in
-                // `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop`.
-                //
-                // WHY THIS ONE IS SAFE TO MOVE AND THE COMPACTOR'S IS NOT. Between the guard
-                // dropping and the write landing there is a window in which this checkpoint is
-                // stale: a concurrent writer can publish a newer one that this then follows, and a
-                // concurrent storage cycle can see blocks these deletes freed, call their slabs
-                // stale and reclaim them while the durable index still names them. Both are
-                // recoverable HERE and only here, because an expiry IS a logged delete: every key
-                // above has an exact-record result in the WAL before this point, so a checkpoint that
-                // lands stale (or never lands at all) leaves an anchor BEHIND the tombstones, and
-                // replay re-derives exactly the deletions it describes. Landing behind a newer
-                // checkpoint rewinds the anchor, which holds more log than needed and never less.
-                // Compaction's relocations are in no log -- see the note at its own flush.
+                // The selected delta is admitted under the same owner as its WAL
+                // tombstones. A later write must not publish its Index anchor before
+                // these deletions. The grouped path queues the bounded delta.
                 shard.index_format_version = super::SHARD_INDEX_FORMAT_VERSION;
                 // WHAT THE ROUND WRITES IS WHAT THE ROUND CHANGED.
                 //
@@ -1475,13 +1504,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 // included -- and `delta_record_covered_keys` reads the covered set from those blobs,
                 // so the block wipe reaches the keys even though they contribute no block items.
                 //
-                // SAFETY, AND IT IS THE SAME ARGUMENT #1620 MADE. The anchor must never move AHEAD of
-                // the tombstones. The delta carries `applied_wal_sequence` -- the sequence anchored
-                // just above, after every `CommonDelete` this round appended -- so the anchor and the
-                // description of the deletions move TOGETHER in one record: a reader that folds the
-                // anchor has folded the deletions. A delta that lands late or never leaves the anchor
-                // BEHIND the tombstones, and WAL replay re-derives exactly these deletions. Neither
-                // direction can leave a key resurrected.
+                // The record carries the exact applied sequence after the tombstones.
+                // The WAL-cut recheck at admission refuses a stale capture.
                 pending_index_flush = shard.checkpoint_wal_sequence().map(|_| {
                     if self
                         .expiry_index_flush_whole
@@ -1529,14 +1553,21 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 shard.expiry_scan_positions[0] = next_hot;
                 shard.expiry_scan_positions[1] = if request.load_cold_buckets { next_cold } else { None };
             }
-            // The control arm of `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop` keeps the
-            // flush inside the region, so the guard has a positive control to compare against.
-            if self
-                .expiry_index_flush_under_lock
-                .load(std::sync::atomic::Ordering::Relaxed)
+            // Admit deltas before releasing the owner. The whole-image measurement
+            // still has a guarded control and a separate detached arm.
+            if matches!(&pending_index_flush, Some(ExpiryIndexCheckpoint::Delta(_)))
+                || self.expiry_index_flush_under_lock.load(std::sync::atomic::Ordering::Relaxed)
             {
                 if let Some(checkpoint) = pending_index_flush.take() {
-                    self.flush_expiry_index(request.shard_id, checkpoint)?;
+                    if let Err(error) = self.flush_expiry_index(request.shard_id, checkpoint) {
+                        if error.code == "expire_index_admission_failed" {
+                            // The WAL tombstones are already applied. Keep the
+                            // last recoverable Index anchor until replay fills the
+                            // missing delta. Returning the error alone cannot do this.
+                            shard.wal_apply_discontinuous = true;
+                        }
+                        return Err(error);
+                    }
                 }
             }
             EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.total, guard_held);
@@ -1553,6 +1584,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
             };
             Ok((report, pending_index_flush))
         })?;
+        #[cfg(test)]
+        if let Some((arrived, resume)) = AFTER_EXPIRY_CAPTURE.with(|pause| pause.borrow_mut().take()) {
+            arrived.send(()).unwrap();
+            resume.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        }
         if let Some(checkpoint) = pending_index_flush {
             self.flush_expiry_index(request.shard_id, checkpoint)?;
         }
@@ -1576,20 +1612,18 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 // stated at the call site: the WAL tombstones are already appended, so a lost
                 // delta tail leaves the anchor behind them and replay re-derives the deletions.
                 let durable = !super::raft_applying() && !super::wal_single_barrier();
-                let _ = self.index_log_store.append_delta(
-                    shard_id,
-                    delta.items,
-                    delta.key_states,
-                    delta.applied_wal_sequence,
-                    None,
-                    // NOT an upsert. An upsert record replaces each item's own predecessor and
-                    // leaves everything else for the key in place, which for a round whose items
-                    // are empty would remove nothing at all. The snapshot shape wipes every block
-                    // of every covered key and restores only the items carried, which is what
-                    // makes an empty item list a deletion.
-                    false,
-                    durable,
-                );
+                // A deletion delta replaces each covered key with the captured state.
+                // Expiry while replaying may have no logged deletion to bind.
+                if let Some(cut) = delta.applied_wal_sequence.filter(|_| !replaying_wal()) {
+                    self.index_log_store.append_expiry_delta(
+                        shard_id, delta.items, delta.key_states, cut, durable, Some(&self.wal_store),
+                    ).map_err(|error| Status::error("expire_index_admission_failed", error.to_string()))?;
+                } else {
+                    let _ = self.index_log_store.append_delta(
+                        shard_id, delta.items, delta.key_states, delta.applied_wal_sequence,
+                        None, false, durable,
+                    );
+                }
                 Ok(())
             }
             ExpiryIndexCheckpoint::Whole(snapshot) => {
@@ -1883,8 +1917,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
             match selected_keys {
                 Some(keys) => keys
                     .iter()
-                    .filter_map(|key| shard.strings().get(&**key)
-                        .map(|slot| (std::sync::Arc::clone(key), slot.address())))
+                    .filter_map(|key| shard.string_address(key)
+                        .map(|address| (std::sync::Arc::clone(key), address)))
                     .collect(),
                 None => shard
                 .strings()
@@ -1903,7 +1937,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             rewrite_stats,
         )?;
         for (key, address) in &staged {
-            if let Some(slot) = shard.strings_mut().get_mut(&**key) {
+            if let Some(slot) = shard.string_row_mut(&**key) {
                 slot.set_address(address);
             }
         }
@@ -2694,4 +2728,90 @@ fn compaction_bucket_layout_states(shard: &ShardState) -> Vec<BucketLayoutStateC
             object_count,
         })
         .collect()
+}
+
+
+#[cfg(test)]
+mod physical_empty_reclaim_ranking_tests {
+    use super::*;
+
+    #[test]
+    fn empty_physical_ranking_matches_diagnostics_with_unready_wal_only_rows() {
+        for clean in [128, 4096] {
+            let dir = tempfile::tempdir().unwrap();
+            let engine = TemporalEngine::with_local_dirs(
+                64 << 20, dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"),
+            );
+            engine.load_shard(1);
+            assert!(engine.set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config { version: 2, async_storage: true, ..Default::default() },
+            }).ok);
+            let insert = |index| {
+                assert!(engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet { key: format!("rank-{index:06}"), value: vec![7; 64] },
+                }).status.ok);
+            };
+            for index in 0..clean { insert(index); }
+            let baseline = engine.apply_storage_lifecycle(StorageLifecycleRequest {
+                shard_id: 1,
+                ..Default::default()
+            });
+            let checkpoint = baseline.dump_manifest.expect("the clean corpus needs a durable checkpoint");
+            assert_eq!(engine.wal_resident_block_count(1), clean);
+            assert!(engine.storage_lifecycle_plan(StorageLifecycleRequest {
+                shard_id: 1,
+                ..Default::default()
+            }).dirty_buckets.is_empty());
+            for index in clean..clean+64 { insert(index); }
+            engine.wal_store.flush(1).unwrap();
+            assert_eq!(engine.wal_resident_block_count(1), clean + 64);
+            engine.forget_block_slab_live_for_test(1);
+            assert!(engine.block_store.slab_block_counts().unwrap().is_empty(), "WAL-only fixture");
+            let stale = BTreeSet::new();
+
+            RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.set(0));
+            let reports = engine.storage_reclaim_slab_reports(1);
+            assert_eq!(RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.replace(0)), clean + 64);
+            assert!(reports.iter().any(|row| row.block_count == 0 && row.live_block_refs > 0));
+            let expected = storage_reclaim_candidates_from_slab_reports(&reports, &stale);
+            assert!(expected.is_empty());
+            assert_eq!(engine.storage_reclaim_candidates_for_execution(1, &stale), expected);
+            assert_eq!(RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.replace(0)), 0);
+
+            // A non-directory at the owned temporary slab root produces a real
+            // inventory error, so it must still execute the legacy fallback.
+            let blocks = dir.path().join("blocks");
+            let saved = dir.path().join("blocks-saved");
+            std::fs::rename(&blocks, &saved).unwrap();
+            std::fs::write(&blocks, b"not a directory").unwrap();
+            let inventory_failed = engine.block_store.slab_block_counts().is_err();
+            let failed_rank = engine.storage_reclaim_candidates_for_execution(1, &stale);
+            let failure_visits = RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.replace(0));
+            std::fs::remove_file(&blocks).unwrap();
+            std::fs::rename(&saved, &blocks).unwrap();
+            assert!(inventory_failed);
+            assert_eq!(failed_rank, expected);
+            assert_eq!(failure_visits, clean + 64);
+
+            let resident = engine.wal_resident_block_count(1);
+            assert!(resident > 1, "the materialization control leaves some WAL rows");
+            assert_eq!(engine.materialize_oldest_resident_blocks(1, resident - 1), 1);
+            engine.block_store.sync_durable().unwrap();
+            assert!(!engine.block_store.slab_block_counts().unwrap().is_empty(), "mixed fixture");
+            engine.forget_block_slab_live_for_test(1);
+            let reports = engine.storage_reclaim_slab_reports(1);
+            assert!(reports.iter().any(|row| row.block_count > 0 && row.live_block_refs > 0));
+            assert!(reports.iter().any(|row| row.block_count == 0 && row.live_block_refs > 0));
+            let expected = storage_reclaim_candidates_from_slab_reports(&reports, &stale);
+            assert_eq!(RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.replace(0)), clean + 64);
+            assert_eq!(engine.storage_reclaim_candidates_for_execution(1, &stale), expected);
+            assert_eq!(RECLAIM_REPORT_LIVE_VISITS.with(|visits| visits.replace(0)), clean + 64);
+            let retained = engine.list_bucket_dump_manifests(1);
+            assert_eq!(retained.len(), 1);
+            assert_eq!(retained[0].manifest_id, checkpoint.manifest_id);
+            assert_eq!(retained[0].wal_sequence, checkpoint.wal_sequence);
+        }
+    }
 }

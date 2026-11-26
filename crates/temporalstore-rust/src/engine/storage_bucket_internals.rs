@@ -3101,7 +3101,7 @@ fn release_bucket_blocks_inner(
         let block_count = dropped.len();
         for (kind, key, dirty, deleted) in &dropped {
             if kind.as_str() == "string" {
-                if let Some(slot) = shard.strings_mut().get_mut(key.as_ref()) {
+                if let Some(slot) = shard.string_row_mut(key.as_ref()) {
                     slot.record.retain_page_state(*dirty, *deleted);
                 }
             }
@@ -4695,7 +4695,7 @@ pub(super) fn clear_retained_inline_page_dirty_state(shard: &mut ShardState, buc
             .cloned().collect::<Vec<_>>()
     };
     for key in keys {
-        if let Some(slot) = shard.strings_mut().get_mut(key.as_ref()) {
+        if let Some(slot) = shard.string_row_mut(key.as_ref()) {
             let (_, deleted) = slot.record.retained_page_state();
             slot.record.retain_page_state(false, deleted);
         }
@@ -7493,8 +7493,7 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
 
 pub(super) fn object_still_has_hot_block(shard: &ShardState, object_key: &str) -> bool {
     shard
-        .strings()
-        .get(object_key)
+        .string_address(object_key)
         .map(|address| crate::wal_record::is_wal_resident(address.block_slab_id()))
         .unwrap_or(false)
         || shard
@@ -7512,7 +7511,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     if object_still_has_hot_block(shard, object_key) {
         return;
     }
-    if shard.strings().contains_key(object_key) {
+    if shard.string_address(object_key).is_some() {
         let (start, end) = shard.routing_range();
         let bucket = block_routing_bucket(object_key, start, end);
         if let Some(shard_id) = shard.shard_id() {
@@ -8141,7 +8140,13 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         match entry.kind.as_str() {
             "string" => {
                 saw_strings = true;
-                strings.insert(entry.object_key.as_ref().into(), entry.address);
+                strings.insert(
+                    Arc::clone(&entry.object_key),
+                    super::state::ReconstructedStringRow {
+                        filed_bucket: entry.filed_bucket(),
+                        address: entry.address,
+                    },
+                );
             }
             // THE FOUR CONTAINER KINDS DERIVE NOTHING NOW, AND THE REASON IS STRUCTURAL.
             //
@@ -8380,18 +8385,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         // THE DERIVED VIEW IS STILL THE AUTHORITY ON WHICH KEYS EXIST, which the assignment made it
         // by construction and this has to make explicit: a key the view does not carry is dropped,
         // exactly as before. What is kept is the ROW's own state for a key it does carry.
-        let table = shard.strings_mut();
-        table.retain(|key, _| strings.contains_key(key));
-        for (key, address) in strings {
-            match table.get_mut(&key) {
-                Some(slot) => slot.set_address(&address),
-                None => {
-                    let mut slot = super::object_record::ObjectSlot::default();
-                    slot.set_address(&address);
-                    table.insert(key, slot);
-                }
-            }
-        }
+        shard.install_reconstructed_string_addresses(strings);
     }
     // MERGED, NOT ASSIGNED, for the three kinds whose element identity is spelled into an element name
     // name. These three used to read `shard.zsets = zsets;` and so on, which throws a DURABLE map

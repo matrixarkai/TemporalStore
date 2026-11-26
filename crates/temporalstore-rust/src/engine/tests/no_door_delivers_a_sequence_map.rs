@@ -160,7 +160,7 @@ fn engine_over_dirs(dir: &std::path::Path, index_subdir: &str) -> (TemporalEngin
 /// A stale-stamped base index carrying the retired map is refused before anything reads it.
 #[test]
 fn door_one_the_base_index_refuses_a_stale_stamp_carrying_the_retired_map() {
-    let stale = SHARD_INDEX_FORMAT_VERSION - 1;
+    let stale = 31u32;
     let image = index_image_carrying("sequences", stale);
     // THE IMAGE IS REFUSED ON ITS HEADER -- so the refusal below is the stamp and not a parse
     // failure -- and the same payload under the CURRENT header decodes cleanly, which is what makes
@@ -308,7 +308,7 @@ fn a_manifest_carrying(
 /// every index-load counter at zero.
 #[test]
 fn door_two_the_dump_manifest_refuses_a_stale_stamp_carrying_the_retired_map() {
-    let stale = SHARD_INDEX_FORMAT_VERSION - 1;
+    let stale = 31u32;
     let (dir, manifest) = a_manifest_carrying("sequences", stale);
     let (target, index_dir) = engine_over_dirs(dir.path(), "restore-indexes");
 
