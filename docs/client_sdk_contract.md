@@ -18,6 +18,37 @@ combine name, partition-id mode, partition version, member partition ids, slot r
 primary/replica endpoints, topology version, refresh reason, and missing-route counts are exposed
 through client preflight and route-cache reports.
 
+Open a table with `TemporalStoreClient` and use `TemporalStoreTable` for normal data
+operations. Custom transports can use `resolve_route_with_policy` and
+`batch_read_policy` to select an endpoint and report outcomes through the client's
+backend failure methods.
+
+For direct protobuf data calls, open the table with `open_table_from_meta`
+and use `execute_grpc` or `batch_execute_grpc` with commands from
+`temporalstore_rust::sdk::v1`. The table client resolves the primary,
+reuses its gRPC channel, and supplies the shard's load version when
+available. Batch results follow input order across shards. Serialized
+relays can forward command bytes through the same routing path.
+
+Use `ClientOptions::direct("127.0.0.1:17201")` to discover a table over gRPC
+and route commands directly to its primary. The single-node Compose setup
+exposes the metaserver at that address. For other deployments, set
+`TS_META_GRPC_BIND_ADDR` on the metaserver.
+
+With default local settings, the metaserver, datanode, and service proxy
+listen on gRPC ports 17201, 17202, and 17200 respectively. A deployment using
+custom bind addresses can configure the gRPC addresses explicitly.
+
+With a configured gRPC metaserver, the synchronous `TemporalStoreTable`
+command and batch methods also use the protobuf data connection. The client
+uses the elected primary and preserves response kinds, including empty
+binary values and missing entries in a positional projection.
+
+The SDK and proxy authenticate metaserver requests through the SDK's environment
+credential provider. A direct client using `TS_META_ADMIN_TOKEN` runs inside the
+cluster trust boundary. The token grants administrative access to the
+metaserver.
+
 The versioned schema lives at:
 
 ```text

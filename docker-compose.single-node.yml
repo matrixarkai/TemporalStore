@@ -16,7 +16,9 @@ services:
     container_name: temporalstore-single-node
     ports:
       - "17101:17101"   # metaserver HTTP (health, topology)
-      - "17102:17102"   # datanode HTTP (health + writes/reads via POST /execute)
+      - "17102:17102"   # datanode HTTP (health and compatibility)
+      - "127.0.0.1:17201:17201"   # metaserver gRPC
+      - "127.0.0.1:17202:17202"   # datanode gRPC
     volumes:
       - temporalstore-data:/var/lib/temporalstore
     healthcheck:

@@ -307,10 +307,32 @@ impl LocalRaftWal {
             shard_id,
             node_id,
             record,
+            &record.entries,
             max_segment_bytes,
             min_keep_segments,
             u64::MAX,
             wal_sync,
+        )
+    }
+
+    pub(super) fn stage_node_segmented_with_log(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        metadata: &RaftWalRecord,
+        entries: &[RaftLogEntry],
+        config: &RaftConfig,
+    ) -> io::Result<StagedWalAppend> {
+        debug_assert!(metadata.entries.is_empty());
+        self.stage_node_segmented_with_options(
+            shard_id,
+            node_id,
+            metadata,
+            entries,
+            config.max_segment_bytes,
+            config.min_keep_segment_num as usize,
+            u64::MAX,
+            config.wal_sync,
         )
     }
 
@@ -354,6 +376,7 @@ impl LocalRaftWal {
             shard_id,
             node_id,
             record,
+            &record.entries,
             max_segment_bytes,
             min_keep_segments,
             slow_fsync_threshold_ms,
@@ -366,6 +389,7 @@ impl LocalRaftWal {
         shard_id: ShardId,
         node_id: RaftNodeId,
         record: &RaftWalRecord,
+        entries: &[RaftLogEntry],
         max_segment_bytes: u64,
         min_keep_segments: usize,
         slow_fsync_threshold_ms: u64,
@@ -407,18 +431,15 @@ impl LocalRaftWal {
         // which shows up as write latency that climbs with the log. Write the entries
         // that are actually new instead, and re-base with a full record only when a
         // delta could not be folded back (start of a segment, or the log moved under us).
-        let log_first_index = record
-            .entries
+        let log_first_index = entries
             .first()
             .map(|entry| entry.index)
             .unwrap_or_default();
-        let log_last_index = record
-            .entries
+        let log_last_index = entries
             .last()
             .map(|entry| entry.index)
             .unwrap_or_default();
-        let log_last_term = record
-            .entries
+        let log_last_term = entries
             .last()
             .map(|entry| entry.term)
             .unwrap_or_default();
@@ -429,7 +450,7 @@ impl LocalRaftWal {
         let delta_safe = cursor.has_base
             && tail_start > 0
             && cursor.persisted_first_index == log_first_index
-            && record.entries.get(tail_start - 1).is_some_and(|entry| {
+            && entries.get(tail_start - 1).is_some_and(|entry| {
                 entry.index == cursor.persisted_last_index
                     && entry.term == cursor.persisted_last_term
             });
@@ -463,7 +484,7 @@ impl LocalRaftWal {
                     pipeline_state: RaftPeerPipelineRuntimeState::default(),
                     read_safety_state: RaftReadSafetyRuntimeState::default(),
                     membership_evidence: record.membership_evidence.clone(),
-                    entries: record.entries[tail_start..].to_vec(),
+                    entries: entries[tail_start..].to_vec(),
                 };
                 RaftWalEnvelope {
                     sequence,
@@ -476,10 +497,14 @@ impl LocalRaftWal {
                     }),
                 }
             } else {
+                let mut base = record.clone();
+                if base.entries.is_empty() {
+                    base.entries = entries.to_vec();
+                }
                 RaftWalEnvelope {
                     sequence,
-                    checksum: raft_wal_checksum(record)?,
-                    record: record.clone(),
+                    checksum: raft_wal_checksum(&base)?,
+                    record: base,
                     delta: None,
                 }
             };
@@ -499,11 +524,14 @@ impl LocalRaftWal {
             .last()
             .map(|segment| segment.bytes)
             .unwrap_or_default();
-        // Every segment opens with a full base record, so pruning whole segments can
-        // never orphan a delta. Rotation still honours `max_segment_bytes`; it is only
-        // clamped up to one base record so a segment can always hold the record that
-        // opens it.
-        let rotate_threshold = max_segment_bytes.max(cursor.base_bytes);
+        // Every segment opens with a full base record so pruning can keep deltas recoverable.
+        // Give an oversized base one segment's worth of append space. Rotating at the base's
+        // own size would rewrite the entire retained log on every subsequent delta.
+        let rotate_threshold = if cursor.base_bytes >= max_segment_bytes {
+            cursor.base_bytes.saturating_add(max_segment_bytes)
+        } else {
+            max_segment_bytes
+        };
         // Size-based rotation as before -- plus: a COMPACTING base opens a segment. When the
         // snapshot boundary advanced, the base supersedes the history in the current segment,
         // and only at a segment boundary can pruning reclaim it. Ordinary re-bases (an empty
@@ -550,8 +578,10 @@ impl LocalRaftWal {
                 last_log_index: 0,
             });
         }
-        let (record_first_log_index, record_last_log_index) =
-            Self::record_log_index_bounds(record);
+        let record_first_log_index = entries.first()
+            .map_or(record.hard_state.commit_index, |entry| entry.index);
+        let record_last_log_index = entries.last()
+            .map_or(record.hard_state.commit_index, |entry| entry.index);
         {
             let active = cursor
                 .segments
@@ -579,7 +609,7 @@ impl LocalRaftWal {
         cursor.persisted_first_index = log_first_index;
         cursor.persisted_last_index = log_last_index;
         cursor.persisted_last_term = log_last_term;
-        cursor.persisted_entry_count = record.entries.len();
+        cursor.persisted_entry_count = entries.len();
         cursor.persisted_marker_index = record
             .installed_snapshot
             .as_ref()
@@ -709,20 +739,6 @@ impl LocalRaftWal {
             persisted_entry_count: 0,
             has_base: false,
         })
-    }
-
-    fn record_log_index_bounds(record: &RaftWalRecord) -> (u64, u64) {
-        let first = record
-            .entries
-            .first()
-            .map(|entry| entry.index)
-            .unwrap_or(record.hard_state.commit_index);
-        let last = record
-            .entries
-            .last()
-            .map(|entry| entry.index)
-            .unwrap_or(record.hard_state.commit_index);
-        (first, last)
     }
 
     fn segment_report_from_segments(segments: &[RaftWalSegmentInfo]) -> RaftWalSegmentReport {
