@@ -194,6 +194,9 @@ fn a_failed_directory_sync_does_not_publish_manifest_before_reopen() {
     let to = parked.clone();
     let failed = with_hook(ScanPoint::BeforeSync, move || std::fs::rename(from, to).unwrap(),
         || store.purge_delayed_destroy_slabs_with_report());
+    assert!(!root.exists(), "failed directory barrier must not publish a replacement store");
+    assert!(matches!(&failed, Err(BlockStoreError::Io(error))
+        if error.kind() == std::io::ErrorKind::NotFound));
     std::fs::rename(&parked, &root).unwrap();
     assert!(matches!(failed, Err(BlockStoreError::Io(_))));
     assert_eq!(std::fs::read(slab_manifest_path(&root)).unwrap(), before);
