@@ -104,6 +104,8 @@ mod log_resident_is_derived;
 mod fold_hash_map_completeness;
 #[path = "tests/recorded_map_invariant.rs"]
 mod recorded_map_invariant;
+#[path = "tests/a_rewrite_asks_once_whether_two_elements_share_a_block.rs"]
+mod a_rewrite_asks_once_whether_two_elements_share_a_block;
 #[path = "tests/set_install_census.rs"]
 mod set_install_census;
 #[path = "tests/model_number_agreement.rs"]
