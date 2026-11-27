@@ -1107,17 +1107,20 @@ impl TemporalEngine {
         shard_id: ShardId,
         manifest: &BucketDumpManifest,
     ) {
-        let (start_routing_bucket, end_routing_bucket) = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
-            .unwrap_or((0, u32::MAX));
         self.shards.with_state_mut(shard_id, |shard| {
             let Some(shard) = shard else {
                 return;
             };
+            self.clear_dumped_bucket_dirty_state_for_owner(shard, manifest);
+        });
+    }
+
+    pub(super) fn clear_dumped_bucket_dirty_state_for_owner(
+        &self,
+        shard: &mut ShardState,
+        manifest: &BucketDumpManifest,
+    ) {
+            let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
             // Per-bucket derived generation the manifest captured (base + dirty count) --
             // exactly what the reclaim fingerprint compares.
             let captured: std::collections::HashMap<u32, u64> = manifest
@@ -1215,7 +1218,6 @@ impl TemporalEngine {
                 let dropped = shard.dirty_objects.drain_buckets(&cleared_buckets);
                 DIRTY_DRAIN_VISITS.fetch_add(dropped as u64, std::sync::atomic::Ordering::Relaxed);
             }
-        })
     }
 
     pub fn apply_storage_lifecycle(
@@ -1236,7 +1238,7 @@ impl TemporalEngine {
             None
         } else {
             match self
-                .create_bucket_dump_manifest(request.shard_id, plan.selected_dump_buckets.clone())
+                .create_bucket_dump_manifest_and_clear(request.shard_id, plan.selected_dump_buckets.clone(), true)
             {
                 Ok(manifest) => Some(manifest),
                 Err(status) => {
@@ -1253,21 +1255,6 @@ impl TemporalEngine {
                 }
             }
         };
-        if let Some(manifest) = &dump_manifest {
-            // Once a bucket is dumped its dirty flag is cleared, so the storage cycle
-            // stops re-selecting and re-dumping it every round. Dumped state is anchored
-            // by the WAL watermark (last_dump_sequence / manifest.wal_sequence, the
-            // dumped-log sequence), not by the dirty flag.
-            self.clear_dumped_bucket_dirty_state(request.shard_id, manifest);
-            // AND THE ITEM COUNT IS BACK TO THE LIVE SET. A dump re-serializes the live
-            // objects, so every superseded record it replaced is gone from the durable form
-            // -- which is what makes `item_space_amplification_ppm` a trigger.
-            self.shards.with_state_mut(request.shard_id, |shard| {
-                if let Some(shard) = shard {
-                    shard.mark_items_dumped();
-                }
-            });
-        }
         let (cache_entries_removed, cache_disk_bytes_removed) = if request.invalidate_cache {
             self.cache
                 .invalidate_shard(request.shard_id)
@@ -3017,14 +3004,8 @@ impl TemporalEngine {
                 .map(|victim| victim.routing_bucket)
                 .collect::<Vec<_>>();
             if !dirty_buckets.is_empty() {
-                if let Ok(manifest) = self.create_bucket_dump_manifest(shard_id, dirty_buckets) {
+                if let Ok(manifest) = self.create_bucket_dump_manifest_and_clear(shard_id, dirty_buckets, false) {
                     dump_manifest_ids.push(manifest.manifest_id.clone());
-                    // Dumped means dumped. `apply_storage_lifecycle` has always paired the
-                    // manifest with this clear; the eviction path created the manifest and left
-                    // every bucket marked dirty, so "dump before evict" dumped and then evicted
-                    // nothing it had dumped. This fallback still needs the clear for owners
-                    // whose per-page dirty state cannot be retained inline.
-                    self.clear_dumped_bucket_dirty_state(shard_id, &manifest);
                 }
             }
         }

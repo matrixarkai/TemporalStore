@@ -37,9 +37,17 @@ pub(super) struct CheckpointPublication {
     shard_id: ShardId,
     state: Arc<PublicationState>,
     revision: u64,
+    published_successfully: AtomicBool,
 }
 
 impl CheckpointPublication {
+    /// Only after successful publish, while holding the captured shard owner's write guard.
+    /// Every directory detachment closes its old state first. This does not bind an ID-only
+    /// caller to an owner. Later publications do not revoke an unchanged bucket's coverage.
+    pub(super) fn is_completed_for_captured_owner(&self) -> bool {
+        self.published_successfully.load(Ordering::Acquire) && !self.state.is_closing()
+    }
+
     pub(super) fn allocate_dump_time_ms(&self, now_ms: u64, persisted_ms: u64) -> io::Result<u64> {
         let exhausted = || io::Error::new(io::ErrorKind::Other, "checkpoint timestamp exhausted");
         let minimum = persisted_ms.checked_add(1).ok_or_else(exhausted)?.max(now_ms);
@@ -106,6 +114,7 @@ impl CheckpointPublications {
             shard_id,
             state,
             revision,
+            published_successfully: AtomicBool::new(false),
         }
     }
 
@@ -137,7 +146,9 @@ impl CheckpointPublications {
         // An I/O error may follow a successful rename. Invalidate older captures before
         // attempting publication, including when its final durability step fails.
         captured.state.advance()?;
-        write().map(Some)
+        let result = write()?;
+        captured.published_successfully.store(true, Ordering::Release);
+        Ok(Some(result))
     }
 
     pub(super) fn publish_current<T>(
@@ -218,6 +229,7 @@ impl CheckpointPublications {
             let mut active = state.active.lock().expect("checkpoint publication lock poisoned");
             let mut states = self.states.lock().expect("checkpoint map lock poisoned");
             if states.get(&shard_id).is_some_and(|current| Arc::ptr_eq(current, &state) && !current.is_closing()) {
+                state.closing.store(true, Ordering::Release);
                 *active = false;
                 states.remove(&shard_id);
             }
@@ -233,6 +245,122 @@ impl CheckpointPublications {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_owner_check_requires_own_success_and_allows_later_publications() {
+        let publications = CheckpointPublications::default();
+        let first = publications.capture(1);
+        assert!(!first.is_completed_for_captured_owner());
+        assert!(publications.publish(&first, || Ok(())).unwrap().is_some());
+        assert!(first.is_completed_for_captured_owner());
+        let next = publications.capture(1);
+        assert!(!next.is_completed_for_captured_owner());
+        assert!(publications.publish(&next, || Ok(())).unwrap().is_some());
+        assert!(first.is_completed_for_captured_owner());
+        assert!(next.is_completed_for_captured_owner());
+        assert!(!publications.is_current_after_publish(&first));
+        publications.publish_current(1, || Ok(())).unwrap();
+        assert!(first.is_completed_for_captured_owner());
+        assert!(next.is_completed_for_captured_owner());
+        assert!(!publications.is_current_after_publish(&next));
+    }
+
+    #[test]
+    fn captured_owner_check_keeps_old_success_but_never_borrows_newer_success() {
+        let publications = CheckpointPublications::default();
+        let first = publications.capture(1);
+        assert!(publications.publish(&first, || Ok(())).unwrap().is_some());
+        assert!(first.is_completed_for_captured_owner());
+        let next = publications.capture(1);
+        assert!(publications.publish(&next, || -> io::Result<()> {
+            Err(io::Error::other("newer publication failed after revision invalidation"))
+        }).is_err());
+        assert!(first.is_completed_for_captured_owner());
+        assert!(!next.is_completed_for_captured_owner());
+        assert!(!publications.is_current_after_publish(&first));
+        let last = publications.capture(1);
+        assert!(publications.publish(&last, || Ok(())).unwrap().is_some());
+        assert!(first.is_completed_for_captured_owner());
+        assert!(last.is_completed_for_captured_owner());
+        assert!(!next.is_completed_for_captured_owner());
+    }
+
+    #[test]
+    fn forget_closes_a_completed_token_before_same_id_reuse() {
+        let publications = CheckpointPublications::default();
+        let first = publications.capture(1);
+        assert!(publications.publish(&first, || Ok(())).unwrap().is_some());
+        publications.forget(1);
+        assert!(first.state.is_closing());
+        assert!(!first.is_completed_for_captured_owner());
+        assert!(!publications.is_current_after_publish(&first));
+        let next = publications.capture(1);
+        assert!(!Arc::ptr_eq(&first.state, &next.state));
+        assert!(publications.publish(&next, || Ok(())).unwrap().is_some());
+        assert!(next.is_completed_for_captured_owner());
+        assert!(!first.is_completed_for_captured_owner());
+    }
+
+    #[test]
+    fn close_invalidates_a_completed_token_before_drain_and_detachment() {
+        let publications = CheckpointPublications::default();
+        let first = publications.capture(1);
+        assert!(publications.publish(&first, || Ok(())).unwrap().is_some());
+        let closing = publications.begin_close(1);
+        assert!(!first.is_completed_for_captured_owner());
+        let drained = closing.drain();
+        assert!(publications.is_current_close(&drained));
+        assert!(publications.finish_close(drained));
+        let next = publications.capture(1);
+        assert!(publications.publish(&next, || Ok(())).unwrap().is_some());
+        assert!(next.is_completed_for_captured_owner());
+        assert!(!first.is_completed_for_captured_owner());
+    }
+
+    #[test]
+    fn captured_owner_check_progresses_while_global_membership_is_locked() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let publications = Arc::new(CheckpointPublications::default());
+        let capture = Arc::new(publications.capture(1));
+        assert!(publications.publish(&capture, || Ok(())).unwrap().is_some());
+        let guard = publications.states.lock().unwrap();
+        let (local_tx, local_rx) = channel();
+        let local_capture = Arc::clone(&capture);
+        let local = std::thread::spawn(move || {
+            local_tx.send(local_capture.is_completed_for_captured_owner()).unwrap();
+        });
+        let (started_tx, started_rx) = channel();
+        let (generic_tx, generic_rx) = channel();
+        let generic_publications = Arc::clone(&publications);
+        let generic_capture = Arc::clone(&capture);
+        let generic = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            generic_tx.send(generic_publications.is_current_after_publish(&generic_capture)).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let local_result = local_rx.recv_timeout(Duration::from_secs(10));
+        let generic_waits = generic_rx.try_recv();
+        drop(guard);
+        local.join().unwrap();
+        generic.join().unwrap();
+        assert_eq!(local_result.expect("token-local check waited for global membership"), true);
+        assert!(matches!(generic_waits, Err(std::sync::mpsc::TryRecvError::Empty)));
+        assert!(generic_rx.recv_timeout(Duration::from_secs(10)).unwrap());
+    }
+
+    #[test]
+    fn captured_owner_check_refuses_revision_wraparound() {
+        let publications = CheckpointPublications::default();
+        let mut capture = publications.capture(1);
+        capture.revision = u64::MAX;
+        capture.state.revision.store(u64::MAX, Ordering::Release);
+        let mut wrote = false;
+        assert!(publications.publish(&capture, || { wrote = true; Ok(()) }).is_err());
+        assert!(!wrote);
+        assert!(!capture.is_completed_for_captured_owner());
+    }
 
     #[test]
     fn dump_names_advance_when_the_wall_clock_stops_or_moves_back() {
