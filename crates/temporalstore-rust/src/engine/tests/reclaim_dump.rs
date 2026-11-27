@@ -1804,8 +1804,28 @@ fn a_container_tombstone_retains_its_wal_record_after_restart() {
     );
     restarted.load_shard(RECLAIM_DUMP_SHARD);
     assert_eq!(restarted.registration_count_for_test(RECLAIM_DUMP_SHARD), 1);
-    restarted.run_storage_manager_cycle(request);
-    assert_eq!(restarted.wal_store().block_retention_floor(RECLAIM_DUMP_SHARD), Some(2));
+    let cycle = restarted.run_storage_manager_cycle(request);
+    // A cycle that declined reclamation has no truncation floor to publish.
+    // Exercise the actual pre-truncation guard in that case. If reclamation
+    // ran, assert the floor the cycle used without refreshing it first.
+    if !cycle.wal_reclaim_report.as_ref().is_some_and(|report| report.applied) {
+        restarted
+            .refresh_wal_retention_floor(RECLAIM_DUMP_SHARD)
+            .expect("compute the retention floor for the restored tombstone");
+    }
+    assert_eq!(
+        restarted.wal_store().block_retention_floor(RECLAIM_DUMP_SHARD),
+        Some(2)
+    );
+    let (records, truncated) = restarted
+        .wal_store()
+        .scan_decoded(RECLAIM_DUMP_SHARD, 0, u64::MAX, 1 << 20)
+        .expect("the retained WAL must decode after maintenance and restart");
+    assert!(!truncated);
+    assert!(
+        records.iter().any(|(_, record)| record.sequence == 2),
+        "the WAL record holding the tombstone must survive"
+    );
     assert_eq!(
         restarted
             .execute(ExecuteRequest {

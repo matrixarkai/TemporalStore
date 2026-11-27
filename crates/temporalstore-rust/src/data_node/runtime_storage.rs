@@ -3,6 +3,10 @@
 
 //! DataNodeRuntime storage-manager scheduling/lifecycle methods, extracted from data_node.rs.
 
+#[cfg(test)]
+#[path = "scalar_pressure_tests.rs"]
+mod scalar_pressure_tests;
+
 use super::round_budget::{
     options_for_slot, BoundedStage, HeavySlot, BlockGcCursor, ShardRoundState, StageBudget,
     StageContext, StageProgress, StageStep,
@@ -574,7 +578,7 @@ impl DataNodeRuntime {
                 invalidate_cache: false,
                 warm_cache: false,
             }, detailed_report);
-        let cache = self.inner.engine.cache().stats();
+        let cache = self.inner.engine.cache().pressure_snapshot();
         // THE NUMBER THAT WAS MISSING. Every memory term below was a cache term, so a shard whose
         // bucket index is large and whose cache is small -- the exact shape eviction exists for --
         // read as carrying no memory and was never asked to give any back.
@@ -1010,22 +1014,29 @@ impl DataNodeRuntime {
         let index_bound_is_the_gate = options.index_resident_limit_bytes > 0
             && (options.eviction_memory_pressure_threshold == 0
                 || options.index_resident_limit_bytes < options.eviction_memory_pressure_threshold);
-        let eviction = options.enable_evict.then(|| {
+        let cache_reclaim = options.enable_evict.then(|| {
+            self.inner.reclaim_cache_budget(
+                shard_id,
+                options.eviction_batch_limit.min(options.eviction_count_limit),
+            )
+        }).flatten();
+        let mut eviction = options.enable_evict.then(|| {
+            let engine = self.inner.storage_engine(shard_id);
             let Some(stage_threshold) = configured_limit else {
+                let resident = engine.bucket_index_resident_bytes(shard_id);
                 return crate::engine::reports::StorageEvictionReport {
                     shard_id,
                     mode: "evict_cache".to_string(),
-                    pressure_before: pressure.eviction_memory_pressure_bytes,
-                    pressure_after: pressure.eviction_memory_pressure_bytes,
-                    bucket_index_bytes_before: pressure.eviction_memory_pressure_bytes,
-                    bucket_index_bytes_after: pressure.eviction_memory_pressure_bytes,
+                    pressure_before: resident,
+                    pressure_after: resident,
+                    bucket_index_bytes_before: resident,
+                    bucket_index_bytes_after: resident,
                     batch_limit: options.eviction_batch_limit,
                     dump_before_evict: options.eviction_dump_before_evict,
                     skipped_reason: "no_memory_limit".to_string(),
                     ..Default::default()
                 };
             };
-            let engine = &self.inner.engine;
             if options.eviction_count_limit == 0 || options.eviction_batch_limit == 0 {
                 let resident = engine.bucket_index_resident_bytes(shard_id);
                 let gate_open = resident > stage_threshold;
@@ -1098,6 +1109,18 @@ impl DataNodeRuntime {
             )
             .into_stage_report()
         });
+        let cache_budget_signal = cache_reclaim.map(|(budget, bytes, reclaimed)| {
+            if let Some(report) = eviction.as_mut().filter(|_| reclaimed != 0) {
+                report.dropped_object_count = report.dropped_object_count.saturating_add(reclaimed);
+                report.skipped_reason.clear();
+            }
+            StorageManagerPressureSignal {
+                name: "cache_live_payload_bytes".to_string(),
+                observed: bytes,
+                threshold: budget.bytes,
+                over_threshold: bytes > budget.bytes,
+            }
+        });
         if eviction.is_some() {
             executed_stages.push("evict".to_string());
             self.inner
@@ -1112,22 +1135,23 @@ impl DataNodeRuntime {
         pressure_decisions.push(storage_manager_pressure_decision(
             "evict",
             eviction.is_some(),
-            eviction.as_ref().is_some_and(|report| report.pressure_gate_open),
+            eviction.as_ref().is_some_and(|report| report.pressure_gate_open)
+                || cache_budget_signal.as_ref().is_some_and(|signal| signal.over_threshold),
             eviction.is_some(),
-            configured_limit.map(|limit| vec![
+            configured_limit.zip(eviction.as_ref()).map(|(limit, report)| vec![
                 storage_manager_pressure_signal(
                     "eviction_memory_pressure_bytes",
-                    pressure.eviction_memory_pressure_bytes, limit,
+                    report.pressure_before, limit,
                 ),
                 storage_manager_pressure_signal(
                     "bucket_index_resident_bytes",
-                    pressure.bucket_index_resident_bytes, limit,
+                    report.bucket_index_bytes_before, limit,
                 ),
                 storage_manager_pressure_signal(
                     "index_resident_limit_bytes",
-                    pressure.bucket_index_resident_bytes, limit,
+                    report.bucket_index_bytes_before, limit,
                 ),
-            ]).unwrap_or_default(),
+            ]).unwrap_or_default().into_iter().chain(cache_budget_signal).collect(),
             vec![if index_bound_is_the_gate {
                 "index_resident_bound_set".to_string()
             } else {

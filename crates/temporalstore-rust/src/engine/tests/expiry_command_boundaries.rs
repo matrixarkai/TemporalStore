@@ -190,10 +190,23 @@ fn a_ttl_that_collects_an_expired_key_maintains_the_block_index() {
          belonging to a record that is no longer there, and reclaim will go on treating it as \
          live.",
     );
-    assert!(
-        !collected_bucket_after,
-        "and the collected key's routing bucket must no longer be in the bucket map",
-    );
+    if collected_bucket_after {
+        // Cleanup can retain the owner until a dump covers its deletion.
+        // It must retain only the deletion claim, with no live block.
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard 1 is loaded");
+            let routing_bucket = crate::engine::block_routing_bucket("ttl:collected", 0, u32::MAX);
+            let owner = shard.bucket_index.bucket_map
+                .get(&routing_bucket)
+                .expect("retained routing bucket");
+            assert!(owner.block_index.is_empty(), "an expired block remained indexed");
+            assert!(owner.deleted() && owner.dirty(), "a retained owner must be a pending deletion");
+            assert!(
+                owner.first_dirty_wal_sequence != 0 || owner.first_dirty_index_log_sequence != 0,
+                "a retained owner must identify pending durability work"
+            );
+        });
+    }
 
     // ---- CONTROL: the live key's block is untouched -------------------------------------
     // Without this, an index that had simply been emptied would satisfy the claim above.

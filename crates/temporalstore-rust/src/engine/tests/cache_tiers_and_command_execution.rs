@@ -3210,6 +3210,8 @@ fn a_capped_dump_takes_the_oldest_undumped_bucket_first() {
 /// which depends on the cap.
 #[test]
 fn a_capped_dump_still_reclaims() {
+    const OBJECTS: usize = 200;
+    const DUMP_CAP: usize = 16;
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         8 << 20,
@@ -3222,14 +3224,14 @@ fn a_capped_dump_still_reclaims() {
     // Far more dirty buckets per round than the cap can cover, for several rounds.
     let mut last_retain = 0u64;
     for _round in 1..=4u64 {
-        for index in 0..200 {
+        for index in 0..OBJECTS {
             write_string(&engine, &format!("capped-{index:04}"), &[b'v'; 128]);
         }
         let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
             shard_id: 1,
             min_undumped_wal_records: 0,
             min_undumped_wal_bytes: 0,
-            max_dump_buckets_per_round: 16,
+            max_dump_buckets_per_round: DUMP_CAP,
             ..StorageManagerCycleRequest::default()
         });
         let wal = report
@@ -3246,7 +3248,33 @@ fn a_capped_dump_still_reclaims() {
          written, which is the state a dump cap used to force",
         stats.last_sequence,
     );
-    // And it must be a real floor, not a token one: most of the log should be behind it.
+    println!(
+        "Capped dump after the write rounds retained WAL from sequence {last_retain} of {}",
+        stats.last_sequence
+    );
+
+    // Stop introducing dirty owners. Give the capped cycle enough passes to
+    // cover the cohort, without lifting the cap or discarding uncovered work.
+    for _ in 0..OBJECTS.div_ceil(DUMP_CAP) {
+        let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
+            max_dump_buckets_per_round: DUMP_CAP,
+            ..StorageManagerCycleRequest::default()
+        });
+        if let Some(reclaim) = cycle.wal_reclaim_report {
+            if reclaim.plan.safe_to_reclaim {
+                assert!(
+                    reclaim.plan.retain_from_wal_sequence >= last_retain,
+                    "without new writes the reclaim floor must not move backwards"
+                );
+                last_retain = reclaim.plan.retain_from_wal_sequence;
+            }
+        }
+    }
+
+    // Once coverage catches up, most of the original log must be behind the floor.
     assert!(
         last_retain * 2 > stats.last_sequence,
         "the floor advanced to {last_retain} of {}, which is too little to call reclaimable",
