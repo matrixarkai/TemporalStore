@@ -249,9 +249,9 @@ impl StoreBuildCost {
 ///
 /// A `Clone` allocates exactly the structure's own heap -- every B-tree node, once -- and nothing
 /// else, so the alloc bytes across one clone IS the structure's resident footprint as a count.
-/// Exact for a `BTreeMap<u64, BlockStoreSlabDescriptor>`, whose value type holds no `Vec`, no
-/// `Arc` and, on this path, no `Some(String)`: nothing in it can be shared or over-reserved, which
-/// is the only way this technique under-reports.
+/// SlabCatalog's alloc-probe-only Clone allocates fresh map nodes AND Arc/record
+/// allocations instead of sharing the serving records. These fixtures carry no
+/// error Strings with spare capacity, so the probe counts the actual representation.
 #[cfg(feature = "alloc-probe")]
 fn deep_heap_bytes<T: Clone>(value: &T) -> u64 {
     let probe = Probe::start();

@@ -12,7 +12,7 @@
 //! different valid value; the crc turns that into an error, and `BlockStore::open` answers any
 //! manifest that fails to load by rebuilding it from the slabs.
 //!
-//! [`encode_slab_manifest`] encodes straight from the descriptors, and `persist_slab_manifest`
+//! [`encode_slab_record_manifest`] encodes straight from the records, and `persist_slab_manifest`
 //! writes the result with a single `write_all`.
 //!
 //! Field numbers are fixed by what is stored on disk and must not be renumbered or reused.
@@ -208,6 +208,7 @@ fn descriptor_to_wire(descriptor: &BlockStoreSlabDescriptor) -> WireSlabDescript
 /// just to read it back out, and the frame already has to hold the encoded bytes (its length and
 /// checksum come before the payload), so the alternative to taking the descriptors by reference is
 /// holding all of them twice.
+#[cfg(test)]
 fn wire_from_slabs<'a>(
     version: u32,
     slabs: impl IntoIterator<Item = &'a BlockStoreSlabDescriptor>,
@@ -219,11 +220,23 @@ fn wire_from_slabs<'a>(
 }
 
 /// The bytes of a manifest: one checksummed frame.
+#[cfg(test)]
 pub(super) fn encode_slab_manifest<'a>(
     version: u32,
     slabs: impl IntoIterator<Item = &'a BlockStoreSlabDescriptor>,
 ) -> Vec<u8> {
     encode_framed(&wire_from_slabs(version, slabs))
+}
+
+pub(super) fn encode_slab_record_manifest<'a>(
+    version: u32,
+    slabs: impl IntoIterator<Item = std::sync::RwLockReadGuard<'a, BlockStoreSlabDescriptor>>,
+) -> Vec<u8> {
+    let wire = WireSlabManifest {
+        version,
+        slabs: slabs.into_iter().map(|slab| descriptor_to_wire(&slab)).collect(),
+    };
+    encode_framed(&wire)
 }
 
 #[cfg(test)]
@@ -298,7 +311,7 @@ mod tests {
         root: &std::path::Path,
     ) -> Result<std::collections::BTreeMap<u64, BlockStoreSlabDescriptor>, String> {
         let mut tally = BlockStoreReadTally::start();
-        load_slab_manifest_at(root, &mut tally).map_err(|error| error.to_string())
+        load_slab_manifest_at(root, &mut tally).map(|slabs| slabs.snapshot()).map_err(|error| error.to_string())
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::fs;
 impl BlockStore {
     pub(crate) fn age_quarantine_for_reclaim_test(&self, arrived_at: u64) {
         let mut inner = self.inner.lock().unwrap();
-        for slab in inner.slabs.values_mut() {
+        for mut slab in inner.slabs.values_mut() {
             if slab.state == BlockStoreSlabState::DelayedDestroy {
                 slab.updated_unix_ms = Some(arrived_at);
             }

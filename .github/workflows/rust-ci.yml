@@ -384,6 +384,27 @@ jobs:
             grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/source-naming.log
           done
 
+      - name: Owned slab metadata locking controls (required)
+        timeout-minutes: 45
+        env:
+          CARGO_TERM_COLOR: never
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          python3 -I -m unittest discover -s scripts -p test_owned_slab_locking_gate.py -v
+          python3 -I scripts/owned_slab_locking_gate.py
+
+      - name: Retain owned slab locking evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owned-slab-locking-${{ github.event.pull_request.head.sha || github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/owned-slab-locking/receipt.json
+            ${{ runner.temp }}/owned-slab-locking/*.log
+
       - name: cargo test (lib + integration, single-threaded, release)
         timeout-minutes: 45
         # Reports every failure but does not block the merge: about a hundred tests in unrelated

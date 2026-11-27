@@ -37,11 +37,7 @@ impl BlockStore {
     /// active slab's data and persist the extent manifest once. No-op when
     /// nothing was deferred (e.g. the live per-append-fsync path).
     pub fn sync_durable(&self) -> Result<(), BlockStoreError> {
-        let owned_writers = {
-            let inner = self.inner.lock().expect("block store lock poisoned");
-            inner.check_owned_recovery()?;
-            inner.owned_writers.values().cloned().collect::<Vec<_>>()
-        };
+        let owned_writers = self.owned_directory.snapshot()?;
         self.sync_durable_writers(owned_writers, true)
     }
 
@@ -52,7 +48,7 @@ impl BlockStore {
         shard_id: u64,
         destinations: impl IntoIterator<Item = &'a ElementEntry>,
     ) -> Result<(), BlockStoreError> {
-        let writer = {
+        let nonempty = {
             let inner = self.inner.lock().expect("block store lock poisoned");
             inner.check_owned_recovery()?;
             let mut nonempty = false;
@@ -67,14 +63,15 @@ impl BlockStore {
                     ).into());
                 }
             }
-            if nonempty {
-                Some(inner.owned_writers.get(&shard_id).cloned().ok_or_else(|| {
+            nonempty
+        };
+        let writer = if nonempty {
+                Some(self.owned_directory.existing(shard_id)?.ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::InvalidData,
                         "relocation destination writer is not loaded")
                 })?)
-            } else {
-                None
-            }
+        } else {
+            None
         };
         self.sync_durable_writers(writer, false)
     }
@@ -85,15 +82,8 @@ impl BlockStore {
         include_legacy: bool,
     ) -> Result<(), BlockStoreError> {
         for writer in writers {
-            let mut writer = writer.lock().expect("owned slab writer lock poisoned");
+            let mut writer = self.owned_directory.lock_writer(&writer);
             writer.sync(&self.read_view.root)?;
-            if let Some(retired) = writer.take_retired() {
-                self.inner
-                    .lock()
-                    .expect("block store lock poisoned")
-                    .owned_active
-                    .remove(&retired);
-            }
         }
         if include_legacy {
             let mut inner = self.inner.lock().expect("block store lock poisoned");
@@ -155,6 +145,7 @@ impl BlockStore {
         routing_bucket: Option<u32>,
         block_ordinal: u32,
     ) -> Result<ElementEntry, BlockStoreError> {
+        let mut retired = Vec::new();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         inner.check_owned_recovery()?;
         if !inner.root_created {
@@ -172,13 +163,13 @@ impl BlockStore {
         // target -- 1.3e-7 of append time, which is noise by any measure. It is removed because
         // it re-encoded for a field nothing keeps, not because it cost anything.
         let record =
-            encode_block_record(bytes, block_id, object_id, routing_bucket, inner.options)?;
+            encode_block_record(bytes, block_id, object_id, routing_bucket, inner.owned_directory.options())?;
         if should_roll_before_append(
             inner.write_offset,
             record.bytes.len() as u64,
             slab_target_bytes,
         ) {
-            roll_slab_inner(&mut inner)?;
+            roll_slab_inner(&mut inner, &mut retired)?;
         }
         if inner.active_append_file.is_none() {
             let path = slab_path(&inner.root, inner.block_slab_id);
@@ -223,14 +214,9 @@ impl BlockStore {
         } else {
             inner.persist_slab_manifest_counted()?;
         }
-        inner.stats.writes += 1;
-        inner.stats.bytes_written += address.length();
-        inner.stats.logical_bytes_written += record.logical_len as u64;
-        if record.compression == BlockRecordCompression::Zstd {
-            inner.stats.compressed_records_written += 1;
-            inner.stats.compression_bytes_saved +=
-                record.logical_len.saturating_sub(record.stored_len) as u64;
-        }
+        let compressed = record.compression == BlockRecordCompression::Zstd;
+        self.write_accounting.add(1, address.length(), record.logical_len as u64,
+            u64::from(compressed), if compressed { record.logical_len.saturating_sub(record.stored_len) as u64 } else { 0 });
         Ok(address)
     }
 
@@ -243,6 +229,7 @@ impl BlockStore {
             return self.append_block_of_object(bytes, object_id, routing_bucket, ordinal)
                 .map(|address| vec![address]);
         }
+        let mut retired = Vec::new();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         inner.check_owned_recovery()?;
         if records.is_empty() {
@@ -265,7 +252,7 @@ impl BlockStore {
             let block_id = u64::from(block_ordinal);
             // Encoded once, including across a roll -- see the note on the single-record path.
             let record =
-                encode_block_record(bytes, block_id, object_id, routing_bucket, inner.options)?;
+                encode_block_record(bytes, block_id, object_id, routing_bucket, inner.owned_directory.options())?;
             if should_roll_before_append(
                 inner.write_offset,
                 record.bytes.len() as u64,
@@ -275,7 +262,7 @@ impl BlockStore {
                     current.flush()?;
                     current.sync_data()?;
                 }
-                roll_slab_inner(&mut inner)?;
+                roll_slab_inner(&mut inner, &mut retired)?;
             }
             if file.is_none() {
                 let path = slab_path(&inner.root, inner.block_slab_id);
@@ -325,20 +312,8 @@ impl BlockStore {
         } else {
             inner.persist_slab_manifest_counted()?;
         }
-        inner.stats.writes = inner.stats.writes.saturating_add(writes);
-        inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);
-        inner.stats.logical_bytes_written = inner
-            .stats
-            .logical_bytes_written
-            .saturating_add(logical_bytes_written);
-        inner.stats.compressed_records_written = inner
-            .stats
-            .compressed_records_written
-            .saturating_add(compressed_records_written);
-        inner.stats.compression_bytes_saved = inner
-            .stats
-            .compression_bytes_saved
-            .saturating_add(compression_bytes_saved);
+        self.write_accounting.add_batch(writes, bytes_written, logical_bytes_written,
+            compressed_records_written, compression_bytes_saved);
         Ok(addresses)
     }
 }

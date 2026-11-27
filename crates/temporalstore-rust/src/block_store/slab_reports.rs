@@ -31,7 +31,7 @@ impl BlockStore {
         ids: &BTreeSet<u64>,
     ) -> BTreeMap<u64, BlockStoreSlabDescriptor> {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        ids.iter().filter_map(|&id| inner.slabs.get(&id).cloned().map(|slab| (id, slab))).collect()
+        ids.iter().filter_map(|&id| inner.slabs.get(&id).map(|slab| (id, slab.clone()))).collect()
     }
 
     pub fn slab_descriptors(&self) -> Vec<BlockStoreSlabDescriptor> {
@@ -40,7 +40,7 @@ impl BlockStore {
             .expect("block store lock poisoned")
             .slabs
             .values()
-            .cloned()
+            .map(|slab| slab.clone())
             .collect()
     }
 
@@ -120,13 +120,14 @@ impl BlockStore {
         &self,
         catalog: &[crate::index_log::SlabCatalogEntry],
     ) -> Result<bool, BlockStoreError> {
+        let mut retired = Vec::new();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let mut changed = false;
         for entry in catalog {
             let state = catalog_state_to_slab_state(entry.state);
             let active = inner.protects_writer_slab(entry.block_slab_id);
-            match inner.slabs.get_mut(&entry.block_slab_id) {
-                Some(slab) => {
+            if inner.slabs.contains_key(&entry.block_slab_id) {
+                    let mut slab = inner.slabs.get_mut(&entry.block_slab_id).expect("folded record");
                     let before = slab.clone();
                     // Never override the live ACTIVE slab's disk-derived state (it holds the open
                     // write frontier); for every other slab adopt the folded lifecycle state.
@@ -143,8 +144,7 @@ impl BlockStore {
                     slab.first_block_id = slab.first_block_id.or(entry.first_block_id);
                     slab.last_block_id = slab.last_block_id.or(entry.last_block_id);
                     changed |= *slab != before;
-                }
-                None => {
+            } else {
                     // A slab the disk scan did not surface (e.g. a purged/reclaimed slab with no
                     // live file): install it from the fold so accounting/GC see the full history.
                     inner.slabs.insert(
@@ -165,10 +165,9 @@ impl BlockStore {
                             has_corruption: false,
                             first_error_offset: None,
                             first_error: None,
-                        },
+                        }, &mut retired,
                     );
                     changed = true;
-                }
             }
         }
         if changed {
@@ -192,10 +191,10 @@ impl BlockStore {
         &self,
     ) -> Result<StreamBackedSlabRuntimeReport, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        let slabs = inner.slabs.clone();
+        let slabs = inner.slabs.snapshot();
         let root = inner.root.clone();
-        let options = inner.options;
-        let mut stats = inner.stats;
+        let options = inner.owned_directory.options();
+        let mut stats = inner.stats_snapshot();
         self.read_view.counters.merge_into(&mut stats);
         let slab_manifest_reconciled_on_open = inner.slab_manifest_reconciled_on_open;
         drop(inner);
