@@ -489,6 +489,8 @@ jobs:
               engine::tests::a_detail_read_carries_its_own_bound::a_detail_read_with_no_count_is_bounded_by_the_configured_cap \
               engine::tests::a_detail_read_carries_its_own_bound::a_count_larger_than_the_cap_is_still_capped \
               engine::tests::a_detail_read_carries_its_own_bound::a_named_count_under_the_cap_is_honoured \
+              engine::tests::hash_read_union_divergence::under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable \
+              engine::tests::manifest_restore_model_maps::a_manifest_restore_on_the_default_recovery_arm_keeps_the_blocks_only_the_index_names \
               wal::registration_records::tests::mutations_match_an_independent_slot_model \
               wal::registration_records::tests::uniform_expectations_stay_inline_and_conflicts_release_their_storage \
               engine::block_in_wal::physical::registration_summary_tests::summaries_combine_domains_and_follow_replacement_retirement_and_clear \
@@ -1678,6 +1680,55 @@ jobs:
       # `running 0 tests; test result: ok. 0 passed` on this tree. The module path is the only
       # spelling that works, and the count assertion below is what makes a future rename fail
       # loudly. All three broke on one cause -- refs gained a second home and these read one.
+      - name: cargo test (rollup allocation ownership controls, hard gate)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/rollup_allocation_controls
+          require_one() {
+            python3 - "$1" "$2" <<'PY'
+          if not __debug__:
+              raise RuntimeError("allocation gate requires non-optimized Python")
+          import pathlib
+          import re
+          import sys
+          path, selector = pathlib.Path(sys.argv[1]), sys.argv[2]
+          if not 0 < path.stat().st_size <= 8 * 1024 * 1024:
+              raise SystemExit("missing or oversized allocation control log")
+          text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', path.read_text(errors="strict"))
+          running = re.findall(r'^running (\d+) tests?$', text, re.M)
+          cases = re.findall(r'^test (\S+) \.\.\. (ok|FAILED|ignored)$', text, re.M)
+          summaries = re.findall(r'^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured;', text, re.M)
+          if running != ["1"] or cases != [(selector, "ok")] or summaries != [("ok", "1", "0", "0", "0")]:
+              raise SystemExit("allocation control did not run exactly once and pass")
+          if any(token in text.lower() for token in ("operation was canceled", "operation was cancelled", "##[error]")):
+              raise SystemExit("allocation control was cancelled or interrupted")
+          print(selector + ": exactly one positive result")
+          PY
+          }
+          for selector in \
+            alloc_probe::thread_allocation_tests::a_thread_probe_counts_real_allocations_and_nested_scopes \
+            alloc_probe::thread_allocation_tests::a_thread_probe_counts_alloc_alloc_zeroed_and_realloc \
+            engine::window_reduce_rollup::tests::probe::a_rollup_names_own_calls_while_a_parked_peer_allocates_in_the_process_span; do
+            log="/tmp/rollup_allocation_controls/${selector//::/__}.log"
+            cargo test --locked --release --features alloc-probe -p temporalstore-rust --lib "$selector" \
+              -- --exact --test-threads=1 --show-output 2>&1 | tee "$log"
+            require_one "$log" "$selector"
+          done
+          selector=engine::window_reduce_rollup::tests::probe::a_rollup_allocates_the_same_over_few_samples_and_many_and_few_members_and_many
+          log="/tmp/rollup_allocation_controls/${selector//::/__}.log"
+          cargo test --locked --release --features alloc-probe -p temporalstore-rust --lib "$selector" \
+            -- --exact --ignored --test-threads=1 --show-output 2>&1 | tee "$log"
+          require_one "$log" "$selector"
+
+      - name: Retain rollup allocation ownership evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollup-allocation-controls-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/rollup_allocation_controls/*.log
+          if-no-files-found: error
+          retention-days: 7
+
       - name: cargo test (published ratio guards, hard gate)
         timeout-minutes: 20
         run: |
