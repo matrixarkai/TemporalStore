@@ -90,6 +90,16 @@ pub(super) mod hash_read_divergence {
     static DIVERGENCES_LOGGED: AtomicU64 = AtomicU64::new(0);
     static LAST: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
 
+    #[cfg(test)]
+    thread_local! {
+        static LOCAL_SAMPLED_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sampled_reads_on_this_thread_for_test() -> u64 {
+        LOCAL_SAMPLED_READS.with(std::cell::Cell::get)
+    }
+
     /// Log every one of the first this many, so a divergence that happens once is still named.
     const LOG_BURST: u64 = 8;
     /// After the burst, log one in this many.
@@ -102,6 +112,8 @@ pub(super) mod hash_read_divergence {
     /// have diverged.
     pub(crate) fn note_read() {
         READS_SERVED.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        LOCAL_SAMPLED_READS.with(|count| count.set(count.get().saturating_add(1)));
     }
 
     /// One field the block index named and the container did not hold.
