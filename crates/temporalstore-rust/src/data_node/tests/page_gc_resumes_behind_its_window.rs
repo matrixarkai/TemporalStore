@@ -17,7 +17,7 @@
 //!     at most two" is a real split and not a store that never held more than the window.
 #![allow(clippy::all)]
 use super::*;
-use crate::data_node::round_budget::{HeavySlot, PageCursor, ShardRoundState};
+use crate::data_node::round_budget::{HeavySlot, BlockGcCursor, ShardRoundState};
 use std::time::{Duration, Instant};
 
 const SHARD: u64 = 1;
@@ -73,7 +73,7 @@ struct Step {
 }
 
 /// Tick until nothing is due, recording every page-collection step that ran.
-fn drive(options: &StorageManagerOptions) -> (Vec<Step>, PageCursor) {
+fn drive(options: &StorageManagerOptions) -> (Vec<Step>, BlockGcCursor) {
     let runtime = seeded();
     let period = Duration::from_secs(1);
     let mut state = ShardRoundState::new(Instant::now() - Duration::from_secs(60), period);
@@ -124,7 +124,7 @@ fn a_bounded_collection_resumes_and_removes_what_one_unbounded_pass_removes() {
         "DENOMINATOR: only {unbounded_removed} slab(s) were collectable, so a window of {WINDOW} \
          could not be told from no window: {unbounded_steps:?}"
     );
-    assert_eq!(unbounded_cursor, PageCursor::default());
+    assert_eq!(unbounded_cursor, BlockGcCursor::default());
 
     let (steps, cursor) = drive(&windowed_options);
     eprintln!("  windowed steps: {steps:?}");
@@ -151,7 +151,7 @@ fn a_bounded_collection_resumes_and_removes_what_one_unbounded_pass_removes() {
         removed, unbounded_removed,
         "the steps together must remove what one unbounded pass removes: {steps:?}"
     );
-    assert_eq!(cursor, PageCursor::default(), "a finished scan leaves no cursor behind");
+    assert_eq!(cursor, BlockGcCursor::default(), "a finished scan leaves no cursor behind");
 }
 
 /// A store that is mostly live, with one stale slab, has collectable garbage but a utility above the
