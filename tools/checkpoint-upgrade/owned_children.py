@@ -77,17 +77,18 @@ def send(child, value):
 def terminate(leader):
     deadline = time.monotonic() + 10
     while True:
-        leader.poll()  # Popen owns the launcher's wait status.
+        code = leader.poll()  # Popen owns the launcher's wait status.
         rows = children()
         reap(rows, leader.pid)
-        live = [child for child in rows if child.state != "Z"]
-        if not live:
+        # Adoption and exit can race the first census; reap to an empty fixed point.
+        remaining = children()
+        if code is not None and not remaining:
             leader.wait(timeout=1)
-            reap(children(), leader.pid)
             return
         now = time.monotonic()
         if now > deadline + 5:
             raise RuntimeError("owned CI descendants did not terminate")
-        for child in live:
-            send(child, signal.SIGTERM if now < deadline else signal.SIGKILL)
+        for child in remaining:
+            if child.state != "Z":
+                send(child, signal.SIGTERM if now < deadline else signal.SIGKILL)
         time.sleep(0.05)

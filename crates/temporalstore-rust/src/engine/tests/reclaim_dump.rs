@@ -2004,7 +2004,7 @@ fn durable_manifest_clean_prefix_case(with_tail: bool) {
             Command::SetMembers { key: "image-removed".into() },
             Command::ListRange { key: "image-list".into(), start: 0, stop: -1 },
             Command::ZSetScore { key: "image-zset".into(), member: b"member".to_vec() },
-            Command::FeatureQuery { key: "image-feature".into(), start_ms: 0, end_ms: 10, count: 16 },
+            Command::FeatureQuery { key: "image-feature".into(), start_ms: 0, end_ms: 10, count: Some(16) },
             Command::ControlStateFamilyQuery { family: crate::types::ControlStateFamily::Counter,
                 key: "image-control".into(), start_ms: 0, end_ms: 10, aggregator: "sum".into() },
         ].into_iter().map(|command| {

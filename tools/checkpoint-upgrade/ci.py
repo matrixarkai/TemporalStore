@@ -154,7 +154,9 @@ def clean_env():
                 "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_TARGET", "RUSTC_BOOTSTRAP"):
             env.pop(name)
     env.update(CARGO_TERM_COLOR="never", CARGO_BUILD_JOBS="1", GIT_CONFIG_GLOBAL="/dev/null",
-               GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0")
+               GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0", GIT_CONFIG_COUNT="2",
+               GIT_CONFIG_KEY_0="maintenance.auto", GIT_CONFIG_VALUE_0="false",
+               GIT_CONFIG_KEY_1="gc.auto", GIT_CONFIG_VALUE_1="0")
     return env
 
 
@@ -181,13 +183,16 @@ def main():
     env = clean_env()
     env.update(CARGO_TARGET_DIR=str(target), UPGRADE_FIXTURE_SOURCE_SHA256=fixture,
                UPGRADE_CONSUMER_COMMIT=consumer)
+    report["git_policy"] = {"maintenance.auto": False, "gc.auto": 0}
+    report["git_version"] = subprocess.check_output(["git", "--version"], env=env, text=True).strip()
 
     def execute(command, log, timeout):
         row = {"command": command, "log": log.name, "timeout_seconds": timeout,
                "completed": False, "configuration": {key: env[key] for key in (
                    "CARGO_TARGET_DIR", "CARGO_BUILD_JOBS", "RUSTC_WORKSPACE_WRAPPER",
                    "UPGRADE_FIXTURE_SOURCE_SHA256", "UPGRADE_CONSUMER_COMMIT",
-                   "UPGRADE_TARGET_FORMAT") if key in env}}
+                   "UPGRADE_TARGET_FORMAT", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0",
+                   "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1") if key in env}}
         report["commands"].append(row)
         save()
         try:

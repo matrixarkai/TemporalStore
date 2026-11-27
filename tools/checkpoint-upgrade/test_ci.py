@@ -63,6 +63,11 @@ class SourceChecks(unittest.TestCase):
         self.assertEqual(actual["PATH"], "/usr/bin")
         self.assertEqual(actual["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual(actual["CARGO_BUILD_JOBS"], "1")
+        self.assertEqual(actual["GIT_CONFIG_COUNT"], "2")
+        self.assertEqual(actual["GIT_CONFIG_KEY_0"], "maintenance.auto")
+        self.assertEqual(actual["GIT_CONFIG_VALUE_0"], "false")
+        self.assertEqual(actual["GIT_CONFIG_KEY_1"], "gc.auto")
+        self.assertEqual(actual["GIT_CONFIG_VALUE_1"], "0")
 
     def test_format_source_contract(self):
         declaration = "pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = {};"
@@ -122,6 +127,33 @@ class SourceChecks(unittest.TestCase):
         with patch.object(owned_children.os, "waitpid") as wait:
             owned_children.reap(rows, 7)
         wait.assert_called_once_with(8, os.WNOHANG)
+
+    def test_termination_handles_adoption_after_the_first_census(self):
+        from unittest.mock import Mock
+        leader = Mock(pid=7)
+        leader.poll.return_value = 0
+        orphan = owned_children.Child(8, 100, 45, "S")
+        zombie = owned_children.Child(8, 100, 45, "Z")
+        with patch.object(owned_children, "children", side_effect=[[], [orphan], [zombie], []]), \
+                patch.object(owned_children.os, "waitpid", return_value=(8, 0)) as wait, \
+                patch.object(owned_children, "send") as send, \
+                patch.object(owned_children.time, "sleep"):
+            owned_children.terminate(leader)
+        send.assert_called_once_with(orphan, owned_children.signal.SIGTERM)
+        wait.assert_called_once_with(8, os.WNOHANG)
+        self.assertEqual(leader.poll.call_count, 2)
+        leader.wait.assert_called_once_with(timeout=1)
+
+    def test_empty_child_census_cannot_complete_before_launcher_exit(self):
+        from unittest.mock import Mock
+        leader = Mock(pid=7)
+        leader.poll.side_effect = [None, 0]
+        with patch.object(owned_children, "children", return_value=[]), \
+                patch.object(owned_children.time, "sleep") as sleep:
+            owned_children.terminate(leader)
+        self.assertEqual(leader.poll.call_count, 2)
+        sleep.assert_called_once_with(0.05)
+        leader.wait.assert_called_once_with(timeout=1)
 
     def test_fast_exit_cannot_bypass_output_bound(self):
         from tempfile import TemporaryDirectory
