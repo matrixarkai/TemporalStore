@@ -89,6 +89,7 @@ pub(super) fn status_is_retryable(status: &Status) -> bool {
             | "shard_not_found"
             | "loadversionmismatch"
             | "load_version_mismatch"
+            | "raft_not_leader"
             // A foreground write refused while its shard is loading, reloading or unloading.
             // Every one of those states ends on its own, and the data node refuses the write
             // BEFORE executing it, so asking again cannot duplicate anything. Not topology
@@ -125,6 +126,7 @@ pub(super) fn status_is_topology_retryable(status: &Status) -> bool {
             | "shard_not_found"
             | "loadversionmismatch"
             | "load_version_mismatch"
+            | "raft_not_leader"
     )
 }
 

@@ -18,6 +18,46 @@ mod lifecycle_report_work_tests;
 #[path = "reclaim_manifest_tests.rs"]
 mod reclaim_manifest_tests;
 
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) struct DirtyPlanCapture {
+    pub(super) shard_id: ShardId,
+    pub(super) node_count: usize,
+    pub(super) logical_object_count: usize,
+    pub(super) claim_ids: Vec<u32>,
+    pub(super) flagged_ids: Vec<u32>,
+    pub(super) cached_ids: Vec<u32>,
+    pub(super) logical_ids: Vec<u32>,
+    pub(super) summary_ids: Option<Vec<u32>>,
+    pub(super) claim_summary_intersection_ids: Option<Vec<u32>>,
+    pub(super) ranked_ids: Option<Vec<u32>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static DIRTY_PLAN_CAPTURES: std::cell::RefCell<Option<Vec<DirtyPlanCapture>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn with_dirty_plan_captures<R>(run: impl FnOnce() -> R) -> (R, Vec<DirtyPlanCapture>) {
+    struct Restore(Option<Vec<DirtyPlanCapture>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // Restore even on unwind; drop any discarded capture outside the TLS borrow.
+            let discarded = DIRTY_PLAN_CAPTURES.with(|slot| slot.replace(self.0.take()));
+            drop(discarded);
+        }
+    }
+    let previous = DIRTY_PLAN_CAPTURES.with(|slot| slot.replace(Some(Vec::new())));
+    let restore = Restore(previous);
+    let result = run();
+    let captures = DIRTY_PLAN_CAPTURES.with(|slot| slot.borrow_mut().take())
+        .expect("the scoped planner capture is enabled");
+    drop(restore);
+    (result, captures)
+}
+
 /// How many dirty-object keys the dump drain has looked at, across every call.
 ///
 /// The drain's cost is not visible from outside -- it is a closure inside a `retain` -- and
@@ -405,11 +445,35 @@ impl TemporalEngine {
         // were materialised at all -- with no summaries the filter selects nothing either way.
         // THE ITEM COUNTS COME OUT OF THE SAME LOCK ACQUISITION as the dirty state. Taking a
         // second read lock to answer one ratio would be two acquisitions for one decision.
+        #[cfg(test)]
+        let capture_dirty_inputs = DIRTY_PLAN_CAPTURES.with(|slot| slot.borrow().is_some());
+        #[cfg(test)]
+        let mut dirty_capture = None;
+        #[cfg(test)]
+        let mut dirty_capture_index = None;
         let (shard_has_dirty_objects, dirty_claims, durable_items, live_items, claims_are_summarized) = self.shards.with_state(request.shard_id, |shard| {
             shard
             .map(|shard| {
                 let (claims, all_marked_dirty) =
                     crate::engine::storage_reporting::dirty_bucket_claims_with_summary_state(shard);
+                #[cfg(test)]
+                if capture_dirty_inputs {
+                    // All four memberships belong to this SAME owner read. The existing claim
+                    // builder has already initialized the dirty cache; no authority is changed.
+                    let nodes = &shard.bucket_index.bucket_map;
+                    dirty_capture = Some(DirtyPlanCapture {
+                        shard_id: request.shard_id,
+                        node_count: nodes.len(),
+                        logical_object_count: shard.dirty_objects.len(),
+                        claim_ids: claims.keys().copied().collect(),
+                        flagged_ids: nodes.iter().filter_map(|(&id, node)| node.dirty().then_some(id)).collect(),
+                        cached_ids: nodes.dirty_buckets().iter().copied().collect(),
+                        logical_ids: shard.dirty_objects.bucket_ids().collect(),
+                        summary_ids: None,
+                        claim_summary_intersection_ids: None,
+                        ranked_ids: None,
+                    });
+                }
                 let claims_are_summarized = detailed_report || all_marked_dirty;
                 (
                     !shard.dirty_objects.is_empty(),
@@ -421,6 +485,18 @@ impl TemporalEngine {
             })
             .unwrap_or_default()
         });
+        #[cfg(test)]
+        if let Some(capture) = dirty_capture {
+            // Grow the collector after with_state has released the owner guard. Formatting
+            // and set comparisons are also left to the fixture, outside every owner read.
+            dirty_capture_index = Some(DIRTY_PLAN_CAPTURES.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let captures = slot.as_mut().expect("scoped capture remains enabled");
+                let index = captures.len();
+                captures.push(capture);
+                index
+            }));
+        }
         // THE CAP, WHICH IS OFF UNLESS A CALLER ASKS FOR IT.
         //
         // Guarded on the threshold itself and on a non-zero denominator: a shard with no live
@@ -500,6 +576,24 @@ impl TemporalEngine {
         } else {
             oldest_dirty_buckets(dirty_bucket_source, &dirty_claims)
         };
+        #[cfg(test)]
+        if let Some(index) = dirty_capture_index {
+            // These are the actual later ranking candidates, not re-routed logical keys.
+            // None preserves the distinction between unmeasured S and measured empty S.
+            let summary_ids = bucket_summaries.as_ref().map(|_| {
+                dirty_bucket_source.iter().map(|summary| summary.routing_bucket).collect::<Vec<_>>()
+            });
+            let intersection = summary_ids.as_ref().map(|ids| {
+                ids.iter().filter_map(|bucket| dirty_claims.get(bucket).map(|_| *bucket)).collect::<Vec<_>>()
+            });
+            DIRTY_PLAN_CAPTURES.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let capture = &mut slot.as_mut().expect("scoped capture remains enabled")[index];
+                capture.summary_ids = summary_ids;
+                capture.claim_summary_intersection_ids = intersection;
+                capture.ranked_ids = Some(dirty_buckets.clone());
+            });
+        }
         let latest_dump_wal_sequence = latest_bucket_dump_manifest
             .as_ref()
             .map(|manifest| manifest.wal_sequence)
@@ -1013,17 +1107,29 @@ impl TemporalEngine {
         shard_id: ShardId,
         manifest: &BucketDumpManifest,
     ) {
-        let (start_routing_bucket, end_routing_bucket) = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
-            .unwrap_or((0, u32::MAX));
         self.shards.with_state_mut(shard_id, |shard| {
             let Some(shard) = shard else {
                 return;
             };
+            self.clear_dumped_bucket_dirty_state_for_owner(shard, manifest);
+        });
+    }
+
+    pub(super) fn clear_dumped_bucket_dirty_state_for_owner(
+        &self,
+        shard: &mut ShardState,
+        manifest: &BucketDumpManifest,
+    ) {
+        self.clear_dumped_bucket_dirty_state_for_owner_except(shard, manifest, &BTreeSet::new());
+    }
+
+    pub(super) fn clear_dumped_bucket_dirty_state_for_owner_except(
+        &self,
+        shard: &mut ShardState,
+        manifest: &BucketDumpManifest,
+        preserved_empty_owners: &BTreeSet<u32>,
+    ) {
+            let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
             // Per-bucket derived generation the manifest captured (base + dirty count) --
             // exactly what the reclaim fingerprint compares.
             let captured: std::collections::HashMap<u32, u64> = manifest
@@ -1076,6 +1182,9 @@ impl TemporalEngine {
             // in one pass.
             let mut cleared_buckets: Vec<u32> = Vec::new();
             for bucket_id in manifest.bucket_ids.iter().copied() {
+                if preserved_empty_owners.contains(&bucket_id) {
+                    continue;
+                }
                 let Some(&captured_generation) = captured.get(&bucket_id) else {
                     continue;
                 };
@@ -1121,7 +1230,6 @@ impl TemporalEngine {
                 let dropped = shard.dirty_objects.drain_buckets(&cleared_buckets);
                 DIRTY_DRAIN_VISITS.fetch_add(dropped as u64, std::sync::atomic::Ordering::Relaxed);
             }
-        })
     }
 
     pub fn apply_storage_lifecycle(
@@ -1142,7 +1250,7 @@ impl TemporalEngine {
             None
         } else {
             match self
-                .create_bucket_dump_manifest(request.shard_id, plan.selected_dump_buckets.clone())
+                .create_bucket_dump_manifest_and_clear(request.shard_id, plan.selected_dump_buckets.clone(), true)
             {
                 Ok(manifest) => Some(manifest),
                 Err(status) => {
@@ -1159,21 +1267,6 @@ impl TemporalEngine {
                 }
             }
         };
-        if let Some(manifest) = &dump_manifest {
-            // Once a bucket is dumped its dirty flag is cleared, so the storage cycle
-            // stops re-selecting and re-dumping it every round. Dumped state is anchored
-            // by the WAL watermark (last_dump_sequence / manifest.wal_sequence, the
-            // dumped-log sequence), not by the dirty flag.
-            self.clear_dumped_bucket_dirty_state(request.shard_id, manifest);
-            // AND THE ITEM COUNT IS BACK TO THE LIVE SET. A dump re-serializes the live
-            // objects, so every superseded record it replaced is gone from the durable form
-            // -- which is what makes `item_space_amplification_ppm` a trigger.
-            self.shards.with_state_mut(request.shard_id, |shard| {
-                if let Some(shard) = shard {
-                    shard.mark_items_dumped();
-                }
-            });
-        }
         let (cache_entries_removed, cache_disk_bytes_removed) = if request.invalidate_cache {
             self.cache
                 .invalidate_shard(request.shard_id)
@@ -2650,6 +2743,67 @@ impl TemporalEngine {
             .unwrap_or_default()
     }
 
+    /// Capture live string addresses under the shard lock, then resolve sizes
+    /// and keep a bounded set of the least recently used keys.
+    pub(crate) fn plan_cache_reclamation(
+        &self,
+        shard_id: ShardId,
+        limit: usize,
+    ) -> Option<(u64, Vec<(String, u64)>)> {
+        let observed_at = now_ms();
+        if limit != 0 {
+            self.fold_fast_read_recency_for_shard(shard_id);
+        }
+        let records = self.shards.with_state(shard_id, |shard| {
+            let shard = shard?;
+            let (start, end) = shard.routing_range();
+            let expiry = shard.expires_at_ms();
+            let records = shard
+                .strings()
+                .iter()
+                .filter(|(key, _)| {
+                    expiry.get(key.as_ref()).is_none_or(|deadline| *deadline > observed_at)
+                })
+                .map(|(key, slot)| {
+                    let bucket = super::block_routing_bucket(key, start, end);
+                    let recency = shard.bucket_recency.get(&bucket).copied().unwrap_or_default();
+                    (key.clone(), slot.address(), bucket, recency)
+                })
+                .collect::<Vec<_>>();
+            Some(records)
+        })?;
+        let mut bytes = 0_u64;
+        let mut coldest = std::collections::BinaryHeap::new();
+        for (key, address, bucket, recency) in records {
+            let length = if address.block_slab_id() == super::HOT_BLOCK_SLAB_ID {
+                address.length()
+            } else if let Some(length) = self.block_store.local_block_payload_length(&address) {
+                length
+            } else {
+                super::read_string_length(
+                    &self.cache, &self.block_store, shard_id, &address, &key, bucket,
+                )? as u64
+            };
+            bytes = bytes.checked_add(length)?;
+            if limit != 0 && length != 0 {
+                let candidate = (recency, key, length);
+                if coldest.len() < limit {
+                    coldest.push(candidate);
+                } else if let Some(mut newest) = coldest.peek_mut() {
+                    if candidate < *newest {
+                        *newest = candidate;
+                    }
+                }
+            }
+        }
+        let victims = coldest
+            .into_sorted_vec()
+            .into_iter()
+            .map(|(_, key, length)| (key.to_string(), length))
+            .collect();
+        Some((bytes, victims))
+    }
+
     pub fn apply_storage_eviction(
         &self,
         shard_id: ShardId,
@@ -2862,14 +3016,8 @@ impl TemporalEngine {
                 .map(|victim| victim.routing_bucket)
                 .collect::<Vec<_>>();
             if !dirty_buckets.is_empty() {
-                if let Ok(manifest) = self.create_bucket_dump_manifest(shard_id, dirty_buckets) {
+                if let Ok(manifest) = self.create_bucket_dump_manifest_and_clear(shard_id, dirty_buckets, false) {
                     dump_manifest_ids.push(manifest.manifest_id.clone());
-                    // Dumped means dumped. `apply_storage_lifecycle` has always paired the
-                    // manifest with this clear; the eviction path created the manifest and left
-                    // every bucket marked dirty, so "dump before evict" dumped and then evicted
-                    // nothing it had dumped. This fallback still needs the clear for owners
-                    // whose per-page dirty state cannot be retained inline.
-                    self.clear_dumped_bucket_dirty_state(shard_id, &manifest);
                 }
             }
         }
@@ -3153,6 +3301,13 @@ mod eviction_round_scale {
     use std::sync::atomic::Ordering;
 
     fn engine_with(objects: usize) -> (tempfile::TempDir, TemporalEngine) {
+        engine_with_background_flush(objects, true)
+    }
+
+    fn engine_with_background_flush(
+        objects: usize,
+        background_flush: bool,
+    ) -> (tempfile::TempDir, TemporalEngine) {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -3160,6 +3315,9 @@ mod eviction_round_scale {
             dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
+        if !background_flush {
+            engine.wal_store.disable_background_flush_for_test();
+        }
         engine.load_shard(1);
         for index in 0..objects {
             fixture_command(&engine, Command::StringSet {
@@ -3702,7 +3860,9 @@ mod eviction_round_scale {
         }
 
         fn round(objects: usize) -> Round {
-            let (_dir, engine) = engine_with(objects);
+            // The store's sync counter includes periodic barriers. Measure the
+            // eviction call with only this fixture's background worker disabled.
+            let (_dir, engine) = engine_with_background_flush(objects, false);
             engine.use_sampled_eviction_for_test();
             APPENDS.store(0, Ordering::Relaxed);
             NANOS.reset();

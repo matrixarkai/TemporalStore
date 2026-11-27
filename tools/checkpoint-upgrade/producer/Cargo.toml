@@ -1,0 +1,17 @@
+[package]
+name = "checkpoint-v32-producer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+temporalstore = { package = "temporalstore-rust", path = PRODUCT_PATH_JSON, default-features = true }
+serde_json = "1"
+sha2 = "0.10"
+
+[[bin]]
+name = "checkpoint-v32-producer"
+path = "main.rs"

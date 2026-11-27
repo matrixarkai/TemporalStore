@@ -3,8 +3,12 @@
 
 //! DataNodeRuntime storage-manager scheduling/lifecycle methods, extracted from data_node.rs.
 
+#[cfg(test)]
+#[path = "scalar_pressure_tests.rs"]
+mod scalar_pressure_tests;
+
 use super::round_budget::{
-    options_for_slot, BoundedStage, HeavySlot, PageCursor, ShardRoundState, StageBudget,
+    options_for_slot, BoundedStage, HeavySlot, BlockGcCursor, ShardRoundState, StageBudget,
     StageContext, StageProgress, StageStep,
 };
 use super::*;
@@ -574,7 +578,7 @@ impl DataNodeRuntime {
                 invalidate_cache: false,
                 warm_cache: false,
             }, detailed_report);
-        let cache = self.inner.engine.cache().stats();
+        let cache = self.inner.engine.cache().pressure_snapshot();
         // THE NUMBER THAT WAS MISSING. Every memory term below was a cache term, so a shard whose
         // bucket index is large and whose cache is small -- the exact shape eviction exists for --
         // read as carrying no memory and was never asked to give any back.
@@ -1010,22 +1014,29 @@ impl DataNodeRuntime {
         let index_bound_is_the_gate = options.index_resident_limit_bytes > 0
             && (options.eviction_memory_pressure_threshold == 0
                 || options.index_resident_limit_bytes < options.eviction_memory_pressure_threshold);
-        let eviction = options.enable_evict.then(|| {
+        let cache_reclaim = options.enable_evict.then(|| {
+            self.inner.reclaim_cache_budget(
+                shard_id,
+                options.eviction_batch_limit.min(options.eviction_count_limit),
+            )
+        }).flatten();
+        let mut eviction = options.enable_evict.then(|| {
+            let engine = self.inner.storage_engine(shard_id);
             let Some(stage_threshold) = configured_limit else {
+                let resident = engine.bucket_index_resident_bytes(shard_id);
                 return crate::engine::reports::StorageEvictionReport {
                     shard_id,
                     mode: "evict_cache".to_string(),
-                    pressure_before: pressure.eviction_memory_pressure_bytes,
-                    pressure_after: pressure.eviction_memory_pressure_bytes,
-                    bucket_index_bytes_before: pressure.eviction_memory_pressure_bytes,
-                    bucket_index_bytes_after: pressure.eviction_memory_pressure_bytes,
+                    pressure_before: resident,
+                    pressure_after: resident,
+                    bucket_index_bytes_before: resident,
+                    bucket_index_bytes_after: resident,
                     batch_limit: options.eviction_batch_limit,
                     dump_before_evict: options.eviction_dump_before_evict,
                     skipped_reason: "no_memory_limit".to_string(),
                     ..Default::default()
                 };
             };
-            let engine = &self.inner.engine;
             if options.eviction_count_limit == 0 || options.eviction_batch_limit == 0 {
                 let resident = engine.bucket_index_resident_bytes(shard_id);
                 let gate_open = resident > stage_threshold;
@@ -1098,6 +1109,18 @@ impl DataNodeRuntime {
             )
             .into_stage_report()
         });
+        let cache_budget_signal = cache_reclaim.map(|(budget, bytes, reclaimed)| {
+            if let Some(report) = eviction.as_mut().filter(|_| reclaimed != 0) {
+                report.dropped_object_count = report.dropped_object_count.saturating_add(reclaimed);
+                report.skipped_reason.clear();
+            }
+            StorageManagerPressureSignal {
+                name: "cache_live_payload_bytes".to_string(),
+                observed: bytes,
+                threshold: budget.bytes,
+                over_threshold: bytes > budget.bytes,
+            }
+        });
         if eviction.is_some() {
             executed_stages.push("evict".to_string());
             self.inner
@@ -1112,22 +1135,23 @@ impl DataNodeRuntime {
         pressure_decisions.push(storage_manager_pressure_decision(
             "evict",
             eviction.is_some(),
-            eviction.as_ref().is_some_and(|report| report.pressure_gate_open),
+            eviction.as_ref().is_some_and(|report| report.pressure_gate_open)
+                || cache_budget_signal.as_ref().is_some_and(|signal| signal.over_threshold),
             eviction.is_some(),
-            configured_limit.map(|limit| vec![
+            configured_limit.zip(eviction.as_ref()).map(|(limit, report)| vec![
                 storage_manager_pressure_signal(
                     "eviction_memory_pressure_bytes",
-                    pressure.eviction_memory_pressure_bytes, limit,
+                    report.pressure_before, limit,
                 ),
                 storage_manager_pressure_signal(
                     "bucket_index_resident_bytes",
-                    pressure.bucket_index_resident_bytes, limit,
+                    report.bucket_index_bytes_before, limit,
                 ),
                 storage_manager_pressure_signal(
                     "index_resident_limit_bytes",
-                    pressure.bucket_index_resident_bytes, limit,
+                    report.bucket_index_bytes_before, limit,
                 ),
-            ]).unwrap_or_default(),
+            ]).unwrap_or_default().into_iter().chain(cache_budget_signal).collect(),
             vec![if index_bound_is_the_gate {
                 "index_resident_bound_set".to_string()
             } else {
@@ -1419,15 +1443,15 @@ impl DataNodeRuntime {
                     });
                 super::task_execution::record_gc_phase(&self.inner, "purge", purge_started);
                 block_purge_report = Some(purge);
-                if !executed_stages.iter().any(|stage| stage == "reclaim_page") {
-                    executed_stages.push("reclaim_page".to_string());
-                    skipped_stages.retain(|stage| stage != "reclaim_page_no_pressure");
-                    self.inner.stats.lock().expect("runtime stats lock poisoned")
-                        .storage_manager_reclaim_block_runs += 1;
-                }
             }
         }
-        if page_log_reclaim.is_some()
+        let purged_or_restored = block_purge_report.as_ref().is_some_and(|purge| purge.processed_block_slabs > 0);
+        let retired_wal = page_log_reclaim.as_ref().is_some_and(|reclaim| {
+            reclaim.wal_records_removed > 0 || reclaim.wal_segments_dropped > 0
+        });
+        // Keep check and deferral evidence in the phase reports. An empty
+        // cleanup check is not a completed collection round.
+        if (purged_or_restored || retired_wal)
             && !executed_stages.iter().any(|stage| stage == "reclaim_page")
         {
             executed_stages.push("reclaim_page".to_string());
@@ -2001,11 +2025,7 @@ impl DataNodeRuntime {
         // Later index work may replace its lifecycle report. Attach physical purge work last.
         let cleanup_progress = if block_purge_report.as_ref().is_some_and(|purge| purge.budget_exhausted) {
             StageProgress::More
-        } else if block_purge_report.as_ref().is_some_and(|purge| purge.processed_block_slabs > 0)
-            || page_log_reclaim.as_ref().is_some_and(|reclaim| {
-                reclaim.wal_records_removed > 0 || reclaim.wal_segments_dropped > 0
-            })
-        {
+        } else if purged_or_restored || retired_wal {
             StageProgress::Done
         } else {
             StageProgress::Idle
@@ -2223,7 +2243,7 @@ impl DataNodeRuntime {
         let started = std::time::Instant::now();
         let mut resume = false;
         let report = if slot == HeavySlot::PageGc {
-            let stage = PageGcStage { runtime: self };
+            let stage = BlockGcStage { runtime: self };
             let mut budget = StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX);
             let context = StageContext { options, plan: None };
             let (step, report) =
@@ -3182,16 +3202,16 @@ const PAGE_GC_STEP_TIME: Duration = Duration::from_millis(10);
 
 /// Block collection as a bounded, resumable stage: each step examines a window of candidate slabs
 /// starting behind the cursor, and reports whether more remain.
-pub(crate) struct PageGcStage<'a> {
+pub(crate) struct BlockGcStage<'a> {
     runtime: &'a DataNodeRuntime,
 }
 
-impl PageGcStage<'_> {
+impl BlockGcStage<'_> {
     /// One bounded step, with the loop report the legacy tick also returns.
     pub(crate) fn run(
         &self,
         shard: ShardId,
-        cursor: &mut PageCursor,
+        cursor: &mut BlockGcCursor,
         budget: &mut StageBudget,
         context: &StageContext<'_>,
     ) -> (StageStep, StorageManagerLoopReport) {
@@ -3230,7 +3250,7 @@ impl PageGcStage<'_> {
             .run_storage_manager_round(shard, options, false, scan_page_slabs);
         let (progress, work_done, status) = match report.gc_report.as_ref() {
             None => {
-                *cursor = PageCursor::default();
+                *cursor = BlockGcCursor::default();
                 (cleanup_progress, 0, report.status.clone())
             }
             Some(gc) => {
@@ -3238,9 +3258,9 @@ impl PageGcStage<'_> {
                 budget.spend(examined);
                 let more = !gc.block_gc_scan_complete && gc.block_gc_scan_last_block_slab_id.is_some();
                 *cursor = if more {
-                    PageCursor { after_slab_id: gc.block_gc_scan_last_block_slab_id }
+                    BlockGcCursor { after_slab_id: gc.block_gc_scan_last_block_slab_id }
                 } else {
-                    PageCursor::default()
+                    BlockGcCursor::default()
                 };
                 (
                     if more { StageProgress::More } else { StageProgress::Done },
@@ -3253,14 +3273,14 @@ impl PageGcStage<'_> {
     }
 }
 
-impl BoundedStage for PageGcStage<'_> {
-    type Cursor = PageCursor;
+impl BoundedStage for BlockGcStage<'_> {
+    type Cursor = BlockGcCursor;
     const NAME: &'static str = "reclaim_page";
 
     fn step(
         &self,
         shard: ShardId,
-        cursor: &mut PageCursor,
+        cursor: &mut BlockGcCursor,
         budget: &mut StageBudget,
         context: &StageContext<'_>,
     ) -> StageStep {
@@ -3335,6 +3355,9 @@ mod page_gate_is_timed {
 
     #[test]
     fn a_closed_slab_gate_still_purges_mature_quarantine() {
+        use crate::types::{Command, CommandResponse, ExecuteRequest};
+
+        let _physical = crate::engine::value_once_in_test(false);
         let root = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024, root.path().join("cache"),
@@ -3352,9 +3375,28 @@ mod page_gate_is_timed {
             Some(std::collections::BTreeSet::from([victim])),
         ).unwrap();
         assert_eq!(quarantined.delayed_destroy_block_slab_ids, vec![victim]);
+
+        // Give the utility gate a real sealed serving slab. Quarantine can
+        // retain a descriptor in the denominator until final destruction.
+        let mut seed = 0x3d6f_819bu32;
+        let value: Vec<u8> = (0..4096).map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as u8
+        }).collect();
+        let written = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: "live".into(), value: value.clone() },
+        });
+        assert!(written.status.ok, "{:?}", written.status);
+        let survivor = store.roll_slab_for_shard(1).unwrap().previous_block_slab_id;
+        assert_ne!(survivor, victim);
+        assert!(engine.live_block_slab_ids(1).contains(&survivor));
+        assert!(!store.active_block_slab_ids().contains(&survivor));
         engine.publish_block_slab_live_bytes();
         let gate = store.reclaim_gate(crate::block_store::DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
-        assert!(!gate.due, "{gate:?}");
+        assert!(gate.ready && gate.logical_bytes > 0 && gate.live_bytes > 0 && !gate.due, "{gate:?}");
 
         let runtime = DataNodeRuntime::new_without_workers_with_options(
             engine.clone(),
@@ -3363,8 +3405,8 @@ mod page_gate_is_timed {
         let step = |enabled| {
             let options = StorageManagerOptions { enable_block_gc: enabled, ..Default::default() };
             let context = StageContext { options: &options, plan: None };
-            let (step, report) = PageGcStage { runtime: &runtime }.run(
-                1, &mut PageCursor::default(), &mut StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX),
+            let (step, report) = BlockGcStage { runtime: &runtime }.run(
+                1, &mut BlockGcCursor::default(), &mut StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX),
                 &context,
             );
             assert!(report.status.ok, "{report:?}");
@@ -3383,6 +3425,13 @@ mod page_gate_is_timed {
         assert!(report.executed_stages.iter().any(|name| name == "reclaim_page"));
         assert!(store.delayed_destroy_slab_ids().unwrap().is_empty());
         assert!(!store.slab_ids().unwrap().contains(&victim));
+        assert!(store.slab_ids().unwrap().contains(&survivor));
+        engine.cache().invalidate_shard(1).unwrap();
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key: "live".into() },
+        });
+        assert!(read.status.ok, "{:?}", read.status);
+        assert_eq!(read.response, CommandResponse::Bytes { value: Some(value) });
     }
 
 
@@ -3467,8 +3516,8 @@ mod page_gate_is_timed {
         assert!(gate.ready && !gate.due, "{gate:?}");
         let step = |options: &StorageManagerOptions| {
             let context = StageContext { options, plan: None };
-            let (step, report) = PageGcStage { runtime: &runtime }.run(
-                1, &mut PageCursor::default(), &mut StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX),
+            let (step, report) = BlockGcStage { runtime: &runtime }.run(
+                1, &mut BlockGcCursor::default(), &mut StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX),
                 &context,
             );
             assert!(report.status.ok, "{report:?}");
@@ -3549,10 +3598,10 @@ mod page_gate_is_timed {
         );
         let options = StorageManagerOptions::default();
         for round in 1..=3u64 {
-            let mut cursor = PageCursor::default();
+            let mut cursor = BlockGcCursor::default();
             let mut budget = StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX);
             let context = StageContext { options: &options, plan: None };
-            let (_, report) = PageGcStage { runtime: &runtime }.run(1, &mut cursor, &mut budget, &context);
+            let (_, report) = BlockGcStage { runtime: &runtime }.run(1, &mut cursor, &mut budget, &context);
             assert!(report.gc_report.is_none(), "the gate was expected to decline: {report:?}");
             let timing = runtime.stats().storage_manager_stage_timing;
             let gate = timing.get("reclaim_page.gate").expect("a declined step reports its gate");

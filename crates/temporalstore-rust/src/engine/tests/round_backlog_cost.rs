@@ -454,7 +454,11 @@ fn the_measured_fixture_never_dumps_so_the_buckets_it_calls_dirty_really_are_dir
     let drained_before = drained_total();
     let mut last = None;
     for round_index in 0..3 {
-        let (report, _) = one_round(&engine, PUBLISHED_MIN_UNDUMPED_WAL_RECORDS);
+        let ((report, _), captures) =
+            crate::engine::storage_lifecycle_methods::with_dirty_plan_captures(|| {
+                one_round(&engine, PUBLISHED_MIN_UNDUMPED_WAL_RECORDS)
+            });
+        emit_dirty_plan_captures(&format!("published-round-{round_index}"), &captures, &report);
         assert!(
             report.completed && report.errors.is_empty(),
             "round {round_index} did not complete: errors={:?}, stages={:?}, install_roll_forward={:?}",
@@ -530,7 +534,11 @@ fn the_measured_fixture_never_dumps_so_the_buckets_it_calls_dirty_really_are_dir
     seed(&control, 0, RECORDS);
     std::thread::sleep(std::time::Duration::from_millis(30));
     let control_drained_before = drained_total();
-    let (control_report, _) = one_round(&control, DUMPING_MIN_UNDUMPED_WAL_RECORDS);
+    let ((control_report, _), captures) =
+        crate::engine::storage_lifecycle_methods::with_dirty_plan_captures(|| {
+            one_round(&control, DUMPING_MIN_UNDUMPED_WAL_RECORDS)
+        });
+    emit_dirty_plan_captures("dumping-control", &captures, &control_report);
     assert!(
         control_report.completed && control_report.errors.is_empty(),
         "dump control round did not complete: {:?}",
@@ -555,6 +563,73 @@ fn the_measured_fixture_never_dumps_so_the_buckets_it_calls_dirty_really_are_dir
         "the control arm left {control_objects} dirty objects behind. The point of the arm is \
          that the SAME store, with only the dump threshold moved, retires everything"
     );
+}
+
+// Full ID vectors are captured under one owner read; comparisons and bounded output happen here.
+// Every planner invocation in the scoped round is numbered, so a later lifecycle plan cannot be
+// mistaken for the initial plan whose pressure snapshot the cycle returns.
+fn emit_dirty_plan_captures(
+    label: &str,
+    captures: &[crate::engine::storage_lifecycle_methods::DirtyPlanCapture],
+    report: &StorageManagerCycleReport,
+) {
+    assert!(!captures.is_empty(), "the real round must reach the instrumented planner");
+    eprintln!(
+        "dirty-plan {label}: captures={}, report_dirty={}, plan_dirty={}, selected={}, summaries={:?}",
+        captures.len(), report.pressure_signals.dirty_bucket_count,
+        report.plan.dirty_buckets.len(), report.plan.selected_dump_buckets.len(),
+        report.plan.bucket_summaries.as_ref().map(Vec::len),
+    );
+    for (index, capture) in captures.iter().enumerate() {
+        assert_eq!(capture.shard_id, 1, "this fixture observes only its own shard");
+        eprintln!(
+            "dirty-plan {label}/{index}: nodes={}, logical_objects={}, C={}, F={}, K={}, D={}",
+            capture.node_count, capture.logical_object_count, capture.claim_ids.len(),
+            capture.flagged_ids.len(), capture.cached_ids.len(), capture.logical_ids.len(),
+        );
+        let mut sets = vec![
+            ("C", capture.claim_ids.iter().copied().collect::<BTreeSet<_>>()),
+            ("F", capture.flagged_ids.iter().copied().collect()),
+            ("K", capture.cached_ids.iter().copied().collect()),
+            ("D", capture.logical_ids.iter().copied().collect()),
+        ];
+        if let Some(ids) = &capture.summary_ids {
+            sets.push(("S", ids.iter().copied().collect()));
+            sets.push(("CxS", capture.claim_summary_intersection_ids.as_ref()
+                .expect("the measured summary candidates have a captured intersection")
+                .iter().copied().collect()));
+        } else {
+            eprintln!("dirty-plan {label}/{index}: S=unmeasured, CxS=unmeasured");
+        }
+        sets.push(("ranked", capture.ranked_ids.as_ref().expect("ranking completed")
+            .iter().copied().collect()));
+        eprintln!("dirty-plan {label}/{index}: ranking populations={:?}",
+            sets.iter().map(|(name, ids)| (*name, ids.len())).collect::<Vec<_>>());
+        for (left, right) in [(0, 1), (1, 2), (0, 2), (0, 3)] {
+            let only_left = sets[left].1.difference(&sets[right].1).copied().collect::<Vec<_>>();
+            let only_right = sets[right].1.difference(&sets[left].1).copied().collect::<Vec<_>>();
+            eprintln!(
+                "dirty-plan {label}/{index}: {}-{}={} sample={:?}; {}-{}={} sample={:?}",
+                sets[left].0, sets[right].0, only_left.len(),
+                only_left.iter().take(16).copied().collect::<Vec<_>>(),
+                sets[right].0, sets[left].0, only_right.len(),
+                only_right.iter().take(16).copied().collect::<Vec<_>>(),
+            );
+        }
+        if capture.summary_ids.is_some() {
+            for (left, right) in [(0, 4), (3, 4), (5, 6)] {
+                let only_left = sets[left].1.difference(&sets[right].1).copied().collect::<Vec<_>>();
+                let only_right = sets[right].1.difference(&sets[left].1).copied().collect::<Vec<_>>();
+                eprintln!(
+                    "dirty-plan {label}/{index}: {}-{}={} sample={:?}; {}-{}={} sample={:?}",
+                    sets[left].0, sets[right].0, only_left.len(),
+                    only_left.iter().take(16).copied().collect::<Vec<_>>(),
+                    sets[right].0, sets[left].0, only_right.len(),
+                    only_right.iter().take(16).copied().collect::<Vec<_>>(),
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -1010,6 +1010,7 @@ mod tests {
         heartbeat_ms: u64,
     ) -> ServerMetaInfo {
         ServerMetaInfo {
+            grpc_addr: None,
             registered_at_ms: 0,
             reported_record_count: 0,
             reported_storage_bytes: 0,
@@ -1579,6 +1580,7 @@ mod tests {
             // now happens when the view is taken rather than inside the planner.
             let mut server = server_record(addr, "rack-1", MetaEntityState::Normal, heartbeat);
             server.shard_states = vec![ServerShardServingState {
+                raft_role: None,
                 shard_id: 1,
                 serving_state: "serving".to_string(),
                 worker_index: 0,

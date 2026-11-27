@@ -569,10 +569,16 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 32,
-        "audited at 32; if this is red the stamp moved and the adoption's cost has to be \
+        current, 33,
+        "audited at 33; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
+    // Re-audited at 33: the served String table now carries a versioned owner-row tuple,
+    // bounds and filed/verified row metadata. That is an intentional served-image change.
+    // This changes the served image, not IndexItemRow's positional shape, IndexDeltaRecord
+    // or their binary framing. The existing row-slot, frame, owner-width and replay-fold
+    // guards below still cover that cost subject independently of the format stamp.
+    // This audit does not claim a new measured cost.
     // Re-audited at 32: 30 moved objects under slot_index, 31 moved container maps into that
     // index, and 32 made object rows positional and added the optional retry-ring domain.
     // These change the served image, not IndexItemRow's positional fields or binary framing.

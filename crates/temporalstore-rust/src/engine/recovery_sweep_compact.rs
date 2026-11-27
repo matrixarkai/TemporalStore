@@ -2677,18 +2677,30 @@ fn update_compacted_bucket_views(
     moved: &[super::compaction::MovedBlock],
     refresh: CompactionIndexRefresh,
 ) {
+    #[cfg(test)]
+    let ordered_moves = dirty_owner_rebuild_tests::order_moves_for_test(moved);
+    #[cfg(test)]
+    let moved = ordered_moves.as_deref().unwrap_or(moved);
     let in_place = apply_relocations_in_place(shard, moved);
     #[cfg(test)]
     LAST_ROUND_INDEX_UPDATE.with(|cell| cell.set(if in_place { 1 } else { 2 }));
+    #[cfg(test)]
+    dirty_owner_rebuild_tests::observe_partial_move_for_test(shard, moved, in_place);
+    if !in_place {
+        storage_bucket_internals::rebuild_bucket_block_ownership_with_relocations(
+            shard_id, shard, start_routing_bucket, end_routing_bucket, moved,
+        );
+    }
     if in_place && matches!(refresh, CompactionIndexRefresh::ChangedBuckets) {
         storage_bucket_internals::refresh_pending_bucket_runtime_flags(shard);
     } else {
         refresh_bucket_runtime_flags(shard);
     }
-    if !in_place {
-        rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
-    }
 }
+
+#[cfg(test)]
+#[path = "dirty_owner_rebuild_tests.rs"]
+mod dirty_owner_rebuild_tests;
 
 #[track_caller]
 fn retained_objects_outside_slab(

@@ -18,6 +18,31 @@ pub(super) fn note_checkpoint_decode() {
 #[path = "dump_checkpoint_capture_tests.rs"]
 mod capture_tests;
 
+#[cfg(test)]
+#[path = "dump_prune_failure_tests.rs"]
+mod prune_failure_tests;
+
+#[cfg(test)]
+#[path = "dump_completion_identity_tests.rs"]
+mod completion_identity_tests;
+
+#[cfg(test)]
+#[path = "qualified_empty_owner_tests.rs"]
+mod qualified_empty_owner_tests;
+
+#[cfg(test)]
+#[path = "qualified_reload_source_tests.rs"]
+mod qualified_reload_source_tests;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_DUMP_DIRTY_COMPLETION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static BEFORE_DUMP_CHECKPOINT_CAPTURE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static FAIL_EMPTY_OWNER_AFTER_METADATA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Fault seam: stop `apply_bucket_dump_manifest_prune_with_retention_refs` dead between its two
 /// phases, as a crash there would.
 ///
@@ -165,18 +190,41 @@ impl TemporalEngine {
         shard_id: ShardId,
         selected_buckets: impl IntoIterator<Item = u32>,
     ) -> Result<BucketDumpManifest, Status> {
+        self.create_bucket_dump_manifest_with_completion(shard_id, selected_buckets, None)
+    }
+
+    pub(super) fn create_bucket_dump_manifest_and_clear(
+        &self,
+        shard_id: ShardId,
+        selected_buckets: impl IntoIterator<Item = u32>,
+        mark_items_dumped: bool,
+    ) -> Result<BucketDumpManifest, Status> {
+        self.create_bucket_dump_manifest_with_completion(
+            shard_id, selected_buckets, Some(mark_items_dumped),
+        )
+    }
+
+    fn create_bucket_dump_manifest_with_completion(
+        &self,
+        shard_id: ShardId,
+        selected_buckets: impl IntoIterator<Item = u32>,
+        completion: Option<bool>,
+    ) -> Result<BucketDumpManifest, Status> {
         let selected_buckets = selected_buckets.into_iter().collect::<BTreeSet<_>>();
-        if self.shards.handle(shard_id).is_none() {
-            return Err(Status::error("shard_not_loaded", "shard is not loaded"));
-        }
-        // Bulk ingest dumps an exported image whose summaries are volatile, so only that path asks
-        // the live shard for them. Every other dump summarises the CAPTURED state off the one
-        // listing taken of it below, instead of listing the live shard first and the capture again.
-        let live_summaries = bulk_ingest_mode().then(|| self.bucket_storage_summaries(shard_id));
+        let owner = self.shards.handle(shard_id)
+            .ok_or_else(|| Status::error("shard_not_loaded", "shard is not loaded"))?;
+        #[cfg(test)]
+        BEFORE_DUMP_CHECKPOINT_CAPTURE.with(|cell| {
+            let hook = cell.borrow_mut().take();
+            if let Some(hook) = hook { hook(); }
+        });
+        // Summaries and physical coverage must describe the same captured image, including
+        // when bulk export reads an older base instead of the live owner.
+        let bulk_capture = bulk_ingest_mode();
         #[cfg(test)]
         super::writer_stall_probe::set_phase("dump: capture checkpoint (clone under read guard)");
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
-        let (mut dump_index_state, mut captured_bytes, publication) = if bulk_ingest_mode() {
+        let (mut dump_index_state, mut captured_bytes, publication) = if bulk_capture {
             let publication = self.shards.with_state(shard_id, |state| {
                 state.map(|_| self.checkpoint_publications.capture(shard_id))
             }).ok_or_else(|| Status::error("shard_not_loaded", "shard is not loaded"))?;
@@ -191,6 +239,27 @@ impl TemporalEngine {
                     "shard is unloaded or its WAL application is incomplete"))?;
             (snapshot, None, publication)
         };
+        let image_wal_anchor = dump_index_state.applied_wal_sequence;
+        if bulk_capture && completion.is_some() {
+            let covered = owner.with_read(|state| {
+                let Some(shard) = state else { return false; };
+                let Some(anchor) = image_wal_anchor else { return false; };
+                shard.checkpoint_wal_sequence() == Some(anchor)
+                    && self.wal_store.stats_without_rescan(shard_id).last_sequence == anchor
+            });
+            if !covered {
+                return Err(Status::error("bulk_dump_uncovered_image",
+                    "bulk dump image does not cover the current owner and WAL tail"));
+            }
+        }
+        let empty_owners = if completion.is_some() && !bulk_capture {
+            qualified_empty_owners::normalize_selected(&mut dump_index_state, &selected_buckets)
+        } else {
+            qualified_empty_owners::Prepared::default()
+        };
+        if !empty_owners.ids.is_empty() {
+            captured_bytes = None;
+        }
         #[cfg(test)]
         super::writer_stall_probe::set_phase("dump: summaries walk of the captured copy");
         let mut retained_objects = std::collections::HashSet::new();
@@ -214,33 +283,26 @@ impl TemporalEngine {
                 coverage_digests.observe(shard_id, entry);
             }
         };
-        let summaries = match live_summaries {
-            Some(live) => {
-                visit_live_block_entries(&dump_index_state, |entry| observe_entry(&entry));
-                live
-            }
-            None => {
-                let (start, end) = self
-                    .infos
-                    .read()
-                    .expect("info lock poisoned")
-                    .get(&shard_id)
-                    .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
-                    .unwrap_or((0, u32::MAX));
-                bucket_storage_summaries_from_visit(&dump_index_state, start, end, |consume| {
-                    visit_live_block_entries(&dump_index_state, |entry| {
-                        consume(&entry);
-                        observe_entry(&entry);
-                    });
-                })
-            }
-        };
+        let (start, end) = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
+            .unwrap_or((0, u32::MAX));
+        let summaries = bucket_storage_summaries_from_visit(&dump_index_state, start, end, |consume| {
+            visit_live_block_entries(&dump_index_state, |entry| {
+                consume(&entry);
+                observe_entry(&entry);
+            });
+        });
         let mut bucket_summaries = summaries
             .into_iter()
             .filter(|summary| {
                 selected_buckets.is_empty() || selected_buckets.contains(&summary.routing_bucket)
             })
             .collect::<Vec<_>>();
+        empty_owners.append_empty_coverage(&mut bucket_summaries);
         bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
         #[cfg(test)]
         super::writer_stall_probe::set_phase("dump: WAL-resident retirements");
@@ -282,7 +344,7 @@ impl TemporalEngine {
         // replay cursor always equals the state the index captured. Derive the watermark from the
         // embedded index's own anchor so reload replays exactly the WAL suffix it lacks.
         // An unanchored frozen image claims no records, never the live tail after capture.
-        let wal_sequence = dump_index_state.applied_wal_sequence.unwrap_or(0);
+        let wal_sequence = image_wal_anchor.unwrap_or(0);
         let parent = latest_bucket_dump_manifest_at(&self.index_dir, shard_id);
         // Distinct captures must not replace one another within the clock's resolution.
         let created_unix_ms = publication.allocate_dump_time_ms(
@@ -366,6 +428,12 @@ impl TemporalEngine {
         super::writer_stall_probe::set_phase("dump: persist manifest + mark_dumped");
         let published = self.checkpoint_publications.publish(&publication, || {
             let metadata = self.persist_bucket_dump_manifest_metadata(&manifest, true)?;
+            #[cfg(test)]
+            if !empty_owners.ids.is_empty()
+                && FAIL_EMPTY_OWNER_AFTER_METADATA.with(|fail| fail.replace(false))
+            {
+                return Err(std::io::Error::other("injected empty-owner publication failure after metadata"));
+            }
             self.wal_store.mark_dumped(shard_id);
             Ok(metadata)
         }).map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
@@ -395,6 +463,42 @@ impl TemporalEngine {
         // anchor on reload, so fold(base + retained deltas) stays complete.
         #[cfg(test)]
         super::writer_stall_probe::set_phase("after the dump (rest of the round)");
+        if let Some(mark_items_dumped) = completion {
+            #[cfg(test)]
+            BEFORE_DUMP_DIRTY_COMPLETION.with(|cell| {
+                let hook = cell.borrow_mut().take();
+                if let Some(hook) = hook { hook(); }
+            });
+            let retired_owners = owner.with_write(|state| {
+                let Some(shard) = state else { return Vec::new(); };
+                if !publication.is_completed_for_captured_owner() {
+                    return Vec::new();
+                }
+                // The exported bulk image can trail the owner's current pending work.
+                // Its generation match cannot authorize clearing work outside that image.
+                let bulk_tail = if bulk_capture {
+                    let Some(anchor) = image_wal_anchor else { return Vec::new(); };
+                    if shard.checkpoint_wal_sequence() != Some(anchor) {
+                        return Vec::new();
+                    }
+                    let tail = self.wal_store.stats_without_rescan(shard_id).last_sequence;
+                    if tail != anchor { return Vec::new(); }
+                    Some(tail)
+                } else { None };
+                let retired = empty_owners.retire_matching(shard);
+                // A refused empty-owner proposal retains all its claims and deletion IDs.
+                self.clear_dumped_bucket_dirty_state_for_owner_except(shard, &manifest, &empty_owners.ids);
+                if mark_items_dumped
+                    && bulk_tail.unwrap_or_else(|| {
+                        self.wal_store.stats_without_rescan(shard_id).last_sequence
+                    }) == wal_sequence
+                {
+                    shard.mark_items_dumped();
+                }
+                retired
+            });
+            drop(retired_owners);
+        }
         Ok(manifest)
     }
 
@@ -685,11 +789,24 @@ impl TemporalEngine {
         follower_cursors: impl IntoIterator<Item = BucketDumpFollowerReplayCursor>,
         raft_snapshot_refs: impl IntoIterator<Item = BucketDumpRaftSnapshotRef>,
     ) -> BucketDumpManifestPruneReport {
-        let plan = self.bucket_dump_manifest_prune_plan_with_retention_refs(
+        let mut plan = match bucket_dump_manifest_prune_plan_at(
+            &self.index_dir,
             shard_id,
-            follower_cursors,
-            raft_snapshot_refs,
-        );
+            &follower_cursors.into_iter().collect::<Vec<_>>(),
+            &raft_snapshot_refs.into_iter().collect::<Vec<_>>(),
+        ) {
+            Ok(plan) => plan,
+            Err(err) => return BucketDumpManifestPruneReport {
+                shard_id,
+                plan: BucketDumpManifestPrunePlan {
+                    shard_id,
+                    reasons: vec![format!("slot_dump_prune_plan_failed:{err}")],
+                    ..BucketDumpManifestPrunePlan::default()
+                },
+                error: Some(Status::error("slot_dump_prune_plan_failed", err.to_string())),
+                ..BucketDumpManifestPruneReport::default()
+            },
+        };
         // DETACH FIRST, THEN UNLINK. Pruning an ancestor leaves whatever survives pointing at a
         // manifest that is no longer there, which `bucket_dump_manifest_chain_issues` reports as
         // `missing_parent_manifest` -- indistinguishable from real corruption, and a
@@ -719,7 +836,10 @@ impl TemporalEngine {
             .cloned()
             .collect::<BTreeSet<_>>();
         if !pruned_manifest_ids.is_empty() {
-            if let Ok(surviving) = list_bucket_dump_manifests_at(&self.index_dir, shard_id) {
+            let detached = (|| -> Result<(), std::io::Error> {
+                #[cfg(test)]
+                prune_failure_tests::before_scan();
+                let surviving = list_bucket_dump_manifests_at(&self.index_dir, shard_id)?;
                 for mut manifest in surviving {
                     let parent_pruned = manifest
                         .parent_manifest_id
@@ -731,12 +851,27 @@ impl TemporalEngine {
                     manifest.parent_manifest_id = None;
                     // Detached from its pruned parent, so the checksum is re-derived.
                     manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
-                    let detached_checksum = bucket_dump_manifest_checksum_in_place(&mut manifest);
-                    if let Ok(checksum) = detached_checksum {
-                        manifest.checksum = checksum;
-                        let _ = self.persist_bucket_dump_manifest(&manifest);
-                    }
+                    manifest.checksum = bucket_dump_manifest_checksum_in_place(&mut manifest)
+                        .map_err(|status| std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("manifest checksum failed: {status:?}"),
+                        ))?;
+                    #[cfg(test)]
+                    prune_failure_tests::before_write(&manifest);
+                    self.persist_bucket_dump_manifest(&manifest)?;
                 }
+                Ok(())
+            })();
+            if let Err(err) = detached {
+                // A partial detach is safe to retry; deleting any parents is not.
+                plan.reasons.push(format!("slot_dump_prune_detach_failed:{err}"));
+                return BucketDumpManifestPruneReport {
+                    shard_id,
+                    plan,
+                    removed_manifest_ids: Vec::new(),
+                    removed_marker_files: 0,
+                    error: Some(Status::error("slot_dump_prune_detach_failed", err.to_string())),
+                };
             }
         }
         // The crash window itself. See `stop_bucket_dump_prune_after_first_phase_for_test`.
@@ -748,6 +883,7 @@ impl TemporalEngine {
                     plan,
                     removed_manifest_ids: Vec::new(),
                     removed_marker_files: 0,
+                    error: None,
                 };
             }
         }
@@ -778,6 +914,7 @@ impl TemporalEngine {
             plan,
             removed_manifest_ids,
             removed_marker_files,
+            error: None,
         }
     }
 
@@ -1020,8 +1157,22 @@ impl TemporalEngine {
                 &manifest_buckets,
                 |key| self.routing_bucket_for_key(manifest.shard_id, key),
             );
-            if manifest.object_lifecycle != expected_object_lifecycle
-                || manifest.object_lifecycle != model_object_lifecycle
+            let matches_legacy_lifecycle = expected_object_lifecycle == model_object_lifecycle
+                && manifest.object_lifecycle != expected_object_lifecycle
+                && live_block_entries.iter().any(|entry| entry.deleted)
+                && {
+                    // Older manifests included retained tombstone blocks in the live totals.
+                    // Their exact report is accepted only when the live index and model maps agree.
+                    let mut legacy = ObjectLifecycleAccumulator::default();
+                    for entry in &live_block_entries {
+                        legacy.observe_including_tombstones(manifest.shard_id, entry);
+                    }
+                    legacy.finish(&restored, &manifest_buckets,
+                        |key| self.routing_bucket_for_key(manifest.shard_id, key))
+                        == manifest.object_lifecycle
+                };
+            if expected_object_lifecycle != model_object_lifecycle
+                || (manifest.object_lifecycle != expected_object_lifecycle && !matches_legacy_lifecycle)
             {
                 // Say WHICH of the two derivations disagrees, and how. There are two comparisons
                 // here and the message named neither, so a refusal said only that a dump would
@@ -1683,6 +1834,7 @@ impl TemporalEngine {
                 .map_err(|err| Status::error("slot_dump_delta_unreadable", err.to_string()))?,
         )
         .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        persistence::clear_durable_image_dirty_flags(&mut restored);
         // Rebuild the unserialized model maps from the durable bucket index BEFORE rebuilding
         // ownership. `rebuild_bucket_block_ownership` clears the bucket map and repopulates it
         // from the model maps, so running it against a state whose `hashes` map never survived
@@ -1707,7 +1859,12 @@ impl TemporalEngine {
         // The unrouted blocks this leaves filed outside the target's range are the known residual,
         // and they are recoverable: the addresses stay unrouted, so a later rebuild over the live
         // model maps re-derives their placement from the shard's own range.
+        qualified_empty_owners::reconcile_covered_image(&mut restored);
         rebuild_bucket_block_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
+        if restored.source_owner_range != Some((0, u32::MAX)) {
+            // This existing reconstruction uses the whole range. Do not certify mixed filing.
+            restored.source_owner_range = None;
+        }
         let restored_index_bytes = serialize_index(&restored);
         self.persist_bucket_dump_install_marker(manifest, "prepare")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;

@@ -766,11 +766,18 @@ pub(super) struct ShardState {
     shard_id: u64,
     #[serde(skip)]
     shard_id_known: bool,
+    /// Qualified source filing for this complete image, not its consumer's target range.
+    /// Appended positional field: v32 images decode as Unknown and cannot authorize cleanup.
+    #[serde(default)]
+    pub(super) source_owner_range: Option<(u32, u32)>,
 }
 
 impl ShardState {
     /// Record the range this shard is loaded on. Called once, by `install_shard_state`.
     pub(super) fn set_routing_range(&mut self, start_routing_bucket: u32, end_routing_bucket: u32) {
+        if self.source_owner_range.is_some_and(|source| source != (start_routing_bucket, end_routing_bucket)) {
+            self.source_owner_range = None;
+        }
         if let Some(strings) = self.bucket_index.objects.get_mut(
             &super::storage_bucket_internals::StoredModelKind::String,
         ) {
@@ -10541,6 +10548,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         routing_range_start: _,
         routing_range_end: _,
         routing_range_known: _,
+        source_owner_range: _,
         shard_id: _,
         shard_id_known: _,
         applied_wal_sequence: _,
