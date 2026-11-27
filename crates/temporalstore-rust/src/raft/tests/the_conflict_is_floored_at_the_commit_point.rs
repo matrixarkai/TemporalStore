@@ -370,7 +370,7 @@ fn a_catch_up_does_not_pull_a_node_backwards() {
         .map(|index| set_entry(index, 2, &format!("leader{index}")))
         .collect();
 
-    install_leader_snapshot_tail(&mut node, None, leader_log, 5);
+    install_leader_snapshot_tail(&mut node, None, leader_log, 5).unwrap();
 
     assert!(
         node.commit_index >= 10,

@@ -45,7 +45,8 @@ use crate::engine::reports::{
 };
 use crate::engine::TemporalEngine;
 use crate::meta::{
-    ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState, TableTopologyResponse,
+    ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState, ShardCacheBudget,
+    TableTopologyResponse,
 };
 use crate::rebalance::SchedulerLifecycleToken;
 use crate::types::{
@@ -861,6 +862,8 @@ pub struct DataNodeMetaHeartbeatReport {
     pub last_server_state: String,
     pub forbid_auto_register: bool,
     pub consecutive_failures: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_budgets: Vec<ShardCacheBudget>,
 }
 
 impl Default for DataNodeMetaHeartbeatReport {
@@ -872,6 +875,7 @@ impl Default for DataNodeMetaHeartbeatReport {
             last_server_state: String::new(),
             forbid_auto_register: false,
             consecutive_failures: 0,
+            cache_budgets: Vec::new(),
         }
     }
 }
@@ -2216,7 +2220,22 @@ impl ShardLeadership {
 /// the next round, and every round before that sees `Unknown`.
 pub trait ShardLeadershipSource: std::fmt::Debug + Send + Sync {
     fn shard_leadership(&self, shard_id: ShardId) -> ShardLeadership;
+
+    fn shard_storage_engine(&self, _shard_id: ShardId) -> Option<TemporalEngine> {
+        None
+    }
+
+    fn reclaim_cache_budget(
+        &self,
+        _budget: ShardCacheBudget,
+        _limit: usize,
+        _authorized: &dyn Fn() -> bool,
+    ) -> Option<(u64, usize)> {
+        None
+    }
 }
+
+const SHARD_GENERATION_LOCKS: usize = 64;
 
 #[derive(Debug)]
 struct DataNodeRuntimeInner {
@@ -2230,6 +2249,7 @@ struct DataNodeRuntimeInner {
     stats: Mutex<MutableRuntimeStats>,
     meta_heartbeat: Mutex<DataNodeMetaHeartbeatReport>,
     lifecycle: Mutex<HashMap<ShardId, DataNodeShardLifecycleState>>,
+    shard_generation_locks: [RwLock<()>; SHARD_GENERATION_LOCKS],
     /// What the loop's WAL-reclaim stage saw the last time it found nothing to reclaim, per shard.
     ///
     /// A quiet shard asks the same question every round and gets the same answer; this is how the
@@ -2255,6 +2275,52 @@ struct DataNodeRuntimeInner {
     /// Who answers "do I lead this shard". `None` means nobody has been told to answer, which
     /// reads as [`ShardLeadership::Unknown`] and NOT as "not the leader".
     shard_leadership: Mutex<Option<Arc<dyn ShardLeadershipSource>>>,
+}
+
+impl DataNodeRuntimeInner {
+    fn reclaim_cache_budget(
+        &self,
+        shard_id: ShardId,
+        limit: usize,
+    ) -> Option<(ShardCacheBudget, u64, usize)> {
+        let budget = self
+            .meta_heartbeat
+            .lock()
+            .expect("meta heartbeat lock poisoned")
+            .cache_budgets
+            .iter()
+            .find(|budget| budget.shard_id == shard_id)
+            .copied()?;
+        let leadership = self
+            .shard_leadership
+            .lock()
+            .expect("shard leadership lock poisoned")
+            .clone()?;
+        let _generation = self
+            .shard_generation_lock(shard_id)
+            .read()
+            .expect("shard generation lock poisoned");
+        self.engine.validate_load_version(shard_id, budget.load_version).ok()?;
+        let authorized = || {
+            let heartbeat = self.meta_heartbeat.lock().expect("meta heartbeat lock poisoned");
+            heartbeat.last_status.ok
+                && now_ms().saturating_sub(heartbeat.last_heartbeat_at_ms) <= 10_000
+                && heartbeat.cache_budgets.contains(&budget)
+        };
+        let (bytes, reclaimed) = leadership.reclaim_cache_budget(budget, limit, &authorized)?;
+        Some((budget, bytes, reclaimed))
+    }
+
+    fn storage_engine(&self, shard_id: ShardId) -> TemporalEngine {
+        let source = self
+            .shard_leadership
+            .lock()
+            .expect("shard leadership lock poisoned")
+            .clone();
+        source
+            .and_then(|source| source.shard_storage_engine(shard_id))
+            .unwrap_or_else(|| self.engine.clone())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2565,6 +2631,7 @@ impl DataNodeRuntime {
             stats: Mutex::default(),
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
+            shard_generation_locks: std::array::from_fn(|_| RwLock::new(())),
             quiet_wal_reclaim: Mutex::default(),
             reap_cursors: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
@@ -2656,6 +2723,13 @@ impl DataNodeRuntime {
         sink.record_owned_writes(shard_id, commands);
     }
 
+    pub fn storage_cache_inspection_report(
+        &self,
+        shard_id: ShardId,
+    ) -> crate::engine::reports::StorageCacheInspectionReport {
+        self.inner.storage_engine(shard_id).storage_cache_inspection_report(shard_id)
+    }
+
     pub fn last_storage_manager_cycle_report(&self) -> Option<StorageManagerCycleReport> {
         self.inner
             .last_storage_manager_cycle
@@ -2705,6 +2779,7 @@ impl DataNodeRuntime {
             stats: Mutex::default(),
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
+            shard_generation_locks: std::array::from_fn(|_| RwLock::new(())),
             quiet_wal_reclaim: Mutex::default(),
             reap_cursors: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
@@ -2820,6 +2895,20 @@ impl DataNodeRuntime {
         )
     }
 
+    /// Execute work under the same generation guard held by load, reload, and unload.
+    pub fn with_load_version<T>(
+        &self,
+        shard_id: ShardId,
+        load_version: u64,
+        execute: impl FnOnce() -> T,
+    ) -> Result<T, Status> {
+        let _generation = self.inner.shard_generation_lock(shard_id)
+            .read()
+            .expect("shard generation lock poisoned");
+        self.inner.engine.validate_load_version(shard_id, load_version)?;
+        Ok(execute())
+    }
+
     pub fn validate_foreground_write_allowed(
         &self,
         shard_id: ShardId,
@@ -2878,6 +2967,9 @@ impl DataNodeRuntime {
     }
 
     pub fn execute_checked(&self, request: CheckedExecuteRequest) -> CheckedExecuteResponse {
+        let _generation = self.inner.shard_generation_lock(request.shard_id)
+            .read()
+            .expect("shard generation lock poisoned");
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
             request.shard_id,
@@ -3336,6 +3428,9 @@ impl DataNodeRuntime {
         &self,
         request: CheckedBatchExecuteRequest,
     ) -> CheckedBatchExecuteResponse {
+        let _generation = self.inner.shard_generation_lock(request.shard_id)
+            .read()
+            .expect("shard generation lock poisoned");
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
             request.shard_id,
