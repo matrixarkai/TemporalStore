@@ -86,6 +86,11 @@ pub(super) trait RecordedKind: Sized + 'static {
     /// misspell it and no two arms can disagree.
     const KIND: &'static str;
 
+    /// Whether a write of this kind appends one block for one element, so that two elements share a
+    /// block only after a compaction fold or a load of one. True for set, sorted set and list; a hash
+    /// packs several fields into one block.
+    const ONE_ELEMENT_PER_BLOCK: bool = false;
+
     /// How this kind's map is encoded, and there is deliberately NO DEFAULT.
     ///
     /// THIS EXISTS BECAUSE ITS ABSENCE WAS A WIRE REGRESSION, caught by three reload tests. The
@@ -484,6 +489,9 @@ fn install_element_at_bucket_with_policy<const APPENDED: bool, K: RecordedKind>(
         element,
         value,
     });
+    if !APPENDED {
+        K::resident(shard).ordinals.forget_unshared(object_key);
+    }
 }
 
 enum WrittenHashFields<'a, 'b> {
@@ -941,10 +949,45 @@ impl<K: RecordedKind> RecordedMap<K> {
         if super::live_block_key(previous) == super::live_block_key(landing) {
             return None;
         }
-        if elements.any_element_other_than_at(element, previous) {
+        if self.another_element_shares(object_key, elements, element, previous) {
             return None;
         }
         Some(previous.clone())
+    }
+
+    /// WHETHER ANOTHER ELEMENT OF THE OBJECT IS STILL ON THE BLOCK `previous` NAMES.
+    ///
+    /// Asked by every rewrite and every removal, and answered by a pass over every element of the
+    /// object, which made each of them cost the members the object held. For a kind that writes one
+    /// block per element the answer is "no" until a compaction fold or a load puts two on one, so
+    /// the object is checked ONCE (one pass, a set of the block keys) and remembered
+    /// (`OrdinalCache::is_unshared`); an append of a block of its own keeps it, and every event that
+    /// can change which block an element is on forgets it. An object that is shared, or a kind that
+    /// packs several elements into a block, is asked the old way.
+    fn another_element_shares(
+        &self,
+        object_key: &str,
+        elements: &K::Elements,
+        element: &<K::Elements as ElementMap>::Element,
+        previous: &ElementEntry,
+    ) -> bool
+    where
+        K::Elements: AddressedElementMap,
+    {
+        if K::ONE_ELEMENT_PER_BLOCK {
+            if self.ordinals.is_unshared(object_key) {
+                return false;
+            }
+            #[cfg(test)]
+            ELEMENT_SCANS.with(|scans| scans.set(scans.get() + 1));
+            if elements.no_two_elements_share_a_block() {
+                if let Some((held, _)) = self.entries.get_key_value(object_key) {
+                    self.ordinals.mark_unshared(held);
+                }
+                return false;
+            }
+        }
+        elements.any_element_other_than_at(element, previous)
     }
 
     fn block_an_element_removal_vacates(
@@ -957,8 +1000,26 @@ impl<K: RecordedKind> RecordedMap<K> {
     {
         let elements = self.entries.get(object_key)?;
         let previous = elements.element_address(element)?;
-        (!elements.any_element_other_than_at(element, previous)).then(|| previous.clone())
+        (!self.another_element_shares(object_key, elements, element, previous)).then(|| previous.clone())
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static ELEMENT_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times a rewrite or a removal had to look at the whole object to answer whether another
+/// element shares its block, on this thread since the last reset.
+#[cfg(test)]
+pub(in crate::engine) fn element_scans_for_test(reset: bool) -> u64 {
+    ELEMENT_SCANS.with(|scans| {
+        let now = scans.get();
+        if reset {
+            scans.set(0);
+        }
+        now
+    })
 }
 
 impl<'a, K: RecordedKind> IntoIterator for &'a RecordedMap<K> {
@@ -1315,6 +1376,18 @@ pub(super) trait AddressedElementMap: ElementMap {
     /// Compared by BLOCK KEY -- slab, offset and length -- and not by the whole address, because
     /// that triple is what an index entry's identity is under the gate.
     fn any_element_other_than_at(&self, skip: &Self::Element, block: &ElementEntry) -> bool;
+
+    /// Whether every element sits on a block of its own: one pass, and a set of the block keys seen.
+    fn no_two_elements_share_a_block(&self) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        let mut distinct = true;
+        self.visit_addresses(|address| {
+            if !seen.insert(super::live_block_key(address)) {
+                distinct = false;
+            }
+        });
+        distinct
+    }
 }
 
 // =============================================================================================
@@ -1414,6 +1487,7 @@ pub(super) struct SetKind;
 impl RecordedKind for SetKind {
     type Elements = std::collections::BTreeMap<Vec<u8>, ElementEntry>;
     const KIND: &'static str = "set";
+    const ONE_ELEMENT_PER_BLOCK: bool = true;
 
     /// `set_index_serde`, WHICH IS THE CODEC THIS FIELD HAS ALWAYS USED, and the one the first
     /// version of the generic type silently dropped.
@@ -1475,6 +1549,7 @@ pub(super) struct ZSetKind;
 impl RecordedKind for ZSetKind {
     type Elements = std::collections::BTreeMap<Vec<u8>, (u64, ElementEntry)>;
     const KIND: &'static str = "zset";
+    const ONE_ELEMENT_PER_BLOCK: bool = true;
 
     /// `zset_index_serde`, for the same reason `sets` needs its own: a member is `Vec<u8>` and a
     /// JSON object key is a string. STATED rather than inherited -- the codec is a required
@@ -1535,6 +1610,7 @@ pub(super) struct ListKind;
 impl RecordedKind for ListKind {
     type Elements = std::collections::BTreeMap<i64, ElementEntry>;
     const KIND: &'static str = "list";
+    const ONE_ELEMENT_PER_BLOCK: bool = true;
 
     /// THE PLAIN MAP, which is what this field always was -- a `#[serde(default)]` map with no
     /// `with =`. An `i64` key has a string form a JSON object can carry, which is exactly why this
