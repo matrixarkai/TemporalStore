@@ -3397,15 +3397,8 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                upsert_bucket_index_block(
-                    shard,
-                    shard_id,
-                    "list",
-                    &key,
-                    Some(element_name.clone()),
-                    address.clone(),
-                    true,
-                );
+                // THE INSTALL BELOW FILES THIS BLOCK, and records its outcome once. Filing it here as
+                // well wrote the same outcome into the log record twice.
                 super::recorded_map::install_element::<super::recorded_map::ListKind>(
                     shard,
                     shard_id,
@@ -3553,15 +3546,8 @@ pub(crate) fn execute_on_shard(
                         async_storage,
                         block_ordinal,
                     ) {
-                        upsert_bucket_index_block(
-                            shard,
-                            shard_id,
-                            "list",
-                            &key,
-                            Some(element_name.clone()),
-                            address.clone(),
-                            true,
-                        );
+                        // THE INSTALL BELOW FILES THIS BLOCK, and records its outcome once. Filing it here
+                        // as well wrote the same outcome into the log record twice.
                         super::recorded_map::install_element::<super::recorded_map::ListKind>(
                             shard,
                             shard_id,
