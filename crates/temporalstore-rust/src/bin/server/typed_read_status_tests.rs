@@ -71,7 +71,7 @@ impl Rpc {
         assert!(loaded.status.ok, "{loaded:?}");
         let raft = ServerRaftState {
             runtime: raft_runtime, local_node_id, raft_shard_id: 1,
-            read_policy: temporalstore_rust::DataRaftReadPolicy {
+            read_policy: temporalstore_rust::raft::DataRaftReadPolicy {
                 mode, read_index_timeout_ms: 100, ..Default::default()
             },
             local_admin_enabled: false, blocked_peers: Arc::new(Mutex::new(BTreeSet::new())),
