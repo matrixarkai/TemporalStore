@@ -51,6 +51,18 @@ const CONCRETE_SERIES: &str = "BTreeMap<u64, ElementEntry>";
 /// every kind into one uniform form is doing conversion, not leaking a representation.
 const ALLOWED: &[(&str, &str, &str)] = &[
     (
+        "window.rs",
+        "the_walk_this_replaced",
+        "A TEST ORACLE inside a production file. The literal map preserves the independent \
+         window walk used to check the generic sampling implementation.",
+    ),
+    (
+        "window.rs",
+        "series_of",
+        "A TEST FIXTURE inside a production file. It builds a concrete series for the window \
+         oracle and never operates on a live series.",
+    ),
+    (
         "storage_reporting.rs",
         "timestamped_kv_series",
         "A REPORTING PROJECTION. It collects every kind into one uniform shape for a report, and \

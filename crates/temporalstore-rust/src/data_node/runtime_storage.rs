@@ -4,7 +4,7 @@
 //! DataNodeRuntime storage-manager scheduling/lifecycle methods, extracted from data_node.rs.
 
 use super::round_budget::{
-    options_for_slot, BoundedStage, HeavySlot, PageCursor, ShardRoundState, StageBudget,
+    options_for_slot, BoundedStage, HeavySlot, BlockGcCursor, ShardRoundState, StageBudget,
     StageContext, StageProgress, StageStep,
 };
 use super::*;
@@ -2219,7 +2219,7 @@ impl DataNodeRuntime {
         let started = std::time::Instant::now();
         let mut resume = false;
         let report = if slot == HeavySlot::PageGc {
-            let stage = PageGcStage { runtime: self };
+            let stage = BlockGcStage { runtime: self };
             let mut budget = StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX);
             let context = StageContext { options, plan: None };
             let (step, report) =
@@ -3178,16 +3178,16 @@ const PAGE_GC_STEP_TIME: Duration = Duration::from_millis(10);
 
 /// Block collection as a bounded, resumable stage: each step examines a window of candidate slabs
 /// starting behind the cursor, and reports whether more remain.
-pub(crate) struct PageGcStage<'a> {
+pub(crate) struct BlockGcStage<'a> {
     runtime: &'a DataNodeRuntime,
 }
 
-impl PageGcStage<'_> {
+impl BlockGcStage<'_> {
     /// One bounded step, with the loop report the legacy tick also returns.
     pub(crate) fn run(
         &self,
         shard: ShardId,
-        cursor: &mut PageCursor,
+        cursor: &mut BlockGcCursor,
         budget: &mut StageBudget,
         context: &StageContext<'_>,
     ) -> (StageStep, StorageManagerLoopReport) {
@@ -3226,7 +3226,7 @@ impl PageGcStage<'_> {
             .run_storage_manager_round(shard, options, false, scan_page_slabs);
         let (progress, work_done, status) = match report.gc_report.as_ref() {
             None => {
-                *cursor = PageCursor::default();
+                *cursor = BlockGcCursor::default();
                 (cleanup_progress, 0, report.status.clone())
             }
             Some(gc) => {
@@ -3234,9 +3234,9 @@ impl PageGcStage<'_> {
                 budget.spend(examined);
                 let more = !gc.block_gc_scan_complete && gc.block_gc_scan_last_block_slab_id.is_some();
                 *cursor = if more {
-                    PageCursor { after_slab_id: gc.block_gc_scan_last_block_slab_id }
+                    BlockGcCursor { after_slab_id: gc.block_gc_scan_last_block_slab_id }
                 } else {
-                    PageCursor::default()
+                    BlockGcCursor::default()
                 };
                 (
                     if more { StageProgress::More } else { StageProgress::Done },
@@ -3249,14 +3249,14 @@ impl PageGcStage<'_> {
     }
 }
 
-impl BoundedStage for PageGcStage<'_> {
-    type Cursor = PageCursor;
+impl BoundedStage for BlockGcStage<'_> {
+    type Cursor = BlockGcCursor;
     const NAME: &'static str = "reclaim_page";
 
     fn step(
         &self,
         shard: ShardId,
-        cursor: &mut PageCursor,
+        cursor: &mut BlockGcCursor,
         budget: &mut StageBudget,
         context: &StageContext<'_>,
     ) -> StageStep {
@@ -3381,8 +3381,8 @@ mod page_gate_is_timed {
         let step = |enabled| {
             let options = StorageManagerOptions { enable_block_gc: enabled, ..Default::default() };
             let context = StageContext { options: &options, plan: None };
-            let (step, report) = PageGcStage { runtime: &runtime }.run(
-                1, &mut PageCursor::default(), &mut StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX),
+            let (step, report) = BlockGcStage { runtime: &runtime }.run(
+                1, &mut BlockGcCursor::default(), &mut StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX),
                 &context,
             );
             assert!(report.status.ok, "{report:?}");
@@ -3492,8 +3492,8 @@ mod page_gate_is_timed {
         assert!(gate.ready && !gate.due, "{gate:?}");
         let step = |options: &StorageManagerOptions| {
             let context = StageContext { options, plan: None };
-            let (step, report) = PageGcStage { runtime: &runtime }.run(
-                1, &mut PageCursor::default(), &mut StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX),
+            let (step, report) = BlockGcStage { runtime: &runtime }.run(
+                1, &mut BlockGcCursor::default(), &mut StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX),
                 &context,
             );
             assert!(report.status.ok, "{report:?}");
@@ -3574,10 +3574,10 @@ mod page_gate_is_timed {
         );
         let options = StorageManagerOptions::default();
         for round in 1..=3u64 {
-            let mut cursor = PageCursor::default();
+            let mut cursor = BlockGcCursor::default();
             let mut budget = StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX);
             let context = StageContext { options: &options, plan: None };
-            let (_, report) = PageGcStage { runtime: &runtime }.run(1, &mut cursor, &mut budget, &context);
+            let (_, report) = BlockGcStage { runtime: &runtime }.run(1, &mut cursor, &mut budget, &context);
             assert!(report.gc_report.is_none(), "the gate was expected to decline: {report:?}");
             let timing = runtime.stats().storage_manager_stage_timing;
             let gate = timing.get("reclaim_page.gate").expect("a declined step reports its gate");
