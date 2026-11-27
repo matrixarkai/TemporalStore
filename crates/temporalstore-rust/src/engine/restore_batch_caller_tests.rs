@@ -135,7 +135,7 @@ fn paused(
             command: Command::StringSet { key: "must-refuse".into(), value: b"not-serving".to_vec() } });
         let raw = writing.wal_store.append_with_sync(1,
             Command::StringSet { key: "during".into(), value: b"during-read".to_vec() }, true);
-        progress_tx.send((peer.status.ok, fenced.status.ok, raw.map(|record| record.sequence))).unwrap();
+        progress_tx.send((peer.status.ok, fenced.status.ok, raw)).unwrap();
     });
     let before_resume = progress_rx.recv_timeout(Duration::from_secs(20));
     let _ = resume_tx.send(());
@@ -144,7 +144,22 @@ fn paused(
     let (peer, improperly_served, appended) = before_resume.expect("appends must progress before restore resumes");
     assert!(peer);
     assert!(!improperly_served, "same-shard serving must remain fenced during recovery");
-    assert!(appended.unwrap() > *sequences.iter().next_back().unwrap());
+    let appended = appended.unwrap();
+    assert!(appended.sequence > *sequences.iter().next_back().unwrap());
+    assert!(appended.staged_blocks.is_empty() && appended.outcomes.is_empty());
+    assert!(matches!(&appended.command, Some(Command::StringSet { key, value })
+        if key == "during" && value == b"during-read"));
+    let (retained, truncated) = engine.wal_store.scan_decoded(1, 0, u64::MAX, 1 << 20).unwrap();
+    assert!(!truncated);
+    assert_eq!(retained.last().unwrap().1.sequence, appended.sequence,
+        "replay must not append another WAL record");
+    assert_eq!(retained.iter().filter(|(_, record)| record.sequence == appended.sequence).count(), 1);
+    assert_eq!(serde_json::to_value(&retained.last().unwrap().1).unwrap(),
+        serde_json::to_value(&appended).unwrap());
+    let address = engine.string_block_address(1, "during").expect("command-only replay must install a block");
+    assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()),
+        "command-only replay cannot depend on discarded staging");
+    assert!(engine.get_config(1).config.async_storage, "the override must not change shard policy");
     let events = events.lock().unwrap();
     let completed = events.iter().filter(|(prepared, _)| !prepared).flat_map(|(_, requests)| requests.iter().map(|(_, seq)| *seq)).collect::<std::collections::BTreeSet<_>>();
     assert!(sequences.is_subset(&completed), "every seeded model must traverse successful admitted I/O: {events:?}");
@@ -175,6 +190,68 @@ fn cold_engine_rehydration_admits_every_model_and_replays_the_real_suffix() {
     reopened.load_shard(1);
     check(&reopened, &cases);
     check_tail(&reopened);
+    command_only_async_replay_preserves_config_clock_trim_and_log();
+}
+
+fn command_only_async_replay_preserves_config_clock_trim_and_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = engine(dir.path(), "legacy");
+    async_shard(&source, 1);
+    exec(&source, 1, Command::StringSet { key: "base".into(), value: b"base-exact".to_vec() });
+    source.flush_shard_index(1);
+    assert!(source.set_config(SetConfigRequest {
+        shard_id: 1, config: Config { version: 3, async_storage: true,
+            feature_max_size: 2, ..Config::default() },
+    }).ok);
+    let config = serde_json::to_value(source.get_config(1).config).unwrap();
+    let at = now_ms().saturating_add(60_000);
+    let points = (1..=3).map(|n| FeaturePoint {
+        timestamp_ms: n * 100, value: vec![n as u8; 64],
+    }).collect::<Vec<_>>();
+    let commands = [
+        Command::StringSet { key: "legacy-value".into(), value: b"legacy-exact".to_vec() },
+        Command::StringSetEx { key: "legacy-ttl".into(), value: b"ttl-exact".to_vec(), ttl_ms: 50_000 },
+        Command::FeatureAppend { key: "legacy-feature".into(), points: points.clone() },
+    ];
+    let anchor = source.wal_store.stats_without_rescan(1).last_sequence;
+    for (offset, command) in commands.into_iter().enumerate() {
+        let mut metadata = crate::wal::WriteAheadLogRecordMetadata::single_command(&command);
+        metadata.timestamp_ms = at;
+        let record = crate::wal::WriteAheadLogRecord {
+            shard_id: 1, sequence: anchor + offset as u64 + 1, metadata: Some(metadata),
+            command: Some(command), staged_blocks: Vec::new(), outcomes: Vec::new(),
+        };
+        assert!(source.wal_store.append_replayed_record(record).unwrap().appended);
+    }
+    let (before, truncated) = source.wal_store.scan_decoded(1, 0, u64::MAX, 1 << 20).unwrap();
+    assert!(!truncated);
+    assert_eq!(before.len(), 4);
+    assert!(before.iter().skip(1).all(|(_, r)| r.command.is_some()
+        && r.outcomes.is_empty() && r.staged_blocks.is_empty()));
+    let expected_log = serde_json::to_value(&before).unwrap();
+    drop(source);
+    let expected = vec![
+        (Command::StringGet { key: "base".into() }, CommandResponse::Bytes { value: Some(b"base-exact".to_vec()) }),
+        (Command::StringGet { key: "legacy-value".into() }, CommandResponse::Bytes { value: Some(b"legacy-exact".to_vec()) }),
+        (Command::StringGet { key: "legacy-ttl".into() }, CommandResponse::Bytes { value: Some(b"ttl-exact".to_vec()) }),
+        (Command::FeatureQuery { key: "legacy-feature".into(), start_ms: 0, end_ms: 1000, count: None },
+            CommandResponse::FeaturePoints { points: points[1..].to_vec() }),
+    ];
+    for _ in 0..2 {
+        let restored = engine(dir.path(), "legacy");
+        restored.load_shard(1);
+        check(&restored, &expected);
+        assert_eq!(serde_json::to_value(restored.get_config(1).config).unwrap(), config);
+        assert_eq!(restored.shards.with_state(1, |s| s.unwrap().expires_at_ms()
+            .get("legacy-ttl").copied()), Some(at + 50_000));
+        let address = restored.string_block_address(1, "legacy-value").unwrap();
+        assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()));
+        assert_eq!(restored.wal_store.stats_without_rescan(1).last_sequence, anchor + 3);
+        let (after, truncated) = restored.wal_store.scan_decoded(1, 0, u64::MAX, 1 << 20).unwrap();
+        assert!(!truncated);
+        assert_eq!(serde_json::to_value(after).unwrap(), expected_log,
+            "replay must preserve every original record and not log reconstructed effects");
+    }
 }
 
 #[test]

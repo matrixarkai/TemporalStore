@@ -3116,6 +3116,7 @@ impl TemporalEngine {
         let mut replayed_through = watermark;
         let mut wal_resident_updates = HashMap::<u64, crate::engine::state::WalResidentBlock>::new();
         let mut replayed_any = false;
+        let mut materialized_commands = false;
 
         // The log is read in BOUNDED WINDOWS rather than all at once. An unbounded scan decoded
         // every un-replayed record -- each carrying its staged block -- into one vector before
@@ -3407,13 +3408,18 @@ impl TemporalEngine {
                         ),
                     ));
                 };
-                let response = self.execute(ExecuteRequest { shard_id, command });
+                // Without recorded outcomes there is no placement for newly
+                // reconstructed bytes. Rebuild physically: deferred addresses disappear with
+                // replay staging, since replay deliberately emits no new WAL record.
+                // The override is local to this call; historical config stays intact.
+                let response = self.execute_durable(ExecuteRequest { shard_id, command });
                 if !response.status.ok {
                     return Err(Status::error(
                         "wal_replay_failed",
                         format!("WAL replay command at sequence {} failed", record.sequence),
                     ));
                 }
+                materialized_commands = true;
                 replayed_through = record.sequence;
                 expected = expected.saturating_add(1);
             }
@@ -3469,6 +3475,14 @@ impl TemporalEngine {
         }
 
         if replayed_through > watermark {
+            // Physical appends can defer their data barrier. Complete it before
+            // publishing an image whose frontier skips these command-only records.
+            if materialized_commands {
+                self.block_store.sync_durable().map_err(|err| Status::error(
+                    "wal_replay_materialization_failed",
+                    format!("could not commit materialized replay blocks: {err}"),
+                ))?;
+            }
             // Only the uncaptured tail beyond the reconstructed delta anchor reaches here
             // (e.g. async writes, which do not append index-log deltas). The delta path's
             // sync writes were already folded at their original addresses in load_index, so
