@@ -198,18 +198,32 @@ mod tests {
     #[test]
     fn cache_is_bounded_and_cold_evictions_recompute_exactly() {
         let mut cache = OrdinalCache::default();
-        for round in 0..3 {
+        for _ in 0..3 {
             for index in 0..256 {
                 let key: ModelKey = std::sync::Arc::from(format!("object-{index}"));
                 assert_eq!(cache.highest(&key, || summarize(&[index])), Some(index));
                 assert!(cache.0.lock().unwrap().len() <= MAX_CACHED_OBJECTS);
             }
-            cache.invalidate("object-255");
+
+            let (index, key) = (0..256)
+                .map(|index| {
+                    let key: ModelKey = std::sync::Arc::from(format!("object-{index}"));
+                    (index, key)
+                })
+                .find(|(_, key)| !cache.contains(key))
+                .expect("the bounded cache must have evicted a scanned object");
+            assert_eq!(cache.highest(&key, || summarize(&[index])), Some(index));
             assert_eq!(
-                cache.highest(&std::sync::Arc::from("object-255"), || summarize(&[round])),
-                Some(round)
+                cache.highest(&key, || panic!("a cached ordinal must be reused")),
+                Some(index)
             );
         }
+
+        let key: ModelKey = std::sync::Arc::from("object-255");
+        cache.invalidate(&key);
+        assert!(!cache.contains(&key));
+        assert_eq!(cache.highest(&key, || summarize(&[0])), Some(0));
+
         cache.clear();
         assert!(cache.0.lock().unwrap().is_empty());
     }

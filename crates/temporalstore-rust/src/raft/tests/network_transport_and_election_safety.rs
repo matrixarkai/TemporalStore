@@ -1298,6 +1298,236 @@ fn production_raft_mode_uses_temporal_raft_ready_path_when_adapter_is_enabled() 
 }
 
 #[test]
+fn foreground_quorum_continues_when_one_follower_append_window_is_full() {
+    let limit = 1 << 20;
+    let config = RaftConfig {
+        max_memory_replicate_log_bytes: limit,
+        max_apply_batch_bytes: limit,
+        ..RaftConfig::default()
+    };
+    let leader = RaftCluster::new_single_shard_with_config(7, [1, 2, 3], config.clone()).unwrap();
+    leader.set_local_node_id(1);
+    let follower = RaftCluster::new_single_shard_with_config(7, [1, 2, 3], config).unwrap();
+    follower.set_local_node_id(2);
+    let transport = OneFailedFollowerTransport {
+        cluster: follower.clone(),
+        failed_target: 3,
+        snapshot_attempts: Arc::new(Mutex::new(0)),
+    };
+    let put = |key: &str| Command::StringSet {
+        key: key.to_owned(),
+        value: vec![255; 256 * 1024],
+    };
+    leader.propose_distributed(put("first"), &transport).unwrap();
+    let _timer = leader.register_data_commit_timer();
+    {
+        let mut inner = leader.inner.write().unwrap();
+        let peer = inner.nodes.get_mut(&3).unwrap();
+        peer.pipeline_state.next_index = 1;
+        peer.pipeline_state.inflight_entries = 4;
+        peer.pipeline_state.inflight_bytes = limit - 128;
+    }
+    assert!(matches!(
+        leader.build_append_entries_request(3),
+        Err(RaftError::AppendBackpressure { node_id: 3, .. })
+    ));
+
+    leader.propose_distributed(put("second"), &transport).unwrap();
+
+    assert_eq!(leader.commit_index(1).unwrap(), 2);
+    assert_eq!(follower.local_status(2).unwrap().last_log_index, 2);
+    assert_eq!(*transport.snapshot_attempts.lock().unwrap(), 0);
+}
+
+#[test]
+fn deployed_quorum_recovery_retries_a_retained_prefix_without_installing_a_snapshot() {
+    let leader = RaftCluster::new_single_shard(7, [1, 2]);
+    leader.set_local_node_id(1);
+    let follower = RaftCluster::new_single_shard(7, [1, 2]);
+    follower.set_local_node_id(2);
+    let transport = FlakyTransport {
+        cluster: follower,
+        failures_left: Arc::new(Mutex::new(0)),
+    };
+    let write = |key: &str| Command::StringSet {
+        key: key.to_string(),
+        value: vec![0, 255],
+    };
+    leader.propose_distributed(write("first"), &transport).unwrap();
+
+    // Restore an empty follower with the same identity. The first append
+    // will be rejected at its missing predecessor and drive next_index back.
+    let restored = RaftCluster::new_single_shard(7, [1, 2]);
+    restored.set_local_node_id(2);
+    let transport = FlakyTransport {
+        cluster: restored.clone(),
+        failures_left: Arc::new(Mutex::new(0)),
+    };
+    let _timer = leader.register_data_commit_timer();
+    leader.propose_distributed(write("second"), &transport).unwrap();
+    let follower = restored.local_status(2).unwrap();
+    assert_eq!(follower.last_log_index, 2);
+    assert_eq!(follower.commit_index, 1);
+    assert!(restored.inner.read().unwrap().nodes[&2].installed_snapshot.is_none());
+}
+
+#[test]
+fn deployed_quorum_recovery_defers_an_unreachable_uncompacted_peer() {
+    let leader = RaftCluster::new_single_shard(7, [1, 2]);
+    leader.set_local_node_id(1);
+    let follower = RaftCluster::new_single_shard(7, [1, 2]);
+    follower.set_local_node_id(2);
+    let transport = FlakyTransport {
+        cluster: follower.clone(),
+        failures_left: Arc::new(Mutex::new(1)),
+    };
+    let _timer = leader.register_data_commit_timer();
+    let result = leader.propose_distributed(
+        Command::StringSet { key: "during-loss".to_owned(), value: vec![0, 255] },
+        &transport,
+    );
+    assert!(matches!(result, Err(RaftError::NoMajority { live: 1, required: 2 })));
+    assert_eq!(leader.commit_index(1).unwrap(), 0);
+    assert_eq!(follower.local_status(2).unwrap().last_log_index, 0);
+
+    let request = leader.build_capped_append_entries_request(2, 1).unwrap();
+    assert_eq!(request.entries.len(), 1);
+    assert!(transport.append_entries(request).unwrap().success);
+    assert_eq!(follower.local_status(2).unwrap().last_log_index, 1);
+}
+
+#[test]
+fn timer_delivers_commit_after_foreground_append_quorum() {
+    let leader = RaftCluster::new_single_shard(7, [1, 2]);
+    leader.set_local_node_id(1);
+    let follower = RaftCluster::new_single_shard(7, [1, 2]);
+    follower.set_local_node_id(2);
+    let transport = FlakyTransport {
+        cluster: follower.clone(),
+        failures_left: Arc::new(Mutex::new(0)),
+    };
+    let timer = leader.register_data_commit_timer();
+    let write = |key: &str| Command::StringSet {
+        key: key.to_string(),
+        value: vec![0, 255],
+    };
+
+    assert_eq!(leader.propose_distributed(write("first"), &transport).unwrap(), CommandResponse::Empty);
+    assert_eq!(leader.commit_index(1).unwrap(), 1);
+    assert_eq!(follower.local_status(2).unwrap().last_log_index, 1);
+    assert_eq!(follower.commit_index(2).unwrap(), 0);
+
+    let heartbeat = leader.build_capped_append_entries_request(2, 0).unwrap();
+    assert!(heartbeat.entries.is_empty());
+    assert_eq!(heartbeat.leader_commit, 1);
+    assert!(transport.append_entries(heartbeat).unwrap().success);
+    assert_eq!(follower.commit_index(2).unwrap(), 1);
+    assert_eq!(
+        follower.read_from_replica(2, Command::StringGet { key: "first".to_string() }).unwrap(),
+        CommandResponse::Bytes { value: Some(vec![0, 255]) },
+    );
+
+    drop(timer);
+    leader.propose_distributed(write("second"), &transport).unwrap();
+    assert_eq!(follower.commit_index(2).unwrap(), 2);
+}
+
+#[test]
+fn deployed_proposals_keep_confirmed_peer_progress_without_copying_peer_logs() {
+    let config = RaftConfig {
+        max_memory_replicate_log_bytes: 1 << 20,
+        max_apply_batch_bytes: 1 << 20,
+        ..RaftConfig::default()
+    };
+    let leader = RaftCluster::new_single_shard_with_config(7, [1, 2], config.clone()).unwrap();
+    leader.set_local_node_id(1);
+    let follower = RaftCluster::new_single_shard_with_config(7, [1, 2], config).unwrap();
+    follower.set_local_node_id(2);
+    let transport = FlakyTransport {
+        cluster: follower.clone(),
+        failures_left: Arc::new(Mutex::new(0)),
+    };
+    let payload = vec![0xFF; 256 << 10];
+    for key in ["one", "two"] {
+        leader.propose_distributed(
+            Command::StringSet { key: key.to_string(), value: payload.clone() },
+            &transport,
+        ).unwrap();
+    }
+    let shadow = leader.local_status(2).unwrap();
+    assert_eq!(shadow.commit_index, 2);
+    assert_eq!(shadow.last_log_index, 0);
+    assert_eq!(follower.commit_index(2).unwrap(), 2);
+    let leader_shadow = follower.local_status(1).unwrap();
+    assert_eq!(leader_shadow.commit_index, 2);
+    assert_eq!(leader_shadow.last_log_index, 0);
+    assert_eq!(
+        follower.read_from_replica(2, Command::StringGet { key: "two".to_string() }).unwrap(),
+        CommandResponse::Bytes { value: Some(payload) },
+    );
+}
+
+#[test]
+fn cache_reclamation_preserves_new_writes_and_respects_the_table_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
+        snapshot_check_interval_ms: 0,
+        engine: ProductionRaftEngineKind::TemporalRaft,
+        shard_id: 91,
+        local_node_id: 1,
+        nodes: vec![ProductionRaftNode {
+            node_id: 1,
+            addr: "127.0.0.1:19101".to_string(),
+        }],
+        wal_dir: dir.path().display().to_string(),
+        config: RaftConfig::default(),
+        rpc: RaftRpcRuntimeOptions::default(),
+        security: ProductionRaftSecurity::plaintext_for_local_chaos("token"),
+        heartbeat_interval_ms: 5,
+        election_tick_ms: 1,
+        max_catchup_entries_per_heartbeat: 1,
+        allow_plaintext_for_local_chaos: true,
+    })
+    .unwrap();
+    let set = |key: &str| {
+        runtime
+            .propose(Command::StringSet { key: key.to_string(), value: vec![0xFF; 4096] })
+            .unwrap();
+    };
+    set("first");
+    set("second");
+    let status = runtime.status();
+    let budget = crate::meta::ShardCacheBudget {
+        table_id: 1,
+        shard_id: 91,
+        load_version: 7,
+        raft_term: status.nodes[0].current_term,
+        bytes: 4096,
+    };
+    let stale = CacheReclaimFence {
+        node_id: 1,
+        term: budget.raft_term,
+        index: status.commit_index,
+        authorized: &|| true,
+    };
+    set("first");
+    assert_eq!(
+        runtime
+            .cluster()
+            .propose_distributed_one(
+                Command::CommonDelete { key: "first".to_string() },
+                &runtime.transport(),
+                Some(stale),
+            )
+            .unwrap(),
+        CommandResponse::Integer { value: 0 },
+    );
+    assert_eq!(runtime.reclaim_cache_budget(budget, 2, &|| false), None);
+    assert_eq!(runtime.reclaim_cache_budget(budget, 2, &|| true), Some((8192, 1)));
+    assert_eq!(runtime.reclaim_cache_budget(budget, 2, &|| true), Some((4096, 0)));
+}
+
+#[test]
 fn production_raft_runtime_validates_security_timer_and_chaos_contracts() {
     let dir = tempfile::tempdir().unwrap();
     let options = ProductionRaftRuntimeOptions {
@@ -1640,7 +1870,31 @@ fn raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup() {
         }
     );
 
+    let reads = || vec![
+        Command::StringGet { key: "k".to_string() },
+        Command::StringLen { key: "k".to_string() },
+        Command::StringGet { key: "missing".to_string() },
+    ];
+    assert!(matches!(
+        cluster.read_batch_from_replica(3, reads()),
+        Err(RaftError::ReplicaLagging { replica_id: 3, .. })
+    ));
+    assert_eq!(
+        cluster.read_batch_from_replica(1, vec![
+            Command::StringSet { key: "k".to_string(), value: b"bad".to_vec() },
+        ]),
+        Err(RaftError::WriteInReplicaReadBatch)
+    );
+
     cluster.catch_up(3).unwrap();
+    assert_eq!(
+        cluster.read_batch_from_replica(3, reads()).unwrap(),
+        vec![
+            CommandResponse::Bytes { value: Some(b"v".to_vec()) },
+            CommandResponse::Integer { value: 1 },
+            CommandResponse::Bytes { value: None },
+        ]
+    );
     assert_eq!(
         cluster
             .read_from_replica(
@@ -2125,3 +2379,101 @@ fn matrixraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() 
         .contains("healed_catchup=true"));
 }
 
+
+#[test]
+fn a_local_follower_cannot_propose_through_the_remote_leaders_shadow() {
+    let cluster = RaftCluster::new_single_shard(11, [1, 2, 3]);
+    let before = cluster.status();
+    assert_eq!(before.leader_id, 1);
+    cluster.set_local_node_id(2);
+
+    let result = cluster.propose_distributed(
+        Command::StringSet {
+            key: "queued-write".to_string(),
+            value: b"value".to_vec(),
+        },
+        &cluster,
+    );
+    assert!(matches!(result, Err(RaftError::NotLeader { node_id: 2 })));
+    assert_eq!(cluster.status(), before);
+}
+
+#[test]
+fn snapshot_retry_advertises_only_the_committed_prefix() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Clone)]
+    struct SnapshotRetry {
+        installed: Arc<AtomicBool>,
+        retry_frontier: Arc<Mutex<Option<(u64, u64)>>>,
+    }
+
+    impl RaftTransport for SnapshotRetry {
+        fn append_entries(
+            &self,
+            request: AppendEntriesRequest,
+        ) -> Result<AppendEntriesResponse, RaftError> {
+            if !self.installed.load(Ordering::Acquire) {
+                return Err(RaftError::Transport("initial append failed".to_string()));
+            }
+            let index = request.entries.last().map_or(request.prev_log_index, |entry| entry.index);
+            if !request.entries.is_empty() {
+                *self.retry_frontier.lock().unwrap() = Some((request.leader_commit, index));
+            }
+            Ok(AppendEntriesResponse {
+                term: request.term,
+                success: true,
+                match_index: index,
+                reject_reason: None,
+            })
+        }
+
+        fn request_vote(&self, _: VoteRequest) -> Result<VoteResponse, RaftError> {
+            unreachable!("snapshot recovery does not send votes")
+        }
+
+        fn install_snapshot(
+            &self,
+            request: InstallSnapshotRequest,
+        ) -> Result<InstallSnapshotResponse, RaftError> {
+            self.installed.store(true, Ordering::Release);
+            Ok(InstallSnapshotResponse {
+                term: request.term,
+                success: true,
+                last_included_index: request.snapshot.last_included_index,
+                reject_reason: None,
+            })
+        }
+    }
+
+    let cluster = RaftCluster::new_single_shard_with_config(
+        11,
+        [1, 2],
+        RaftConfig {
+            replication_deadline_ms: 30_000,
+            ..RaftConfig::default()
+        },
+    ).unwrap();
+    cluster
+        .propose(Command::StringSet { key: "existing".to_string(), value: vec![1] })
+        .unwrap();
+    let committed = cluster.status().commit_index;
+    let transport = SnapshotRetry {
+        installed: Arc::new(AtomicBool::new(false)),
+        retry_frontier: Arc::new(Mutex::new(None)),
+    };
+
+    let started = Instant::now();
+    cluster
+        .propose_distributed(
+            Command::StringSet { key: "new".to_string(), value: vec![2] },
+            &transport,
+        )
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "snapshot recovery waited for a deadline after all append replies arrived",
+    );
+    assert_eq!(*transport.retry_frontier.lock().unwrap(), Some((committed, committed + 1)));
+    assert_eq!(cluster.status().commit_index, committed + 1);
+}

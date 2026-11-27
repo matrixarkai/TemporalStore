@@ -606,7 +606,8 @@ fn append_ingestion_metrics(out: &mut String, engine: &TemporalEngine) {
 fn start_heartbeat_loop(
     engine: TemporalEngine,
     runtime: DataNodeRuntime,
-    meta_addr: String,
+    raft_state: Option<ServerRaftState>,
+    meta_control: DatanodeMetadata,
     server_addr: String,
     binary_version: String,
     interval_ms: u64,
@@ -619,7 +620,8 @@ fn start_heartbeat_loop(
         let _ = send_heartbeat(
             &engine,
             &runtime,
-            &meta_addr,
+            raft_state.as_ref(),
+            &meta_control,
             &server_addr,
             &binary_version,
             boot_time_ms,

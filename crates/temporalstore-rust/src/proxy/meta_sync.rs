@@ -33,10 +33,13 @@ impl ProxyService {
     /// configured, the address that leads, and whether they are the same.
     pub(super) fn fetch_meta_leader(&self) -> Result<crate::meta::MetaRaftLeaderResponse, Status> {
         let options = self.options();
-        crate::http::get_json_with_options_and_headers::<crate::meta::MetaRaftLeaderResponse>(
+        if let Some(target) = options.meta_grpc_target.as_deref() {
+            return self.client().metadata_leader_grpc(target, options.control_http_options().io_timeout_ms)
+                .map_err(|err| Status::error("meta_leader_unavailable", err.to_string()));
+        }
+        get_meta_json::<crate::meta::MetaRaftLeaderResponse>(
             &options.meta_addr,
             "/meta/raft/leader",
-            &crate::meta::admin_auth_header(),
             options.control_http_options(),
         )
         .map_err(|err| Status::error("meta_leader_unavailable", err.to_string()))
@@ -46,17 +49,33 @@ impl ProxyService {
         &self,
         old_topology_version: u64,
     ) -> Result<TopologyVersionReport, Status> {
+        let client = self.client();
+        if client.client_options().meta_grpc_target.is_some() {
+            return client.fetch_meta_topology_version(old_topology_version)
+                .map_err(|err| Status::error("topology_check_failed", err.to_string()));
+        }
         let options = self.options();
-        post_json_with_options_and_headers::<_, TopologyVersionReport>(
+        post_meta_json::<_, TopologyVersionReport>(
             &options.meta_addr,
             "/meta/topology_version",
             &TopologyVersionRequest {
                 old_topology_version,
             },
-            &crate::meta::admin_auth_header(),
             options.control_http_options(),
         )
         .map_err(|err| Status::error("topology_check_failed", err.to_string()))
+    }
+
+    fn send_proxy_heartbeat(
+        &self,
+        options: &ProxyOptions,
+        request: &ProxyHeartbeatRequest,
+    ) -> Result<ProxyHeartbeatResponse, crate::client::ClientError> {
+        let deadline = options.control_http_options();
+        if let Some(target) = options.meta_grpc_target.as_deref() {
+            return self.client().proxy_heartbeat_grpc(target, deadline.io_timeout_ms, request.clone());
+        }
+        Ok(post_meta_json(&options.meta_addr, "/proxies/heartbeat", request, deadline)?)
     }
 
     pub fn heartbeat_to_meta(&self) -> ProxyHeartbeatResponse {
@@ -73,13 +92,7 @@ impl ProxyService {
             config_version: proxy_config_version(&options),
             binary_version: options.binary_version.clone(),
         };
-        match post_json_with_options_and_headers::<_, ProxyHeartbeatResponse>(
-            &options.meta_addr,
-            "/proxies/heartbeat",
-            &request,
-            &crate::meta::admin_auth_header(),
-            options.control_http_options(),
-        ) {
+        match self.send_proxy_heartbeat(&options, &request) {
             Ok(response) if response.status.ok || response.status.code == "resource_frozen" => {
                 // The metaserver is reachable and answering, so this is the cheapest moment to
                 // learn how many shards the cluster has.
@@ -103,13 +116,7 @@ impl ProxyService {
                     return response;
                 }
                 if self.auto_register_proxy(&options).status.ok {
-                    let response = post_json_with_options_and_headers::<_, ProxyHeartbeatResponse>(
-                        &options.meta_addr,
-                        "/proxies/heartbeat",
-                        &request,
-                        &crate::meta::admin_auth_header(),
-                        options.control_http_options(),
-                    )
+                    let response = self.send_proxy_heartbeat(&options, &request)
                     .unwrap_or_else(|err| ProxyHeartbeatResponse {
                         status: Status::error("metaserver_error", err.to_string()),
                         config_changed: false,
@@ -201,21 +208,22 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .auto_register_total += 1;
-        let response = post_json_with_options_and_headers::<_, AckResponse>(
-            &options.meta_addr,
-            "/proxies/register",
-            &RegisterProxyRequest {
-                registered_at_ms: 0,
-                proxy_addr: options.proxy_addr.clone(),
-                namespace: options.namespace.clone(),
-                location: options.location.clone(),
-                config_version: proxy_config_version(options),
-                binary_version: options.binary_version.clone(),
-            },
-            &crate::meta::admin_auth_header(),
-            options.control_http_options(),
-        )
-        .unwrap_or_else(|err| AckResponse {
+        let request = RegisterProxyRequest {
+            registered_at_ms: 0,
+            proxy_addr: options.proxy_addr.clone(),
+            namespace: options.namespace.clone(),
+            location: options.location.clone(),
+            config_version: proxy_config_version(options),
+            binary_version: options.binary_version.clone(),
+        };
+        let deadline = options.control_http_options();
+        let result = if let Some(target) = options.meta_grpc_target.as_deref() {
+            self.client().register_proxy_grpc(target, deadline.io_timeout_ms, request)
+        } else {
+            post_meta_json(&options.meta_addr, "/proxies/register", &request, deadline)
+                .map_err(crate::client::ClientError::from)
+        };
+        let response = result.unwrap_or_else(|err| AckResponse {
             status: Status::error("metaserver_error", err.to_string()),
         });
         self.record_service_discovery_registration(&response.status);

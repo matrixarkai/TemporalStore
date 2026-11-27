@@ -2003,19 +2003,10 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            // THE LENGTH IS TAKEN FROM THE CACHE'S SHARED BYTES, NOT FROM A COPY OF THEM. A string
-            // block is the whole value, so its length is the value's.
             CommandResponse::Integer {
-                value: read_bucket_index_value_shared(
-                    cache,
-                    block_store,
-                    shard_id,
-                    shard,
-                    "string",
-                    &key,
-                    None,
-                )
-                .map_or(0, |bytes| bytes.len() as i64),
+                value: bucket_store::read_bucket_index_string_length(
+                    cache, block_store, shard_id, shard, &key,
+                ),
             }
         }
         Command::StringGetRange { key, start, end } => {
