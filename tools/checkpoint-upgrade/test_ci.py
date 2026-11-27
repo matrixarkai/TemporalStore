@@ -152,6 +152,18 @@ class SourceChecks(unittest.TestCase):
             ci.clean_checkout(Path("/workspace"), workspace_target=True)
         self.assertEqual(status.call_args.args[0][-3:], ["--", ".", ":(top,literal,exclude)target"])
 
+    def test_artifact_status_rows_cannot_hide_other_source_inputs(self):
+        for row in (b"!! target/\0", b"?? target/checkpoint-producer/\0"):
+            with patch.object(ci.subprocess, "run"), patch.object(ci.subprocess, "check_output", return_value=row):
+                ci.clean_checkout(Path("/workspace"), workspace_target=True)
+                with self.assertRaises(RuntimeError):
+                    ci.clean_checkout(Path("/producer"))
+        for row in (b"?? target-evil.rs\0", b"!! nested/target/source.rs\0",
+                    b"!! ignored-source.rs\0", b" M target/source.rs\0"):
+            with patch.object(ci.subprocess, "run"), patch.object(ci.subprocess, "check_output", return_value=row):
+                with self.assertRaises(RuntimeError):
+                    ci.clean_checkout(Path("/workspace"), workspace_target=True)
+
     def test_child_signal_checks_identity_and_parent(self):
         child = owned_children.Child(7, 100, 44, "S")
         for current in (child, owned_children.Child(7, 100, 45, "S"),

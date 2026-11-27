@@ -59,11 +59,25 @@ class HostedControls(unittest.TestCase):
         subprocess.run(["git", "init", "--quiet", str(repository)], env=self.env, check=True)
         source = repository / "source.rs"
         source.write_text("const VALUE: u8 = 1;\n")
-        subprocess.run(["git", "-C", str(repository), "add", "source.rs"], env=self.env, check=True)
+        (repository / ".gitignore").write_text("target/\nignored-source.rs\n")
+        subprocess.run(["git", "-C", str(repository), "add", "source.rs", ".gitignore"], env=self.env, check=True)
         subprocess.run(["git", "-C", str(repository), "-c", "user.name=CI fixture",
                         "-c", "user.email=ci@example.invalid", "commit", "--quiet", "-m", "Fixture"],
                        env=self.env, check=True)
         ci.clean_checkout(repository)
+        nested = repository / "target/checkpoint-producer"
+        nested.mkdir(parents=True)
+        subprocess.run(["git", "init", "--quiet", str(nested)], env=self.env, check=True)
+        (nested / "old-source.rs").write_text("const OLD: u8 = 1;\n")
+        ci.clean_checkout(repository, workspace_target=True)
+        with self.assertRaises(RuntimeError):
+            ci.clean_checkout(repository)
+        for name in ("ignored-source.rs", "target-evil.rs"):
+            unexpected = repository / name
+            unexpected.write_text("const UNEXPECTED: u8 = 1;\n")
+            with self.assertRaises(RuntimeError):
+                ci.clean_checkout(repository, workspace_target=True)
+            unexpected.unlink()
         source.write_text("const VALUE: u8 = 2;\n")
         subprocess.run(["git", "-C", str(repository), "add", "source.rs"], env=self.env, check=True)
         with self.assertRaises(subprocess.CalledProcessError):

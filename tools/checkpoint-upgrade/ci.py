@@ -120,9 +120,19 @@ def clean_checkout(root, workspace_target=False, env=None):
     if workspace_target:
         command += ["--", ".", ":(top,literal,exclude)target"]
     status = subprocess.check_output(command, env=env, timeout=30)
-    unknown = [row for row in status.split(b"\0") if row]
+    unknown = []
+    for row in status.split(b"\0"):
+        if not row:
+            continue
+        artifact = row[:3] in (b"?? ", b"!! ") and (
+            row[3:] == b"target" or row[3:].startswith(b"target/"))
+        if workspace_target and artifact:
+            continue
+        unknown.append(row)
     if unknown:
-        raise RuntimeError("staged, modified or unknown source in a product checkout")
+        paths = [os.fsdecode(row[:512]) for row in unknown[:16]]
+        raise RuntimeError("staged, modified or unknown source in a product checkout: "
+                           + json.dumps(paths, ensure_ascii=True))
 
 
 def run(command, log, env, timeout):
