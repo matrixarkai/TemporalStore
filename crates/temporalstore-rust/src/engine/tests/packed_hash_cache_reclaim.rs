@@ -50,6 +50,35 @@ fn get(engine: &TemporalEngine, key: &str, field: &str) -> Vec<u8> {
 }
 
 #[test]
+fn cold_shared_frame_and_cached_frame_use_the_same_allocation() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    put(&engine, "row", &["a", "b"], 9, 16 * 1024);
+    let cache_key = page(&engine, "row", "a");
+    let expected = engine.cache.get_shared(&cache_key).unwrap().unwrap().to_vec();
+    engine.cache.invalidate(&cache_key).unwrap();
+    assert!(engine.cache.get_shared(&cache_key).unwrap().is_none());
+
+    let address = engine.shards.with_state(1, |state| {
+        state.unwrap().bucket_index.hashes.get("row").unwrap().get("a").unwrap().clone()
+    });
+    let frame = read_block_frame_shared(
+        &engine.cache,
+        &engine.block_store,
+        1,
+        &address,
+        BlockIdentity::of(1, "hash", "row", Some("a")),
+        Some(block_routing_bucket("row", 0, 1023)),
+    )
+    .unwrap();
+    let cached = engine.cache.get_shared(&cache_key).unwrap().unwrap();
+    assert_eq!(frame.as_ref(), expected);
+    assert!(std::sync::Arc::ptr_eq(&frame, &cached));
+    assert_eq!(get(&engine, "row", "a"), vec![9; 16 * 1024]);
+    assert_eq!(get(&engine, "row", "b"), vec![9; 16 * 1024]);
+}
+
+#[test]
 fn full_replacement_retires_cached_frame_but_preserves_held_read_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path());

@@ -104,6 +104,8 @@ mod log_resident_is_derived;
 mod fold_hash_map_completeness;
 #[path = "tests/recorded_map_invariant.rs"]
 mod recorded_map_invariant;
+#[path = "tests/a_rewrite_asks_once_whether_two_elements_share_a_block.rs"]
+mod a_rewrite_asks_once_whether_two_elements_share_a_block;
 #[path = "tests/set_install_census.rs"]
 mod set_install_census;
 #[path = "tests/model_number_agreement.rs"]
@@ -369,6 +371,8 @@ mod the_write_path_leaves_the_bucket_ttl_alone;
 mod marking_an_object_dirty_reaches_its_blocks;
 #[path = "tests/one_key_one_allocation.rs"]
 mod one_key_one_allocation;
+#[path = "tests/a_block_reading_read_takes_the_shared_lock.rs"]
+mod a_block_reading_read_takes_the_shared_lock;
 #[path = "tests/string_keyed_holders.rs"]
 mod string_keyed_holders;
 #[path = "tests/one_record_per_object.rs"]
@@ -667,5 +671,10 @@ mod a_scalar_reporter_visits_at_most_its_cap_at_every_scale;
 mod shard_lock_holds_are_attributed_by_call_site;
 #[path = "tests/a_removal_retires_its_vacated_block_by_naming_it.rs"]
 mod a_removal_retires_its_vacated_block_by_naming_it;
+
+#[path = "tests/a_block_key_spells_its_numbers_without_the_formatter.rs"]
+mod a_block_key_spells_its_numbers_without_the_formatter;
+#[path = "tests/a_list_write_records_its_block_once.rs"]
+mod a_list_write_records_its_block_once;
 #[path = "tests/a_feature_aggregate_takes_a_typed_reducer.rs"]
 mod a_feature_aggregate_takes_a_typed_reducer;

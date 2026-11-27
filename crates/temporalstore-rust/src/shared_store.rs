@@ -6284,8 +6284,13 @@ fn decode_wal_offset_metadata_frames(
     Ok(bytes.len() - last_frame_start)
 }
 
-fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
+pub(crate) fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
     let kind = match command {
+        Command::FeatureReduceQuery { key, start_ms, end_ms, reducer, rounding, scale, count } => {
+            v1::command::Kind::FeatureReduceQuery(crate::sdk::feature_reduce_to_proto(
+                key, *start_ms, *end_ms, reducer, *rounding, *scale, *count,
+            ))
+        }
         Command::CommonExpire { key, ttl_ms } => {
             v1::command::Kind::CommonExpire(v1::CommonExpire {
                 key: key.clone(),

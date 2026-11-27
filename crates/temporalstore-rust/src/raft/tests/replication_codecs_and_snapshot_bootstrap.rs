@@ -1303,6 +1303,29 @@ fn install_snapshot_clears_stale_vote_on_term_raise() {
 }
 
 #[test]
+fn rejected_higher_term_append_still_steps_down_the_old_leader() {
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    cluster.set_local_node_id(1);
+    assert!(cluster.is_local_leader(1));
+    let reply = cluster.receive_append_entries(AppendEntriesRequest {
+        rpc: None,
+        shard_id: 1,
+        term: 5,
+        leader_id: 2,
+        target_id: 1,
+        prev_log_index: 1,
+        prev_log_term: 4,
+        entries: Vec::new(),
+        leader_commit: 0,
+    }).unwrap();
+    assert!(!reply.success);
+    assert_eq!(reply.term, 5);
+    assert_eq!(reply.reject_reason.as_deref(), Some("out_of_order_append_queued"));
+    assert_eq!(cluster.local_status(1).unwrap().role, RaftRole::Follower);
+    assert!(!cluster.is_local_leader(1));
+}
+
+#[test]
 fn append_entries_commit_clamps_to_last_new_entry_not_whole_log_tail() {
     // Raft Figure 2: a follower advances commitIndex only to min(leaderCommit, index of
     // the last NEW entry in THIS AppendEntries) -- never to its whole-log tail. A divergent
@@ -1360,7 +1383,14 @@ fn append_entries_commit_clamps_to_last_new_entry_not_whole_log_tail() {
     // The real leader now re-sends a matching-term entry 4 with a HIGH leader_commit (6).
     // Entry 4 matches by term so append is a no-op; the divergent entry 5 survives in the
     // log. commitIndex must clamp to 4 (this batch's last new entry), NOT 5 (whole-log tail).
-    seed(5, 3, 1, vec![entry(3, 4, "k4-stale")], 6);
+    let reply = seed(5, 3, 1, vec![entry(3, 4, "k4-stale")], 6);
+    assert!(reply.success);
+    assert_eq!(reply.match_index, 4);
+
+    let heartbeat = seed(5, 4, 3, Vec::new(), 6);
+    assert!(heartbeat.success);
+    assert_eq!(heartbeat.match_index, 4);
+    assert_eq!(cluster.local_status(3).unwrap().last_log_index, 5);
 
     assert_eq!(
         cluster.commit_index(3).unwrap(),
@@ -2160,3 +2190,76 @@ async fn external_snapshot_bootstrap_rejects_stale_local_replica_before_download
     );
 }
 
+
+
+#[test]
+fn local_replica_cache_policy_survives_snapshot_install_and_recovery() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let root = tempfile::tempdir().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let factory = ReplicaEngineFactory(Arc::new({
+        let calls = calls.clone();
+        move || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            TemporalEngine::with_scratch_replica_storage(Default::default(), |path| {
+                let mut options = matrixcache::CacheOptions::new(1 << 20, 0, 32 << 20)
+                    .with_ssd_paths([path.to_owned()]);
+                options.block_options.compression = matrixcache::CacheCompression::None;
+                matrixcache::MultiLayerCache::try_with_options(options)
+                    .map_err(|error| error.to_string())
+            })
+            .map_err(RaftError::InvalidConfig)
+        }
+    }));
+    let config = RaftConfig {
+        max_memory_replicate_log_bytes: 8 << 20,
+        max_apply_batch_bytes: 8 << 20,
+        ..RaftConfig::default()
+    };
+    let open = || {
+        let target = RaftCluster::restore_single_shard_with_factory(
+            root.path(),
+            7,
+            [1],
+            config.clone(),
+            Some((1, factory.clone())),
+        )
+        .unwrap();
+        target.set_local_node_id(1);
+        target
+    };
+    let source = RaftCluster::new_single_shard_with_config(7, [1], config.clone()).unwrap();
+    let payload: Vec<u8> = (0..(2 << 20)).map(|index| index as u8).collect();
+    source
+        .propose(Command::StringSet {
+            key: "chunk".to_string(),
+            value: payload.clone(),
+        })
+        .unwrap();
+
+    let target = open();
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert!(target.local_replica_engine(8).is_none());
+    target.install_snapshot(1, source.create_snapshot().unwrap()).unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+
+    let check = |target: &RaftCluster| {
+        let engine = target.local_replica_engine(7).unwrap();
+        let read = || engine.execute(ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringGet { key: "chunk".to_string() },
+        });
+        let expected = CommandResponse::Bytes { value: Some(payload.clone()) };
+        assert_eq!(read().response, expected);
+        let warm = engine.cache().stats().disk_hits;
+        assert_eq!(read().response, expected);
+        assert!(engine.cache().stats().disk_hits > warm);
+    };
+    check(&target);
+    drop(target);
+
+    let restored = open();
+    assert_eq!(calls.load(Ordering::Relaxed), 4);
+    check(&restored);
+}

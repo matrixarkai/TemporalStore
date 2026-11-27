@@ -42,6 +42,32 @@ impl BlockStore {
         Ok(bytes)
     }
 
+    /// Exact logical size of a locally available framed block. The payload checksum
+    /// remains the responsibility of value reads.
+    pub(crate) fn local_block_payload_length(&self, address: &ElementEntry) -> Option<u64> {
+        let header_bytes = (BLOCK_RECORD_HEADER_LEN + 4) as u64;
+        if address.length() < BLOCK_RECORD_HEADER_LEN as u64 {
+            return None;
+        }
+        let backend = LocalSlabBackend::new(&self.read_view.root);
+        let slab_id = address.block_slab_id();
+        let end = address.offset().checked_add(address.length())?;
+        if backend.len(slab_id).ok()? < end {
+            return None;
+        }
+        let mut tally = BlockStoreReadTally::start();
+        let read = backend
+            .read_range(
+                slab_id,
+                address.offset(),
+                header_bytes.min(address.length()),
+                &mut tally,
+            )
+            .ok()?;
+        let prefix = read.charge(&self.read_view.counters);
+        record::block_record_payload_length(&prefix, address)
+    }
+
     pub fn read_range(
         &self,
         block_slab_id: u64,
