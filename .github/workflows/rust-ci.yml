@@ -1156,6 +1156,63 @@ jobs:
           done
           [ "$passed_tests" -eq 2 ] || { echo '::error::expected both purge tests to execute and pass'; exit 1; }
 
+      - name: cargo test (dirty owner reconstruction, seven named tests, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          passed_tests=0
+          for t in \
+            engine::recovery_sweep_compact::dirty_owner_rebuild_tests::released_string_fallback_preserves_both_claims_and_both_deletion_authorities \
+            engine::recovery_sweep_compact::dirty_owner_rebuild_tests::expiry_only_owner_survives_the_real_released_string_fallback \
+            engine::recovery_sweep_compact::dirty_owner_rebuild_tests::released_live_wal_owner_with_deleted_ids_is_not_a_deleted_owner_and_readd_prunes \
+            engine::recovery_sweep_compact::dirty_owner_rebuild_tests::in_place_compaction_retains_the_same_owner_claim_contract \
+            engine::recovery_sweep_compact::dirty_owner_rebuild_tests::fallback_keeps_published_pages_clean_and_ignores_nonreleased_retained_bits \
+            engine::recovery_sweep_compact::dirty_owner_rebuild_tests::dirty_resident_string_beside_released_string_survives_both_partial_move_orders \
+            engine::recovery_sweep_compact::dirty_owner_rebuild_tests::no_lineage_rebuild_preserves_only_exact_current_string_page_authority
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/owner-named-gate.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/owner-named-gate.log || true)
+            one=$(grep -Ec '^running 1 test$' /tmp/owner-named-gate.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/owner-named-gate.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/owner-named-gate.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/owner-named-gate.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/owner-named-gate.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 7 ] || { echo '::error::expected all seven owner reconstruction tests to execute and pass'; exit 1; }
+
+      - name: cargo test (scalar pressure and dirty backlog contracts, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          passed_tests=0
+          for t in \
+            data_node::runtime_storage::scalar_pressure_tests::scalar_pressure_matches_full_stats_with_real_pins_and_writeback_mutations \
+            engine::tests::round_backlog_cost::the_measured_fixture_never_dumps_so_the_buckets_it_calls_dirty_really_are_dirty
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/scalar-owner-release-gate.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/scalar-owner-release-gate.log || true)
+            one=$(grep -Ec '^running 1 test$' /tmp/scalar-owner-release-gate.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/scalar-owner-release-gate.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/scalar-owner-release-gate.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/scalar-owner-release-gate.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/scalar-owner-release-gate.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 2 ] || { echo '::error::expected both scalar pressure and dirty backlog tests to execute and pass'; exit 1; }
+
       - name: cargo test (loop ordering and quarantine grace guards, hard gate)
         timeout-minutes: 20
         run: |
