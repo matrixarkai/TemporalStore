@@ -126,6 +126,82 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: Write-only proposal endpoint controls (hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          mkdir -p /tmp/typed-feature-proposal-contract
+          passed_tests=0
+          run_control() {
+            kind=$1; target=$2; t=$3
+            log="/tmp/typed-feature-proposal-contract/$passed_tests.log"
+            cargo test --locked --release -p temporalstore-rust "$kind" "$target" "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee "$log"
+            running=$(grep -Ec '^running [0-9]+ tests?$' "$log" || true)
+            one=$(grep -Fxc 'running 1 test' "$log" || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' "$log" || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" "$log" || true)
+            summaries=$(grep -Ec '^test result:' "$log" || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log" || true)
+            if [ "$running" != 1 ] || [ "$one" != 1 ] || [ "$rows" != 1 ] \
+              || [ "$exact_ok" != 1 ] || [ "$summaries" != 1 ] || [ "$passed" != 1 ]; then
+              echo "::error::$t: expected one ordinary proposal contract control to pass"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          }
+          run_control --test feature_reduce_http_status proposal_rejects_reads_before_admission_and_normal_http_client_still_forwards_queries
+          run_control --test feature_reduce_http_status raft_node_proposal_rejects_reads_and_keeps_normal_write_admission
+          run_control --bin distributed_raft_harness typed_read_route_tests::distributed_proposal_handler_refuses_reads_before_any_admission
+          test "$passed_tests" = 3
+      - name: Upload proposal contract evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typed-feature-proposal-contract
+          path: /tmp/typed-feature-proposal-contract
+          if-no-files-found: error
+
+      - name: Typed HTTP and distributed read status controls (hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          mkdir -p /tmp/typed-feature-http-status
+          passed_tests=0
+          run_control() {
+            kind=$1; target=$2; t=$3
+            log="/tmp/typed-feature-http-status/$passed_tests.log"
+            cargo test --locked --release -p temporalstore-rust "$kind" "$target" "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee "$log"
+            running=$(grep -Ec '^running [0-9]+ tests?$' "$log" || true)
+            one=$(grep -Fxc 'running 1 test' "$log" || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' "$log" || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" "$log" || true)
+            summaries=$(grep -Ec '^test result:' "$log" || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log" || true)
+            if [ "$running" != 1 ] || [ "$one" != 1 ] || [ "$rows" != 1 ] \
+              || [ "$exact_ok" != 1 ] || [ "$summaries" != 1 ] || [ "$passed" != 1 ]; then
+              echo "::error::$t: expected one ordinary HTTP route control to pass"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          }
+          run_control --test feature_reduce_http_status production_datanode_http_and_distributed_reads_preserve_typed_errors
+          run_control --test feature_reduce_http_status production_raft_node_http_read_preserves_typed_errors_and_read_gates
+          run_control --test feature_reduce_http_status production_datanode_http_batch_keeps_valid_invalid_valid_rows
+          run_control --bin distributed_raft_harness typed_read_route_tests::distributed_handler_serialized_typed_reads_keep_engine_status
+          [ "$passed_tests" -eq 4 ]
+
+      - name: Upload typed HTTP read status evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typed-feature-http-status-controls
+          path: /tmp/typed-feature-http-status/*.log
+          if-no-files-found: error
+
       - name: Raft datanode typed read status controls (hard gate)
         timeout-minutes: 30
         run: |

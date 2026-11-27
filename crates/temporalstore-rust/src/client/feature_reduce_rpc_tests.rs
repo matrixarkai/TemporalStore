@@ -119,7 +119,7 @@ async fn every_typed_reducer_crosses_single_rpc_with_exact_parameters_and_number
 
 #[tokio::test]
 async fn typed_rpc_batch_preserves_errors_caps_empty_windows_and_named_family_results() {
-    let rpc = Rpc::new().await;
+    let mut rpc = Rpc::new().await;
     let mut capped = query(R::Mean, F::Nearest, 1000);
     if let Command::FeatureReduceQuery { count, .. } = &mut capped { *count = Some(2); }
     let mut empty = query(R::Mean, F::Nearest, 1000);
@@ -151,9 +151,29 @@ async fn typed_rpc_batch_preserves_errors_caps_empty_windows_and_named_family_re
         (R::Wilson { at_least: 4, z: f64::INFINITY }, 1, "z"),
         (R::Weighted { weights: vec![1.0; 65] }, 1, "weights"),
     ] {
-        let response = rpc.execute(query(reducer, F::Nearest, scale)).await;
-        assert_eq!(response.status.code, "invalid_argument");
-        assert!(response.status.message.contains(field));
+        let command = query(reducer, F::Nearest, scale);
+        // The wire retains the semantic status; the table API intentionally
+        // maps a failed single-command status to ClientError::Status.
+        let before = rpc.execute(query(R::Mean, F::Nearest, 1000)).await;
+        assert!(before.status.ok);
+        assert_eq!(before.response, CommandResponse::Aggregate { value: 4000 });
+        let response = rpc.client.execute(v1::ExecuteRequest {
+            shard_id: 75, command: Some(encode_command(&command).unwrap()), ..Default::default()
+        }).await.unwrap().into_inner();
+        let status = response.status.unwrap();
+        assert!(!status.ok);
+        assert_eq!(status.code, "invalid_argument");
+        assert!(status.message.contains(field));
+        assert_eq!(decode_response(response.response.unwrap()).unwrap().response, CommandResponse::Empty);
+        let table = rpc.table.clone();
+        let error = tokio::task::spawn_blocking(move || table.execute(command).unwrap_err()).await.unwrap();
+        match error {
+            ClientError::Status(message) => assert_eq!(message, status.message),
+            other => panic!("expected the table API's semantic status error, got {other:?}"),
+        }
+        let after = rpc.execute(query(R::Mean, F::Nearest, 1000)).await;
+        assert!(after.status.ok);
+        assert_eq!(after.response, CommandResponse::Aggregate { value: 4000 });
     }
 }
 
