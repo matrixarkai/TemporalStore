@@ -6337,20 +6337,46 @@ pub(super) fn file_series_blocks_after_write(
             None => vacated,
         }
     };
-    if !restate {
+    // Advance the owner fence once per capped write, independent of how many blocks
+    // the filing path touches. Sample after reload so the durable fence is included.
+    let generation_before = dirty.then(|| {
+        let (start, end) = shard.routing_range();
+        let routing_bucket = block_routing_bucket(object_key, start, end);
+        if !shard.bucket_index.released_buckets.is_empty() {
+            reload_released_bucket(shard, shard_id, routing_bucket);
+        }
+        let generation = shard
+            .bucket_index
+            .bucket_map
+            .get(&routing_bucket)
+            .map_or(0, |bucket| bucket.dirty_generation);
+        (routing_bucket, generation)
+    });
+
+    let needs_restate = if restate {
+        true
+    } else {
         sync_bucket_index_object_blocks_with_mode(
             shard, shard_id, kind, object_key, published, dirty, false,
         );
-        if retire_object_blocks(shard, shard_id, kind, object_key, &retired, dirty) {
-            return;
+        !retire_object_blocks(shard, shard_id, kind, object_key, &retired, dirty)
+    };
+    if needs_restate {
+        let live_addresses = shard
+            .objects_of_kind(stored_model_kind(kind))
+            .get(object_key)
+            .map(|series| series.addresses().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        sync_bucket_index_object_blocks(shard, shard_id, kind, object_key, live_addresses, dirty);
+    }
+
+    if let Some((routing_bucket, generation)) = generation_before {
+        if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+            if bucket.dirty_generation > generation {
+                bucket.dirty_generation = generation.saturating_add(1);
+            }
         }
     }
-    let live_addresses = shard
-        .objects_of_kind(stored_model_kind(kind))
-        .get(object_key)
-        .map(|series| series.addresses().cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    sync_bucket_index_object_blocks(shard, shard_id, kind, object_key, live_addresses, dirty);
 }
 
 /// Remove the named blocks of one object from the bucket index, and from the object's block refs.
