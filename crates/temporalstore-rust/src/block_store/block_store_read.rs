@@ -299,6 +299,9 @@ impl BlockStore {
         if advances_legacy_cursor {
             inner.active_append_file = None;
         }
+        inner.note_quarantine_scan_change();
+        inner.delayed_destroy_earliest_unix_ms = None;
+        inner.quarantine_known_empty = false;
         std::fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
         if advances_legacy_cursor {

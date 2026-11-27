@@ -2961,6 +2961,7 @@ pub(crate) fn execute_on_shard(
                 }
                 seen.by_time.insert((now, member), ());
             }
+            storage_bucket_internals::refresh_live_blockless_owner(shard, &key, start_routing_bucket, end_routing_bucket);
             mutated = true;
             CommandResponse::Integer {
                 value: i64::from(duplicate),
@@ -3019,6 +3020,7 @@ pub(crate) fn execute_on_shard(
                 false,
             );
             store_for_write(&mut shard.buckets, &key, next);
+            storage_bucket_internals::refresh_live_blockless_owner(shard, &key, start_routing_bucket, end_routing_bucket);
             mutated = true;
             CommandResponse::Members {
                 members: bucket_answer(allowed, remaining, retry_after_ms),
@@ -5091,6 +5093,7 @@ pub(crate) fn execute_on_shard(
                 Some(value.clone()),
             );
             hll::record_change(shard, &key, bucket_ms, value);
+            storage_bucket_internals::refresh_live_blockless_owner(shard, &key, start_routing_bucket, end_routing_bucket);
             if let Some(ttl_ms) = ttl_ms {
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);
                 crate::engine::set_expiry(shard, key.clone(), expires_at);
@@ -5464,6 +5467,7 @@ pub(crate) fn execute_on_shard(
                         selection_type,
                     },
                 );
+                storage_bucket_internals::refresh_live_blockless_owner(shard, &key, start_routing_bucket, end_routing_bucket);
             }
             if ttl_ms > 0 {
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);

@@ -495,7 +495,7 @@ impl EvictionLoopTerms {
 /// that stage and not to the one before it.
 struct LoopSpans {
     started: std::time::Instant,
-    clock: std::time::Instant,
+    next_start_us: u64,
     rows: Vec<StorageManagerLoopStageSpan>,
     io: super::stage_io_probe::StageIoProbe,
 }
@@ -507,7 +507,7 @@ impl LoopSpans {
         let now = std::time::Instant::now();
         Self {
             started: now,
-            clock: now,
+            next_start_us: 0,
             rows: Vec::new(),
             io,
         }
@@ -516,19 +516,58 @@ impl LoopSpans {
     /// A stage ran when its name is the last thing pushed on `executed`; stages push exactly once
     /// and in order, so no earlier entry can be mistaken for it.
     fn close(&mut self, stage: &str, executed: &[String]) {
+        self.close_with_clock(stage, executed, std::time::Instant::now);
+    }
+
+    fn close_with_clock(
+        &mut self,
+        stage: &str,
+        executed: &[String],
+        now: impl FnOnce() -> std::time::Instant,
+    ) {
         self.io.mark();
-        let elapsed = self.clock.elapsed();
-        let start_offset = self.clock.saturating_duration_since(self.started);
-        self.clock = std::time::Instant::now();
+        // Both adjacent rows share this boundary. Quantize the absolute
+        // offsets before subtracting so rounding cannot leave a gap.
+        let end_offset_us = now().duration_since(self.started).as_micros() as u64;
+        let start_offset_us = std::mem::replace(&mut self.next_start_us, end_offset_us);
         self.rows.push(StorageManagerLoopStageSpan {
             stage: stage.to_string(),
             executed: executed.last().map(String::as_str) == Some(stage),
-            start_offset_us: start_offset.as_micros() as u64,
-            duration_us: elapsed.as_micros() as u64,
+            start_offset_us,
+            duration_us: end_offset_us - start_offset_us,
             walk: crate::engine::take_stage_walk_charges(),
         });
     }
 }
+#[cfg(test)]
+mod loop_span_boundary_tests {
+    use super::LoopSpans;
+    use std::time::Duration;
+
+    #[test]
+    fn stage_rows_tile_one_clock_even_with_fractional_boundaries() {
+        let mut spans = LoopSpans::start();
+        let origin = spans.started;
+        let mut reads = 0;
+        for (stage, boundary_ns) in [
+            ("reclaim_page", 539_999),
+            ("reclaim_index", 560_001),
+            ("compact_pages", 560_900),
+            ("reap_metrics", 561_001),
+        ] {
+            spans.close_with_clock(stage, &[], || {
+                reads += 1;
+                origin + Duration::from_nanos(boundary_ns)
+            });
+        }
+        assert_eq!(reads, 4);
+        let rows: Vec<_> = spans.rows.iter()
+            .map(|row| (row.start_offset_us, row.duration_us)).collect();
+        assert_eq!(rows, [(0, 539), (539, 21), (560, 0), (560, 1)]);
+        assert_eq!(rows.iter().map(|(_, duration)| duration).sum::<u64>(), 561);
+    }
+}
+
 impl DataNodeRuntime {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
         self.inner.engine.storage_lifecycle_plan(request)

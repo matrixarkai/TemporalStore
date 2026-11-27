@@ -613,6 +613,7 @@ impl BlockStore {
                 && !holds_tallied_live_bytes
             {
                 removed_physical_bytes += slab_physical_bytes;
+                inner.note_quarantine_scan_change();
                 if delayed_destroy {
                     move_slab_to_delayed_destroy_unsynced(&inner.root, block_slab_id)?;
                     set_slab_state(
