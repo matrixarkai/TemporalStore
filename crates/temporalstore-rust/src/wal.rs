@@ -140,8 +140,6 @@ use crate::types::{Command, ShardId};
 pub enum WriteAheadLogError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
     /// A committed, newline-terminated record failed its per-record integrity envelope (the
     /// length or CRC/SHA-256 digest did not match the payload). This is silent value-loss --
     /// a bit-flip that still parses as JSON -- so recovery surfaces it as data loss and
