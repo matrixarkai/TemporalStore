@@ -585,6 +585,10 @@ jobs:
             engine::tests::a_set_door_asks_one_member_not_the_set::the_door_never_lists_the_set \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_answers_what_the_sorted_listing_answered \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_reads_a_prefix_and_never_lists \
+            engine::tests::a_block_reading_read_takes_the_shared_lock::each_read_answers_while_the_shared_lock_is_held \
+            engine::tests::a_block_reading_read_takes_the_shared_lock::the_fast_reads_answer_what_the_ordinary_arms_answered \
+            engine::tests::a_block_reading_read_takes_the_shared_lock::a_list_range_keeps_its_snapshot_when_its_elements_are_overwritten_after_the_plan \
+            engine::tests::expiry_scale::one_expiry_pass_walks_the_cache_once_instead_of_twice_per_expired_key \
             engine::tests::a_removal_retires_its_vacated_block_by_naming_it::removals_never_walk_the_object_and_leave_what_a_model_leaves_across_a_restart \
             engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_pop_takes_the_first_or_last_members_in_order_and_leaves_the_rest \
             engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_range_of_the_first_members_answers_what_the_full_sort_answered \
