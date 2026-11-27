@@ -922,7 +922,8 @@ mod tests {
             (attempt_a, attempt_b, accessible, waiting, addresses)
         });
         outcome.0.unwrap(); outcome.1.unwrap();
-        assert_eq!(outcome.2.unwrap(), (18, 18));
+        let expected_logical_bytes = (b"seed".len() + b"accounting wait".len()) as u64;
+        assert_eq!(outcome.2.unwrap(), (expected_logical_bytes, expected_logical_bytes));
         assert!(outcome.3, "both real appends wait on shared accounting until explicit release");
         assert_eq!(store.stats().writes, 4);
         store.sync_durable().unwrap();
