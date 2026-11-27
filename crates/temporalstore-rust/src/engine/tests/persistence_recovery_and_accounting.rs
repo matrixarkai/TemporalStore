@@ -6576,6 +6576,29 @@ fn the_index_wire_keys_are_what_they_were() {
         let shard = state.expect("shard 1 loaded");
         let value = serde_json::to_value(&shard.bucket_index).expect("the index serializes");
 
+        // Durable fields are a closed census; data keys in positional rows are not JSON names.
+        assert_eq!(
+            value.as_object().unwrap().keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>(),
+            ["bucket_map", "hashes", "lists", "objects", "sets", "zsets"].into_iter().collect()
+        );
+        let owner = value["objects"]["string"].as_array().expect("v33 String owner tuple");
+        assert_eq!(owner.len(), 3);
+        assert_eq!(owner[0], "string_owner_rows_v1");
+        assert_eq!(owner[1], serde_json::to_value(shard.routing_range()).unwrap());
+        let rows = owner[2].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = rows[0].as_array().unwrap();
+        assert_eq!(row.len(), 4);
+        assert!(row[0].as_u64().is_some_and(|n| n <= u32::MAX as u64));
+        assert_eq!(row[1], true);
+        assert_eq!(row[2], "wire");
+        let live = shard.strings().get("wire").expect("the real String write remains indexed");
+        assert_eq!(row[3], serde_json::to_value(live).unwrap());
+        let restored: crate::engine::state::CoreIndex = serde_json::from_value(value.clone()).unwrap();
+        let restored_slot = restored.objects.get(&crate::engine::storage_bucket_internals::StoredModelKind::String)
+            .unwrap().get("wire").unwrap();
+        assert_eq!(serde_json::to_value(restored_slot).unwrap(), row[3]);
+
         // Every object key that appears anywhere in the document, deduplicated.
         fn collect(value: &serde_json::Value, into: &mut std::collections::BTreeSet<String>) {
             match value {
@@ -6715,7 +6738,7 @@ fn the_index_wire_keys_are_what_they_were() {
                 "sets",
                 "string",
                 "ttl_ms",
-                "wire",
+            // "wire" is the tuple's key value, checked with its complete live slot above.
                 "wire-hash",
                 "zsets",
             ],

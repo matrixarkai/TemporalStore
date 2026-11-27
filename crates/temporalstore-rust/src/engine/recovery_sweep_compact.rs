@@ -1917,8 +1917,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
             match selected_keys {
                 Some(keys) => keys
                     .iter()
-                    .filter_map(|key| shard.strings().get(&**key)
-                        .map(|slot| (std::sync::Arc::clone(key), slot.address())))
+                    .filter_map(|key| shard.string_address(key)
+                        .map(|address| (std::sync::Arc::clone(key), address)))
                     .collect(),
                 None => shard
                 .strings()
@@ -1937,7 +1937,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             rewrite_stats,
         )?;
         for (key, address) in &staged {
-            if let Some(slot) = shard.strings_mut().get_mut(&**key) {
+            if let Some(slot) = shard.string_row_mut(&**key) {
                 slot.set_address(address);
             }
         }
