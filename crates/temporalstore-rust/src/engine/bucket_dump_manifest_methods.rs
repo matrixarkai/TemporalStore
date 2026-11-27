@@ -19,6 +19,10 @@ pub(super) fn note_checkpoint_decode() {
 mod capture_tests;
 
 #[cfg(test)]
+#[path = "dump_prune_failure_tests.rs"]
+mod prune_failure_tests;
+
+#[cfg(test)]
 #[path = "dump_completion_identity_tests.rs"]
 mod completion_identity_tests;
 
@@ -785,11 +789,24 @@ impl TemporalEngine {
         follower_cursors: impl IntoIterator<Item = BucketDumpFollowerReplayCursor>,
         raft_snapshot_refs: impl IntoIterator<Item = BucketDumpRaftSnapshotRef>,
     ) -> BucketDumpManifestPruneReport {
-        let plan = self.bucket_dump_manifest_prune_plan_with_retention_refs(
+        let mut plan = match bucket_dump_manifest_prune_plan_at(
+            &self.index_dir,
             shard_id,
-            follower_cursors,
-            raft_snapshot_refs,
-        );
+            &follower_cursors.into_iter().collect::<Vec<_>>(),
+            &raft_snapshot_refs.into_iter().collect::<Vec<_>>(),
+        ) {
+            Ok(plan) => plan,
+            Err(err) => return BucketDumpManifestPruneReport {
+                shard_id,
+                plan: BucketDumpManifestPrunePlan {
+                    shard_id,
+                    reasons: vec![format!("slot_dump_prune_plan_failed:{err}")],
+                    ..BucketDumpManifestPrunePlan::default()
+                },
+                error: Some(Status::error("slot_dump_prune_plan_failed", err.to_string())),
+                ..BucketDumpManifestPruneReport::default()
+            },
+        };
         // DETACH FIRST, THEN UNLINK. Pruning an ancestor leaves whatever survives pointing at a
         // manifest that is no longer there, which `bucket_dump_manifest_chain_issues` reports as
         // `missing_parent_manifest` -- indistinguishable from real corruption, and a
@@ -819,7 +836,10 @@ impl TemporalEngine {
             .cloned()
             .collect::<BTreeSet<_>>();
         if !pruned_manifest_ids.is_empty() {
-            if let Ok(surviving) = list_bucket_dump_manifests_at(&self.index_dir, shard_id) {
+            let detached = (|| -> Result<(), std::io::Error> {
+                #[cfg(test)]
+                prune_failure_tests::before_scan();
+                let surviving = list_bucket_dump_manifests_at(&self.index_dir, shard_id)?;
                 for mut manifest in surviving {
                     let parent_pruned = manifest
                         .parent_manifest_id
@@ -831,12 +851,27 @@ impl TemporalEngine {
                     manifest.parent_manifest_id = None;
                     // Detached from its pruned parent, so the checksum is re-derived.
                     manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
-                    let detached_checksum = bucket_dump_manifest_checksum_in_place(&mut manifest);
-                    if let Ok(checksum) = detached_checksum {
-                        manifest.checksum = checksum;
-                        let _ = self.persist_bucket_dump_manifest(&manifest);
-                    }
+                    manifest.checksum = bucket_dump_manifest_checksum_in_place(&mut manifest)
+                        .map_err(|status| std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("manifest checksum failed: {status:?}"),
+                        ))?;
+                    #[cfg(test)]
+                    prune_failure_tests::before_write(&manifest);
+                    self.persist_bucket_dump_manifest(&manifest)?;
                 }
+                Ok(())
+            })();
+            if let Err(err) = detached {
+                // A partial detach is safe to retry; deleting any parents is not.
+                plan.reasons.push(format!("slot_dump_prune_detach_failed:{err}"));
+                return BucketDumpManifestPruneReport {
+                    shard_id,
+                    plan,
+                    removed_manifest_ids: Vec::new(),
+                    removed_marker_files: 0,
+                    error: Some(Status::error("slot_dump_prune_detach_failed", err.to_string())),
+                };
             }
         }
         // The crash window itself. See `stop_bucket_dump_prune_after_first_phase_for_test`.
@@ -848,6 +883,7 @@ impl TemporalEngine {
                     plan,
                     removed_manifest_ids: Vec::new(),
                     removed_marker_files: 0,
+                    error: None,
                 };
             }
         }
@@ -878,6 +914,7 @@ impl TemporalEngine {
             plan,
             removed_manifest_ids,
             removed_marker_files,
+            error: None,
         }
     }
 

@@ -2040,6 +2040,9 @@ impl TemporalEngine {
                 | Command::ControlStateQuery { .. }
                 | Command::ControlStateSelectionQuery { .. }
                 | Command::SeenCard { .. }
+                | Command::ZSetRange { .. }
+                | Command::SetMembers { .. }
+                | Command::ListRange { .. }
         );
         if !read_command {
             return None;
@@ -2398,7 +2401,9 @@ impl TemporalEngine {
                 | Command::ListLen { key }
                 | Command::SetScan { key, .. }
                 | Command::SetCard { key }
-                | Command::SetIsMember { key, .. } => {
+                | Command::SetIsMember { key, .. }
+                | Command::ZSetRange { key, .. }
+                | Command::SetMembers { key } => {
                     if shard
                         .expires_at_ms()
                         .get(key.as_str())
@@ -2490,6 +2495,29 @@ impl TemporalEngine {
                             .control_state_selection
                             .get(key.as_str())
                             .map(|stored| stored.value.clone()),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                Command::ListRange { key, start, stop } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    // THE ADDRESSES ARE TAKEN UNDER THE GUARD AND THE BLOCKS ARE READ AFTER IT DROPS,
+                    // as a hash read does: the window is copied, and pinned if any of it is still in
+                    // the log.
+                    FastPathRead::List {
+                        key: key.as_str(),
+                        window: execute_on_shard::list_range_window(shard, key, *start, *stop),
                         routing_bucket: block_routing_bucket(
                             key,
                             start_routing_bucket,
@@ -2711,6 +2739,29 @@ impl TemporalEngine {
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::WindowReduceRanking { ranked },
+                })
+            }
+            FastPathRead::List {
+                key,
+                window,
+                routing_bucket,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                // A block that cannot be read declines the fast path, so the ordinary path answers
+                // instead of this one answering short.
+                let members = execute_on_shard::read_list_window(
+                    &self.cache,
+                    &self.block_store,
+                    request.shard_id,
+                    key,
+                    &window,
+                    routing_bucket,
+                )
+                .into_iter()
+                .collect::<Option<Vec<_>>>()?;
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Members { members },
                 })
             }
             FastPathRead::Response {
@@ -4275,6 +4326,12 @@ enum FastPathRead<'a> {
     },
     /// An integer answered from the index alone, with nothing to read afterwards.
     Answer { value: i64, routing_bucket: u32 },
+    /// The addresses of a list window, taken under the guard; the elements are read after it drops.
+    List {
+        key: &'a str,
+        window: Vec<(i64, ElementEntry)>,
+        routing_bucket: u32,
+    },
     /// A whole response answered from a resident map under the guard, with nothing to read
     /// afterwards.
     Response {
@@ -4346,6 +4403,10 @@ fn index_only_read(shard: &ShardState, command: &Command) -> Option<CommandRespo
         Command::SetIsMember { key, member } => {
             execute_on_shard::set_is_member_answer(shard, key, member)
         }
+        Command::ZSetRange { key, start, stop, rev } => {
+            Some(execute_on_shard::zset_range_answer(shard, key, *start, *stop, *rev))
+        }
+        Command::SetMembers { key } => execute_on_shard::set_members_from_map(shard, key),
         _ => None,
     }
 }
@@ -4450,6 +4511,22 @@ impl FastPathRead<'_> {
                 }
                 snapshot
             }
+            Self::List { key, window, .. }
+                if window.iter().any(|(_, address)| {
+                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                }) =>
+            {
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                let object = stable_block_object_id(shard, "list", key);
+                for (seq, address) in window {
+                    if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                        let mut name = [0_u8; 16];
+                        let element_name = execute_on_shard::list_element_name(*seq, &mut name);
+                        guard.pin(blocks, object, Some(element_name), address);
+                    }
+                }
+                Some(guard)
+            }
             // A READ THAT FETCHES NO BLOCKS HAS NO LOCATION TO PIN. `Answer` is an integer taken
             // from the index and `Value` is a byte string copied out of a resident map, both under
             // the guard; nothing is read after it drops, so there is no WAL-resident address a
@@ -4458,7 +4535,8 @@ impl FastPathRead<'_> {
             Self::Hash { .. }
             | Self::Answer { .. }
             | Self::Response { .. }
-            | Self::Value { .. } => None,
+            | Self::Value { .. }
+            | Self::List { .. } => None,
         }
     }
 }
@@ -6079,6 +6157,8 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             key,
             blob.get("context_entities"),
         );
+        let (start, end) = shard.routing_range();
+        storage_bucket_internals::refresh_live_blockless_owner(shard, key, start, end);
         // THE FOUR CONTAINER MAPS ARE NOT APPLIED HERE, and the reason is the whole shape of
         // `fold_carried_container_elements`: an element may only be restored once the fold has
         // FINISHED, because a later record in the same fold can take its block away again. See
@@ -8141,6 +8221,8 @@ fn delete_record_exact_with_identity_batch(
     removed |= shard.context_children_mut().remove(key).is_some();
     removed |= shard.context_summaries_mut().remove(key).is_some();
     removed |= shard.context_compressions_mut().remove(key).is_some();
+    let (start, end) = shard.routing_range();
+    storage_bucket_internals::refresh_live_blockless_owner(shard, key, start, end);
     removed
 }
 
@@ -8150,7 +8232,9 @@ const MAX_DELETE_IDENTITY_PROJECTION_REFS: usize = 256;
 ///
 /// An empty bucket retains the deleted id as a tombstone. A mixed bucket must drop it before any
 /// reconciliation, or a normal delete is reported as divergence.
-fn note_object_left_bucket(bucket: &mut BucketNode, deleted_object_ids: &BTreeSet<u64>) {
+fn note_object_left_bucket(
+    bucket: &mut BucketNode, deleted_object_ids: &BTreeSet<u64>, has_live_blockless_owner: bool,
+) {
     if bucket.block_index.is_empty() {
         bucket.object_index.extend(deleted_object_ids.iter().copied());
     } else {
@@ -8159,7 +8243,7 @@ fn note_object_left_bucket(bucket: &mut BucketNode, deleted_object_ids: &BTreeSe
         }
     }
     bucket.set_dirty(true);
-    let next_flag = bucket.block_index.is_empty();
+    let next_flag = bucket.block_index.is_empty() && !has_live_blockless_owner;
     bucket.set_deleted(next_flag);
     bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
     bucket.set_meta_loaded(true);
@@ -8271,7 +8355,9 @@ fn mark_bucket_index_object_deleted_with_identity_batch(
                 );
             }
             if !deleted_object_ids.is_empty() {
-                note_object_left_bucket(&mut bucket, &deleted_object_ids);
+                note_object_left_bucket(
+                    &mut bucket, &deleted_object_ids, shard.blockless_owners.contains_key(&routing_bucket),
+                );
                 bucket.deleted_object_index.extend(deleted_object_ids);
                 if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
                     owners.forget_key(routing_bucket, key);
@@ -8335,7 +8421,9 @@ fn mark_bucket_index_object_deleted_with_identity_batch(
             }
         });
         if !deleted_object_ids.is_empty() {
-            note_object_left_bucket(&mut bucket, &deleted_object_ids);
+            note_object_left_bucket(
+                &mut bucket, &deleted_object_ids, shard.blockless_owners.contains_key(&routing_bucket),
+            );
             // THE REPAIR AT THE REMOVAL SITE, over this bucket's own blocks. A delta over the
             // ids this delete dropped stood here and was wrong -- it left drift that the reconcile
             // it replaced had been repairing silently. All three arms of that reconcile are kept,
@@ -8691,7 +8779,7 @@ fn mark_bucket_index_block_deleted_recording(
             });
             bucket.deleted_object_index.extend(deleted_object_ids);
             bucket.set_dirty(true);
-            let next_flag = bucket.block_index.is_empty();
+            let next_flag = bucket.block_index.is_empty() && !shard.blockless_owners.contains_key(&routing_bucket);
             bucket.set_deleted(next_flag);
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             bucket.set_meta_loaded(true);
