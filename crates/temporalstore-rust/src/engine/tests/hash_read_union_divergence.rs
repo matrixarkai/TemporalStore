@@ -269,6 +269,13 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
     );
 
     let before = divergences(&engine);
+    use crate::engine::execute_on_shard::hash_read_divergence::{
+        note_read, sampled_reads_on_this_thread_for_test,
+    };
+    let control_before = sampled_reads_on_this_thread_for_test();
+    note_read();
+    assert_eq!(sampled_reads_on_this_thread_for_test(), control_before + 1);
+    let sampled_reads_before = sampled_reads_on_this_thread_for_test();
     let served_after = served(&engine, PLANTED_KEY);
     let after = divergences(&engine);
 
@@ -289,14 +296,13 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
         after - before
     );
 
-    // THE DENOMINATOR IS PUBLISHED AND NON-ZERO, because a count without one is unreadable.
-    let report = engine.hash_read_divergence_report();
-    assert!(
-        report.reads_served >= 2,
-        "the report says {} reads were served over {} divergences; a zero or missing denominator \
-         makes the count say nothing either way",
-        report.reads_served,
-        report.index_named_fields_the_container_lacked
+    // This counter measures dual-source sampling, not every served hash read. The container-only
+    // path cannot compare field names with the block index, so it must not inflate that sample.
+    // Read completeness is established by the exact returned fields above, not by this counter.
+    assert_eq!(
+        sampled_reads_on_this_thread_for_test(),
+        sampled_reads_before,
+        "a container-only read must not count as a dual-source sample"
     );
 }
 
