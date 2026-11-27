@@ -931,6 +931,75 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
 // THE PRICE ON THE SHIPPED ARTEFACT
 // =================================================================================================
 
+type WireBlockRow = BTreeMap<String, serde_json::Value>;
+
+#[derive(serde::Deserialize)]
+struct WireBlockIndex {
+    slot_index: WireSlots,
+}
+
+#[derive(serde::Deserialize)]
+struct WireSlots {
+    bucket_map: BTreeMap<u32, WireBucket>,
+}
+
+#[derive(serde::Deserialize)]
+struct WireBucket {
+    #[serde(default)]
+    block_index: BTreeMap<String, WireBlockRow>,
+}
+
+fn wire_row_restates_identity(row: &WireBlockRow) -> bool {
+    row.contains_key("object_key") || row.contains_key("model_id")
+}
+
+fn assert_encoded_block_identities(shard: &ShardState) {
+    let container = crate::engine::encode_index_bytes(shard);
+    let payload = msgpack_payload_of(&container);
+    let wire: WireBlockIndex = rmp_serde::from_slice(&payload).expect("read the served block maps");
+
+    // Inspect raw row fields before the production reader can ignore redundant fields.
+    let mut actual = BTreeMap::new();
+    for (bucket, node) in wire.slot_index.bucket_map {
+        for (key, row) in node.block_index {
+            assert!(!wire_row_restates_identity(&row), "redundant identity in {bucket}/{key}");
+            let parts = crate::index_log::block_ref_key_parts(&key).expect("invert the encoded key");
+            assert!(parts.element_name.is_empty(), "unexpected element in {key}");
+            let identity = (bucket, parts.object_key.to_owned());
+            assert!(actual.insert(identity, (key, row)).is_none(), "duplicate string block");
+        }
+    }
+    assert_eq!(actual.len(), HEADLINE_KEYS, "wire coverage must match the seeded corpus");
+
+    let blocks = super::blocks_with_identity(&shard.bucket_index);
+    assert_eq!(blocks.len(), HEADLINE_KEYS, "live coverage must match the seeded corpus");
+    for (bucket, _, object, block) in blocks {
+        let (key, row) = actual.remove(&(bucket, object.to_string())).expect("live block on wire");
+        assert_eq!(key, crate::engine::state::block_index_written_key(&object, block));
+        let parts = crate::index_log::block_ref_key_parts(&key).expect("read the encoded identity");
+        assert_eq!(parts.kind, block.model_id().as_str(), "model in {key}");
+        // Use the served index's named MessagePack representation for both addresses.
+        let expected_bytes = rmp_serde::to_vec_named(&block.address).expect("encode the live address");
+        let expected_address: serde_json::Value =
+            rmp_serde::from_slice(&expected_bytes).expect("read the live address as wire fields");
+        assert_eq!(row.get("address"), Some(&expected_address), "address in {key}");
+        assert_eq!(row.get("dirty").and_then(serde_json::Value::as_bool), Some(block.dirty()));
+        assert_eq!(row.get("deleted").and_then(serde_json::Value::as_bool), Some(block.deleted()));
+
+        // Each field must trip the same predicate independently on a real row after encoding.
+        if actual.len() == HEADLINE_KEYS - 1 {
+            for (field, value) in [("object_key", parts.object_key), ("model_id", parts.kind)] {
+                let mut altered = row.clone();
+                assert!(altered.insert(field.to_owned(), serde_json::Value::from(value)).is_none());
+                let bytes = rmp_serde::to_vec_named(&altered).expect("encode the mutation control");
+                let decoded: WireBlockRow = rmp_serde::from_slice(&bytes).expect("decode the mutation control");
+                assert!(wire_row_restates_identity(&decoded), "{field} must trip the row check");
+            }
+        }
+    }
+    assert!(actual.is_empty(), "unexpected extra wire blocks");
+}
+
 /// WHAT THE ENTRY'S RESTATEMENT COSTS THE SHIPPED CONTAINER, AT THE SHIPPED ROUTING RANGE.
 ///
 /// # NOT A COUNTERFACTUAL
@@ -945,7 +1014,7 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
 ///
 /// Four are printed and they are not interchangeable: the JSON stream, the msgpack payload, the
 /// SHIPPED container (codec 2), and the codec-1 container that #2350's prediction was taken on.
-/// The prediction is checked against the codec-1 arm because that is the arm it was made on.
+/// Codec-1 savings are reported as a historical comparison.
 ///
 /// Two key shapes, because a padded corpus is a lower bound on every compressed figure and a
 /// scattered one an upper bound, and #2350 took every figure on both for exactly that reason.
@@ -957,9 +1026,8 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
         "\n################ THE ENTRY'S RESTATEMENT, PRICED ON THE SHIPPED ARTEFACT ################"
     );
     println!(
-        "  BEFORE is this module run on `ea5b278a9` with the production change absent and nothing \
-         else different -- same corpus, same range, same fixture code. The deltas below are a \
-         measurement of the change and not of a doctoring instrument."
+        "  BEFORE records `ea5b278a9` on the same corpus and range. The deltas below include \
+         subsequent encoding changes."
     );
     println!(
         "  {:<10} {:>12} {:>12} {:>12} {:>12} {:>12}",
@@ -971,7 +1039,11 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
         (KeyShape::Scattered, BEFORE_SCATTERED),
     ] {
         let seeded = seed(HEADLINE_KEYS, PUBLISHED_WIDTH, shape, SHIPPED_END_BUCKET);
+        seeded.engine.shards.with_state(SHARD, |state| {
+            assert_encoded_block_identities(state.expect("shard is loaded"));
+        });
         let surfaces = seeded.surfaces();
+        surfaces.assert_amortised_regime();
         surfaces.report("shipped range 0..1023");
         let n = HEADLINE_KEYS as f64;
         for (label, was, now) in [
@@ -1027,36 +1099,9 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
             shape.label(),
             PREDICTED_STREAM_SAVING
         );
-        // ---- AND THE CONTAINER SAVING AGAINST THE PREDICTED BAND, WHICH IT UNDERSHOOTS ----
-        //
-        // #2350 predicted +2.34 to +2.96 for `object_key` and +0.26 to +0.37 for `model_id` on the
-        // codec-1 container, which is +2.60 to +3.33 for the pair. Measured: 2.418 padded and
-        // 3.177 scattered -- UNDER the band at both ends, by 0.18 and 0.15 B/object.
-        //
-        // THE DIRECTION OF THE MISS IS WORTH MORE THAN THE SIZE OF IT. The counterfactual was a
-        // delta between two `serde_json::Value` re-encodes, and a `Value` writes its keys SORTED
-        // while the struct writes declaration order -- #2350 measured that reordering alone moving
-        // a compressed size 5%, and named its container arms a proxy good to within 15%. A
-        // counterfactual on a re-ordered document therefore prices a removal 5-7% optimistically,
-        // and that is the whole of this gap. The clause is a BAND and not an equality for exactly
-        // that reason, and it is asserted on both ends.
-        //
-        // THE UPPER END IS DATED, NOT PREDICTED. `before` is frozen at `ea5b278a9`, so this is a
-        // cross-commit delta (see the stream note above): the stream is now 66.872 B/object
-        // smaller than `before` on both shapes against the 50.0 this change accounts for, and the
-        // other 16.872 B/object left in commits after `ea5b278a9`. On the codec-1 container that
-        // reads 3.11 B/object padded and 5.269 scattered, where the removed bytes compress worst.
-        // A saving larger than predicted is not a regression, so only the upper end moved, to the
-        // measured 5.3; the lower end, 2.0, is the end that bites if the restated key comes back.
-        const CONTAINER_SAVING_BAND: std::ops::RangeInclusive<f64> = 2.0..=5.3;
         let container_saved = (before.json_container - surfaces.json_container) as f64 / n;
-        assert!(
-            CONTAINER_SAVING_BAND.contains(&container_saved),
-            "[CLAUSE the-prediction-closes] the codec-1 container saving on {} keys is \
-             {container_saved:.3} B/object, outside the 2.0 to 5.3 (3.33 predicted, 5.3 measured \
-             on scattered keys once later commits are in) this change was costed \
-             against (#2350's +2.60 to +3.33 for the pair, less the 5-7% a `Value`-rebuilt \
-             counterfactual overstates by)",
+        println!(
+            "  codec-1 saving on {} keys: {container_saved:.3} B/object against the historical capture; the original prediction band was 2.0..=5.3",
             shape.label()
         );
         // THE WAL-PLACEMENT MAP, PRICED ON ITS OWN LINE. It is held out of the surfaces above, so its
@@ -1104,10 +1149,9 @@ struct Before {
 /// WHAT THIS CORPUS WEIGHED BEFORE THE CHANGE, AND WHERE THE NUMBERS CAME FROM.
 ///
 /// Captured by running THIS MODULE on `ea5b278a9` with the production change absent -- the
-/// measurement module committed first and the entry's two fields still written -- so the before and
-/// the after differ in the change and in nothing else. Not a doctored `serde_json::Value`: the
-/// production encoder on the production path, at 8,000 objects in 1,024 buckets on `0..1023`, with
-/// the amortised regime asserted on both readings.
+/// measurement module committed first and the entry's two fields still written. The historical
+/// capture used the production encoder at 8,000 objects in 1,024 buckets on `0..1023`. Later wire
+/// changes also contribute to differences from the current reading.
 ///
 /// A CONSTANT AND NOT A SECOND FIXTURE RUN, deliberately. The alternative is to build the old shape
 /// here, and the old shape is what this change deletes: a fixture that could still produce it would

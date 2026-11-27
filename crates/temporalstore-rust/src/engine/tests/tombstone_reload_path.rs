@@ -26,7 +26,7 @@
 //!   1. a reload of a store this binary wrote ACCEPTS the index -- so the tombstone entries and the
 //!      blocks that record removals survive a round trip through the persisted index itself, not just
 //!      through a replay;
-//!   2. a reload of a store stamped with the PREVIOUS version REFUSES it and replays;
+//!   2. a reload of a store stamped with unsupported version 31 refuses it and replays;
 //!   3. the membership is identical either way, and is the membership after the removal rather than
 //!      before it. A counter saying "replayed" beside a resurrected member would be worse than no
 //!      counter at all.
@@ -254,12 +254,11 @@ fn a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (expected, victim) = seed_and_unload(dir.path());
 
-    // STAMP THE STORED INDEX WITH THE PREVIOUS VERSION, which is what every existing store looks
-    // like to this binary.
+    // Stamp the payload with version 31, whose old object layout remains unsupported.
     //
     // THE STAMP IS THE CONTAINER HEADER'S. `decode_index_bytes` compares the struct version in the
     // header with the constant before it reads a byte of the payload, so an image "from before the
-    // bump" is this build's payload behind a header that names the previous version -- and the
+    // bump" is this build's payload behind a header that names an unsupported version -- and the
     // decode refuses it, which the load turns into a replay.
     let index_path = dir.path().join("indexes").join("shard-1.index.json");
     let raw = std::fs::read(&index_path).expect("the unload wrote a base index");
@@ -271,7 +270,7 @@ fn a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index() {
          it must first be able to read",
         stored.index_format_version
     );
-    let down_stamped = crate::engine::encode_index_bytes_at_version(&stored, current - 1);
+    let down_stamped = crate::engine::encode_index_bytes_at_version(&stored, 31u32);
     std::fs::write(&index_path, &down_stamped).expect("write the down-stamped index");
     // AND THE DOWN-STAMPED FILE IS REFUSED ON ITS HEADER, which is the precondition for the arm
     // below testing the stale-stamp path rather than some other undecodable one.
@@ -279,7 +278,7 @@ fn a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index() {
         .err()
         .expect("a down-stamped index must be refused by the decode");
     assert!(
-        refusal.contains("struct version") && refusal.contains(&(current - 1).to_string()),
+        refusal.contains("struct version") && refusal.contains(&(31u32).to_string()),
         "the down-stamped index was refused, but not on its header's struct version: {refusal}"
     );
 
@@ -288,7 +287,7 @@ fn a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index() {
     load_on(&engine);
     let (accepted, absent, undecodable) = crate::engine::persistence::index_load_path_counts();
 
-    println!("=== reload of a store stamped {} (this binary writes {current}) ===", current - 1);
+    println!("=== reload of a store stamped {} (this binary writes {current}) ===", 31u32);
     println!("  load paths: accepted={accepted} absent={absent} undecodable={undecodable}");
     let seen = members_of(&engine);
     let (live, tombstoned) = entry_counts(&engine);

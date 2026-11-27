@@ -1120,6 +1120,15 @@ impl TemporalEngine {
         shard: &mut ShardState,
         manifest: &BucketDumpManifest,
     ) {
+        self.clear_dumped_bucket_dirty_state_for_owner_except(shard, manifest, &BTreeSet::new());
+    }
+
+    pub(super) fn clear_dumped_bucket_dirty_state_for_owner_except(
+        &self,
+        shard: &mut ShardState,
+        manifest: &BucketDumpManifest,
+        preserved_empty_owners: &BTreeSet<u32>,
+    ) {
             let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
             // Per-bucket derived generation the manifest captured (base + dirty count) --
             // exactly what the reclaim fingerprint compares.
@@ -1173,6 +1182,9 @@ impl TemporalEngine {
             // in one pass.
             let mut cleared_buckets: Vec<u32> = Vec::new();
             for bucket_id in manifest.bucket_ids.iter().copied() {
+                if preserved_empty_owners.contains(&bucket_id) {
+                    continue;
+                }
                 let Some(&captured_generation) = captured.get(&bucket_id) else {
                     continue;
                 };

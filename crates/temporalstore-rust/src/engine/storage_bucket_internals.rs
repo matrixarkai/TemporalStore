@@ -1834,6 +1834,89 @@ pub(super) fn rebuild_bucket_block_ownership(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) {
+    rebuild_bucket_block_ownership_with_relocations(
+        shard_id, shard, start_routing_bucket, end_routing_bucket, &[],
+    );
+}
+
+pub(super) struct StringRelocations<'a> {
+    by_key: BTreeMap<&'a str, Option<&'a super::compaction::MovedBlock>>,
+}
+
+impl<'a> StringRelocations<'a> {
+    pub(super) fn new(moved: &'a [super::compaction::MovedBlock]) -> Self {
+        let mut by_key: BTreeMap<&str, Option<&super::compaction::MovedBlock>> = BTreeMap::new();
+        for movement in moved {
+            if movement.model_id != "string" || movement.element_name.is_some() {
+                continue;
+            }
+            by_key.entry(movement.object_key.as_str())
+                .and_modify(|prior| {
+                    if prior.is_some_and(|held| held.old != movement.old || held.new != movement.new) {
+                        *prior = None;
+                    }
+                })
+                .or_insert(Some(movement));
+        }
+        Self { by_key }
+    }
+
+    pub(super) fn get(&self, key: &str) -> Option<&'a super::compaction::MovedBlock> {
+        self.by_key.get(key).copied().flatten()
+    }
+}
+
+pub(super) fn indexed_string_page_flags(
+    shard: &ShardState,
+    entry: &LiveBlockEntry,
+    movement: Option<&super::compaction::MovedBlock>,
+) -> Option<(bool, bool)> {
+    if entry.kind.as_str() != "string"
+        || shard.strings().get(entry.object_key.as_ref())?.address() != entry.address
+    {
+        return None;
+    }
+    let movement = movement.filter(|movement| {
+        movement.model_id == "string"
+            && movement.object_key.as_str() == entry.object_key.as_ref()
+            && movement.element_name.is_none()
+            && movement.new == entry.address
+    });
+    let mut current = None;
+    let mut prior = None;
+    let mut current_conflict = false;
+    let mut prior_conflict = false;
+    // Only this String's refs, never a bucket's complete block list. The current address wins
+    // over an old placement; disagreeing copies of the same placement are not authority.
+    for block_ref in shard.bucket_index.object_block_refs("string", &entry.object_key)?.iter() {
+        let block = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket)?
+            .block_index.get(&block_ref.block_ref_key)?;
+        if block.model_id().as_str() != "string" {
+            continue;
+        }
+        let flags = (block.dirty(), block.deleted());
+        if block.address == entry.address {
+            current_conflict |= current.is_some_and(|held| held != flags);
+            current = Some(flags);
+        } else if movement.is_some_and(|movement| block.address == movement.old) {
+            prior_conflict |= prior.is_some_and(|held| held != flags);
+            prior = Some(flags);
+        }
+    }
+    if current.is_some() {
+        (!current_conflict).then_some(current).flatten()
+    } else {
+        (!prior_conflict).then_some(prior).flatten()
+    }
+}
+
+pub(super) fn rebuild_bucket_block_ownership_with_relocations(
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    moved: &[super::compaction::MovedBlock],
+) {
     // Preserve the durable per-bucket watermark across the clear+rebuild. load_index keeps
     // dirty_generation; rebuilding with a fresh BucketNode::default() would zero it, making a
     // restored shard (e.g. after a manifest install) mismatch its own dump-manifest generation
@@ -1844,11 +1927,40 @@ pub(super) fn rebuild_bucket_block_ownership(
     // longer exists on the node: it was read into two reports and nothing else, and the report
     // takes it from the newest dump manifest instead. Nothing here has to preserve a figure a
     // manifest already holds.
-    let preserved_dirty_generations: HashMap<u32, u64> = shard
+    let mut retained_owners = crate::engine::state::BucketMap::default();
+    let preserved_dirty_generations: BTreeMap<u32, u64> = shard
         .bucket_index
         .bucket_map
         .iter()
-        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.dirty_generation))
+        .map(|(routing_bucket, bucket)| {
+            // Resident blocks are derived, but pending owner state and whole-object deletion
+            // identity are not. Capture them in this existing pass, before dropping any refs.
+            if bucket.dirty()
+                || bucket.first_dirty_wal_sequence != 0
+                || bucket.first_dirty_index_log_sequence != 0
+                || !bucket.deleted_object_index.is_empty()
+            {
+                let mut owner = BucketNode {
+                    routing_bucket: *routing_bucket,
+                    flags: BucketFlags::default()
+                        .with(BucketFlags::META_LOADED, true)
+                        .with(BucketFlags::DIRTY, bucket.dirty())
+                        .with(BucketFlags::DELETED, bucket.deleted()),
+                    dirty_generation: bucket.dirty_generation,
+                    first_dirty_wal_sequence: bucket.first_dirty_wal_sequence,
+                    first_dirty_index_log_sequence: bucket.first_dirty_index_log_sequence,
+                    deleted_object_index: bucket.deleted_object_index.clone(),
+                    ..BucketNode::default()
+                };
+                // Only an actual deleted owner carries these identities in its object count.
+                // Released or mixed live owners must re-derive their live IDs from new blocks.
+                if bucket.deleted() {
+                    owner.object_index.extend(bucket.deleted_object_index.iter().copied());
+                }
+                retained_owners.insert(*routing_bucket, owner);
+            }
+            (*routing_bucket, bucket.dirty_generation)
+        })
         .collect();
     // AND THE TOMBSTONE ENTRIES, WHICH THE MODEL MAPS CANNOT RE-DERIVE.
     //
@@ -1873,7 +1985,32 @@ pub(super) fn rebuild_bucket_block_ownership(
     // cannot find it to clear, so the removal is restated for ever and the retention stops being
     // bounded at one row per distinct element removed.
     let preserved_tombstones = collect_rebuild_tombstones::<true>(shard);
-    shard.bucket_index.bucket_map.clear();
+    let string_moves = StringRelocations::new(moved);
+    let mut model_entries = Vec::new();
+    // Capture bits in the existing model collection pass, while indexed authority still exists.
+    // The String relocation directory is built once; each entry performs bounded key/ref reads.
+    visit_model_live_blocks(
+        shard,
+        ModelWalkTally::WholeShardEntries,
+        |_, _| true,
+        |kind, object_key, element_name, address| {
+            let mut entry = live_block_entry(
+                object_key.to_handle(), kind.as_str(), element_name.map(str::to_string), address.clone(),
+            );
+            if kind == ModelKind::String {
+                let bucket = block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
+                if shard.bucket_index.released_buckets.contains(&bucket) {
+                    restore_retained_inline_page_state(shard, &mut entry);
+                } else if let Some(flags) = indexed_string_page_flags(
+                    shard, &entry, string_moves.get(entry.object_key.as_ref()),
+                ) {
+                    (entry.dirty, entry.deleted) = flags;
+                }
+            }
+            model_entries.push(entry);
+        },
+    );
+    shard.bucket_index.bucket_map = retained_owners;
     // AND THE LOOKUP WITH IT, because it describes the map that was just emptied.
     //
     // It used to survive this clear and be rebuilt wholesale at the end of the function. Now that
@@ -1888,17 +2025,15 @@ pub(super) fn rebuild_bucket_block_ownership(
     // charges the inserts below make -- not by a walk afterwards, which is the walk this whole
     // change exists to remove and which a compaction round would pay twice.
     shard.bucket_index.block_slab_live.clear();
-    // The rebuild re-derives every bucket from the model maps, which is what a reload does one
-    // bucket at a time. Nothing is released afterwards, and a registry that outlived the map it
-    // names would make the block walk supplement buckets that are already whole.
-    shard.bucket_index.released_buckets.clear();
+    // Released page bits were captured above from their separate authority. Membership remains
+    // until refile finishes; no later whole-index walk may supplement these entries twice.
     // WHAT THE REFILE PLACES, SO THE LOOKUP CAN BE FILED FROM IT.
     //
     // Collected rather than filed inside the loop: the filing takes the whole index mutably and
     // the loop holds one bucket out of it, so it cannot happen there -- the same shape
     // `reload_released_bucket` already uses for the same reason.
     let mut filed_blocks: Vec<(u32, u64, Arc<str>, BlockIndex)> = Vec::new();
-    for entry in collect_model_live_block_entries(shard) {
+    for entry in model_entries {
         let routing_bucket =
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
         // THE OUT-OF-RANGE FILTER THAT STOOD HERE CANNOT FIRE ANY MORE, so it is gone rather than
@@ -1951,6 +2086,8 @@ pub(super) fn rebuild_bucket_block_ownership(
             filed_blocks.push((routing_bucket, handle, object_key, placed.clone()));
         }
     }
+    // The blocks are resident again. Clear before any later walk could supplement them twice.
+    shard.bucket_index.released_buckets.clear();
     file_rebuilt_block_refs(&mut shard.bucket_index, &mut filed_blocks);
     // FILE THE TOMBSTONE ENTRIES BACK, after the live rebuild and before the flag pass below, so the
     // `every_block_deleted` computation sees the finished bucket rather than a half-built one.
@@ -2068,8 +2205,12 @@ pub(super) fn rebuild_bucket_block_ownership(
         bucket.set_meta_loaded(true);
         bucket.set_loading(false);
         bucket.set_in_memory(!bucket.block_index.is_empty());
-        let every_block_deleted =
-            !bucket.block_index.is_empty() && bucket.block_index.values().all(|block| block.deleted());
+        let every_block_deleted = if bucket.block_index.is_empty() {
+            // A blockless deletion-only owner still holds its prior deletion authority.
+            bucket.deleted()
+        } else {
+            bucket.block_index.values().all(|block| block.deleted())
+        };
         bucket.set_deleted(every_block_deleted);
         update_bucket_layout(shard_id, bucket, &keys);
     }
@@ -3119,7 +3260,7 @@ fn release_bucket_blocks_inner(
         let block_count = dropped.len();
         for (kind, key, dirty, deleted) in &dropped {
             if kind.as_str() == "string" {
-                if let Some(slot) = shard.strings_mut().get_mut(key.as_ref()) {
+                if let Some(slot) = shard.string_row_mut(key.as_ref()) {
                     slot.record.retain_page_state(*dirty, *deleted);
                 }
             }
@@ -4713,7 +4854,7 @@ pub(super) fn clear_retained_inline_page_dirty_state(shard: &mut ShardState, buc
             .cloned().collect::<Vec<_>>()
     };
     for key in keys {
-        if let Some(slot) = shard.strings_mut().get_mut(key.as_ref()) {
+        if let Some(slot) = shard.string_row_mut(key.as_ref()) {
             let (_, deleted) = slot.record.retained_page_state();
             slot.record.retain_page_state(false, deleted);
         }
@@ -6196,20 +6337,46 @@ pub(super) fn file_series_blocks_after_write(
             None => vacated,
         }
     };
-    if !restate {
+    // Advance the owner fence once per capped write, independent of how many blocks
+    // the filing path touches. Sample after reload so the durable fence is included.
+    let generation_before = dirty.then(|| {
+        let (start, end) = shard.routing_range();
+        let routing_bucket = block_routing_bucket(object_key, start, end);
+        if !shard.bucket_index.released_buckets.is_empty() {
+            reload_released_bucket(shard, shard_id, routing_bucket);
+        }
+        let generation = shard
+            .bucket_index
+            .bucket_map
+            .get(&routing_bucket)
+            .map_or(0, |bucket| bucket.dirty_generation);
+        (routing_bucket, generation)
+    });
+
+    let needs_restate = if restate {
+        true
+    } else {
         sync_bucket_index_object_blocks_with_mode(
             shard, shard_id, kind, object_key, published, dirty, false,
         );
-        if retire_object_blocks(shard, shard_id, kind, object_key, &retired, dirty) {
-            return;
+        !retire_object_blocks(shard, shard_id, kind, object_key, &retired, dirty)
+    };
+    if needs_restate {
+        let live_addresses = shard
+            .objects_of_kind(stored_model_kind(kind))
+            .get(object_key)
+            .map(|series| series.addresses().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        sync_bucket_index_object_blocks(shard, shard_id, kind, object_key, live_addresses, dirty);
+    }
+
+    if let Some((routing_bucket, generation)) = generation_before {
+        if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+            if bucket.dirty_generation > generation {
+                bucket.dirty_generation = generation.saturating_add(1);
+            }
         }
     }
-    let live_addresses = shard
-        .objects_of_kind(stored_model_kind(kind))
-        .get(object_key)
-        .map(|series| series.addresses().cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    sync_bucket_index_object_blocks(shard, shard_id, kind, object_key, live_addresses, dirty);
 }
 
 /// Remove the named blocks of one object from the bucket index, and from the object's block refs.
@@ -7272,12 +7439,18 @@ fn refresh_one_bucket_runtime_flags(
     // any store without an expiry. `inspect` charges what the fold stepped over, which is the only
     // honest figure given the short-circuit the comment above describes.
     let mut fold_visits = 0u64;
-    let every_block_deleted = !bucket.block_index.is_empty()
-        && bucket
+    // With no resident blocks the existing owner classification is the authority: a
+    // deletion-only owner may be deleted, while a released live owner is not. Retained
+    // deleted IDs alone cannot distinguish them. New/nonempty blocks decide as before.
+    let every_block_deleted = if bucket.block_index.is_empty() {
+        bucket.deleted()
+    } else {
+        bucket
             .block_index
             .values()
             .inspect(|_| fold_visits += 1)
-            .all(|block| block.deleted());
+            .all(|block| block.deleted())
+    };
     bucket.set_deleted(every_block_deleted);
     // ASKED OF THE INDEX, NOT FOLDED OVER THE BLOCKS. The dirty-object index already records which
     // routing bucket each dirty object belongs to -- it is recorded there at mark time, beside the
@@ -7546,8 +7719,7 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
 
 pub(super) fn object_still_has_hot_block(shard: &ShardState, object_key: &str) -> bool {
     shard
-        .strings()
-        .get(object_key)
+        .string_address(object_key)
         .map(|address| crate::wal_record::is_wal_resident(address.block_slab_id()))
         .unwrap_or(false)
         || shard
@@ -7565,7 +7737,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     if object_still_has_hot_block(shard, object_key) {
         return;
     }
-    if shard.strings().contains_key(object_key) {
+    if shard.string_address(object_key).is_some() {
         let (start, end) = shard.routing_range();
         let bucket = block_routing_bucket(object_key, start, end);
         if let Some(shard_id) = shard.shard_id() {
@@ -7677,18 +7849,35 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
     end_routing_bucket: u32,
     mut finalize: impl FnMut(&mut BucketNode, &BTreeSet<u64>),
 ) {
-    // Preserve tombstone (deleted) object ids across the rebuild. A delete removes the object
-    // from the model maps (strings/hashes/...), so collect_model_live_block_entries no longer
-    // sees it, but the object manager must keep reporting it as a tombstone until GC reclaims
-    // the slot. The deserialize + reconcile load path keeps deleted_object_index; a
-    // promote/rebuild reconstruct (flush or the WAL-replay tail) would otherwise silently drop
-    // it, undercounting objects after a reconstruct-based reload.
-    let prior_deleted_object_index: BTreeMap<u32, DeletedObjectIndex> = shard
+    // Model rows can recreate physical refs, but cannot recover pending ownership claims.
+    struct PendingOwner {
+        dirty: bool,
+        deleted: bool,
+        generation: u64,
+        wal_sequence: u64,
+        index_sequence: u64,
+        deleted_objects: DeletedObjectIndex,
+    }
+    let prior_pending_owners: Vec<_> = shard
         .bucket_index
         .bucket_map
         .iter()
-        .filter(|(_, bucket)| !bucket.deleted_object_index.is_empty())
-        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.deleted_object_index.clone()))
+        .filter(|(_, bucket)| {
+            bucket.dirty()
+                || bucket.first_dirty_wal_sequence != 0
+                || bucket.first_dirty_index_log_sequence != 0
+                || !bucket.deleted_object_index.is_empty()
+        })
+        .map(|(routing_bucket, bucket)| {
+            (*routing_bucket, PendingOwner {
+                dirty: bucket.dirty(),
+                deleted: bucket.deleted(),
+                generation: bucket.dirty_generation,
+                wal_sequence: bucket.first_dirty_wal_sequence,
+                index_sequence: bucket.first_dirty_index_log_sequence,
+                deleted_objects: bucket.deleted_object_index.clone(),
+            })
+        })
         .collect();
     // AND THE TOMBSTONE ENTRIES, FOR THE SAME REASON ONE STEP DOWN.
     //
@@ -7787,7 +7976,7 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
     // Re-attach the tombstone ids captured above. Keep them in object_index too so the object
     // manager's object_count matches the deserialize/reconcile load path (which never dropped
     // them); a live block entry re-adding the same id is a no-op (BTreeSet).
-    for (routing_bucket, deleted) in prior_deleted_object_index {
+    for (routing_bucket, prior) in prior_pending_owners {
         let mut bucket = bucket_index
             .bucket_map
             .entry(routing_bucket)
@@ -7796,10 +7985,20 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
                 flags: BucketFlags::default().with(BucketFlags::META_LOADED, true),
                 ..BucketNode::default()
             });
-        for object_id in &deleted {
+        let dirty = bucket.dirty() || prior.dirty;
+        bucket.set_dirty(dirty);
+        // A blockless released owner may also carry deleted IDs. Preserve the actual
+        // flag only when the rebuild found no live or element-tombstone blocks.
+        if bucket.block_index.is_empty() {
+            bucket.set_deleted(prior.deleted);
+        }
+        bucket.dirty_generation = bucket.dirty_generation.max(prior.generation);
+        bucket.first_dirty_wal_sequence = prior.wal_sequence;
+        bucket.first_dirty_index_log_sequence = prior.index_sequence;
+        for object_id in &prior.deleted_objects {
             bucket.object_index.insert(*object_id);
         }
-        bucket.deleted_object_index.extend(deleted);
+        bucket.deleted_object_index.extend(prior.deleted_objects);
     }
     // Re-attach the tombstone ENTRIES captured above, skipping any whose element the rebuild has just
     // filed as LIVE. A re-add clears its tombstone through the upsert's retain, and a rebuild has to
@@ -8194,7 +8393,13 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         match entry.kind.as_str() {
             "string" => {
                 saw_strings = true;
-                strings.insert(entry.object_key.as_ref().into(), entry.address);
+                strings.insert(
+                    Arc::clone(&entry.object_key),
+                    super::state::ReconstructedStringRow {
+                        filed_bucket: entry.filed_bucket(),
+                        address: entry.address,
+                    },
+                );
             }
             // THE FOUR CONTAINER KINDS DERIVE NOTHING NOW, AND THE REASON IS STRUCTURAL.
             //
@@ -8433,18 +8638,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         // THE DERIVED VIEW IS STILL THE AUTHORITY ON WHICH KEYS EXIST, which the assignment made it
         // by construction and this has to make explicit: a key the view does not carry is dropped,
         // exactly as before. What is kept is the ROW's own state for a key it does carry.
-        let table = shard.strings_mut();
-        table.retain(|key, _| strings.contains_key(key));
-        for (key, address) in strings {
-            match table.get_mut(&key) {
-                Some(slot) => slot.set_address(&address),
-                None => {
-                    let mut slot = super::object_record::ObjectSlot::default();
-                    slot.set_address(&address);
-                    table.insert(key, slot);
-                }
-            }
-        }
+        shard.install_reconstructed_string_addresses(strings);
     }
     // MERGED, NOT ASSIGNED, for the three kinds whose element identity is spelled into an element name
     // name. These three used to read `shard.zsets = zsets;` and so on, which throws a DURABLE map

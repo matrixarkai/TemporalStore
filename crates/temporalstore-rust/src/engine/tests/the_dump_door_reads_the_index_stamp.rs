@@ -264,7 +264,7 @@ fn engine_over_a_planted_base_index(stamp: u32) -> (tempfile::TempDir, TemporalE
 /// The door that always read the stamp still reads it, through the shared predicate.
 #[test]
 fn the_base_index_door_refuses_a_stale_stamp() {
-    let stale = SHARD_INDEX_FORMAT_VERSION - 1;
+    let stale = 31u32;
     let (_dir, engine) = engine_over_a_planted_base_index(stale);
     crate::engine::persistence::reset_index_load_path_counts();
     let loaded = engine
@@ -307,7 +307,7 @@ fn the_base_index_door_accepts_the_same_image_at_the_current_stamp() {
 /// THE INSTALL DOOR NOW REFUSES, WHERE IT USED TO INSTALL SILENTLY.
 #[test]
 fn the_dump_manifest_install_refuses_a_stale_stamped_image() {
-    let stale = SHARD_INDEX_FORMAT_VERSION - 1;
+    let stale = 31u32;
     let mut fixture = a_real_dump_manifest();
     re_stamp(&mut fixture.manifest, stale);
 
@@ -345,7 +345,7 @@ fn the_dump_manifest_install_refuses_a_stale_stamped_image() {
 /// puts the refusal BEFORE the first write rather than after it.
 #[test]
 fn the_refused_install_writes_no_index_and_installs_no_shard() {
-    let stale = SHARD_INDEX_FORMAT_VERSION - 1;
+    let stale = 31u32;
     let mut fixture = a_real_dump_manifest();
     re_stamp(&mut fixture.manifest, stale);
 
@@ -428,7 +428,7 @@ fn the_same_manifest_at_the_current_stamp_installs_and_round_trips_its_series() 
 /// instead, which is the same trade `load_index_inner` makes. So the load must still succeed.
 #[test]
 fn the_ordinary_recovery_load_refuses_a_stale_dump_manifest_and_falls_back() {
-    let stale = SHARD_INDEX_FORMAT_VERSION - 1;
+    let stale = 31u32;
     let mut fixture = a_real_dump_manifest();
     re_stamp(&mut fixture.manifest, stale);
     assert!(
@@ -552,7 +552,7 @@ fn a_manifest_this_binary_writes_is_stamped_current_and_still_installs() {
 /// stamp's and not the fixture's.
 #[test]
 fn the_preflight_report_names_the_stale_stamp_as_a_blocker() {
-    let stale = SHARD_INDEX_FORMAT_VERSION - 1;
+    let stale = 31u32;
     let mut fixture = a_real_dump_manifest();
     re_stamp(&mut fixture.manifest, stale);
 

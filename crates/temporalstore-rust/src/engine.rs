@@ -179,6 +179,8 @@ pub use compaction::{
     reset_container_batch_counts, CONTAINER_BATCH_ELEMENT_CAP,
 };
 mod storage_reporting;
+mod selected_owner_absence;
+mod qualified_empty_owners;
 #[path = "engine/engine_hashing.rs"]
 pub(crate) mod hashing;
 mod bucket_store;
@@ -211,6 +213,8 @@ pub(crate) use container_blocks::{
 pub(crate) use hashing::{reset_routing_bucket_derivations, routing_bucket_derivations};
 mod recorded_map;
 mod object_record;
+mod filed_string_rows;
+mod object_rows;
 // `pub(crate)`: a replication payload names the range it carries, and those payloads live
 // outside this module.
 pub(crate) mod routing_range_stamp;
@@ -1446,7 +1450,9 @@ impl TemporalEngine {
             // post-apply.
             let touched_container_elements =
                 command_touched_container_elements(&command, shard);
-            if object_keys.is_empty() {
+            // A mutating TTL has already filed its lazy-expiry deletions.
+            let expiry_maintained_index = matches!(&command, Command::CommonTtl { .. });
+            if object_keys.is_empty() && !expiry_maintained_index {
                 rebuild_bucket_block_ownership(
                     request.shard_id,
                     shard,
@@ -1546,7 +1552,7 @@ impl TemporalEngine {
                     Command::HashDelete { .. } => storage_bucket_internals::hash_delete_maintained(),
                     _ => false,
                 };
-            let maintained_bucket_index = hash_index_filed.is_some()
+            let maintained_bucket_index = expiry_maintained_index || hash_index_filed.is_some()
                 || (!shard.bucket_index.bucket_map.is_empty()
                     && !object_keys.is_empty()
                     && (matches!(&command, Command::SetAdd { .. } | Command::SetAddMany { .. })
@@ -3227,7 +3233,7 @@ impl TemporalEngine {
     pub fn string_block_cache_key_for_test(&self, shard_id: ShardId, key: &str) -> Option<CacheKey> {
         self.shards.with_state(shard_id, |state| {
         let shard = state?;
-        let address = shard.strings().get(key)?;
+        let address = shard.string_address(key)?;
         let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
         Some(CacheKey::page_with_slot(
             shard_id,
@@ -4237,7 +4243,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// the cost of the step is one replay for each existing store, spent deliberately.
 ///
 /// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 32;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 35;
 
 /// Whether `key`, or one of the control-state family keys the ordinary read would also drop with
 /// it, has a deadline that lapsed. The same three families `remove_if_expired_with` examines, asked
@@ -5015,11 +5021,9 @@ fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
                     .try_into()
                     .map_err(|_| "served index version stamp is malformed".to_string())?,
             );
-            // Checked BEFORE decoding, deliberately. This payload is addressed by field order, so
-            // decoding it against a different struct shape does not error, it produces a plausible
-            // and wrong `ShardState`. Refusing is treated like an absent index: the caller replays
-            // the WAL and the index-log deltas, which is slower and correct.
-            if version != SHARD_INDEX_FORMAT_VERSION {
+            // Versions 32 and 34 store String rows as maps. The current schema
+            // reads those maps and keeps checkpoint coverage when its WAL was reclaimed.
+            if !matches!(version, 32 | 34 | SHARD_INDEX_FORMAT_VERSION) {
                 return Err(format!(
                     "served index was written from struct version {version}, this binary is {}",
                     SHARD_INDEX_FORMAT_VERSION
@@ -5029,17 +5033,82 @@ fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
                 .map_err(|error| format!("served index payload did not decompress: {error}"))?;
             let mut state = rmp_serde::from_slice::<ShardState>(&decoded)
                 .map_err(|error| error.to_string())?;
-            // THE HEADER IS THE STAMP. The field inside the payload is whatever the writing shard
-            // happened to carry -- 0 for one that was never stamped -- and the header is what was
-            // checked against `SHARD_INDEX_FORMAT_VERSION` above, so it is the one value here that
-            // is both known and meaningful. Without this a fresh shard's image decodes back as
-            // stale and every door that reads the stamp refuses it.
-            state.index_format_version = version;
+            if version == 32 {
+                // Legacy images cannot mint routing authority through an extra payload field.
+                state.source_owner_range = None;
+            }
+            // Convert the accepted schema in memory, leaving the physical image and cut intact.
+            state.index_format_version = SHARD_INDEX_FORMAT_VERSION;
             Ok(state)
         }
         other => Err(format!(
             "served index uses payload codec {other}, which this binary cannot read"
         )),
+    }
+}
+
+#[cfg(test)]
+mod owner_rows_checkpoint_tests {
+    use super::*;
+
+    fn legacy_map_checkpoint(version: u32) -> Vec<u8> {
+        use super::object_record::ObjectSlot;
+        use super::object_rows::ObjectRows;
+        use super::storage_bucket_internals::StoredModelKind;
+        let mut shard = ShardState::default();
+        shard.index_format_version = version;
+        shard.source_owner_range = Some((10, 20));
+        shard.applied_wal_sequence = Some(77);
+        let mut slot = ObjectSlot::default();
+        // The packed size class stores 91 bytes as 92.
+        slot.set_logical_size(91);
+        let key: state::ModelKey = std::sync::Arc::from("legacy-checkpoint-row");
+        shard.bucket_index.objects.insert(StoredModelKind::String,
+            ObjectRows::Flat(std::collections::HashMap::from([(key, slot)])));
+        // Encode the legacy map schema, not a restamped owner-row tuple.
+        let payload = rmp_serde::to_vec_named(&shard).unwrap();
+        let mut bytes = INDEX_CONTAINER_MAGIC.to_vec();
+        bytes.push(INDEX_CODEC_ZSTD_MSGPACK);
+        bytes.extend_from_slice(&version.to_be_bytes());
+        bytes.extend(zstd::stream::encode_all(payload.as_slice(), INDEX_ZSTD_LEVEL).unwrap());
+        bytes
+    }
+
+    #[test]
+    fn legacy_map_checkpoint_preserves_its_cut_and_unresolved_filing() {
+        let bytes = legacy_map_checkpoint(32);
+        let decoded = decode_index_bytes_inner(&bytes).unwrap();
+        assert_eq!(decoded.index_format_version, SHARD_INDEX_FORMAT_VERSION);
+        assert_eq!(decoded.applied_wal_sequence, Some(77));
+        assert_eq!(decoded.string_row("legacy-checkpoint-row").unwrap().logical_size(), Some(92));
+        assert!(decoded.strings().selected_strings(0).is_none());
+        let current = encode_index_bytes(&decoded);
+        let offset = INDEX_CONTAINER_MAGIC.len() + 1;
+        assert_eq!(&current[offset..offset + 4], &SHARD_INDEX_FORMAT_VERSION.to_be_bytes());
+        assert_eq!(decode_index_bytes_inner(&current).unwrap().applied_wal_sequence, Some(77));
+    }
+
+    #[test]
+    fn legacy_string_upgrade_preserves_only_authenticated_owner_range() {
+        let converted_v32 = decode_index_bytes_inner(&legacy_map_checkpoint(32)).unwrap();
+        assert_eq!(converted_v32.source_owner_range, None);
+        let mut converted_v34 = decode_index_bytes_inner(&legacy_map_checkpoint(34)).unwrap();
+        assert_eq!(converted_v34.applied_wal_sequence, Some(77));
+        assert_eq!(converted_v34.source_owner_range, Some((10, 20)));
+        converted_v34.set_routing_range(10, 20);
+        assert_eq!(converted_v34.source_owner_range, Some((10, 20)));
+        converted_v34.set_routing_range(11, 20);
+        assert_eq!(converted_v34.source_owner_range, None);
+    }
+
+    #[test]
+    fn owner_checkpoint_reader_still_refuses_unsupported_versions() {
+        for version in [0_u32, 31, 33, u32::MAX] {
+            let mut bytes = legacy_map_checkpoint(32);
+            let offset = INDEX_CONTAINER_MAGIC.len() + 1;
+            bytes[offset..offset + 4].copy_from_slice(&version.to_be_bytes());
+            assert!(decode_index_bytes_inner(&bytes).unwrap_err().contains("struct version"));
+        }
     }
 }
 
@@ -6716,7 +6785,7 @@ fn repoint_model_element(
     };
     let key: &str = &from.object_key;
     match from.model_id.as_str() {
-        "string" => match shard.strings_mut().get_mut(key) {
+        "string" => match shard.string_row_mut(key) {
             Some(slot) if slot.address() == *old => {
                 slot.set_address(new);
                 true
@@ -9581,7 +9650,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
             .unwrap_or(false)
     });
     bucket_index_exists
-        || shard.strings().contains_key(key)
+        || shard.string_address(key).is_some()
         || shard.bucket_index.hashes.contains_key(key)
         || shard.bucket_index.sets.contains_key(key)
         || shard.bucket_index.lists.contains_key(key)

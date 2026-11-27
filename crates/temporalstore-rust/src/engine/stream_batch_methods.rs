@@ -1831,7 +1831,9 @@ impl TemporalEngine {
                             shard,
                         ));
                     }
-                    if object_keys.is_empty() {
+                    let expiry_maintained_index =
+                        matches!(command_for_post_write_ref, Command::CommonTtl { .. });
+                    if object_keys.is_empty() && !expiry_maintained_index {
                         rebuild_bucket_block_ownership(
                             shard_id,
                             shard,
@@ -1957,7 +1959,7 @@ impl TemporalEngine {
                                 .expect("persisted index delta owns command keys"),
                         );
                     }
-                    if !maintained_bucket_index
+                    if !expiry_maintained_index && !maintained_bucket_index
                         && !defer_bucket_index_reconstruct()
                         // A command that writes no block cannot have changed the block index, so a
                         // rebuild after one recomputes what it already held. The single-command path

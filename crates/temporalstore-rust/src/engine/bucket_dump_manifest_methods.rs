@@ -27,11 +27,20 @@ mod prune_failure_tests;
 mod completion_identity_tests;
 
 #[cfg(test)]
+#[path = "qualified_empty_owner_tests.rs"]
+mod qualified_empty_owner_tests;
+
+#[cfg(test)]
+#[path = "qualified_reload_source_tests.rs"]
+mod qualified_reload_source_tests;
+
+#[cfg(test)]
 thread_local! {
     static BEFORE_DUMP_DIRTY_COMPLETION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static BEFORE_DUMP_CHECKPOINT_CAPTURE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static FAIL_EMPTY_OWNER_AFTER_METADATA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Fault seam: stop `apply_bucket_dump_manifest_prune_with_retention_refs` dead between its two
@@ -243,6 +252,14 @@ impl TemporalEngine {
                     "bulk dump image does not cover the current owner and WAL tail"));
             }
         }
+        let empty_owners = if completion.is_some() && !bulk_capture {
+            qualified_empty_owners::normalize_selected(&mut dump_index_state, &selected_buckets)
+        } else {
+            qualified_empty_owners::Prepared::default()
+        };
+        if !empty_owners.ids.is_empty() {
+            captured_bytes = None;
+        }
         #[cfg(test)]
         super::writer_stall_probe::set_phase("dump: summaries walk of the captured copy");
         let mut retained_objects = std::collections::HashSet::new();
@@ -285,6 +302,7 @@ impl TemporalEngine {
                 selected_buckets.is_empty() || selected_buckets.contains(&summary.routing_bucket)
             })
             .collect::<Vec<_>>();
+        empty_owners.append_empty_coverage(&mut bucket_summaries);
         bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
         #[cfg(test)]
         super::writer_stall_probe::set_phase("dump: WAL-resident retirements");
@@ -410,6 +428,12 @@ impl TemporalEngine {
         super::writer_stall_probe::set_phase("dump: persist manifest + mark_dumped");
         let published = self.checkpoint_publications.publish(&publication, || {
             let metadata = self.persist_bucket_dump_manifest_metadata(&manifest, true)?;
+            #[cfg(test)]
+            if !empty_owners.ids.is_empty()
+                && FAIL_EMPTY_OWNER_AFTER_METADATA.with(|fail| fail.replace(false))
+            {
+                return Err(std::io::Error::other("injected empty-owner publication failure after metadata"));
+            }
             self.wal_store.mark_dumped(shard_id);
             Ok(metadata)
         }).map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
@@ -445,23 +469,25 @@ impl TemporalEngine {
                 let hook = cell.borrow_mut().take();
                 if let Some(hook) = hook { hook(); }
             });
-            owner.with_write(|state| {
-                let Some(shard) = state else { return; };
+            let retired_owners = owner.with_write(|state| {
+                let Some(shard) = state else { return Vec::new(); };
                 if !publication.is_completed_for_captured_owner() {
-                    return;
+                    return Vec::new();
                 }
                 // The exported bulk image can trail the owner's current pending work.
                 // Its generation match cannot authorize clearing work outside that image.
                 let bulk_tail = if bulk_capture {
-                    let Some(anchor) = image_wal_anchor else { return; };
+                    let Some(anchor) = image_wal_anchor else { return Vec::new(); };
                     if shard.checkpoint_wal_sequence() != Some(anchor) {
-                        return;
+                        return Vec::new();
                     }
                     let tail = self.wal_store.stats_without_rescan(shard_id).last_sequence;
-                    if tail != anchor { return; }
+                    if tail != anchor { return Vec::new(); }
                     Some(tail)
                 } else { None };
-                self.clear_dumped_bucket_dirty_state_for_owner(shard, &manifest);
+                let retired = empty_owners.retire_matching(shard);
+                // A refused empty-owner proposal retains all its claims and deletion IDs.
+                self.clear_dumped_bucket_dirty_state_for_owner_except(shard, &manifest, &empty_owners.ids);
                 if mark_items_dumped
                     && bulk_tail.unwrap_or_else(|| {
                         self.wal_store.stats_without_rescan(shard_id).last_sequence
@@ -469,7 +495,9 @@ impl TemporalEngine {
                 {
                     shard.mark_items_dumped();
                 }
+                retired
             });
+            drop(retired_owners);
         }
         Ok(manifest)
     }
@@ -1129,8 +1157,22 @@ impl TemporalEngine {
                 &manifest_buckets,
                 |key| self.routing_bucket_for_key(manifest.shard_id, key),
             );
-            if manifest.object_lifecycle != expected_object_lifecycle
-                || manifest.object_lifecycle != model_object_lifecycle
+            let matches_legacy_lifecycle = expected_object_lifecycle == model_object_lifecycle
+                && manifest.object_lifecycle != expected_object_lifecycle
+                && live_block_entries.iter().any(|entry| entry.deleted)
+                && {
+                    // Older manifests included retained tombstone blocks in the live totals.
+                    // Their exact report is accepted only when the live index and model maps agree.
+                    let mut legacy = ObjectLifecycleAccumulator::default();
+                    for entry in &live_block_entries {
+                        legacy.observe_including_tombstones(manifest.shard_id, entry);
+                    }
+                    legacy.finish(&restored, &manifest_buckets,
+                        |key| self.routing_bucket_for_key(manifest.shard_id, key))
+                        == manifest.object_lifecycle
+                };
+            if expected_object_lifecycle != model_object_lifecycle
+                || (manifest.object_lifecycle != expected_object_lifecycle && !matches_legacy_lifecycle)
             {
                 // Say WHICH of the two derivations disagrees, and how. There are two comparisons
                 // here and the message named neither, so a refusal said only that a dump would
@@ -1792,6 +1834,7 @@ impl TemporalEngine {
                 .map_err(|err| Status::error("slot_dump_delta_unreadable", err.to_string()))?,
         )
         .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        persistence::clear_durable_image_dirty_flags(&mut restored);
         // Rebuild the unserialized model maps from the durable bucket index BEFORE rebuilding
         // ownership. `rebuild_bucket_block_ownership` clears the bucket map and repopulates it
         // from the model maps, so running it against a state whose `hashes` map never survived
@@ -1816,7 +1859,12 @@ impl TemporalEngine {
         // The unrouted blocks this leaves filed outside the target's range are the known residual,
         // and they are recoverable: the addresses stay unrouted, so a later rebuild over the live
         // model maps re-derives their placement from the shard's own range.
+        qualified_empty_owners::reconcile_covered_image(&mut restored);
         rebuild_bucket_block_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
+        if restored.source_owner_range != Some((0, u32::MAX)) {
+            // This existing reconstruction uses the whole range. Do not certify mixed filing.
+            restored.source_owner_range = None;
+        }
         let restored_index_bytes = serialize_index(&restored);
         self.persist_bucket_dump_install_marker(manifest, "prepare")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;

@@ -103,7 +103,7 @@ fn held(engine: &TemporalEngine) -> Option<(u64, bool)> {
     })
 }
 
-/// A PRE-BUMP INDEX IS REFUSED BY THE STAMP, NOT READ.
+/// An index stamped with unsupported version 31 is refused before decoding.
 #[test]
 fn a_pre_bump_index_is_refused_rather_than_read() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -118,16 +118,14 @@ fn a_pre_bump_index_is_refused_rather_than_read() {
         "denominator: the index just written must carry the CURRENT stamp, or staling it below \
          changes nothing"
     );
-    // THE STAMP IS THE CONTAINER HEADER'S: the same payload behind a header that names the previous
-    // struct version. The reader compares it before it reads the payload, so this is "an index an
-    // older build wrote" and the decode refuses it.
+    // Stamp the payload with unsupported version 31 to isolate header refusal.
     let stale = crate::engine::encode_index_bytes_at_version(
         &restored,
-        crate::engine::SHARD_INDEX_FORMAT_VERSION - 1,
+        31u32,
     );
     let refusal = crate::engine::decode_index_bytes(&stale)
         .err()
-        .expect("an image stamped one version back must be refused by the decode");
+        .expect("an image stamped with unsupported version 31 must be refused");
     assert!(
         refusal.contains("struct version"),
         "the stale image was refused, but not on its header's struct version: {refusal}"
@@ -140,7 +138,7 @@ fn a_pre_bump_index_is_refused_rather_than_read() {
     let (accepted_n, absent_n, decode_n) = index_load_path_counts();
     println!(
         "  stamp {} against {} -> decode {decode_n}, absent {absent_n}, accepted {accepted_n}",
-        crate::engine::SHARD_INDEX_FORMAT_VERSION - 1,
+        31u32,
         crate::engine::SHARD_INDEX_FORMAT_VERSION
     );
     assert!(

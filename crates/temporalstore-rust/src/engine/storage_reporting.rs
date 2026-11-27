@@ -101,6 +101,12 @@ pub(super) struct ObjectLifecycleAccumulator {
 
 impl ObjectLifecycleAccumulator {
     pub(super) fn observe(&mut self, shard_id: ShardId, entry: &LiveBlockEntry) {
+        if !entry.deleted {
+            self.observe_including_tombstones(shard_id, entry);
+        }
+    }
+
+    pub(super) fn observe_including_tombstones(&mut self, shard_id: ShardId, entry: &LiveBlockEntry) {
         let object_id = expected_live_block_object_id(shard_id, entry);
         let term = stable_object_hash(&format!("{}:{}", entry.kind.as_str(), entry.object_key));
         self.observe_identity(object_id, term);

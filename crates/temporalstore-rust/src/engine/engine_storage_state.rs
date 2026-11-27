@@ -13,6 +13,7 @@ use crate::types::{CommandResponse, ControlStateSelectionType, FeaturePoint, Sha
 use super::control_rollup::RollupEntry;
 use super::hll::Hll;
 use super::hash_field_map::HashFieldMap;
+use super::object_rows::ObjectRows;
 
 /// WHICH FLAVOUR OF DIRTINESS A MARK IS, as a field rather than as a key prefix.
 ///
@@ -197,6 +198,11 @@ pub(super) static CONTEXT_EVENT_ADOPT_MOVED: std::sync::atomic::AtomicU64 =
 /// here would be a silent per-live-key regression, and nothing else in the suite would notice.
 const _: () = assert!(std::mem::size_of::<ModelKey>() == 16);
 const _: () = assert!(std::mem::size_of::<ModelKey>() + 8 == std::mem::size_of::<String>());
+
+pub(super) struct ReconstructedStringRow {
+    pub(super) filed_bucket: Option<u32>,
+    pub(super) address: ElementEntry,
+}
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct ShardState {
@@ -760,11 +766,23 @@ pub(super) struct ShardState {
     shard_id: u64,
     #[serde(skip)]
     shard_id_known: bool,
+    /// Qualified source filing for this complete image, not its consumer's target range.
+    /// Appended positional field: v32 images decode as Unknown and cannot authorize cleanup.
+    #[serde(default)]
+    pub(super) source_owner_range: Option<(u32, u32)>,
 }
 
 impl ShardState {
     /// Record the range this shard is loaded on. Called once, by `install_shard_state`.
     pub(super) fn set_routing_range(&mut self, start_routing_bucket: u32, end_routing_bucket: u32) {
+        if self.source_owner_range.is_some_and(|source| source != (start_routing_bucket, end_routing_bucket)) {
+            self.source_owner_range = None;
+        }
+        if let Some(strings) = self.bucket_index.objects.get_mut(
+            &super::storage_bucket_internals::StoredModelKind::String,
+        ) {
+            strings.enable_string_owners((start_routing_bucket, end_routing_bucket));
+        }
         self.routing_range_start = start_routing_bucket;
         self.routing_range_end = end_routing_bucket;
         self.routing_range_known = true;
@@ -901,7 +919,7 @@ pub(super) struct CoreIndex {
     /// carries the reasoning and the condition for deleting it.
     pub(super) objects: BTreeMap<
         super::storage_bucket_internals::StoredModelKind,
-        HashMap<ModelKey, super::object_record::ObjectSlot>,
+        ObjectRows,
     >,
     /// Per-slab live block refs and live bytes, maintained by every mutation of the map above.
     ///
@@ -1234,7 +1252,7 @@ impl<'de> Deserialize<'de> for CoreIndex {
                 let mut stored_objects: Option<
                     BTreeMap<
                         super::storage_bucket_internals::StoredModelKind,
-                        HashMap<ModelKey, super::object_record::ObjectSlot>,
+                        ObjectRows,
                     >,
                 > = None;
                 while let Some(key) = map.next_key::<CoreIndexField>()? {
@@ -1324,6 +1342,13 @@ impl<'de> Deserialize<'de> for CoreIndex {
                 // `impl Default for CoreIndex` carries the argument for why a site list cannot be
                 // relied on to.
                 index.object_element_name_block_refs = Some(0);
+                for (kind, rows) in &index.objects {
+                    if *kind != super::storage_bucket_internals::StoredModelKind::String
+                        && rows.flat().is_none()
+                    {
+                        return Err(M::Error::custom("owner row encoding requires String model"));
+                    }
+                }
                 for (routing_bucket, decoded) in buckets.unwrap_or_default() {
                     for (handle, object_key) in &decoded.block_keys {
                         // THE BLOCK IS LOOKED UP BY THE HANDLE IT WAS FILED UNDER rather than
@@ -1340,6 +1365,13 @@ impl<'de> Deserialize<'de> for CoreIndex {
                         }
                     }
                     index.bucket_map.insert(routing_bucket, decoded.node);
+                }
+                if let Some(strings) = index.objects.get_mut(
+                    &super::storage_bucket_internals::StoredModelKind::String,
+                ) {
+                    if strings.flat().is_some() {
+                        strings.enable_string_owners((0, u32::MAX));
+                    }
                 }
                 Ok(index)
             }
@@ -1642,7 +1674,7 @@ impl<'a> BlockKeysByPosition<'a> {
     pub(super) fn from_parts(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
-            HashMap<ModelKey, super::object_record::ObjectSlot>,
+            ObjectRows,
         >,
         lookup: &'a ObjectBlockLookup,
     ) -> Self {
@@ -1658,7 +1690,7 @@ impl<'a> BlockKeysByPosition<'a> {
     pub(super) fn from_parts_for_bucket(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
-            HashMap<ModelKey, super::object_record::ObjectSlot>,
+            ObjectRows,
         >,
         lookup: &'a ObjectBlockLookup,
         routing_bucket: u32,
@@ -1669,7 +1701,7 @@ impl<'a> BlockKeysByPosition<'a> {
     fn from_parts_filtered<const WITH_HANDLES: bool>(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
-            HashMap<ModelKey, super::object_record::ObjectSlot>,
+            ObjectRows,
         >,
         lookup: &'a ObjectBlockLookup,
         routing_bucket: Option<u32>,
@@ -1726,7 +1758,7 @@ impl<'a> BlockKeysByPosition<'a> {
     pub(super) fn from_owned_buckets(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
-            HashMap<ModelKey, super::object_record::ObjectSlot>,
+            ObjectRows,
         >,
         lookup: &'a ObjectBlockLookup,
         owners: Option<&super::bucket_owners::BucketOwners>,
@@ -1815,7 +1847,7 @@ impl<'a> BlockKeysByPosition<'a> {
     pub(super) fn from_parts_for_keys<'k>(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
-            HashMap<ModelKey, super::object_record::ObjectSlot>,
+            ObjectRows,
         >,
         lookup: &'a ObjectBlockLookup,
         keys: impl IntoIterator<Item = &'k str>,
@@ -8330,6 +8362,20 @@ pub(super) static FILING_ROW_CENSUS: std::sync::Mutex<
 > = std::sync::Mutex::new(None);
 
 impl CoreIndex {
+    fn file_string_from_live_refs(&mut self, key: &str) -> bool {
+        use super::storage_bucket_internals::StoredModelKind;
+        let Some(rows) = self.objects.get_mut(&StoredModelKind::String) else { return false; };
+        let owner = rows.get(key).and_then(|slot| slot.refs()).and_then(|refs| {
+            let mut refs = refs.iter();
+            let filed = refs.next()?.routing_bucket;
+            refs.all(|reference| reference.routing_bucket == filed).then_some(filed)
+        });
+        match owner {
+            Some(filed) => rows.file_string(key, filed),
+            None => { rows.unverify_string(key); false }
+        }
+    }
+
     /// THE LOOKUP ALREADY DESCRIBES THE BLOCKS, CHECKED WITHOUT REBUILDING IT.
     ///
     /// This is what replaces a `rebuild_object_block_lookup()` at a site whose filing now files
@@ -10348,6 +10394,27 @@ fn adopt_canonical_key_allocations_in_hashed<V>(
     adopted
 }
 
+fn adopt_canonical_key_allocations_in_object_rows(
+    rows: &mut ObjectRows,
+    lookup: &ObjectBlockLookup,
+) -> usize {
+    // Collect only changed key handles before editing the row table.
+    let canonical_keys: Vec<_> = rows
+        .keys()
+        .filter_map(|held| {
+            lookup.any_shared_object_key(held)
+                .filter(|canonical| !Arc::ptr_eq(held, canonical))
+        })
+        .collect();
+    let mut adopted = 0;
+    for canonical in canonical_keys {
+        if rows.adopt_key(canonical.as_ref(), &canonical) {
+            adopted += 1;
+        }
+    }
+    adopted
+}
+
 fn adopt_canonical_key_allocations(
     expires_at_ms: &mut BTreeMap<Arc<str>, u64>,
     // THE WHOLE INDEX AND NOT THE LOOKUP, because the canonical holder moved. A string key lives
@@ -10481,6 +10548,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         routing_range_start: _,
         routing_range_end: _,
         routing_range_known: _,
+        source_owner_range: _,
         shard_id: _,
         shard_id_known: _,
         applied_wal_sequence: _,
@@ -10529,7 +10597,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         .get_mut(&super::storage_bucket_internals::StoredModelKind::String)
     {
         _adopted_hashed +=
-            adopt_canonical_key_allocations_in_hashed(table, &bucket_index.object_block_lookup);
+            adopt_canonical_key_allocations_in_object_rows(table, &bucket_index.object_block_lookup);
     }
     // THE FEATURE SERIES ARE IN `objects` NOW, so the pass reaches them through the kind's
     // inner table rather than through a field. Dropping this term instead would have cost
@@ -10545,7 +10613,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         .get_mut(&super::storage_bucket_internals::StoredModelKind::Feature)
     {
         _adopted_hashed +=
-            adopt_canonical_key_allocations_in_hashed(table, &bucket_index.object_block_lookup);
+            adopt_canonical_key_allocations_in_object_rows(table, &bucket_index.object_block_lookup);
     }
     // THE CONTROL-STATE COUNTERS ARE IN `counter_series` NOW, so this pass reaches them
     // through the domain's table rather than through a field. Dropping the term would
@@ -11177,8 +11245,11 @@ impl ShardState {
     /// not a distinction any of them should have to carry.
     /// The control-state counter series.
     /// Redis-style string values, one address per key.
-    pub(super) fn strings(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::String)
+    pub(super) fn strings(&self) -> &ObjectRows {
+        static EMPTY: std::sync::OnceLock<ObjectRows> = std::sync::OnceLock::new();
+        self.bucket_index.objects
+            .get(&super::storage_bucket_internals::StoredModelKind::String)
+            .unwrap_or_else(|| EMPTY.get_or_init(ObjectRows::default))
     }
 
     /// The string rows, for writing. Creates the kind's table on first use.
@@ -11189,8 +11260,56 @@ impl ShardState {
     /// row has somewhere to put a deadline and a dirty bit, which a bare address does not.
     pub(super) fn strings_mut(
         &mut self,
-    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.objects_of_kind_mut(super::storage_bucket_internals::StoredModelKind::String)
+    ) -> &mut ObjectRows {
+        let bounds = self.routing_range();
+        let rows = self.bucket_index.objects
+            .entry(super::storage_bucket_internals::StoredModelKind::String)
+            .or_insert_with(|| ObjectRows::string(bounds));
+        rows.enable_string_owners(bounds);
+        rows
+    }
+
+    pub(super) fn string_row(&self, key: &str) -> Option<&super::object_record::ObjectSlot> {
+        self.strings().get(key)
+    }
+
+    pub(super) fn string_row_mut(&mut self, key: &str)
+        -> Option<&mut super::object_record::ObjectSlot>
+    {
+        self.strings_mut().get_mut(key)
+    }
+
+    /// Reconstructed addresses replace membership, not surviving slot metadata.
+    /// Missing filing evidence keeps that row ineligible for selected capture.
+    pub(super) fn install_reconstructed_string_addresses(
+        &mut self,
+        addresses: HashMap<ModelKey, ReconstructedStringRow>,
+    ) -> usize {
+        use super::storage_bucket_internals::StoredModelKind;
+        self.strings_mut().retain(|key, _| addresses.contains_key(key));
+        let mut unresolved = 0;
+        for (key, row) in addresses {
+            {
+                let rows = self.strings_mut();
+                match rows.get_mut(&key) {
+                    Some(slot) => slot.set_address(&row.address),
+                    None => {
+                        let mut slot = super::object_record::ObjectSlot::default();
+                        slot.set_address(&row.address);
+                        rows.insert(key.clone(), slot);
+                    }
+                }
+            }
+            self.bucket_index.adopt_refs_into_slot(StoredModelKind::String, &key);
+            match row.filed_bucket {
+                Some(filed) => { self.strings_mut().file_string(&key, filed); }
+                None => {
+                    self.strings_mut().unverify_string(&key);
+                    unresolved += 1;
+                }
+            }
+        }
+        unresolved
     }
 
     /// One string key's address, or `None` when the key has no row.
@@ -11218,10 +11337,11 @@ impl ShardState {
         const KIND: super::storage_bucket_internals::StoredModelKind =
             super::storage_bucket_internals::StoredModelKind::String;
         // BISECT CONTROL: the original shape, holding the table across the match.
-        let table = self.objects_of_kind_mut(KIND);
+        let table = self.strings_mut();
         if let Some(slot) = table.get_mut(&*key) {
             let previous = slot.address();
             slot.set_address(address);
+            self.bucket_index.file_string_from_live_refs(&key);
             return Some(previous);
         }
         let mut slot = super::object_record::ObjectSlot::default();
@@ -11229,12 +11349,13 @@ impl ShardState {
         // THE KEY IS KEPT FOR THE ADOPTION BELOW, which needs it after the insert has taken
         // ownership. A pointer clone, not a copy of the characters.
         let object_key = std::sync::Arc::clone(&key);
-        self.objects_of_kind_mut(KIND).insert(key, slot);
+        self.strings_mut().insert(key, slot);
         // THE ROW HAS JUST COME INTO BEING, SO ITS BLOCKS MOVE IN. The block was filed before this
         // -- the address being installed here is WHERE it was filed -- so without this the refs
         // of every first write would stay in the lookup and the fold would save nothing on a
         // single-block object. See `CoreIndex::adopt_refs_into_slot`.
         self.bucket_index.adopt_refs_into_slot(KIND, object_key.as_ref());
+        self.bucket_index.file_string_from_live_refs(object_key.as_ref());
         None
     }
 
@@ -11546,16 +11667,22 @@ impl ShardState {
         &mut self,
         kind: super::storage_bucket_internals::StoredModelKind,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.bucket_index.objects.entry(kind).or_default()
+        assert_ne!(kind, super::storage_bucket_internals::StoredModelKind::String,
+            "String mutation requires its owner-aware door");
+        self.bucket_index.objects.entry(kind).or_default().flat_mut()
+            .expect("non-String model rows")
     }
 
     pub(super) fn objects_of_kind(
         &self,
         kind: super::storage_bucket_internals::StoredModelKind,
     ) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+        assert_ne!(kind, super::storage_bucket_internals::StoredModelKind::String,
+            "String reads require its owner-aware door");
         self.bucket_index
             .objects
             .get(&kind)
+            .and_then(ObjectRows::flat)
             .unwrap_or_else(|| NO_OBJECTS_OF_THIS_KIND.get_or_init(HashMap::new))
     }
 
@@ -11582,10 +11709,7 @@ impl ShardState {
     pub(super) fn features_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.bucket_index
-            .objects
-            .entry(super::storage_bucket_internals::StoredModelKind::Feature)
-            .or_default()
+        self.objects_of_kind_mut(super::storage_bucket_internals::StoredModelKind::Feature)
     }
 
     pub(super) fn context_audits(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
@@ -11596,10 +11720,7 @@ impl ShardState {
     pub(super) fn context_audits_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.bucket_index
-            .objects
-            .entry(super::storage_bucket_internals::StoredModelKind::ContextAudit)
-            .or_default()
+        self.objects_of_kind_mut(super::storage_bucket_internals::StoredModelKind::ContextAudit)
     }
 
     /// The context summaries, read from the consolidated map.
@@ -11619,10 +11740,7 @@ impl ShardState {
     pub(super) fn context_summaries_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.bucket_index
-            .objects
-            .entry(super::storage_bucket_internals::StoredModelKind::ContextSummary)
-            .or_default()
+        self.objects_of_kind_mut(super::storage_bucket_internals::StoredModelKind::ContextSummary)
     }
 
     /// The context compression events, read from the consolidated map.
@@ -11642,10 +11760,7 @@ impl ShardState {
     pub(super) fn context_compressions_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.bucket_index
-            .objects
-            .entry(super::storage_bucket_internals::StoredModelKind::ContextCompression)
-            .or_default()
+        self.objects_of_kind_mut(super::storage_bucket_internals::StoredModelKind::ContextCompression)
     }
 
     /// The context child refs, read from the consolidated map.
@@ -11673,10 +11788,7 @@ impl ShardState {
     pub(super) fn context_children_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.bucket_index
-            .objects
-            .entry(super::storage_bucket_internals::StoredModelKind::ContextChild)
-            .or_default()
+        self.objects_of_kind_mut(super::storage_bucket_internals::StoredModelKind::ContextChild)
     }
 
     /// The control-state blocks, read from the consolidated map.
@@ -11927,10 +12039,7 @@ impl ShardState {
     pub(super) fn context_indexes_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.bucket_index
-            .objects
-            .entry(super::storage_bucket_internals::StoredModelKind::ContextIndex)
-            .or_default()
+        self.objects_of_kind_mut(super::storage_bucket_internals::StoredModelKind::ContextIndex)
     }
 
     /// The entities of every owning node.
@@ -11949,10 +12058,7 @@ impl ShardState {
     pub(super) fn context_entities_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.bucket_index
-            .objects
-            .entry(super::storage_bucket_internals::StoredModelKind::ContextEntity)
-            .or_default()
+        self.objects_of_kind_mut(super::storage_bucket_internals::StoredModelKind::ContextEntity)
     }
 
     pub(super) fn context_events(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
@@ -11970,10 +12076,7 @@ impl ShardState {
     pub(super) fn context_events_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.bucket_index
-            .objects
-            .entry(super::storage_bucket_internals::StoredModelKind::ContextEvent)
-            .or_default()
+        self.objects_of_kind_mut(super::storage_bucket_internals::StoredModelKind::ContextEvent)
     }
 
     /// Install a whole series for one key.
@@ -12041,7 +12144,7 @@ impl ShardState {
         // handle at its own write site, which runs BEFORE the block index holds one -- so it
         // minted, while the maps adopted here later converged on the block index's
         // allocation. Three holders, two allocations, and no byte probe would have said so.
-        moved |= adopt_key_in(&mut self.strings_mut(), object_key, &canonical);
+        moved |= self.strings_mut().adopt_key(object_key, &canonical);
         // `control_state` TOO, for its RAW-keyed half. The counter commands file the raw object
         // key, so it is a fourth holder of characters `strings`, `features` and
         // `control_state_selection` already agreed on -- measured at 8 of 8 keys, four holders
