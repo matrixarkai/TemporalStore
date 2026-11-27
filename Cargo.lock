@@ -872,7 +872,7 @@ checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 [[package]]
 name = "matrixcache"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/matrixcache.git?rev=bcf26e100f1fe414076a4771468fbaec704eafc3#bcf26e100f1fe414076a4771468fbaec704eafc3"
+source = "git+https://github.com/matrixarkai/matrixcache.git?rev=5bd12b543086d5af9e80cd06a4a50537004bbb82#5bd12b543086d5af9e80cd06a4a50537004bbb82"
 dependencies = [
  "ahash",
  "core_affinity",

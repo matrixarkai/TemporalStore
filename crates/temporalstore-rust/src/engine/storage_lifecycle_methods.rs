@@ -18,6 +18,46 @@ mod lifecycle_report_work_tests;
 #[path = "reclaim_manifest_tests.rs"]
 mod reclaim_manifest_tests;
 
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) struct DirtyPlanCapture {
+    pub(super) shard_id: ShardId,
+    pub(super) node_count: usize,
+    pub(super) logical_object_count: usize,
+    pub(super) claim_ids: Vec<u32>,
+    pub(super) flagged_ids: Vec<u32>,
+    pub(super) cached_ids: Vec<u32>,
+    pub(super) logical_ids: Vec<u32>,
+    pub(super) summary_ids: Option<Vec<u32>>,
+    pub(super) claim_summary_intersection_ids: Option<Vec<u32>>,
+    pub(super) ranked_ids: Option<Vec<u32>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static DIRTY_PLAN_CAPTURES: std::cell::RefCell<Option<Vec<DirtyPlanCapture>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn with_dirty_plan_captures<R>(run: impl FnOnce() -> R) -> (R, Vec<DirtyPlanCapture>) {
+    struct Restore(Option<Vec<DirtyPlanCapture>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // Restore even on unwind; drop any discarded capture outside the TLS borrow.
+            let discarded = DIRTY_PLAN_CAPTURES.with(|slot| slot.replace(self.0.take()));
+            drop(discarded);
+        }
+    }
+    let previous = DIRTY_PLAN_CAPTURES.with(|slot| slot.replace(Some(Vec::new())));
+    let restore = Restore(previous);
+    let result = run();
+    let captures = DIRTY_PLAN_CAPTURES.with(|slot| slot.borrow_mut().take())
+        .expect("the scoped planner capture is enabled");
+    drop(restore);
+    (result, captures)
+}
+
 /// How many dirty-object keys the dump drain has looked at, across every call.
 ///
 /// The drain's cost is not visible from outside -- it is a closure inside a `retain` -- and
@@ -405,11 +445,35 @@ impl TemporalEngine {
         // were materialised at all -- with no summaries the filter selects nothing either way.
         // THE ITEM COUNTS COME OUT OF THE SAME LOCK ACQUISITION as the dirty state. Taking a
         // second read lock to answer one ratio would be two acquisitions for one decision.
+        #[cfg(test)]
+        let capture_dirty_inputs = DIRTY_PLAN_CAPTURES.with(|slot| slot.borrow().is_some());
+        #[cfg(test)]
+        let mut dirty_capture = None;
+        #[cfg(test)]
+        let mut dirty_capture_index = None;
         let (shard_has_dirty_objects, dirty_claims, durable_items, live_items, claims_are_summarized) = self.shards.with_state(request.shard_id, |shard| {
             shard
             .map(|shard| {
                 let (claims, all_marked_dirty) =
                     crate::engine::storage_reporting::dirty_bucket_claims_with_summary_state(shard);
+                #[cfg(test)]
+                if capture_dirty_inputs {
+                    // All four memberships belong to this SAME owner read. The existing claim
+                    // builder has already initialized the dirty cache; no authority is changed.
+                    let nodes = &shard.bucket_index.bucket_map;
+                    dirty_capture = Some(DirtyPlanCapture {
+                        shard_id: request.shard_id,
+                        node_count: nodes.len(),
+                        logical_object_count: shard.dirty_objects.len(),
+                        claim_ids: claims.keys().copied().collect(),
+                        flagged_ids: nodes.iter().filter_map(|(&id, node)| node.dirty().then_some(id)).collect(),
+                        cached_ids: nodes.dirty_buckets().iter().copied().collect(),
+                        logical_ids: shard.dirty_objects.bucket_ids().collect(),
+                        summary_ids: None,
+                        claim_summary_intersection_ids: None,
+                        ranked_ids: None,
+                    });
+                }
                 let claims_are_summarized = detailed_report || all_marked_dirty;
                 (
                     !shard.dirty_objects.is_empty(),
@@ -421,6 +485,18 @@ impl TemporalEngine {
             })
             .unwrap_or_default()
         });
+        #[cfg(test)]
+        if let Some(capture) = dirty_capture {
+            // Grow the collector after with_state has released the owner guard. Formatting
+            // and set comparisons are also left to the fixture, outside every owner read.
+            dirty_capture_index = Some(DIRTY_PLAN_CAPTURES.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let captures = slot.as_mut().expect("scoped capture remains enabled");
+                let index = captures.len();
+                captures.push(capture);
+                index
+            }));
+        }
         // THE CAP, WHICH IS OFF UNLESS A CALLER ASKS FOR IT.
         //
         // Guarded on the threshold itself and on a non-zero denominator: a shard with no live
@@ -500,6 +576,24 @@ impl TemporalEngine {
         } else {
             oldest_dirty_buckets(dirty_bucket_source, &dirty_claims)
         };
+        #[cfg(test)]
+        if let Some(index) = dirty_capture_index {
+            // These are the actual later ranking candidates, not re-routed logical keys.
+            // None preserves the distinction between unmeasured S and measured empty S.
+            let summary_ids = bucket_summaries.as_ref().map(|_| {
+                dirty_bucket_source.iter().map(|summary| summary.routing_bucket).collect::<Vec<_>>()
+            });
+            let intersection = summary_ids.as_ref().map(|ids| {
+                ids.iter().filter_map(|bucket| dirty_claims.get(bucket).map(|_| *bucket)).collect::<Vec<_>>()
+            });
+            DIRTY_PLAN_CAPTURES.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let capture = &mut slot.as_mut().expect("scoped capture remains enabled")[index];
+                capture.summary_ids = summary_ids;
+                capture.claim_summary_intersection_ids = intersection;
+                capture.ranked_ids = Some(dirty_buckets.clone());
+            });
+        }
         let latest_dump_wal_sequence = latest_bucket_dump_manifest
             .as_ref()
             .map(|manifest| manifest.wal_sequence)

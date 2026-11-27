@@ -2151,6 +2151,16 @@ pub trait SharedWalSink: std::fmt::Debug + Send + Sync {
     /// Record a single successfully-applied write `command` for `shard_id`.
     fn record_write(&self, shard_id: ShardId, command: &Command);
 
+    fn record_owned_write(&self, shard_id: ShardId, command: Command) {
+        self.record_write(shard_id, &command);
+    }
+
+    fn record_owned_writes(&self, shard_id: ShardId, commands: Vec<Command>) {
+        for command in commands {
+            self.record_owned_write(shard_id, command);
+        }
+    }
+
     /// Record one successfully applied maintenance frame without widening its record scope.
     fn record_outcomes(&self, shard_id: ShardId, outcomes: &[crate::wal::WalOutcomeItem]);
 }
@@ -2631,31 +2641,19 @@ impl DataNodeRuntime {
         );
     }
 
-    fn mirror_write(&self, shard_id: ShardId, command: &Command) {
-        if !is_write_command(command) {
-            return;
-        }
-        let sink = self.inner.shared_wal_sink.get().cloned();
-        if let Some(sink) = sink {
-            sink.record_write(shard_id, command);
-        }
-    }
-
     fn mirror_writes(
         &self,
         shard_id: ShardId,
-        commands: &[Command],
+        commands: Vec<Command>,
         responses: &[ExecuteResponse],
     ) {
-        let sink = self.inner.shared_wal_sink.get().cloned();
-        let Some(sink) = sink else {
+        let Some(sink) = self.inner.shared_wal_sink.get() else {
             return;
         };
-        for (command, response) in commands.iter().zip(responses.iter()) {
-            if command_was_applied(command, response) {
-                sink.record_write(shard_id, command);
-            }
-        }
+        let commands = commands.into_iter().zip(responses).filter_map(|(command, response)| {
+            command_was_applied(&command, response).then_some(command)
+        }).collect();
+        sink.record_owned_writes(shard_id, commands);
     }
 
     pub fn last_storage_manager_cycle_report(&self) -> Option<StorageManagerCycleReport> {
@@ -2872,7 +2870,9 @@ impl DataNodeRuntime {
                 request.shard_id,
                 command_key(&request.command).as_deref(),
             );
-            self.mirror_write(request.shard_id, &request.command);
+            if let Some(sink) = shared_wal_sink {
+                sink.record_owned_write(request.shard_id, request.command);
+            }
         }
         response
     }
@@ -2922,7 +2922,9 @@ impl DataNodeRuntime {
                 request.shard_id,
                 command_key(&request.command).as_deref(),
             );
-            self.mirror_write(request.shard_id, &request.command);
+            if let Some(sink) = shared_wal_sink {
+                sink.record_owned_write(request.shard_id, request.command);
+            }
         }
         response
     }
@@ -3094,7 +3096,7 @@ impl DataNodeRuntime {
             &request.commands,
             &response.responses,
         );
-        self.mirror_writes(request.shard_id, &request.commands, &response.responses);
+        self.mirror_writes(request.shard_id, request.commands, &response.responses);
         response
     }
 
@@ -3372,7 +3374,7 @@ impl DataNodeRuntime {
             );
             self.mirror_writes(
                 request.shard_id,
-                &request.commands,
+                request.commands,
                 &response.response.responses,
             );
         }

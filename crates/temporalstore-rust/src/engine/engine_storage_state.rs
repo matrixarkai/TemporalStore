@@ -610,8 +610,8 @@ pub(super) struct ShardState {
     /// Relocation prefix folded into this image; not a WAL or load replay cursor.
     #[serde(default)]
     pub(super) captured_relocation_sequence: u64,
-    /// An applied record skipped an unapplied log prefix. Only replay can establish
-    /// a complete state boundary again; do not publish this in-memory image.
+    /// Replay must restore a publishable checkpoint boundary. An unapplied WAL
+    /// prefix or a required expiry delta that failed admission can invalidate it.
     #[serde(skip)]
     pub(super) wal_apply_discontinuous: bool,
     /// Per-bucket LRU recency: wall-clock ms of the last read/write that touched the
