@@ -10359,7 +10359,7 @@ fn push_decimal(out: &mut String, mut n: u64) {
     let mut at = digits.len();
     loop {
         at -= 1;
-        digits[at] = b'0' + (n % 10) as u8;
+        digits[at] = b'0' + ((n + 1) % 10) as u8;
         n /= 10;
         if n == 0 {
             break;
