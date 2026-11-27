@@ -1226,6 +1226,53 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/pin-scrape.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
+      - name: cargo test (shard install source authority, hard gate)
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          t=engine::tests::shard_carried_identity::the_only_production_site_that_installs_a_shard_stamps_the_id_it_inserts_under
+          cargo test --locked --release -p temporalstore-rust --lib "$t" \
+            -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/metrics-owner-source-gate.log
+          running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/metrics-owner-source-gate.log || true)
+          one=$(grep -Ec '^running 1 test$' /tmp/metrics-owner-source-gate.log || true)
+          rows=$(grep -Ec '^test .* \.\.\. ' /tmp/metrics-owner-source-gate.log || true)
+          exact_ok=$(grep -Fxc "test $t ... ok" /tmp/metrics-owner-source-gate.log || true)
+          summaries=$(grep -Ec '^test result:' /tmp/metrics-owner-source-gate.log || true)
+          passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/metrics-owner-source-gate.log || true)
+          if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+            || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+            echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+            exit 1
+          fi
+      - name: cargo test (raft fixture reservations, both binary harnesses, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          passed_tests=0
+          for t in \
+            tests::server_raft_control_scale_up_down_preserves_serving \
+            tests::raft_test_listener_reservations_are_distinct_and_still_bound
+          do
+            CARGO_TERM_COLOR=never cargo test --locked --release -p temporalstore-rust \
+              --bin temporalstore_data_server --bin matrixark_rust_datanode "$t" \
+              -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/metrics-raft-reservations-gate.log
+            server=$(grep -Ec '^[[:space:]]*Running unittests src/bin/temporalstore_data_server\.rs \(' /tmp/metrics-raft-reservations-gate.log || true)
+            datanode=$(grep -Ec '^[[:space:]]*Running unittests src/bin/matrixark_rust_datanode\.rs \(' /tmp/metrics-raft-reservations-gate.log || true)
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/metrics-raft-reservations-gate.log || true)
+            one=$(grep -Ec '^running 1 test$' /tmp/metrics-raft-reservations-gate.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/metrics-raft-reservations-gate.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/metrics-raft-reservations-gate.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/metrics-raft-reservations-gate.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/metrics-raft-reservations-gate.log || true)
+            if [ "$server" != "1" ] || [ "$datanode" != "1" ] || [ "$running" != "2" ] \
+              || [ "$one" != "2" ] || [ "$rows" != "2" ] || [ "$exact_ok" != "2" ] \
+              || [ "$summaries" != "2" ] || [ "$passed" != "2" ]; then
+              echo "::error::$t: expected both binary harnesses, each with exactly one named pass and zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 2))
+          done
+          [ "$passed_tests" -eq 4 ] || { echo '::error::expected both raft fixture tests to pass in both binary harnesses'; exit 1; }
       - name: cargo test (index stage and dump floor guards, hard gate)
         timeout-minutes: 20
         run: |

@@ -5047,6 +5047,27 @@ mod tests {
         listener.local_addr().unwrap().to_string()
     }
 
+    fn reserve_local_listeners(count: usize) -> Vec<TcpListener> {
+        (0..count)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn raft_test_listener_reservations_are_distinct_and_still_bound() {
+        let listeners = reserve_local_listeners(4);
+        let addresses: BTreeSet<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap())
+            .collect();
+        assert_eq!(addresses.len(), 4);
+        for address in addresses {
+            let error = TcpListener::bind(address)
+                .expect_err("a held test reservation must prevent a second bind");
+            assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        }
+    }
+
     fn wait_for_http(addr: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -5095,13 +5116,24 @@ mod tests {
         voters: Vec<RaftNodeId>,
         local_admin_enabled: bool,
     ) -> ServerRaftState {
+        let listeners = reserve_local_listeners(voters.len());
         let nodes = voters
             .into_iter()
-            .map(|node_id| ProductionRaftNode {
+            .zip(listeners.iter())
+            .map(|(node_id, listener)| ProductionRaftNode {
                 node_id,
-                addr: free_local_addr(),
+                addr: listener.local_addr().unwrap().to_string(),
             })
             .collect::<Vec<_>>();
+        assert_eq!(
+            nodes
+                .iter()
+                .map(|node| &node.addr)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            nodes.len(),
+            "test raft voter addresses must be distinct"
+        );
         let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
             // The cadence the metaserver already uses; 0 disables the check.
             snapshot_check_interval_ms: env_u64("TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS", 30_000),
@@ -5134,6 +5166,9 @@ mod tests {
             allow_plaintext_for_local_chaos: true,
         })
         .unwrap();
+        // Startup validates addresses but does not bind sockets.
+        // Keep every reservation until it returns.
+        drop(listeners);
         ServerRaftState {
             runtime,
             local_node_id,
