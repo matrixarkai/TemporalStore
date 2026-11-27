@@ -2158,8 +2158,11 @@ fn physical_ownership_rebuild_preserves_pending_claims_and_empty_owner_state() {
     let live = block_routing_bucket(key, 0, u32::MAX);
     let deleted_empty = live.wrapping_add(1);
     let live_empty = live.wrapping_add(2);
-    let address = ElementEntry::try_from_parts(3, 16, 32, Some(1), None).unwrap();
+    // A physical inline String has ordinal zero. Check the complete stored address
+    // before rebuild so the oracle measures rebuild, rather than inline encoding.
+    let address = ElementEntry::try_from_parts(3, 16, 32, Some(0), None).unwrap();
     shard.set_string_address(key.into(), &address);
+    assert_eq!(shard.string_address(key), Some(address.clone()));
     for (id, generation, wal, index, deleted) in [
         (live, 7, 41, 19, false),
         (deleted_empty, 8, 42, 20, true),
